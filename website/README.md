@@ -1,6 +1,6 @@
 # Website
 
-The public site: the home page and the WPT dashboard at `/wpt`. Astro, plain
+The public site has the home page and the WPT dashboard at `/wpt`. Astro, plain
 CSS, no client framework. Every page is rendered at build time.
 
     bun install
@@ -15,7 +15,7 @@ deploy looks like.
 
     bun run check
 
-`check` is the gate: contrast, typecheck, lint, format, build. CI runs the same
+`check` runs contrast, typecheck, lint, format, and build. CI runs the same
 commands, then Alchemy deploys `dist/`.
 
 | script      | what it does                                         |
@@ -23,10 +23,10 @@ commands, then Alchemy deploys `dist/`.
 | `contrast`  | validates the token pairs in `src/styles/themes.css` |
 | `typecheck` | `astro sync` + `tsc --noEmit --runExternalCode`      |
 | `lint`      | oxlint                                               |
-| `format`    | oxfmt in check mode; `format:fix` writes             |
+| `format`    | oxfmt in check mode. `format:fix` writes             |
 | `build`     | copies the record, then `astro build`                |
 
-`@/` is the only path alias: it points at `src/`, and everything else is a
+`@/` is the only path alias. It points at `src/`. Everything else is a
 relative import.
 
 ## The data the page reads
@@ -44,12 +44,12 @@ the page reads are also the files a script can fetch:
 
 `latest.json`, `index.json`, and `regressions.json` come from
 `uv run tools/wpt/cli.py publish` in the `WPT` workflow. There is no API
-version: the shapes above are what this site consumes, and a change to one is a
-change to the page in the same commit.
+version. The shapes above are what this site consumes, and if a shape changes,
+the page changes in the same commit.
 
 A run produced by a different WPT revision is not comparable, so
 `regressions.json` reports `comparable: false` and an empty diff across a pin
-bump. New `TIMEOUT`s are listed separately from new failures: they flip with
+bump. New `TIMEOUT`s are listed separately from new failures. They flip with
 runner load.
 
 ## Deploy
@@ -68,5 +68,5 @@ secrets.
 The palette and type scale follow `https://ericc.ch/DESIGN.md`: monochrome,
 `light-dark()` token pairs in `src/styles/themes.css`, type carrying the
 hierarchy, text-only controls. `src/styles/base.css` is the reset and reading
-rhythm; `src/styles/ui.css` is the page's own vocabulary (`.card`, `.stats`,
-`.bar`, `.diff-list`). There is no Tailwind and no client CSS framework.
+rhythm. `src/styles/ui.css` has the page's own classes (`.card`, `.stats`,
+`.bar`, `.diff-counts`). There is no Tailwind and no client CSS framework.

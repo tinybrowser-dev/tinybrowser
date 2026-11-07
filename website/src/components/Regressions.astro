@@ -9,7 +9,7 @@ interface Props {
 
 const { regression, passDelta } = Astro.props
 
-/** A flaky file puts every subtest in the diff; the count is the files, not the rows. */
+/** A flaky file puts every subtest in the diff. The count is the files, not the rows. */
 function fileCount(rows: Array<{ test: string }>): number {
   return new Set(rows.map((row) => row.test)).size
 }
@@ -49,7 +49,7 @@ const comparable = regression !== null && regression.previous_sha !== null && re
         <span class="muted">{plural(timedOut, "file")} newly timing out</span>
       </p>
       <p class="diff-note">
-        A test that flips with runner load lands here too.{" "}
+        A test that flips with runner load appears here too.{" "}
         <a href="/wpt/data/regressions.json">The raw diff</a> has every file and subtest.
       </p>
     </div>

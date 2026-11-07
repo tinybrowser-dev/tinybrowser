@@ -11,8 +11,8 @@ const subtests = counter(counters, "subtests")
 const total = Math.max(subtests, 1)
 
 // Monochrome, by ink intensity: the more ink a segment carries, the worse the
-// outcome. Pass is faint, a timeout mid, a failure strongest; skips and any
-// status this list does not name fall back to the surface itself.
+// outcome. Pass is faint, a timeout mid, a failure strongest. Skips and any
+// status this list does not name use the surface colour.
 const parts = [
   { label: "pass", count: counter(counters, "subtest_pass"), className: "bar-pass" },
   {

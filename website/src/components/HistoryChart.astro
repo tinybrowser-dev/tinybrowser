@@ -62,9 +62,9 @@ const last = points[points.length - 1]?.date.slice(0, 10)
       <polyline points={line} class="line" />
       {points.map((point, i) => <circle cx={x(i)} cy={y(point.pct)} r="3" class="point">
         <title>
-              {point.date.slice(0, 16).replace("T", " ")} UTC —{" "}
-              {point.pct.toFixed(1)}% — {point.sha.slice(0, 8)}
-            </title>
+          {point.date.slice(0, 16).replace("T", " ")} UTC, {point.pct.toFixed(1)}%,{" "}
+          {point.sha.slice(0, 8)}
+        </title>
       </circle>)}
       <text x={pad.left} y={height - 8} class="axis">
         {first}

@@ -36,7 +36,7 @@ export type RunRecord = {
   totals: Counters
   areas: Record<string, Counters>
   /**
-   * Only `merge` output carries the list; `publish` moves it into the gzipped
+   * Only `merge` output carries the list. `publish` moves it into the gzipped
    * sidecar so the committed record stays small.
    */
   failures?: Array<Failure>

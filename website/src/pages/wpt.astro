@@ -19,7 +19,7 @@ const { latest, index, regressions } = loadSnapshot()
 const score = latest ? subtestPercent(latest.totals) : null
 const files = latest ? testPercent(latest.totals) : null
 
-// The newest index entry repeats `latest`; the delta is against the one before.
+// The newest index entry repeats `latest`. The delta is against the one before.
 const previousScore = index.length > 1 ? subtestPercent(index[1].totals) : null
 const delta = score !== null && previousScore !== null ? score - previousScore : null
 
@@ -42,7 +42,7 @@ const raw = [
 ---
 
 <Base
-  title="Web Platform Tests — tinybrowser"
+  title="Web Platform Tests for tinybrowser"
   description="tinybrowser's Web Platform Tests score, history, and regressions."
 >
   <div class="page-head">
@@ -50,7 +50,7 @@ const raw = [
       <h1 class="page-title">Web Platform Tests</h1>
       <p class="lede">
         How much of the pinned WPT corpus tinybrowser passes, by folder and by run. One point per
-        code push. The percentage counts the subtests the run reported; a file that fails before it
+        code push. The percentage counts the subtests the run reported. A file that fails before it
         reports any adds none.
       </p>
     </div>
@@ -100,7 +100,7 @@ const raw = [
         <div class="card">
           <p class="stat-label">Skipped</p>
           <p class="stat-value">{formatCount(counter(latest.totals, "skip"))}</p>
-          <p class="stat-detail">files the corpus or the lane marks as skipped</p>
+          <p class="stat-detail">files the corpus or the runner marks as skipped</p>
         </div>
         <div class="card">
           <p class="stat-label">Unexpected failures</p>
@@ -128,13 +128,13 @@ const raw = [
       <div class="section card">
         <h2>Raw data</h2>
         <p class="lede">
-          These are the files the page reads. No API key, no shape promise beyond what the page
-          consumes.
+          These are the files the page reads. No API key is needed, and the shape is whatever this
+          page consumes.
         </p>
         <ul class="raw-list">
           {raw.map(([name, description]) => <li>
             <a href={`/wpt/data/${name}`}>/wpt/data/{name}</a>
-            <span class="muted"> — {description}</span>
+            <span class="muted"> ({description})</span>
           </li>)}
         </ul>
       </div>

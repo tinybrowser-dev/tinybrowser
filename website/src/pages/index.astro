@@ -11,8 +11,8 @@ const score = latest ? subtestPercent(latest.totals) : null
   <section class="home measure">
     <h1>tinybrowser</h1>
     <p class="lede">
-      A small, fast, spec-first headless browser for AI agents. Conformance is the product, so the
-      Web Platform Tests run on every code push and the result is published in the open.
+      A small, fast, spec-first headless browser for AI agents. The Web Platform Tests run on every
+      code push, and the result is published at <a href="/wpt">/wpt</a>.
     </p>
     <p class="links">
       <a href="/wpt">Conformance dashboard</a>
@@ -20,7 +20,7 @@ const score = latest ? subtestPercent(latest.totals) : null
       <a href="/wpt/data/latest.json">Raw record</a>
     </p>
     {latest && <p class="lede">
-      Latest run: {formatPercent(score)} of subtests passing across{" "}
+      The latest run passed {formatPercent(score)} of subtests across{" "}
       {latest.totals.tests.toLocaleString("en-US")} files.
     </p>}
   </section>

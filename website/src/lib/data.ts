@@ -4,8 +4,8 @@ import { join } from "node:path"
 import type { IndexEntry, Regression, RunRecord, Snapshot } from "./record"
 
 /**
- * Where the results repo is checked out. Defaults to `data/` at the repo root;
- * CI overrides it when the checkout lands elsewhere.
+ * Where the results repo is checked out. Defaults to `data/` at the repo root.
+ * CI overrides it when the checkout is somewhere else.
  */
 const dir = process.env.WPT_DATA_DIR ?? "../data"
 

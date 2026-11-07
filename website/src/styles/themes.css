@@ -1,4 +1,4 @@
-/* light-dark(light, dark) resolves from color-scheme; :root follows the OS until the toggle pins it. */
+/* light-dark(light, dark) resolves from color-scheme. :root follows the OS until the toggle pins it. */
 
 :root {
   color-scheme: light dark;
