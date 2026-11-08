@@ -10,9 +10,9 @@ const { counters, compact = false } = Astro.props
 const subtests = counter(counters, "subtests")
 const total = Math.max(subtests, 1)
 
-// Monochrome, by ink intensity: the more ink a segment carries, the worse the
-// outcome. Pass is faint, a timeout mid, a failure strongest. Skips and any
-// status this list does not name use the surface colour.
+// Monochrome, by ink intensity: the filled part is what passed, so pass gets
+// the strongest ink, a timeout mid, a failure faint. Skips and any status this
+// list does not name use the surface colour.
 const parts = [
   { label: "pass", count: counter(counters, "subtest_pass"), className: "bar-pass" },
   {

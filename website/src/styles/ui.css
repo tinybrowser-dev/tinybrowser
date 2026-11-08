@@ -246,7 +246,7 @@ th h2 {
 }
 
 .bar-pass {
-  background: var(--fg-2);
+  background: var(--fg-0);
 }
 
 .bar-timeout {
@@ -254,7 +254,7 @@ th h2 {
 }
 
 .bar-fail {
-  background: var(--fg-0);
+  background: var(--fg-2);
 }
 
 .bar-rest {
