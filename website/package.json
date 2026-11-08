@@ -29,9 +29,10 @@
   },
   "devDependencies": {
     "@alchemy.run/cloudflare": "2.0.0-beta.84",
+    "@effect/platform-bun": "4.1.2",
     "@types/node": "^26.6.6",
     "alchemy": "2.0.0-beta.84",
-    "effect": "4.0.7",
+    "effect": "4.1.2",
     "oxfmt": "^0.74.0",
     "oxlint": "^1.89.0",
     "typescript": "7.1.0-beta"
