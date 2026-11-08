@@ -41,6 +41,10 @@ const PAIRS: Array<{ label: string; fg: string; bg: string; min: number }> = [
   { label: "hairline on page", fg: "--fg-2", bg: "--bg-0", min: 1.2 },
   { label: "hairline on surface", fg: "--fg-2", bg: "--bg-1", min: 1.2 },
   { label: "hairline on selection", fg: "--fg-2", bg: "--bg-2", min: 1.2 },
+  // A bar segment is a graphic, not a hairline: WCAG 1.4.11 asks for 3:1 so a
+  // failure stays visible against the empty track.
+  { label: "bar fail on track", fg: "--fg-1", bg: "--bg-2", min: 3 },
+  { label: "bar pass on track", fg: "--fg-0", bg: "--bg-2", min: 3 },
 ]
 
 const { light, dark } = parsePalettes(readFileSync(CSS, "utf8"))

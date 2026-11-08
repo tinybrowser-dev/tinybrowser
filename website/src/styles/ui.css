@@ -249,12 +249,10 @@ th h2 {
   background: var(--fg-0);
 }
 
-.bar-timeout {
-  background: var(--fg-1);
-}
-
+/* Failures and timeouts share this ink; --fg-2 against --bg-2 is 1.2:1 and
+   disappears into the track. */
 .bar-fail {
-  background: var(--fg-2);
+  background: var(--fg-1);
 }
 
 .bar-rest {

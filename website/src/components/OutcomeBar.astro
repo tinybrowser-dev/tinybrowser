@@ -10,19 +10,19 @@ const { counters, compact = false } = Astro.props
 const subtests = counter(counters, "subtests")
 const total = Math.max(subtests, 1)
 
-// Monochrome, by ink intensity: the filled part is what passed, so pass gets
-// the strongest ink, a timeout mid, a failure faint. Skips and any status this
-// list does not name use the surface colour.
+// Monochrome, by ink intensity: a pass gets the strongest ink, everything that
+// is not a pass gets the second ink. A timeout is a failure here, so it shares
+// the fail segment rather than reading as a separate status. Skips and
+// unreported subtests use the surface colour, which is what the empty track is.
 const parts = [
   { label: "pass", count: counter(counters, "subtest_pass"), className: "bar-pass" },
   {
-    label: "timeout",
-    count: counter(counters, "subtest_timeout") + counter(counters, "subtest_notrun"),
-    className: "bar-timeout",
-  },
-  {
     label: "fail",
-    count: counter(counters, "subtest_fail") + counter(counters, "subtest_error"),
+    count:
+      counter(counters, "subtest_fail") +
+      counter(counters, "subtest_error") +
+      counter(counters, "subtest_timeout") +
+      counter(counters, "subtest_notrun"),
     className: "bar-fail",
   },
 ].filter((part) => part.count > 0)
