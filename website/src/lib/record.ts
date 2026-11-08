@@ -17,6 +17,12 @@ export type Counters = {
   skip: number
   subtests: number
   subfail: number
+  /**
+   * Corpus subtests the run never reported: a worker variant that did not
+   * run, or a file that stopped before testharness started. They count in
+   * `subtests` and never in `subtest_pass`.
+   */
+  subtest_unreported: number
   time_ms: number
   [key: `subtest_${string}`]: number
 }

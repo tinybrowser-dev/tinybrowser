@@ -47,6 +47,11 @@ the page reads are also the files a script can fetch:
 version. The shapes above are what this site consumes, and if a shape changes,
 the page changes in the same commit.
 
+`totals.subtests` is the pinned revision's corpus count. `merge --corpus` adds
+the subtests a run never reported as `subtest_unreported`, so a worker variant
+or a file that errors before testharness starts still counts in the
+denominator and never in the passing count.
+
 A run produced by a different WPT revision is not comparable, so
 `regressions.json` reports `comparable: false` and an empty diff across a pin
 bump. New `TIMEOUT`s are listed separately from new failures. They flip with

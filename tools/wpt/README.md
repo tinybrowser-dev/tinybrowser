@@ -162,15 +162,25 @@ table, so the two cannot disagree. The 335 MB merged wptreport is a debug
 artifact; the record is the hand-off, and `tools/wpt/verdict-cases.json`
 pins its verdict rule against `tools/wpt-report`.
 
+`corpus --revision REV --out corpus.json.gz` writes Chrome's per-test subtest
+totals from wpt.fyi. `merge --corpus corpus.json.gz` fills the gap between
+those totals and what the run reported with `subtest_unreported`, so the
+denominator is the pinned revision's corpus and a test that never reports
+counts as not passing. Without the map the denominator is only what reported.
+The CI score job fetches the map and warns instead of failing when wpt.fyi is
+unavailable.
+
 `publish --record run.json --data DIR` turns that record into the files the
 public dashboard reads: `latest.json` (the record without its failure list),
 `index.json` (one entry per run, which is the history chart),
 `regressions.json` (failure-list set difference against the previous run), and
 `failures.jsonl.gz` (the list itself, since a full run has ~100k rows and a
-JSON member that size would make every commit huge). A WPT pin bump makes the
-diff incomparable and it says so instead of reporting phantom fixes. The
-`WPT` workflow runs this after a push to `main` and commits the result to
-`tinybrowser-dev/tinybrowser-wpt-results`.
+JSON member that size would make every commit huge). It also gives every
+index point at the current WPT revision the same corpus denominator, so an
+older point does not show a fall that only changed the denominator. A WPT pin
+bump makes the diff incomparable and it says so instead of reporting phantom
+fixes. The `WPT` workflow runs this after a push to `main` and commits the
+result to `tinybrowser-dev/tinybrowser-wpt-results`.
 
 A test file whose own timers outlast DEFAULT_TIMEOUT cannot be sped up
 from the engine: `referrer-policy/css-integration/svg/` sleeps 800 ms

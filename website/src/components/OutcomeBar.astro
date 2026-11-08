@@ -30,7 +30,7 @@ const parts = [
 const known = parts.reduce((sum, part) => sum + part.count, 0)
 const other = subtests - known
 if (other > 0) {
-  parts.push({ label: "skip", count: other, className: "bar-rest" })
+  parts.push({ label: "not run", count: other, className: "bar-rest" })
 }
 ---
 

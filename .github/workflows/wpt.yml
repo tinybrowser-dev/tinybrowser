@@ -401,6 +401,31 @@ jobs:
           pattern: wpt-report-*
           path: reports
           merge-multiple: true
+      - name: Corpus counts
+        run: |
+          set -euo pipefail
+          revision=$(python3 - <<'PY'
+          import glob, json
+          for path in sorted(glob.glob("reports/*.json")):
+              try:
+                  with open(path) as handle:
+                      data = json.load(handle)
+              except (OSError, ValueError):
+                  continue
+              revision = (data.get("run_info") or {}).get("revision")
+              if revision:
+                  print(revision)
+                  break
+          PY
+          )
+          if [[ -z "$revision" ]]; then
+            echo "::warning::no WPT revision in the reports; the denominator will be the reported subtests only"
+            exit 0
+          fi
+          if ! python3 tools/wpt/cli.py corpus --revision "$revision" --out corpus.json.gz; then
+            echo "::warning::could not fetch Chrome's corpus counts; the denominator will be the reported subtests only"
+            rm -f corpus.json.gz
+          fi
       - name: Merge chunk reports
         run: |
           set -euo pipefail
@@ -412,9 +437,13 @@ jobs:
             echo "::error::no chunk reports to merge"
             exit 1
           fi
+          corpus_args=()
+          if [[ -s corpus.json.gz ]]; then
+            corpus_args=(--corpus corpus.json.gz)
+          fi
           python3 tools/wpt/cli.py merge --strict-skips "${reports[@]}" \
             --out merged.json --summary-out run.json \
-            --product-revision "$GITHUB_SHA" | tee summary.txt
+            --product-revision "$GITHUB_SHA" "${corpus_args[@]}" | tee summary.txt
           if (( ${#reports[@]} != expected )); then
             echo "::error::incomplete run: ${#reports[@]} of $expected chunk reports"
             exit 1
@@ -437,6 +466,7 @@ jobs:
           path: |
             merged.json
             run.json
+            corpus.json.gz
             summary.txt
           if-no-files-found: warn
           retention-days: 7

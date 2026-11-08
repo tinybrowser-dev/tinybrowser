@@ -9,6 +9,8 @@ scheduling, driving, and reporting. This file owns the phases around it:
 * `score`  — run a set, then print one row per directory + attention list.
 * `rerun`  — re-run only the attention set from a saved wptreport.
 * `merge`  — fold the chunk reports of a CI run into one score.
+* `corpus` — Chrome's per-test subtest counts for the pinned WPT revision.
+* `publish` — one record into the history repo's data directory.
 * `profile` — run tests (or read one report) and rank them by wall time.
 * `failures` — print the canonical failure list from a `--score` log.
 * `baseline` — run a slice at two revisions, diff the failure lists.
@@ -54,6 +56,8 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.request
 from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
@@ -735,19 +739,41 @@ def parse_rerun_argv(
     return report, include_timeout, dry_run, save_report, [], None
 
 
-def parse_merge_argv(
-    argv: list[str],
-) -> tuple[list[Path], Path | None, Path | None, str | None, bool, str | None]:
+@dataclass(frozen=True)
+class MergeArgs:
+    reports: list[Path]
+    out: Path | None = None
+    summary_out: Path | None = None
+    product_revision: str | None = None
+    corpus: Path | None = None
+    strict: bool = False
+    error: str | None = None
+
+
+def parse_merge_argv(argv: list[str]) -> MergeArgs:
     reports: list[Path] = []
     out: Path | None = None
     summary_out: Path | None = None
     product_revision: str | None = None
+    corpus: Path | None = None
     strict = False
+
+    def fail(message: str) -> MergeArgs:
+        return MergeArgs(
+            reports=reports,
+            out=out,
+            summary_out=summary_out,
+            product_revision=product_revision,
+            corpus=corpus,
+            strict=strict,
+            error=message,
+        )
+
     i = 0
     while i < len(argv):
         arg = argv[i]
         name = arg.split("=", 1)[0]
-        if name in ("--out", "--summary-out", "--product-revision"):
+        if name in ("--out", "--summary-out", "--product-revision", "--corpus"):
             if "=" in arg:
                 value = arg.split("=", 1)[1]
             elif i + 1 < len(argv) and not argv[i + 1].startswith("-"):
@@ -756,44 +782,34 @@ def parse_merge_argv(
             else:
                 value = ""
             if not value:
-                return (
-                    reports,
-                    out,
-                    summary_out,
-                    product_revision,
-                    strict,
-                    (f"{name} needs a value"),
-                )
+                return fail(f"{name} needs a value")
             if name == "--out":
                 out = Path(value)
             elif name == "--summary-out":
                 summary_out = Path(value)
+            elif name == "--corpus":
+                corpus = Path(value)
             else:
                 product_revision = value
         elif arg == "--strict-skips":
             strict = True
         elif arg.startswith("-"):
-            return (
-                reports,
-                out,
-                summary_out,
-                product_revision,
-                strict,
-                f"merge takes report files, not {arg} (chunk flags belong to `run`)",
+            return fail(
+                f"merge takes report files, not {arg} (chunk flags belong to `run`)"
             )
         else:
             reports.append(Path(arg))
         i += 1
     if not reports:
-        return (
-            reports,
-            out,
-            summary_out,
-            product_revision,
-            strict,
-            "merge needs at least one report file",
-        )
-    return reports, out, summary_out, product_revision, strict, None
+        return fail("merge needs at least one report file")
+    return MergeArgs(
+        reports=reports,
+        out=out,
+        summary_out=summary_out,
+        product_revision=product_revision,
+        corpus=corpus,
+        strict=strict,
+    )
 
 
 # --- report primitives (score + rerun share these) ---
@@ -1106,7 +1122,7 @@ def fold_reports(
 # The compact run record. The merged wptreport is a debug artifact; this is
 # what the history, the site, and the regression diff consume, so it must stay
 # small and stable while the wptreport keeps growing.
-RECORD_SCHEMA = 1
+RECORD_SCHEMA = 2
 RECORD_COUNTERS = (
     "tests",
     "pass",
@@ -1143,15 +1159,115 @@ def epoch_seconds(value: Any) -> float | None:
     return value / 1000 if value > 1e11 else float(value)
 
 
-def build_record(merged: dict, product_revision: str | None) -> dict:
+def corpus_counts(summary: dict) -> dict[str, int]:
+    """Per-test subtest totals from a wpt.fyi `summary_v2` payload.
+
+    Each value is `{"s": verdict, "c": [passed, total]}`. Only tests with a
+    positive total matter: a reftest reports 0 subtests and must not inflate
+    the denominator.
+    """
+    counts: dict[str, int] = {}
+    for test, entry in summary.items():
+        if not isinstance(test, str) or not test.startswith("/"):
+            continue
+        if not isinstance(entry, dict):
+            continue
+        pair = entry.get("c")
+        if not isinstance(pair, list) or len(pair) != 2:
+            continue
+        total = pair[1]
+        if isinstance(total, bool) or not isinstance(total, int) or total <= 0:
+            continue
+        counts[test] = total
+    return counts
+
+
+def read_corpus(path: Path) -> dict[str, int] | None:
+    """The corpus map: a test path to its subtest count, plain or gzipped."""
+    try:
+        raw = path.read_bytes()
+        if raw[:2] == b"\x1f\x8b":
+            raw = gzip.decompress(raw)
+        data = json.loads(raw)
+    except (OSError, EOFError, json.JSONDecodeError) as error:
+        eprint(f"corpus: cannot read {path}: {error}")
+        return None
+    if not isinstance(data, dict):
+        eprint(f"corpus: {path} is not a JSON object")
+        return None
+    counts = {
+        test: total
+        for test, total in data.items()
+        if isinstance(test, str)
+        and isinstance(total, int)
+        and not isinstance(total, bool)
+        and total > 0
+    }
+    if not counts:
+        eprint(f"corpus: {path} has no subtest counts")
+        return None
+    return counts
+
+
+def write_corpus(path: Path, counts: dict[str, int]) -> None:
+    body = json.dumps(counts, separators=(",", ":"), sort_keys=True).encode()
+    if path.suffix == ".gz":
+        with gzip.open(path, "wb") as handle:
+            handle.write(body)
+    else:
+        path.write_bytes(body)
+
+
+def enroll_subtests(
+    rows: dict[str, dict[str, int]],
+    reported: dict[str, int],
+    corpus: dict[str, int],
+) -> int:
+    """Add subtests the run never reported, per test, to their area.
+
+    A worker variant, a file that errors before testharness starts, or a
+    chunk that ran half a test all leave a gap between the corpus and the
+    report. The gap counts as not run, never as a pass. Returns the number of
+    subtests enrolled.
+    """
+    missing = 0
+    for test, expected in corpus.items():
+        gap = expected - reported.get(test, 0)
+        if gap <= 0:
+            continue
+        row = rows.get(group_of(test))
+        if row is None:
+            row = defaultdict(int)
+            rows[group_of(test)] = row
+        row["subtests"] += gap
+        row["subtest_unreported"] += gap
+        missing += gap
+    return missing
+
+
+def build_record(
+    merged: dict, product_revision: str | None, corpus: dict[str, int] | None = None
+) -> dict:
     """The compact record of one merged run.
 
     Totals and areas come from the same classifier the table uses, so the
     record can never disagree with the printed score. `failures` is the
     attention list with the diagnostic message dropped: a status, a test, and
     an optional subtest name are what a diff and a site need.
+
+    With a corpus map, subtests the run never reported are added as
+    `subtest_unreported`, so the denominator is the pinned revision's corpus
+    and not only the part that reached the harness.
     """
-    rows, attention = classify_results(merged.get("results") or [])
+    results = merged.get("results") or []
+    rows, attention = classify_results(results)
+    if corpus is not None:
+        reported = {
+            result["test"]: len(result.get("subtests") or [])
+            for result in results
+            if result.get("test")
+        }
+        enroll_subtests(rows, reported, corpus)
     totals: dict[str, int] = defaultdict(int)
     for row in rows.values():
         for key, value in row.items():
@@ -1173,12 +1289,17 @@ def build_record(merged: dict, product_revision: str | None) -> dict:
 
 
 def merge_main(argv: list[str]) -> int:
-    reports, out, summary_out, product_revision, strict, error = parse_merge_argv(argv)
-    if error:
-        return die("merge", error, 2)
+    args = parse_merge_argv(argv)
+    if args.error:
+        return die("merge", args.error, 2)
+    corpus = None
+    if args.corpus is not None:
+        corpus = read_corpus(args.corpus)
+        if corpus is None:
+            return die("merge", f"cannot use corpus {args.corpus}", 2)
     loaded: list[tuple[Path, dict]] = []
     skipped = 0
-    for report in reports:
+    for report in args.reports:
         data, problem = load_report(report)
         if data is None:
             eprint(f"wpt: merge: skipping {problem}")
@@ -1186,34 +1307,166 @@ def merge_main(argv: list[str]) -> int:
             continue
         loaded.append((report, data))
     if not loaded:
-        return die("merge", f"no usable report among {len(reports)}", 2)
+        return die("merge", f"no usable report among {len(args.reports)}", 2)
     merged, warnings, error = fold_reports(loaded)
     for warning in warnings:
         eprint(f"wpt: merge: {warning}")
     if error:
         return die("merge", error, 2)
     assert merged is not None
-    if out is not None:
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(merged))
+    if args.out is not None:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(json.dumps(merged))
         eprint(
-            f"merged {len(loaded)} reports -> {out} ({len(merged['results'])} results)"
+            f"merged {len(loaded)} reports -> {args.out} ({len(merged['results'])} results)"
         )
-    if summary_out is not None:
-        summary_out.parent.mkdir(parents=True, exist_ok=True)
-        record = build_record(merged, product_revision)
-        summary_out.write_text(json.dumps(record, separators=(",", ":")))
+    if args.summary_out is not None:
+        args.summary_out.parent.mkdir(parents=True, exist_ok=True)
+        record = build_record(merged, args.product_revision, corpus)
+        args.summary_out.write_text(json.dumps(record, separators=(",", ":")))
+        enrolled = record["totals"].get("subtest_unreported", 0)
         eprint(
-            f"record -> {summary_out} ({record['totals']['tests']} tests, "
+            f"record -> {args.summary_out} ({record['totals']['tests']} tests, "
             f"{len(record['failures'])} failures)"
         )
+        if enrolled:
+            subtests = record["totals"]["subtests"]
+            passing = record["totals"].get("subtest_pass", 0)
+            eprint(
+                f"corpus: {enrolled} subtests not reported by the run, "
+                f"score {passing}/{subtests} = {100 * passing / subtests:.1f}%"
+            )
     code = summarize_results(merged["results"])
-    if strict and skipped:
+    if args.strict and skipped:
         # The table is out and --out is written; the caller (CI score job)
         # turns an unusable chunk report into a red run without losing it.
-        eprint(f"wpt: merge: {skipped} of {len(reports)} chunk reports were unusable")
+        eprint(
+            f"wpt: merge: {skipped} of {len(args.reports)} chunk reports were unusable"
+        )
         return code or 2
     return code
+
+
+# --- `corpus` (Chrome's per-test subtest counts) ---
+
+
+CORPUS_USAGE = """corpus (--revision REV | --summary FILE) --out FILE
+
+Write the per-test subtest counts of a Chrome run at a WPT revision as a
+compact {test: subtests} map. `merge --corpus FILE` uses it to add the
+subtests a run never reported, so the score's denominator is the pinned
+revision's corpus rather than only the part that reached the harness.
+
+--revision REV asks wpt.fyi for the newest Chrome run at that revision and
+downloads its summary_v2. --summary FILE reads that summary from disk, which
+is what the selftest uses. The output is JSON, gzipped when FILE ends in .gz.
+"""
+
+WPT_FYI_RUNS = "https://wpt.fyi/api/runs?sha={revision}&max-count=100"
+USER_AGENT = "tinybrowser-wpt/1"
+
+
+def download(url: str, timeout: float) -> bytes:
+    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return response.read()
+
+
+def summary_from_wpt_fyi(revision: str) -> tuple[dict | None, str | None]:
+    """The newest Chrome summary at `revision`, or a reason it is unavailable."""
+    try:
+        runs = json.loads(download(WPT_FYI_RUNS.format(revision=revision), 60))
+    except (OSError, ValueError) as error:
+        return None, f"wpt.fyi run list: {error}"
+    if not isinstance(runs, list):
+        return None, "wpt.fyi returned no run list"
+    candidates = [
+        run
+        for run in runs
+        if isinstance(run, dict)
+        and run.get("browser_name") == "chrome"
+        and run.get("results_url")
+    ]
+    candidates.sort(key=lambda run: run.get("created_at") or "", reverse=True)
+    if not candidates:
+        return None, f"no Chrome run at {revision}"
+    problems: list[str] = []
+    for run in candidates:
+        try:
+            raw = download(run["results_url"], 120)
+            if raw[:2] == b"\x1f\x8b":
+                raw = gzip.decompress(raw)
+            summary = json.loads(raw)
+        except (OSError, ValueError, EOFError) as error:
+            problems.append(str(error))
+            continue
+        if isinstance(summary, dict) and corpus_counts(summary):
+            return summary, None
+        problems.append("summary has no subtest counts")
+    return None, "; ".join(problems)
+
+
+def corpus_main(argv: list[str]) -> int:
+    revision: str | None = None
+    summary_path: Path | None = None
+    out: Path | None = None
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        name = arg.split("=", 1)[0]
+        if name in ("--revision", "--summary", "--out"):
+            if "=" in arg:
+                value = arg.split("=", 1)[1]
+            elif i + 1 < len(argv) and not argv[i + 1].startswith("-"):
+                value = argv[i + 1]
+                i += 1
+            else:
+                value = ""
+            if not value:
+                return die("corpus", f"{name} needs a value\n{CORPUS_USAGE}", 2)
+            if name == "--revision":
+                revision = value
+            elif name == "--summary":
+                summary_path = Path(value)
+            else:
+                out = Path(value)
+        elif arg in ("-h", "--help"):
+            print(CORPUS_USAGE)
+            return 0
+        else:
+            return die("corpus", f"unexpected argument {arg}\n{CORPUS_USAGE}", 2)
+        i += 1
+    if out is None or (revision is None) == (summary_path is None):
+        return die(
+            "corpus",
+            f"need --out and exactly one of --revision or --summary\n{CORPUS_USAGE}",
+            2,
+        )
+    if summary_path is not None:
+        try:
+            raw = summary_path.read_bytes()
+            if raw[:2] == b"\x1f\x8b":
+                raw = gzip.decompress(raw)
+            summary = json.loads(raw)
+        except (OSError, EOFError, ValueError) as error:
+            return die("corpus", f"cannot read {summary_path}: {error}", 2)
+        if not isinstance(summary, dict):
+            return die("corpus", f"{summary_path} is not a JSON object", 2)
+    else:
+        assert revision is not None
+        summary, problem = summary_from_wpt_fyi(revision)
+        if summary is None:
+            return die("corpus", problem or "no summary", 1)
+    counts = corpus_counts(summary)
+    if not counts:
+        return die("corpus", "the summary has no subtest counts", 1)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    write_corpus(out, counts)
+    source = revision if revision is not None else str(summary_path)
+    eprint(
+        f"corpus: {len(counts)} tests, {sum(counts.values())} subtests from {source}"
+    )
+    return 0
 
 
 # --- `publish` (one record into the history repo's data dir) ---
@@ -1420,6 +1673,18 @@ def publish_main(argv: list[str]) -> int:
         except (OSError, json.JSONDecodeError) as error:
             eprint(f"publish: ignoring unreadable index.json: {error}")
     entry = index_entry(record)
+    # The corpus is a property of the WPT revision, not of one run. Entries
+    # published before enrollment carry the smaller reported denominator, so
+    # give every same-revision point the corpus denominator; otherwise the
+    # chart shows a fall that is a denominator change, not a regression.
+    denominator = (record.get("totals") or {}).get("subtests")
+    if isinstance(denominator, int) and denominator > 0:
+        for item in index:
+            if item.get("wpt_revision") != record.get("wpt_revision"):
+                continue
+            totals = item.get("totals")
+            if isinstance(totals, dict):
+                totals["subtests"] = max(totals.get("subtests") or 0, denominator)
     index = [item for item in index if item.get("sha") != entry["sha"]]
     index.insert(0, entry)
     index_path.write_text(json.dumps(index, separators=(",", ":")))
@@ -3163,6 +3428,33 @@ def _selftest() -> None:
     _, _, err = hoist_paths_after_test_types([], ["--test-types", "testharnes"])
     assert err is not None
 
+    # Corpus enrollment: only a positive subtest total counts, and a reftest
+    # with 0 subtests must not inflate the denominator.
+    assert corpus_counts(
+        {
+            "/a.any.html": {"s": "P", "c": [2, 3]},
+            "/a.any.worker.html": {"s": "P", "c": [0, 3]},
+            "/reftest.html": {"s": "P", "c": [0, 0]},
+            "/broken": {"c": "nope"},
+            "not-a-path": {"c": [1, 1]},
+        }
+    ) == {"/a.any.html": 3, "/a.any.worker.html": 3}
+    rows, _ = classify_results(
+        [
+            {
+                "test": "/dom/ok.html",
+                "status": "OK",
+                "subtests": [{"name": "a", "status": "PASS"}],
+                "duration": 0,
+            }
+        ]
+    )
+    assert enroll_subtests(rows, {"/dom/ok.html": 1}, {"/dom/ok.html": 3}) == 2
+    assert rows["dom"]["subtests"] == 3
+    assert rows["dom"]["subtest_unreported"] == 2
+    assert enroll_subtests(rows, {"/dom/ok.html": 5}, {"/dom/ok.html": 3}) == 0
+    assert rows["dom"]["subtests"] == 3
+
     assert group_of("/dom/nodes/Node-childNodes.html") == "dom/nodes"
     assert group_of("/FileAPI/Blob.html") == "FileAPI"
     assert group_of("/foo.html") == "(root)"
@@ -3309,7 +3601,7 @@ def _selftest() -> None:
     assert r == Path("r.json") and err is None
     assert parse_rerun_argv([])[5] is not None
 
-    reports, out, summary, revision, strict, err = parse_merge_argv(
+    args = parse_merge_argv(
         [
             "a.json",
             "b.json",
@@ -3319,23 +3611,29 @@ def _selftest() -> None:
             "r.json",
             "--product-revision",
             "abc",
+            "--corpus",
+            "corpus.json.gz",
             "--strict-skips",
         ]
     )
     assert (
-        reports == [Path("a.json"), Path("b.json")]
-        and out == Path("m.json")
-        and summary == Path("r.json")
-        and revision == "abc"
-        and strict
-        and err is None
+        args.reports == [Path("a.json"), Path("b.json")]
+        and args.out == Path("m.json")
+        and args.summary_out == Path("r.json")
+        and args.product_revision == "abc"
+        and args.corpus == Path("corpus.json.gz")
+        and args.strict
+        and args.error is None
     )
-    assert parse_merge_argv(["a.json", "b.json"])[1] is None
-    assert parse_merge_argv(["a.json"])[5] is None  # one report is a valid merge
-    assert parse_merge_argv([])[5] is not None
-    assert parse_merge_argv(["a.json", "b.json", "--out"])[5] is not None
-    assert parse_merge_argv(["a.json", "--summary-out"])[5] is not None
-    assert parse_merge_argv(["a.json", "b.json", "--total-chunks", "2"])[5] is not None
+    assert parse_merge_argv(["a.json", "b.json"]).out is None
+    assert parse_merge_argv(["a.json"]).error is None  # one report is a valid merge
+    assert parse_merge_argv([]).error is not None
+    assert parse_merge_argv(["a.json", "b.json", "--out"]).error is not None
+    assert parse_merge_argv(["a.json", "--summary-out"]).error is not None
+    assert (
+        parse_merge_argv(["a.json", "b.json", "--total-chunks", "2"]).error is not None
+    )
+    assert parse_merge_argv(["a.json", "--corpus"]).error is not None
 
     # run in-process resume: the driver reads the harness journal to tell the
     # files that finished from the one an abort left in flight, and ignores a
@@ -3354,6 +3652,7 @@ def _selftest() -> None:
     _selftest_profile()
     _selftest_failures()
     _selftest_baseline()
+    _selftest_corpus()
     _selftest_merge()
     _selftest_publish()
 
@@ -3467,6 +3766,50 @@ def _selftest_baseline() -> None:
         assert baseline_main(Options(), ["not-a-commit", "dom/"]) == 2
 
 
+def _selftest_corpus() -> None:
+    """corpus: extraction, the gzipped round trip, and the argument grammar."""
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        summary_path = tmp / "summary.json"
+        summary_path.write_text(
+            json.dumps(
+                {
+                    "/a.any.html": {"s": "P", "c": [1, 2]},
+                    "/a.any.worker.html": {"s": "P", "c": [0, 2]},
+                    "/reftest.html": {"s": "P", "c": [0, 0]},
+                }
+            )
+        )
+        out = tmp / "corpus.json.gz"
+        with contextlib.redirect_stderr(io.StringIO()):
+            assert corpus_main(["--summary", str(summary_path), "--out", str(out)]) == 0
+        assert read_corpus(out) == {"/a.any.html": 2, "/a.any.worker.html": 2}
+        assert out.read_bytes()[:2] == b"\x1f\x8b"
+
+        with (
+            contextlib.redirect_stderr(io.StringIO()),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            assert corpus_main([]) == 2
+            assert corpus_main(["--summary", str(summary_path)]) == 2
+            assert (
+                corpus_main(
+                    [
+                        "--summary",
+                        str(summary_path),
+                        "--revision",
+                        "abc",
+                        "--out",
+                        str(out),
+                    ]
+                )
+                == 2
+            )
+            assert (
+                corpus_main(["--summary", str(tmp / "missing"), "--out", str(out)]) == 2
+            )
+
+
 def _selftest_merge() -> None:
     """Fabricated chunk reports: merge survives the failure modes CI has."""
     info = {"product": "tinybrowser", "os": "linux"}
@@ -3531,13 +3874,60 @@ def _selftest_merge() -> None:
         # The record is the hand-off: same classifier as the table, and the
         # failure list is a status token per entry, not a diagnostic string.
         record = json.loads(record_path.read_text())
-        assert record["schema"] == 1
+        assert record["schema"] == 2
         assert record["product_revision"] == "abc123"
         assert record["wpt_revision"] is None
         assert record["totals"]["tests"] == 3
         assert record["totals"]["pass"] == 3
         assert record["areas"]["(root)"]["tests"] == 3
         assert record["failures"] == []
+
+        # With a corpus, subtests the run did not report join the denominator
+        # as not run. /c.html is absent from the corpus and keeps its 0.
+        corpus = tmp / "corpus.json.gz"
+        write_corpus(corpus, {"/a.html": 4, "/b.html": 2, "/a.worker.html": 3})
+        corpus_record = tmp / "run-corpus.json"
+        with (
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            assert (
+                merge_main(
+                    [
+                        str(a),
+                        str(b),
+                        "--summary-out",
+                        str(corpus_record),
+                        "--corpus",
+                        str(corpus),
+                    ]
+                )
+                == 0
+            )
+        enrolled = json.loads(corpus_record.read_text())
+        assert enrolled["totals"]["subtests"] == 9
+        assert enrolled["totals"]["subtest_unreported"] == 9
+        assert enrolled["totals"]["pass"] == 3
+        assert enrolled["areas"]["(root)"]["subtests"] == 9
+        assert enrolled["areas"]["(root)"]["subtest_unreported"] == 9
+        # A bad corpus is an error, not a silent fallback to the small
+        # denominator.
+        with (
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            assert (
+                merge_main(
+                    [
+                        str(a),
+                        "--summary-out",
+                        str(corpus_record),
+                        "--corpus",
+                        str(tmp / "missing"),
+                    ]
+                )
+                == 2
+            )
 
         failing = tmp / "failing.json"
         failing.write_text(
@@ -3628,11 +4018,11 @@ def _selftest_publish() -> None:
     back through `read_failures` — the same path the next publish uses.
     """
     record = {
-        "schema": 1,
+        "schema": 2,
         "product_revision": "aaa",
         "wpt_revision": "w1",
         "time_end": 1_800_000_000,
-        "totals": {"tests": 3},
+        "totals": {"tests": 3, "subtests": 10},
         "areas": {},
         "failures": [
             {"test": "/dom/a.html", "subtest": "", "status": "TIMEOUT"},
@@ -3668,6 +4058,7 @@ def _selftest_publish() -> None:
         second = tmp / "second.json"
         updated = json.loads(json.dumps(record))
         updated.update(product_revision="bbb", time_end=1_800_000_100)
+        updated["totals"]["subtests"] = 20
         updated["failures"] = [
             {"test": "/dom/b.html", "subtest": "", "status": "TIMEOUT"},
             {"test": "/dom/c.html", "subtest": "s", "status": "FAIL"},
@@ -3691,6 +4082,11 @@ def _selftest_publish() -> None:
         assert [
             item["sha"] for item in json.loads((data / "index.json").read_text())
         ] == ["bbb", "aaa"]
+        # The corpus denominator belongs to the WPT revision, so the older
+        # point at the same revision is rewritten instead of showing a fall
+        # that only changed the denominator.
+        index = json.loads((data / "index.json").read_text())
+        assert index[1]["totals"]["subtests"] == 20
 
         # Same commit: the point is replaced, not added.
         rerun = json.loads(json.dumps(updated))
@@ -3729,7 +4125,7 @@ def _selftest_publish() -> None:
             assert read_failures(data / "failures.jsonl.gz") == []
 
 
-TOP_HELP = """tinybrowser WPT harness: run | score | rerun | merge | profile | failures | baseline | manifest | overnight | selftest
+TOP_HELP = """tinybrowser WPT harness: run | score | rerun | merge | corpus | publish | profile | failures | baseline | manifest | overnight | selftest
 
 Lanes — `run <lane>`, required, one executor each:
   run in-process PATH... [--jobs N] [--report FILE] [--baseline FILE]
@@ -3763,15 +4159,23 @@ Reports and diffs:
     Summarize an existing report (--report) or run then summarize.
   rerun REPORT [--include-timeout] [--dry-run] [--save-report FILE] [-- runner...]
     Re-run only the attention set from a wptreport.
-  merge REPORT... [--out FILE] [--summary-out FILE] [--product-revision SHA] [--strict-skips]
+  merge REPORT... [--out FILE] [--summary-out FILE] [--product-revision SHA] [--corpus FILE] [--strict-skips]
     Fold the chunk reports of one CI run into a single score. Reports that
     are missing, corrupt, or empty are skipped with a warning; overlapping
     tests are refused. --out writes the merged wptreport, keeping run_info,
     subsuites, and the time bounds. --summary-out writes the compact run
     record (totals, per-area counters, subtest outcomes, failure list) that
     the history and the site read; --product-revision stamps it with the
-    commit under test. --strict-skips exits 2 after printing the table when
-    any report was unusable, so a dead chunk still fails CI.
+    commit under test. --corpus adds the subtests a test never reported, from
+    the counts `corpus` writes, so the denominator is the pinned revision's
+    corpus instead of only what reached the harness. --strict-skips exits 2
+    after printing the table when any report was unusable, so a dead chunk
+    still fails CI.
+  corpus (--revision REV | --summary FILE) --out FILE
+    Write Chrome's per-test subtest counts at a WPT revision. With
+    --revision it asks wpt.fyi for the newest Chrome run and downloads its
+    summary; with --summary it reads that summary locally. `merge --corpus`
+    consumes the result.
   publish --record FILE --data DIR [--sha SHA]
     Add one record to the data directory the results repo publishes:
     latest.json, regressions.json, index.json, and the gzipped failure
@@ -3851,6 +4255,8 @@ def main(argv: list[str] | None = None) -> int:
         return merge_main(args)
     if command == "publish":
         return publish_main(args)
+    if command == "corpus":
+        return corpus_main(args)
     if command == "profile":
         return profile_main(options, args)
     if command == "failures":

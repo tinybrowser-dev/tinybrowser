@@ -50,8 +50,8 @@ const raw = [
       <h1 class="page-title">Web Platform Tests</h1>
       <p class="lede">
         How much of the pinned WPT corpus tinybrowser passes, by folder and by run. One point per
-        code push. The percentage counts the subtests the run reported. A file that fails before it
-        reports any adds none.
+        code push. The denominator is every subtest in the corpus, so a test that never reports
+        counts as not passing.
       </p>
     </div>
     {latest && <p class="run-meta">
@@ -82,7 +82,7 @@ const raw = [
           <p class="stat-value">{formatPercent(score)}</p>
           <p class="stat-detail">
             {formatCount(counter(latest.totals, "subtest_pass"))} of{" "}
-            {formatCount(counter(latest.totals, "subtests"))} reported
+            {formatCount(counter(latest.totals, "subtests"))}
             {delta !== null && Math.abs(delta) >= 0.05 && <span class="delta">
               {delta >= 0 ? "+" : ""}
               {delta.toFixed(1)} pts
@@ -98,9 +98,9 @@ const raw = [
           </p>
         </div>
         <div class="stat">
-          <p class="stat-label">Skipped</p>
-          <p class="stat-value">{formatCount(counter(latest.totals, "skip"))}</p>
-          <p class="stat-detail">files the corpus or the runner marks as skipped</p>
+          <p class="stat-label">Not run</p>
+          <p class="stat-value">{formatCount(counter(latest.totals, "subtest_unreported"))}</p>
+          <p class="stat-detail">subtests in the corpus the run never reported</p>
         </div>
         <div class="stat">
           <p class="stat-label">Unexpected failures</p>
