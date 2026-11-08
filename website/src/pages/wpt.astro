@@ -68,7 +68,7 @@ const raw = [
   </div>
 
   {latest === null ? (
-    <div class="card empty">
+    <div class="empty">
       <p>
         No run has been published yet. The first push to <code>main</code> that touches the engine
         writes it.
@@ -77,7 +77,7 @@ const raw = [
   ) : (
     <>
       <div class="stats">
-        <div class="card">
+        <div class="stat">
           <p class="stat-label">Subtests passing</p>
           <p class="stat-value">{formatPercent(score)}</p>
           <p class="stat-detail">
@@ -89,7 +89,7 @@ const raw = [
             </span>}
           </p>
         </div>
-        <div class="card">
+        <div class="stat">
           <p class="stat-label">Files passing</p>
           <p class="stat-value">{formatPercent(files)}</p>
           <p class="stat-detail">
@@ -97,12 +97,12 @@ const raw = [
             {formatCount(counter(latest.totals, "tests"))}
           </p>
         </div>
-        <div class="card">
+        <div class="stat">
           <p class="stat-label">Skipped</p>
           <p class="stat-value">{formatCount(counter(latest.totals, "skip"))}</p>
           <p class="stat-detail">files the corpus or the runner marks as skipped</p>
         </div>
-        <div class="card">
+        <div class="stat">
           <p class="stat-label">Unexpected failures</p>
           <p class="stat-value">{formatCount(counter(latest.totals, "unexpected"))}</p>
           <p class="stat-detail">
@@ -125,7 +125,7 @@ const raw = [
         <AreaTable areas={latest.areas} />
       </div>
 
-      <div class="section card">
+      <div class="section">
         <h2>Raw data</h2>
         <p class="lede">
           These are the files the page reads. No API key is needed, and the shape is whatever this

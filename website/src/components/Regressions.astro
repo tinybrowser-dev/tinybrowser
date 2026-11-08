@@ -20,7 +20,7 @@ const timedOut = regression ? fileCount(regression.new_timeouts) : 0
 const comparable = regression !== null && regression.previous_sha !== null && regression.comparable
 ---
 
-<div class="card">
+<div>
   <div class="section-head">
     <h2>What changed</h2>
     {comparable && <span class="note">one run against the previous one</span>}

@@ -68,5 +68,5 @@ secrets.
 The palette and type scale follow `https://ericc.ch/DESIGN.md`: monochrome,
 `light-dark()` token pairs in `src/styles/themes.css`, type carrying the
 hierarchy, text-only controls. `src/styles/base.css` is the reset and reading
-rhythm. `src/styles/ui.css` has the page's own classes (`.card`, `.stats`,
-`.bar`, `.diff-counts`). There is no Tailwind and no client CSS framework.
+rhythm. `src/styles/ui.css` has the page's own classes (`.stats`, `.bar`,
+`.diff-counts`). There is no Tailwind and no client CSS framework.
