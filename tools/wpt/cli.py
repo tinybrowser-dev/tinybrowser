@@ -1675,8 +1675,9 @@ def publish_main(argv: list[str]) -> int:
     entry = index_entry(record)
     # The corpus is a property of the WPT revision, not of one run. Entries
     # published before enrollment carry the smaller reported denominator, so
-    # give every same-revision point the corpus denominator; otherwise the
-    # chart shows a fall that is a denominator change, not a regression.
+    # give every same-revision point the largest known corpus denominator;
+    # otherwise the chart shows a fall that is only a denominator change.
+    # The max also keeps the history stable when a later corpus fetch fails.
     denominator = (record.get("totals") or {}).get("subtests")
     if isinstance(denominator, int) and denominator > 0:
         for item in index:
@@ -1684,7 +1685,14 @@ def publish_main(argv: list[str]) -> int:
                 continue
             totals = item.get("totals")
             if isinstance(totals, dict):
-                totals["subtests"] = max(totals.get("subtests") or 0, denominator)
+                denominator = max(denominator, totals.get("subtests") or 0)
+        for item in index:
+            if item.get("wpt_revision") != record.get("wpt_revision"):
+                continue
+            totals = item.get("totals")
+            if isinstance(totals, dict):
+                totals["subtests"] = denominator
+        entry["totals"]["subtests"] = denominator
     index = [item for item in index if item.get("sha") != entry["sha"]]
     index.insert(0, entry)
     index_path.write_text(json.dumps(index, separators=(",", ":")))
@@ -4091,6 +4099,8 @@ def _selftest_publish() -> None:
         # Same commit: the point is replaced, not added.
         rerun = json.loads(json.dumps(updated))
         rerun["time_end"] = 1_800_000_200
+        # A failed corpus fetch must not shrink the denominator back.
+        rerun["totals"]["subtests"] = 15
         path = tmp / "rerun.json"
         path.write_text(json.dumps(rerun))
         with (
@@ -4101,6 +4111,8 @@ def _selftest_publish() -> None:
         assert [
             item["sha"] for item in json.loads((data / "index.json").read_text())
         ] == ["bbb", "aaa"]
+        index = json.loads((data / "index.json").read_text())
+        assert index[0]["totals"]["subtests"] == 20
         assert [item["date"] for item in json.loads((data / "index.json").read_text())][
             0
         ].startswith("2027-01-15")
