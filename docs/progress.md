@@ -53,6 +53,16 @@ timeouts flip both ways with runner load, and the `font-stretch`/`css-text`
 reftests flip with font rasterisation (repeated local runs of one binary flip
 the same files).
 
+Dedicated workers landed on 2026-11-09. The `workers/` in-process slice
+(248 files) moved from 7 passing files / 34 passing subtests to 99 / 226,
+with no previously passing file or subtest lost. The remaining timeouts are
+the missing SharedWorker, service-worker, worker `fetch`/XHR, MessagePort
+transfer, Blob-URL, and IndexedDB surfaces. A 2,131-file regression slice
+(`dom/events`, `html/webappapis`, `encoding`, `xhr`, `FileAPI`) improved by
+78 passing subtests against the same build without workers; three
+worker-aware files that used to fail immediately with `Worker is not a
+function` now spend their budget and report TIMEOUT instead.
+
 Every push to `main` now publishes the record to
 `tinybrowser-dev/tinybrowser-wpt-results` and the site at
 `tinybrowser.ericc.ch/wpt` rebuilds from it: subtests passing, files passing,

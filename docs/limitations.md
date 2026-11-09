@@ -38,7 +38,14 @@ a browser that implements the mapping algorithm.
 
 ## Missing surfaces
 
-No workers or service-workers. Canvas `getContext` returns a working 2D
+Dedicated classic workers run in the page engine: construction from HTTP(S)
+and `data:` URLs, `postMessage` with the structured-clone codec, timers,
+`importScripts`, `close()`, `terminate()`, and runtime error propagation to
+the `Worker` object. They share the renderer's thread, so a
+worker that loops blocks the page until the script budget interrupts it.
+SharedWorker, service workers, worker `fetch`/XHR, MessagePort transfer,
+Blob-URL worker scripts, and IndexedDB remain unimplemented. Canvas
+`getContext` returns a working 2D
 context (paths, text, gradients, patterns, filters, layers); the
 `bitmaprenderer` context exists but transfers nothing until `ImageBitmap`
 decoding lands; WebGL returns null. Sync XHR is rejected, customized

@@ -36,6 +36,7 @@ use crate::protocol::{
     BrowserEvent, BrowserServices, FrameId, Mount, RendererEvent, ResponseHead, TabError,
 };
 use crate::storage::PendingStorageEvent;
+use crate::worker::{Worker, WorkerId, WorkerRequest};
 
 /// One child navigable's replay store, owned by the engine that hosts its
 /// documents.
@@ -168,6 +169,9 @@ pub struct Engine {
     standalone_history: bool,
     /// JS-truth predicates the browser waits on, evaluated after each drain.
     js_waiters: Vec<JsWaiter>,
+    /// Dedicated workers owned by this engine. A worker shares the engine's
+    /// `QuickJS` runtime and services but owns its own task and timer queues.
+    workers: BTreeMap<WorkerId, Worker>,
 }
 
 /// One JS-truth predicate: the browser registers it once and hears only when
@@ -222,6 +226,8 @@ impl Engine {
             shared: Rc::new(RefCell::new(crate::messaging::Shared::default())),
             pending_storage: Rc::new(RefCell::new(Vec::new())),
             turn_deadline: Rc::new(std::cell::Cell::new(None)),
+            worker_requests: Rc::new(RefCell::new(Vec::new())),
+            next_worker: Rc::new(std::cell::Cell::new(1)),
             font_ctx: fonts.0.clone(),
         };
         let main = Document::with_shared(FrameId::MAIN, &runtime, &init_scripts);
@@ -237,12 +243,67 @@ impl Engine {
             deferred_events: Vec::new(),
             standalone_history: false,
             js_waiters: Vec::new(),
+            workers: BTreeMap::new(),
         }
     }
 
     /// Marks this engine as having no browser tab behind it.
     pub fn use_standalone_history(&mut self) {
         self.standalone_history = true;
+    }
+
+    /// Materializes the worker creates, posts, and terminates that realm host
+    /// functions queued while a script was running.
+    fn adopt_worker_requests(&mut self) -> bool {
+        let requests = std::mem::take(&mut *self.runtime.worker_requests.borrow_mut());
+        let mut applied = false;
+        for request in requests {
+            applied = true;
+            match request {
+                WorkerRequest::Create(created) => {
+                    match Worker::create(*created, &self.runtime, &self.js_runtime) {
+                        Ok(worker) => {
+                            self.workers.insert(worker.id(), worker);
+                        }
+                        Err(error) => {
+                            if let Some(document) = self.frames.get_mut(&error.parent) {
+                                document.push_worker_error(error);
+                            }
+                        }
+                    }
+                }
+                WorkerRequest::Post { id, payload } => {
+                    if let Some(worker) = self.workers.get_mut(&id) {
+                        worker.queue_message(payload);
+                    }
+                }
+                WorkerRequest::Terminate { id } => {
+                    if let Some(mut worker) = self.workers.remove(&id) {
+                        worker.terminate();
+                    }
+                }
+                WorkerRequest::Close { id } => {
+                    if let Some(worker) = self.workers.get_mut(&id) {
+                        worker.close();
+                    }
+                }
+                WorkerRequest::Error(error) => {
+                    if let Some(document) = self.frames.get_mut(&error.parent) {
+                        document.push_worker_error(*error);
+                    }
+                }
+                WorkerRequest::PostToParent {
+                    parent,
+                    worker,
+                    payload,
+                } => {
+                    if let Some(document) = self.frames.get_mut(&parent) {
+                        document.push_worker_message(worker, payload);
+                    }
+                }
+            }
+        }
+        applied
     }
 
     /// Adopts every child frame the realms created for themselves (an `iframe`
@@ -1027,6 +1088,20 @@ impl Engine {
                     self.reconcile_frames();
                 }
             }
+            let worker_ids: Vec<WorkerId> = self.workers.keys().copied().collect();
+            for id in worker_ids {
+                if std::time::Instant::now() >= deadline {
+                    return self.has_ready_work();
+                }
+                if self.workers.get_mut(&id).is_some_and(Worker::drain_step) {
+                    ran = true;
+                    // A worker task's own requests (a post, a close, an error)
+                    // are observable before its next task runs: apply them now
+                    // instead of waiting for every owner to go idle.
+                    self.reconcile_frames();
+                }
+            }
+            self.workers.retain(|_, worker| !worker.is_closed());
             if !ran {
                 // A pass that ran no task can still have adopted realm work:
                 // stepping the document moves its outbox into a navigation or
@@ -1050,6 +1125,8 @@ impl Engine {
     #[must_use]
     pub fn has_ready_work(&self) -> bool {
         self.frames.values().any(Document::has_ready_work)
+            || self.workers.values().any(Worker::has_ready_work)
+            || !self.runtime.worker_requests.borrow().is_empty()
     }
 
     /// Whether any frame's document has a dial queued or in flight.
@@ -1223,6 +1300,7 @@ impl Engine {
         self.frames
             .values()
             .filter_map(Document::next_deadline)
+            .chain(self.workers.values().filter_map(Worker::next_deadline))
             .min()
     }
 
@@ -1232,6 +1310,7 @@ impl Engine {
     fn reconcile_frames(&mut self) -> bool {
         let mut applied = false;
         loop {
+            let workers = self.adopt_worker_requests();
             let adopted = self.adopt_pending_frames();
             let removed = self.runtime.shared.borrow_mut().take_removed_frames();
             for (frame, container) in &removed {
@@ -1285,7 +1364,8 @@ impl Engine {
                 }
             }
             let deliveries = self.runtime.shared.borrow_mut().take_deliveries();
-            let had_work = adopted
+            let had_work = workers
+                || adopted
                 || ran_scripts
                 || !removed_containers.is_empty()
                 || !navigations.is_empty()
@@ -2200,12 +2280,14 @@ impl Engine {
     }
 
     pub fn shutdown(&mut self) {
+        self.workers.clear();
         for document in self.frames.values_mut() {
             document.shutdown();
         }
     }
 
     pub fn release(&mut self) {
+        self.workers.clear();
         for document in self.frames.values_mut() {
             document.release();
         }
@@ -2284,6 +2366,7 @@ impl Drop for Engine {
         // Drop realms before the wrapper cache so cached JS values never
         // outlive the QuickJS heap. The engine's own runtime handle is the
         // last one and drops with the struct.
+        self.workers.clear();
         self.frames.clear();
         self.runtime.registry.borrow_mut().clear();
         self.js_runtime.collect();

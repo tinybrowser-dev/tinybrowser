@@ -1203,12 +1203,33 @@ pub(crate) struct SubresourceOptions {
     pub(crate) referrer_policy: Option<blitz_traits::net::ReferrerPolicy>,
 }
 
+/// Which global a realm exposes.
+///
+/// A document realm is the Window the page runs in. A dedicated worker realm
+/// has no document, no browsing context, and a `DedicatedWorkerGlobalScope`
+/// instead of a Window
+/// (<https://html.spec.whatwg.org/multipage/workers.html#dedicatedworkerglobalscope>).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum GlobalKind {
+    Document,
+    DedicatedWorker {
+        id: crate::worker::WorkerId,
+        /// The document frame that constructed the worker: the worker's only
+        /// message destination and the owner of its `Worker` object.
+        parent: FrameId,
+        name: String,
+    },
+}
+
 pub(crate) struct World {
     /// The handles every frame of this renderer process shares: trees,
     /// registry and wrapper cache, ports, JS heap, wake handle, and stop flag.
     pub(crate) runtime: FrameRuntime,
-    /// The frame this realm belongs to.
+    /// The frame this realm belongs to. A worker uses a synthetic id outside
+    /// the frame namespace because it has no browsing context.
     frame: FrameId,
+    /// The kind of global this realm exposes.
+    pub(crate) kind: GlobalKind,
     /// The browser tab this document belongs to, when a browser owns it. A
     /// popup tab's `close()` names it; a child frame or an embedded carrier
     /// has none.
@@ -1678,6 +1699,7 @@ impl World {
         Self {
             runtime: runtime.clone(),
             frame,
+            kind: GlobalKind::Document,
             own_window: None,
             realm,
             init_scripts,
@@ -1725,6 +1747,57 @@ impl World {
             event_ctors: HashMap::new(),
             weak_references: None,
             deliver_mutations_fn: None,
+        }
+    }
+
+    /// Builds the realm for a dedicated worker.
+    ///
+    /// The worker owns no document and no browsing context; its global is a
+    /// `DedicatedWorkerGlobalScope` sharing the page engine's `QuickJS`
+    /// runtime and services with its creator
+    /// (<https://html.spec.whatwg.org/multipage/workers.html#dedicated-workers-and-the-dedicatedworkerglobalscope-interface>).
+    pub(crate) fn new_worker(
+        document_url: Url,
+        frame: FrameId,
+        parent: FrameId,
+        runtime: &FrameRuntime,
+        id: crate::worker::WorkerId,
+        name: String,
+    ) -> Self {
+        let mut world = Self::new(
+            document_url,
+            frame,
+            runtime,
+            Rc::new(RefCell::new(Vec::new())),
+        );
+        world.kind = GlobalKind::DedicatedWorker { id, parent, name };
+        world
+    }
+
+    /// The worker name a `DedicatedWorkerGlobalScope` reports, or `None` for
+    /// a document realm.
+    pub(crate) fn worker_name(&self) -> Option<&str> {
+        match &self.kind {
+            GlobalKind::Document => None,
+            GlobalKind::DedicatedWorker { name, .. } => Some(name),
+        }
+    }
+
+    /// The worker identity a worker global reports, or `None` for a document
+    /// realm.
+    pub(crate) fn worker_id(&self) -> Option<crate::worker::WorkerId> {
+        match &self.kind {
+            GlobalKind::Document => None,
+            GlobalKind::DedicatedWorker { id, .. } => Some(*id),
+        }
+    }
+
+    /// The creator frame a worker global posts to, or `None` for a document
+    /// realm.
+    pub(crate) fn worker_parent(&self) -> Option<FrameId> {
+        match &self.kind {
+            GlobalKind::Document => None,
+            GlobalKind::DedicatedWorker { parent, .. } => Some(*parent),
         }
     }
 

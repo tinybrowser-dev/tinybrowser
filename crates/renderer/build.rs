@@ -52,47 +52,65 @@ fn main() {
 
     let mut manifest = String::new();
 
-    let order_path = root.join("src/js/scripts/web/order.txt");
-    println!("cargo:rerun-if-changed={}", order_path.display());
-    let mut bundle = WEB_PREFIX.to_owned();
-    let mut bundle_inputs = Vec::new();
-    let mut seen = HashSet::new();
-    let order = fs::read_to_string(&order_path).expect("read web order.txt");
-    for file in order.lines() {
-        let file = file.trim();
-        if file.is_empty() || file.starts_with('#') {
-            continue;
+    for (blob, order) in [
+        ("web_bundle.deflate", "order.txt"),
+        ("worker_bundle.deflate", "worker_order.txt"),
+    ] {
+        let order_path = root.join("src/js/scripts/web").join(order);
+        println!("cargo:rerun-if-changed={}", order_path.display());
+        let mut bundle = WEB_PREFIX.to_owned();
+        let mut bundle_inputs = Vec::new();
+        let mut seen = HashSet::new();
+        let order =
+            fs::read_to_string(&order_path).unwrap_or_else(|err| panic!("read {order}: {err}"));
+        for file in order.lines() {
+            let file = file.trim();
+            if file.is_empty() || file.starts_with('#') {
+                continue;
+            }
+            assert!(
+                file.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')),
+                "{order} entry {file:?} must be a plain file name"
+            );
+            assert!(
+                seen.insert(file.to_owned()),
+                "duplicate {order} entry {file}"
+            );
+            let rel = format!("src/js/scripts/web/{file}");
+            println!("cargo:rerun-if-changed={}", root.join(&rel).display());
+            bundle.push_str(
+                &fs::read_to_string(root.join(&rel))
+                    .unwrap_or_else(|err| panic!("read web shim {rel}: {err}")),
+            );
+            bundle_inputs.push(rel);
         }
         assert!(
-            file.chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')),
-            "order.txt entry {file:?} must be a plain file name"
+            !bundle_inputs.is_empty(),
+            "{order} lists no shims; refusing to ship an empty bundle"
         );
-        assert!(
-            seen.insert(file.to_owned()),
-            "duplicate order.txt entry {file}"
-        );
-        let rel = format!("src/js/scripts/web/{file}");
-        println!("cargo:rerun-if-changed={}", root.join(&rel).display());
-        bundle.push_str(
-            &fs::read_to_string(root.join(&rel))
-                .unwrap_or_else(|err| panic!("read web shim {rel}: {err}")),
-        );
-        bundle_inputs.push(rel);
+        bundle.push_str(WEB_SUFFIX);
+        let name = blob.trim_end_matches(".deflate");
+        // The bundles share interfaces on purpose: the worker bundle is the
+        // document bundle minus DOM and Window. Compile it against a fresh
+        // provider table so sharing a name is not a conflict.
+        let bundle = if name == "web_bundle" {
+            contracts.javascript(name, &bundle)
+        } else {
+            let mut worker = Contracts {
+                idl: contracts.idl.clone(),
+                providers: HashSet::new(),
+            };
+            worker.javascript(name, &bundle)
+        };
+        write_blob(&out, blob, bundle.as_bytes());
+        writeln!(
+            manifest,
+            "{blob}\tbundle\t{WEB_PREFIX}|{WEB_SUFFIX}\t{}",
+            bundle_inputs.join(",")
+        )
+        .expect("write manifest line");
     }
-    assert!(
-        !bundle_inputs.is_empty(),
-        "order.txt lists no shims; refusing to ship an empty web bundle"
-    );
-    bundle.push_str(WEB_SUFFIX);
-    let bundle = contracts.javascript("web_bundle", &bundle);
-    write_blob(&out, "web_bundle.deflate", bundle.as_bytes());
-    writeln!(
-        manifest,
-        "web_bundle.deflate\tbundle\t{WEB_PREFIX}|{WEB_SUFFIX}\t{}",
-        bundle_inputs.join(",")
-    )
-    .expect("write manifest line");
 
     for (blob, input) in SINGLES {
         println!("cargo:rerun-if-changed={}", root.join(input).display());

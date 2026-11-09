@@ -471,6 +471,7 @@ mod tests {
             RequestPolicy::ClassicScript {
                 crossorigin: Some(net::cors::CrossOrigin::UseCredentials),
             },
+            RequestPolicy::WorkerScript,
             RequestPolicy::ModuleScript {
                 crossorigin: Some(net::cors::CrossOrigin::Anonymous),
             },

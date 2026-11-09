@@ -49,7 +49,7 @@ use rquickjs::{
 };
 use url::Url;
 
-use crate::protocol::{FrameId, TargetName, WindowId};
+use crate::protocol::{DialRequest, FrameId, ReferrerRequest, RequestPolicy, TargetName, WindowId};
 
 pub(crate) use world::{CreatorInfo, NavigationReferrer, PolicyContainer, RealmRequest, World};
 
@@ -99,6 +99,18 @@ const INSTALL_WEB_APIS_DEFLATE: &[u8] =
 fn install_web_apis_js(ctx: &Ctx<'_>) -> rquickjs::Result<&'static str> {
     static CACHE: std::sync::OnceLock<Box<str>> = std::sync::OnceLock::new();
     blob::decompress(ctx, INSTALL_WEB_APIS_DEFLATE, &CACHE)
+}
+
+/// The worker-only shim bundle: the web APIs a `WorkerGlobalScope` exposes,
+/// without the document and browsing-context shims.
+///
+/// Assembled by `build.rs` from `scripts/web/worker_order.txt`.
+const INSTALL_WORKER_APIS_DEFLATE: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/js_blobs/worker_bundle.deflate"));
+
+fn install_worker_apis_js(ctx: &Ctx<'_>) -> rquickjs::Result<&'static str> {
+    static CACHE: std::sync::OnceLock<Box<str>> = std::sync::OnceLock::new();
+    blob::decompress(ctx, INSTALL_WORKER_APIS_DEFLATE, &CACHE)
 }
 
 /// A value produced by script evaluation.
@@ -392,6 +404,26 @@ impl JsRealm {
         world: Rc<RefCell<World>>,
         stop: Arc<Stop>,
     ) -> Result<Self, JsError> {
+        Self::with_install(shared, world, stop, false)
+    }
+
+    /// Builds a dedicated worker's realm. It shares the engine's `QuickJS`
+    /// runtime with its creator but has its own global, task queue, and
+    /// event-target graph.
+    pub(crate) fn new_worker(
+        shared: &JsRuntimeHandle,
+        world: Rc<RefCell<World>>,
+        stop: Arc<Stop>,
+    ) -> Result<Self, JsError> {
+        Self::with_install(shared, world, stop, true)
+    }
+
+    fn with_install(
+        shared: &JsRuntimeHandle,
+        world: Rc<RefCell<World>>,
+        stop: Arc<Stop>,
+        worker: bool,
+    ) -> Result<Self, JsError> {
         let runtime = shared.get()?;
         runtime.set_memory_limit(MAX_RUNTIME_MEMORY);
         runtime.set_max_stack_size(MAX_RUNTIME_STACK);
@@ -407,11 +439,39 @@ impl JsRealm {
             budget_depth: Cell::new(0),
             turn_deadline,
         };
-        host.install()?;
+        if worker {
+            if let Err(error) = host.install_worker() {
+                return Err(host.install_failure(error));
+            }
+        } else if let Err(error) = host.install() {
+            return Err(host.install_failure(error));
+        }
         // Publish the context so a cross-realm script insertion can enter this
         // realm synchronously instead of deferring to the next drain.
         host.world.borrow_mut().realm_context = Some(host.context.clone());
         Ok(host)
+    }
+
+    /// Turns a realm-install failure into a message that names the shim
+    /// exception instead of the engine's generic `Exception generated` text.
+    fn install_failure(&self, error: JsError) -> JsError {
+        let message = self.context.with(|ctx| {
+            let value = ctx.catch();
+            value
+                .as_string()
+                .and_then(|text| text.to_string().ok())
+                .or_else(|| {
+                    value.as_object().and_then(|object| {
+                        object
+                            .get::<_, Option<String>>("stack")
+                            .ok()
+                            .flatten()
+                            .or_else(|| object.get::<_, Option<String>>("message").ok().flatten())
+                    })
+                })
+                .unwrap_or_else(|| format!("{value:?}"))
+        });
+        JsError::Engine(format!("realm install failed: {error}: {message}").into_boxed_str())
     }
 
     /// Starts a renderer turn on this realm, or joins one already open.
@@ -611,6 +671,48 @@ impl JsRealm {
                 if let Err(error) = ctx.eval_with_options::<Value, _>(code.as_str(), options) {
                     report_script_error(&ctx, &error, 0, "");
                 }
+                Ok(())
+            })
+        })
+    }
+
+    /// Dispatches one message a worker posted on its `Worker` object in the
+    /// parent realm
+    /// (<https://html.spec.whatwg.org/multipage/workers.html#dom-worker-postmessage>).
+    pub(crate) fn deliver_worker_event(&self, worker: u64, payload: &str) -> Result<(), JsError> {
+        self.with_budget(None, MicrotaskCheckpoint::Perform, || {
+            self.context.with(|ctx| {
+                let deliver: Function = ctx.globals().get("__tbWorkerEvent")?;
+                deliver.call::<_, ()>((worker, payload))?;
+                Ok(())
+            })
+        })
+    }
+
+    /// Fires a worker's `error` event on the parent's `Worker` object.
+    pub(crate) fn deliver_worker_error(
+        &self,
+        worker: u64,
+        message: &str,
+        filename: &str,
+        lineno: u32,
+        colno: u32,
+    ) -> Result<(), JsError> {
+        self.with_budget(None, MicrotaskCheckpoint::Perform, || {
+            self.context.with(|ctx| {
+                let deliver: Function = ctx.globals().get("__tbWorkerErrorEvent")?;
+                deliver.call::<_, ()>((worker, message, filename, lineno, colno))?;
+                Ok(())
+            })
+        })
+    }
+
+    /// Dispatches one message posted to a worker global.
+    pub(crate) fn deliver_worker_message(&self, payload: &str) -> Result<(), JsError> {
+        self.with_budget(None, MicrotaskCheckpoint::Perform, || {
+            self.context.with(|ctx| {
+                let deliver: Function = ctx.globals().get("__tbWorkerDeliverMessage")?;
+                deliver.call::<_, ()>((payload,))?;
                 Ok(())
             })
         })
@@ -1090,6 +1192,7 @@ impl JsRealm {
             intl::install(&ctx)?;
             self.install_task_host_functions(&ctx, &world)?;
             Self::install_document_host_functions(&ctx, &world)?;
+            Self::install_url_host_functions(&ctx, &world)?;
             Self::install_crypto_host_functions(&ctx)?;
             install_storage_host_functions(&ctx, &world)?;
             install_window_host_functions(&ctx, &world)?;
@@ -1137,6 +1240,102 @@ impl JsRealm {
             }
             Ok(())
         })
+    }
+
+    /// Installs a dedicated worker's global.
+    ///
+    /// The worker shares the engine's services and heap, so it keeps the
+    /// timer, fetch, encoding, and messaging host functions. It has no
+    /// document, history, storage, or Window, so those installers never run
+    /// (<https://html.spec.whatwg.org/multipage/workers.html#the-workerglobalscope-common-interface>).
+    fn install_worker(&self) -> Result<(), JsError> {
+        let world = self.world.clone();
+        bridge::prepare(&self.runtime, &world)?;
+        self.context.with(|ctx| {
+            bindings::install_worker(&ctx, &world)?;
+            intl::install(&ctx)?;
+            self.install_task_host_functions(&ctx, &world)?;
+            Self::install_url_host_functions(&ctx, &world)?;
+            Self::install_import_scripts_host(&ctx, &world)?;
+            Self::install_crypto_host_functions(&ctx)?;
+            url_parts::install(&ctx)?;
+            encoding::install(&ctx)?;
+            bindings::install_messaging(&ctx)?;
+            bridge::evaluate(&ctx, install_worker_apis_js(&ctx)?)?;
+            Ok(())
+        })
+    }
+
+    /// Fetches an `importScripts` resource as a classic script.
+    ///
+    /// `importScripts` shares the classic-script fetch, not a page `fetch`:
+    /// the response is a JavaScript resource loaded with the worker's origin
+    /// as initiator and no CORS negotiation
+    /// (<https://html.spec.whatwg.org/multipage/workers.html#dom-workerglobalscope-importscripts>).
+    fn install_import_scripts_host(
+        ctx: &Ctx<'_>,
+        world: &Rc<RefCell<World>>,
+    ) -> Result<(), JsError> {
+        let import_world = world.clone();
+        bridge::object(ctx)?.set(
+            "__tbImportScripts",
+            Func::from(move |url: String| -> Option<Vec<u8>> {
+                let parsed = url::Url::parse(&url).ok()?;
+                if parsed.scheme() == "data" {
+                    let (content_type, body) = crate::engine::decode_data_url_bounded(&url)?;
+                    let essence = content_type
+                        .split(';')
+                        .next()
+                        .unwrap_or(&content_type)
+                        .trim();
+                    return javascript_mime_essence(essence).then_some(body);
+                }
+                if parsed.scheme() != "http" && parsed.scheme() != "https" {
+                    return None;
+                }
+                let world = import_world.borrow();
+                let mut dial = DialRequest::new(
+                    RequestPolicy::ClassicScript { crossorigin: None },
+                    &parsed,
+                    &world.origin,
+                );
+                dial.referrer = ReferrerRequest::Client {
+                    url: world.referrer_url.clone(),
+                };
+                dial.referrer_policy = world.policy.referrer_policy.unwrap_or_default();
+                dial.timeout_ms = 30_000;
+                let (send, receive) = std::sync::mpsc::sync_channel(1);
+                let cancel = world.runtime.services.start_dial(
+                    dial,
+                    Box::new(move |outcome| {
+                        let _ = send.send(outcome);
+                    }),
+                );
+                let Ok(Ok(outcome)) = receive.recv_timeout(Duration::from_secs(30)) else {
+                    cancel();
+                    return None;
+                };
+                if !(200..300).contains(&outcome.status) {
+                    return None;
+                }
+                if let Some(content_type) = &outcome.content_type {
+                    let essence = content_type
+                        .split(';')
+                        .next()
+                        .unwrap_or(content_type)
+                        .trim();
+                    if !javascript_mime_essence(essence) {
+                        return None;
+                    }
+                }
+                match outcome.body {
+                    crate::protocol::ResponseBody::Bytes(body) => Some(body),
+                    crate::protocol::ResponseBody::Streamed(_)
+                    | crate::protocol::ResponseBody::Undecodable => None,
+                }
+            }),
+        )?;
+        Ok(())
     }
 
     fn install_crypto_host_functions(ctx: &Ctx<'_>) -> Result<(), JsError> {
@@ -1294,12 +1493,6 @@ impl JsRealm {
     ) -> Result<(), JsError> {
         let cookie_get = world.clone();
         let cookie_set = world.clone();
-        let object_url_create = world.clone();
-        let object_url_revoke = world.clone();
-        let object_url_contents = world.clone();
-        let object_url_type = world.clone();
-        let url_resolve = world.clone();
-        let document_origin = world.clone();
 
         bridge::object(ctx)?.set(
             "__cookieGet",
@@ -1319,6 +1512,26 @@ impl JsRealm {
                     .set_cookie(&value, &world.document_url);
             }),
         )?;
+        Ok(())
+    }
+
+    /// URL parsing, object URLs, and the realm's serialized origin.
+    ///
+    /// Every global has these: a `WorkerGlobalScope` exposes `URL` and
+    /// `location`, and its fetch and `importScripts` resolve against the
+    /// worker's script URL, so the worker needs the same host functions a
+    /// document does
+    /// (<https://html.spec.whatwg.org/multipage/workers.html#the-workerglobalscope-common-interface>).
+    fn install_url_host_functions(
+        ctx: &Ctx<'_>,
+        world: &Rc<RefCell<World>>,
+    ) -> Result<(), JsError> {
+        let object_url_create = world.clone();
+        let object_url_revoke = world.clone();
+        let object_url_contents = world.clone();
+        let object_url_type = world.clone();
+        let url_resolve = world.clone();
+        let realm_origin = world.clone();
 
         bridge::object(ctx)?.set(
             "__tbCreateObjectURL",
@@ -1380,7 +1593,7 @@ impl JsRealm {
         // (<https://html.spec.whatwg.org/multipage/browsers.html#concept-origin>).
         bridge::object(ctx)?.set(
             "__tbOrigin",
-            Func::from(move || document_origin.borrow().origin_string()),
+            Func::from(move || realm_origin.borrow().origin_string()),
         )?;
         Ok(())
     }
@@ -1907,7 +2120,7 @@ pub(crate) fn classic_script_mime(typ: Option<&str>) -> bool {
 /// Whether `typ` is exactly a JavaScript MIME type essence string, with no
 /// parameters and no surrounding whitespace
 /// (<https://html.spec.whatwg.org/multipage/scripting.html#javascript-mime-type-essence-match>).
-fn javascript_mime_essence(typ: &str) -> bool {
+pub(crate) fn javascript_mime_essence(typ: &str) -> bool {
     // https://mimesniff.spec.whatwg.org/#javascript-mime-type
     [
         "application/ecmascript",
@@ -2178,6 +2391,8 @@ fn sync_page_fetch(world: &World, request: SyncPageFetch) -> Option<SyncFetchLis
     dial.referrer = request.referrer;
     dial.timeout_ms = u64::from(millis(request.timeout));
     dial.referrer_policy = world.policy.referrer_policy.unwrap_or_default();
+    // Synchronous XHR owns the renderer thread until the response arrives;
+    // the blocking seam is the one service implementations provide for it.
     let outcome = world.runtime.services.dial_sync(dial);
     match outcome {
         // The header list stays as served; nothing is sniffed into it

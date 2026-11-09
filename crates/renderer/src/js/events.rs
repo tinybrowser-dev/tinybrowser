@@ -1789,7 +1789,20 @@ fn call_handler_attribute<'js>(
         }
     }
     if let Some(function) = handler.as_function() {
-        let is_window = bindings::host_node_id(ctx, object.as_value()).is_none();
+        // A realm's own global is an `OnErrorEventHandler`: both `Window` and
+        // `WorkerGlobalScope` call `onerror` with
+        // `(message, filename, lineno, colno, error)`. A `Worker` object is
+        // also a non-node event target, but its `onerror` receives the
+        // `ErrorEvent` like any other handler
+        // (<https://html.spec.whatwg.org/multipage/webappapis.html#the-event-handler-processing-algorithm>).
+        let is_window = {
+            let world = bindings::world(ctx)?;
+            let world = world.borrow();
+            world
+                .window_object()
+                .and_then(|window| window.restore(ctx).ok())
+                .is_some_and(|window| window.as_value() == object.as_value())
+        };
         let result = if typ == "error" && is_window {
             call_error_handler(ctx, function, object, event)
         } else {

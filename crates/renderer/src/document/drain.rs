@@ -267,6 +267,20 @@ impl Document {
                 ports,
             } => self.deliver_port_message(endpoint, &payload, &ports),
             Task::PortClosed { endpoint } => self.deliver_port_close(endpoint),
+            Task::WorkerMessage { worker, payload } => {
+                self.fire_js(|js| js.deliver_worker_event(worker.get(), &payload));
+            }
+            Task::WorkerError(error) => {
+                self.fire_js(|js| {
+                    js.deliver_worker_error(
+                        error.worker.get(),
+                        &error.message,
+                        &error.filename,
+                        error.lineno,
+                        error.colno,
+                    )
+                });
+            }
             Task::NodeLoad(element) => {
                 self.fire_node_load(element);
             }

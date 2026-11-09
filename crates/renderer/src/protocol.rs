@@ -80,6 +80,17 @@ impl FrameId {
     pub fn get(self) -> u64 {
         self.0
     }
+
+    /// A synthetic identity for a dedicated worker's realm.
+    ///
+    /// Workers have no browsing context and never appear in the frame tree or
+    /// the browser's routing, so they live outside the protocol's frame id
+    /// space. The realm still needs an id for the frame-keyed stores it
+    /// shares with its engine.
+    #[must_use]
+    pub(crate) fn worker(id: u64) -> Self {
+        Self((1u64 << 63) | id)
+    }
 }
 
 /// How a renderer-created frame relates to the frame that created it.
@@ -1560,6 +1571,11 @@ pub enum RequestPolicy {
     /// A classic `<script src>` load, with the element's `crossorigin` state
     /// (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#create-a-potential-cors-request>).
     ClassicScript { crossorigin: Option<CrossOrigin> },
+    /// A dedicated worker's script: a classic script fetched in `same-origin`
+    /// mode with same-origin credentials, so every redirect hop must stay on
+    /// the creator's origin
+    /// (<https://html.spec.whatwg.org/multipage/workers.html#fetch-a-classic-worker-script>).
+    WorkerScript,
     /// A module graph fetch: always `cors`, with the credentials mode the
     /// graph root's `crossorigin` attribute selects
     /// (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#cors-settings-attributes>).
@@ -1606,7 +1622,7 @@ impl RequestPolicy {
     pub fn kind(self) -> DialKind {
         match self {
             Self::Fetch(_) => DialKind::JsFetch,
-            Self::ClassicScript { .. } => DialKind::ClassicScript,
+            Self::ClassicScript { .. } | Self::WorkerScript => DialKind::ClassicScript,
             Self::ModuleScript { .. } => DialKind::ModuleScript,
             Self::Stylesheet { .. } => DialKind::Stylesheet,
             Self::Image { .. } => DialKind::Image,
@@ -1629,6 +1645,11 @@ impl RequestPolicy {
             Self::ClassicScript { crossorigin }
             | Self::Stylesheet { crossorigin }
             | Self::Image { crossorigin } => potential_cors(crossorigin),
+            Self::WorkerScript => net::cors::CorsParameters {
+                mode: net::cors::RequestMode::SameOrigin,
+                credentials: net::cors::CredentialsMode::SameOrigin,
+                redirect: net::cors::RedirectMode::Follow,
+            },
             Self::ModuleScript { crossorigin } => {
                 cors_protocol(cross_origin_credentials(crossorigin))
             }

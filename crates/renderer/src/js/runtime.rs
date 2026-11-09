@@ -43,6 +43,13 @@ pub(crate) struct FrameRuntime {
     /// sets it once; serial tasks clamp to it instead of each taking a fresh
     /// budget (`ScriptTurn`).
     pub(crate) turn_deadline: Rc<Cell<Option<Instant>>>,
+    /// Worker lifecycle and message requests the engine materializes after a
+    /// script returns. `QuickJS` cannot create a worker's context while the
+    /// constructor's script is still running.
+    pub(crate) worker_requests: Rc<RefCell<Vec<crate::worker::WorkerRequest>>>,
+    /// Worker ids are minted by the realm that constructs one, so the
+    /// constructor can name its worker before the engine materializes it.
+    pub(crate) next_worker: Rc<Cell<u64>>,
     /// Parley's font context, built once per process: construction scans
     /// system fonts (~25ms), so every `BaseDocument` clones this instead of
     /// rescanning. Cloning is cheap; Blitz shares the source cache.

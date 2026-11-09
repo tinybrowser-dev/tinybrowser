@@ -136,6 +136,12 @@
         cancelable: true,
       });
       host.__tbDispatchTrusted(event);
+      // A worker global reports an unhandled exception to its owner as an
+      // `error` event on the `Worker` object
+      // (<https://html.spec.whatwg.org/multipage/workers.html#runtime-script-errors-in-workers>).
+      if (!event.defaultPrevented && typeof host.__tbWorkerUnhandled === 'function') {
+        host.__tbWorkerUnhandled(message, filename, event.lineno, event.colno);
+      }
       return event.defaultPrevented;
     } finally {
       reporting = false;

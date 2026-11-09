@@ -12,7 +12,7 @@
 //! <https://html.spec.whatwg.org/multipage/form-elements.html#concept-option-selectedness>).
 
 use super::{focus, host_node_id, owning_world, world, world_for_node};
-use crate::dom::forms::{self, PendingEntry, encode_form_bytes, trim_label, urlencode_form};
+use crate::dom::forms::{self, PendingEntry, encode_form_bytes, urlencode_form};
 use crate::dom::input::{
     InputType, NumberBufferState, number_buffer_state, step_mismatch, value_as_number,
     value_in_units,
@@ -56,10 +56,6 @@ pub(super) fn install(_ctx: &Ctx<'_>, globals: &Object<'_>) -> Result<()> {
     globals.set(
         "__tbUrlEncodeForm",
         rquickjs::prelude::Func::from(|text: String, label: String| urlencode_form(&text, &label)),
-    )?;
-    globals.set(
-        "__tbEncodingName",
-        rquickjs::prelude::Func::from(encoding_name),
     )?;
     globals.set(
         "__tbSetOptionSelectedness",
@@ -419,12 +415,6 @@ fn form_can_submit<'js>(ctx: Ctx<'js>, form: Value<'js>) -> bool {
 ///
 /// The `replacement` encoding is never returned: getting an encoding
 /// rejects it (<https://encoding.spec.whatwg.org/#concept-encoding-get>).
-pub(super) fn encoding_name(label: String) -> Option<String> {
-    encoding_rs::Encoding::for_label(trim_label(&label).as_bytes())
-        .filter(|encoding| *encoding != encoding_rs::REPLACEMENT)
-        .map(|encoding| encoding.name().to_owned())
-}
-
 /// Sets an option's selectedness without the dirtiness flag, as the
 /// `Option()` constructor does, and leaves the `selected` content attribute
 /// driving it

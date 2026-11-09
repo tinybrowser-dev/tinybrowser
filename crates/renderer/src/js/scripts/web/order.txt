@@ -25,3 +25,4 @@ canvas_filter.js
 css_color_api.js
 geometry.js
 offscreen_canvas.js
+workers.js

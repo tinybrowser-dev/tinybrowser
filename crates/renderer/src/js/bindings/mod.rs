@@ -447,6 +447,156 @@ pub(super) fn handler_target<'js>(ctx: &Ctx<'js>, node: &Value<'js>) -> Result<N
 }
 
 pub(crate) fn install(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
+    install_common(ctx, world)?;
+    install_document(ctx, world)
+}
+
+/// Installs the global a dedicated worker runs in.
+///
+/// The event classes, bridge, host functions, and primitives are shared with
+/// a document realm; the DOM, history, location, and Window installers are
+/// not. The worker shim publishes `self`, `location`, `navigator`,
+/// `postMessage`, `importScripts`, and the worker-only interfaces.
+pub(crate) fn install_worker(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
+    install_common(ctx, world)?;
+    install_worker_global_hosts(ctx, world)?;
+    let globals = ctx.globals();
+    globals.set("self", globals.clone())?;
+    Ok(())
+}
+
+/// The hooks a document's `Worker` constructor calls.
+fn install_worker_constructor_hosts(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
+    let host = crate::js::bridge::object(ctx)?;
+    host.set("__tbIsWorker", false)?;
+    let create_world = Rc::clone(world);
+    host.set(
+        "__tbWorkerCreate",
+        rquickjs::prelude::Func::from(
+            move |ctx: Ctx<'_>, url: String, name: String, module: bool| -> Result<u64> {
+                let parsed = url::Url::parse(&url)
+                    .map_err(|_| Exception::throw_type(&ctx, "Invalid worker script URL"))?;
+                let current = create_world.borrow();
+                let id = crate::worker::WorkerId::new(current.runtime.next_worker.get());
+                current.runtime.next_worker.set(id.get().saturating_add(1));
+                let created =
+                    crate::worker::CreatedWorker::from_creator(&current, id, parsed, name, module);
+                current
+                    .runtime
+                    .worker_requests
+                    .borrow_mut()
+                    .push(crate::worker::WorkerRequest::Create(Box::new(created)));
+                Ok(id.get())
+            },
+        ),
+    )?;
+    let post_world = Rc::clone(world);
+    host.set(
+        "__tbWorkerPost",
+        rquickjs::prelude::Func::from(move |id: u64, payload: String| {
+            post_world
+                .borrow()
+                .runtime
+                .worker_requests
+                .borrow_mut()
+                .push(crate::worker::WorkerRequest::Post {
+                    id: crate::worker::WorkerId::new(id),
+                    payload,
+                });
+        }),
+    )?;
+    let terminate_world = Rc::clone(world);
+    host.set(
+        "__tbWorkerTerminate",
+        rquickjs::prelude::Func::from(move |id: u64| {
+            terminate_world
+                .borrow()
+                .runtime
+                .worker_requests
+                .borrow_mut()
+                .push(crate::worker::WorkerRequest::Terminate {
+                    id: crate::worker::WorkerId::new(id),
+                });
+        }),
+    )?;
+    Ok(())
+}
+
+/// The hooks a worker global calls: its own identity, and messages and close
+/// to its creator.
+fn install_worker_global_hosts(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
+    let host = crate::js::bridge::object(ctx)?;
+    let name = world.borrow().worker_name().unwrap_or_default().to_owned();
+    let url = world.borrow().document_url.to_string();
+    host.set("__tbIsWorker", true)?;
+    host.set("__tbWorkerName", name)?;
+    host.set("__tbWorkerURL", url)?;
+    let unhandled_world = Rc::clone(world);
+    host.set(
+        "__tbWorkerUnhandled",
+        rquickjs::prelude::Func::from(
+            move |message: String, filename: String, lineno: u32, colno: u32| {
+                let world = unhandled_world.borrow();
+                let Some(worker) = world.worker_id() else {
+                    return;
+                };
+                let Some(parent) = world.worker_parent() else {
+                    return;
+                };
+                world.runtime.worker_requests.borrow_mut().push(
+                    crate::worker::WorkerRequest::Error(Box::new(crate::worker::WorkerError {
+                        worker,
+                        parent,
+                        message,
+                        filename,
+                        lineno,
+                        colno,
+                    })),
+                );
+            },
+        ),
+    )?;
+    let parent_world = Rc::clone(world);
+    host.set(
+        "__tbWorkerPostToParent",
+        rquickjs::prelude::Func::from(move |payload: String| {
+            let world = parent_world.borrow();
+            let Some(worker) = world.worker_id() else {
+                return;
+            };
+            let Some(parent) = world.worker_parent() else {
+                return;
+            };
+            world.runtime.worker_requests.borrow_mut().push(
+                crate::worker::WorkerRequest::PostToParent {
+                    parent,
+                    worker,
+                    payload,
+                },
+            );
+        }),
+    )?;
+    let close_world = Rc::clone(world);
+    host.set(
+        "__tbWorkerClose",
+        rquickjs::prelude::Func::from(move || {
+            let world = close_world.borrow();
+            let Some(worker) = world.worker_id() else {
+                return;
+            };
+            world
+                .runtime
+                .worker_requests
+                .borrow_mut()
+                .push(crate::worker::WorkerRequest::Close { id: worker });
+        }),
+    )?;
+    Ok(())
+}
+
+/// The part of a global install every realm shares: the bridge, the
+/// `EventTarget` graph, host functions, and pristine intrinsics.
+fn install_common(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
     register_world(ctx, world);
     crate::js::bridge::install(ctx, world)?;
     let globals = ctx.globals();
@@ -455,11 +605,6 @@ pub(crate) fn install(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
         .set_window(Persistent::save(ctx, globals.clone()));
     Class::<JsEvent>::define(&globals)?;
     crate::js::bridge::evaluate(ctx, events::install_event_ctor_js(ctx)?)?;
-    install_webdriver_bridge(ctx)?;
-    // `innerWidth`/`innerHeight`/`outerWidth`/`outerHeight` are live getters
-    // defined in the web shims; they read the document viewport so CDP
-    // emulation is visible without re-installing globals
-    // (<https://drafts.csswg.org/cssom-view/#dom-window-innerwidth>).
     crate::js::bridge::object(ctx)?.set(
         "__tb_new_custom_event",
         rquickjs::prelude::Func::from(events::construct_custom_event),
@@ -480,12 +625,45 @@ pub(crate) fn install(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
     Class::<JsEventTarget>::define(&globals)?;
     events::install_event_target_bridge(ctx)?;
     crate::js::bridge::evaluate(ctx, events::install_event_target_ctor_js(ctx)?)?;
+    Class::<JsDomException>::define(&globals)?;
+    crate::js::bridge::evaluate(ctx, events::install_abort_js(ctx)?)?;
+    install_host_functions(ctx)?;
+    capture_host_primitives(ctx, &globals, world)?;
+    // Both a Window and a `WorkerGlobalScope` are event targets. The bare
+    // methods let a worker global dispatch before its prototype is rewired to
+    // `DedicatedWorkerGlobalScope.prototype`.
+    globals.set(
+        "addEventListener",
+        rquickjs::prelude::Func::from(window_add_event_listener),
+    )?;
+    globals.set(
+        "removeEventListener",
+        rquickjs::prelude::Func::from(window_remove_event_listener),
+    )?;
+    globals.set(
+        "dispatchEvent",
+        rquickjs::prelude::Func::from(window_dispatch_event),
+    )?;
+    crate::js::bridge::object(ctx)?.set(
+        "__tbDispatchTrusted",
+        rquickjs::prelude::Func::from(window_dispatch_trusted_event),
+    )?;
+    Ok(())
+}
+
+/// The DOM and browsing-context surface a document realm adds to the common
+/// install.
+fn install_document(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
+    let globals = ctx.globals();
+    install_webdriver_bridge(ctx)?;
+    // `innerWidth`/`innerHeight`/`outerWidth`/`outerHeight` are live getters
+    // defined in the web shims; they read the document viewport so CDP
+    // emulation is visible without re-installing globals
+    // (<https://drafts.csswg.org/cssom-view/#dom-window-innerwidth>).
     Class::<JsNode>::define(&globals)?;
     Class::<JsNodeList>::define(&globals)?;
     Class::<JsHtmlCollection>::define(&globals)?;
     Class::<JsOptionsCollection>::define(&globals)?;
-    Class::<JsDomException>::define(&globals)?;
-    crate::js::bridge::evaluate(ctx, events::install_abort_js(ctx)?)?;
     Class::<JsImplementation>::define(&globals)?;
     Class::<JsTokenList>::define(&globals)?;
     Class::<JsNamedNodeMap>::define(&globals)?;
@@ -496,7 +674,6 @@ pub(crate) fn install(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
     Class::<JsMutationObserver>::define(&globals)?;
     Class::<JsRange>::define(&globals)?;
     Class::<JsMutationRecord>::define(&globals)?;
-    install_host_functions(ctx)?;
     node::install_custom_construction(ctx)?;
     crate::js::bridge::object(ctx)?.set("__tb_handlerNames", HANDLER_ATTRIBUTES.to_vec())?;
     crate::js::bridge::object(ctx)?.set(
@@ -522,7 +699,6 @@ pub(crate) fn install(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
     range::install(ctx)?;
     Class::<JsAttr>::define(&globals)?;
     install_collection_brand(ctx)?;
-    capture_host_primitives(ctx, &globals, world)?;
 
     let document_id = world.borrow().with_main_document(|parsed| NodeId {
         document: parsed.id,
@@ -540,23 +716,7 @@ pub(crate) fn install(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
     // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-frames
     globals.set("frames", globals.clone())?;
     globals.set("opener", Value::new_null(ctx.clone()))?;
-
-    globals.set(
-        "addEventListener",
-        rquickjs::prelude::Func::from(window_add_event_listener),
-    )?;
-    globals.set(
-        "removeEventListener",
-        rquickjs::prelude::Func::from(window_remove_event_listener),
-    )?;
-    globals.set(
-        "dispatchEvent",
-        rquickjs::prelude::Func::from(window_dispatch_event),
-    )?;
-    crate::js::bridge::object(ctx)?.set(
-        "__tbDispatchTrusted",
-        rquickjs::prelude::Func::from(window_dispatch_trusted_event),
-    )?;
+    install_worker_constructor_hosts(ctx, world)?;
     Ok(())
 }
 
@@ -1858,6 +2018,8 @@ mod realm_tests {
             shared: Rc::new(RefCell::new(Shared::default())),
             pending_storage: Rc::new(RefCell::new(Vec::new())),
             turn_deadline: Rc::new(std::cell::Cell::new(None)),
+            worker_requests: Rc::new(RefCell::new(Vec::new())),
+            next_worker: Rc::new(std::cell::Cell::new(1)),
             font_ctx: parley::FontContext::default(),
         };
         let mut world = World::new(

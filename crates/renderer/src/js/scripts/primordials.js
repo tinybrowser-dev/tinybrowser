@@ -33,6 +33,18 @@ const __tbPrivateArray = () => {
   __tbSetPrototypeOf(array, null);
   return array;
 };
+// Lazily initializes per-event state for interfaces named by
+// `document.createEvent`: an uninitialized event gets its spec defaults on
+// first getter read. Lives here because `messaging.js` and `ui_events.js`
+// both consume it and any bundle order puts one of them first.
+const __tbEventEntry = (event, data, fresh) => {
+  const entry = data.get(event);
+  if (entry !== undefined) return entry;
+  if (!host.__tbIsEvent(event)) throw new TypeError('Illegal invocation');
+  const initialized = fresh();
+  data.set(event, initialized);
+  return initialized;
+};
 const __tbArray = Object.create(null);
 for (const name of ['some', 'sort', 'join', 'indexOf', 'concat']) {
   const method = Array.prototype[name];

@@ -77,9 +77,6 @@ globalThis.requestAnimationFrame = function(fn) {
 globalThis.cancelAnimationFrame = function(id) {
   globalThis.clearTimeout(Number(id) - 1);
 };
-if (!globalThis.document) {
-  globalThis.document = {};
-}
 // A no-op console: enough for scripts that only log, without a logging pipe.
 if (typeof globalThis.console === 'undefined') {
   const noop = function() {};
@@ -89,7 +86,10 @@ if (typeof globalThis.console === 'undefined') {
     assert: noop, time: noop, timeEnd: noop, count: noop,
   };
 }
-Object.defineProperty(document, 'cookie', {
-  get() { return host.__cookieGet(); },
-  set(v) { host.__cookieSet(String(v)); }
-});
+// A worker global has no document and no cookie store.
+if (globalThis.document) {
+  Object.defineProperty(document, 'cookie', {
+    get() { return host.__cookieGet(); },
+    set(v) { host.__cookieSet(String(v)); }
+  });
+}

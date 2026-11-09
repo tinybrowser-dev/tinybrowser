@@ -34,6 +34,7 @@ mod storage;
 #[cfg(test)]
 mod test_services;
 mod window_features;
+mod worker;
 mod xml;
 
 pub use embedded::EmbeddedRenderer;

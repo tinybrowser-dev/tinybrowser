@@ -1,5 +1,9 @@
 # Priorities
 
+The current cut is the wasm demo (vault brief); these tiers rank
+web-platform work behind it. Chrome extensions are a separate, later
+track with their own corpus.
+
 P0 is not flat. The tiers group it by measured reach; Next effort
 ranks the work by reach and the current WPT gap together. Reach is the
 share of page loads that use the API in Chrome UseCounter (2026-10-20
@@ -105,7 +109,11 @@ targeted fixes, not a push.
 
 ## P1
 
-navigation-api, custom-elements, shadow-dom, editing, selection, clipboard, uievents, focus, workers, service-workers, IndexedDB, streams, compression, FileAPI, trusted-types, locks, import-maps.
+navigation-api, custom-elements, shadow-dom, editing, selection, clipboard, uievents, focus, shared/service workers, IndexedDB, streams, compression, FileAPI, trusted-types, locks, import-maps, chrome-extensions.
+
+Dedicated workers are implemented; the remaining worker work is SharedWorker,
+service workers, worker `fetch`/XHR, MessagePort transfer, and Blob-URL
+worker scripts.
 
 P1 is not "rare". IndexedDB is read on 24.7% of pages (write 23.2%),
 compression streams on 25.1%, Cache Storage read on 19.6%, a worker
@@ -113,9 +121,33 @@ starts on 21.2%, a service worker controls 17.8%. They stay P1 because
 pages can feature-detect and degrade, not because nobody uses them.
 Promote IndexedDB and compression first if a P1 item is pulled forward.
 
+### Chrome extensions (full MV3)
+
+A Chrome vendor surface, not a web spec, so WPT cannot score it. It
+needs its own corpus: a small set of real unpacked MV3 extensions plus
+contract tests for each API. Full MV3, not a subset — a partial
+`chrome.*` surface makes extensions fail in ways the corpus would hide.
+
+Surface: the `chrome-extension://<id>/` origin, storage partitioning and
+extension CSP; unpacked manifest parse/validate, ID derivation and the
+permission model; content scripts (match patterns, `run_at`,
+`all_frames`, isolated worlds) and CSS injection; `chrome.runtime`
+(messaging, `getURL`), `chrome.storage.*`, `chrome.scripting`,
+`chrome.tabs`, `chrome.alarms`, `chrome.i18n`, and
+`chrome.declarativeNetRequest`; `web_accessible_resources`; extension
+popup and options pages; the MV3 background service worker.
+
+Dependency: the MV3 background is a service worker, so `workers` and
+`service-workers` land first. Feature-gate the whole extension surface:
+the default binary keeps its size budget, and an extension-enabled build
+carries the `chrome.*` glue and its corpus harness.
+
+Out: Chrome Web Store install/auth, native messaging, MV2.
+
 ## P2
 
-wasm, webmcp, ai.
+wasm (the wasm demo is the current cut; this tier is about wasm as a
+page technology), webmcp, ai.
 
 ## Skip
 

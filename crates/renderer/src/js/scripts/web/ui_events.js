@@ -202,18 +202,6 @@ Object.defineProperty(globalThis.InputEvent.prototype, Symbol.toStringTag, { val
 // still throw: the brand check is the native `Class<JsEvent>` conversion
 // (`host.__tbIsEvent`), not a prototype walk, so
 // `Object.create(MouseEvent.prototype)` throws instead of allocating state.
-const __tbEventEntry = (event, data, fresh) => {
-  // Defined here but consumed lazily by `messaging.js` (evaluated earlier
-  // per `order.txt`): every call site runs post-init, so no TDZ. A future
-  // move to `primordials.js` next to `__tbEventConstructor` would remove the
-  // invisible cross-file dependency.
-  const entry = data.get(event);
-  if (entry !== undefined) return entry;
-  if (!host.__tbIsEvent(event)) throw new TypeError('Illegal invocation');
-  const initialized = fresh();
-  data.set(event, initialized);
-  return initialized;
-};
 const __tbEventString = value => (value === undefined ? '' : __tbStringCtor(value));
 function __tbExposeEvent(name, parent, data, fresh, read, members) {
   const ctor = {

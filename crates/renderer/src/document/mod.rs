@@ -102,6 +102,13 @@ enum Task {
     PortClosed {
         endpoint: u64,
     },
+    /// One message a dedicated worker posted to this document.
+    WorkerMessage {
+        worker: crate::worker::WorkerId,
+        payload: String,
+    },
+    /// One error a dedicated worker reported to this document.
+    WorkerError(crate::worker::WorkerError),
     /// A subresource event for one element, queued so a listener attached
     /// later in the same script still sees it: `update the image data` and the
     /// stylesheet fetch steps queue a task rather than firing inside the
@@ -1729,6 +1736,18 @@ impl Document {
     /// Queues a `close` event for one channel endpoint.
     pub(crate) fn push_port_closed(&mut self, endpoint: u64) {
         self.tasks.push_back(Task::PortClosed { endpoint });
+    }
+
+    /// Queues one message a dedicated worker posted to this document's
+    /// `Worker` object.
+    pub(crate) fn push_worker_message(&mut self, worker: crate::worker::WorkerId, payload: String) {
+        self.tasks
+            .push_back(Task::WorkerMessage { worker, payload });
+    }
+
+    /// Queues one worker error for the `Worker` object's `error` handler.
+    pub(crate) fn push_worker_error(&mut self, error: crate::worker::WorkerError) {
+        self.tasks.push_back(Task::WorkerError(error));
     }
 
     /// Dispatches one cross-tab `message` event at this frame's window.

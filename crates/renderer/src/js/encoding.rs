@@ -26,7 +26,16 @@ pub(super) fn install(ctx: &Ctx<'_>) -> Result<()> {
     host.set("__tbAtob", Func::from(atob))?;
     host.set("__tbBtoa", Func::from(btoa))?;
     host.set("__tbBase64Encode", Func::from(base64_encode))?;
+    host.set("__tbEncodingName", Func::from(encoding_name))?;
     Ok(())
+}
+
+/// Resolves a label to its encoding name, or `None` for an unknown label or
+/// `replacement` (<https://encoding.spec.whatwg.org/#concept-encoding-get>).
+fn encoding_name(label: String) -> Option<String> {
+    Encoding::for_label(crate::dom::forms::trim_label(&label).as_bytes())
+        .filter(|encoding| *encoding != encoding_rs::REPLACEMENT)
+        .map(|encoding| encoding.name().to_owned())
 }
 
 /// UTF-8 encodes `input` after IDL string conversion, replacing unpaired
