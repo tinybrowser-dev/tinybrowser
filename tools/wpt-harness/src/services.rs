@@ -350,7 +350,12 @@ impl Origin {
             .content_type
             .clone()
             .unwrap_or_else(|| self.content_type_for(&file));
-        let substitute = path.contains(".sub.") || pipes.apply(&mut headers.list);
+        let sub_pipe = pipes.apply(&mut headers.list);
+        // Both a `.sub.` path and an explicit `sub` pipe expand the body, and
+        // either way the `header(...)` pipes still contribute response headers:
+        // `sub` is an independent pipe, not a substitute for the whole
+        // pipeline.
+        let substitute = sub_pipe || path.contains(".sub.");
         // A `.sub.` path is a wptserve pipe: the body's `{{...}}` expressions
         // are expanded against the request, with the escaping its extension
         // selects (`wptserve/handlers.py::wrap_pipeline`). A body this module

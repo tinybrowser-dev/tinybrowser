@@ -168,6 +168,10 @@ pub(crate) enum Destination {
     Font,
     /// Nested browsing-context navigations (`frame-src`).
     Frame,
+    /// Worker script and static-import requests inside a worker
+    /// (`worker-src`, which falls back to `child-src`, `script-src`, and
+    /// `default-src`).
+    Worker,
 }
 
 impl Destination {
@@ -192,6 +196,8 @@ enum Effective {
     ImgSrc,
     FontSrc,
     FrameSrc,
+    /// A worker script or a static import inside one (`worker-src`).
+    WorkerSrc,
 }
 
 impl Effective {
@@ -205,6 +211,7 @@ impl Effective {
             Self::ImgSrc => "img-src",
             Self::FontSrc => "font-src",
             Self::FrameSrc => "frame-src",
+            Self::WorkerSrc => "worker-src",
         }
     }
 
@@ -221,6 +228,10 @@ impl Effective {
             Self::FontSrc => &["font-src", "default-src"],
             // <https://w3c.github.io/webappsec-csp/#directive-fallback-list>
             Self::FrameSrc => &["frame-src", "child-src", "default-src"],
+            // `worker-src` delegates to `child-src`, then the script list: a
+            // worker is a script request that a cross-origin page cannot turn
+            // into an escape from `script-src`.
+            Self::WorkerSrc => &["worker-src", "child-src", "script-src", "default-src"],
         }
     }
 }
@@ -235,6 +246,7 @@ impl Destination {
             Self::Img => Effective::ImgSrc,
             Self::Font => Effective::FontSrc,
             Self::Frame => Effective::FrameSrc,
+            Self::Worker => Effective::WorkerSrc,
         }
     }
 }
@@ -424,6 +436,14 @@ impl List {
             ));
         }
         Self { policies }
+    }
+
+    /// Appends every policy of `other`, which is how a worker's policy
+    /// container takes the policies its own script response carried on top of
+    /// the creator's
+    /// (<https://html.spec.whatwg.org/multipage/browsers.html#initialize-a-policy-container-from-a-fetch-response>).
+    pub(crate) fn append(&mut self, other: Self) {
+        self.policies.extend(other.policies);
     }
 
     /// Appends one `meta` policy. Report-only is not delivered by `meta`.
@@ -981,7 +1001,8 @@ fn inline_check_blocks(effective: Effective, list: &[String], inline: &InlineScr
         | Effective::ConnectSrc
         | Effective::ImgSrc
         | Effective::FontSrc
-        | Effective::FrameSrc => false,
+        | Effective::FrameSrc
+        | Effective::WorkerSrc => false,
     }
 }
 

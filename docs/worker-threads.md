@@ -160,6 +160,18 @@ and filters the worker's script, module graph, `fetch`, XHR, and `Set-Cookie`
 storage through the jar. All six `workers/same-site-cookies/` files pass.
 `cookies/` and `webmessaging/` are unchanged.
 
+Gate after module CSP and referrer: `workers/` is **974 subtests, 961 passing,
+237 perfect files**, with 10 failing, 0 timeout, and 1 error file, still no
+subtest lost. The harness applies `header(...)` pipes on `.sub.` paths as well
+as their body expansion, which is what makes the cross-origin referrer cases
+observe a policy at all. A module fetch now names the declaring module (or the
+worker's own script for a dynamic import) as its referrer, a worker's static
+imports are `worker-src` requests (`worker-src` → `child-src` → `script-src`
+→ `default-src`, never `script-src-elem`), and a worker's own script response
+supplies the referrer policy and CSP list for the dynamic imports its body
+runs while static imports keep what it inherited. Both module referrer files
+are 15/15 and both module CSP files are perfect.
+
 ## What the remaining failures need
 
 Popups exist now: a host with no tab carrier (the in-process harness) has the
@@ -170,9 +182,6 @@ failures are implementation gaps, not the thread model:
 - Partitioned cookies: the jar has no `Partitioned` attribute (CHIPS), so
   `shared-worker-partitioned-cookies` cannot see a partitioned cookie, and
   shared-worker partitioning itself is not implemented.
-- Module CSP and referrer: the module graph is fetched, but the
-  `worker-src`/`script-src` checks on static and dynamic imports and several
-  referrer-policy cases still disagree with the expected arrays.
 - `data-url`/`data-url-shared`: `IndexedDB` is absent.
 - Growable `SharedArrayBuffer`: construction and structured clone work, and
   the receiver keeps the sender's `maxByteLength`. The WPT fixture gets its

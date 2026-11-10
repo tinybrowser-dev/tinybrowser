@@ -169,10 +169,19 @@ implemented: `all` is refused outside a first-party site context, the absent
 option defaults to `all` there and `none` otherwise, and `none` restricts the
 worker's script, module graph, `fetch`, XHR, and `Set-Cookie` storage to
 `SameSite=None`. The context check walks the creator's ancestor chain, so a
-same-site frame inside a cross-site one is still third-party. `workers/` is
-now **939/974 passing subtests and 233 perfect files**, with 14 failing, 0
-timeout, and 1 error file, no subtest lost; `cookies/` and `webmessaging/`
-are unchanged.
+same-site frame inside a cross-site one is still third-party.
+
+Module CSP and referrer followed. The harness now applies `header(...)` pipes
+to `.sub.` paths instead of only expanding their bodies, so a cross-origin
+referrer test actually sees the policy. A module fetch's referrer is the
+declaring module (or the worker's own script for a dynamic `import()`), a
+worker's static imports settle under `worker-src` with its full fallback list
+and never `script-src-elem`, and a worker's script response contributes the
+referrer policy and CSP list its dynamic imports run under while static
+imports keep the creator's. `workers/` is now **961/974 passing subtests and
+237 perfect files**, with 10 failing, 0 timeout, and 1 error file, no subtest
+lost; both module referrer files are 15/15 and both module CSP files are
+perfect. `cookies/` and `referrer-policy/` are unchanged.
 
 Every push to `main` now publishes the record to
 `tinybrowser-dev/tinybrowser-wpt-results` and the site at

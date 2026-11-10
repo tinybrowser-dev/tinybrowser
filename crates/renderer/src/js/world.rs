@@ -1523,6 +1523,23 @@ pub(crate) struct DocumentState {
     /// `crossorigin`-derived mode a document's module graph uses
     /// (<https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script>).
     pub(crate) module_credentials: Option<net::cors::CredentialsMode>,
+    /// Whether a module is declaring, so a fetch it starts is resolving a static
+    /// import and takes the referencing module's URL as its referrer. A
+    /// dynamic `import()` runs after this clears and names the worker's own
+    /// script instead
+    /// (<https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script>).
+    pub(crate) declaring_module: bool,
+    /// The `Referrer-Policy` of a worker's own script response, which governs
+    /// the dynamic imports its body runs. Static imports keep the policy the
+    /// worker inherited from its creator
+    /// (<https://w3c.github.io/webappsec-referrer-policy/#integration-with-html>).
+    pub(crate) worker_referrer_policy: Option<net::ReferrerPolicy>,
+    /// The content security policies a worker's own script response carried,
+    /// appended to the ones it inherited from its creator. They govern the
+    /// dynamic imports its body runs, while its static imports stay under the
+    /// creator's policy
+    /// (<https://html.spec.whatwg.org/multipage/browsers.html#initialize-a-policy-container-from-a-fetch-response>).
+    pub(crate) worker_module_csp: Option<crate::csp::List>,
 
     /// Existing elements being synchronously upgraded by a custom-element
     /// constructor. `HTMLElement()` consumes the top candidate.
@@ -1634,6 +1651,9 @@ impl DocumentState {
         self.current_script_url = None;
         self.module_client_origin = None;
         self.module_credentials = None;
+        self.declaring_module = false;
+        self.worker_referrer_policy = None;
+        self.worker_module_csp = None;
         self.custom_construction.clear();
         self.implementations.clear();
         self.active_elements.clear();
@@ -1918,6 +1938,7 @@ impl World {
         self.state.current_script = None;
         self.state.module_fetch_root = None;
         self.state.current_script_url = None;
+        self.state.declaring_module = false;
         id
     }
 
