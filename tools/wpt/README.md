@@ -131,11 +131,14 @@ The host serves files the way wptserve does: the content-type table comes from
 `load_headers` order (`__dir__` then the file, `.sub.headers` before
 `.headers`, templates expanded), and `.any.html`/`.window.html` documents are
 rendered from their sources. `document.cookie` goes through the browser's own
-jar (`crates/cookies`). Still unimplemented: wptserve's query-param `pipe`
-handlers, `.sub.` body substitution (a `.sub.html` is served literally), and
-`.py` handlers (a network error rather than the handler's source). Popups,
-workers, and WebDriver are out of scope: `window.open` returns null and
-`testdriver.js` files belong to the WebDriver lane.
+jar (`crates/cookies`), and a document mounted from disk stores the
+`Set-Cookie` fields of its `.headers` file the way a fetched navigation does.
+The query-param `pipe` pipeline implements `header(Name, Value)` and `sub`;
+`trickle` timing is ignored. A `.py` path is forwarded to a real wptserve
+process (`tools/wpt/sidecar.py`). `domains[...]` accepts the configured
+Unicode subdomain spellings and expands them to their IDNA form, as
+`wptserve` does. Popups and WebDriver are out of scope: `window.open` returns
+null and `testdriver.js` files belong to the WebDriver lane.
 
 **The lane runs the real fetch core.** `FsServices` is a `NetworkHost` over
 `net::Agent::with_transport`: response tainting, CORS and preflight, the

@@ -489,6 +489,21 @@ impl FsServices {
         }
     }
 
+    /// Stores a response's `Set-Cookie` fields in the jar.
+    ///
+    /// The main document is mounted from bytes the harness read itself, so its
+    /// headers never pass through [`net::Agent`]'s response path. A test that
+    /// sets a cookie from a `.headers` file still expects the jar to hold it,
+    /// exactly as a navigation that fetched the document would
+    /// (<https://fetch.spec.whatwg.org/#http-network-or-cache-fetch>).
+    pub(crate) fn store_set_cookies(&self, headers: &[(String, String)], url: &Url) {
+        for (name, value) in headers {
+            if name == "set-cookie" {
+                self.agent.set_cookie(value, url);
+            }
+        }
+    }
+
     /// Drops cookies and storage between files.
     ///
     /// A worker builds a fresh engine per file, so state a file leaves behind
@@ -862,6 +877,25 @@ mod tests {
                 .content_type_for(std::path::Path::new("a.txt")),
             "application/octet-stream",
             "only extensions the passed table names are known"
+        );
+        std::fs::remove_dir_all(&root).expect("root removed");
+    }
+
+    #[test]
+    fn a_set_cookie_header_reaches_the_jar() {
+        let services = services("cookies");
+        let root = services.origin.root.clone();
+        std::fs::write(root.join("dir/page.html"), b"x").expect("file");
+        std::fs::write(root.join("dir/page.html.headers"), "Set-Cookie: NAME=1\n")
+            .expect("headers");
+        let url = url::Url::parse("http://web-platform.test:8000/dir/page.html").expect("test URL");
+        let request =
+            renderer::DialRequest::new(renderer::RequestPolicy::FrameLoad, &url, &url.origin());
+        fetch(&services.agent, &request).expect("navigation");
+        assert!(
+            services.agent.cookies_for(&url).contains("NAME=1"),
+            "a navigation stores the response's Set-Cookie: {}",
+            services.agent.cookies_for(&url)
         );
         std::fs::remove_dir_all(&root).expect("root removed");
     }

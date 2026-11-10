@@ -192,6 +192,10 @@ impl Session {
                 headers: &[],
             },
         );
+        // The mount bypasses the transport, so the jar misses the response's
+        // `Set-Cookie` fields; a navigation would store them
+        // (<https://fetch.spec.whatwg.org/#http-network-or-cache-fetch>).
+        self.services.store_set_cookies(&headers.list, &url);
         let content_type = headers.content_type.unwrap_or(fallback_content_type);
         // The main document is mounted from the bytes on disk, so the
         // transport's `.sub.` pipe never sees it. Apply the same expansion a

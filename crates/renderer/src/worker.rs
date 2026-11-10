@@ -107,11 +107,11 @@ pub(crate) struct CreatedWorkerOptions {
 
 impl CreatedWorkerOptions {
     /// The options of a dedicated worker, which has no shared-realm key.
-    pub(crate) const fn dedicated(module: bool) -> Self {
+    pub(crate) const fn dedicated(module: bool, credentials: net::cors::CredentialsMode) -> Self {
         Self {
             module,
             shared: false,
-            credentials: net::cors::CredentialsMode::SameOrigin,
+            credentials,
             extended_lifetime: false,
         }
     }
@@ -438,6 +438,7 @@ impl Worker {
             // step 8).
             if created.module {
                 state.state.module_client_origin = Some(created.origin.clone());
+                state.state.module_credentials = Some(created.credentials);
             }
         }
         let js = JsRealm::new_worker(
@@ -991,7 +992,9 @@ fn fetch_module_url(created: &CreatedWorker, runtime: &FrameRuntime) -> Result<U
         return Err(());
     }
     let mut dial = DialRequest::new(
-        RequestPolicy::ModuleWorkerScript,
+        RequestPolicy::ModuleWorkerScript {
+            credentials: created.credentials,
+        },
         &created.url,
         &created.origin,
     );

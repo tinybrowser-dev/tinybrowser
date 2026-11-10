@@ -184,6 +184,27 @@
       value: location, writable: false, enumerable: true, configurable: false,
     });
 
+    // `origin` comes from the `WindowOrWorkerGlobalScope` mixin: the worker's
+    // origin serialization, `"null"` for an opaque one, and `[Replaceable]`
+    // so an assignment replaces the accessor with a data property
+    // (<https://html.spec.whatwg.org/multipage/webappapis.html#dom-origin>,
+    // <https://webidl.spec.whatwg.org/#idl-attributes>).
+    let workerOrigin = location.origin;
+    Object.defineProperty(globalThis, 'origin', {
+      get() { return workerOrigin; },
+      set(value) {
+        workerOrigin = value;
+        Object.defineProperty(globalThis, 'origin', {
+          value: workerOrigin,
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        });
+      },
+      enumerable: true,
+      configurable: true,
+    });
+
     // `performance` is not a Window-only API; a worker gets the same clock
     // surface for its own realm
     // (<https://w3c.github.io/hr-time/#the-performance-interface>).
@@ -257,8 +278,17 @@
       if (type !== 'classic' && type !== 'module') {
         throw new TypeError(`Worker type must be 'classic' or 'module': ${type}`);
       }
+      // A module worker's script fetch options carry this credentials mode;
+      // its graph keeps it for every descendant fetch
+      // (<https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script>).
+      const credentials = dictionary.credentials === undefined
+        ? 'same-origin'
+        : String(dictionary.credentials);
+      if (credentials !== 'omit' && credentials !== 'same-origin' && credentials !== 'include') {
+        throw new TypeError(`Worker credentials must be 'omit', 'same-origin', or 'include': ${credentials}`);
+      }
       const name = dictionary.name === undefined ? '' : String(dictionary.name);
-      const id = host.__tbWorkerCreate(parsed, name, type === 'module');
+      const id = host.__tbWorkerCreate(parsed, name, type === 'module', credentials);
       __tbWorkerIds.set(this, id);
       __tbWorkers.set(id, this);
     }

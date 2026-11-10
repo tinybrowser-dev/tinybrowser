@@ -1588,19 +1588,28 @@ pub enum RequestPolicy {
     /// (<https://html.spec.whatwg.org/multipage/workers.html#fetch-a-classic-worker-script>).
     WorkerScript,
     /// A module worker's root script: a module graph fetched in `same-origin`
-    /// mode, so an `Access-Control-Allow-Origin` header cannot make a
-    /// cross-origin worker script load. Descendant imports are ordinary module
-    /// fetches and may use CORS.
-    ModuleWorkerScript,
-    /// A module graph fetch: always `cors`, with the credentials mode the
-    /// graph root's `crossorigin` attribute selects
-    /// (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#cors-settings-attributes>).
+    /// mode with the credentials mode the worker's `WorkerOptions.credentials`
+    /// selected, so an `Access-Control-Allow-Origin` header cannot make a
+    /// cross-origin worker script load and `credentials: 'omit'` sends no
+    /// cookies. Descendant imports are `cors` module fetches under the same
+    /// credentials mode
+    /// (<https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script>,
+    /// step 4).
+    ModuleWorkerScript {
+        credentials: net::cors::CredentialsMode,
+    },
+    /// A module graph fetch: always `cors`, with the credentials mode of the
+    /// graph's script fetch options
+    /// (<https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script>).
     ///
-    /// The graph root's element supplies the mode: the document records it as
-    /// the current script while the graph loads, so every descendant fetch
-    /// inherits it. A dynamic `import()` outside any script evaluation uses the
-    /// document's default instead.
-    ModuleScript { crossorigin: Option<CrossOrigin> },
+    /// A document derives it from the graph root's `crossorigin` attribute,
+    /// which the document records as the current script while the graph loads,
+    /// so every descendant fetch inherits it. A module worker passes its
+    /// `WorkerOptions.credentials` instead. A dynamic `import()` outside any
+    /// script evaluation uses the document's default.
+    ModuleScript {
+        credentials: net::cors::CredentialsMode,
+    },
     /// A style sheet: a `<link rel=stylesheet>`, a CSS `@import`, or a sheet a
     /// script loaded, with the element's `crossorigin` state
     /// (<https://html.spec.whatwg.org/multipage/semantics.html#create-a-link-request>).
@@ -1639,7 +1648,7 @@ impl RequestPolicy {
         match self {
             Self::Fetch(_) => DialKind::JsFetch,
             Self::ClassicScript { .. } | Self::WorkerScript => DialKind::ClassicScript,
-            Self::ModuleScript { .. } | Self::ModuleWorkerScript => DialKind::ModuleScript,
+            Self::ModuleScript { .. } | Self::ModuleWorkerScript { .. } => DialKind::ModuleScript,
             Self::Stylesheet { .. } => DialKind::Stylesheet,
             Self::Image { .. } => DialKind::Image,
             Self::Font => DialKind::Font,
@@ -1661,14 +1670,17 @@ impl RequestPolicy {
             Self::ClassicScript { crossorigin }
             | Self::Stylesheet { crossorigin }
             | Self::Image { crossorigin } => potential_cors(crossorigin),
-            Self::WorkerScript | Self::ModuleWorkerScript => net::cors::CorsParameters {
+            Self::WorkerScript => net::cors::CorsParameters {
                 mode: net::cors::RequestMode::SameOrigin,
                 credentials: net::cors::CredentialsMode::SameOrigin,
                 redirect: net::cors::RedirectMode::Follow,
             },
-            Self::ModuleScript { crossorigin } => {
-                cors_protocol(cross_origin_credentials(crossorigin))
-            }
+            Self::ModuleWorkerScript { credentials } => net::cors::CorsParameters {
+                mode: net::cors::RequestMode::SameOrigin,
+                credentials,
+                redirect: net::cors::RedirectMode::Follow,
+            },
+            Self::ModuleScript { credentials } => cors_protocol(credentials),
             Self::Font | Self::CspReportTo => cors_protocol(net::cors::CredentialsMode::SameOrigin),
             Self::CspReportUri => net::cors::CorsParameters {
                 mode: net::cors::RequestMode::NoCors,
@@ -1727,7 +1739,9 @@ fn potential_cors(crossorigin: Option<CrossOrigin>) -> net::cors::CorsParameters
 /// The `CORS settings attribute credentials mode`: `same-origin` for the
 /// `No CORS` and `Anonymous` states, `include` for `Use Credentials`
 /// (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#cors-settings-attributes>).
-fn cross_origin_credentials(crossorigin: Option<CrossOrigin>) -> net::cors::CredentialsMode {
+pub(crate) fn cross_origin_credentials(
+    crossorigin: Option<CrossOrigin>,
+) -> net::cors::CredentialsMode {
     // A module fetch is always CORS, so an absent attribute means the
     // `same-origin` credentials of the `No CORS` and `Anonymous` states
     // (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#cors-settings-attributes>).
@@ -2463,10 +2477,10 @@ mod request_policy_tests {
         }
     }
 
-    fn policy_table() -> [(RequestPolicy, RequestMode, CredentialsMode); 16] {
+    fn policy_table() -> Vec<(RequestPolicy, RequestMode, CredentialsMode)> {
         let anonymous = Some(CrossOrigin::Anonymous);
         let credentials = Some(CrossOrigin::UseCredentials);
-        [
+        let mut table = vec![
             (
                 fetch(CorsMode::NoCors),
                 RequestMode::NoCors,
@@ -2527,28 +2541,6 @@ mod request_policy_tests {
                 RequestMode::Cors,
                 CredentialsMode::Include,
             ),
-            // A module graph is always `cors`; the attribute only selects the
-            // CORS settings attribute credentials mode
-            // (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#cors-settings-attributes>).
-            (
-                RequestPolicy::ModuleScript { crossorigin: None },
-                RequestMode::Cors,
-                CredentialsMode::SameOrigin,
-            ),
-            (
-                RequestPolicy::ModuleScript {
-                    crossorigin: anonymous,
-                },
-                RequestMode::Cors,
-                CredentialsMode::SameOrigin,
-            ),
-            (
-                RequestPolicy::ModuleScript {
-                    crossorigin: credentials,
-                },
-                RequestMode::Cors,
-                CredentialsMode::Include,
-            ),
             // Fonts and a `report-to` delivery are `cors` with same-origin
             // credentials (<https://drafts.csswg.org/css-fonts-4/#font-fetching-requirements>,
             // <https://w3c.github.io/reporting/#try-delivery>).
@@ -2565,6 +2557,46 @@ mod request_policy_tests {
             (
                 RequestPolicy::FrameLoad,
                 RequestMode::Navigate,
+                CredentialsMode::Include,
+            ),
+        ];
+        table.extend(module_policy_table());
+        table
+    }
+
+    /// The two module fetch shapes: a graph is `cors` under the credentials
+    /// mode in its script fetch options, while a module worker's root script is
+    /// `same-origin` because it is a top-level worker script
+    /// (<https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script>,
+    /// step 4).
+    fn module_policy_table() -> [(RequestPolicy, RequestMode, CredentialsMode); 4] {
+        [
+            (
+                RequestPolicy::ModuleScript {
+                    credentials: CredentialsMode::SameOrigin,
+                },
+                RequestMode::Cors,
+                CredentialsMode::SameOrigin,
+            ),
+            (
+                RequestPolicy::ModuleScript {
+                    credentials: CredentialsMode::Include,
+                },
+                RequestMode::Cors,
+                CredentialsMode::Include,
+            ),
+            (
+                RequestPolicy::ModuleWorkerScript {
+                    credentials: CredentialsMode::SameOrigin,
+                },
+                RequestMode::SameOrigin,
+                CredentialsMode::SameOrigin,
+            ),
+            (
+                RequestPolicy::ModuleWorkerScript {
+                    credentials: CredentialsMode::Include,
+                },
+                RequestMode::SameOrigin,
                 CredentialsMode::Include,
             ),
         ]

@@ -484,9 +484,16 @@ fn install_worker_constructor_hosts(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -
     host.set(
         "__tbWorkerCreate",
         rquickjs::prelude::Func::from(
-            move |ctx: Ctx<'_>, url: String, name: String, module: bool| -> Result<u64> {
+            move |ctx: Ctx<'_>,
+                  url: String,
+                  name: String,
+                  module: bool,
+                  credentials: String|
+                  -> Result<u64> {
                 let parsed = url::Url::parse(&url)
                     .map_err(|_| Exception::throw_type(&ctx, "Invalid worker script URL"))?;
+                let credentials = net::cors::CredentialsMode::from_idl(&credentials)
+                    .ok_or_else(|| Exception::throw_type(&ctx, "Invalid worker credentials"))?;
                 let current = create_world.borrow();
                 let id = crate::worker::WorkerId::new(current.runtime.next_worker.get());
                 current.runtime.next_worker.set(id.get().saturating_add(1));
@@ -495,7 +502,7 @@ fn install_worker_constructor_hosts(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -
                     id,
                     parsed,
                     name,
-                    crate::worker::CreatedWorkerOptions::dedicated(module),
+                    crate::worker::CreatedWorkerOptions::dedicated(module, credentials),
                 );
                 current
                     .runtime

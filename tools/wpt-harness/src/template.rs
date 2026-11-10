@@ -294,7 +294,7 @@ fn domain(subdomain: &str) -> Option<String> {
     if subdomain.is_empty() {
         return Some(BROWSER_HOST.to_owned());
     }
-    is_subdomain(subdomain).then(|| format!("{subdomain}.{BROWSER_HOST}"))
+    encoded_subdomain(subdomain).map(|encoded| format!("{encoded}.{BROWSER_HOST}"))
 }
 
 /// `hosts[alias][subdomain]`, where the alias is `""` (browser) or `alt`.
@@ -307,18 +307,33 @@ fn host(alias: &str, subdomain: &str) -> Option<String> {
     if subdomain.is_empty() {
         return Some(base.to_owned());
     }
-    is_subdomain(subdomain).then(|| format!("{subdomain}.{base}"))
+    encoded_subdomain(subdomain).map(|encoded| format!("{encoded}.{base}"))
 }
 
-/// Whether serve.py registers `name` as a one- or two-level subdomain.
-fn is_subdomain(name: &str) -> bool {
-    let mut levels = name.split('.');
-    let first = levels.next().unwrap_or_default();
-    let second = levels.next();
-    if levels.next().is_some() || !SUBDOMAINS.contains(&first) {
-        return false;
+/// The registered one- or two-level subdomain in `name`, with every label
+/// IDNA-encoded.
+///
+/// `serve.py` registers the configured names twice: once as written (the
+/// non-ASCII `天気の良い日` and `élève` included) for the server's host
+/// matching, and IDNA-encoded in `domains[...]`
+/// (`wptserve/config.py::_get_domains`). A template can therefore name either
+/// spelling, and the expansion is always the ASCII form.
+fn encoded_subdomain(name: &str) -> Option<String> {
+    let labels: Vec<&str> = name.split('.').collect();
+    if labels.is_empty() || labels.len() > 2 {
+        return None;
     }
-    second.is_none_or(|second| SUBDOMAINS.contains(&second))
+    let mut encoded = Vec::with_capacity(labels.len());
+    for label in labels {
+        let url::Host::Domain(ascii) = url::Host::parse(label).ok()? else {
+            return None;
+        };
+        if !SUBDOMAINS.contains(&ascii.as_str()) {
+            return None;
+        }
+        encoded.push(ascii);
+    }
+    Some(encoded.join("."))
 }
 
 /// `location[field]` for one request URL.
@@ -371,6 +386,21 @@ mod tests {
         assert_eq!(expand("{{ports[https][0]}}", ""), "8443");
         assert_eq!(expand("{{domains[]}}", ""), "web-platform.test");
         assert_eq!(expand("{{domains[www]}}", ""), "www.web-platform.test");
+        // The tests spell the two non-ASCII subdomains as written; the
+        // expansion is the IDNA form `serve.py` serves
+        // (`wptserve/config.py::_get_domains`).
+        assert_eq!(
+            expand("{{domains[天気の良い日]}}", ""),
+            "xn--n8j6ds53lwwkrqhv28a.web-platform.test"
+        );
+        assert_eq!(
+            expand("{{domains[élève]}}", ""),
+            "xn--lve-6lad.web-platform.test"
+        );
+        assert_eq!(
+            expand("{{hosts[][élève.www]}}", ""),
+            "xn--lve-6lad.www.web-platform.test"
+        );
         assert_eq!(
             expand("{{hosts[alt][www]}}", ""),
             "www.not-web-platform.test"

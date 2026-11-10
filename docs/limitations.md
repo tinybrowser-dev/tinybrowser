@@ -65,15 +65,20 @@ clone and `eval(import())` failures are recorded in `docs/upstream.md`.
 `postMessage` also refuses a `SharedArrayBuffer` or a view over one
 because the engine has no shared-memory transport, so the two
 parallelism tests that post shared memory fail at the clone step before
-their main-thread spin.
-The in-process WPT harness serves files directly and now applies
-wptserve's `header(...)` and `sub` pipes; it does not implement
-`trickle` timing, and it has no popups, so tests that open a window or
-measure `trickle` still cannot run there. Its standalone session history
-also does not apply a main-frame `history.back()` to a child frame's
-joint entry, so `workers/semantics/navigation/001.html` cannot observe
-the child document being restored; that is a harness gap, not a worker
-lifetime rule.
+their main-thread spin. The cookie jar does not implement the `Partitioned`
+attribute (CHIPS), so a partitioned cookie is stored as an ordinary one;
+`shared-worker-partitioned-cookies.tentative.https.html` reaches its
+worker assertions and then stops on the popup it opens.
+The in-process WPT harness serves files directly, applies wptserve's
+`header(...)` and `sub` pipes, and stores a mounted document's `.headers`
+`Set-Cookie` in the jar; it does not implement `trickle` timing, and it
+has no popups, so tests that open a window or measure `trickle` still
+cannot run there. That is why every `extendedLifetime` case and the
+same-site-cookie files stop: they exchange messages through a popup. Its
+standalone session history also does not apply a main-frame
+`history.back()` to a child frame's joint entry, so
+`workers/semantics/navigation/001.html` cannot observe the child document
+being restored; that is a harness gap, not a worker lifetime rule.
 
 Canvas `getContext` returns a working 2D context (paths, text, gradients,
 patterns, filters, layers); the `bitmaprenderer` context exists but

@@ -79,8 +79,8 @@ cases that need the in-process harness to implement wptserve pipes, and
 the upstream QuickJS gaps in `docs/upstream.md`.
 
 SharedWorker landed on 2026-11-10. The `workers/` slice (248 files) moved
-from 222 passing files / 488 passing subtests of 794 to 215 perfect files
-/ 843 passing subtests of 965, with no subtest lost. The realm key is
+from 222 passing files / 488 passing subtests of 794 to 218 perfect files
+/ 882 passing subtests of 966, with no subtest lost. The realm key is
 `(creator origin, script URL, name)`; a connection repeats the key and
 must agree on `type`/`credentials`/`extendedLifetime`, and a mismatch
 fires a plain `error` event on the new `SharedWorker` object without
@@ -102,10 +102,23 @@ resolves `blob:` URLs in its realm, and a worker realm installs
 `BroadcastChannel` with engine-wide channel ids, so an opaque-origin
 worker can exchange messages with its owner. The in-process harness now
 applies wptserve's `header(...)` and `sub` pipes, which let the module
-CSP/referrer/data-URL and opaque-origin files run. The remaining
-shared-worker failures are `extendedLifetime` cases that need popups the
-harness does not provide, `IndexedDB` absence, the harness cookie jar,
-and the upstream QuickJS gaps.
+CSP/referrer/data-URL and opaque-origin files run.
+
+`WorkerOptions.credentials` now reaches the wire: a module worker's whole
+graph (root script, static imports, dynamic imports) is fetched under the
+mode the option selected, while a classic worker keeps `same-origin`.
+Worker globals also expose `origin` from the
+`WindowOrWorkerGlobalScope` mixin as a `[Replaceable]` attribute, which
+worker code uses to build same-origin URLs. Two harness gaps had been
+masking these: a document mounted from disk never stored its `.headers`
+`Set-Cookie` in the jar, and `domains[...]` rejected the configured
+Unicode subdomain spellings instead of expanding them to IDNA. With both
+fixed, the dedicated and shared `WorkerOptions.credentials` files pass
+33/33 each (51 subtests gained) and the WorkerLocation origin file passes.
+The remaining failures are popup-based `extendedLifetime` and same-site
+cookie files, `IndexedDB` absence, CHIPS partitioning, same-thread
+parallelism and forcible termination, joint-history traversal in the
+in-process harness, and the upstream QuickJS gaps.
 
 Every push to `main` now publishes the record to
 `tinybrowser-dev/tinybrowser-wpt-results` and the site at

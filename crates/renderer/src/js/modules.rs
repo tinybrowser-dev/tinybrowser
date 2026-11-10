@@ -164,15 +164,22 @@ fn module_fetch_inputs(world: &crate::js::World, name: &str) -> ModuleFetchInput
         .module_client_origin
         .clone()
         .unwrap_or_else(|| world.origin.clone());
+    // A module worker's script fetch options carry the worker's
+    // `WorkerOptions.credentials`, which every fetch in its graph keeps; a
+    // document derives the mode from its root element's `crossorigin` state
+    // (<https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script>).
+    let credentials = world.state.module_credentials.unwrap_or_else(|| {
+        crate::protocol::cross_origin_credentials(crate::protocol::cross_origin(
+            options.crossorigin,
+        ))
+    });
     let policy = if worker_root {
         // The worker's own script must stay same-origin, even when the server
         // sends `Access-Control-Allow-Origin`
-        // (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>).
-        crate::protocol::RequestPolicy::ModuleWorkerScript
+        // (<https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script>).
+        crate::protocol::RequestPolicy::ModuleWorkerScript { credentials }
     } else {
-        crate::protocol::RequestPolicy::ModuleScript {
-            crossorigin: crate::protocol::cross_origin(options.crossorigin),
-        }
+        crate::protocol::RequestPolicy::ModuleScript { credentials }
     };
     (
         world.runtime.services.clone(),

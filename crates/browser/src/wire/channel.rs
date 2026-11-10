@@ -473,9 +473,11 @@ mod tests {
             },
             RequestPolicy::WorkerScript,
             RequestPolicy::ModuleScript {
-                crossorigin: Some(net::cors::CrossOrigin::Anonymous),
+                credentials: net::cors::CredentialsMode::SameOrigin,
             },
-            RequestPolicy::ModuleScript { crossorigin: None },
+            RequestPolicy::ModuleWorkerScript {
+                credentials: net::cors::CredentialsMode::Include,
+            },
             RequestPolicy::Stylesheet { crossorigin: None },
             RequestPolicy::Image {
                 crossorigin: Some(net::cors::CrossOrigin::Anonymous),

@@ -1528,18 +1528,21 @@ mod tests {
     /// What each policy actually puts on the wire: the CORS triple, the
     /// fetch-metadata destination and mode, and the origin the browser
     /// authorized. The renderer's table is only a claim until this holds.
-    fn wire_table() -> [(
+    /// One row of the wire table: the policy, its resolved CORS triple, and
+    /// the fetch-metadata mode and destination the browser writes.
+    type WireCase = (
         RequestPolicy,
         net::cors::RequestMode,
         net::cors::CredentialsMode,
         net::cors::RedirectMode,
         &'static str,
         &'static str,
-    ); 10] {
+    );
+
+    fn wire_table() -> Vec<WireCase> {
         use net::cors::{CredentialsMode, RedirectMode, RequestMode};
 
         let anonymous = Some(net::cors::CrossOrigin::Anonymous);
-        let credentials = Some(net::cors::CrossOrigin::UseCredentials);
         let fetch = |mode, credentials| {
             RequestPolicy::Fetch(renderer::CorsRequest {
                 mode,
@@ -1547,7 +1550,7 @@ mod tests {
                 redirect: RedirectMode::Follow,
             })
         };
-        [
+        let mut table = vec![
             (
                 fetch(renderer::CorsMode::NoCors, CredentialsMode::Omit),
                 RequestMode::NoCors,
@@ -1570,16 +1573,6 @@ mod tests {
                 },
                 RequestMode::Cors,
                 CredentialsMode::SameOrigin,
-                RedirectMode::Follow,
-                "cors",
-                "script",
-            ),
-            (
-                RequestPolicy::ModuleScript {
-                    crossorigin: credentials,
-                },
-                RequestMode::Cors,
-                CredentialsMode::Include,
                 RedirectMode::Follow,
                 "cors",
                 "script",
@@ -1633,6 +1626,40 @@ mod tests {
                 RedirectMode::Error,
                 "no-cors",
                 "report",
+            ),
+        ];
+        table.extend(wire_module_table());
+        table
+    }
+
+    /// Module fetches: a graph is `cors`, a module worker's root script is
+    /// `same-origin`, and both carry the credentials mode of their script fetch
+    /// options
+    /// (<https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script>,
+    /// step 4).
+    fn wire_module_table() -> [WireCase; 2] {
+        use net::cors::{CredentialsMode, RedirectMode, RequestMode};
+
+        [
+            (
+                RequestPolicy::ModuleScript {
+                    credentials: CredentialsMode::Include,
+                },
+                RequestMode::Cors,
+                CredentialsMode::Include,
+                RedirectMode::Follow,
+                "cors",
+                "script",
+            ),
+            (
+                RequestPolicy::ModuleWorkerScript {
+                    credentials: CredentialsMode::Include,
+                },
+                RequestMode::SameOrigin,
+                CredentialsMode::Include,
+                RedirectMode::Follow,
+                "same-origin",
+                "script",
             ),
         ]
     }

@@ -1527,6 +1527,11 @@ pub(crate) struct DocumentState {
     /// uses the worker's own origin
     /// (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>).
     pub(crate) module_client_origin: Option<url::Origin>,
+    /// The credentials mode every module fetch in a module worker's graph
+    /// uses. It comes from `WorkerOptions.credentials` and replaces the
+    /// `crossorigin`-derived mode a document's module graph uses
+    /// (<https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script>).
+    pub(crate) module_credentials: Option<net::cors::CredentialsMode>,
 
     /// Existing elements being synchronously upgraded by a custom-element
     /// constructor. `HTMLElement()` consumes the top candidate.
@@ -1637,6 +1642,7 @@ impl DocumentState {
         self.module_fetch_root = None;
         self.current_script_url = None;
         self.module_client_origin = None;
+        self.module_credentials = None;
         self.custom_construction.clear();
         self.implementations.clear();
         self.active_elements.clear();
