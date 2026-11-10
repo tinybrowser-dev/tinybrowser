@@ -78,6 +78,22 @@ The remaining `workers/` failures are the unimplemented SharedWorker
 cases that need the in-process harness to implement wptserve pipes, and
 the upstream QuickJS gaps in `docs/upstream.md`.
 
+SharedWorker landed on 2026-11-10. The `workers/` slice (248 files) moved
+from 222 passing files / 488 passing subtests of 794 to 208 perfect files
+/ 810 passing subtests of 959, with no subtest lost: the slice now
+enumerates 248 files but 959 subtests after the shared-worker files run
+their real test bodies. The realm key is `(creator origin, script URL,
+name)`; a connection repeats the key and must agree on
+`type`/`credentials`/`extendedLifetime`, and a mismatch fires a plain
+`error` event on the new `SharedWorker` object without joining. Each
+connection gets a fresh `MessagePort` pair, and the worker side arrives
+as a `connect` event whose `data` is `''` and whose `source` is
+`ports[0]`. Runtime errors stay at the shared global; load and parse
+failures fan out to every connected `SharedWorker`. The remaining
+shared-worker failures are `extendedLifetime` cases that need popups the
+harness does not provide, `IndexedDB` absence, the harness cookie jar,
+and the same `?pipe=header(...)`/QuickJS gaps as dedicated workers.
+
 Every push to `main` now publishes the record to
 `tinybrowser-dev/tinybrowser-wpt-results` and the site at
 `tinybrowser.ericc.ch/wpt` rebuilds from it: subtests passing, files passing,

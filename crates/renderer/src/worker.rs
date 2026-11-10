@@ -61,6 +61,17 @@ pub(crate) struct CreatedWorker {
     pub(crate) url: Url,
     pub(crate) name: String,
     pub(crate) module: bool,
+    /// Whether this is a `SharedWorker`: the engine keeps one realm per
+    /// `(url, name)` and attaches a port for every constructor call
+    /// (<https://html.spec.whatwg.org/multipage/workers.html#dom-sharedworker>).
+    pub(crate) shared: bool,
+    /// The `WorkerOptions.credentials` a shared worker's connections must
+    /// agree on; the two scripts fetch under the same mode
+    /// (<https://html.spec.whatwg.org/multipage/workers.html#dom-sharedworker>).
+    pub(crate) credentials: net::cors::CredentialsMode,
+    /// The `WorkerOptions.extendedLifetime` a shared worker's connections must
+    /// agree on.
+    pub(crate) extended_lifetime: bool,
     pub(crate) origin: url::Origin,
     pub(crate) top_level: url::Origin,
     pub(crate) policy: PolicyContainer,
@@ -77,6 +88,35 @@ pub(crate) struct CreatedWorker {
     pub(crate) local_script: Option<String>,
 }
 
+/// What the constructor asked a worker to be: classic or module, dedicated or
+/// shared, and the options two shared connections must agree on.
+#[derive(Clone, Copy)]
+pub(crate) struct CreatedWorkerOptions {
+    pub(crate) module: bool,
+    /// Whether this is a `SharedWorker`: the engine keeps one realm per
+    /// `(origin, url, name)` and attaches a port for every constructor call
+    /// (<https://html.spec.whatwg.org/multipage/workers.html#dom-sharedworker>).
+    pub(crate) shared: bool,
+    /// The `WorkerOptions.credentials` a shared worker's connections must
+    /// agree on; their scripts fetch under the same mode.
+    pub(crate) credentials: net::cors::CredentialsMode,
+    /// The `WorkerOptions.extendedLifetime` a shared worker's connections must
+    /// agree on.
+    pub(crate) extended_lifetime: bool,
+}
+
+impl CreatedWorkerOptions {
+    /// The options of a dedicated worker, which has no shared-realm key.
+    pub(crate) const fn dedicated(module: bool) -> Self {
+        Self {
+            module,
+            shared: false,
+            credentials: net::cors::CredentialsMode::SameOrigin,
+            extended_lifetime: false,
+        }
+    }
+}
+
 impl CreatedWorker {
     /// Captures the creator's origin, policy container, sandbox set, and
     /// referrer for a worker created from `world`.
@@ -85,7 +125,7 @@ impl CreatedWorker {
         id: WorkerId,
         url: Url,
         name: String,
-        module: bool,
+        options: CreatedWorkerOptions,
     ) -> Self {
         let local_script = (url.scheme() == "blob")
             .then(|| world.object_url_contents(url.as_str()))
@@ -96,7 +136,10 @@ impl CreatedWorker {
             parent: world.frame(),
             url,
             name,
-            module,
+            module: options.module,
+            shared: options.shared,
+            credentials: options.credentials,
+            extended_lifetime: options.extended_lifetime,
             origin: world.origin.clone(),
             top_level: world
                 .top_level
@@ -110,9 +153,44 @@ impl CreatedWorker {
     }
 }
 
+/// A shared worker's identity in one engine.
+///
+/// The script URL and name select the realm; `origin` keeps data-URL and
+/// cross-origin creators apart, because a shared worker is shared only within
+/// one origin
+/// (<https://html.spec.whatwg.org/multipage/workers.html#shared-worker-creation-steps>).
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub(crate) struct SharedWorkerKey {
+    pub(crate) origin: url::Origin,
+    pub(crate) url: Url,
+    pub(crate) name: String,
+}
+
+impl SharedWorkerKey {
+    pub(crate) fn new(origin: url::Origin, url: Url, name: String) -> Self {
+        Self { origin, url, name }
+    }
+}
+
+/// The options two connections to the same shared worker must agree on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SharedWorkerOptions {
+    pub(crate) module: bool,
+    pub(crate) credentials: net::cors::CredentialsMode,
+    pub(crate) extended_lifetime: bool,
+}
+
 /// One lifecycle or message request a worker host function queued.
 pub(crate) enum WorkerRequest {
     Create(Box<CreatedWorker>),
+    /// A new `SharedWorker` connection: the realm keyed by `created`'s URL and
+    /// name, plus the worker-side port endpoint that receives the `connect`
+    /// event
+    /// (<https://html.spec.whatwg.org/multipage/workers.html#dom-sharedworker>).
+    CreateShared {
+        created: Box<CreatedWorker>,
+        endpoint: u64,
+    },
     Post {
         id: WorkerId,
         payload: String,
@@ -140,6 +218,13 @@ pub(crate) enum WorkerRequest {
     LoadFailed {
         worker: WorkerId,
         parent: FrameId,
+    },
+    /// A shared worker's script failed to load or parse. Every associated
+    /// `SharedWorker` object hears a plain `error` event
+    /// (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>,
+    /// step 14).
+    SharedLoadFailed {
+        worker: WorkerId,
     },
     Error(Box<WorkerError>),
 }
@@ -183,6 +268,12 @@ enum WorkerTask {
     PortClosed {
         endpoint: u64,
     },
+    /// One `SharedWorker` connection: deliver a `connect` event carrying the
+    /// worker-side port
+    /// (<https://html.spec.whatwg.org/multipage/workers.html#shared-workers-and-the-sharedworkerglobalscope-interface>).
+    Connect {
+        endpoint: u64,
+    },
     Timer(TimerId),
 }
 
@@ -218,6 +309,10 @@ enum WorkerScript {
 pub(crate) struct Worker {
     id: WorkerId,
     parent: FrameId,
+    /// Whether this realm is a `SharedWorker`'s global scope. A shared worker
+    /// has several owners and receives connections instead of window messages
+    /// (<https://html.spec.whatwg.org/multipage/workers.html#shared-workers-and-the-sharedworkerglobalscope-interface>).
+    shared: bool,
     /// `worker global scope`'s url: the response URL, which differs from the
     /// request URL after a redirect
     /// (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>,
@@ -252,11 +347,12 @@ impl Worker {
     /// (<https://html.spec.whatwg.org/multipage/workers.html#dom-worker>).
     pub(crate) fn create(
         created: &CreatedWorker,
+        id: WorkerId,
         runtime: &FrameRuntime,
         js_runtime: &SharedJsRuntime,
     ) -> Result<Self, WorkerLoadFailure> {
         let failure = WorkerLoadFailure {
-            worker: created.id,
+            worker: id,
             parent: created.parent,
         };
         let (script, worker_url) = if created.module {
@@ -280,15 +376,26 @@ impl Worker {
                 response_url,
             )
         };
-        let world = World::new_worker(
-            worker_url.clone(),
-            FrameId::worker(created.id.get()),
-            created.parent,
-            runtime,
-            created.id,
-            created.name.clone(),
-            created.module,
-        );
+        let world = if created.shared {
+            World::new_shared_worker(
+                worker_url.clone(),
+                FrameId::worker(id.get()),
+                runtime,
+                id,
+                created.name.clone(),
+                created.module,
+            )
+        } else {
+            World::new_worker(
+                worker_url.clone(),
+                FrameId::worker(id.get()),
+                created.parent,
+                runtime,
+                id,
+                created.name.clone(),
+                created.module,
+            )
+        };
         let world = Rc::new(RefCell::new(world));
         {
             let mut state = world.borrow_mut();
@@ -316,8 +423,9 @@ impl Worker {
         let (fetch_tx, fetch_rx) = std::sync::mpsc::channel();
         let pending_fetches = Arc::new(AtomicUsize::new(0));
         Ok(Self {
-            id: created.id,
+            id,
             parent: created.parent,
+            shared: created.shared,
             url: worker_url,
             world,
             js,
@@ -401,6 +509,19 @@ impl Worker {
         if !self.closed {
             self.tasks.push_back(WorkerTask::PortClosed { endpoint });
         }
+    }
+
+    /// Queues one `connect` event carrying a worker-side port endpoint.
+    ///
+    /// A shared worker queues connects behind its script, so the script has
+    /// installed `onconnect` before the first event fires
+    /// (<https://html.spec.whatwg.org/multipage/workers.html#dom-sharedworkerglobalscope-onconnect>).
+    pub(crate) fn queue_connect(&mut self, endpoint: u64) {
+        if self.closed {
+            self.forget_endpoints(&[endpoint]);
+            return;
+        }
+        self.tasks.push_back(WorkerTask::Connect { endpoint });
     }
 
     /// Releases transferred endpoints the worker will never adopt.
@@ -490,6 +611,12 @@ impl Worker {
                 ports,
             } => self.deliver_port_message(endpoint, payload, ports),
             WorkerTask::PortClosed { endpoint } => self.deliver_port_close(endpoint),
+            WorkerTask::Connect { endpoint } => {
+                if let Err(error) = self.js.deliver_shared_connect(endpoint) {
+                    self.forget_endpoints(&[endpoint]);
+                    self.report_error(&error);
+                }
+            }
             WorkerTask::Timer(id) => {
                 if let Some(timer) = self.timers.remove(&id) {
                     self.js_timers.remove(&timer.js_id);
@@ -549,9 +676,12 @@ impl Worker {
     /// the message without adopting it would strand the channel.
     fn discard_queued_tasks(&mut self) {
         while let Some(task) = self.tasks.pop_front() {
-            if let WorkerTask::Message { ports, .. } | WorkerTask::PortMessage { ports, .. } = task
-            {
-                self.forget_endpoints(&ports);
+            match task {
+                WorkerTask::Message { ports, .. } | WorkerTask::PortMessage { ports, .. } => {
+                    self.forget_endpoints(&ports);
+                }
+                WorkerTask::Connect { endpoint } => self.forget_endpoints(&[endpoint]),
+                WorkerTask::PortClosed { .. } | WorkerTask::Timer(_) => {}
             }
         }
     }
@@ -601,6 +731,12 @@ impl Worker {
     }
 
     fn report_error(&mut self, error: &JsError) {
+        // Runtime errors in a shared worker fire at its global scope only; no
+        // `SharedWorker` object hears them
+        // (<https://html.spec.whatwg.org/multipage/workers.html#runtime-script-errors-2>).
+        if self.shared {
+            return;
+        }
         let error = WorkerError::from_js(self.id, self.parent, &self.url, error);
         self.world
             .borrow()
@@ -611,15 +747,20 @@ impl Worker {
     }
 
     fn report_load_failure(&self) {
+        let request = if self.shared {
+            WorkerRequest::SharedLoadFailed { worker: self.id }
+        } else {
+            WorkerRequest::LoadFailed {
+                worker: self.id,
+                parent: self.parent,
+            }
+        };
         self.world
             .borrow()
             .runtime
             .worker_requests
             .borrow_mut()
-            .push(WorkerRequest::LoadFailed {
-                worker: self.id,
-                parent: self.parent,
-            });
+            .push(request);
     }
 
     fn adopt_js_work(&mut self) {

@@ -878,6 +878,19 @@ impl JsRealm {
         })
     }
 
+    /// Dispatches one `connect` event at a shared worker global, carrying the
+    /// worker-side port of a new connection
+    /// (<https://html.spec.whatwg.org/multipage/workers.html#dom-sharedworkerglobalscope-onconnect>).
+    pub(crate) fn deliver_shared_connect(&self, endpoint: u64) -> Result<(), JsError> {
+        self.with_budget(None, MicrotaskCheckpoint::Perform, || {
+            self.context.with(|ctx| {
+                let deliver: Function = ctx.globals().get("__tbWorkerConnect")?;
+                deliver.call::<_, ()>((endpoint,))?;
+                Ok(())
+            })
+        })
+    }
+
     /// Tells the page shim to dispatch `change` on `MediaQueryList`s whose
     /// result flipped (<https://drafts.csswg.org/cssom-view/#evaluate-media-queries-and-report-changes>).
     pub(crate) fn report_media_changes(&self) -> Result<(), JsError> {

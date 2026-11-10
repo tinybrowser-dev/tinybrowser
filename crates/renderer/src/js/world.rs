@@ -1223,6 +1223,15 @@ pub(crate) enum GlobalKind {
         /// (<https://html.spec.whatwg.org/multipage/workers.html#dom-workerglobalscope-importscripts>).
         module: bool,
     },
+    /// A shared worker realm: no document, and a `SharedWorkerGlobalScope`.
+    /// It has no single owner; every connection reaches it over its own
+    /// routed port
+    /// (<https://html.spec.whatwg.org/multipage/workers.html#shared-workers-and-the-sharedworkerglobalscope-interface>).
+    SharedWorker {
+        id: crate::worker::WorkerId,
+        name: String,
+        module: bool,
+    },
 }
 
 pub(crate) struct World {
@@ -1790,21 +1799,53 @@ impl World {
         world
     }
 
+    /// Builds the realm for a shared worker.
+    ///
+    /// A shared worker has no single owner and no browsing context: its global
+    /// is a `SharedWorkerGlobalScope`, and every connection arrives as a
+    /// `connect` event carrying its own port
+    /// (<https://html.spec.whatwg.org/multipage/workers.html#shared-workers-and-the-sharedworkerglobalscope-interface>).
+    pub(crate) fn new_shared_worker(
+        document_url: Url,
+        frame: FrameId,
+        runtime: &FrameRuntime,
+        id: crate::worker::WorkerId,
+        name: String,
+        module: bool,
+    ) -> Self {
+        let mut world = Self::new(
+            document_url,
+            frame,
+            runtime,
+            Rc::new(RefCell::new(Vec::new())),
+        );
+        world.kind = GlobalKind::SharedWorker { id, name, module };
+        world
+    }
+
+    /// Whether this realm is a shared worker.
+    pub(crate) fn is_shared_worker(&self) -> bool {
+        matches!(self.kind, GlobalKind::SharedWorker { .. })
+    }
+
     /// Whether this realm is a module worker, which `importScripts()` must
     /// refuse.
     pub(crate) fn worker_is_module(&self) -> bool {
         match &self.kind {
             GlobalKind::Document => false,
-            GlobalKind::DedicatedWorker { module, .. } => *module,
+            GlobalKind::DedicatedWorker { module, .. }
+            | GlobalKind::SharedWorker { module, .. } => *module,
         }
     }
 
-    /// The worker name a `DedicatedWorkerGlobalScope` reports, or `None` for
-    /// a document realm.
+    /// The worker name a worker global reports, or `None` for a document
+    /// realm.
     pub(crate) fn worker_name(&self) -> Option<&str> {
         match &self.kind {
             GlobalKind::Document => None,
-            GlobalKind::DedicatedWorker { name, .. } => Some(name),
+            GlobalKind::DedicatedWorker { name, .. } | GlobalKind::SharedWorker { name, .. } => {
+                Some(name)
+            }
         }
     }
 
@@ -1813,15 +1854,17 @@ impl World {
     pub(crate) fn worker_id(&self) -> Option<crate::worker::WorkerId> {
         match &self.kind {
             GlobalKind::Document => None,
-            GlobalKind::DedicatedWorker { id, .. } => Some(*id),
+            GlobalKind::DedicatedWorker { id, .. } | GlobalKind::SharedWorker { id, .. } => {
+                Some(*id)
+            }
         }
     }
 
-    /// The creator frame a worker global posts to, or `None` for a document
-    /// realm.
+    /// The creator frame a dedicated worker global posts to, or `None` for a
+    /// document realm or a shared worker.
     pub(crate) fn worker_parent(&self) -> Option<FrameId> {
         match &self.kind {
-            GlobalKind::Document => None,
+            GlobalKind::Document | GlobalKind::SharedWorker { .. } => None,
             GlobalKind::DedicatedWorker { parent, .. } => Some(*parent),
         }
     }

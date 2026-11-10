@@ -19,7 +19,7 @@
   if (__tbWorkerIsGlobal) {
     // A worker global has no browsing context: remove the Window-shaped names
     // the messaging shim installs for documents.
-    for (const name of ['window', 'localStorage', 'sessionStorage', 'frameElement', 'length', 'parent', 'top']) {
+    for (const name of ['window', 'localStorage', 'sessionStorage', 'frameElement', 'length', 'parent', 'top', 'open', 'opener']) {
       try {
         delete globalThis[name];
       } catch (error) {}
@@ -107,20 +107,56 @@
       value: 'DedicatedWorkerGlobalScope', writable: false, enumerable: false, configurable: true,
     });
 
+    // A `SharedWorker` global receives connections instead of window messages:
+    // its only entry points are `onconnect` and the ports each event carries
+    // (<https://html.spec.whatwg.org/multipage/workers.html#shared-workers-and-the-sharedworkerglobalscope-interface>).
+    class SharedWorkerGlobalScope extends WorkerGlobalScope {
+      close() {
+        host.__tbWorkerClose();
+      }
+    }
+    __tbDefineWorkerHandler(SharedWorkerGlobalScope.prototype, 'onconnect');
+    Object.defineProperty(SharedWorkerGlobalScope.prototype, Symbol.toStringTag, {
+      value: 'SharedWorkerGlobalScope', writable: false, enumerable: false, configurable: true,
+    });
+
     Object.defineProperty(globalThis, 'WorkerGlobalScope', {
       value: WorkerGlobalScope, writable: true, configurable: true,
     });
-    Object.defineProperty(globalThis, 'DedicatedWorkerGlobalScope', {
-      value: DedicatedWorkerGlobalScope, writable: true, configurable: true,
-    });
-    Object.setPrototypeOf(globalThis, DedicatedWorkerGlobalScope.prototype);
+    if (host.__tbIsSharedWorker === true) {
+      Object.defineProperty(globalThis, 'SharedWorkerGlobalScope', {
+        value: SharedWorkerGlobalScope, writable: true, configurable: true,
+      });
+      Object.setPrototypeOf(globalThis, SharedWorkerGlobalScope.prototype);
+    } else {
+      Object.defineProperty(globalThis, 'DedicatedWorkerGlobalScope', {
+        value: DedicatedWorkerGlobalScope, writable: true, configurable: true,
+      });
+      Object.setPrototypeOf(globalThis, DedicatedWorkerGlobalScope.prototype);
+    }
     globalThis.self = globalThis;
 
     // The Window shim in the messaging script installs these as own properties
-    // of every global. A worker's are the `DedicatedWorkerGlobalScope`
-    // operations on the prototype chain, so drop the Window-shaped own ones.
+    // of every global. A worker's are the `WorkerGlobalScope` operations on
+    // the prototype chain, so drop the Window-shaped own ones.
     delete globalThis.close;
     delete globalThis.postMessage;
+
+    if (host.__tbIsSharedWorker === true) {
+      // The host calls this when the engine adopts a `connect`: the event's
+      // port is the worker side of the new connection
+      // (<https://html.spec.whatwg.org/multipage/workers.html#dom-sharedworkerglobalscope-onconnect>).
+      globalThis.__tbWorkerConnect = function(endpoint) {
+        const materialized = __tbMaterializePorts([endpoint]);
+        const port = materialized.ports[endpoint];
+        globalThis.dispatchEvent(new MessageEvent('connect', {
+          data: '',
+          source: port,
+          ports: Object.freeze([port]),
+        }));
+        __tbFirePortCloses(materialized.closes);
+      };
+    }
 
     // `name` is a `[Replaceable]` attribute: an own accessor on the global
     // that, once assigned, becomes a writable data property
@@ -249,6 +285,72 @@
   Object.defineProperty(globalThis, 'Worker', {
     value: Worker, writable: true, configurable: true,
   });
+
+  // `SharedWorker` is Window-only; a worker global has no shared worker
+  // constructor
+  // (<https://html.spec.whatwg.org/multipage/workers.html#shared-workers-and-the-sharedworkerglobalscope-interface>).
+  if (!__tbWorkerIsGlobal) {
+    const __tbSharedWorkerPorts = new WeakMap();
+    class SharedWorker extends EventTarget {
+      constructor(url, options) {
+        if (arguments.length < 1) {
+          throw new TypeError("Failed to construct 'SharedWorker': 1 argument required, but only 0 present.");
+        }
+        // Convert and parse before initializing the base class: a `toString`
+        // that constructs another worker must recurse through JS alone, and a
+        // conversion exception propagates unchanged
+        // (<https://html.spec.whatwg.org/multipage/workers.html#dom-sharedworker>).
+        const href = String(url);
+        let parsed;
+        try {
+          parsed = new URL(href, __tbWorkerBase());
+        } catch (error) {
+          throw new DOMException(`Invalid shared worker script URL: ${href}`, 'SyntaxError');
+        }
+        super();
+        // `options` is `(DOMString or WorkerOptions)`. `undefined` takes the
+        // default empty dictionary and `null` converts to an empty dictionary;
+        // every other primitive is the worker name
+        // (<https://webidl.spec.whatwg.org/#idl-union>).
+        let dictionary;
+        let name;
+        if (options === undefined || options === null || typeof options === 'object') {
+          dictionary = options === undefined || options === null ? {} : Object(options);
+          name = dictionary.name === undefined ? '' : String(dictionary.name);
+        } else {
+          dictionary = {};
+          name = String(options);
+        }
+        const type = dictionary.type === undefined ? 'classic' : String(dictionary.type);
+        if (type !== 'classic' && type !== 'module') {
+          throw new TypeError(`SharedWorker type must be 'classic' or 'module': ${type}`);
+        }
+        const credentials = dictionary.credentials === undefined
+          ? 'same-origin'
+          : String(dictionary.credentials);
+        if (credentials !== 'omit' && credentials !== 'same-origin' && credentials !== 'include') {
+          throw new TypeError(`SharedWorker credentials must be 'omit', 'same-origin', or 'include': ${credentials}`);
+        }
+        const extendedLifetime = dictionary.extendedLifetime === undefined
+          ? false
+          : Boolean(dictionary.extendedLifetime);
+        const created = host.__tbSharedWorkerCreate(
+          parsed.href, name, type === 'module', credentials, extendedLifetime);
+        const id = created[0];
+        __tbWorkerIds.set(this, id);
+        __tbSharedWorkerPorts.set(this, __tbMaterializePort(created[1]));
+        __tbWorkers.set(id, this);
+      }
+      get port() { return __tbSharedWorkerPorts.get(this); }
+    }
+    __tbDefineWorkerHandler(SharedWorker.prototype, 'onerror');
+    Object.defineProperty(SharedWorker.prototype, Symbol.toStringTag, {
+      value: 'SharedWorker', writable: false, enumerable: false, configurable: true,
+    });
+    Object.defineProperty(globalThis, 'SharedWorker', {
+      value: SharedWorker, writable: true, configurable: true,
+    });
+  }
 
   globalThis.__tbWorkerEvent = function(id, payload, portIds) {
     const worker = __tbWorkers.get(id);

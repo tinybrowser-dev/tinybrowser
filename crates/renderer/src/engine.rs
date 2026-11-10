@@ -36,7 +36,27 @@ use crate::protocol::{
     BrowserEvent, BrowserServices, FrameId, Mount, RendererEvent, ResponseHead, TabError,
 };
 use crate::storage::PendingStorageEvent;
-use crate::worker::{Worker, WorkerError, WorkerId, WorkerRequest};
+use crate::worker::{
+    CreatedWorker, SharedWorkerKey, SharedWorkerOptions, Worker, WorkerError, WorkerId,
+    WorkerRequest,
+};
+
+/// One live shared worker realm, plus the `SharedWorker` objects connected to
+/// it.
+struct SharedRealm {
+    /// The worker in `Engine::workers` that hosts this realm.
+    id: WorkerId,
+    /// The options every connection must repeat; a connection with other
+    /// options never joins this realm
+    /// (<https://html.spec.whatwg.org/multipage/workers.html#shared-worker-creation-steps>,
+    /// steps 5 and 6).
+    options: SharedWorkerOptions,
+    /// Every `SharedWorker` object attached to this realm, with the frame that
+    /// owns it. A load failure fires a plain `error` event at each one
+    /// (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>,
+    /// step 14).
+    owners: Vec<(FrameId, WorkerId)>,
+}
 
 /// One child navigable's replay store, owned by the engine that hosts its
 /// documents.
@@ -172,6 +192,11 @@ pub struct Engine {
     /// Dedicated workers owned by this engine. A worker shares the engine's
     /// `QuickJS` runtime and services but owns its own task and timer queues.
     workers: BTreeMap<WorkerId, Worker>,
+    /// Shared worker realms keyed by `(origin, url, name)`. The realm itself
+    /// lives in `workers`; this map records the options its connections agreed
+    /// on and the `SharedWorker` objects to notify
+    /// (<https://html.spec.whatwg.org/multipage/workers.html#shared-worker-creation-steps>).
+    shared_workers: HashMap<SharedWorkerKey, SharedRealm>,
 }
 
 /// One JS-truth predicate: the browser registers it once and hears only when
@@ -244,6 +269,7 @@ impl Engine {
             standalone_history: false,
             js_waiters: Vec::new(),
             workers: BTreeMap::new(),
+            shared_workers: HashMap::new(),
         }
     }
 
@@ -261,7 +287,7 @@ impl Engine {
             applied = true;
             match request {
                 WorkerRequest::Create(created) => {
-                    match Worker::create(&created, &self.runtime, &self.js_runtime) {
+                    match Worker::create(&created, created.id, &self.runtime, &self.js_runtime) {
                         Ok(worker) => {
                             self.workers.insert(worker.id(), worker);
                         }
@@ -269,6 +295,9 @@ impl Engine {
                             self.push_worker_load_failed(failure.parent, failure.worker);
                         }
                     }
+                }
+                WorkerRequest::CreateShared { created, endpoint } => {
+                    self.adopt_shared_create(&created, endpoint);
                 }
                 WorkerRequest::Post { id, payload, ports } => {
                     if self.workers.contains_key(&id) {
@@ -303,6 +332,9 @@ impl Engine {
                 WorkerRequest::LoadFailed { worker, parent } => {
                     self.push_worker_load_failed(parent, worker);
                 }
+                WorkerRequest::SharedLoadFailed { worker } => {
+                    self.fail_shared_realm(worker);
+                }
                 WorkerRequest::PostToParent {
                     parent,
                     worker,
@@ -313,7 +345,135 @@ impl Engine {
                 }
             }
         }
+        self.prune_shared_workers();
         applied
+    }
+
+    /// Attaches one `SharedWorker` connection to its realm, creating the realm
+    /// for the first connection.
+    ///
+    /// The realm is keyed by `(origin, url, name)`. A connection that repeats
+    /// the key but changes the options never joins: its `SharedWorker` object
+    /// fires a plain `error` event instead
+    /// (<https://html.spec.whatwg.org/multipage/workers.html#shared-worker-creation-steps>).
+    fn adopt_shared_create(&mut self, created: &CreatedWorker, endpoint: u64) {
+        let key = SharedWorkerKey::new(
+            created.origin.clone(),
+            created.url.clone(),
+            created.name.clone(),
+        );
+        let options = SharedWorkerOptions {
+            module: created.module,
+            credentials: created.credentials,
+            extended_lifetime: created.extended_lifetime,
+        };
+        let existing = self
+            .shared_workers
+            .get(&key)
+            .map(|realm| (realm.id, realm.options));
+        match existing {
+            // A live realm with the same options takes the connection. A
+            // record whose realm is already gone is stale: the key selects the
+            // next realm instead.
+            Some((id, existing)) if self.workers.contains_key(&id) => {
+                if existing != options {
+                    // The realm exists with other options: the connection is
+                    // refused before its port can carry a message.
+                    self.runtime
+                        .shared
+                        .borrow_mut()
+                        .forget_endpoints(&[endpoint]);
+                    self.push_worker_load_failed(created.parent, created.id);
+                    return;
+                }
+                if let Some(realm) = self.shared_workers.get_mut(&key) {
+                    realm.owners.push((created.parent, created.id));
+                }
+                // The worker-side endpoint belongs to the shared realm's frame
+                // before the `connect` event runs
+                // (<https://html.spec.whatwg.org/multipage/web-messaging.html#transfer-receiving-steps>).
+                Self::route_endpoints(&self.runtime.shared, &[endpoint], FrameId::worker(id.get()));
+                if let Some(worker) = self.workers.get_mut(&id) {
+                    worker.queue_connect(endpoint);
+                }
+            }
+            Some(_) | None => {
+                self.shared_workers.remove(&key);
+                if let Ok(mut worker) =
+                    Worker::create(created, created.id, &self.runtime, &self.js_runtime)
+                {
+                    let id = worker.id();
+                    Self::route_endpoints(
+                        &self.runtime.shared,
+                        &[endpoint],
+                        FrameId::worker(id.get()),
+                    );
+                    worker.queue_connect(endpoint);
+                    self.workers.insert(id, worker);
+                    self.shared_workers.insert(
+                        key,
+                        SharedRealm {
+                            id,
+                            options,
+                            owners: vec![(created.parent, created.id)],
+                        },
+                    );
+                } else {
+                    self.runtime
+                        .shared
+                        .borrow_mut()
+                        .forget_endpoints(&[endpoint]);
+                    self.push_worker_load_failed(created.parent, created.id);
+                }
+            }
+        }
+    }
+
+    /// Fires the plain `error` event a shared worker's script failure raises at
+    /// every `SharedWorker` object connected to it
+    /// (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>,
+    /// step 14).
+    fn fail_shared_realm(&mut self, id: WorkerId) {
+        let Some(key) = self
+            .shared_workers
+            .iter()
+            .find_map(|(key, realm)| (realm.id == id).then(|| key.clone()))
+        else {
+            return;
+        };
+        let Some(realm) = self.shared_workers.remove(&key) else {
+            return;
+        };
+        for (owner, worker) in realm.owners {
+            self.push_worker_load_failed(owner, worker);
+        }
+    }
+
+    /// Drops shared realm records whose realm is gone, disentangling the
+    /// owner ports it held, and forgets owners whose frame no longer exists.
+    fn prune_shared_workers(&mut self) {
+        let dead: Vec<WorkerId> = self
+            .shared_workers
+            .values()
+            .filter(|realm| !self.workers.contains_key(&realm.id))
+            .map(|realm| realm.id)
+            .collect();
+        for id in dead {
+            self.shared_workers.retain(|_, realm| realm.id != id);
+            // Writing `close()` in a shared worker destroys the realm, and
+            // every connected `MessagePort` is disentangled with it
+            // (<https://html.spec.whatwg.org/multipage/workers.html#dom-sharedworkerglobalscope-close>).
+            self.runtime
+                .shared
+                .borrow_mut()
+                .close_frame_ports(FrameId::worker(id.get()));
+        }
+        let frames: Vec<FrameId> = self.frames.keys().copied().collect();
+        for realm in self.shared_workers.values_mut() {
+            realm
+                .owners
+                .retain(|(frame, _)| frames.contains(frame) || frame.as_worker().is_some());
+        }
     }
 
     /// The worker realm behind a synthetic worker frame, if one is live
@@ -2368,6 +2528,7 @@ impl Engine {
 
     pub fn shutdown(&mut self) {
         self.workers.clear();
+        self.shared_workers.clear();
         for document in self.frames.values_mut() {
             document.shutdown();
         }
@@ -2375,6 +2536,7 @@ impl Engine {
 
     pub fn release(&mut self) {
         self.workers.clear();
+        self.shared_workers.clear();
         for document in self.frames.values_mut() {
             document.release();
         }
@@ -2454,6 +2616,7 @@ impl Drop for Engine {
         // outlive the QuickJS heap. The engine's own runtime handle is the
         // last one and drops with the struct.
         self.workers.clear();
+        self.shared_workers.clear();
         self.frames.clear();
         self.runtime.registry.borrow_mut().clear();
         self.js_runtime.collect();

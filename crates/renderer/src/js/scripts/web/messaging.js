@@ -803,6 +803,15 @@ const __tbMaterializePort = id => {
   __tbPorts[id] = port;
   return port;
 };
+// An `EventHandler` accepts a function, or an object whose `handleEvent` is
+// callable; every other value, `null`, and `undefined` become `null`
+// (<https://webidl.spec.whatwg.org/#idl-event-handler>).
+const __tbEventHandler = value => {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'function') return value;
+  if (typeof value === 'object' && typeof value.handleEvent === 'function') return value;
+  return null;
+};
 const __tbPortLookup = id => {
   const port = __tbPorts[id];
   return port === undefined ? null : port;
@@ -841,15 +850,17 @@ const __tbMessagePortConstructor = globalThis.MessagePort = class MessagePort ex
   }
   get onmessage() { return __tbBrand(this, __tbPortData).onmessage; }
   set onmessage(value) {
-    __tbBrand(this, __tbPortData).onmessage = value;
-    // The first set enables the queue, whatever the value
+    const data = __tbBrand(this, __tbPortData);
+    data.onmessage = __tbEventHandler(value);
+    // The first set enables the queue, whatever the value. The internal start
+    // step runs even when script replaced the `start` property on this port
     // (<https://html.spec.whatwg.org/multipage/web-messaging.html#message-ports>).
-    this.start();
+    if (!data.closed) host.__tbPortStart(data.id);
   }
   get onmessageerror() { return __tbBrand(this, __tbPortData).onmessageerror; }
-  set onmessageerror(value) { __tbBrand(this, __tbPortData).onmessageerror = value; }
+  set onmessageerror(value) { __tbBrand(this, __tbPortData).onmessageerror = __tbEventHandler(value); }
   get onclose() { return __tbBrand(this, __tbPortData).onclose; }
-  set onclose(value) { __tbBrand(this, __tbPortData).onclose = value; }
+  set onclose(value) { __tbBrand(this, __tbPortData).onclose = __tbEventHandler(value); }
 };
 Object.defineProperty(globalThis.MessagePort.prototype, Symbol.toStringTag, { value: 'MessagePort', writable: false, enumerable: false, configurable: true });
 // https://html.spec.whatwg.org/multipage/web-messaging.html#messagechannel

@@ -482,8 +482,13 @@ fn install_worker_constructor_hosts(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -
                 let current = create_world.borrow();
                 let id = crate::worker::WorkerId::new(current.runtime.next_worker.get());
                 current.runtime.next_worker.set(id.get().saturating_add(1));
-                let created =
-                    crate::worker::CreatedWorker::from_creator(&current, id, parsed, name, module);
+                let created = crate::worker::CreatedWorker::from_creator(
+                    &current,
+                    id,
+                    parsed,
+                    name,
+                    crate::worker::CreatedWorkerOptions::dedicated(module),
+                );
                 current
                     .runtime
                     .worker_requests
@@ -493,6 +498,11 @@ fn install_worker_constructor_hosts(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -
             },
         ),
     )?;
+    // A `SharedWorker` connection: the constructor pairs the page's `port`
+    // with a worker-side endpoint, and the engine attaches that endpoint to
+    // the realm keyed by (origin, url, name) as a `connect` event
+    // (<https://html.spec.whatwg.org/multipage/workers.html#dom-sharedworker>).
+    install_shared_worker_constructor_host(ctx, world)?;
     let post_world = Rc::clone(world);
     host.set(
         "__tbWorkerPost",
@@ -531,6 +541,64 @@ fn install_worker_constructor_hosts(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -
     Ok(())
 }
 
+/// The `SharedWorker` half of the constructor hooks: it pairs the page's port
+/// with a worker-side endpoint and queues the connection for the shared realm
+/// (<https://html.spec.whatwg.org/multipage/workers.html#dom-sharedworker>).
+fn install_shared_worker_constructor_host(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
+    let host = crate::js::bridge::object(ctx)?;
+    let shared_world = Rc::clone(world);
+    host.set(
+        "__tbSharedWorkerCreate",
+        rquickjs::prelude::Func::from(
+            move |ctx: Ctx<'_>,
+                  url: String,
+                  name: String,
+                  module: bool,
+                  credentials: String,
+                  extended_lifetime: bool|
+                  -> Result<Vec<f64>> {
+                let parsed = url::Url::parse(&url)
+                    .map_err(|_| Exception::throw_type(&ctx, "Invalid worker script URL"))?;
+                let credentials = net::cors::CredentialsMode::from_idl(&credentials)
+                    .ok_or_else(|| Exception::throw_type(&ctx, "Invalid worker credentials"))?;
+                let current = shared_world.borrow();
+                let id = crate::worker::WorkerId::new(current.runtime.next_worker.get());
+                current.runtime.next_worker.set(id.get().saturating_add(1));
+                let created = crate::worker::CreatedWorker::from_creator(
+                    &current,
+                    id,
+                    parsed,
+                    name,
+                    crate::worker::CreatedWorkerOptions {
+                        module,
+                        shared: true,
+                        credentials,
+                        extended_lifetime,
+                    },
+                );
+                let (frame, shared) = (current.frame(), current.shared());
+                let (page_endpoint, worker_endpoint) = shared.borrow_mut().ports.new_pair(frame);
+                // The worker side leaves this realm now; the engine aims it at
+                // the shared realm's frame when it adopts the connection
+                // (<https://html.spec.whatwg.org/multipage/web-messaging.html#transfer-receiving-steps>).
+                if !shared.borrow_mut().ports.detach(worker_endpoint, frame) {
+                    return Err(Exception::throw_type(&ctx, "Cannot transfer MessagePort"));
+                }
+                current.runtime.worker_requests.borrow_mut().push(
+                    crate::worker::WorkerRequest::CreateShared {
+                        created: Box::new(created),
+                        endpoint: worker_endpoint,
+                    },
+                );
+                Ok(vec![
+                    crate::js::js_number(id.get()),
+                    crate::js::js_number(page_endpoint),
+                ])
+            },
+        ),
+    )
+}
+
 /// The hooks a worker global calls: its own identity, and messages and close
 /// to its creator.
 fn install_worker_global_hosts(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
@@ -538,6 +606,7 @@ fn install_worker_global_hosts(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Res
     let name = world.borrow().worker_name().unwrap_or_default().to_owned();
     let url = world.borrow().document_url.to_string();
     host.set("__tbIsWorker", true)?;
+    host.set("__tbIsSharedWorker", world.borrow().is_shared_worker())?;
     host.set("__tbWorkerName", name)?;
     host.set("__tbWorkerURL", url)?;
     host.set("__tbWorkerModule", world.borrow().worker_is_module())?;

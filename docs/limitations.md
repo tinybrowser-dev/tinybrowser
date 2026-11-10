@@ -49,13 +49,23 @@ that loops blocks the page until the script budget interrupts it, and a
 parent that blocks waiting for the worker cannot be released. That rules
 out the WPT cases that require true parallelism (`postMessage` racing a
 busy parent) and forcible termination of a worker stuck in synchronous
-script. SharedWorker, service workers, `IndexedDB`, growable
-`SharedArrayBuffer`, and `ReadableStream` transfer remain unimplemented;
-the QuickJS gaps behind the remaining clone and `eval(import())` failures
-are recorded in `docs/upstream.md`. The in-process WPT harness serves
-files directly and does not implement wptserve's `?pipe=header(...)`, so
-the `data:`-worker CORS module-import tests cannot pass there even though
-the engine's module fetch path is the one the tests exercise.
+script.
+
+`SharedWorker` runs the same way. One realm per `(creator origin, script
+URL, name)` receives a `connect` event per constructor call, with the
+options (`type`, `credentials`, `extendedLifetime`) required to match.
+Shared-worker runtime errors fire at the worker global only, and a
+script that fails to load or parse fires a plain `error` event at every
+connected `SharedWorker` object. The same-thread limitation applies: a
+shared worker is shared inside one engine, not across renderer
+processes, and `extendedLifetime` does not outlive the tab. Service
+workers, `IndexedDB`, growable `SharedArrayBuffer`, and `ReadableStream`
+transfer remain unimplemented; the QuickJS gaps behind the remaining
+clone and `eval(import())` failures are recorded in `docs/upstream.md`.
+The in-process WPT harness serves files directly and does not implement
+wptserve's `?pipe=header(...)`, so the `data:`-worker CORS module-import
+tests cannot pass there even though the engine's module fetch path is
+the one the tests exercise.
 
 Canvas `getContext` returns a working 2D context (paths, text, gradients,
 patterns, filters, layers); the `bitmaprenderer` context exists but

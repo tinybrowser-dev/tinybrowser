@@ -114,8 +114,10 @@ navigation-api, custom-elements, shadow-dom, editing, selection, clipboard, uiev
 Dedicated workers are implemented: classic and module scripts, nested
 workers, `MessagePort` transfer and delivery, the structured-clone codec,
 worker `fetch`/XHR (including synchronous XHR), `import.meta`, `blob:` and
-`data:` scripts, timers, and error propagation. The remaining worker work
-is SharedWorker, service workers, and `IndexedDB`.
+`data:` scripts, timers, and error propagation. SharedWorker runs in the
+same engine with one realm per `(origin, URL, name)`, per-connection
+ports, and the same classic/module and error semantics. The remaining
+worker work is service workers and `IndexedDB`.
 
 P1 is not "rare". IndexedDB is read on 24.7% of pages (write 23.2%),
 compression streams on 25.1%, Cache Storage read on 19.6%, a worker
