@@ -159,14 +159,15 @@
     }
 
     // `name` is a `[Replaceable]` attribute: an own accessor on the global
-    // that, once assigned, becomes a writable data property
+    // that, once assigned, becomes a writable data property holding the value
+    // as assigned, without a `DOMString` conversion
     // (<https://webidl.spec.whatwg.org/#idl-attributes>,
     // <https://html.spec.whatwg.org/multipage/workers.html#dom-dedicatedworkerglobalscope-name>).
     let workerName = host.__tbWorkerName;
     Object.defineProperty(globalThis, 'name', {
       get() { return workerName; },
       set(value) {
-        workerName = String(value);
+        workerName = value;
         Object.defineProperty(globalThis, 'name', {
           value: workerName,
           writable: true,
@@ -242,10 +243,8 @@
       // conversion exception propagates unchanged
       // (<https://html.spec.whatwg.org/multipage/workers.html#dom-worker>).
       const href = String(url);
-      let parsed;
-      try {
-        parsed = new URL(href, __tbWorkerBase());
-      } catch (error) {
+      const parsed = host.__tbParseWorkerURL(href, __tbWorkerBase());
+      if (parsed === undefined) {
         throw new DOMException(`Invalid worker script URL: ${href}`, 'SyntaxError');
       }
       super();
@@ -259,7 +258,7 @@
         throw new TypeError(`Worker type must be 'classic' or 'module': ${type}`);
       }
       const name = dictionary.name === undefined ? '' : String(dictionary.name);
-      const id = host.__tbWorkerCreate(parsed.href, name, type === 'module');
+      const id = host.__tbWorkerCreate(parsed, name, type === 'module');
       __tbWorkerIds.set(this, id);
       __tbWorkers.set(id, this);
     }
@@ -301,10 +300,8 @@
         // conversion exception propagates unchanged
         // (<https://html.spec.whatwg.org/multipage/workers.html#dom-sharedworker>).
         const href = String(url);
-        let parsed;
-        try {
-          parsed = new URL(href, __tbWorkerBase());
-        } catch (error) {
+        const parsed = host.__tbParseWorkerURL(href, __tbWorkerBase());
+        if (parsed === undefined) {
           throw new DOMException(`Invalid shared worker script URL: ${href}`, 'SyntaxError');
         }
         super();
@@ -335,7 +332,7 @@
           ? false
           : Boolean(dictionary.extendedLifetime);
         const created = host.__tbSharedWorkerCreate(
-          parsed.href, name, type === 'module', credentials, extendedLifetime);
+          parsed, name, type === 'module', credentials, extendedLifetime);
         const id = created[0];
         __tbWorkerIds.set(this, id);
         __tbSharedWorkerPorts.set(this, __tbMaterializePort(created[1]));
@@ -385,12 +382,16 @@
     });
     // An uncanceled worker error is reported at the `Worker` object's own
     // realm — the document or the parent worker — exactly like an uncaught
-    // exception there
+    // exception there. A handler reached through a promise cannot call
+    // `preventDefault()` until its microtask runs, so the report decision
+    // waits for the microtask checkpoint
     // (<https://html.spec.whatwg.org/multipage/webappapis.html#report-an-exception>).
     worker.dispatchEvent(event);
-    if (!event.defaultPrevented && typeof host.__tbReportError === 'function') {
-      host.__tbReportError(message, filename, lineno, colno);
-    }
+    Promise.resolve().then(() => {
+      if (!event.defaultPrevented && typeof host.__tbReportError === 'function') {
+        host.__tbReportError(message, filename, lineno, colno);
+      }
+    });
   };
   // A worker that never started (fetch, MIME, parse, or realm failure) fires a
   // plain `error` event at the `Worker` object, with no message

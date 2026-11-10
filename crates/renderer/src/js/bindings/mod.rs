@@ -472,6 +472,14 @@ pub(crate) fn install_worker(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Resul
 /// (<https://html.spec.whatwg.org/multipage/workers.html#dom-worker>).
 fn install_worker_constructor_hosts(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
     let host = crate::js::bridge::object(ctx)?;
+    let url_world = Rc::clone(world);
+    host.set(
+        "__tbParseWorkerURL",
+        rquickjs::prelude::Func::from(move |href: String, base: String| -> Option<String> {
+            let world = url_world.borrow();
+            worker_script_url(&world, &href, &base)
+        }),
+    )?;
     let create_world = Rc::clone(world);
     host.set(
         "__tbWorkerCreate",
@@ -598,6 +606,49 @@ fn install_shared_worker_constructor_host(ctx: &Ctx<'_>, world: &Rc<RefCell<Worl
         ),
     )
 }
+
+/// Resolves a worker script URL the way the HTML constructor does: against the
+/// document's base URL, with the document's encoding override applied to the
+/// query component
+/// (<https://html.spec.whatwg.org/multipage/workers.html#dom-worker>,
+/// <https://url.spec.whatwg.org/#concept-url-parser>).
+fn worker_script_url(world: &World, href: &str, base: &str) -> Option<String> {
+    let base = url::Url::parse(base).ok()?;
+    let mut url = url::Url::options().base_url(Some(&base)).parse(href).ok()?;
+    // Only a query the parser read from `href` uses the encoding override; a
+    // base URL's query is already encoded. A cannot-be-a-base URL keeps `?` in
+    // its path, so it has no query to re-encode.
+    if url.query().is_none() {
+        return Some(url.as_str().to_owned());
+    }
+    let start = href.find('?')?;
+    let raw = &href[start + 1..];
+    let raw = raw.split('#').next().unwrap_or(raw);
+    let encoding = world.main_document().map_or(encoding_rs::UTF_8, |parsed| {
+        encoding_rs::Encoding::for_label(parsed.character_set.as_bytes())
+            .unwrap_or(encoding_rs::UTF_8)
+    });
+    let mut encoded = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        if ch.is_ascii() {
+            // Every ASCII-compatible override encodes ASCII identically;
+            // `Url::set_query` applies the query percent-encode set.
+            encoded.push(ch);
+        } else {
+            let mut buffer = [0_u8; 4];
+            let (bytes, _, _) = encoding.encode(ch.encode_utf8(&mut buffer));
+            for byte in bytes.iter() {
+                encoded.push('%');
+                encoded.push(HEX[(byte >> 4) as usize] as char);
+                encoded.push(HEX[(byte & 0xF) as usize] as char);
+            }
+        }
+    }
+    url.set_query(Some(&encoded));
+    Some(url.as_str().to_owned())
+}
+
+const HEX: &[u8; 16] = b"0123456789ABCDEF";
 
 /// The hooks a worker global calls: its own identity, and messages and close
 /// to its creator.
