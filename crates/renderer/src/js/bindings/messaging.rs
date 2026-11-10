@@ -686,12 +686,23 @@ pub(crate) const HANDLER_ATTRIBUTES: &[&str] = &[
     "onwheel",
 ];
 
+/// The "Window-reflecting body element event handler set": handlers a `body`
+/// or `frameset` element mirrors from its `Window`, replacing the generic
+/// element handler of the same name
+/// (<https://html.spec.whatwg.org/multipage/webappapis.html#window-reflecting-body-element-event-handler-set>).
+const BODY_WINDOW_HANDLERS: &[&str] = &[
+    "onblur", "onerror", "onfocus", "onload", "onresize", "onscroll",
+];
+
 pub(crate) fn get_node_handler<'js>(
     ctx: Ctx<'js>,
     node: Value<'js>,
     name: String,
 ) -> Result<Value<'js>> {
     let id = handler_target(&ctx, &node)?;
+    if let Some(world) = mirrored_window_handler(&ctx, id, &name) {
+        return get_handler_in(&world, None, &name, &ctx);
+    }
     get_handler(&ctx, Some(id), &name)
 }
 
@@ -702,11 +713,30 @@ pub(crate) fn set_node_handler<'js>(
     value: Value<'js>,
 ) -> Result<()> {
     let id = handler_target(&ctx, &node)?;
+    if let Some(world) = mirrored_window_handler(&ctx, id, &name) {
+        set_handler_in(&world, None, &name, value, &ctx);
+        return Ok(());
+    }
     set_handler(&ctx, Some(id), &name, value)
 }
 
+/// The world whose `Window` holds `name` for `id`, when `id` is a `body` or
+/// `frameset` element reflecting that handler.
+fn mirrored_window_handler(ctx: &Ctx<'_>, id: NodeId, name: &str) -> Option<Rc<RefCell<World>>> {
+    if !BODY_WINDOW_HANDLERS.contains(&name) {
+        return None;
+    }
+    let world = world_for_node(ctx, id).ok()?;
+    let reflected = world.borrow().document(id).is_some_and(|parsed| {
+        crate::dom::tree::is_html_element(&parsed.document.base, id.node, "body")
+            || crate::dom::tree::is_html_element(&parsed.document.base, id.node, "frameset")
+    });
+    reflected.then_some(world)
+}
+
 pub(crate) fn get_window_handler(ctx: Ctx<'_>, name: String) -> Result<Value<'_>> {
-    get_handler(&ctx, None, &name)
+    let world = world(&ctx)?;
+    get_handler_in(&world, None, &name, &ctx)
 }
 
 pub(crate) fn set_window_handler<'js>(
@@ -714,7 +744,9 @@ pub(crate) fn set_window_handler<'js>(
     name: String,
     value: Value<'js>,
 ) -> Result<()> {
-    set_handler(&ctx, None, &name, value)
+    let world = world(&ctx)?;
+    set_handler_in(&world, None, &name, value, &ctx);
+    Ok(())
 }
 
 /// The stored value of the handler property `name` on the window (`None`
@@ -724,6 +756,15 @@ fn get_handler<'js>(ctx: &Ctx<'js>, target: Option<NodeId>, name: &str) -> Resul
         Some(id) => world_for_node(ctx, id)?,
         None => world(ctx)?,
     };
+    get_handler_in(&world, target, name, ctx)
+}
+
+fn get_handler_in<'js>(
+    world: &Rc<RefCell<World>>,
+    target: Option<NodeId>,
+    name: &str,
+    ctx: &Ctx<'js>,
+) -> Result<Value<'js>> {
     match world.borrow().handler_attribute(target, name) {
         Some(saved) => saved.restore(ctx),
         None => Ok(Value::new_null(ctx.clone())),
@@ -742,6 +783,17 @@ fn set_handler<'js>(
         Some(id) => world_for_node(ctx, id)?,
         None => world(ctx)?,
     };
+    set_handler_in(&world, target, name, value, ctx);
+    Ok(())
+}
+
+fn set_handler_in<'js>(
+    world: &Rc<RefCell<World>>,
+    target: Option<NodeId>,
+    name: &str,
+    value: Value<'js>,
+    ctx: &Ctx<'js>,
+) {
     let saved = if value.is_null() || value.is_undefined() {
         None
     } else {
@@ -750,7 +802,6 @@ fn set_handler<'js>(
     world
         .borrow_mut()
         .set_handler_attribute(target, name, saved);
-    Ok(())
 }
 
 /// Whether the calling realm's frame owns `endpoint`.

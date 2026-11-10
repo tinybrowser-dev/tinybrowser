@@ -373,13 +373,14 @@ impl Engine {
     /// Attaches one `SharedWorker` connection to its realm, creating the realm
     /// for the first connection.
     ///
-    /// The realm is keyed by `(origin, url, name)`. A connection that repeats
-    /// the key but changes the options never joins: its `SharedWorker` object
-    /// fires a plain `error` event instead
-    /// (<https://html.spec.whatwg.org/multipage/workers.html#shared-worker-creation-steps>).
+    /// The realm is keyed by the creator's storage key, script URL, and name.
+    /// A connection that repeats the key but changes the options never joins:
+    /// its `SharedWorker` object fires a plain `error` event instead
+    /// (<https://html.spec.whatwg.org/multipage/workers.html#dom-sharedworker>).
     fn adopt_shared_create(&mut self, created: &CreatedWorker, endpoint: u64) {
         let key = SharedWorkerKey::new(
             created.origin.clone(),
+            created.partition_key.clone(),
             created.url.clone(),
             created.name.clone(),
             created.same_site_cookies,
@@ -670,7 +671,6 @@ impl Engine {
                             document.world().borrow().sandbox,
                         );
                         self.frames.insert(frame, document);
-                        self.refresh_first_party(frame);
                         // The auxiliary document was created inside the opening
                         // script, so its realm could only start now.
                         if let Some(document) = self.frames.get_mut(&frame) {
@@ -699,7 +699,6 @@ impl Engine {
                     sandbox,
                 );
                 self.frames.insert(frame, document);
-                self.refresh_first_party(frame);
                 self.seed_frame_history(frame);
                 // `srcdoc` takes priority over `src`
                 // (<https://html.spec.whatwg.org/multipage/iframe-embed-object.html#attr-iframe-srcdoc>).
@@ -1001,7 +1000,6 @@ impl Engine {
         }
         self.remove_descendants(frame);
         self.frame_mut(frame)?.mount(mount);
-        self.refresh_first_party(frame);
         self.reconcile_frames();
         Ok(())
     }
@@ -1032,7 +1030,6 @@ impl Engine {
         document.set_document_referrer(None);
         document.install_tab_state(tab);
         document.install_head(head, None);
-        self.refresh_first_party(frame);
         Ok(())
     }
 
@@ -2139,50 +2136,6 @@ impl Engine {
         }
     }
 
-    /// Recomputes whether `frame` is in a first-party site context after its
-    /// document commits.
-    ///
-    /// A frame is first-party only when its site is same-site with every
-    /// ancestor's: a same-site frame inside a cross-site one is still embedded
-    /// as a third party
-    /// (<https://privacycg.github.io/storage-access/#first-party-site-context>).
-    fn refresh_first_party(&mut self, frame: FrameId) {
-        let Some(origin) = self
-            .frames
-            .get(&frame)
-            .map(|document| document.world().borrow().origin.clone())
-        else {
-            return;
-        };
-        let mut current = frame;
-        let mut first_party = true;
-        loop {
-            let parent = {
-                let shared = self.runtime.shared.borrow();
-                let tree = &shared.tree;
-                tree.parent(current)
-            };
-            let Some(parent) = parent else {
-                break;
-            };
-            let Some(parent_origin) = self
-                .frames
-                .get(&parent)
-                .map(|document| document.world().borrow().origin.clone())
-            else {
-                break;
-            };
-            if !net::origins_same_site(&origin, &parent_origin) {
-                first_party = false;
-                break;
-            }
-            current = parent;
-        }
-        if let Some(document) = self.frames.get_mut(&frame) {
-            document.world().borrow_mut().first_party = first_party;
-        }
-    }
-
     /// Keeps a frame's initial `about:blank` document while it still has one,
     /// so a script-set realm survives; otherwise installs the inherited blank.
     fn keep_initial_blank(&mut self, child: FrameId, parent: FrameId) {
@@ -2212,7 +2165,6 @@ impl Engine {
             None => document.load_about_blank(Some(&about_blank()), None),
         }
         self.inherit_policy(child, parent);
-        self.refresh_first_party(child);
     }
 
     /// Whether `url` is a nested cross-document navigation that `frame-src`
@@ -2384,6 +2336,22 @@ impl Engine {
                     .frames
                     .get(&initiator)
                     .map(|document| document.world().borrow().policy.secure_context);
+                // A navigation that replaces a top-level document belongs to
+                // the destination site's cookie partition, because that is the
+                // page the request is for. A nested frame stays in the
+                // initiator's partition
+                // (<https://github.com/privacycg/CHIPS#computing-the-cookie-partition-key>).
+                let top_level_navigation = {
+                    let shared = self.runtime.shared.borrow();
+                    shared.tree.top_level(child) == child
+                };
+                let partition_key = if top_level_navigation {
+                    net::site_for_origin(&url.origin())
+                } else {
+                    self.frames
+                        .get(&initiator)
+                        .and_then(|document| document.world().borrow().partition_key())
+                };
                 if let Some(document) = self.frames.get_mut(&child) {
                     document.set_creator_secure_context(creator_secure);
                     let mut request = crate::protocol::DialRequest::new(
@@ -2392,6 +2360,7 @@ impl Engine {
                         &origin,
                     );
                     request.frame = Some(child);
+                    request.partition_key = partition_key;
                     request.referrer = referrer;
                     request.method.clone_from(&navigation.method);
                     request.body.clone_from(&navigation.body);
@@ -2449,7 +2418,6 @@ impl Engine {
                 document.load_javascript_frame(&script, &source, &policy);
             }
         }
-        self.refresh_first_party(child);
     }
 
     /// Loads a frame's `about:srcdoc` document, inheriting the creator's base
@@ -2481,7 +2449,6 @@ impl Engine {
                 markup,
             );
         }
-        self.refresh_first_party(child);
     }
 
     /// A `data:` frame URL decodes in-process. A malformed URL fails the
@@ -2511,7 +2478,6 @@ impl Engine {
             document.set_document_referrer(referrer);
             document.install_frame_response(&head, &body, None);
         }
-        self.refresh_first_party(child);
     }
 
     /// A `blob:` frame URL reads the parent's Blob URL Store. A missing entry
@@ -2551,7 +2517,6 @@ impl Engine {
             document.set_document_referrer(referrer);
             document.install_frame_response(&head, contents.as_bytes(), Some(origin));
         }
-        self.refresh_first_party(child);
     }
 
     /// Records a frame load so the parent's `load` event waits for it

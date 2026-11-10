@@ -183,6 +183,19 @@ imports keep the creator's. `workers/` is now **961/974 passing subtests and
 lost; both module referrer files are 15/15 and both module CSP files are
 perfect. `cookies/` and `referrer-policy/` are unchanged.
 
+CHIPS followed. The cookie jar stores a `Partitioned` cookie under the site of
+its top-level document, requires `Secure`, and includes the key in the cookie
+identity; every dial and `document.cookie` call carries the key, a nested frame
+uses the initiator's top-level site while a top-level navigation uses the
+destination's, and a worker inherits its creator's. A `SharedWorker` is keyed by
+its constructor storage key (origin plus top-level site) plus name, so each
+top-level site gets its own realm. The realm-level first-party verdict now folds
+its parent's stored verdict at creation and recomputes on an origin change, and
+`body`/`frameset` mirror the Window-reflecting handler set. `workers/` is now
+**963/974 passing subtests and 239 perfect files**, with 9 failing, 0 timeout,
+and 0 error files, no subtest lost; `cookies/` gains 4 subtests (331 to 335) and
+one perfect file (40 to 41), and `webmessaging/` is unchanged.
+
 Every push to `main` now publishes the record to
 `tinybrowser-dev/tinybrowser-wpt-results` and the site at
 `tinybrowser.ericc.ch/wpt` rebuilds from it: subtests passing, files passing,

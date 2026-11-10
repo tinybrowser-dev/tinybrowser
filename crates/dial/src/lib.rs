@@ -281,6 +281,7 @@ pub fn outbound_request<S: BuildHasher>(
         renderer::CookiePolicy::All => net::SameSiteCookiePolicy::All,
         renderer::CookiePolicy::NoneOnly => net::SameSiteCookiePolicy::NoneOnly,
     };
+    outbound.partition_key.clone_from(&request.partition_key);
     Ok(outbound)
 }
 

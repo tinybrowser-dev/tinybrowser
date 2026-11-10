@@ -1211,6 +1211,17 @@ pub(crate) enum GlobalKind {
     },
 }
 
+/// The site context a child realm's parent provides: the parent's origin and
+/// whether the parent itself is first-party.
+///
+/// A realm is first-party exactly when its parent is and its own site matches
+/// the parent's, which folds the whole ancestor chain into one value.
+#[derive(Clone, Debug)]
+pub(crate) struct ParentContext {
+    pub(crate) origin: url::Origin,
+    pub(crate) first_party: bool,
+}
+
 pub(crate) struct World {
     /// The handles every frame of this renderer process shares: trees,
     /// registry and wrapper cache, ports, JS heap, wake handle, and stop flag.
@@ -1293,6 +1304,14 @@ pub(crate) struct World {
     /// read this
     /// (<https://privacycg.github.io/storage-access/#first-party-site-context>).
     pub(crate) first_party: bool,
+    /// The parent browsing context's site context, recorded when a child
+    /// realm is created; `None` for a top-level context, which nothing embeds
+    /// and which is therefore always first-party.
+    ///
+    /// Keeping the parent's origin and verdict lets [`Self::refresh_first_party`]
+    /// answer for the whole ancestor chain, since every ancestor's verdict is
+    /// already folded into its parent's.
+    parent_context: Option<ParentContext>,
     /// Which `SameSite` cookies this realm's requests may send and store.
     ///
     /// Documents keep [`net::SameSiteCookiePolicy::All`]. A shared worker's
@@ -1760,6 +1779,7 @@ impl World {
             origin: document_url.origin(),
             top_level: None,
             first_party: true,
+            parent_context: None,
             same_site_cookie_policy: net::SameSiteCookiePolicy::All,
             referrer_url: document_url.clone(),
             document_referrer: None,
@@ -2147,6 +2167,39 @@ impl World {
         self.top_level
             .clone()
             .unwrap_or_else(|| self.origin.clone())
+    }
+
+    /// Records the parent browsing context this child realm is embedded in, so
+    /// its first-party verdict can be recomputed whenever its own origin
+    /// changes
+    /// (<https://privacycg.github.io/storage-access/#first-party-site-context>).
+    pub(crate) fn set_parent_context(&mut self, parent: &Self) {
+        self.parent_context = Some(ParentContext {
+            origin: parent.origin.clone(),
+            first_party: parent.first_party,
+        });
+        self.refresh_first_party();
+    }
+
+    /// Recomputes [`Self::first_party`]: a top-level context is never embedded
+    /// and so is first-party, and a child is first-party only when its parent
+    /// is and its own site is same-site with the parent's.
+    ///
+    /// A navigation that changes this realm's origin calls this, because a
+    /// cross-site frame stops being first-party even though its ancestors do
+    /// not change.
+    fn refresh_first_party(&mut self) {
+        self.first_party = self.parent_context.as_ref().is_none_or(|parent| {
+            parent.first_party && net::origins_same_site(&self.origin, &parent.origin)
+        });
+    }
+
+    /// The cookie partition key this realm's requests and `document.cookie`
+    /// operations use: the site of its top-level document, or `None` when that
+    /// origin is opaque
+    /// (<https://github.com/privacycg/CHIPS#computing-the-cookie-partition-key>).
+    pub(crate) fn partition_key(&self) -> Option<String> {
+        net::site_for_origin(&self.top_level_origin())
     }
 
     /// Whether this realm's environment is a secure context. The model is
@@ -2600,6 +2653,7 @@ impl World {
         self.referrer_url = url.clone();
         self.document_url = url;
         self.origin = origin;
+        self.refresh_first_party();
     }
 
     /// Resolves `spec` against this document's URL, falling back to the

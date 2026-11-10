@@ -678,12 +678,12 @@ impl NetworkHost for FsServices {
         Box::new(move || cancel_flag.store(true, Ordering::Release))
     }
 
-    fn cookies_for(&self, url: &Url) -> String {
-        self.agent.cookies_for(url)
+    fn cookies_for(&self, url: &Url, partition_key: Option<&str>) -> String {
+        self.agent.cookies_for_partition(url, partition_key)
     }
 
-    fn set_cookie(&self, value: &str, url: &Url) {
-        self.agent.set_cookie(value, url);
+    fn set_cookie(&self, value: &str, url: &Url, partition_key: Option<&str>) {
+        let _stored = self.agent.set_cookie_partition(value, url, partition_key);
     }
 }
 

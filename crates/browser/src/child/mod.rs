@@ -326,19 +326,21 @@ impl NetworkHost for HostServices {
         }
     }
 
-    fn cookies_for(&self, url: &Url) -> String {
+    fn cookies_for(&self, url: &Url, partition_key: Option<&str>) -> String {
         match self.call(ServiceCall::Network(NetworkCall::CookieGet {
             url: url.to_string(),
+            partition_key: partition_key.map(str::to_owned),
         })) {
             Some(ServiceReply::Cookie(value)) => value,
             _ => String::new(),
         }
     }
 
-    fn set_cookie(&self, value: &str, url: &Url) {
+    fn set_cookie(&self, value: &str, url: &Url, partition_key: Option<&str>) {
         let _result = self.call(ServiceCall::Network(NetworkCall::CookieSet {
             value: value.to_owned(),
             url: url.to_string(),
+            partition_key: partition_key.map(str::to_owned),
         }));
     }
 }

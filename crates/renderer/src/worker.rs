@@ -125,6 +125,10 @@ pub(crate) struct CreatedWorker {
     /// (<https://html.spec.whatwg.org/multipage/workers.html#dom-worker>).
     pub(crate) worker_origin: url::Origin,
     pub(crate) top_level: url::Origin,
+    /// The cookie partition key of the creator's top-level site, which every
+    /// request the worker's script, module graph, `fetch`, and XHR make uses
+    /// (<https://github.com/privacycg/CHIPS#computing-the-cookie-partition-key>).
+    pub(crate) partition_key: Option<String>,
     pub(crate) policy: PolicyContainer,
     pub(crate) sandbox: SandboxFlags,
     pub(crate) referrer_url: Url,
@@ -191,6 +195,11 @@ impl CreatedWorker {
             .then(|| world.object_url_contents(url.as_str()))
             .flatten()
             .map(|contents| contents.to_string());
+        let top_level = world
+            .top_level
+            .clone()
+            .unwrap_or_else(|| world.origin.clone());
+        let partition_key = net::site_for_origin(&top_level);
         Self {
             id,
             parent: world.frame(),
@@ -203,10 +212,8 @@ impl CreatedWorker {
             same_site_cookies: options.same_site_cookies,
             origin: world.origin.clone(),
             worker_origin,
-            top_level: world
-                .top_level
-                .clone()
-                .unwrap_or_else(|| world.origin.clone()),
+            top_level,
+            partition_key,
             policy: world.policy.clone(),
             sandbox: world.sandbox,
             referrer_url: world.document_url.clone(),
@@ -217,13 +224,19 @@ impl CreatedWorker {
 
 /// A shared worker's identity in one engine.
 ///
-/// The script URL and name select the realm; `origin` keeps data-URL and
-/// cross-origin creators apart, because a shared worker is shared only within
-/// one origin
-/// (<https://html.spec.whatwg.org/multipage/workers.html#shared-worker-creation-steps>).
+/// A `SharedWorkerGlobalScope` is matched by its constructor storage key, its
+/// constructor URL, and its name
+/// (<https://html.spec.whatwg.org/multipage/workers.html#dom-sharedworker>).
+/// The storage key is the creator's origin plus the top-level site of the
+/// creator's environment, so each top-level site gets its own realm and one
+/// site's data is never shared with another
+/// (<https://storage.spec.whatwg.org/#obtain-a-storage-key-for-non-storage-purposes>).
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub(crate) struct SharedWorkerKey {
     pub(crate) origin: url::Origin,
+    /// The storage key's top-level site, `None` only when the creator has no
+    /// top-level site (an opaque top-level origin).
+    pub(crate) top_level_site: Option<String>,
     pub(crate) url: Url,
     pub(crate) name: String,
     /// Shared workers with other cookie options are a different realm
@@ -234,12 +247,14 @@ pub(crate) struct SharedWorkerKey {
 impl SharedWorkerKey {
     pub(crate) fn new(
         origin: url::Origin,
+        top_level_site: Option<String>,
         url: Url,
         name: String,
         same_site_cookies: SharedWorkerSameSiteCookies,
     ) -> Self {
         Self {
             origin,
+            top_level_site,
             url,
             name,
             same_site_cookies,
@@ -1497,13 +1512,14 @@ impl Worker {
             self.fail_fetch(js_id);
             return;
         };
-        let (origin, referrer_url, referrer_policy, cookie_policy, gate) = {
+        let (origin, referrer_url, referrer_policy, cookie_policy, partition_key, gate) = {
             let world = self.world.borrow();
             (
                 world.origin.clone(),
                 world.referrer_url.clone(),
                 world.policy.referrer_policy,
                 world.same_site_cookie_policy,
+                world.partition_key(),
                 crate::RedirectGate::new(
                     world.policy.csp.clone(),
                     &world.origin,
@@ -1513,6 +1529,7 @@ impl Worker {
         };
         let mut dial = DialRequest::new(RequestPolicy::Fetch(fetch.options.cors), &url, &origin);
         dial.cookie_policy = cookie_policy.into();
+        dial.partition_key = partition_key;
         dial.method = fetch.method;
         dial.body = fetch.body;
         dial.content_type = fetch.content_type;
@@ -1622,6 +1639,7 @@ fn fetch_module_url(created: &CreatedWorker, runtime: &FrameRuntime) -> Result<U
     };
     dial.referrer_policy = created.policy.referrer_policy.unwrap_or_default();
     dial.cookie_policy = created.same_site_cookies.cookie_policy().into();
+    dial.partition_key.clone_from(&created.partition_key);
     dial.timeout_ms = 30_000;
     let (send, receive) = std::sync::mpsc::sync_channel(1);
     let cancel = runtime.services.start_dial(
@@ -1682,6 +1700,7 @@ fn fetch_worker_source(
     };
     dial.referrer_policy = created.policy.referrer_policy.unwrap_or_default();
     dial.cookie_policy = created.same_site_cookies.cookie_policy().into();
+    dial.partition_key.clone_from(&created.partition_key);
     dial.timeout_ms = 30_000;
     let (send, receive) = std::sync::mpsc::sync_channel(1);
     let cancel = runtime.services.start_dial(

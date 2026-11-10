@@ -255,6 +255,9 @@ struct Chain {
     cross_site_redirect: bool,
     /// Policy checked before each redirect is followed.
     csp: Option<renderer::RedirectGate>,
+    /// The cookie partition this dial belongs to, from the regular realm's
+    /// top-level site.
+    partition_key: Option<String>,
 }
 
 struct PendingFetch {
@@ -395,6 +398,7 @@ fn cookie_header(chain: &Chain) -> String {
         initiator: initiator.as_ref(),
         cross_site_redirect: chain.cross_site_redirect,
         same_site_policy: SameSiteCookiePolicy::All,
+        partition_key: chain.partition_key.as_deref(),
     })
 }
 
@@ -432,6 +436,7 @@ fn store_hop_cookies(url: &Url, chain: &Chain, response: &FetchResponse) {
                 initiator: initiator.as_ref(),
                 cross_site_redirect: chain.cross_site_redirect,
                 same_site_policy: SameSiteCookiePolicy::All,
+                partition_key: chain.partition_key.as_deref(),
             },
         );
     }
@@ -587,6 +592,7 @@ impl NetworkHost for WasmServices {
                 followed: 0,
                 cross_site_redirect: false,
                 csp: request.csp.as_deref().cloned(),
+                partition_key: request.partition_key,
             },
             completion,
         );
@@ -607,7 +613,7 @@ impl NetworkHost for WasmServices {
         })
     }
 
-    fn cookies_for(&self, url: &Url) -> String {
+    fn cookies_for(&self, url: &Url, partition_key: Option<&str>) -> String {
         let origin = url.origin();
         lock(cookie_jar()).cookie_string(CookieOp {
             url,
@@ -618,10 +624,11 @@ impl NetworkHost for WasmServices {
             initiator: Some(&origin),
             cross_site_redirect: false,
             same_site_policy: SameSiteCookiePolicy::All,
+            partition_key,
         })
     }
 
-    fn set_cookie(&self, value: &str, url: &Url) {
+    fn set_cookie(&self, value: &str, url: &Url, partition_key: Option<&str>) {
         let origin = url.origin();
         lock(cookie_jar()).store(
             value,
@@ -634,6 +641,7 @@ impl NetworkHost for WasmServices {
                 initiator: Some(&origin),
                 cross_site_redirect: false,
                 same_site_policy: SameSiteCookiePolicy::All,
+                partition_key,
             },
         );
     }

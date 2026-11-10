@@ -514,15 +514,15 @@ pub(crate) struct TabNetworkHandle {
 }
 
 impl TabNetworkHandle {
-    /// `document.cookie` getter for `url`.
+    /// `document.cookie` getter for `url` in one cookie partition.
     #[must_use]
-    pub(crate) fn cookies_for(&self, url: &Url) -> String {
-        self.agent.cookies_for(url)
+    pub(crate) fn cookies_for(&self, url: &Url, partition_key: Option<&str>) -> String {
+        self.agent.cookies_for_partition(url, partition_key)
     }
 
-    /// `document.cookie` setter for `url`.
-    pub(crate) fn set_cookie(&self, value: &str, url: &Url) {
-        self.agent.set_cookie(value, url);
+    /// `document.cookie` setter for `url` in one cookie partition.
+    pub(crate) fn set_cookie(&self, value: &str, url: &Url, partition_key: Option<&str>) {
+        let _stored = self.agent.set_cookie_partition(value, url, partition_key);
     }
 
     /// Spawns one navigation dial and returns its task handle. The caller

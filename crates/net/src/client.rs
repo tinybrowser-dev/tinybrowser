@@ -258,6 +258,7 @@ impl Agent {
         url: &'a Url,
         origin: &'a url::Origin,
         kind: RetrievalKind,
+        partition_key: Option<&'a str>,
     ) -> CookieOp<'a> {
         CookieOp {
             url,
@@ -268,22 +269,43 @@ impl Agent {
             initiator: Some(origin),
             cross_site_redirect: false,
             same_site_policy: SameSiteCookiePolicy::All,
+            partition_key,
         }
     }
 
-    /// `document.cookie` getter for `uri`: non-HTTP cookies, semicolon-separated.
+    /// `document.cookie` getter for `uri`: non-HTTP cookies, semicolon-separated,
+    /// restricted to `partition_key`'s partition plus the unpartitioned jar.
     #[must_use]
-    pub fn cookies_for(&self, uri: &Url) -> String {
+    pub fn cookies_for_partition(&self, uri: &Url, partition_key: Option<&str>) -> String {
         let origin = uri.origin();
         self.jar()
-            .cookie_string(self.fetch_op(uri, &origin, RetrievalKind::NonHttp))
+            .cookie_string(self.fetch_op(uri, &origin, RetrievalKind::NonHttp, partition_key))
+    }
+
+    /// `document.cookie` getter without a top-level site, which sees only
+    /// unpartitioned cookies.
+    #[must_use]
+    pub fn cookies_for(&self, uri: &Url) -> String {
+        self.cookies_for_partition(uri, None)
     }
 
     /// `document.cookie` setter for `uri`. Invalid `Set-Cookie` lines are ignored.
-    pub fn set_cookie(&self, value: &str, uri: &Url) {
+    pub fn set_cookie_partition(
+        &self,
+        value: &str,
+        uri: &Url,
+        partition_key: Option<&str>,
+    ) -> bool {
         let origin = uri.origin();
-        self.jar()
-            .store(value, self.fetch_op(uri, &origin, RetrievalKind::NonHttp));
+        self.jar().store(
+            value,
+            self.fetch_op(uri, &origin, RetrievalKind::NonHttp, partition_key),
+        )
+    }
+
+    /// `document.cookie` setter for a request with no top-level site.
+    pub fn set_cookie(&self, value: &str, uri: &Url) {
+        let _stored = self.set_cookie_partition(value, uri, None);
     }
 
     /// Stores one `Set-Cookie` line with HTTP-level rules, so an `HttpOnly`
@@ -292,8 +314,10 @@ impl Agent {
     /// (<https://w3c.github.io/webdriver/#add-cookie>).
     pub fn store_cookie_http(&self, value: &str, uri: &Url) -> bool {
         let origin = uri.origin();
-        self.jar()
-            .store(value, self.fetch_op(uri, &origin, RetrievalKind::Http))
+        self.jar().store(
+            value,
+            self.fetch_op(uri, &origin, RetrievalKind::Http, None),
+        )
     }
 
     /// Cookies visible to `uri`, including session and `HttpOnly` cookies.
@@ -301,9 +325,19 @@ impl Agent {
     /// (<https://w3c.github.io/webdriver/#get-all-cookies>).
     #[must_use]
     pub fn cookie_records(&self, uri: &Url) -> Vec<crate::CookieRecord> {
+        self.cookie_records_partition(uri, None)
+    }
+
+    /// Cookies visible to `uri` in one partition, plus the unpartitioned jar.
+    #[must_use]
+    pub fn cookie_records_partition(
+        &self,
+        uri: &Url,
+        partition_key: Option<&str>,
+    ) -> Vec<crate::CookieRecord> {
         let origin = uri.origin();
         self.jar()
-            .records_for(self.fetch_op(uri, &origin, RetrievalKind::Http))
+            .records_for(self.fetch_op(uri, &origin, RetrievalKind::Http, partition_key))
     }
 
     /// Drops every cookie from the live jar
@@ -487,6 +521,7 @@ impl Agent {
             initiator: request.initiator.as_ref(),
             on_redirect: request.on_redirect.as_ref(),
             same_site_cookie_policy: request.same_site_cookie_policy,
+            partition_key: request.partition_key.as_deref(),
         };
         let mut hop = Hop {
             method: request.method,
@@ -658,6 +693,7 @@ impl Agent {
             initiator: dial.initiator,
             cross_site_redirect,
             same_site_policy: dial.same_site_cookie_policy,
+            partition_key: dial.partition_key,
         };
         let mut hop_headers = hop.headers.clone();
         self.apply_cors_request(dial.cors, hop, &wire, &mut hop_headers, budget.clone())
@@ -812,6 +848,12 @@ pub struct Request {
     /// for every request its global scope makes
     /// (<https://privacycg.github.io/saa-non-cookie-storage/#shared-worker>).
     pub same_site_cookie_policy: SameSiteCookiePolicy,
+    /// The site of the top-level document this request belongs to. It is the
+    /// partition key for `Partitioned` cookies; `None` means the caller has no
+    /// top-level site, so only unpartitioned cookies are visible and a
+    /// `Partitioned` one cannot be stored
+    /// (<https://github.com/privacycg/CHIPS#computing-the-cookie-partition-key>).
+    pub partition_key: Option<String>,
 }
 
 impl std::fmt::Debug for Request {
@@ -830,6 +872,7 @@ impl std::fmt::Debug for Request {
             .field("referrer", &self.referrer)
             .field("referrer_policy", &self.referrer_policy)
             .field("same_site_cookie_policy", &self.same_site_cookie_policy)
+            .field("partition_key", &self.partition_key)
             .finish()
     }
 }
@@ -859,6 +902,7 @@ impl Request {
             referrer: Referrer::NoReferrer,
             referrer_policy: ReferrerPolicy::default(),
             same_site_cookie_policy: SameSiteCookiePolicy::All,
+            partition_key: None,
         }
     }
 }
@@ -1022,6 +1066,9 @@ struct Dial<'a> {
     initiator: Option<&'a url::Origin>,
     on_redirect: Option<&'a RedirectGate>,
     same_site_cookie_policy: SameSiteCookiePolicy,
+    /// The site of the top-level document this request belongs to, which
+    /// selects the `Partitioned` cookies it may send and store.
+    partition_key: Option<&'a str>,
 }
 
 impl Dial<'_> {

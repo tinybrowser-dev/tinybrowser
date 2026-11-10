@@ -336,6 +336,9 @@ pub enum NetworkCall {
     CookieGet {
         /// Document URL.
         url: String,
+        /// The site of the top-level document, which selects the
+        /// `Partitioned` cookies the caller may see.
+        partition_key: Option<String>,
     },
     /// `document.cookie` setter.
     CookieSet {
@@ -343,6 +346,9 @@ pub enum NetworkCall {
         value: String,
         /// Document URL.
         url: String,
+        /// The site of the top-level document, which a `Partitioned`
+        /// cookie is stored under.
+        partition_key: Option<String>,
     },
 }
 

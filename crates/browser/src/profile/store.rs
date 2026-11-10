@@ -225,6 +225,13 @@ fn encode_cookies(records: &[CookieRecord]) -> String {
         out.push(if record.http_only { '1' } else { '0' });
         out.push('\t');
         out.push_str(same_site_token(record.same_site));
+        // Appended after the versioned fields: a file written before CHIPS
+        // has no twelfth field, which parses as the unpartitioned cookie it
+        // was.
+        out.push('\t');
+        if let Some(key) = &record.partition_key {
+            push_escaped(&mut out, key);
+        }
         out.push('\n');
     }
     out
@@ -267,6 +274,7 @@ fn parse_cookie_line(line: &str) -> io::Result<CookieRecord> {
     let secure = parse_flag(next_field(&mut parts, "secure")?)?;
     let http_only = parse_flag(next_field(&mut parts, "http_only")?)?;
     let same_site = parse_same_site(next_field(&mut parts, "same_site")?)?;
+    let partition_key = parts.next().map(unescape).filter(|key| !key.is_empty());
     Ok(CookieRecord {
         name,
         value,
@@ -279,6 +287,7 @@ fn parse_cookie_line(line: &str) -> io::Result<CookieRecord> {
         secure,
         http_only,
         same_site,
+        partition_key,
     })
 }
 

@@ -73,6 +73,10 @@ struct StoredCookie {
     secure: bool,
     http_only: bool,
     same_site: SameSite,
+    /// The top-level site this cookie is partitioned under, or `None` for an
+    /// ordinary unpartitioned cookie
+    /// (<https://github.com/privacycg/CHIPS>).
+    partition_key: Option<String>,
 }
 
 /// The cookies one browser profile holds, keyed by domain and path.
@@ -123,6 +127,12 @@ pub struct CookieOp<'a> {
     pub cross_site_redirect: bool,
     /// Which `SameSite` values this operation may use.
     pub same_site_policy: SameSiteCookiePolicy,
+    /// The site of the top-level document this operation belongs to, which is
+    /// the partition key a `Partitioned` cookie is stored under and matched
+    /// against. `None` when the caller has no top-level site (a `WebDriver`
+    /// view, a local scheme)
+    /// (<https://github.com/privacycg/CHIPS#algorithm>).
+    pub partition_key: Option<&'a str>,
 }
 
 /// How a cookie operation reached the jar.
@@ -327,6 +337,19 @@ impl CookieJar {
         if same_site == SameSite::None && !record.secure {
             return None;
         }
+        // A partitioned cookie requires `Secure`; the record's key is a site
+        // string, bounded like the storage-model's other string fields
+        // (<https://github.com/privacycg/CHIPS#partitioned-requires-secure>).
+        if record.partition_key.is_some() && !record.secure {
+            return None;
+        }
+        if record
+            .partition_key
+            .as_ref()
+            .is_some_and(|key| key.is_empty() || key.len() > 1024)
+        {
+            return None;
+        }
         if !record.host_only && (is_ip(&domain) || is_public_suffix(&domain)) {
             return None;
         }
@@ -345,6 +368,7 @@ impl CookieJar {
             &domain,
             &record.path,
             record.secure,
+            record.partition_key.as_deref(),
         ) {
             return None;
         }
@@ -360,6 +384,7 @@ impl CookieJar {
             secure: record.secure,
             http_only: record.http_only,
             same_site,
+            partition_key: record.partition_key,
         })
     }
 }
@@ -389,6 +414,10 @@ pub struct CookieRecord {
     pub http_only: bool,
     /// `SameSite` attribute.
     pub same_site: CookieSameSite,
+    /// The top-level site this cookie is partitioned under, or `None` for an
+    /// ordinary unpartitioned cookie
+    /// (<https://github.com/privacycg/CHIPS>).
+    pub partition_key: Option<String>,
 }
 
 /// `SameSite` value stored with a cookie.
@@ -479,6 +508,9 @@ struct ParsedSetCookie {
     secure: bool,
     http_only: bool,
     same_site: Option<SameSite>,
+    /// Whether the `Partitioned` attribute was present
+    /// (<https://github.com/privacycg/CHIPS#the-partitioned-attribute>).
+    partitioned: bool,
 }
 
 fn parse_set_cookie(input: &str) -> Option<ParsedSetCookie> {
@@ -512,6 +544,7 @@ fn parse_set_cookie(input: &str) -> Option<ParsedSetCookie> {
         secure: false,
         http_only: false,
         same_site: None,
+        partitioned: false,
     };
     for av in attrs.split(';') {
         let av = av.trim();
@@ -546,6 +579,8 @@ fn parse_set_cookie(input: &str) -> Option<ParsedSetCookie> {
             parsed.secure = true;
         } else if aname.eq_ignore_ascii_case("HttpOnly") {
             parsed.http_only = true;
+        } else if aname.eq_ignore_ascii_case("Partitioned") {
+            parsed.partitioned = true;
         } else if aname.eq_ignore_ascii_case("SameSite") {
             parsed.same_site = Some(if avalue.eq_ignore_ascii_case("Strict") {
                 SameSite::Strict
@@ -593,8 +628,31 @@ fn receive_cookie(
     if http_only && matches!(kind, RetrievalKind::NonHttp) {
         return None;
     }
+    // CHIPS: a `Partitioned` cookie is double-keyed on the site of the
+    // top-level document the request belongs to, and the attribute requires
+    // `Secure`. A context with no top-level site cannot derive the key, so the
+    // cookie is refused rather than stored unpartitioned, which would widen
+    // its scope
+    // (<https://github.com/privacycg/CHIPS#using-set-cookie-with-partitioned>).
+    let partition_key = if parsed.partitioned {
+        if !secure {
+            return None;
+        }
+        Some(op.partition_key?.to_owned())
+    } else {
+        None
+    };
     // https://httpwg.org/http-extensions/draft-ietf-httpbis-rfc6265bis.html#name-storage-model
-    if !trustworthy && overlays_secure_cookie(existing, &parsed.name, &domain, &path, secure) {
+    if !trustworthy
+        && overlays_secure_cookie(
+            existing,
+            &parsed.name,
+            &domain,
+            &path,
+            secure,
+            partition_key.as_deref(),
+        )
+    {
         return None;
     }
     let same_site = parsed.same_site.unwrap_or(SameSite::Default);
@@ -621,6 +679,7 @@ fn receive_cookie(
             && old.domain == domain
             && old.host_only == host_only
             && old.path == path
+            && old.partition_key == partition_key
     }) {
         if matches!(kind, RetrievalKind::NonHttp) && old.http_only {
             return None;
@@ -637,6 +696,7 @@ fn receive_cookie(
             secure,
             http_only,
             same_site,
+            partition_key,
         });
     }
     Some(StoredCookie {
@@ -651,6 +711,7 @@ fn receive_cookie(
         secure,
         http_only,
         same_site,
+        partition_key,
     })
 }
 
@@ -707,10 +768,12 @@ fn overlays_secure_cookie(
     domain: &str,
     path: &str,
     secure: bool,
+    partition_key: Option<&str>,
 ) -> bool {
     !secure
         && existing.iter().any(|old| {
             old.secure
+                && old.partition_key.as_deref() == partition_key
                 && old.name == name
                 && (domain_match(&old.domain, domain) || domain_match(domain, &old.domain))
                 && path_match(path, &old.path)
@@ -754,6 +817,7 @@ impl StoredCookie {
             secure: self.secure,
             http_only: self.http_only,
             same_site: CookieSameSite::from(self.same_site),
+            partition_key: self.partition_key.clone(),
         }
     }
 
@@ -773,6 +837,15 @@ impl StoredCookie {
             return false;
         }
         if !path_match(request_path, &self.path) {
+            return false;
+        }
+        // A partitioned cookie is only visible inside the partition it was
+        // stored under; an unpartitioned cookie has no key and matches every
+        // request
+        // (<https://github.com/privacycg/CHIPS#attaching-a-partitioned-cookie-to-a-request>).
+        if let Some(key) = &self.partition_key
+            && Some(key.as_str()) != op.partition_key
+        {
             return false;
         }
         if self.secure && !trustworthy {
@@ -795,6 +868,7 @@ fn same_cookie_identity(old: &StoredCookie, stored: &StoredCookie) -> bool {
         && old.domain == stored.domain
         && old.host_only == stored.host_only
         && old.path == stored.path
+        && old.partition_key == stored.partition_key
 }
 
 fn samesite_allows(
@@ -1239,11 +1313,109 @@ mod tests {
             initiator: None,
             cross_site_redirect: false,
             same_site_policy: crate::SameSiteCookiePolicy::All,
+            partition_key: None,
         }
     }
 
     fn http(url: &Url, now: SystemTime) -> CookieOp<'_> {
         op(url, now, RetrievalKind::Http)
+    }
+
+    /// An operation that belongs to `top_site`'s partition.
+    fn partitioned<'a>(url: &'a Url, now: SystemTime, top_site: &'a str) -> CookieOp<'a> {
+        CookieOp {
+            partition_key: Some(top_site),
+            ..http(url, now)
+        }
+    }
+
+    #[test]
+    fn a_partitioned_cookie_is_only_visible_in_its_own_top_level_site() {
+        let site = url("https://example.com/");
+        let mut jar = CookieJar::default();
+        assert!(jar.store(
+            "__Host-p=1; Secure; Path=/; SameSite=None; Partitioned",
+            partitioned(&site, at(NOW), "https://a.test"),
+        ));
+        assert_eq!(
+            jar.cookie_string(partitioned(&site, at(NOW), "https://a.test")),
+            "__Host-p=1"
+        );
+        assert_eq!(
+            jar.cookie_string(partitioned(&site, at(NOW), "https://b.test")),
+            ""
+        );
+        // A view with no top-level site is not any partition, so the cookie is
+        // withheld there too.
+        assert_eq!(jar.cookie_string(http(&site, at(NOW))), "");
+    }
+
+    #[test]
+    fn a_partitioned_cookie_requires_secure_and_a_partition_key() {
+        let site = url("https://example.com/");
+        let mut jar = CookieJar::default();
+        assert!(!jar.store(
+            "p=1; Path=/; SameSite=None; Partitioned",
+            partitioned(&site, at(NOW), "https://a.test"),
+        ));
+        assert!(!jar.store(
+            "__Host-p=1; Secure; Path=/; SameSite=None; Partitioned",
+            http(&site, at(NOW)),
+        ));
+        assert_eq!(
+            jar.cookie_string(partitioned(&site, at(NOW), "https://a.test")),
+            ""
+        );
+    }
+
+    #[test]
+    fn two_partitions_hold_the_same_cookie_identity_independently() {
+        let site = url("https://example.com/");
+        let mut jar = CookieJar::default();
+        assert!(jar.store(
+            "__Host-p=a; Secure; Path=/; SameSite=None; Partitioned",
+            partitioned(&site, at(NOW), "https://a.test"),
+        ));
+        assert!(jar.store(
+            "__Host-p=b; Secure; Path=/; SameSite=None; Partitioned",
+            partitioned(&site, at(NOW), "https://b.test"),
+        ));
+        assert_eq!(
+            jar.cookie_string(partitioned(&site, at(NOW), "https://a.test")),
+            "__Host-p=a"
+        );
+        assert_eq!(
+            jar.cookie_string(partitioned(&site, at(NOW), "https://b.test")),
+            "__Host-p=b"
+        );
+        // Deleting in one partition leaves the other alone.
+        assert!(jar.store(
+            "__Host-p=; Secure; Path=/; SameSite=None; Partitioned; Max-Age=0",
+            partitioned(&site, at(NOW), "https://a.test"),
+        ));
+        assert_eq!(
+            jar.cookie_string(partitioned(&site, at(NOW), "https://a.test")),
+            ""
+        );
+        assert_eq!(
+            jar.cookie_string(partitioned(&site, at(NOW), "https://b.test")),
+            "__Host-p=b"
+        );
+    }
+
+    #[test]
+    fn an_unpartitioned_cookie_is_visible_in_every_partition() {
+        let site = url("https://example.com/");
+        let mut jar = CookieJar::default();
+        assert!(jar.store("plain=1; Path=/", http(&site, at(NOW))));
+        assert_eq!(
+            jar.cookie_string(partitioned(&site, at(NOW), "https://a.test")),
+            "plain=1"
+        );
+        assert_eq!(
+            jar.cookie_string(partitioned(&site, at(NOW), "https://b.test")),
+            "plain=1"
+        );
     }
 
     #[test]
@@ -1522,6 +1694,7 @@ mod tests {
             secure: false,
             http_only: false,
             same_site: CookieSameSite::Default,
+            partition_key: None,
         }
     }
 

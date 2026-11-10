@@ -389,6 +389,7 @@ fn materialize_iframe_document(
         world.policy = world_rc.borrow().policy.clone();
         world.sandbox = sandbox;
         world.top_level = Some(world_rc.borrow().top_level_origin());
+        world.set_parent_context(&world_rc.borrow());
     }
     document.load_about_blank_tree(Some(&base_url), Some(origin));
     // The initial blank reports its creator's URL, walked out of a `srcdoc`
@@ -1113,6 +1114,7 @@ impl Document {
                 world.policy = inherited.clone();
                 world.sandbox = sandbox;
                 world.top_level = Some(top_level.clone());
+                world.set_parent_context(&self.world.borrow());
             }
             document.load_about_blank(Some(&base_url), Some(origin));
             document.set_document_referrer(Some(referrer_url.clone()));
@@ -1336,6 +1338,10 @@ impl Document {
     /// upgrades unconditionally
     /// (<https://w3c.github.io/webappsec-upgrade-insecure-requests/#upgrade-request>).
     fn queue_dial(&mut self, mut dial: QueuedDial) {
+        // Every request a document starts belongs to its top-level site's
+        // cookie partition, which is what a `Partitioned` cookie is keyed on
+        // (<https://github.com/privacycg/CHIPS#computing-the-cookie-partition-key>).
+        dial.req.partition_key = self.world.borrow().partition_key();
         if self.world.borrow().policy.csp.upgrades_insecure_requests() {
             let nested = matches!(
                 dial.context,

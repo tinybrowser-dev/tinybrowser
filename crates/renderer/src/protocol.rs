@@ -1424,6 +1424,12 @@ pub struct DialRequest {
     /// this at [`CookiePolicy::All`]
     /// (<https://privacycg.github.io/saa-non-cookie-storage/#shared-worker>).
     pub cookie_policy: CookiePolicy,
+    /// The site of the top-level document this request belongs to, which
+    /// selects the `Partitioned` cookies it may send and store. `None` means
+    /// the realm has no top-level site, so only unpartitioned cookies are
+    /// visible
+    /// (<https://github.com/privacycg/CHIPS#computing-the-cookie-partition-key>).
+    pub partition_key: Option<String>,
 }
 
 /// Which `SameSite` cookies one request may send and store.
@@ -1474,6 +1480,7 @@ impl DialRequest {
             cache: RequestCache::Default,
             referrer_policy: net::ReferrerPolicy::default(),
             cookie_policy: CookiePolicy::All,
+            partition_key: None,
         }
     }
 }
@@ -1919,11 +1926,12 @@ pub trait NetworkHost: Send + Sync + 'static {
         Err(DialFailure::Connect)
     }
 
-    /// `document.cookie` getter for `url`.
-    fn cookies_for(&self, url: &Url) -> String;
+    /// `document.cookie` getter for `url`, restricted to `partition_key`'s
+    /// partition plus the unpartitioned jar.
+    fn cookies_for(&self, url: &Url, partition_key: Option<&str>) -> String;
 
     /// `document.cookie` setter for `url`.
-    fn set_cookie(&self, value: &str, url: &Url);
+    fn set_cookie(&self, value: &str, url: &Url, partition_key: Option<&str>);
 }
 
 /// Web Storage effects the page engine asks its host to perform.

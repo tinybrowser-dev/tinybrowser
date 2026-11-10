@@ -172,6 +172,32 @@ supplies the referrer policy and CSP list for the dynamic imports its body
 runs while static imports keep what it inherited. Both module referrer files
 are 15/15 and both module CSP files are perfect.
 
+Gate after CHIPS: `workers/` is **974 subtests, 963 passing, 239 perfect
+files**, with 9 failing, 0 timeout, and 0 error files, still no subtest lost,
+and `cookies/` moved from 331 to 335 passing subtests and 40 to 41 perfect
+files. The cookie jar stores a `Partitioned` cookie under the site of its
+top-level document, requires `Secure`, and includes the key in the cookie
+identity, so two partitions hold the same name independently. `document.cookie`,
+every dial, and a worker's script and module graph carry the key: a realm takes
+it from its top-level origin, a top-level navigation uses the destination site,
+a nested frame uses the initiator's, and a worker inherits its creator's. A
+`SharedWorker` is now keyed by its constructor storage key (origin plus
+top-level site) and its name, so each top-level site gets its own realm.
+`shared-worker-partitioned.tentative.html` and
+`shared-worker-partitioned-cookies.tentative.https.html` both pass.
+
+Two event-dispatch bugs surfaced on the way. A realm's `first_party` verdict
+was recomputed from the frame tree only on the engine's own commit paths, so a
+document committed by the embedded renderer kept its `about:blank` verdict; the
+verdict now folds the parent's stored verdict and site at creation and is
+recomputed whenever the realm's origin changes. A `body`/`frameset` element
+mirrors the Window-reflecting handler set (`onload` included), so
+`document.body.onload = …` now runs on load. Window handler dispatch reads the
+registration slot rather than the property, so a global `function onload() {}`
+declaration no longer runs on every load, which is what Chrome does.
+
+## What the remaining failures need
+
 ## What the remaining failures need
 
 Popups exist now: a host with no tab carrier (the in-process harness) has the
@@ -179,9 +205,11 @@ renderer host an auxiliary context, so the `extendedLifetime`,
 partitioned-cookie, and module CSP/referrer files run. The remaining worker
 failures are implementation gaps, not the thread model:
 
-- Partitioned cookies: the jar has no `Partitioned` attribute (CHIPS), so
-  `shared-worker-partitioned-cookies` cannot see a partitioned cookie, and
-  shared-worker partitioning itself is not implemented.
+- Partitioned cookies: the cookie jar keys on the top-level site only, not
+  Chrome's cross-site ancestor bit, so `cookies/partitioned-cookies/`
+  `partitioned-cookies-a-b-a-embed` sees the top-level partition's cookie in a
+  same-site embed that has a cross-site ancestor; `partitioned-cookies-top-level-redirect`
+  still fails its redirect assertion.
 - `data-url`/`data-url-shared`: `IndexedDB` is absent.
 - Growable `SharedArrayBuffer`: construction and structured clone work, and
   the receiver keeps the sender's `maxByteLength`. The WPT fixture gets its

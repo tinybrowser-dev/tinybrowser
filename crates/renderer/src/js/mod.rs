@@ -1510,6 +1510,7 @@ impl JsRealm {
                         &parsed,
                         &world.origin,
                     );
+                    dial.partition_key = world.partition_key();
                     dial.referrer = ReferrerRequest::Client {
                         url: world.referrer_url.clone(),
                     };
@@ -1742,19 +1743,30 @@ impl JsRealm {
         bridge::object(ctx)?.set(
             "__cookieGet",
             Func::from(move || {
-                let world = cookie_get.borrow();
-                world.runtime.services.cookies_for(&world.document_url)
+                let (services, url, partition_key) = {
+                    let world = cookie_get.borrow();
+                    (
+                        world.runtime.services.clone(),
+                        world.document_url.clone(),
+                        world.partition_key(),
+                    )
+                };
+                services.cookies_for(&url, partition_key.as_deref())
             }),
         )?;
 
         bridge::object(ctx)?.set(
             "__cookieSet",
             Func::from(move |value: String| {
-                let world = cookie_set.borrow();
-                world
-                    .runtime
-                    .services
-                    .set_cookie(&value, &world.document_url);
+                let (services, url, partition_key) = {
+                    let world = cookie_set.borrow();
+                    (
+                        world.runtime.services.clone(),
+                        world.document_url.clone(),
+                        world.partition_key(),
+                    )
+                };
+                services.set_cookie(&value, &url, partition_key.as_deref());
             }),
         )?;
         Ok(())
@@ -2620,6 +2632,7 @@ fn sync_page_fetch(world: &World, request: SyncPageFetch) -> Option<SyncFetchLis
         &parsed,
         &world.origin,
     );
+    dial.partition_key = world.partition_key();
     dial.method = request.method;
     dial.body = request.body;
     dial.content_type = request.content_type;

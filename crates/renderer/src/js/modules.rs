@@ -162,6 +162,9 @@ struct ModuleFetchInputs {
     /// The directive this fetch settles under: a static import in a worker is
     /// a `worker-src` request, everything else is a script request.
     destination: crate::csp::Destination,
+    /// The cookie partition this fetch belongs to; `None` for a realm with no
+    /// top-level site.
+    partition_key: Option<String>,
 }
 
 fn module_fetch_inputs(world: &crate::js::World, name: &str) -> ModuleFetchInputs {
@@ -268,6 +271,7 @@ fn module_fetch_inputs(world: &crate::js::World, name: &str) -> ModuleFetchInput
         request_policy: policy,
         csp,
         destination,
+        partition_key: world.partition_key(),
     }
 }
 
@@ -354,6 +358,7 @@ pub(super) fn load_module<'js>(ctx: &Ctx<'js>, name: &str) -> Result<Module<'js,
     let (send, receive) = mpsc::sync_channel(1);
     let mut request = DialRequest::new(inputs.request_policy, &url, &inputs.initiator);
     request.cookie_policy = world_rc.borrow().same_site_cookie_policy.into();
+    request.partition_key.clone_from(&inputs.partition_key);
     request.referrer = crate::protocol::ReferrerRequest::Client {
         url: inputs.referrer,
     };

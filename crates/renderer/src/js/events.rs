@@ -18,7 +18,7 @@ use rquickjs::{
 
 use super::bindings;
 use super::bindings::JsNode;
-use super::world::{EventTargetKey, Listener, World};
+use super::world::{EventTargetKey, GlobalKind, Listener, World};
 
 include!(concat!(env!("OUT_DIR"), "/Event.rs"));
 include!(concat!(env!("OUT_DIR"), "/EventTarget.rs"));
@@ -1756,7 +1756,32 @@ fn call_handler_attribute<'js>(
         return Ok(());
     }
     let name = format!("on{typ}");
-    let mut handler: Value = object.get(name.as_str())?;
+    // A document window's handler lives in a registration slot behind an
+    // accessor, and a global function declaration named `onload` replaces that
+    // accessor with a plain data property on the global object. Chrome keeps
+    // running the slot, so a page function that merely shares the handler's
+    // name must not run on every load; reading the property here would.
+    //
+    // Only a `Window` realm has that accessor: a worker global installs its
+    // handlers as ordinary properties, so its dispatch keeps reading the
+    // property (`worker.onmessage = …` is assigned this way).
+    // (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handlers>).
+    let is_window = {
+        let world = bindings::world(ctx)?;
+        let document = matches!(world.borrow().kind, GlobalKind::Document);
+        document && object.as_value().strict_eq(ctx.globals().as_value())
+    };
+    let mut handler: Value = if is_window {
+        match bindings::world(ctx)?
+            .borrow()
+            .handler_attribute(None, &name)
+        {
+            Some(saved) => saved.restore(ctx)?,
+            None => Value::new_null(ctx.clone()),
+        }
+    } else {
+        object.get(name.as_str())?
+    };
     if handler.as_function().is_none()
         && let Some(source) = handler_attribute_source(ctx, object, &name)?
     {

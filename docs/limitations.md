@@ -71,10 +71,16 @@ though the allocator hooks themselves are in place, and the QuickJS gaps
 behind the remaining clone failures are recorded in `docs/upstream.md`. A
 relative `eval(import())` in a blob- or data-URL module worker cannot resolve
 because those URLs have no hierarchical path in the URL standard; Chrome
-rejects it the same way, and `docs/upstream.md` records the probe. The cookie jar does not implement the `Partitioned`
-attribute (CHIPS), so a partitioned cookie is stored as an ordinary one;
-`shared-worker-partitioned-cookies.tentative.https.html` now runs through its
-popup and fails only the assertion that reads a partitioned cookie.
+rejects it the same way, and `docs/upstream.md` records the probe. The cookie
+jar implements the `Partitioned` attribute (CHIPS) by storing a cookie under
+the site of its top-level document and matching it only inside that
+partition; `document.cookie`, every dial, and a worker's script and module
+graph carry the key, and a `SharedWorker` is keyed by its creator's storage
+key (origin plus top-level site). Chrome's newer cross-site ancestor bit is
+not modelled, so a same-site frame that has a cross-site ancestor still sees
+the top-level partition's cookie
+(`cookies/partitioned-cookies/partitioned-cookies-a-b-a-embed.tentative.https.html`
+fails only that assertion).
 The in-process WPT harness serves files directly, applies wptserve's
 `header(...)` and `sub` pipes, and stores a mounted document's `.headers`
 `Set-Cookie` in the jar; it does not implement `trickle` timing. It has no
