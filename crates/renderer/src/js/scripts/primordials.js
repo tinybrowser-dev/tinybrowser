@@ -93,6 +93,7 @@ const __tbStringSlice = String.prototype.slice;
 const __tbStringSplit = String.prototype.split;
 const __tbStringTrim = String.prototype.trim;
 const __tbStringIncludes = String.prototype.includes;
+const __tbStringStartsWith = String.prototype.startsWith;
 const __tbStringEndsWith = String.prototype.endsWith;
 const __tbStringToLowerCase = String.prototype.toLowerCase;
 // ASCII lowercase: only A-Z fold. Unicode folding would wrongly match
@@ -186,6 +187,48 @@ __tbArray.map = (array, callback) => {
     });
   }
   return result;
+};
+__tbArray.slice = (array, start, end) => {
+  const length = array.length;
+  let first = start === undefined ? 0 : start < 0 ? Math.max(length + start, 0) : Math.min(start, length);
+  let last = end === undefined ? length : end < 0 ? Math.max(length + end, 0) : Math.min(end, length);
+  const result = [];
+  for (; first < last; first++) {
+    __tbDefineProperty(result, result.length, {
+      __proto__: null, value: array[first], writable: true, enumerable: true, configurable: true,
+    });
+  }
+  return result;
+};
+__tbArray.splice = (array, start, deleteCount, ...items) => {
+  const length = array.length;
+  let index = start < 0 ? Math.max(length + start, 0) : Math.min(start, length);
+  const count = deleteCount === undefined ? length - index : Math.min(Math.max(deleteCount, 0), length - index);
+  const removed = [];
+  for (let offset = 0; offset < count; offset++) {
+    __tbDefineProperty(removed, offset, {
+      __proto__: null, value: array[index + offset], writable: true, enumerable: true, configurable: true,
+    });
+  }
+  for (let offset = index; offset + count < length; offset++) array[offset] = array[offset + count];
+  array.length = length - count;
+  for (let offset = 0; offset < items.length; offset++) {
+    for (let move = array.length; move > index + offset; move--) array[move] = array[move - 1];
+    array[index + offset] = items[offset];
+  }
+  return removed;
+};
+__tbArray.find = (array, callback) => {
+  for (let index = 0; index < array.length; index++) {
+    if (callback(array[index], index)) return array[index];
+  }
+  return undefined;
+};
+__tbArray.findIndex = (array, callback) => {
+  for (let index = 0; index < array.length; index++) {
+    if (callback(array[index], index)) return index;
+  }
+  return -1;
 };
 __tbArray.filter = (array, callback) => {
   const result = [];

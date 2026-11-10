@@ -2263,7 +2263,7 @@ mod realm_tests {
 
     #[test]
     fn canvas_measure_text_freezes_alignment_and_rejects_foreign_clusters() {
-        let services: Arc<dyn BrowserServices> = Arc::new(NullServices);
+        let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
         let shared = SharedJsRuntime::default();
         let stop = Arc::new(Stop::new());
         let documents = Rc::new(RefCell::new(crate::documents::DocumentStore::default()));
@@ -2329,7 +2329,7 @@ mod realm_tests {
 
     #[test]
     fn canvas_serialization_converts_options_in_rust() {
-        let services: Arc<dyn BrowserServices> = Arc::new(NullServices);
+        let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
         let shared = SharedJsRuntime::default();
         let stop = Arc::new(Stop::new());
         let documents = Rc::new(RefCell::new(crate::documents::DocumentStore::default()));
@@ -2406,7 +2406,7 @@ mod realm_tests {
 
     #[test]
     fn offscreen_canvas_needs_no_dom_node_and_exposes_no_bitmap_handle() {
-        let services: Arc<dyn BrowserServices> = Arc::new(NullServices);
+        let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
         let shared = SharedJsRuntime::default();
         let stop = Arc::new(Stop::new());
         let documents = Rc::new(RefCell::new(crate::documents::DocumentStore::default()));
@@ -2473,7 +2473,7 @@ mod realm_tests {
 
     #[test]
     fn structured_clone_transfer_detaches_the_source_buffer() {
-        let services: Arc<dyn BrowserServices> = Arc::new(NullServices);
+        let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
         let shared = SharedJsRuntime::default();
         let stop = Arc::new(Stop::new());
         let documents = Rc::new(RefCell::new(crate::documents::DocumentStore::default()));
@@ -2506,7 +2506,7 @@ mod realm_tests {
 
     #[test]
     fn replacing_with_a_foreign_fragment_adopts_each_child() {
-        let services: Arc<dyn BrowserServices> = Arc::new(NullServices);
+        let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
         let shared = SharedJsRuntime::default();
         let stop = Arc::new(Stop::new());
         let documents = Rc::new(RefCell::new(crate::documents::DocumentStore::default()));
@@ -2547,7 +2547,7 @@ mod realm_tests {
 
     #[test]
     fn inserting_a_fragment_splices_its_children_in_tree_order() {
-        let services: Arc<dyn BrowserServices> = Arc::new(NullServices);
+        let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
         let shared = SharedJsRuntime::default();
         let stop = Arc::new(Stop::new());
         let documents = Rc::new(RefCell::new(crate::documents::DocumentStore::default()));
@@ -2590,7 +2590,7 @@ mod realm_tests {
     /// (<https://html.spec.whatwg.org/multipage/webappapis.html#secure-contexts>).
     #[test]
     fn a_secure_context_gates_the_secure_context_only_surfaces() {
-        let services: Arc<dyn BrowserServices> = Arc::new(NullServices);
+        let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
         let shared = SharedJsRuntime::default();
         for (url, expected) in [
             ("https://a.test/", "true,function,true,true,function"),
@@ -2633,7 +2633,7 @@ mod realm_tests {
     /// (<https://w3c.github.io/webcrypto/#Crypto-interface>).
     #[test]
     fn crypto_is_one_interface_with_one_instance() {
-        let services: Arc<dyn BrowserServices> = Arc::new(NullServices);
+        let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
         let shared = SharedJsRuntime::default();
         let stop = Arc::new(Stop::new());
         let documents = Rc::new(RefCell::new(crate::documents::DocumentStore::default()));
@@ -2700,7 +2700,7 @@ mod realm_tests {
     /// (<https://webidl.spec.whatwg.org/#internally-create-a-new-object-implementing-the-interface>).
     #[test]
     fn a_constructed_js_interface_gets_the_generated_prototype() {
-        let services: Arc<dyn BrowserServices> = Arc::new(NullServices);
+        let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
         let shared = SharedJsRuntime::default();
         let stop = Arc::new(Stop::new());
         let documents = Rc::new(RefCell::new(crate::documents::DocumentStore::default()));
@@ -2741,7 +2741,7 @@ mod realm_tests {
     /// engine must gate string compilation below the JS surface.
     #[test]
     fn evaluation_intrinsics_keep_spec_identity() {
-        let services: Arc<dyn BrowserServices> = Arc::new(NullServices);
+        let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
         let shared = SharedJsRuntime::default();
         let stop = Arc::new(Stop::new());
         let documents = Rc::new(RefCell::new(crate::documents::DocumentStore::default()));
@@ -2787,7 +2787,7 @@ mod realm_tests {
     /// (<https://w3c.github.io/webappsec-csp/#can-compile-strings>)
     #[test]
     fn evaluation_respects_content_security_policy() {
-        let services: Arc<dyn BrowserServices> = Arc::new(NullServices);
+        let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
         let shared = SharedJsRuntime::default();
         let stop = Arc::new(Stop::new());
         let documents = Rc::new(RefCell::new(crate::documents::DocumentStore::default()));
@@ -2850,7 +2850,7 @@ mod realm_tests {
     /// runtime with `JS_FreeRuntime: Assertion 'list_empty(&rt->gc_obj_list)'`.
     #[test]
     fn teardown_with_retained_custom_event() {
-        let services: Arc<dyn BrowserServices> = Arc::new(NullServices);
+        let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
         let shared = SharedJsRuntime::default();
         let stop = Arc::new(Stop::new());
         let documents = Rc::new(RefCell::new(crate::documents::DocumentStore::default()));
@@ -2873,7 +2873,7 @@ mod realm_tests {
 
     #[test]
     fn teardown_after_document_lifecycle() {
-        let services: Arc<dyn BrowserServices> = Arc::new(NullServices);
+        let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
         let shared = SharedJsRuntime::default();
         let stop = Arc::new(Stop::new());
         let documents = Rc::new(RefCell::new(crate::documents::DocumentStore::default()));
@@ -2900,7 +2900,7 @@ mod realm_tests {
 
     #[test]
     fn realms_share_a_heap_and_resolve_their_own_world() {
-        let services: Arc<dyn BrowserServices> = Arc::new(NullServices);
+        let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
         let shared = SharedJsRuntime::default();
         let stop = Arc::new(Stop::new());
         let documents = Rc::new(RefCell::new(crate::documents::DocumentStore::default()));
@@ -2964,7 +2964,7 @@ mod realm_tests {
 
     #[test]
     fn wrappers_are_shared_with_the_owner_realms_prototypes() {
-        let services: Arc<dyn BrowserServices> = Arc::new(NullServices);
+        let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
         let shared = SharedJsRuntime::default();
         let stop = Arc::new(Stop::new());
         let documents = Rc::new(RefCell::new(crate::documents::DocumentStore::default()));
@@ -3063,7 +3063,7 @@ mod realm_tests {
     /// and leaves the rest queued.
     #[test]
     fn one_drain_stops_four_runaway_timers() {
-        let services: Arc<dyn BrowserServices> = Arc::new(NullServices);
+        let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
         let stop = Arc::new(Stop::new());
         let wake = Arc::new(tokio::sync::Notify::new());
         let mut engine =
@@ -3113,7 +3113,7 @@ mod realm_tests {
     /// host steps again.
     #[test]
     fn embedded_yield_is_an_immediate_step() {
-        let services: Arc<dyn BrowserServices> = Arc::new(NullServices);
+        let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
         let mut renderer = crate::EmbeddedRenderer::new(services, net::ValidIdentity::default());
         let html = "<script>globalThis.__n = 0; for (let i = 0; i < 4; i++) setTimeout(() => { globalThis.__n++; for (;;) {} }, 0);</script>";
         renderer
@@ -3138,7 +3138,7 @@ mod realm_tests {
     /// A cross-origin world cannot revoke another world's blob URL.
     #[test]
     fn revoke_object_url_rejects_a_cross_origin_caller() {
-        let services: Arc<dyn BrowserServices> = Arc::new(NullServices);
+        let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
         let shared = SharedJsRuntime::default();
         let documents = Rc::new(RefCell::new(crate::documents::DocumentStore::default()));
         let registry = Rc::new(RefCell::new(crate::js::RealmRegistry::default()));
@@ -3202,7 +3202,7 @@ mod realm_tests {
     /// timer map, because both requests share the realm outbox order.
     #[test]
     fn timeout_cancelled_in_the_same_turn_does_not_fire() {
-        let services: Arc<dyn BrowserServices> = Arc::new(NullServices);
+        let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
         let mut engine = crate::engine::Engine::new(
             services,
             Arc::new(Stop::new()),
@@ -3228,7 +3228,7 @@ mod realm_tests {
     /// drain that is already running.
     #[test]
     fn script_error_handler_may_insert_another_bad_script() {
-        let services: Arc<dyn BrowserServices> = Arc::new(NullServices);
+        let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
         let mut engine = crate::engine::Engine::new(
             services,
             Arc::new(Stop::new()),
@@ -3261,7 +3261,7 @@ mod realm_tests {
     /// queue, so the write after an open lands in the parser the open created.
     #[test]
     fn document_write_after_open_keeps_queue_order() {
-        let services: Arc<dyn BrowserServices> = Arc::new(NullServices);
+        let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
         let mut engine = crate::engine::Engine::new(
             services,
             Arc::new(Stop::new()),
@@ -3289,7 +3289,7 @@ mod realm_tests {
     /// budget, while a queued cancellation survives to stop the old timer.
     #[test]
     fn replace_document_releases_writes_and_keeps_cancellations() {
-        let services: Arc<dyn BrowserServices> = Arc::new(NullServices);
+        let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
         let shared = SharedJsRuntime::default();
         let documents = Rc::new(RefCell::new(crate::documents::DocumentStore::default()));
         let registry = Rc::new(RefCell::new(crate::js::RealmRegistry::default()));
@@ -3335,7 +3335,7 @@ mod realm_tests {
     /// lets the parent reach `complete` and fire `load`.
     #[test]
     fn iframe_finishing_last_fires_parent_load() {
-        let services: Arc<dyn BrowserServices> = Arc::new(NullServices);
+        let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
         let mut engine = crate::engine::Engine::new(
             services,
             Arc::new(Stop::new()),
@@ -3356,7 +3356,7 @@ mod realm_tests {
     /// failure is handled, so `load` still fires.
     #[test]
     fn failed_data_script_finishing_last_fires_load() {
-        let services: Arc<dyn BrowserServices> = Arc::new(NullServices);
+        let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
         let mut engine = crate::engine::Engine::new(
             services,
             Arc::new(Stop::new()),
@@ -3376,7 +3376,7 @@ mod realm_tests {
     /// before the load check, so `load` cannot fire in the gap.
     #[test]
     fn font_requested_by_a_stylesheet_delays_load() {
-        let services: Arc<dyn BrowserServices> = Arc::new(NullServices);
+        let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
         let mut engine = crate::engine::Engine::new(
             services,
             Arc::new(Stop::new()),

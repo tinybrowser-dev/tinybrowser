@@ -1461,6 +1461,7 @@ impl JsRealm {
             Self::install_url_host_functions(&ctx, &world)?;
             Self::install_import_scripts_host(&ctx, &world)?;
             Self::install_crypto_host_functions(&ctx)?;
+            install_storage_host_functions(&ctx, &world)?;
             url_parts::install(&ctx)?;
             encoding::install(&ctx)?;
             bindings::install_messaging(&ctx)?;

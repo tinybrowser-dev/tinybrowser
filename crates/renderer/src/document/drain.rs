@@ -510,11 +510,15 @@ impl Document {
 
     fn due_timer(&mut self) -> Option<TimerId> {
         let now = Instant::now();
+        // Ties at the same deadline run in creation order, so tasks queued
+        // together keep the order they were queued in
+        // (<https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#timer-initialisation-steps>,
+        // <https://html.spec.whatwg.org/multipage/webappapis.html#task-queue>).
         let (id, timer) = self
             .timers
             .iter_mut()
             .filter(|(_, timer)| !timer.fired && timer.when.is_some_and(|when| when <= now))
-            .min_by_key(|(_, timer)| timer.when)?;
+            .min_by_key(|(id, timer)| (timer.when, id.get()))?;
         timer.fired = true;
         Some(*id)
     }

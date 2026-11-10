@@ -507,7 +507,7 @@ pub struct FsServices {
     /// The real fetch core. Every policy decision is this crate's; only the
     /// one exchange underneath is the in-memory transport.
     agent: net::Agent,
-    storage: Mutex<HashMap<(bool, StorageKey, String), String>>,
+    storage: Mutex<HashMap<(StorageKind, StorageKey, String), String>>,
 }
 
 impl FsServices {
@@ -692,7 +692,7 @@ impl StorageHost for FsServices {
         self.storage
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .get(&(kind == StorageKind::Local, origin.clone(), key.to_owned()))
+            .get(&(kind, origin.clone(), key.to_owned()))
             .cloned()
     }
 
@@ -701,9 +701,7 @@ impl StorageHost for FsServices {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .keys()
-            .filter(|(local, key_origin, _)| {
-                *local == (kind == StorageKind::Local) && key_origin == origin
-            })
+            .filter(|(key_kind, key_origin, _)| *key_kind == kind && key_origin == origin)
             .map(|(_, _, key)| key.clone())
             .collect()
     }
@@ -720,10 +718,7 @@ impl StorageHost for FsServices {
         self.storage
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert(
-                (kind == StorageKind::Local, origin.clone(), key.to_owned()),
-                value.to_owned(),
-            );
+            .insert((kind, origin.clone(), key.to_owned()), value.to_owned());
         Ok(None)
     }
 
@@ -738,7 +733,7 @@ impl StorageHost for FsServices {
         self.storage
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .remove(&(kind == StorageKind::Local, origin.clone(), key.to_owned()));
+            .remove(&(kind, origin.clone(), key.to_owned()));
         None
     }
 
@@ -750,9 +745,7 @@ impl StorageHost for FsServices {
         _source: FrameId,
     ) -> Option<StorageChange> {
         let mut storage = self.storage.lock().unwrap_or_else(PoisonError::into_inner);
-        storage.retain(|(local, key_origin, _), _| {
-            !(*local == (kind == StorageKind::Local) && key_origin == origin)
-        });
+        storage.retain(|(key_kind, key_origin, _), _| !(*key_kind == kind && key_origin == origin));
         None
     }
 }

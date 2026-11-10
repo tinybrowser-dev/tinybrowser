@@ -417,13 +417,19 @@ pub enum BrowserEvent {
     HistoryTraversal { delta: i32 },
 }
 
-/// Which of the two storage areas a change belongs to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Which per-origin key/value area a host storage call names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum StorageKind {
     /// `localStorage`: one area per origin in the profile.
     Local,
     /// `sessionStorage`: one area per origin in a top-level browsing context.
     Session,
+    /// `indexedDB`: one records area per origin in the profile. It shares the
+    /// key/value seam with Web Storage but is not a `Storage` area: no
+    /// `storage` event ever names it and its rows are encoded records, not
+    /// page strings
+    /// (<https://w3c.github.io/IndexedDB/#database>).
+    IndexedDb,
 }
 
 impl StorageKind {
@@ -433,6 +439,7 @@ impl StorageKind {
         match self {
             Self::Local => "local",
             Self::Session => "session",
+            Self::IndexedDb => "indexeddb",
         }
     }
 
@@ -444,6 +451,7 @@ impl StorageKind {
         match token {
             "local" => Some(Self::Local),
             "session" => Some(Self::Session),
+            "indexeddb" => Some(Self::IndexedDb),
             _ => None,
         }
     }

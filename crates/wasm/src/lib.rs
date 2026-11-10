@@ -292,6 +292,12 @@ fn local_storage() -> &'static Mutex<HashMap<renderer::StorageKey, StorageArea>>
     AREAS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// `indexedDB` rows shared by every realm of this wasm instance.
+fn indexed_db() -> &'static Mutex<HashMap<renderer::StorageKey, StorageArea>> {
+    static AREAS: OnceLock<Mutex<HashMap<renderer::StorageKey, StorageArea>>> = OnceLock::new();
+    AREAS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 /// Session storage namespaces keyed by component tab owner.
 fn session_storage() -> &'static Mutex<HashMap<u64, HashMap<renderer::StorageKey, StorageArea>>> {
     static NAMESPACES: OnceLock<Mutex<HashMap<u64, HashMap<renderer::StorageKey, StorageArea>>>> =
@@ -662,6 +668,9 @@ impl StorageHost for WasmServices {
                 .get(&self.owner)
                 .and_then(|namespace| namespace.get(origin))
                 .and_then(|area| area.get(key)),
+            StorageKind::IndexedDb => lock(indexed_db())
+                .get(origin)
+                .and_then(|area| area.get(key)),
         }
     }
 
@@ -673,6 +682,9 @@ impl StorageHost for WasmServices {
             StorageKind::Session => lock(session_storage())
                 .get(&self.owner)
                 .and_then(|namespace| namespace.get(origin))
+                .map_or_default(StorageArea::keys),
+            StorageKind::IndexedDb => lock(indexed_db())
+                .get(origin)
                 .map_or_default(StorageArea::keys),
         }
     }
@@ -697,6 +709,10 @@ impl StorageHost for WasmServices {
                 .entry(origin.clone())
                 .or_default()
                 .set(key, value),
+            StorageKind::IndexedDb => lock(indexed_db())
+                .entry(origin.clone())
+                .or_default()
+                .set(key, value),
         }
     }
 
@@ -714,6 +730,7 @@ impl StorageHost for WasmServices {
                 .get_mut(&self.owner)?
                 .get_mut(origin)?
                 .remove(key),
+            StorageKind::IndexedDb => lock(indexed_db()).get_mut(origin)?.remove(key),
         }
     }
 
@@ -730,6 +747,7 @@ impl StorageHost for WasmServices {
                 .get_mut(&self.owner)?
                 .get_mut(origin)?
                 .clear(),
+            StorageKind::IndexedDb => lock(indexed_db()).get_mut(origin)?.clear(),
         }
     }
 }

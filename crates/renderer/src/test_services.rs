@@ -1,5 +1,8 @@
 //! Browser-service doubles shared by the renderer's unit tests.
 
+use std::collections::HashMap;
+use std::sync::{Mutex, PoisonError};
+
 use url::Url;
 
 use crate::protocol::{
@@ -7,8 +10,14 @@ use crate::protocol::{
     MessagingHost, NetworkHost, StorageChange, StorageError, StorageHost, StorageKind,
 };
 
-/// Services that answer every host call with its empty or failing result.
-pub(crate) struct NullServices;
+/// Services that answer every network, browsing-context, and messaging call
+/// with its empty or failing result. Storage keeps one in-memory area per
+/// origin so the storage shims, including `indexedDB`, can be tested end to
+/// end.
+#[derive(Default)]
+pub(crate) struct NullServices {
+    storage: Mutex<HashMap<(StorageKind, crate::protocol::StorageKey, String), String>>,
+}
 
 impl NetworkHost for NullServices {
     fn start_dial(&self, _request: DialRequest, completion: DialCompletion) -> DialCancellation {
@@ -26,52 +35,90 @@ impl NetworkHost for NullServices {
 impl StorageHost for NullServices {
     fn storage_get(
         &self,
-        _kind: StorageKind,
-        _origin: &crate::protocol::StorageKey,
-        _key: &str,
+        kind: StorageKind,
+        origin: &crate::protocol::StorageKey,
+        key: &str,
     ) -> Option<String> {
-        None
+        self.storage
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&(kind, origin.clone(), key.to_owned()))
+            .cloned()
     }
 
-    fn storage_keys(
-        &self,
-        _kind: StorageKind,
-        _origin: &crate::protocol::StorageKey,
-    ) -> Vec<String> {
-        Vec::new()
+    fn storage_keys(&self, kind: StorageKind, origin: &crate::protocol::StorageKey) -> Vec<String> {
+        let storage = self.storage.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut keys: Vec<String> = storage
+            .keys()
+            .filter(|(key_kind, key_origin, _)| *key_kind == kind && key_origin == origin)
+            .map(|(_, _, key)| key.clone())
+            .collect();
+        keys.sort();
+        keys
     }
 
     fn storage_set(
         &self,
-        _kind: StorageKind,
-        _origin: &crate::protocol::StorageKey,
+        kind: StorageKind,
+        origin: &crate::protocol::StorageKey,
         _url: &str,
-        _key: &str,
-        _value: &str,
+        key: &str,
+        value: &str,
         _source: FrameId,
     ) -> Result<Option<StorageChange>, StorageError> {
-        Ok(None)
+        let mut storage = self.storage.lock().unwrap_or_else(PoisonError::into_inner);
+        let old_value = storage.insert((kind, origin.clone(), key.to_owned()), value.to_owned());
+        if old_value.as_deref() == Some(value) {
+            return Ok(None);
+        }
+        Ok(Some(StorageChange {
+            key: Some(key.to_owned()),
+            old_value,
+            new_value: Some(value.to_owned()),
+        }))
     }
 
     fn storage_remove(
         &self,
-        _kind: StorageKind,
-        _origin: &crate::protocol::StorageKey,
+        kind: StorageKind,
+        origin: &crate::protocol::StorageKey,
         _url: &str,
-        _key: &str,
+        key: &str,
         _source: FrameId,
     ) -> Option<StorageChange> {
-        None
+        let mut storage = self.storage.lock().unwrap_or_else(PoisonError::into_inner);
+        let old_value = storage.remove(&(kind, origin.clone(), key.to_owned()))?;
+        Some(StorageChange {
+            key: Some(key.to_owned()),
+            old_value: Some(old_value),
+            new_value: None,
+        })
     }
 
     fn storage_clear(
         &self,
-        _kind: StorageKind,
-        _origin: &crate::protocol::StorageKey,
+        kind: StorageKind,
+        origin: &crate::protocol::StorageKey,
         _url: &str,
         _source: FrameId,
     ) -> Option<StorageChange> {
-        None
+        let mut storage = self.storage.lock().unwrap_or_else(PoisonError::into_inner);
+        let keys: Vec<(StorageKind, crate::protocol::StorageKey, String)> = storage
+            .keys()
+            .filter(|(key_kind, key_origin, _)| *key_kind == kind && key_origin == origin)
+            .cloned()
+            .collect();
+        if keys.is_empty() {
+            return None;
+        }
+        for key in &keys {
+            storage.remove(key);
+        }
+        Some(StorageChange {
+            key: None,
+            old_value: None,
+            new_value: None,
+        })
     }
 }
 

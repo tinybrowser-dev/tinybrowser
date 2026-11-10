@@ -240,9 +240,36 @@ to the enclosing script or module (`docs/upstream.md`), and all four module
 files pass: `workers/` reaches **972/974 passing subtests and 246 perfect
 files**, with 0 timeouts, 0 errors, no subtest lost, and only the two
 `workers/data-url*.html` files left, each short one `indexedDB is present`
-assertion. `cookies/` and `webmessaging/` remain unchanged. IndexedDB is the
-last feature-sized gap; it has to be a real implementation, so no
-`"indexedDB" in self` shim was added.
+assertion. `cookies/` and `webmessaging/` remain unchanged. IndexedDB was the
+last feature-sized gap; it is a real implementation, so no `"indexedDB" in
+self` shim was added.
+
+`indexedDB` then landed as a shim over the browser-owned storage seam. The
+factory, `open()` and its `upgradeneeded`/`success`/`error` events,
+`deleteDatabase()`, `databases()`, one versionchange transaction per upgrade,
+object-store create/delete, and the record operations `put`, `add`, `get`,
+`getKey`, `getAll`, `getAllKeys`, `count`, `delete`, and `clear` are
+implemented, with `IDBKeyRange`, inline and generated keys, binary and array
+keys, and `DOMStringList`. Rows are opaque encoded values in a per-origin area
+behind `StorageKind::IndexedDb`, owned and persisted by the browser process
+(`tinybrowser-indexeddb-v1`), so every renderer of a profile sees one store.
+An opaque origin has no storage key: `open()` and `deleteDatabase()` throw
+`SecurityError` and `databases()` rejects, which is what the two
+`workers/data-url*.html` files test. `workers/` reaches **974/974 passing
+subtests and 248 perfect files**, with 0 failures, 0 timeouts, and 0 errors;
+`cookies/` and `webmessaging/` are unchanged at 522/642 subtests and 154
+perfect files. A 16-file IndexedDB slice (factory, keys, ranges, requests,
+transactions, object stores, binary keys, delete) passes 142 of 150 subtests
+and 12 of 16 files; the eight remaining subtests all need indexes or cursors,
+which are the next milestone and are absent rather than stubbed.
+
+The WPT work also exposed an engine bug outside IndexedDB: reading an
+undeclared global name returned `undefined` instead of throwing
+`ReferenceError`, because the Window named-properties proxy on the global
+prototype answers `[[Get]]` with `undefined` for a missing name. The quickjs
+fork now resolves a global binding through `[[HasProperty]]` first, as the
+object environment record does (`docs/upstream.md`); the engine carries a
+regression test for bare, `eval`, `Function`, and strict-mode reads.
 
 Every push to `main` now publishes the record to
 `tinybrowser-dev/tinybrowser-wpt-results` and the site at

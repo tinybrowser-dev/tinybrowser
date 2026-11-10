@@ -216,7 +216,10 @@ failures are implementation gaps, not the thread model:
   `partitioned-cookies-a-b-a-embed` sees the top-level partition's cookie in a
   same-site embed that has a cross-site ancestor; `partitioned-cookies-top-level-redirect`
   still fails its redirect assertion.
-- `data-url`/`data-url-shared`: `IndexedDB` is absent.
+- IndexedDB exists, so `data-url`/`data-url-shared` pass their
+  `indexedDB is present` assertion; an opaque origin throws `SecurityError`
+  from `open()` as the files expect. Indexes, cursors, and upgrade blocking
+  remain implementation gaps (`docs/limitations.md`).
 - Growable `SharedArrayBuffer`: construction and structured clone work, and
   the receiver keeps the sender's `maxByteLength`. `WebAssembly.Memory` exists,
   so the WPT fixture can obtain its constructor, and a non-isolated document

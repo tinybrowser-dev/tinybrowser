@@ -10,6 +10,7 @@ xhr.js
 url.js
 navigator.js
 messaging.js
+indexeddb.js
 crypto.js
 errors.js
 workers.js

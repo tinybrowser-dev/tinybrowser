@@ -1260,6 +1260,7 @@ impl StorageRouter<'_> {
         let value = match kind {
             StorageKind::Local => self.context.partition.local_storage.get(origin, key),
             StorageKind::Session => self.context.sessions.get(self.authority.tab, origin, key),
+            StorageKind::IndexedDb => self.context.partition.indexed_db.get(origin, key),
         };
         send_reply(
             &self.context.responder,
@@ -1274,6 +1275,7 @@ impl StorageRouter<'_> {
         let keys = match kind {
             StorageKind::Local => self.context.partition.local_storage.keys(origin),
             StorageKind::Session => self.context.sessions.keys(self.authority.tab, origin),
+            StorageKind::IndexedDb => self.context.partition.indexed_db.keys(origin),
         };
         send_reply(
             &self.context.responder,
@@ -1300,6 +1302,7 @@ impl StorageRouter<'_> {
                     .sessions
                     .set(self.authority.tab, origin, key, value)
             }
+            StorageKind::IndexedDb => self.context.partition.indexed_db.set(origin, key, value),
         };
         self.publish(
             source,
@@ -1331,6 +1334,7 @@ impl StorageRouter<'_> {
                 .context
                 .sessions
                 .remove(self.authority.tab, origin, key),
+            StorageKind::IndexedDb => self.context.partition.indexed_db.remove(origin, key),
         };
         self.publish(source, kind, origin, url, change.as_ref());
         send_reply(
@@ -1352,6 +1356,7 @@ impl StorageRouter<'_> {
         let change = match kind {
             StorageKind::Local => self.context.partition.local_storage.clear(origin),
             StorageKind::Session => self.context.sessions.clear(self.authority.tab, origin),
+            StorageKind::IndexedDb => self.context.partition.indexed_db.clear(origin),
         };
         self.publish(source, kind, origin, url, change.as_ref());
         send_reply(

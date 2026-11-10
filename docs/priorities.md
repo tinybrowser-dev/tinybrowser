@@ -117,7 +117,8 @@ worker `fetch`/XHR (including synchronous XHR), `import.meta`, `blob:` and
 `data:` scripts, timers, and error propagation. SharedWorker runs in the
 same engine with one realm per `(origin, URL, name)`, per-connection
 ports, and the same classic/module and error semantics. The remaining
-worker work is service workers and `IndexedDB`.
+worker work is service workers and the remaining IndexedDB surface
+(indexes, cursors, and upgrade blocking).
 
 P1 is not "rare". IndexedDB is read on 24.7% of pages (write 23.2%),
 compression streams on 25.1%, Cache Storage read on 19.6%, a worker

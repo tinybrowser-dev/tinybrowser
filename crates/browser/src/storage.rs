@@ -1,14 +1,17 @@
-//! The browser-owned local storage area.
+//! Browser-owned per-origin key/value areas.
 //!
-//! `localStorage` is one area per origin, shared by every document in the
-//! profile and persisted with it
-//! (<https://html.spec.whatwg.org/multipage/webstorage.html#the-localstorage-attribute>).
-//! The browser process owns the map so independent renderers observe one area;
-//! renderers call in over the service path. `sessionStorage` is scoped to one
-//! top-level browsing context and remains browser-owned across renderer swaps.
+//! `localStorage` and `indexedDB` each keep one area per origin, shared by
+//! every document in the profile and persisted with it
+//! (<https://html.spec.whatwg.org/multipage/webstorage.html#the-localstorage-attribute>,
+//! <https://w3c.github.io/IndexedDB/#database>).
+//! The browser process owns the maps so independent renderers observe one
+//! store; renderers call in over the service path. `sessionStorage` is scoped
+//! to one top-level browsing context and remains browser-owned across renderer
+//! swaps.
 //!
 //! The mutation methods implement the spec's `Storage` algorithms and return
 //! the change a `storage` event needs; `None` means the mutation was a no-op.
+//! A caller of `indexedDB` ignores the change and writes opaque encoded rows.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,9 +22,9 @@ use webstorage::StorageArea;
 
 use crate::actor::TabId;
 
-/// One profile's local storage areas, keyed by origin.
+/// One profile's per-origin string areas.
 #[derive(Default)]
-pub(crate) struct LocalStorage {
+pub(crate) struct StorageAreas {
     areas: Mutex<HashMap<StorageKey, StorageArea>>,
     dirty: AtomicBool,
 }
@@ -118,7 +121,7 @@ impl SessionStorage {
     }
 }
 
-impl LocalStorage {
+impl StorageAreas {
     /// `Storage.getItem(key)`
     /// (<https://html.spec.whatwg.org/multipage/webstorage.html#dom-storage-getitem>).
     pub(crate) fn get(&self, origin: &StorageKey, key: &str) -> Option<String> {
@@ -225,7 +228,7 @@ impl LocalStorage {
 
 #[cfg(test)]
 mod tests {
-    use super::LocalStorage;
+    use super::StorageAreas;
     use renderer::StorageKey;
 
     /// One origin spelled four ways is one area, and a profile written before
@@ -234,7 +237,7 @@ mod tests {
     /// standing for every opaque document.
     #[test]
     fn storage_normalizes_every_spelling_of_one_origin() {
-        let storage = LocalStorage::default();
+        let storage = StorageAreas::default();
         storage.import(vec![
             (
                 "https://example.test/a?b#c".to_owned(),

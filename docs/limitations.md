@@ -65,7 +65,22 @@ load or parse fires a plain `error` event at every connected `SharedWorker`
 object. A shared worker is shared inside one engine, not across renderer
 processes, and `extendedLifetime` does not outlive the tab; moving the realm
 to its own thread is milestone 6 in `docs/worker-threads.md`. Service
-workers and `IndexedDB` remain unimplemented. A `ReadableStream` is
+workers remain unimplemented. `indexedDB` exists on windows and workers and
+implements the factory, database open and upgrade, one versionchange
+transaction per upgrade, object-store create/delete, and the record
+operations `put`, `add`, `get`, `getKey`, `getAll`, `getAllKeys`, `count`,
+`delete`, and `clear` over `IDBKeyRange` bounds. Records live in the profile
+as opaque encoded rows behind `StorageKind::IndexedDb`, so every renderer of
+a profile sees one store and the browser persists it like `localStorage`.
+`databases()`, `deleteDatabase()`, inline and generated keys, binary and array
+keys, and the `DOMStringList` members are implemented. Indexes and cursors are
+not: `createIndex`, `index`, `indexNames` contents, `openCursor`, and
+`openKeyCursor` are absent, so a page that needs them gets a `TypeError`
+rather than a wrong result. Upgrade blocking between open connections and a
+key generator shared across connections are also absent; two connections can
+still issue overlapping version changes, and generated keys are allocated per
+transaction snapshot. The area enforces the same 5 MiB per-origin cap as
+`localStorage` instead of a separate IndexedDB quota. A `ReadableStream` is
 transferable: the transfer list locks the sender and moves the stream over an
 internal `MessageChannel`, one chunk per pull, so close, error, and cancel all
 cross with it. `crossOriginIsolated` is exposed on windows and workers and is computed from a

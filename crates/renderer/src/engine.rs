@@ -3453,7 +3453,7 @@ mod navigator_tests {
         })
         .expect("identity");
         let mut engine = Engine::new(
-            Arc::new(NullServices),
+            Arc::new(NullServices::default()),
             Arc::new(crate::js::Stop::new()),
             Arc::new(tokio::sync::Notify::new()),
             identity,
@@ -3556,7 +3556,7 @@ mod messaging_tests {
 
     fn engine() -> Engine {
         Engine::new(
-            Arc::new(NullServices),
+            Arc::new(NullServices::default()),
             Arc::new(crate::js::Stop::new()),
             Arc::new(tokio::sync::Notify::new()),
             net::ValidIdentity::default(),
@@ -3592,6 +3592,301 @@ mod messaging_tests {
             tab: crate::protocol::TabState::default(),
             body: body.as_bytes().to_vec(),
         }
+    }
+
+    /// An `indexedDB` database opens, upgrades, and stores a record through the
+    /// host storage seam. The factory is the same object on every access
+    /// (<https://w3c.github.io/IndexedDB/#dom-windoworworkerglobalscope-indexeddb>),
+    /// and key comparison orders a number before a string
+    /// (<https://w3c.github.io/IndexedDB/#compare-two-keys>).
+    #[test]
+    fn indexed_db_opens_upgrades_and_reads_a_record() {
+        let mut engine = engine();
+        engine
+            .mount_frame(
+                FrameId::MAIN,
+                &mount("https://example.test/indexeddb", "<!doctype html><p>idb"),
+            )
+            .expect("mount");
+        let _ready = engine.drain_ready();
+        engine
+            .eval_in(
+                FrameId::MAIN,
+                r"
+                (function () {
+                  window.__idb = null;
+                  const open = (name, version, upgrade) => new Promise((resolve, reject) => {
+                    const request = indexedDB.open(name, version);
+                    request.onupgradeneeded = event => {
+                      if (upgrade) upgrade(event.target.result);
+                    };
+                    request.onsuccess = () => resolve(request.result);
+                    request.onerror = () => reject(request.error);
+                  });
+                  (async function () {
+                    try {
+                      const db = await open('records', 1, database => {
+                        const store = database.createObjectStore('books', { keyPath: 'isbn' });
+                        store.put({ isbn: 1, title: 'one' });
+                        store.put({ isbn: 2, title: 'two' });
+                      });
+                      const value = await new Promise((resolve, reject) => {
+                        const transaction = db.transaction('books');
+                        const request = transaction.objectStore('books').get(1);
+                        request.onsuccess = () => resolve(request.result);
+                        request.onerror = () => reject(request.error);
+                      });
+                      db.close();
+                      const again = await open('records', 1);
+                      const count = await new Promise((resolve, reject) => {
+                        const transaction = again.transaction('books');
+                        const request = transaction.objectStore('books').count();
+                        request.onsuccess = () => resolve(request.result);
+                        request.onerror = () => reject(request.error);
+                      });
+                      const names = Array.from(again.objectStoreNames);
+                      again.close();
+                      window.__idb = JSON.stringify({
+                        title: value.title,
+                        count,
+                        names,
+                        cmp: indexedDB.cmp(1, 'a'),
+                        same: indexedDB === self.indexedDB,
+                      });
+                    } catch (error) {
+                      window.__idb = JSON.stringify({ error: error.name + ': ' + error.message });
+                    }
+                  })();
+                })()
+                ",
+            )
+            .expect("start");
+        for _ in 0..40 {
+            // A zero-delay timer is due only after the clock advances; the
+            // realm's task queue is drained between the timers.
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            let _ready = engine.drain_ready();
+            let done = engine
+                .eval_in(FrameId::MAIN, "window.__idb !== null")
+                .expect("probe");
+            if done == "true" {
+                break;
+            }
+        }
+        assert_eq!(
+            engine
+                .eval_in(FrameId::MAIN, "String(window.__idb)")
+                .expect("result"),
+            r#"{"title":"one","count":2,"names":["books"],"cmp":-1,"same":true}"#
+        );
+    }
+
+    /// The per-operation guards every object-store write shares: a read-only
+    /// transaction refuses a write, an explicit key is invalid with an inline
+    /// key path, and a store deleted during the upgrade is inert
+    /// (<https://w3c.github.io/IndexedDB/#add-or-put-operation>). `databases()`
+    /// snapshots at call time, so a database whose upgrade transaction is still
+    /// running is not listed
+    /// (<https://w3c.github.io/IndexedDB/#dom-idbfactory-databases>).
+    #[test]
+    fn indexed_db_enforces_object_store_guards() {
+        let mut engine = engine();
+        engine
+            .mount_frame(
+                FrameId::MAIN,
+                &mount(
+                    "https://example.test/indexeddb-guards",
+                    "<!doctype html><p>idb",
+                ),
+            )
+            .expect("mount");
+        let _ready = engine.drain_ready();
+        engine
+            .eval_in(
+                FrameId::MAIN,
+                r"
+                (function () {
+                  window.__guards = null;
+                  const open = (name, version, upgrade) => new Promise((resolve, reject) => {
+                    const request = indexedDB.open(name, version);
+                    request.onupgradeneeded = event => {
+                      if (upgrade) upgrade(event.target.result);
+                    };
+                    request.onsuccess = () => resolve(request.result);
+                    request.onerror = () => reject(request.error);
+                  });
+                  (async function () {
+                    const errors = { __proto__: null };
+                    try {
+                      let snapshot;
+                      const db = await open('guards', 1, database => {
+                        database.createObjectStore('books', { keyPath: 'isbn' });
+                        // The upgrade transaction has not committed, so the
+                        // database is absent from the call-time snapshot.
+                        snapshot = indexedDB.databases();
+                      });
+                      const empty = (await snapshot).length;
+                      try {
+                        db.transaction('books').objectStore('books').put({ isbn: 1 });
+                      } catch (error) {
+                        errors.readonly = error.name;
+                      }
+                      try {
+                        db.transaction('books', 'readwrite').objectStore('books')
+                          .put({ isbn: 1 }, 1);
+                      } catch (error) {
+                        errors.inline = error.name;
+                      }
+                      db.close();
+                      const db2 = await open('guards', 2, database => {
+                        database.createObjectStore('auto', { autoIncrement: true })
+                          .put({ value: 'first' });
+                        const gone = database.createObjectStore('gone');
+                        database.deleteObjectStore('gone');
+                        try {
+                          gone.put({ value: 'x' });
+                        } catch (error) {
+                          errors.deleted = error.name;
+                        }
+                      });
+                      const key = await new Promise((resolve, reject) => {
+                        const request = db2.transaction('auto', 'readwrite')
+                          .objectStore('auto').put({ value: 'second' });
+                        request.onsuccess = () => resolve(request.result);
+                        request.onerror = () => reject(request.error);
+                      });
+                      try {
+                        indexedDB.cmp();
+                      } catch (error) {
+                        errors.cmp = error.name;
+                      }
+                      const names = Array.from(db2.objectStoreNames);
+                      db2.close();
+                      window.__guards = JSON.stringify({ empty, key, names, errors });
+                    } catch (error) {
+                      window.__guards = JSON.stringify({
+                        error: error.name + ': ' + error.message,
+                      });
+                    }
+                  })();
+                })()
+                ",
+            )
+            .expect("start");
+        for _ in 0..40 {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            let _ready = engine.drain_ready();
+            let done = engine
+                .eval_in(FrameId::MAIN, "window.__guards !== null")
+                .expect("probe");
+            if done == "true" {
+                break;
+            }
+        }
+        assert_eq!(
+            engine
+                .eval_in(FrameId::MAIN, "String(window.__guards)")
+                .expect("result"),
+            r#"{"empty":0,"key":2,"names":["auto","books"],"errors":{"readonly":"ReadOnlyError","inline":"DataError","deleted":"InvalidStateError","cmp":"TypeError"}}"#
+        );
+    }
+
+    /// An undeclared global name throws `ReferenceError` even though the
+    /// Window named properties proxy sits on the global's prototype chain. Its
+    /// `[[Get]]` trap answers `undefined` for a missing name, so resolution has
+    /// to ask `[[HasProperty]]` first, as the object environment record does
+    /// (<https://tc39.es/ecma262/#sec-object-environment-records-hasbinding>).
+    #[test]
+    fn an_undeclared_global_name_throws_a_reference_error() {
+        let mut engine = engine();
+        engine
+            .mount_frame(
+                FrameId::MAIN,
+                &mount("https://example.test/reference", "<!doctype html><p>probe"),
+            )
+            .expect("mount");
+        let _ready = engine.drain_ready();
+        let probe = engine
+            .eval_in(
+                FrameId::MAIN,
+                r"
+                (function () {
+                  const read = () => {
+                    try { return String(noExistingVariable); }
+                    catch (error) { return error.name; }
+                  };
+                  return JSON.stringify({
+                    typeofName: typeof noExistingVariable,
+                    contains: 'noExistingVariable' in globalThis,
+                    read: read(),
+                    evalRead: (() => {
+                      try { return String(eval('noExistingVariable')); }
+                      catch (error) { return error.name; }
+                    })(),
+                    functionRead: (() => {
+                      try { return String(Function('return noExistingVariable')()); }
+                      catch (error) { return error.name; }
+                    })(),
+                    strictRead: (() => {
+                      try { return String((function () {
+                        'use strict';
+                        return noExistingVariable;
+                      })()); }
+                      catch (error) { return error.name; }
+                    })(),
+                  });
+                })()
+                ",
+            )
+            .expect("probe");
+        assert_eq!(
+            probe,
+            r#"{"typeofName":"undefined","contains":false,"read":"ReferenceError","evalRead":"ReferenceError","functionRead":"ReferenceError","strictRead":"ReferenceError"}"#
+        );
+    }
+
+    /// A data-URL document has an opaque origin, so `indexedDB` exists but
+    /// `open()` and `deleteDatabase()` throw `SecurityError` synchronously and
+    /// `databases()` rejects with one
+    /// (<https://w3c.github.io/IndexedDB/#dom-idbfactory-open>).
+    #[test]
+    fn indexed_db_rejects_an_opaque_origin() {
+        let mut engine = engine();
+        engine
+            .mount_frame(
+                FrameId::MAIN,
+                &mount("data:text/html,<p>opaque", "<!doctype html><p>opaque"),
+            )
+            .expect("mount");
+        let _ready = engine.drain_ready();
+        let probe = engine
+            .eval_in(
+                FrameId::MAIN,
+                r"
+                (function () {
+                  const factory = indexedDB;
+                  let openError;
+                  let deleteError;
+                  try { factory.open('db'); } catch (error) { openError = error.name; }
+                  try { factory.deleteDatabase('db'); } catch (error) { deleteError = error.name; }
+                  const databases = factory.databases();
+                  databases.catch(() => {});
+                  return JSON.stringify({
+                    factory: Object.prototype.toString.call(factory),
+                    openError,
+                    deleteError,
+                    rejected: databases instanceof Promise,
+                    cmp: factory.cmp(1, 2),
+                    same: indexedDB === self.indexedDB,
+                  });
+                })()
+                ",
+            )
+            .expect("probe");
+        assert_eq!(
+            probe,
+            r#"{"factory":"[object IDBFactory]","openError":"SecurityError","deleteError":"SecurityError","rejected":true,"cmp":-1,"same":true}"#
+        );
     }
 
     /// A transferred stream moves; it does not copy. The sender's half is

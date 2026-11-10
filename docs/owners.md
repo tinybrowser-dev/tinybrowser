@@ -19,6 +19,8 @@ it (#239).
 | Wall/monotonic time | `net::Clock`/`ClockSource` | an injected clock |
 | Fetch policy | `net::Agent` with `net::Transport` | the transport only feeds bytes (#233) |
 | HTTP cache | `crates/browser/src/network.rs` | the browser's response store |
+| Per-origin key/value rows | `crates/browser/src/storage.rs` (`StorageAreas`) | `StorageKind` plus opaque encoded values |
+| IndexedDB databases and records | `crates/renderer/src/js/scripts/web/indexeddb.js` | the `indexeddb` area through the storage seam |
 | Carrier dial adapter | `crates/dial` | one conversion from `DialRequest` to `net::Request` |
 | WPT timeout policy | `tools/wpt/timeouts.py` | flags from `cli.py` |
 | WPT test selection | `tools/wpt-harness/src/suite.rs` (manifest) | — |

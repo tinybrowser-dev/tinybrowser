@@ -13,10 +13,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use net::{Agent, CookieRecord, CookieSameSite};
 
 use super::Profile;
-use crate::storage::LocalStorage;
+use crate::storage::StorageAreas;
 
 const COOKIES_VERSION: &str = "tinybrowser-cookies-v1";
 const LOCAL_STORAGE_VERSION: &str = "tinybrowser-localstorage-v1";
+const INDEXED_DB_VERSION: &str = "tinybrowser-indexeddb-v1";
 static COOKIE_TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Durable backing for one Profile under `XDG_DATA_HOME`.
@@ -116,8 +117,21 @@ impl ProfileStore {
     /// # Errors
     ///
     /// The file exists but cannot be read or moved aside when corrupt.
-    pub(crate) fn load_local_storage(&self, storage: &LocalStorage) -> io::Result<()> {
-        let path = self.local_storage_path();
+    pub(crate) fn load_local_storage(&self, storage: &StorageAreas) -> io::Result<()> {
+        self.load_areas("localstorage", LOCAL_STORAGE_VERSION, storage)
+    }
+
+    /// Loads the profile's `indexedDB` rows into `storage`.
+    ///
+    /// # Errors
+    ///
+    /// The file exists but cannot be read or moved aside when corrupt.
+    pub(crate) fn load_indexed_db(&self, storage: &StorageAreas) -> io::Result<()> {
+        self.load_areas("indexeddb", INDEXED_DB_VERSION, storage)
+    }
+
+    fn load_areas(&self, file: &str, version: &str, storage: &StorageAreas) -> io::Result<()> {
+        let path = self.root.join(file);
         let _disk = self.lock_disk();
         let bytes = match fs::read(&path) {
             Ok(bytes) => bytes,
@@ -126,7 +140,7 @@ impl ProfileStore {
         };
         let rows = std::str::from_utf8(&bytes)
             .ok()
-            .and_then(|text| parse_local_storage(text).ok());
+            .and_then(|text| parse_areas(text, version).ok());
         if let Some(rows) = rows {
             storage.import(rows);
             return Ok(());
@@ -137,7 +151,7 @@ impl ProfileStore {
             .as_millis();
         fs::rename(
             &path,
-            path.with_file_name(format!("localstorage.corrupt.{stamp}")),
+            path.with_file_name(format!("{file}.corrupt.{stamp}")),
         )?;
         Ok(())
     }
@@ -147,7 +161,20 @@ impl ProfileStore {
     /// # Errors
     ///
     /// The file cannot be written or the directory cannot be synced.
-    pub(crate) fn save_local_storage(&self, storage: &LocalStorage) -> io::Result<()> {
+    pub(crate) fn save_local_storage(&self, storage: &StorageAreas) -> io::Result<()> {
+        self.save_areas("localstorage", LOCAL_STORAGE_VERSION, storage)
+    }
+
+    /// Persists every dirty `indexedDB` row.
+    ///
+    /// # Errors
+    ///
+    /// The file cannot be written or the directory cannot be synced.
+    pub(crate) fn save_indexed_db(&self, storage: &StorageAreas) -> io::Result<()> {
+        self.save_areas("indexeddb", INDEXED_DB_VERSION, storage)
+    }
+
+    fn save_areas(&self, file: &str, version: &str, storage: &StorageAreas) -> io::Result<()> {
         let dir = &self.root;
         let _disk = self.lock_disk();
         if !storage.is_dirty() {
@@ -155,10 +182,10 @@ impl ProfileStore {
         }
         fs::create_dir_all(dir)?;
         restrict(dir, 0o700)?;
-        let path = dir.join("localstorage");
+        let path = dir.join(file);
         let seq = COOKIE_TMP_SEQ.fetch_add(1, Ordering::Relaxed);
-        let tmp = dir.join(format!("localstorage.{}.{seq}.tmp", std::process::id()));
-        let encoded = encode_local_storage(&storage.export());
+        let tmp = dir.join(format!("{file}.{}.{seq}.tmp", std::process::id()));
+        let encoded = encode_areas(&storage.export(), version);
         let write_result = (|| {
             let mut file = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
             restrict(&tmp, 0o600)?;
@@ -179,10 +206,6 @@ impl ProfileStore {
 
     fn cookies_path(&self) -> PathBuf {
         self.root.join("cookies")
-    }
-
-    fn local_storage_path(&self) -> PathBuf {
-        self.root.join("localstorage")
     }
 }
 
@@ -397,8 +420,8 @@ fn parse_same_site(raw: &str) -> io::Result<CookieSameSite> {
 }
 
 /// One `origin \t key \t value` row per local storage entry.
-fn encode_local_storage(rows: &[(String, String, String)]) -> String {
-    let mut out = String::from(LOCAL_STORAGE_VERSION);
+fn encode_areas(rows: &[(String, String, String)], version: &str) -> String {
+    let mut out = String::from(version);
     out.push('\n');
     for (origin, key, value) in rows {
         push_escaped(&mut out, origin);
@@ -411,18 +434,18 @@ fn encode_local_storage(rows: &[(String, String, String)]) -> String {
     out
 }
 
-fn parse_local_storage(text: &str) -> io::Result<Vec<(String, String, String)>> {
+fn parse_areas(text: &str, version: &str) -> io::Result<Vec<(String, String, String)>> {
     let mut lines = text.lines();
-    let Some(version) = lines.next() else {
+    let Some(found) = lines.next() else {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "empty local storage file",
+            "empty storage area file",
         ));
     };
-    if version != LOCAL_STORAGE_VERSION {
+    if found != version {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "unsupported local storage file",
+            "unsupported storage area file",
         ));
     }
     let mut rows = Vec::new();
@@ -435,7 +458,7 @@ fn parse_local_storage(text: &str) -> io::Result<Vec<(String, String, String)>> 
             parts.next().map(unescape).ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!("missing local storage field {name}"),
+                    format!("missing storage area field {name}"),
                 )
             })
         };

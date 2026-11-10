@@ -11,19 +11,21 @@ use crate::broadcast::RendererEventHub;
 use crate::network::{NetworkContext, TabNetworkHandle};
 use crate::profile::Profile;
 use crate::profile::store::ProfileStore;
-use crate::storage::{LocalStorage, SessionStorage};
+use crate::storage::{SessionStorage, StorageAreas};
 
 /// Services shared by renderer assignments in one storage partition.
 #[derive(Clone)]
 pub(crate) struct PartitionServices {
-    pub(crate) local_storage: Arc<LocalStorage>,
+    pub(crate) local_storage: Arc<StorageAreas>,
+    pub(crate) indexed_db: Arc<StorageAreas>,
     pub(crate) events: Arc<RendererEventHub>,
 }
 
 /// Network and site data shared by documents in one partition.
 struct StoragePartition {
     network: NetworkContext,
-    local_storage: Arc<LocalStorage>,
+    local_storage: Arc<StorageAreas>,
+    indexed_db: Arc<StorageAreas>,
     events: Arc<RendererEventHub>,
 }
 
@@ -48,13 +50,16 @@ impl BrowserContext {
     ) -> io::Result<Self> {
         let store = ProfileStore::open_in(data_home, profile)?;
         store.load_into(&network.agent())?;
-        let local_storage = Arc::new(LocalStorage::default());
+        let local_storage = Arc::new(StorageAreas::default());
         store.load_local_storage(&local_storage)?;
+        let indexed_db = Arc::new(StorageAreas::default());
+        store.load_indexed_db(&indexed_db)?;
         Ok(Self {
             store: Arc::new(store),
             partition: StoragePartition {
                 network,
                 local_storage,
+                indexed_db,
                 events: Arc::new(RendererEventHub::default()),
             },
             sessions: Arc::new(SessionStorage::default()),
@@ -70,6 +75,7 @@ impl BrowserContext {
     pub(crate) fn partition_services(&self) -> PartitionServices {
         PartitionServices {
             local_storage: Arc::clone(&self.partition.local_storage),
+            indexed_db: Arc::clone(&self.partition.indexed_db),
             events: Arc::clone(&self.partition.events),
         }
     }
@@ -95,9 +101,11 @@ impl BrowserContext {
         let store = Arc::clone(&self.store);
         let agent = self.partition.network.agent();
         let local_storage = Arc::clone(&self.partition.local_storage);
+        let indexed_db = Arc::clone(&self.partition.indexed_db);
         tokio::task::spawn_blocking(move || {
             store.save_from(&agent)?;
-            store.save_local_storage(&local_storage)
+            store.save_local_storage(&local_storage)?;
+            store.save_indexed_db(&indexed_db)
         })
         .await
         .map_err(io::Error::other)?
