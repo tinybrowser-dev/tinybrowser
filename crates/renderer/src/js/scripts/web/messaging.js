@@ -409,6 +409,11 @@ const __tbEncode = (value, transfer, sourcePort) => {
     // it would misclassify the view as a plain object
     // (<https://tc39.es/ecma262/#sec-arraybuffer.isview>).
     if (__tbIsArrayBufferView(input)) {
+      // A view left out of bounds by `resize` reports 0 for both byte fields,
+      // so only the engine can see that its backing store is gone. Such a view
+      // cannot be serialized
+      // (<https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal>).
+      if (host.__tbIsOutOfBoundsView(input)) throw __tbCloneFailure();
       const tag = Object.prototype.toString.call(input);
       const kind = tag.slice(8, -1);
       let buffer;

@@ -82,7 +82,22 @@ pub(crate) fn install_messaging(ctx: &Ctx<'_>) -> Result<()> {
         "__tbBroadcastPost",
         rquickjs::prelude::Func::from(broadcast_post),
     )?;
+    globals.set(
+        "__tbIsOutOfBoundsView",
+        rquickjs::prelude::Func::from(is_out_of_bounds_view),
+    )?;
     Ok(())
+}
+
+/// Whether one structured-clone candidate is a typed array whose buffer is
+/// detached or out of bounds.
+///
+/// The structured-clone algorithm throws a `DataCloneError` for such a view,
+/// but the JavaScript getters report `0` for both `byteOffset` and
+/// `byteLength`, so the serializer cannot see it from script
+/// (<https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal>).
+fn is_out_of_bounds_view(value: rquickjs::Value<'_>) -> bool {
+    rquickjs::is_out_of_bounds_view(&value)
 }
 
 /// Mints one `BroadcastChannel` id from the engine-wide counter. A post names

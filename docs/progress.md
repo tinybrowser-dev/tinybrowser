@@ -80,7 +80,7 @@ the upstream QuickJS gaps in `docs/upstream.md`.
 
 SharedWorker landed on 2026-11-10. The `workers/` slice (248 files) moved
 from 222 passing files / 488 passing subtests of 794 to 218 perfect files
-/ 882 passing subtests of 966, with no subtest lost. The realm key is
+/ 886 passing subtests of 966, with no subtest lost. The realm key is
 `(creator origin, script URL, name)`; a connection repeats the key and
 must agree on `type`/`credentials`/`extendedLifetime`, and a mismatch
 fires a plain `error` event on the new `SharedWorker` object without
@@ -115,10 +115,19 @@ masking these: a document mounted from disk never stored its `.headers`
 Unicode subdomain spellings instead of expanding them to IDNA. With both
 fixed, the dedicated and shared `WorkerOptions.credentials` files pass
 33/33 each (51 subtests gained) and the WorkerLocation origin file passes.
-The remaining failures are popup-based `extendedLifetime` and same-site
-cookie files, `IndexedDB` absence, CHIPS partitioning, same-thread
-parallelism and forcible termination, joint-history traversal in the
-in-process harness, and the upstream QuickJS gaps.
+The structured-clone battery then stopped misclassifying a typed array
+that a resized buffer left out of bounds: both byte getters report 0 for
+it, so the serializer could not tell it from a genuine empty view. The
+rquickjs fork gained `is_out_of_bounds_view`, which asks
+`JS_GetTypedArrayBuffer` and consumes the exception that reports the
+state, and the serializer throws the required `DataCloneError`; the four
+`Serializing`/`Transferring OOB TypedArray throws` subtests in the
+dedicated and shared batteries now pass. The remaining failures are
+popup-based `extendedLifetime` and same-site cookie files, `IndexedDB`
+absence, CHIPS partitioning, same-thread parallelism and forcible
+termination, joint-history traversal in the in-process harness,
+`WebAssembly`'s absence in the growable-SAB fixture, and the QuickJS
+`eval(import())` gap.
 
 Every push to `main` now publishes the record to
 `tinybrowser-dev/tinybrowser-wpt-results` and the site at
