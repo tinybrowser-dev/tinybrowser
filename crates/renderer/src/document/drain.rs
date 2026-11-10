@@ -35,7 +35,8 @@ impl Document {
         self.adopt_dial_completions();
         let Some(task) = self.tasks.pop_front() else {
             let fired = self.check_load();
-            return !self.stop.is_set() && (fired || self.has_pending_frame_loads());
+            return !self.stop.is_set()
+                && (fired || self.has_pending_frame_loads() || self.awaits_proxy_replay());
         };
         // Joins the drain's turn when one is open, so serial tasks share
         // its deadline. A task outside a drain still opens its own turn.

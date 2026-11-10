@@ -149,6 +149,23 @@ worker thread polls its fetch channel while a dial is in flight).
 measured shared-memory transport, and the remaining milestones (shared and
 nested worker threads).
 
+The in-process harness can host popups now. A carrier with no tabs answers
+`BrowsingContextHost::opens_window_as_tab` false, and the renderer creates an
+auxiliary context in its own engine instead of asking the browser for a tab;
+the popup navigates from its initial `about:blank` and the opener's
+`WindowProxy` writes made before the popup's realm existed (an `onload`
+handler, a property assignment) are replayed into the first real document.
+A frame's `load` waits for that replay, so `popup.onload` fires.
+`workers/` went from 897/972 passing subtests and 223 perfect files to
+**933/974 and 227 perfect files**, gaining 36 subtests with no loss: the
+four `extendedLifetime` files, `data-url-shared`, the four module
+CSP/referrer files (they run now and fail only on real CSP/referrer gaps),
+and two partitioned-cookie assertions. Timeouts fell from 9 files to zero.
+The same-site-cookie files reach `test_driver.get_all_cookies()`, which the
+checked-in `testdriver-vendor.js` leaves unimplemented, and the SharedWorker
+`sameSiteCookies` option is still missing; those are the next worker gaps
+alongside CHIPS, module CSP/referrer, `IndexedDB`, and `ReadableStream`.
+
 Every push to `main` now publishes the record to
 `tinybrowser-dev/tinybrowser-wpt-results` and the site at
 `tinybrowser.ericc.ch/wpt` rebuilds from it: subtests passing, files passing,

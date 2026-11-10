@@ -2164,6 +2164,18 @@ pub trait BrowsingContextHost: Send + Sync + 'static {
         source: &NavigationSource,
     ) -> Option<WindowId>;
 
+    /// Whether `window.open` creates a context outside this engine, a browser
+    /// tab.
+    ///
+    /// The default is yes, and the engine asks [`Self::window_open`]. A host
+    /// that runs one engine with no tab carrier (the in-process WPT harness)
+    /// answers no, and the renderer hosts the auxiliary context itself, the
+    /// same way it already hosts a `blob:` popup
+    /// (<https://html.spec.whatwg.org/multipage/document-sequences.html#creating-a-new-auxiliary-browsing-context>).
+    fn opens_window_as_tab(&self) -> bool {
+        true
+    }
+
     /// Reports a frame the renderer created, before its document can run
     /// script. The browser records the frame's active sandboxing flag set and
     /// checks later calls against it

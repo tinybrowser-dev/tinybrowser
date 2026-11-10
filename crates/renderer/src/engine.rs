@@ -1809,6 +1809,10 @@ impl Engine {
                 self.remove_subtree(container);
             }
             self.apply_navigations(navigations);
+            // An auxiliary context's realm starts after `window.open`
+            // returned, so the opener's proxy writes are replayed here
+            // (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-set>).
+            let replayed = self.flush_pending_proxy_sets();
             if self.standalone_history {
                 for (frame, delta) in traversals {
                     self.traverse_embedded_history(frame, delta);
@@ -1824,12 +1828,53 @@ impl Engine {
             self.apply_deliveries(deliveries);
             self.flush_embedder_csp();
             let fired_load = self.fire_ready_frame_loads();
-            if !had_work && !fired_load {
+            if !had_work && !fired_load && !replayed {
                 break;
             }
             applied = true;
         }
         applied
+    }
+
+    /// Replays `WindowProxy` writes made before a frame's realm existed.
+    ///
+    /// `window.open` and `iframe.contentWindow` return a proxy before the new
+    /// document's realm starts, so writes such as `popup.onload = ...` are held
+    /// by the writer's realm. Every writer realm is asked, because a frame can
+    /// be written through by its parent, its opener, or a sibling. A navigation
+    /// resets the flag, so the writes land on the document that replaces the
+    /// initial `about:blank`
+    /// (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-set>).
+    fn flush_pending_proxy_sets(&mut self) -> bool {
+        let pending: Vec<FrameId> = self
+            .frames
+            .iter()
+            .filter(|(_, document)| document.needs_proxy_sets_replay())
+            .map(|(&frame, _)| frame)
+            .collect();
+        let mut replayed = false;
+        for frame in pending {
+            // A frame without a realm keeps its writes: they belong to the
+            // document whose realm starts next. `fire_ready_frame_loads` starts
+            // the realm of a frame whose `load` is held for this replay.
+            if !self.frames.get(&frame).is_some_and(Document::has_realm) {
+                continue;
+            }
+            let writers: Vec<FrameId> = self.frames.keys().copied().collect();
+            for writer in writers {
+                if let Some(document) = self.frames.get_mut(&writer) {
+                    document.flush_frame_proxy_sets(frame);
+                }
+            }
+            // Marked only after every writer flushed: a writer that cannot run
+            // (a stopped realm) must leave the frame waiting rather than drop
+            // its writes.
+            if let Some(document) = self.frames.get_mut(&frame) {
+                document.mark_proxy_sets_replayed();
+            }
+            replayed = true;
+        }
+        replayed
     }
 
     /// Removes a frame and every descendant it owns before the backing
@@ -2698,6 +2743,19 @@ impl Engine {
                     .get(&child)
                     .is_none_or(Document::waiting_for_load);
                 if waiting {
+                    // A frame whose `load` waits for the opener's or parent's
+                    // pre-realm `WindowProxy` writes still needs its realm: the
+                    // replay targets that realm, and `load` waits for the
+                    // replay. Without this the frame would wait for a realm
+                    // that only the replay can unblock
+                    // (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-set>).
+                    let awaiting_replay = self
+                        .frames
+                        .get(&child)
+                        .is_some_and(Document::awaits_proxy_replay);
+                    if awaiting_replay && let Some(document) = self.frames.get_mut(&child) {
+                        document.ensure_js_ok();
+                    }
                     continue;
                 }
                 // A navigated frame always gets its realm before `load`:

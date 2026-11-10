@@ -2118,7 +2118,20 @@ fn open_window(
     // handle
     // (<https://html.spec.whatwg.org/multipage/window-object.html#dom-open>).
     if plan.url.as_ref().is_some_and(|url| url.scheme() == "blob")
-        && let Some(frame) = World::create_auxiliary(world, plan.url.as_ref(), &target, plan.opener)
+        && let Some(frame) =
+            World::create_auxiliary(world, plan.url.as_ref(), &target, plan.opener, false)
+    {
+        return Some(WindowOpenAnswer {
+            context: OpenedContext::Frame(frame),
+            withholds: plan.withholds,
+        });
+    }
+    // A host with no tab carrier cannot open the window itself, so the
+    // renderer hosts it. The document may be cross-origin; frames already
+    // cross that boundary through `WindowProxy`.
+    if !services.opens_window_as_tab()
+        && let Some(frame) =
+            World::create_auxiliary(world, plan.url.as_ref(), &target, plan.opener, true)
     {
         return Some(WindowOpenAnswer {
             context: OpenedContext::Frame(frame),

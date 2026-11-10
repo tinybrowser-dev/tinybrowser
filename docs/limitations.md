@@ -65,18 +65,25 @@ the allocator hooks themselves are in place, and the QuickJS gaps behind the
 remaining clone and `eval(import())` failures are recorded in
 `docs/upstream.md`. The cookie jar does not implement the `Partitioned`
 attribute (CHIPS), so a partitioned cookie is stored as an ordinary one;
-`shared-worker-partitioned-cookies.tentative.https.html` reaches its
-worker assertions and then stops on the popup it opens.
+`shared-worker-partitioned-cookies.tentative.https.html` now runs through its
+popup and fails only the assertion that reads a partitioned cookie.
 The in-process WPT harness serves files directly, applies wptserve's
 `header(...)` and `sub` pipes, and stores a mounted document's `.headers`
-`Set-Cookie` in the jar; it does not implement `trickle` timing, and it
-has no popups, so tests that open a window or measure `trickle` still
-cannot run there. That is why every `extendedLifetime` case and the
-same-site-cookie files stop: they exchange messages through a popup. Its
-standalone session history also does not apply a main-frame
-`history.back()` to a child frame's joint entry, so
-`workers/semantics/navigation/001.html` cannot observe the child document
-being restored; that is a harness gap, not a worker lifetime rule.
+`Set-Cookie` in the jar; it does not implement `trickle` timing. It has no
+tab carrier, so the renderer hosts a popup in the same engine
+(`BrowsingContextHost::opens_window_as_tab` answers false): `window.open`
+creates an auxiliary context whose initial `about:blank` is replaced by a
+queued navigation, and the opener's pre-realm `WindowProxy` writes
+(`popup.onload`, a property assignment) are replayed into the popup's first
+real document. That is what lets the `extendedLifetime` cases, the
+partitioned-cookie files, and the module CSP/referrer files run. The
+same-site-cookie files now reach `test_driver.get_all_cookies()`, which the
+checked-in `testdriver-vendor.js` does not implement, and the SharedWorker
+`sameSiteCookies` option itself is not implemented. Its standalone session
+history also does not apply a main-frame `history.back()` to a child frame's
+joint entry, so `workers/semantics/navigation/001.html` cannot observe the
+child document being restored; that is a harness gap, not a worker lifetime
+rule.
 
 Canvas `getContext` returns a working 2D context (paths, text, gradients,
 patterns, filters, layers); the `bitmaprenderer` context exists but

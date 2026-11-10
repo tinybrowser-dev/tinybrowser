@@ -2383,20 +2383,23 @@ impl World {
     /// Creates an auxiliary top-level browsing context for `target`.
     ///
     /// `None` means this renderer cannot host it: either the calling document
-    /// is sandboxed without `allow-popups`, or the URL belongs to another site,
-    /// so the caller falls back to a browser tab. The navigation is queued and
-    /// applied after the caller's script stops, so the auxiliary document
-    /// exists first
+    /// is sandboxed without `allow-popups`, or the URL belongs to another site
+    /// and `allow_cross_origin` is false, so the caller falls back to a browser
+    /// tab. The navigation is queued and applied after the caller's script
+    /// stops, so the auxiliary document exists first
     /// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps>).
     pub(crate) fn create_auxiliary(
         world_rc: &Rc<RefCell<World>>,
         url: Option<&Url>,
         target: &TargetName,
         opener: crate::protocol::OpenerPolicy,
+        allow_cross_origin: bool,
     ) -> Option<FrameId> {
         let current = world_rc.borrow().frame;
         if !world_rc.borrow().allows_auxiliary_navigation()
-            || !world_rc.borrow().may_host_auxiliary(url)
+            || !world_rc
+                .borrow()
+                .may_host_auxiliary(url, allow_cross_origin)
         {
             return None;
         }
@@ -2439,10 +2442,18 @@ impl World {
     ///
     /// A context with no URL starts on `about:blank`; one on the opener's own
     /// origin keeps the opener's realm reachable as `window.opener` and as a
-    /// same-origin `WindowProxy`. Every other URL stays with the browser tab's
-    /// cross-origin context
+    /// same-origin `WindowProxy`. Every other URL normally stays with the
+    /// browser tab's cross-origin context
     /// (<https://html.spec.whatwg.org/multipage/browsers.html#concept-origin>).
-    fn may_host_auxiliary(&self, url: Option<&Url>) -> bool {
+    /// `allow_cross_origin` is the host's answer to
+    /// [`BrowserServices::opens_window_as_tab`]: a host with no tab carrier
+    /// keeps the context here whatever its origin.
+    ///
+    /// [`BrowserServices::opens_window_as_tab`]: crate::protocol::BrowsingContextHost::opens_window_as_tab
+    fn may_host_auxiliary(&self, url: Option<&Url>, allow_cross_origin: bool) -> bool {
+        if allow_cross_origin {
+            return true;
+        }
         url.is_none_or(|url| {
             if url.scheme() == "about" {
                 return true;

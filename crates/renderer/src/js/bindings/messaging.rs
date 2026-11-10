@@ -86,6 +86,7 @@ pub(crate) fn install_messaging(ctx: &Ctx<'_>) -> Result<()> {
         "__tbIsOutOfBoundsView",
         rquickjs::prelude::Func::from(is_out_of_bounds_view),
     )?;
+    globals.set("__tbCloseFrame", rquickjs::prelude::Func::from(close_frame))?;
     globals.set(
         "__tbRegisterSharedBuffer",
         rquickjs::prelude::Func::from(register_shared_buffer),
@@ -155,6 +156,29 @@ fn create_shared_buffer(
 /// (<https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal>).
 fn is_out_of_bounds_view(value: rquickjs::Value<'_>) -> bool {
     rquickjs::is_out_of_bounds_view(&value)
+}
+
+/// Closes an auxiliary context from its opener, across origins.
+///
+/// `close` is a cross-origin-accessible `WindowProxy` member, but only the
+/// context's opener may use it on another window
+/// (<https://html.spec.whatwg.org/multipage/browsers.html#crossoriginproperties-(-o-)>,
+/// <https://html.spec.whatwg.org/multipage/window-object.html#dom-window-close>).
+fn close_frame(ctx: Ctx<'_>, frame: f64) {
+    let Some(frame) = protocol_id(frame) else {
+        return;
+    };
+    let Ok(world) = world(&ctx) else {
+        return;
+    };
+    let caller = world.borrow().frame();
+    let shared = world.borrow().shared();
+    let mut shared = shared.borrow_mut();
+    let frame = FrameId::new(frame);
+    if shared.tree.opener(frame) != Some(caller) {
+        return;
+    }
+    shared.close_auxiliary(frame);
 }
 
 /// Mints one `BroadcastChannel` id from the engine-wide counter. A post names

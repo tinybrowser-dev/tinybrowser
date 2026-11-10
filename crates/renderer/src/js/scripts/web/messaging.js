@@ -58,10 +58,13 @@ const __tbFramePending = frame => {
 };
 host.__tbFlushFrameSets = function(frame) {
   const pending = __tbFramePendingSets[frame];
-  if (pending === undefined) return;
-  delete __tbFramePendingSets[frame];
+  if (pending === undefined) return false;
   const target = host.__tbFrameGlobal(frame);
-  if (target == null) return;
+  // A frame whose realm is not up yet keeps its writes: the document that
+  // starts next, not the initial about:blank a navigation replaces, is the one
+  // they belong to
+  // (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-set>).
+  if (target == null) return false;
   for (const key of Reflect.ownKeys(pending)) {
     if (key === '__proto__' || typeof key === 'symbol') {
       // `CreateDataProperty`: a `__proto__` write must not walk the prototype
@@ -74,6 +77,7 @@ host.__tbFlushFrameSets = function(frame) {
       target[key] = pending[key];
     }
   }
+  return true;
 };
 
 const __tbCloneFailure = () => new globalThis.DOMException('The object could not be cloned.', 'DataCloneError');
@@ -974,6 +978,7 @@ const __tbFrameProxy = frame => {
         }
         case 'window': case 'self': case 'frames': return proxy;
         case 'length': return host.__tbFrameChildCount(frame);
+        case 'close': return () => host.__tbCloseFrame(frame);
         case 'closed': return !host.__tbFrameRegistered(frame);
         case Symbol.toStringTag: return 'Window';
       }
@@ -1058,7 +1063,7 @@ const __tbFrameProxy = frame => {
     has(target, property) {
       switch (property) {
         case 'postMessage': case 'parent': case 'top': case 'window': case 'self':
-        case 'frames': case 'length': case 'closed':
+        case 'frames': case 'length': case 'close': case 'closed':
           return true;
       }
       const sameOrigin = host.__tbFrameGlobal(frame);

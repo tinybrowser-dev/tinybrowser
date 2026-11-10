@@ -141,10 +141,32 @@ against the 886/966 baseline. The gains are
 `Worker_terminate_event_queue`, and `workers/semantics/xhr/001.html` (the fetch
 poll above).
 
-## What threads will not fix
+Gate after popups: `workers/` is **974 subtests, 933 passing, 227 perfect
+files**, with 15 failing, 0 timeout, and 6 error files, and zero lost
+subtests. The popup work gained 36 subtests: the four `extendedLifetime`
+files, `data-url-shared`, the four module CSP/referrer files (now running
+instead of timing out), and two `shared-worker-partitioned-cookies`
+assertions. `FileAPI/url/url-charset.window.html` also gained two subtests
+through the same pending-write replay. `webmessaging/` stayed at 187/232
+passing subtests.
 
-- `extendedLifetime`, same-site cookies, partitioned shared workers, module
-  CSP/referrer: these need popups, which the in-process harness does not have.
+## What the remaining failures need
+
+Popups exist now: a host with no tab carrier (the in-process harness) has the
+renderer host an auxiliary context, so the `extendedLifetime`,
+partitioned-cookie, and module CSP/referrer files run. The remaining worker
+failures are implementation gaps, not the thread model:
+
+- Same-site cookies: `test_driver.get_all_cookies()` is missing from the
+  checked-in `testdriver-vendor.js`, and the SharedWorker `sameSiteCookies`
+  option is not implemented, so the third-party files fail on the worker
+  starting when it should not.
+- Partitioned cookies: the jar has no `Partitioned` attribute (CHIPS), so
+  `shared-worker-partitioned-cookies` cannot see a partitioned cookie, and
+  shared-worker partitioning itself is not implemented.
+- Module CSP and referrer: the module graph is fetched, but the
+  `worker-src`/`script-src` checks on static and dynamic imports and several
+  referrer-policy cases still disagree with the expected arrays.
 - `data-url`/`data-url-shared`: `IndexedDB` is absent.
 - Growable `SharedArrayBuffer`: construction and structured clone work, and
   the receiver keeps the sender's `maxByteLength`. The WPT fixture gets its

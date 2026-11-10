@@ -723,6 +723,13 @@ impl BrowsingContextHost for FsServices {
         None
     }
 
+    /// This host runs one engine and has no tab carrier: `window.open` creates
+    /// an auxiliary context in the same engine, so WPT files that need a popup
+    /// can run here.
+    fn opens_window_as_tab(&self) -> bool {
+        false
+    }
+
     fn navigate_named(
         &self,
         _name: &renderer::ContextName,
