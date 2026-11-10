@@ -213,15 +213,18 @@ than applied halfway; a browser-hosted tab actor owns the full list.
 by a real growable `SharedArrayBuffer` that `grow()` extends in place. The
 module compiler is still absent, so `Module`, `Instance`, `compile`, and
 `validate` are not exposed. The two `structured-clone` files now reach the
-`Growable SharedArrayBuffer` comparison instead of failing at the missing
-constructor, but they still fail it: the fixture asserts
-`sab instanceof ArrayBuffer`, and a `SharedArrayBuffer` is not an `ArrayBuffer`
-in any conforming engine. Chrome 152 fails the same assertion on the same
-page, so `workers/` stays at **964/974 passing subtests and 240 perfect
-files**, 8 failing, 0 timeout, 0 errors, with no subtest lost;
-`cookies/` and `webmessaging/` are unchanged. `docs/upstream.md` records the
-probe and why the fixture cannot pass without a non-conforming
-`SharedArrayBuffer`.
+`Growable SharedArrayBuffer` case, and the engine refuses to serialize shared
+memory outside a cross-origin isolated realm, which is the branch that case
+expects in the harness; both subtests pass. Serialization is gated by the new
+`crossOriginIsolated` capability, computed from `Cross-Origin-Opener-Policy`,
+`Cross-Origin-Embedder-Policy`, the secure context, and the embedder's (or
+worker creator's) capability, and the three worker files that transfer shared
+memory under COOP/COEP still pass. `workers/` rises to **966/974 passing
+subtests and 240 perfect files**, with 8 failing, 0 timeout, and 0 errors, no
+subtest lost; the two `structured-clone` files still count as failing only
+because `ReadableStream` transfer is a SKIP. `cookies/` and `webmessaging/`
+are unchanged. `docs/upstream.md` records the fixture's remaining wrong
+assertion for an isolated page.
 
 Every push to `main` now publishes the record to
 `tinybrowser-dev/tinybrowser-wpt-results` and the site at

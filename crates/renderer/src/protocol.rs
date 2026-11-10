@@ -774,11 +774,47 @@ pub struct Mount {
     pub body: Vec<u8>,
 }
 
+/// A response's `Cross-Origin-Opener-Policy` value
+/// (<https://html.spec.whatwg.org/multipage/browsers.html#cross-origin-opener-policies>).
+///
+/// Only `same-origin` grants cross-origin isolation, so the other values
+/// collapse into one variant.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CrossOriginOpenerPolicy {
+    /// `unsafe-none`, or a value this engine does not recognize.
+    #[default]
+    UnsafeNone,
+    /// `same-origin`.
+    SameOrigin,
+}
+
+/// A response's `Cross-Origin-Embedder-Policy` value
+/// (<https://html.spec.whatwg.org/multipage/browsers.html#cross-origin-embedder-policies>).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CrossOriginEmbedderPolicy {
+    /// `unsafe-none`, or a value this engine does not recognize.
+    #[default]
+    UnsafeNone,
+    /// `require-corp`.
+    RequireCorp,
+    /// `credentialless`.
+    Credentialless,
+}
+
+impl CrossOriginEmbedderPolicy {
+    /// Whether this value permits cross-origin isolation
+    /// (<https://html.spec.whatwg.org/multipage/browsers.html#compatible-with-cross-origin-isolation>).
+    #[must_use]
+    pub const fn compatible(self) -> bool {
+        matches!(self, Self::RequireCorp | Self::Credentialless)
+    }
+}
+
 /// The document's policy container: CSP list and referrer policy
 /// (<https://html.spec.whatwg.org/multipage/browsers.html#policy-containers>).
 ///
 /// A document carries one of these, and a local-scheme response inherits one
-/// clone, so no load path can leave the two fields out of sync.
+/// clone, so no load path can leave the fields out of sync.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct PolicyContainer {
     /// The content security policies that apply.
@@ -798,6 +834,17 @@ pub struct PolicyContainer {
     /// the opener of a popup is its creator. Chromium carries the same field on
     /// `PolicyContainerPolicies` and computes it at navigation commit.
     pub secure_context: bool,
+    /// The response's `Cross-Origin-Opener-Policy`.
+    pub cross_origin_opener_policy: CrossOriginOpenerPolicy,
+    /// The response's `Cross-Origin-Embedder-Policy`.
+    pub cross_origin_embedder_policy: CrossOriginEmbedderPolicy,
+    /// Whether the environment is cross-origin isolated
+    /// (<https://html.spec.whatwg.org/multipage/webappapis.html#concept-settings-object-cross-origin-isolated-capability>).
+    ///
+    /// Like the secure-context bit this decision depends on the creator, so it
+    /// is computed when the response installs and then inherits with the rest
+    /// of the container.
+    pub cross_origin_isolated: bool,
 }
 
 /// The document state a response installs: URL, content type, and the
@@ -898,6 +945,9 @@ impl ResponseSource {
             sandbox: SandboxFlags::empty(),
             referrer_policy: None,
             secure_context: false,
+            cross_origin_opener_policy: CrossOriginOpenerPolicy::UnsafeNone,
+            cross_origin_embedder_policy: CrossOriginEmbedderPolicy::UnsafeNone,
+            cross_origin_isolated: false,
         };
         match self {
             Self::Http(head) => &head.policy,
@@ -937,6 +987,42 @@ impl ResponseSource {
             Self::Http(head) => head.no_sniff,
             Self::Local { .. } => false,
         }
+    }
+}
+
+/// Whether `headers` carries `name` with a value equal to `expected`,
+/// ASCII case-insensitively
+/// (<https://fetch.spec.whatwg.org/#concept-header-list-get>).
+fn header_value_is(headers: &[(String, String)], name: &str, expected: &str) -> bool {
+    net::combined_header_in(headers, name)
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case(expected))
+}
+
+/// Parses a response's `Cross-Origin-Opener-Policy`
+/// (<https://html.spec.whatwg.org/multipage/browsers.html#cross-origin-opener-policies>).
+#[must_use]
+fn cross_origin_opener_policy(headers: &[(String, String)]) -> CrossOriginOpenerPolicy {
+    if header_value_is(headers, "cross-origin-opener-policy", "same-origin") {
+        CrossOriginOpenerPolicy::SameOrigin
+    } else {
+        CrossOriginOpenerPolicy::UnsafeNone
+    }
+}
+
+/// Parses a response's `Cross-Origin-Embedder-Policy`
+/// (<https://html.spec.whatwg.org/multipage/browsers.html#cross-origin-embedder-policies>).
+#[must_use]
+pub fn cross_origin_embedder_policy(headers: &[(String, String)]) -> CrossOriginEmbedderPolicy {
+    let Some(value) = net::combined_header_in(headers, "cross-origin-embedder-policy") else {
+        return CrossOriginEmbedderPolicy::UnsafeNone;
+    };
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("require-corp") {
+        CrossOriginEmbedderPolicy::RequireCorp
+    } else if value.eq_ignore_ascii_case("credentialless") {
+        CrossOriginEmbedderPolicy::Credentialless
+    } else {
+        CrossOriginEmbedderPolicy::UnsafeNone
     }
 }
 
@@ -990,6 +1076,12 @@ impl ResponseHead {
                         // computes the bit when it installs this head
                         // (<https://html.spec.whatwg.org/multipage/webappapis.html#secure-contexts>).
                         secure_context: false,
+                        cross_origin_opener_policy: cross_origin_opener_policy(headers),
+                        cross_origin_embedder_policy: cross_origin_embedder_policy(headers),
+                        // The environment, not the response alone, decides the
+                        // capability; the document computes it at install
+                        // (<https://html.spec.whatwg.org/multipage/webappapis.html#concept-settings-object-cross-origin-isolated-capability>).
+                        cross_origin_isolated: false,
                     }
                 },
                 reporting_endpoints: net::combined_header_in(headers, "reporting-endpoints"),

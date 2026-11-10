@@ -939,18 +939,17 @@ impl Worker {
             worker: id,
             parent: created.parent,
         };
-        let (script, worker_url) = if created.module {
+        let (script, worker_url, own_embedder_policy) = if created.module {
             // A module worker's url is its response URL: relative imports,
             // `fetch`, and XHR resolve against the redirect target, not the
             // request URL
             // (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>,
             // step 14).
-            (
-                WorkerScript::Module,
-                fetch_module_url(created, runtime).map_err(|()| failure)?,
-            )
+            let (url, embedder_policy) =
+                fetch_module_url(created, runtime).map_err(|()| failure)?;
+            (WorkerScript::Module, url, embedder_policy)
         } else {
-            let (source, response_url) =
+            let (source, response_url, embedder_policy) =
                 fetch_worker_source(created, runtime).map_err(|()| failure)?;
             // A script body is decoded with UTF-8 decode, whose replacement
             // mode substitutes U+FFFD rather than failing the load
@@ -958,6 +957,7 @@ impl Worker {
             (
                 WorkerScript::Classic(String::from_utf8_lossy(&source).into_owned()),
                 response_url,
+                embedder_policy,
             )
         };
         let world = if created.shared {
@@ -994,6 +994,15 @@ impl Worker {
                 created.top_level.clone()
             });
             state.policy = created.policy.clone();
+            if let Some(compatible) = own_embedder_policy {
+                state.policy.cross_origin_embedder_policy = compatible;
+            }
+            // A worker is cross-origin isolated only when its creator is and
+            // its own script response permits it. A `data:` or `blob:` script
+            // inherits the whole container, including the decision
+            // (<https://html.spec.whatwg.org/multipage/webappapis.html#concept-settings-object-cross-origin-isolated-capability>).
+            state.policy.cross_origin_isolated = state.policy.cross_origin_isolated
+                && state.policy.cross_origin_embedder_policy.compatible();
             state.sandbox = created.sandbox;
             state.referrer_url = created.referrer_url.clone();
             state.document_referrer = Some(created.referrer_url.clone());
@@ -1620,9 +1629,12 @@ impl Worker {
 /// redirect target. The module graph itself is fetched again at the worker's
 /// first turn, where the loader applies the MIME check and CSP
 /// (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>).
-fn fetch_module_url(created: &CreatedWorker, runtime: &FrameRuntime) -> Result<Url, ()> {
+fn fetch_module_url(
+    created: &CreatedWorker,
+    runtime: &FrameRuntime,
+) -> Result<(Url, Option<crate::protocol::CrossOriginEmbedderPolicy>), ()> {
     if created.url.scheme() == "data" || created.url.scheme() == "blob" {
-        return Ok(created.url.clone());
+        return Ok((created.url.clone(), None));
     }
     if created.url.scheme() != "http" && created.url.scheme() != "https" {
         return Err(());
@@ -1659,7 +1671,12 @@ fn fetch_module_url(created: &CreatedWorker, runtime: &FrameRuntime) -> Result<U
     if !(200..300).contains(&outcome.status) {
         return Err(());
     }
-    Ok(outcome.final_url)
+    Ok((
+        outcome.final_url,
+        Some(crate::protocol::cross_origin_embedder_policy(
+            &outcome.headers,
+        )),
+    ))
 }
 
 /// Fetches a classic worker's script and reports the URL its response came
@@ -1673,12 +1690,19 @@ fn fetch_module_url(created: &CreatedWorker, runtime: &FrameRuntime) -> Result<U
 fn fetch_worker_source(
     created: &CreatedWorker,
     runtime: &FrameRuntime,
-) -> Result<(Vec<u8>, Url), ()> {
+) -> Result<
+    (
+        Vec<u8>,
+        Url,
+        Option<crate::protocol::CrossOriginEmbedderPolicy>,
+    ),
+    (),
+> {
     if created.url.scheme() == "data" {
         // A `data:` worker script is not MIME-checked; every MIME type is
         // allowed, including an empty one (WPT `workers/data-url.html`).
         let (_, body) = crate::engine::decode_data_url_bounded(created.url.as_str()).ok_or(())?;
-        return Ok((body, created.url.clone()));
+        return Ok((body, created.url.clone(), None));
     }
     if created.url.scheme() == "blob" {
         // A `blob:` worker script is the store entry read when the constructor
@@ -1687,7 +1711,7 @@ fn fetch_worker_source(
         // step 5), so the backing Blob's type is irrelevant
         // (WPT `workers/Worker_script_mimetype.htm`).
         return match &created.local_script {
-            Some(source) => Ok((source.clone().into_bytes(), created.url.clone())),
+            Some(source) => Ok((source.clone().into_bytes(), created.url.clone(), None)),
             None => Err(()),
         };
     }
@@ -1732,7 +1756,13 @@ fn fetch_worker_source(
         return Err(());
     }
     match outcome.body {
-        crate::protocol::ResponseBody::Bytes(body) => Ok((body, outcome.final_url)),
+        crate::protocol::ResponseBody::Bytes(body) => Ok((
+            body,
+            outcome.final_url,
+            Some(crate::protocol::cross_origin_embedder_policy(
+                &outcome.headers,
+            )),
+        )),
         crate::protocol::ResponseBody::Streamed(_) | crate::protocol::ResponseBody::Undecodable => {
             Err(())
         }

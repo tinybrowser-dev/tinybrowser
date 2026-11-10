@@ -59,6 +59,8 @@ pub(crate) fn install(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
     bridge.set("__tb_mint", Func::from(mint_handle))?;
     let secure_context = world.borrow().is_secure_context();
     bridge.set("__tbSecureContext", secure_context)?;
+    let cross_origin_isolated = world.borrow().is_cross_origin_isolated();
+    bridge.set("__tbCrossOriginIsolated", cross_origin_isolated)?;
     let install: Function = ctx.eval(format!(
         "(function(host) {{ 'use strict';\n{}\n{}\n}})",
         include_str!("scripts/primordials.js"),
@@ -75,6 +77,15 @@ pub(crate) fn install(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
     ctx.globals().prop(
         "isSecureContext",
         Accessor::new_get(move || secure_context)
+            .enumerable()
+            .configurable(),
+    )?;
+    // `crossOriginIsolated` is a `WindowOrWorkerGlobalScope` mixin attribute
+    // with the same shape: an enumerable, configurable accessor and no setter
+    // (<https://html.spec.whatwg.org/multipage/webappapis.html#dom-crossoriginisolated>).
+    ctx.globals().prop(
+        "crossOriginIsolated",
+        Accessor::new_get(move || cross_origin_isolated)
             .enumerable()
             .configurable(),
     )?;

@@ -716,10 +716,23 @@ pub(crate) struct Document {
     /// the head from its URL and its creator's bit
     /// (<https://html.spec.whatwg.org/multipage/webappapis.html#secure-contexts>).
     response_secure_context: bool,
+    /// The response's `Cross-Origin-Opener-Policy` and
+    /// `Cross-Origin-Embedder-Policy` values
+    /// (<https://html.spec.whatwg.org/multipage/browsers.html#cross-origin-opener-policies>).
+    response_cross_origin_opener_policy: crate::protocol::CrossOriginOpenerPolicy,
+    response_cross_origin_embedder_policy: crate::protocol::CrossOriginEmbedderPolicy,
+    /// Whether the response being parsed is cross-origin isolated, computed at
+    /// the head from its own headers, its secure context, and its creator
+    /// (<https://html.spec.whatwg.org/multipage/webappapis.html#concept-settings-object-cross-origin-isolated-capability>).
+    response_cross_origin_isolated: bool,
     /// The creator's secure-context bit for the next navigation this document
     /// commits. `None` when the browser started the navigation, which has no
     /// creator (`is_secure_environment` then reads the URL alone).
     creator_secure_context: Option<bool>,
+    /// The creator's cross-origin isolation for the next navigation this
+    /// document commits. A nested document needs its ancestor's capability as
+    /// well as its own embedder policy.
+    creator_cross_origin_isolated: Option<bool>,
     /// The policy container a local-scheme document inherits, installed
     /// atomically after the parser replaces the document's state
     /// (<https://html.spec.whatwg.org/multipage/browsers.html#policy-containers>).
@@ -950,7 +963,13 @@ impl Document {
             response_sandbox: crate::protocol::SandboxFlags::default(),
             response_referrer_policy: None,
             response_secure_context: false,
+            response_cross_origin_opener_policy:
+                crate::protocol::CrossOriginOpenerPolicy::UnsafeNone,
+            response_cross_origin_embedder_policy:
+                crate::protocol::CrossOriginEmbedderPolicy::UnsafeNone,
+            response_cross_origin_isolated: false,
             creator_secure_context: None,
+            creator_cross_origin_isolated: None,
             inherited_policy: None,
             embedder_csp_reports: Vec::new(),
             csp_from_response: false,
@@ -1458,6 +1477,14 @@ impl Document {
     /// (<https://html.spec.whatwg.org/multipage/webappapis.html#secure-contexts>).
     pub(crate) fn set_creator_secure_context(&mut self, creator: Option<bool>) {
         self.creator_secure_context = creator;
+    }
+
+    /// Records the creator's cross-origin isolation for the navigation this
+    /// document is about to commit. A nested document needs its embedder's
+    /// capability in addition to its own `Cross-Origin-Embedder-Policy`
+    /// (<https://html.spec.whatwg.org/multipage/webappapis.html#concept-settings-object-cross-origin-isolated-capability>).
+    pub(crate) fn set_creator_cross_origin_isolated(&mut self, creator: Option<bool>) {
+        self.creator_cross_origin_isolated = creator;
     }
 
     /// Gives a blank document the URL `about:blank` and the creator's base
@@ -2083,6 +2110,11 @@ impl Document {
         self.response_sandbox = crate::protocol::SandboxFlags::default();
         self.response_referrer_policy = None;
         self.response_secure_context = false;
+        self.response_cross_origin_opener_policy =
+            crate::protocol::CrossOriginOpenerPolicy::UnsafeNone;
+        self.response_cross_origin_embedder_policy =
+            crate::protocol::CrossOriginEmbedderPolicy::UnsafeNone;
+        self.response_cross_origin_isolated = false;
         self.csp_from_response = false;
         self.sniff_header.clear();
         self.apply_mime_sniff = false;
@@ -2171,6 +2203,37 @@ impl Document {
                 .or(self.creator_secure_context),
         };
         self.response_secure_context = secure_context::is_secure_environment(&head.url, creator);
+        // A top-level document is isolated by its own headers. A nested one
+        // also needs its embedder's capability, and only the embedder policy
+        // applies to it; a local-scheme document inherits the whole decision
+        // with the rest of the policy container
+        // (<https://html.spec.whatwg.org/multipage/webappapis.html#concept-settings-object-cross-origin-isolated-capability>).
+        let creator_isolated = match &head.source {
+            crate::protocol::ResponseSource::Http(_) => self.creator_cross_origin_isolated,
+            crate::protocol::ResponseSource::Local { inherited } => inherited
+                .as_ref()
+                .map(|policy| policy.cross_origin_isolated)
+                .or(self.creator_cross_origin_isolated),
+        };
+        let top_level = {
+            let shared = self.shared.borrow();
+            shared.tree.top_level(self.frame) == self.frame
+        };
+        self.response_cross_origin_opener_policy = policy.cross_origin_opener_policy;
+        self.response_cross_origin_embedder_policy = policy.cross_origin_embedder_policy;
+        self.response_cross_origin_isolated = match &head.source {
+            crate::protocol::ResponseSource::Local { .. } => policy.cross_origin_isolated,
+            crate::protocol::ResponseSource::Http(_) => {
+                self.response_secure_context
+                    && policy.cross_origin_embedder_policy.compatible()
+                    && (if top_level {
+                        policy.cross_origin_opener_policy
+                            == crate::protocol::CrossOriginOpenerPolicy::SameOrigin
+                    } else {
+                        creator_isolated.unwrap_or(false)
+                    })
+            }
+        };
         self.csp_from_response = true;
         self.apply_mime_sniff = true;
         self.mime_guard = crate::sniff::MimeGuard {
@@ -2658,6 +2721,9 @@ impl Document {
                 sandbox: self.response_sandbox,
                 referrer_policy: self.response_referrer_policy,
                 secure_context: self.response_secure_context,
+                cross_origin_opener_policy: self.response_cross_origin_opener_policy,
+                cross_origin_embedder_policy: self.response_cross_origin_embedder_policy,
+                cross_origin_isolated: self.response_cross_origin_isolated,
             };
             return;
         }

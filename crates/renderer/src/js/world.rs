@@ -2209,6 +2209,15 @@ impl World {
         self.policy.secure_context
     }
 
+    /// Whether this realm may use APIs gated by cross-origin isolation.
+    ///
+    /// The bit is computed when the response installs and inherits through the
+    /// policy container, so a worker reads the creator's decision
+    /// (<https://html.spec.whatwg.org/multipage/webappapis.html#concept-settings-object-cross-origin-isolated-capability>).
+    pub(crate) fn is_cross_origin_isolated(&self) -> bool {
+        self.policy.cross_origin_isolated
+    }
+
     /// Whether this realm's frame is still attached to its document. A
     /// removed iframe's frame may still sit in the tree until the engine
     /// reconciles, so the container's connectedness decides.

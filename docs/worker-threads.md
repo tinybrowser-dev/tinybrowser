@@ -218,13 +218,14 @@ failures are implementation gaps, not the thread model:
   still fails its redirect assertion.
 - `data-url`/`data-url-shared`: `IndexedDB` is absent.
 - Growable `SharedArrayBuffer`: construction and structured clone work, and
-  the receiver keeps the sender's `maxByteLength`. `WebAssembly.Memory` now
-  exists, so the WPT fixture can obtain its constructor, but the fixture then
-  fails its own `assert_true(sab instanceof ArrayBuffer)`; a
-  `SharedArrayBuffer` is not an `ArrayBuffer`, and Chrome fails the same
-  assertion. `WebAssembly.Module`/`Instance` are absent, and quickjs-ng stores
+  the receiver keeps the sender's `maxByteLength`. `WebAssembly.Memory` exists,
+  so the WPT fixture can obtain its constructor, and a non-isolated document
+  now refuses to serialize shared memory, which is the branch the fixture
+  expects, so the case passes. An isolated page would still hit the fixture's
+  wrong `assert_true(sab instanceof ArrayBuffer)` (`docs/upstream.md`).
+  `WebAssembly.Module`/`Instance` are absent, and quickjs-ng stores
   `byteLength` per object, so a `grow()` in one runtime is not visible through
-  another runtime's object (`docs/upstream.md`).
+  another runtime's object.
 - `ReadableStream` transfer is a codec gap, not concurrency. `eval(import())`
   in a blob- or data-URL module worker cannot resolve a relative specifier,
   because the URL standard gives those URLs no hierarchical path; Chrome

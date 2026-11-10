@@ -404,6 +404,11 @@ const __tbEncode = (value, transfer, sourcePort) => {
       return index;
     }
     if (typeof SharedArrayBuffer === 'function' && input instanceof SharedArrayBuffer) {
+      // Shared memory cannot leave an agent cluster unless the sender is
+      // cross-origin isolated; the receiver is in the same cluster, so this
+      // one check covers both sides
+      // (<https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal>).
+      if (host.__tbCrossOriginIsolated !== true) throw __tbCloneFailure();
       // Shared memory is never copied: the payload names the sender's block,
       // and the receiver wraps the same bytes. Registering here also keeps the
       // block alive if the sender's object is collected before the message

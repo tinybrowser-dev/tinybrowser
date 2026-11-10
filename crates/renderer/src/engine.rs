@@ -2716,6 +2716,14 @@ impl Engine {
                     .frames
                     .get(&initiator)
                     .map(|document| document.world().borrow().policy.secure_context);
+                // A nested document is cross-origin isolated only when its
+                // embedder is, so the embedder's capability travels with the
+                // navigation
+                // (<https://html.spec.whatwg.org/multipage/webappapis.html#concept-settings-object-cross-origin-isolated-capability>).
+                let creator_isolated = self
+                    .frames
+                    .get(&initiator)
+                    .map(|document| document.world().borrow().policy.cross_origin_isolated);
                 // A navigation that replaces a top-level document belongs to
                 // the destination site's cookie partition, because that is the
                 // page the request is for. A nested frame stays in the
@@ -2734,6 +2742,7 @@ impl Engine {
                 };
                 if let Some(document) = self.frames.get_mut(&child) {
                     document.set_creator_secure_context(creator_secure);
+                    document.set_creator_cross_origin_isolated(creator_isolated);
                     let mut request = crate::protocol::DialRequest::new(
                         crate::protocol::RequestPolicy::FrameLoad,
                         url,
@@ -3564,6 +3573,126 @@ mod messaging_tests {
             tab: crate::protocol::TabState::default(),
             body: body.as_bytes().to_vec(),
         }
+    }
+
+    /// A mount with a real HTTP response, so the policy container sees the
+    /// response headers.
+    fn mount_http(url: &str, body: &str, headers: &[(&str, &str)]) -> Mount {
+        let headers: Vec<(String, String)> = headers
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+            .collect();
+        Mount {
+            head: ResponseHead::http(
+                200,
+                Url::parse(url).expect("mount URL"),
+                Some("text/html".to_owned()),
+                &headers,
+            ),
+            tab: crate::protocol::TabState::default(),
+            body: body.as_bytes().to_vec(),
+        }
+    }
+
+    /// Cross-origin isolation needs a secure origin, a `same-origin` opener
+    /// policy, and an embedder policy compatible with isolation. A shared
+    /// buffer may be cloned only when the sender is isolated
+    /// (<https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal>).
+    #[test]
+    fn cross_origin_isolation_gates_shared_array_buffer_cloning() {
+        let mut isolated = engine();
+        isolated
+            .mount_frame(
+                FrameId::MAIN,
+                &mount_http(
+                    "https://example.test/isolated",
+                    "<!doctype html><p>isolated",
+                    &[
+                        ("Cross-Origin-Opener-Policy", "same-origin"),
+                        ("Cross-Origin-Embedder-Policy", "require-corp"),
+                    ],
+                ),
+            )
+            .expect("mount");
+        let _ready = isolated.drain_ready();
+        let probe = isolated
+            .eval_in(
+                FrameId::MAIN,
+                r"
+                (function () {
+                  const copy = structuredClone(new SharedArrayBuffer(8));
+                  return JSON.stringify({
+                    crossOriginIsolated: self.crossOriginIsolated,
+                    secure: self.isSecureContext,
+                    bytes: copy.byteLength,
+                    shared: copy instanceof SharedArrayBuffer,
+                  });
+                })()
+                ",
+            )
+            .expect("clone");
+        assert_eq!(
+            probe,
+            r#"{"crossOriginIsolated":true,"secure":true,"bytes":8,"shared":true}"#
+        );
+
+        let mut open = engine();
+        open.mount_frame(
+            FrameId::MAIN,
+            &mount_http(
+                "https://example.test/open",
+                "<!doctype html><p>open",
+                &[("Cross-Origin-Embedder-Policy", "require-corp")],
+            ),
+        )
+        .expect("mount");
+        let _ready = open.drain_ready();
+        let probe = open
+            .eval_in(
+                FrameId::MAIN,
+                r"
+                (function () {
+                  let error;
+                  try { structuredClone(new SharedArrayBuffer(8)); }
+                  catch (caught) { error = caught.name + ':' + caught.code; }
+                  return JSON.stringify({
+                    crossOriginIsolated: self.crossOriginIsolated,
+                    error,
+                  });
+                })()
+                ",
+            )
+            .expect("clone");
+        assert_eq!(
+            probe,
+            r#"{"crossOriginIsolated":false,"error":"DataCloneError:25"}"#
+        );
+
+        let mut insecure = engine();
+        insecure
+            .mount_frame(
+                FrameId::MAIN,
+                &mount_http(
+                    "http://example.test/insecure",
+                    "<!doctype html><p>insecure",
+                    &[
+                        ("Cross-Origin-Opener-Policy", "same-origin"),
+                        ("Cross-Origin-Embedder-Policy", "require-corp"),
+                    ],
+                ),
+            )
+            .expect("mount");
+        let _ready = insecure.drain_ready();
+        let probe = insecure
+            .eval_in(
+                FrameId::MAIN,
+                "JSON.stringify({ crossOriginIsolated: self.crossOriginIsolated, secure: self.isSecureContext })",
+            )
+            .expect("probe");
+        assert_eq!(
+            probe, r#"{"crossOriginIsolated":false,"secure":false}"#,
+            "a policy header cannot isolate an insecure origin"
+        );
     }
 
     #[test]
