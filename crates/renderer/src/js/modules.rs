@@ -13,17 +13,30 @@ pub(super) struct WebModuleResolver;
 impl Resolver for WebModuleResolver {
     fn resolve<'js>(
         &mut self,
-        _ctx: &Ctx<'js>,
+        ctx: &Ctx<'js>,
         base: &str,
         name: &str,
         _attributes: Option<ImportAttributes<'js>>,
     ) -> Result<String> {
-        let base = Url::parse(base).map_err(|_| Error::new_resolving(base, name))?;
+        // `QuickJS` labels code it compiles from a string `<input>`, so `eval`
+        // and the engine's own shim have no script URL to resolve against.
+        // The realm's base URL stands in, the way an indirect `eval` uses the
+        // global's base URL
+        // (<https://tc39.es/ecma262/#sec-hostresolveimportedmodule>).
+        let base = match Url::parse(base) {
+            Ok(base) => base,
+            Err(_) => super::bindings::world(ctx)
+                .map(|world| world.borrow().document_url.clone())
+                .map_err(|_| Error::new_resolving(base, name))?,
+        };
         let resolved = Url::parse(name)
             .or_else(|_| base.join(name))
             .map_err(|_| Error::new_resolving(base.as_str(), name))?;
         match resolved.scheme() {
-            "http" | "https" => Ok(resolved.into()),
+            // The schemes this engine's module loader can fetch: `http`/
+            // `https` over the network, and `blob`/`data` locally
+            // (<https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script>).
+            "http" | "https" | "blob" | "data" => Ok(resolved.into()),
             _ => Err(Error::new_resolving(base.as_str(), name)),
         }
     }
@@ -41,7 +54,18 @@ impl Loader for WebModuleLoader {
         if attributes.is_some() {
             return Err(Error::new_loading(name));
         }
-        load_module(ctx, name)
+        load_module(ctx, name).map_err(|error| match error {
+            // A module whose fetch failed reaches script as a TypeError, the
+            // way Chromium reports it. `QuickJS`'s loader contract turns every
+            // host `Loading` failure into a ReferenceError, so the exception is
+            // built here instead
+            // (<https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script>).
+            Error::Loading { .. } => rquickjs::Exception::throw_type(
+                ctx,
+                &format!("Failed to fetch dynamically imported module: {name}"),
+            ),
+            other => other,
+        })
     }
 }
 
@@ -79,12 +103,61 @@ fn module_request_blocked(
     Ok(())
 }
 
+/// Declares a module and fills its `import.meta`.
+///
+/// `QuickJS` allocates `import.meta` as an empty null-prototype object and
+/// never adds the host-defined `url` member, so the module's own URL is
+/// installed here
+/// (<https://html.spec.whatwg.org/multipage/webappapis.html#hostgetimportmetaproperties>).
+fn declare_module<'js>(
+    ctx: &Ctx<'js>,
+    name: &str,
+    source: impl Into<Vec<u8>>,
+) -> Result<Module<'js, Declared>> {
+    let module = Module::declare(ctx.clone(), name, source)?;
+    module.meta()?.set("url", name)?;
+    Ok(module)
+}
+
+/// Declares an inline module script, whose `import.meta.url` is the document
+/// URL with the script's unique fragment
+/// (<https://html.spec.whatwg.org/multipage/webappapis.html#hostgetimportmetaproperties>).
+pub(super) fn declare_inline<'js>(
+    ctx: &Ctx<'js>,
+    name: &str,
+    source: &str,
+) -> Result<Module<'js, Declared>> {
+    declare_module(ctx, name, source)
+}
+
 pub(super) fn load_module<'js>(ctx: &Ctx<'js>, name: &str) -> Result<Module<'js, Declared>> {
     // A JavaScript module graph is fetched before evaluation
     // (<https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script>).
     // QuickJS's host loader is synchronous, so the renderer waits here while
     // the browser process performs the network operation on its I/O runtime.
     let world_rc = super::bindings::world(ctx)?;
+    let Ok(url) = Url::parse(name) else {
+        return Err(Error::new_loading(name));
+    };
+    // A local-scheme module needs no network fetch: `blob:` reads the Blob URL
+    // Store and `data:` decodes itself. Neither is MIME-gated; a module script
+    // is created from the UTF-8 decoded body
+    // (<https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script>).
+    if url.scheme() == "blob" || url.scheme() == "data" {
+        let source = if url.scheme() == "blob" {
+            world_rc
+                .borrow()
+                .object_url_contents(name)
+                .map(|contents| contents.to_string())
+        } else {
+            crate::engine::decode_data_url_bounded(name)
+                .map(|(_, body)| String::from_utf8_lossy(&body).into_owned())
+        };
+        let Some(source) = source else {
+            return Err(Error::new_loading(name));
+        };
+        return declare_module(ctx, name, source);
+    }
     let (services, initiator, referrer_url, referrer_policy, crossorigin, gate) = {
         let world = world_rc.borrow();
         // Every fetch in a module graph keeps the graph root's script fetch
@@ -121,9 +194,6 @@ pub(super) fn load_module<'js>(ctx: &Ctx<'js>, name: &str) -> Result<Module<'js,
     module_request_blocked(&world_rc, ctx, name)?;
 
     let (send, receive) = mpsc::sync_channel(1);
-    let Ok(url) = Url::parse(name) else {
-        return Err(Error::new_loading(name));
-    };
     let mut request = DialRequest::new(
         crate::protocol::RequestPolicy::ModuleScript { crossorigin },
         &url,
@@ -176,5 +246,8 @@ pub(super) fn load_module<'js>(ctx: &Ctx<'js>, name: &str) -> Result<Module<'js,
     let crate::protocol::ResponseBody::Bytes(body) = outcome.body else {
         return Err(Error::new_loading(name));
     };
-    Module::declare(ctx.clone(), name, body)
+    // A module script is registered under the URL its response came from, so
+    // relative imports in a redirected graph resolve against the final URL
+    // (<https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script>).
+    declare_module(ctx, outcome.final_url.as_str(), body)
 }

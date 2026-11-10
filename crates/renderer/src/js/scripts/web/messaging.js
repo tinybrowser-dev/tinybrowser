@@ -99,6 +99,72 @@ const __tbIsTypedArray = value => __tbProbe(candidate => Object.getOwnPropertyDe
 const __tbIsBoxedBoolean = value => __tbProbe(candidate => Boolean.prototype.valueOf.call(candidate), value);
 const __tbIsBoxedNumber = value => __tbProbe(candidate => Number.prototype.valueOf.call(candidate), value);
 const __tbIsBoxedString = value => __tbProbe(candidate => String.prototype.valueOf.call(candidate), value);
+const __tbIsBoxedBigInt = value => typeof BigInt === 'function'
+  && __tbProbe(candidate => BigInt.prototype.valueOf.call(candidate), value);
+// `ImageData` is serializable but has no brand slot; its `width` accessor is
+// an internal-slot check that works across realms
+// (<https://html.spec.whatwg.org/multipage/structured-data.html#serializable-objects>).
+const __tbImageDataPrototype = typeof globalThis.ImageData === 'function'
+  ? globalThis.ImageData.prototype
+  : null;
+// A prototype-chain check, not a member probe: the `width`/`data` accessors
+// do not validate their receiver, so probing one would also match an
+// `ImageBitmap` or a plain object. A subclass still matches, and deserializes
+// as its closest serializable superclass
+// (<https://html.spec.whatwg.org/multipage/structured-data.html#structureddeserialize>).
+const __tbHasPrototype = (value, prototype) => {
+  if (value === null || (typeof value !== 'object' && typeof value !== 'function')) {
+    return false;
+  }
+  for (let object = Object.getPrototypeOf(value); object !== null; object = Object.getPrototypeOf(object)) {
+    if (object === prototype) return true;
+  }
+  return false;
+};
+const __tbIsImageData = value => __tbImageDataPrototype !== null
+  && __tbHasPrototype(value, __tbImageDataPrototype);
+const __tbImageBitmapPrototype = typeof globalThis.ImageBitmap === 'function'
+  ? globalThis.ImageBitmap.prototype
+  : null;
+// Every `ImageBitmap` carries the registry id the Rust canvas layer assigned.
+const __tbIsImageBitmap = value => __tbImageBitmapPrototype !== null
+  && __tbHasPrototype(value, __tbImageBitmapPrototype)
+  && typeof value.__tbBitmap === 'number';
+// Interface constructors the decoder instantiates are captured here, so a
+// page that deletes or replaces a global cannot change what a clone becomes
+// (<https://html.spec.whatwg.org/multipage/structured-data.html#structureddeserialize>).
+const __tbCloneIntrinsic = name =>
+  typeof globalThis[name] === 'function' ? globalThis[name] : undefined;
+const __tbBlobCtor = __tbCloneIntrinsic('Blob');
+const __tbFileCtor = __tbCloneIntrinsic('File');
+const __tbImageDataCtor = __tbCloneIntrinsic('ImageData');
+const __tbOffscreenCanvasCtor = __tbCloneIntrinsic('OffscreenCanvas');
+const __tbDomExceptionCtor = __tbCloneIntrinsic('DOMException');
+const __tbUint8ClampedCtor = globalThis.Uint8ClampedArray;
+const __tbViewCtors = Object.create(null);
+for (const name of [
+  'Int8Array', 'Uint8Array', 'Uint8ClampedArray', 'Int16Array', 'Uint16Array',
+  'Int32Array', 'Uint32Array', 'Float32Array', 'Float64Array',
+  'BigInt64Array', 'BigUint64Array',
+]) {
+  if (typeof globalThis[name] === 'function') __tbViewCtors[name] = globalThis[name];
+}
+if (typeof globalThis.Float16Array === 'function') {
+  __tbViewCtors.Float16Array = globalThis.Float16Array;
+}
+const __tbErrorCtors = Object.create(null);
+for (const name of [
+  'Error', 'EvalError', 'RangeError', 'ReferenceError', 'SyntaxError',
+  'TypeError', 'URIError', 'AggregateError',
+]) {
+  if (typeof globalThis[name] === 'function') __tbErrorCtors[name] = globalThis[name];
+}
+// An array index is a canonical non-negative integer string below 2^32-1.
+const __tbIsArrayIndex = key => {
+  const number = Number(key);
+  return Number.isInteger(number) && number >= 0 && number < 4294967295
+    && String(number) === key;
+};
 // A real error (from any realm) answers `[object Error]` through its internal
 // slot; a plain object can only do so by defining `Symbol.toStringTag`, which
 // real errors never do
@@ -135,7 +201,33 @@ const __tbTransferList = transfer => {
   if (transfer === null || typeof transfer !== 'object' || typeof transfer[Symbol.iterator] !== 'function') {
     throw new TypeError('The transfer list must be an iterable object');
   }
-  return Array.from(transfer);
+  const items = Array.from(transfer);
+  // Every element converts to the WebIDL `object` type: `null` and
+  // `undefined` have no object conversion and throw a TypeError, before any
+  // de/re-serialization or transfer side effect
+  // (<https://webidl.spec.whatwg.org/#es-object>).
+  for (const item of items) {
+    if (item === null || (typeof item !== 'object' && typeof item !== 'function')) {
+      throw new TypeError('The transfer list must contain only objects');
+    }
+  }
+  return items;
+};
+
+// `postMessage(message, sequence<object> transfer)` and
+// `postMessage(message, optional StructuredSerializeOptions options = {})`
+// are overloads on `Worker`, `DedicatedWorkerGlobalScope`, and `MessagePort`.
+// WebIDL picks the sequence only for an object with an `@@iterator` method;
+// `null`, `undefined`, a primitive, and a non-iterable object all pick the
+// dictionary, whose `transfer` member is the transfer list
+// (<https://webidl.spec.whatwg.org/#dfn-overload-resolution-algorithm>).
+const __tbPostMessageTransfer = transfer => {
+  if (transfer !== null && typeof transfer === 'object'
+      && typeof transfer[Symbol.iterator] === 'function') {
+    return transfer;
+  }
+  if (transfer === null || transfer === undefined) return undefined;
+  return transfer.transfer;
 };
 
 // Serializes `value` into { payload, ports }, detaching every transferred
@@ -149,12 +241,14 @@ const __tbEncode = (value, transfer, sourcePort) => {
   const buffers = new __tbPrivateMap();     // ArrayBuffer -> node slot, or -1 once listed
   const transferred = new __tbPrivateMap(); // MessagePort -> endpoint id
   const canvases = new __tbPrivateMap();    // OffscreenCanvas -> node slot, or -1 once listed
+  const transferredBitmaps = new __tbPrivateSet();
+  const bitmapDescriptors = new __tbPrivateMap();
   for (const item of __tbTransferList(transfer)) {
     if (item instanceof ArrayBuffer) {
       if (buffers.has(item)) throw new globalThis.DOMException('Transfer list contains duplicate buffers', 'DataCloneError');
       if (typeof item.transfer !== 'function') throw new globalThis.DOMException('The buffer is not transferable', 'DataCloneError');
       buffers.set(item, -1);
-    } else if (item instanceof globalThis.MessagePort) {
+    } else if (item instanceof __tbMessagePortConstructor) {
       if (item === sourcePort) throw new globalThis.DOMException('Cannot transfer the source port', 'DataCloneError');
       const itemData = __tbBrand(item, __tbPortData);
       if (itemData.closed) throw new globalThis.DOMException('Cannot transfer a detached MessagePort', 'DataCloneError');
@@ -174,6 +268,14 @@ const __tbEncode = (value, transfer, sourcePort) => {
         throw new globalThis.DOMException('Cannot transfer an OffscreenCanvas with a context', 'InvalidStateError');
       }
       canvases.set(item, -1);
+    } else if (__tbIsImageBitmap(item)) {
+      if (transferredBitmaps.has(item)) {
+        throw new globalThis.DOMException('Transfer list contains duplicate bitmaps', 'DataCloneError');
+      }
+      if (host.__tbImageBitmapPixels(item) == null) {
+        throw new globalThis.DOMException('Cannot transfer a detached ImageBitmap', 'DataCloneError');
+      }
+      transferredBitmaps.add(item);
     } else {
       throw new globalThis.DOMException('Value not transferable', 'DataCloneError');
     }
@@ -232,9 +334,51 @@ const __tbEncode = (value, transfer, sourcePort) => {
       let descriptor;
       if (__tbFileData.get(input) !== undefined) {
         const file = __tbFileData.get(input);
-        descriptor = ['file', file.name, file.lastModified, blob.type, bytes];
+        descriptor = ['file', file.name, blob.type, file.lastModified, bytes];
       } else {
         descriptor = ['blob', blob.type, bytes];
+      }
+      const index = slot(descriptor);
+      seen.set(input, index);
+      return index;
+    }
+    // A `FileList` clones its files; the interface object is recreated in the
+    // target realm
+    // (<https://w3c.github.io/FileAPI/#filelist-section>).
+    if (__tbFileListData.get(input) !== undefined) {
+      const files = __tbFileListData.get(input).files;
+      const index = slot(null);
+      seen.set(input, index);
+      const entries = __tbPrivateArray();
+      for (let item = 0; item < files.length; item++) {
+        __tbArray.push(entries, encode(files[item]));
+      }
+      nodes[index] = __tbSetPrototypeOf(['filelist', entries], null);
+      return index;
+    }
+    // `ImageData` clones its pixels as a fresh `Uint8ClampedArray`
+    // (<https://html.spec.whatwg.org/multipage/structured-data.html#serializable-objects>).
+    if (__tbIsImageData(input)) {
+      const index = slot([
+        'imagedata', input.width, input.height,
+        __tbBase64Encode(new __tbUint8Array(input.data.buffer, input.data.byteOffset, input.data.byteLength)),
+      ]);
+      seen.set(input, index);
+      return index;
+    }
+    // `ImageBitmap` is serializable and transferable; the receiver gets a
+    // fresh bitmap with the same pixels
+    // (<https://html.spec.whatwg.org/multipage/structured-data.html#serializable-objects>).
+    if (__tbIsImageBitmap(input)) {
+      let descriptor = bitmapDescriptors.get(input);
+      if (descriptor === undefined) {
+        const pixels = host.__tbImageBitmapPixels(input);
+        if (pixels === null || pixels === undefined) throw __tbCloneFailure();
+        descriptor = [
+          'bitmap', input.width, input.height, input.__tbOriginClean === true,
+          __tbBase64Encode(new __tbUint8Array(pixels.buffer, pixels.byteOffset, pixels.byteLength)),
+        ];
+        bitmapDescriptors.set(input, descriptor);
       }
       const index = slot(descriptor);
       seen.set(input, index);
@@ -249,7 +393,9 @@ const __tbEncode = (value, transfer, sourcePort) => {
         // failure, not a raw TypeError.
         throw __tbCloneFailure();
       }
-      const index = slot(['buffer', __tbBase64Encode(view)]);
+      const index = slot([
+        'buffer', __tbBase64Encode(view), input.maxByteLength, input.resizable === true,
+      ]);
       seen.set(input, index);
       return index;
     }
@@ -258,11 +404,36 @@ const __tbEncode = (value, transfer, sourcePort) => {
       // has no shared-memory transport, so refuse instead of corrupting.
       throw __tbCloneFailure();
     }
-    if (__tbIsTypedArray(input) || __tbIsDataView(input)) {
-      const buffer = encode(input.buffer);
-      const descriptor = __tbIsDataView(input)
-        ? ['view', buffer, 'DataView', input.byteOffset, input.byteLength]
-        : ['view', buffer, input.constructor.name, input.byteOffset, input.length];
+    // `ArrayBuffer.isView` is the brand check: the typed-array `length`
+    // accessor throws for a view left out of bounds by `resize()`, so probing
+    // it would misclassify the view as a plain object
+    // (<https://tc39.es/ecma262/#sec-arraybuffer.isview>).
+    if (__tbIsArrayBufferView(input)) {
+      const tag = Object.prototype.toString.call(input);
+      const kind = tag.slice(8, -1);
+      let buffer;
+      let byteOffset;
+      let byteLength;
+      try {
+        buffer = input.buffer;
+        byteOffset = input.byteOffset;
+        byteLength = input.byteLength;
+      } catch (error) {
+        // A view over a resized-away buffer has no byte range to read.
+        throw __tbCloneFailure();
+      }
+      // A view that falls outside its (resized) buffer cannot be serialized
+      // (<https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal>).
+      if (byteOffset + byteLength > buffer.byteLength) throw __tbCloneFailure();
+      // A length-tracking view is created without an explicit length and grows
+      // with its resizable buffer; the receiver rebuilds it the same way
+      // (<https://tc39.es/ecma262/#sec-arraybuffer.prototype.resize>).
+      const tracked = buffer.resizable === true
+        && byteOffset === 0 && byteLength === buffer.byteLength;
+      const encoded = encode(buffer);
+      const descriptor = kind === 'DataView'
+        ? ['view', encoded, 'DataView', byteOffset, byteLength, tracked]
+        : ['view', encoded, kind, byteOffset, input.length, tracked];
       const index = slot(descriptor);
       seen.set(input, index);
       return index;
@@ -286,12 +457,25 @@ const __tbEncode = (value, transfer, sourcePort) => {
     if (__tbIsError(input)) {
       const index = slot(null);
       seen.set(input, index);
-      nodes[index] = __tbSetPrototypeOf(['error', String(input.name), String(input.message)], null);
+      // An error's `name`, its own `message` (a missing message is not the
+      // same as an empty one), and its `cause` survive the clone; custom
+      // properties do not
+      // (<https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal>).
+      const hasMessage = __tbHasOwnProperty.call(input, 'message');
+      const cause = __tbHasOwnProperty.call(input, 'cause') ? encode(input.cause) : null;
+      nodes[index] = __tbSetPrototypeOf([
+        'error',
+        String(input.name),
+        hasMessage ? String(input.message) : '',
+        hasMessage,
+        cause,
+      ], null);
       return index;
     }
     if (__tbIsBoxedBoolean(input)) return slot(['boxed', 'Boolean', input.valueOf()]);
     if (__tbIsBoxedNumber(input)) return slot(['boxed', 'Number', __tbNumberWire(input.valueOf())]);
     if (__tbIsBoxedString(input)) return slot(['boxed', 'String', input.valueOf()]);
+    if (__tbIsBoxedBigInt(input)) return slot(['boxedbigint', String(input.valueOf())]);
     if (__tbIsMap(input)) {
       const index = slot(null);
       seen.set(input, index);
@@ -313,7 +497,15 @@ const __tbEncode = (value, transfer, sourcePort) => {
       seen.set(input, index);
       const items = __tbPrivateArray();
       for (let item = 0; item < input.length; item++) __tbArray.push(items, encode(input[item]));
-      nodes[index] = __tbSetPrototypeOf(['array', items], null);
+      // Array serialization also copies own enumerable properties that are not
+      // indices, like any other object graph node
+      // (<https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal>).
+      const properties = __tbPrivateArray();
+      for (const key of Object.keys(input)) {
+        if (__tbIsArrayIndex(key)) continue;
+        __tbArray.push(properties, __tbSetPrototypeOf([key, encode(input[key])], null));
+      }
+      nodes[index] = __tbSetPrototypeOf(['array', items, properties], null);
       return index;
     }
     // Anything else clones as an object with its own enumerable properties,
@@ -337,11 +529,21 @@ const __tbEncode = (value, transfer, sourcePort) => {
       throw new globalThis.DOMException('The buffer is already detached', 'DataCloneError');
     }
     if (index !== -1) {
-      nodes[index] = __tbSetPrototypeOf(['buffer', __tbBase64Encode(new __tbUint8Array(moved))], null);
+      nodes[index] = __tbSetPrototypeOf([
+        'buffer',
+        __tbBase64Encode(new __tbUint8Array(moved)),
+        moved.maxByteLength,
+        moved.resizable === true,
+      ], null);
     }
   }
   for (const [canvas] of canvases) {
     host.__tbOffscreenDetach(canvas);
+  }
+  // Transferring an ImageBitmap closes the source bitmap
+  // (<https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializewithtransfer>).
+  for (const bitmap of transferredBitmaps) {
+    bitmap.close();
   }
   const ports = __tbPrivateArray();
   for (const [port, id] of transferred) {
@@ -365,7 +567,22 @@ const __tbDecode = (payload, ports) => {
   values.length = nodes.length;
   for (let index = 0; index < nodes.length; index++) {
     switch (nodes[index][0]) {
-      case 'buffer': values[index] = __tbBase64Bytes(nodes[index][1]).buffer; break;
+      case 'buffer': {
+        const bytes = __tbBase64Bytes(nodes[index][1]);
+        const resizable = nodes[index][3] === true;
+        const max = typeof nodes[index][2] === 'number' ? nodes[index][2] : bytes.length;
+        // A resizable buffer keeps its maximum so a later `resize()` reaches
+        // the same ceiling the sender had
+        // (<https://tc39.es/ecma262/#sec-arraybuffer-constructor>).
+        const buffer = resizable && max > bytes.length
+          ? new ArrayBuffer(bytes.length, { maxByteLength: max })
+          : resizable
+            ? new ArrayBuffer(bytes.length, { maxByteLength: bytes.length })
+            : new ArrayBuffer(bytes.length);
+        new Uint8Array(buffer).set(bytes);
+        values[index] = buffer;
+        break;
+      }
       case 'object': values[index] = {}; break;
       case 'array': values[index] = new Array(nodes[index][1].length); break;
       case 'map': values[index] = new Map(); break;
@@ -378,9 +595,21 @@ const __tbDecode = (payload, ports) => {
     switch (descriptor[0]) {
       case 'view': {
         const buffer = values[descriptor[1]];
-        values[index] = descriptor[2] === 'DataView'
-          ? new DataView(buffer, descriptor[3], descriptor[4])
-          : new globalThis[descriptor[2]](buffer, descriptor[3], descriptor[4]);
+        // A length-tracking view takes no explicit length and follows the
+        // buffer's size when it is resized
+        // (<https://tc39.es/ecma262/#sec-arraybuffer.prototype.resize>).
+        const tracked = descriptor[5] === true;
+        if (descriptor[2] === 'DataView') {
+          values[index] = tracked
+            ? new DataView(buffer, descriptor[3])
+            : new DataView(buffer, descriptor[3], descriptor[4]);
+        } else {
+          const View = __tbViewCtors[descriptor[2]];
+          if (View === undefined) throw new Error(`unknown typed array ${descriptor[2]}`);
+          values[index] = tracked
+            ? new View(buffer, descriptor[3])
+            : new View(buffer, descriptor[3], descriptor[4]);
+        }
         break;
       }
       case 'undefined': values[index] = undefined; break;
@@ -389,26 +618,55 @@ const __tbDecode = (payload, ports) => {
       case 'number': values[index] = __tbNumberValue(descriptor[1]); break;
       case 'string': values[index] = descriptor[1]; break;
       case 'bigint': values[index] = BigInt(descriptor[1]); break;
-      case 'offscreen': values[index] = new globalThis.OffscreenCanvas(descriptor[1], descriptor[2]); break;
+      case 'offscreen':
+        values[index] = new __tbOffscreenCanvasCtor(descriptor[1], descriptor[2]);
+        break;
       case 'date': values[index] = new Date(__tbNumberValue(descriptor[1])); break;
       case 'regexp': values[index] = new RegExp(descriptor[1], descriptor[2]); break;
-      case 'domexception': values[index] = new globalThis.DOMException(descriptor[2], descriptor[1]); break;
+      case 'domexception':
+        values[index] = new __tbDomExceptionCtor(descriptor[2], descriptor[1]);
+        break;
       case 'error': {
         const name = descriptor[1];
-        const ctor = globalThis[name];
-        values[index] = typeof ctor === 'function' && ctor.prototype instanceof Error
-          ? new ctor(descriptor[2])
-          : new Error(descriptor[2]);
+        const ctor = __tbErrorCtors[name] ?? __tbErrorCtors.Error;
+        values[index] = descriptor[3] ? new ctor(descriptor[2]) : new ctor();
         values[index].name = name;
         break;
       }
       case 'boxed': {
-        const ctor = globalThis[descriptor[1]];
+        const ctor = __tbCloneIntrinsic(descriptor[1]);
         values[index] = new ctor(__tbNumberValue(descriptor[2]));
         break;
       }
-      case 'blob': values[index] = new Blob([__tbBase64Bytes(descriptor[2])], { type: descriptor[1] }); break;
-      case 'file': values[index] = new File([__tbBase64Bytes(descriptor[4])], descriptor[1], { type: descriptor[2], lastModified: descriptor[3] }); break;
+      case 'boxedbigint': values[index] = Object(BigInt(descriptor[1])); break;
+      case 'blob':
+        values[index] = new __tbBlobCtor([__tbBase64Bytes(descriptor[2])], { type: descriptor[1] });
+        break;
+      case 'file':
+        values[index] = new __tbFileCtor([__tbBase64Bytes(descriptor[4])], descriptor[1], {
+          type: descriptor[2], lastModified: descriptor[3],
+        });
+        break;
+      case 'filelist': {
+        // Built in the prepass below: a FileList's files have higher slot
+        // indices than the list itself, so they are not ready yet here.
+        break;
+      }
+      case 'imagedata': {
+        const bytes = __tbBase64Bytes(descriptor[3]);
+        const data = new __tbUint8ClampedCtor(bytes.length);
+        for (let byte = 0; byte < bytes.length; byte++) data[byte] = bytes[byte];
+        values[index] = new __tbImageDataCtor(data, descriptor[1], descriptor[2]);
+        break;
+      }
+      case 'bitmap': {
+        const bytes = __tbBase64Bytes(descriptor[4]);
+        const data = new __tbUint8Array(bytes.length);
+        for (let byte = 0; byte < bytes.length; byte++) data[byte] = bytes[byte];
+        values[index] = host.__tbImageBitmapFrom(
+          descriptor[1], descriptor[2], descriptor[3], data);
+        break;
+      }
       case 'port': {
         const port = ports[descriptor[1]];
         if (port === undefined) throw new Error('missing transferred MessagePort');
@@ -416,6 +674,15 @@ const __tbDecode = (payload, ports) => {
         break;
       }
     }
+  }
+  // A FileList is built before the other containers so a reference to it
+  // resolves: its `File` elements are leaves and already exist
+  // (<https://w3c.github.io/FileAPI/#filelist-section>).
+  for (let index = 0; index < nodes.length; index++) {
+    const descriptor = nodes[index];
+    if (descriptor[0] !== 'filelist') continue;
+    const files = __tbArray.map(descriptor[1], slot => values[slot]);
+    values[index] = host.__tbCreateFileList(files);
   }
   for (let index = 0; index < nodes.length; index++) {
     const descriptor = nodes[index];
@@ -439,6 +706,22 @@ const __tbDecode = (payload, ports) => {
       case 'array': {
         const target = values[index];
         for (let item = 0; item < descriptor[1].length; item++) target[item] = values[descriptor[1][item]];
+        const properties = descriptor[2] === undefined ? [] : descriptor[2];
+        for (let entry = 0; entry < properties.length; entry++) {
+          __tbDefineProperty(target, properties[entry][0], {
+            __proto__: null,
+            value: values[properties[entry][1]],
+            writable: true,
+            enumerable: true,
+            configurable: true,
+          });
+        }
+        break;
+      }
+      case 'error': {
+        if (descriptor[4] !== null && descriptor[4] !== undefined) {
+          values[index].cause = values[descriptor[4]];
+        }
         break;
       }
       case 'map': {
@@ -529,18 +812,15 @@ const __tbMessagePortConstructor = globalThis.MessagePort = class MessagePort ex
   constructor() { throw new TypeError('Illegal constructor'); }
   postMessage(message, transfer) {
     const data = __tbBrand(this, __tbPortData);
-    // Overload resolution: an iterable second argument is the transfer
-    // sequence; any other object is the options dictionary, whose unknown
-    // members are ignored
-    // (<https://html.spec.whatwg.org/multipage/web-messaging.html#dom-messageport-postmessage>).
-    if (transfer !== null && typeof transfer === 'object'
-        && typeof transfer[Symbol.iterator] !== 'function') {
-      transfer = transfer.transfer;
+    // The message is required; the overload set has no zero-argument member
+    // (<https://webidl.spec.whatwg.org/#overload-resolution>).
+    if (arguments.length < 1) {
+      throw new TypeError("Failed to execute 'postMessage' on 'MessagePort': 1 argument required, but only 0 present.");
     }
     // The transfer list is consumed even when the port is detached or the
     // message is doomed
     // (<https://html.spec.whatwg.org/multipage/web-messaging.html#message-port-post-message-steps>).
-    const encoded = __tbEncode(message, transfer, this);
+    const encoded = __tbEncode(message, __tbPostMessageTransfer(transfer), this);
     if (data.closed) return;
     // A port posted to its own entangled port loses the channel
     // (<https://html.spec.whatwg.org/multipage/web-messaging.html#message-port-post-message-steps>).
@@ -1376,7 +1656,7 @@ Object.defineProperty(globalThis, 'name', {
     'XMLHttpRequest', 'XMLHttpRequestUpload',
     'ReadableStream', 'TextDecoder', 'TextEncoder', 'URL', 'URLSearchParams',
     'AbortController', 'AbortSignal', 'CustomEvent', 'Document',
-    'Storage', 'StorageEvent', 'QuotaExceededError',
+    'Storage', 'StorageEvent', 'QuotaExceededError', 'Navigator', 'WorkerNavigator',
   ];
   for (const name of names) {
     const ctor = globalThis[name];

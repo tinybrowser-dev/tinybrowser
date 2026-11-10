@@ -226,8 +226,12 @@ globalThis.FileList = class FileList {
   }
 };
 Object.defineProperty(globalThis.FileList.prototype, Symbol.toStringTag, { value: 'FileList', writable: false, enumerable: false, configurable: true });
+// The prototype is captured once: structured deserialization still builds a
+// FileList after a page deletes the global interface
+// (<https://html.spec.whatwg.org/multipage/structured-data.html#structureddeserialize>).
+const __tbFileListPrototype = globalThis.FileList.prototype;
 host.__tbCreateFileList = files => {
-  const list = __tbObjectCreate(globalThis.FileList.prototype);
+  const list = __tbObjectCreate(__tbFileListPrototype);
   const items = __tbArray.map(files, file => file);
   __tbFileListData.set(list, { files: items });
   // The indexed getter (<https://webidl.spec.whatwg.org/#dfn-indexed-property-getter>):

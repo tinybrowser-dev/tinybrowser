@@ -15,16 +15,25 @@ use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
 
 use tokio::time::Instant;
 use url::Url;
 
 use crate::js::world::World;
-use crate::js::{FrameRuntime, JsError, JsRealm, PageTimerId, RealmRequest, SharedJsRuntime};
-use crate::protocol::{
-    DialRequest, FrameId, PolicyContainer, ReferrerRequest, RequestPolicy, SandboxFlags, TimerId,
+use crate::js::{
+    FrameRuntime, JsError, JsFetchId, JsFetchRequest, JsRealm, PageTimerId, RealmRequest,
+    SharedJsRuntime, WorkerScriptError,
 };
+use crate::protocol::{
+    DialCancellation, DialOutcome, DialRequest, FrameId, PolicyContainer, ReferrerRequest,
+    RequestPolicy, SandboxFlags, TimerId,
+};
+
+/// A worker's share of the engine's in-flight `fetch`/XHR conncurrency cap.
+const MAX_PENDING_FETCHES: usize = 256;
 
 /// One dedicated worker's identity inside its engine.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -57,6 +66,15 @@ pub(crate) struct CreatedWorker {
     pub(crate) policy: PolicyContainer,
     pub(crate) sandbox: SandboxFlags,
     pub(crate) referrer_url: Url,
+    /// A `blob:` script's source, read from the Blob URL Store while the
+    /// constructor runs.
+    ///
+    /// The constructor starts the fetch in parallel, so revoking the object URL
+    /// right after `new Worker()` does not stop it (WPT
+    /// `workers/dedicated-worker-from-blob-url.window.html`). The engine adopts
+    /// the create after the constructor returns, which would miss a store entry
+    /// revoked in between.
+    pub(crate) local_script: Option<String>,
 }
 
 impl CreatedWorker {
@@ -69,6 +87,10 @@ impl CreatedWorker {
         name: String,
         module: bool,
     ) -> Self {
+        let local_script = (url.scheme() == "blob")
+            .then(|| world.object_url_contents(url.as_str()))
+            .flatten()
+            .map(|contents| contents.to_string());
         Self {
             id,
             parent: world.frame(),
@@ -83,6 +105,7 @@ impl CreatedWorker {
             policy: world.policy.clone(),
             sandbox: world.sandbox,
             referrer_url: world.document_url.clone(),
+            local_script,
         }
     }
 }
@@ -93,6 +116,7 @@ pub(crate) enum WorkerRequest {
     Post {
         id: WorkerId,
         payload: String,
+        ports: Vec<u64>,
     },
     Terminate {
         id: WorkerId,
@@ -104,6 +128,18 @@ pub(crate) enum WorkerRequest {
         parent: FrameId,
         worker: WorkerId,
         payload: String,
+        ports: Vec<u64>,
+    },
+    /// A worker that never started, or whose script did not parse.
+    ///
+    /// Every load, MIME, realm, and parse failure reaches script the same way:
+    /// a plain `error` event at the `Worker` object, with no message, and the
+    /// environment is discarded
+    /// (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>,
+    /// step 14).
+    LoadFailed {
+        worker: WorkerId,
+        parent: FrameId,
     },
     Error(Box<WorkerError>),
 }
@@ -119,17 +155,6 @@ pub(crate) struct WorkerError {
 }
 
 impl WorkerError {
-    fn new(created: &CreatedWorker, message: impl Into<String>) -> Self {
-        Self {
-            worker: created.id,
-            parent: created.parent,
-            message: message.into(),
-            filename: created.url.to_string(),
-            lineno: 0,
-            colno: 0,
-        }
-    }
-
     fn from_js(worker: WorkerId, parent: FrameId, filename: &Url, error: &JsError) -> Self {
         Self {
             worker,
@@ -144,8 +169,35 @@ impl WorkerError {
 
 /// One queued task in a worker's event loop.
 enum WorkerTask {
-    Message(String),
+    Message {
+        payload: String,
+        ports: Vec<u64>,
+    },
+    /// One message arriving on a port this worker's realm owns
+    /// (<https://html.spec.whatwg.org/multipage/web-messaging.html#message-port-post-message-steps>).
+    PortMessage {
+        endpoint: u64,
+        payload: String,
+        ports: Vec<u64>,
+    },
+    PortClosed {
+        endpoint: u64,
+    },
     Timer(TimerId),
+}
+
+/// Why a worker never reached its first turn.
+///
+/// The spec maps a failed script fetch, a non-JavaScript MIME type, a realm
+/// that cannot be created, and a script that does not parse onto one
+/// observable: a plain `error` event at the `Worker` object, then the
+/// environment is discarded
+/// (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>,
+/// step 14).
+#[derive(Clone, Copy)]
+pub(crate) struct WorkerLoadFailure {
+    pub(crate) worker: WorkerId,
+    pub(crate) parent: FrameId,
 }
 
 struct WorkerTimer {
@@ -166,6 +218,10 @@ enum WorkerScript {
 pub(crate) struct Worker {
     id: WorkerId,
     parent: FrameId,
+    /// `worker global scope`'s url: the response URL, which differs from the
+    /// request URL after a redirect
+    /// (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>,
+    /// step 14).
     url: Url,
     world: Rc<RefCell<World>>,
     js: JsRealm,
@@ -174,38 +230,64 @@ pub(crate) struct Worker {
     timers: HashMap<TimerId, WorkerTimer>,
     js_timers: HashMap<PageTimerId, TimerId>,
     next_timer: TimerId,
+    /// `fetch`/XHR completions from the dial threads, adopted at the top of a
+    /// drain step so the response runs as a worker task
+    /// (<https://fetch.spec.whatwg.org/#fetch-processresponse>).
+    fetch_tx: Sender<(JsFetchId, Option<DialOutcome>)>,
+    fetch_rx: Receiver<(JsFetchId, Option<DialOutcome>)>,
+    /// Completions started but not yet adopted. A host that waits on this
+    /// never calls the worker idle while a response is in flight.
+    pending_fetches: Arc<AtomicUsize>,
+    fetches: HashMap<JsFetchId, DialCancellation>,
     closed: bool,
 }
 
 impl Worker {
     /// Builds the worker realm and installs its global.
     ///
-    /// A script fetch or realm failure is returned as a [`WorkerError`]; the
-    /// caller reports it to the creating document's `Worker` object. The
+    /// A script fetch or realm failure is returned as a [`WorkerLoadFailure`];
+    /// the caller reports it to the creating document's `Worker` object. The
     /// script itself runs at the worker's first turn, because `new Worker()`
     /// must return before the worker starts
     /// (<https://html.spec.whatwg.org/multipage/workers.html#dom-worker>).
     pub(crate) fn create(
-        created: CreatedWorker,
+        created: &CreatedWorker,
         runtime: &FrameRuntime,
         js_runtime: &SharedJsRuntime,
-    ) -> Result<Self, WorkerError> {
-        let script = if created.module {
-            WorkerScript::Module
+    ) -> Result<Self, WorkerLoadFailure> {
+        let failure = WorkerLoadFailure {
+            worker: created.id,
+            parent: created.parent,
+        };
+        let (script, worker_url) = if created.module {
+            // A module worker's url is its response URL: relative imports,
+            // `fetch`, and XHR resolve against the redirect target, not the
+            // request URL
+            // (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>,
+            // step 14).
+            (
+                WorkerScript::Module,
+                fetch_module_url(created, runtime).map_err(|()| failure)?,
+            )
         } else {
-            let source = fetch_worker_source(&created, runtime)?;
-            WorkerScript::Classic(
-                String::from_utf8(source)
-                    .map_err(|_| WorkerError::new(&created, "worker script is not UTF-8"))?,
+            let (source, response_url) =
+                fetch_worker_source(created, runtime).map_err(|()| failure)?;
+            // A script body is decoded with UTF-8 decode, whose replacement
+            // mode substitutes U+FFFD rather than failing the load
+            // (<https://infra.spec.whatwg.org/#utf-8-decode>).
+            (
+                WorkerScript::Classic(String::from_utf8_lossy(&source).into_owned()),
+                response_url,
             )
         };
         let world = World::new_worker(
-            created.url.clone(),
+            worker_url.clone(),
             FrameId::worker(created.id.get()),
             created.parent,
             runtime,
             created.id,
             created.name.clone(),
+            created.module,
         );
         let world = Rc::new(RefCell::new(world));
         {
@@ -230,11 +312,13 @@ impl Worker {
             Rc::clone(&world),
             Arc::clone(&runtime.stop),
         )
-        .map_err(|error| WorkerError::from_js(created.id, created.parent, &created.url, &error))?;
+        .map_err(|_| failure)?;
+        let (fetch_tx, fetch_rx) = std::sync::mpsc::channel();
+        let pending_fetches = Arc::new(AtomicUsize::new(0));
         Ok(Self {
             id: created.id,
             parent: created.parent,
-            url: created.url,
+            url: worker_url,
             world,
             js,
             script: Some(script),
@@ -242,6 +326,10 @@ impl Worker {
             timers: HashMap::new(),
             js_timers: HashMap::new(),
             next_timer: TimerId::default(),
+            fetch_tx,
+            fetch_rx,
+            pending_fetches,
+            fetches: HashMap::new(),
             closed: false,
         })
     }
@@ -250,8 +338,81 @@ impl Worker {
         self.id
     }
 
-    pub(crate) fn queue_message(&mut self, payload: String) {
-        self.tasks.push_back(WorkerTask::Message(payload));
+    /// Fires one message a nested worker posted at this worker's `Worker`
+    /// object
+    /// (<https://html.spec.whatwg.org/multipage/workers.html#dom-worker-postmessage>).
+    pub(crate) fn deliver_message(
+        &self,
+        worker: WorkerId,
+        payload: &str,
+        ports: &[u64],
+    ) -> Result<(), JsError> {
+        self.js.deliver_worker_event(worker.get(), payload, ports)
+    }
+
+    /// Fires one error a nested worker reported at this worker's `Worker`
+    /// object
+    /// (<https://html.spec.whatwg.org/multipage/workers.html#runtime-script-errors-in-workers>).
+    pub(crate) fn deliver_error(&self, error: &WorkerError) -> Result<(), JsError> {
+        self.js.deliver_worker_error(
+            error.worker.get(),
+            &error.message,
+            &error.filename,
+            error.lineno,
+            error.colno,
+        )
+    }
+
+    /// Fires the plain `error` event a nested worker that never started
+    /// reports at its `Worker` object
+    /// (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>).
+    pub(crate) fn deliver_load_failure(&self, worker: WorkerId) -> Result<(), JsError> {
+        self.js.deliver_worker_load_error(worker.get())
+    }
+
+    pub(crate) fn queue_message(&mut self, payload: String, ports: Vec<u64>) {
+        // `terminate()` empties the implicit port's queue and `close()` sets
+        // the closing flag, after which no further tasks may be queued; a
+        // message the owner posts later is dropped, not held
+        // (<https://html.spec.whatwg.org/multipage/workers.html#terminate-a-worker>).
+        if !self.closed {
+            self.tasks.push_back(WorkerTask::Message { payload, ports });
+        }
+    }
+
+    /// Queues a message that arrived on a port this worker's realm owns.
+    ///
+    /// The endpoint may have moved since the delivery was queued, so the
+    /// running task re-checks its owner
+    /// (<https://html.spec.whatwg.org/multipage/web-messaging.html#message-port-post-message-steps>).
+    pub(crate) fn queue_port_message(&mut self, endpoint: u64, payload: String, ports: Vec<u64>) {
+        if self.closed {
+            self.forget_endpoints(&ports);
+            return;
+        }
+        self.tasks.push_back(WorkerTask::PortMessage {
+            endpoint,
+            payload,
+            ports,
+        });
+    }
+
+    pub(crate) fn queue_port_closed(&mut self, endpoint: u64) {
+        if !self.closed {
+            self.tasks.push_back(WorkerTask::PortClosed { endpoint });
+        }
+    }
+
+    /// Releases transferred endpoints the worker will never adopt.
+    fn forget_endpoints(&self, endpoints: &[u64]) {
+        if endpoints.is_empty() {
+            return;
+        }
+        self.world
+            .borrow()
+            .shared()
+            .borrow_mut()
+            .forget_endpoints(endpoints);
     }
 
     /// Runs one task and reports whether the engine must step the worker
@@ -260,25 +421,48 @@ impl Worker {
         if self.closed {
             return false;
         }
+        self.adopt_fetches();
         if let Some(script) = self.script.take() {
             let _turn = self.js.enter_turn();
-            let (evaluated, reports) = match script {
-                // The classic path reports through the realm's `error` event,
-                // which propagates to the owner unless the worker global
-                // cancels it
-                // (<https://html.spec.whatwg.org/multipage/webappapis.html#report-the-error>).
-                WorkerScript::Classic(source) => (
-                    self.js.eval_classic_script(&source, 0, self.url.as_str()),
-                    false,
-                ),
-                WorkerScript::Module => (self.js.eval_external_module(self.url.as_str()), true),
-            };
-            if let Err(error) = evaluated {
-                if reports {
-                    self.report_error(&error);
+            match script {
+                // A runtime exception was reported at the worker global; the
+                // worker keeps its event loop either way. Only a script that
+                // never compiled discards the environment
+                // (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>).
+                WorkerScript::Classic(source) => {
+                    match self.js.eval_worker_script(&source, self.url.as_str()) {
+                        Ok(()) | Err(WorkerScriptError::Runtime) => {}
+                        Err(WorkerScriptError::Parse) => {
+                            self.report_load_failure();
+                            self.closed = true;
+                            return false;
+                        }
+                        // The renderer's turn budget cut a script that never
+                        // yielded; stop the worker without a script-visible
+                        // event
+                        // (<https://html.spec.whatwg.org/multipage/workers.html#terminate-a-worker>).
+                        Err(WorkerScriptError::Interrupted) => {
+                            self.closed = true;
+                            return false;
+                        }
+                    }
                 }
-                self.closed = true;
-                return false;
+                // A module graph that fails to load or parse is the same
+                // environment-discarding failure; a module runtime error is
+                // reported at the worker global
+                // (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>).
+                WorkerScript::Module => match self.js.eval_worker_module(self.url.as_str()) {
+                    Ok(()) | Err(WorkerScriptError::Runtime) => {}
+                    Err(WorkerScriptError::Parse) => {
+                        self.report_load_failure();
+                        self.closed = true;
+                        return false;
+                    }
+                    Err(WorkerScriptError::Interrupted) => {
+                        self.closed = true;
+                        return false;
+                    }
+                },
             }
             return !self.closed;
         }
@@ -291,11 +475,21 @@ impl Worker {
         };
         let _turn = self.js.enter_turn();
         match task {
-            WorkerTask::Message(payload) => {
-                if let Err(error) = self.js.deliver_worker_message(&payload) {
+            WorkerTask::Message { payload, ports } => {
+                if let Err(error) = self.js.deliver_worker_message(&payload, &ports) {
+                    // The realm could not run the delivery; the ports were
+                    // detached from their sender, so they are lost here
+                    // (<https://html.spec.whatwg.org/multipage/web-messaging.html#transfer-receiving-steps>).
+                    self.forget_endpoints(&ports);
                     self.report_error(&error);
                 }
             }
+            WorkerTask::PortMessage {
+                endpoint,
+                payload,
+                ports,
+            } => self.deliver_port_message(endpoint, payload, ports),
+            WorkerTask::PortClosed { endpoint } => self.deliver_port_close(endpoint),
             WorkerTask::Timer(id) => {
                 if let Some(timer) = self.timers.remove(&id) {
                     self.js_timers.remove(&timer.js_id);
@@ -336,16 +530,74 @@ impl Worker {
 
     pub(crate) fn terminate(&mut self) {
         self.closed = true;
-        self.tasks.clear();
+        self.discard_queued_tasks();
         self.timers.clear();
         self.js_timers.clear();
     }
 
     /// `close()` stops the worker before its next task; the engine drops the
     /// realm after the current drain so it is never destroyed from inside its
-    /// own script.
+    /// own script. Both close and terminate discard the tasks still queued
+    /// (<https://html.spec.whatwg.org/multipage/workers.html#close-a-worker>).
     pub(crate) fn close(&mut self) {
         self.closed = true;
+        self.discard_queued_tasks();
+    }
+
+    /// Drops every queued task, releasing the endpoints its messages carried.
+    /// A transferred port is already detached from its sender, so dropping
+    /// the message without adopting it would strand the channel.
+    fn discard_queued_tasks(&mut self) {
+        while let Some(task) = self.tasks.pop_front() {
+            if let WorkerTask::Message { ports, .. } | WorkerTask::PortMessage { ports, .. } = task
+            {
+                self.forget_endpoints(&ports);
+            }
+        }
+    }
+
+    /// Runs one message that arrived on a port this worker owns.
+    ///
+    /// The port may have moved to another realm between the message being
+    /// queued and this task; it goes back on the port's queue, which the new
+    /// realm flushes when the port is enabled there
+    /// (<https://html.spec.whatwg.org/multipage/web-messaging.html#message-port-post-message-steps>).
+    fn deliver_port_message(&mut self, endpoint: u64, payload: String, ports: Vec<u64>) {
+        let frame = self.world.borrow().frame();
+        let shared = self.world.borrow().shared();
+        if shared.borrow().ports.owner(endpoint) != Some(frame) {
+            shared
+                .borrow_mut()
+                .requeue_port_message(endpoint, payload, ports);
+            return;
+        }
+        match self.js.deliver_port_message(endpoint, &payload, &ports) {
+            Ok(true) => {}
+            // The payload could not be decoded; the shim already dropped the
+            // ports that travelled with it and the port reports `messageerror`
+            // (<https://html.spec.whatwg.org/multipage/web-messaging.html#message-port-post-message-steps>).
+            Ok(false) => {
+                if let Err(error) = self.js.deliver_port_message_error(endpoint) {
+                    self.report_error(&error);
+                }
+            }
+            Err(error) => {
+                self.forget_endpoints(&ports);
+                self.report_error(&error);
+            }
+        }
+    }
+
+    fn deliver_port_close(&mut self, endpoint: u64) {
+        let frame = self.world.borrow().frame();
+        let shared = self.world.borrow().shared();
+        if shared.borrow().ports.owner(endpoint) != Some(frame) {
+            shared.borrow_mut().requeue_port_close(endpoint);
+            return;
+        }
+        if let Err(error) = self.js.deliver_port_close(endpoint) {
+            self.report_error(&error);
+        }
     }
 
     fn report_error(&mut self, error: &JsError) {
@@ -356,6 +608,18 @@ impl Worker {
             .worker_requests
             .borrow_mut()
             .push(WorkerRequest::Error(Box::new(error)));
+    }
+
+    fn report_load_failure(&self) {
+        self.world
+            .borrow()
+            .runtime
+            .worker_requests
+            .borrow_mut()
+            .push(WorkerRequest::LoadFailed {
+                worker: self.id,
+                parent: self.parent,
+            });
     }
 
     fn adopt_js_work(&mut self) {
@@ -378,13 +642,13 @@ impl Worker {
                     self.timers.remove(&id);
                 }
             }
-            RealmRequest::Fetch(fetch) => {
-                if let Err(error) = self.js.finish_js_fetch(fetch.js_id, None) {
-                    self.report_error(&error);
+            RealmRequest::Fetch(fetch) => self.start_fetch(*fetch),
+            RealmRequest::AbortFetch(js_id) => {
+                if let Some(cancel) = self.fetches.remove(&js_id) {
+                    cancel();
                 }
             }
-            RealmRequest::AbortFetch(_)
-            | RealmRequest::Script(_)
+            RealmRequest::Script(_)
             | RealmRequest::HistoryPush { .. }
             | RealmRequest::HistoryTraverse { .. }
             | RealmRequest::CspViolation(_, _)
@@ -392,6 +656,93 @@ impl Worker {
             | RealmRequest::HtmlWrite(_)
             | RealmRequest::DocumentStream(_) => {}
         }
+    }
+
+    /// Starts one `fetch`/XHR dial for this worker.
+    ///
+    /// The completion goes through a channel and is adopted in the worker's
+    /// next turn, so the response callback runs as worker script rather than
+    /// on the dial thread
+    /// (<https://fetch.spec.whatwg.org/#fetch-processresponse>).
+    fn start_fetch(&mut self, fetch: JsFetchRequest) {
+        let js_id = fetch.js_id;
+        if self.pending_fetches.load(Ordering::Acquire) >= MAX_PENDING_FETCHES {
+            self.fail_fetch(js_id);
+            return;
+        }
+        let Ok(url) = Url::parse(&fetch.url) else {
+            self.fail_fetch(js_id);
+            return;
+        };
+        let (origin, referrer_url, referrer_policy, gate) = {
+            let world = self.world.borrow();
+            (
+                world.origin.clone(),
+                world.referrer_url.clone(),
+                world.policy.referrer_policy,
+                crate::RedirectGate::new(
+                    world.policy.csp.clone(),
+                    &world.origin,
+                    crate::csp::Destination::Connect,
+                ),
+            )
+        };
+        let mut dial = DialRequest::new(RequestPolicy::Fetch(fetch.options.cors), &url, &origin);
+        dial.method = fetch.method;
+        dial.body = fetch.body;
+        dial.content_type = fetch.content_type;
+        dial.headers = fetch.headers;
+        dial.referrer = match fetch.options.referrer {
+            ReferrerRequest::Client { .. } => ReferrerRequest::Client { url: referrer_url },
+            referrer => referrer,
+        };
+        dial.referrer_policy = fetch
+            .options
+            .referrer_policy
+            .or(referrer_policy)
+            .unwrap_or_default();
+        dial.keepalive = fetch.options.keepalive;
+        dial.body_len = fetch.options.body_len;
+        dial.integrity = fetch.options.integrity;
+        dial.cache = fetch.options.cache;
+        dial.delivery = fetch.options.delivery;
+        dial.csp = Some(Box::new(gate));
+        let tx = self.fetch_tx.clone();
+        self.pending_fetches.fetch_add(1, Ordering::Release);
+        let cancel = self.world.borrow().runtime.services.start_dial(
+            dial,
+            Box::new(move |outcome| {
+                // A failure maps to the same empty outcome a rejected fetch
+                // reports; the shim turns it into a `TypeError`
+                // (<https://fetch.spec.whatwg.org/#concept-network-error>).
+                let _ = tx.send((js_id, outcome.ok()));
+            }),
+        );
+        self.fetches.insert(js_id, cancel);
+    }
+
+    /// Adopts every settled fetch and runs its callback.
+    fn adopt_fetches(&mut self) {
+        let _turn = self.js.enter_turn();
+        while let Ok((js_id, outcome)) = self.fetch_rx.try_recv() {
+            self.pending_fetches.fetch_sub(1, Ordering::Release);
+            self.fetches.remove(&js_id);
+            if let Err(error) = self.js.finish_js_fetch(js_id, outcome) {
+                self.report_error(&error);
+            }
+            self.adopt_js_work();
+        }
+    }
+
+    fn fail_fetch(&mut self, js_id: JsFetchId) {
+        if let Err(error) = self.js.finish_js_fetch(js_id, None) {
+            self.report_error(&error);
+        }
+    }
+
+    /// Whether this worker still owes a fetch completion.
+    pub(crate) fn has_pending_dials(&self) -> bool {
+        self.pending_fetches.load(Ordering::Acquire) > 0
     }
 
     fn schedule_timer(&mut self, delay: Duration, js_id: PageTimerId) -> TimerId {
@@ -421,28 +772,81 @@ impl Worker {
     }
 }
 
-/// Fetches a classic worker's script.
+/// Resolves a module worker's script URL before its realm exists.
+///
+/// The realm is built with the response URL so the worker's base URL is the
+/// redirect target. The module graph itself is fetched again at the worker's
+/// first turn, where the loader applies the MIME check and CSP
+/// (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>).
+fn fetch_module_url(created: &CreatedWorker, runtime: &FrameRuntime) -> Result<Url, ()> {
+    if created.url.scheme() == "data" || created.url.scheme() == "blob" {
+        return Ok(created.url.clone());
+    }
+    if created.url.scheme() != "http" && created.url.scheme() != "https" {
+        return Err(());
+    }
+    let mut dial = DialRequest::new(
+        RequestPolicy::ModuleScript { crossorigin: None },
+        &created.url,
+        &created.origin,
+    );
+    dial.referrer = ReferrerRequest::Client {
+        url: created.referrer_url.clone(),
+    };
+    dial.referrer_policy = created.policy.referrer_policy.unwrap_or_default();
+    dial.timeout_ms = 30_000;
+    let (send, receive) = std::sync::mpsc::sync_channel(1);
+    let cancel = runtime.services.start_dial(
+        dial,
+        Box::new(move |outcome| {
+            let _ = send.send(outcome);
+        }),
+    );
+    let outcome = match receive.recv_timeout(Duration::from_secs(30)) {
+        Ok(Ok(outcome)) => outcome,
+        Ok(Err(_)) => return Err(()),
+        Err(_) => {
+            cancel();
+            return Err(());
+        }
+    };
+    if !(200..300).contains(&outcome.status) {
+        return Err(());
+    }
+    Ok(outcome.final_url)
+}
+
+/// Fetches a classic worker's script and reports the URL its response came
+/// from.
 ///
 /// The dial uses the same-origin request mode, so every redirect hop must stay
-/// on the creator's origin. `data:` is decoded in this process; a response
-/// whose MIME type is not JavaScript is a load failure
+/// on the creator's origin. `data:` is decoded in this process; any failed
+/// fetch, status, or MIME check is a load failure, which script sees as a plain
+/// `error` event at the `Worker` object
 /// (<https://html.spec.whatwg.org/multipage/workers.html#fetch-a-classic-worker-script>).
 fn fetch_worker_source(
     created: &CreatedWorker,
     runtime: &FrameRuntime,
-) -> Result<Vec<u8>, WorkerError> {
+) -> Result<(Vec<u8>, Url), ()> {
     if created.url.scheme() == "data" {
         // A `data:` worker script is not MIME-checked; every MIME type is
         // allowed, including an empty one (WPT `workers/data-url.html`).
-        let (_, body) = crate::engine::decode_data_url_bounded(created.url.as_str())
-            .ok_or_else(|| WorkerError::new(created, "worker script could not be decoded"))?;
-        return Ok(body);
+        let (_, body) = crate::engine::decode_data_url_bounded(created.url.as_str()).ok_or(())?;
+        return Ok((body, created.url.clone()));
+    }
+    if created.url.scheme() == "blob" {
+        // A `blob:` worker script is the store entry read when the constructor
+        // ran. Only a network-scheme response is MIME-checked
+        // (<https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-classic-worker-script>,
+        // step 5), so the backing Blob's type is irrelevant
+        // (WPT `workers/Worker_script_mimetype.htm`).
+        return match &created.local_script {
+            Some(source) => Ok((source.clone().into_bytes(), created.url.clone())),
+            None => Err(()),
+        };
     }
     if created.url.scheme() != "http" && created.url.scheme() != "https" {
-        return Err(WorkerError::new(
-            created,
-            "worker script URL is not supported",
-        ));
+        return Err(());
     }
     let mut dial = DialRequest::new(RequestPolicy::WorkerScript, &created.url, &created.origin);
     dial.referrer = ReferrerRequest::Client {
@@ -459,50 +863,31 @@ fn fetch_worker_source(
     );
     let outcome = match receive.recv_timeout(Duration::from_secs(30)) {
         Ok(Ok(outcome)) => outcome,
-        Ok(Err(failure)) => {
-            return Err(WorkerError::new(
-                created,
-                format!("worker script dial failed: {failure:?}"),
-            ));
-        }
+        Ok(Err(_)) => return Err(()),
         Err(_) => {
             cancel();
-            return Err(WorkerError::new(created, "worker script dial timed out"));
+            return Err(());
         }
     };
     if !(200..300).contains(&outcome.status) {
-        return Err(WorkerError::new(
-            created,
-            format!("worker script returned HTTP {}", outcome.status),
-        ));
+        return Err(());
     }
     // A worker script request uses the same-origin mode, so every redirect
     // hop must stay on the creator's origin
     // (<https://html.spec.whatwg.org/multipage/workers.html#fetch-a-classic-worker-script>).
     if outcome.final_url.origin() != created.origin {
-        return Err(WorkerError::new(
-            created,
-            "worker script redirected to a different origin",
-        ));
+        return Err(());
     }
     if let Some(content_type) = &outcome.content_type
         && !crate::js::javascript_mime_essence(content_type_essence(content_type))
     {
-        return Err(WorkerError::new(
-            created,
-            "worker script has a non-JavaScript MIME type",
-        ));
+        return Err(());
     }
     match outcome.body {
-        crate::protocol::ResponseBody::Bytes(body) => Ok(body),
-        crate::protocol::ResponseBody::Streamed(_) => Err(WorkerError::new(
-            created,
-            "worker script response was streamed",
-        )),
-        crate::protocol::ResponseBody::Undecodable => Err(WorkerError::new(
-            created,
-            "worker script body could not be decoded",
-        )),
+        crate::protocol::ResponseBody::Bytes(body) => Ok((body, outcome.final_url)),
+        crate::protocol::ResponseBody::Streamed(_) | crate::protocol::ResponseBody::Undecodable => {
+            Err(())
+        }
     }
 }
 

@@ -111,9 +111,11 @@ targeted fixes, not a push.
 
 navigation-api, custom-elements, shadow-dom, editing, selection, clipboard, uievents, focus, shared/service workers, IndexedDB, streams, compression, FileAPI, trusted-types, locks, import-maps, chrome-extensions.
 
-Dedicated workers are implemented; the remaining worker work is SharedWorker,
-service workers, worker `fetch`/XHR, MessagePort transfer, and Blob-URL
-worker scripts.
+Dedicated workers are implemented: classic and module scripts, nested
+workers, `MessagePort` transfer and delivery, the structured-clone codec,
+worker `fetch`/XHR (including synchronous XHR), `import.meta`, `blob:` and
+`data:` scripts, timers, and error propagation. The remaining worker work
+is SharedWorker, service workers, and `IndexedDB`.
 
 P1 is not "rare". IndexedDB is read on 24.7% of pages (write 23.2%),
 compression streams on 25.1%, Cache Storage read on 19.6%, a worker

@@ -267,8 +267,12 @@ impl Document {
                 ports,
             } => self.deliver_port_message(endpoint, &payload, &ports),
             Task::PortClosed { endpoint } => self.deliver_port_close(endpoint),
-            Task::WorkerMessage { worker, payload } => {
-                self.fire_js(|js| js.deliver_worker_event(worker.get(), &payload));
+            Task::WorkerMessage {
+                worker,
+                payload,
+                ports,
+            } => {
+                self.fire_js(|js| js.deliver_worker_event(worker.get(), &payload, &ports));
             }
             Task::WorkerError(error) => {
                 self.fire_js(|js| {
@@ -280,6 +284,9 @@ impl Document {
                         error.colno,
                     )
                 });
+            }
+            Task::WorkerLoadFailed(worker) => {
+                self.fire_js(|js| js.deliver_worker_load_error(worker.get()));
             }
             Task::NodeLoad(element) => {
                 self.fire_node_load(element);

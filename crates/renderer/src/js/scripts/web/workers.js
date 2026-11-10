@@ -52,17 +52,57 @@
       get self() { return globalThis; }
       get location() { return globalThis.location; }
       get navigator() { return globalThis.navigator; }
-      close() { host.__tbWorkerClose(); }
+      importScripts(...urls) {
+        // A module worker's global has no classic-script import: the operation
+        // throws, and the worker keeps running
+        // (<https://html.spec.whatwg.org/multipage/workers.html#dom-workerglobalscope-importscripts>).
+        if (host.__tbWorkerModule) {
+          throw new TypeError("Failed to execute 'importScripts' on 'WorkerGlobalScope': Module scripts don't support importScripts().");
+        }
+        for (const value of urls) {
+          const href = new URL(String(value), location.href).href;
+          // The host reports a failed fetch as `undefined`; an empty script is
+          // the empty string, which still runs
+          // (<https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-classic-worker-imported-script>).
+          const source = host.__tbImportScripts(href);
+          if (source === undefined) {
+            throw new DOMException(`Failed to load ${href}`, 'NetworkError');
+          }
+          host.__tbEvalImportedScript(href, source);
+        }
+      }
     }
+    // `onerror` is a `WorkerGlobalScope` handler, and the realm's own global is
+    // an `OnErrorEventHandler`: the five-argument call is decided by the
+    // event's target, not by this slot
+    // (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handlers>).
+    __tbDefineWorkerHandler(WorkerGlobalScope.prototype, 'onerror');
+    __tbDefineWorkerHandler(WorkerGlobalScope.prototype, 'onlanguagechange');
+    __tbDefineWorkerHandler(WorkerGlobalScope.prototype, 'onoffline');
+    __tbDefineWorkerHandler(WorkerGlobalScope.prototype, 'ononline');
+    __tbDefineWorkerHandler(WorkerGlobalScope.prototype, 'onrejectionhandled');
+    __tbDefineWorkerHandler(WorkerGlobalScope.prototype, 'onunhandledrejection');
+    Object.defineProperty(WorkerGlobalScope.prototype, Symbol.toStringTag, {
+      value: 'WorkerGlobalScope', writable: false, enumerable: false, configurable: true,
+    });
 
     class DedicatedWorkerGlobalScope extends WorkerGlobalScope {
       postMessage(message, transfer) {
-        host.__tbWorkerPostToParent(__tbEncode(message, transfer).payload);
+        if (arguments.length < 1) {
+          throw new TypeError("Failed to execute 'postMessage' on 'DedicatedWorkerGlobalScope': 1 argument required, but only 0 present.");
+        }
+        const encoded = __tbEncode(message, __tbPostMessageTransfer(transfer));
+        host.__tbWorkerPostToParent(encoded.payload, encoded.ports);
+      }
+      // `close()` belongs to the dedicated global, not to the common
+      // `WorkerGlobalScope`
+      // (<https://html.spec.whatwg.org/multipage/workers.html#dom-dedicatedworkerglobalscope-close>).
+      close() {
+        host.__tbWorkerClose();
       }
     }
     __tbDefineWorkerHandler(DedicatedWorkerGlobalScope.prototype, 'onmessage');
     __tbDefineWorkerHandler(DedicatedWorkerGlobalScope.prototype, 'onmessageerror');
-    __tbDefineWorkerHandler(DedicatedWorkerGlobalScope.prototype, 'onerror');
     Object.defineProperty(DedicatedWorkerGlobalScope.prototype, Symbol.toStringTag, {
       value: 'DedicatedWorkerGlobalScope', writable: false, enumerable: false, configurable: true,
     });
@@ -75,6 +115,12 @@
     });
     Object.setPrototypeOf(globalThis, DedicatedWorkerGlobalScope.prototype);
     globalThis.self = globalThis;
+
+    // The Window shim in the messaging script installs these as own properties
+    // of every global. A worker's are the `DedicatedWorkerGlobalScope`
+    // operations on the prototype chain, so drop the Window-shaped own ones.
+    delete globalThis.close;
+    delete globalThis.postMessage;
 
     // `name` is a `[Replaceable]` attribute: an own accessor on the global
     // that, once assigned, becomes a writable data property
@@ -116,36 +162,31 @@
       });
     }
 
-    // The messaging shim installs a Window `close()`; a worker closes its own
-    // global instead
-    // (<https://html.spec.whatwg.org/multipage/workers.html#dom-dedicatedworkerglobalscope-close>).
-    globalThis.close = function close() {
-      host.__tbWorkerClose();
-    };
-    globalThis.postMessage = function(message, transfer) {
-      host.__tbWorkerPostToParent(__tbEncode(message, transfer).payload);
-    };
-    globalThis.importScripts = function(...urls) {
-      for (const value of urls) {
-        const href = new URL(String(value), location.href).href;
-        const body = host.__tbImportScripts(href);
-        if (body === null) {
-          throw new DOMException(`Failed to load ${href}`, 'NetworkError');
-        }
-        const source = new TextDecoder('utf-8').decode(new Uint8Array(body));
-        (0, eval)(source);
-      }
-    };
-
     // The host calls this after a message from the creator arrived.
-    globalThis.__tbWorkerDeliverMessage = function(payload) {
+    globalThis.__tbWorkerDeliverMessage = function(payload, portIds) {
+      const materialized = __tbMaterializePorts(portIds);
+      let data;
+      try {
+        data = __tbDecode(payload, materialized.ports);
+      } catch (error) {
+        // The ports arrived with a message that cannot be decoded; they are
+        // lost with it
+        // (<https://html.spec.whatwg.org/multipage/web-messaging.html#transfer-receiving-steps>).
+        __tbDiscardPorts(portIds);
+        return;
+      }
+      const ports = __tbArray.map(portIds, id => materialized.ports[id]);
       globalThis.dispatchEvent(new MessageEvent('message', {
-        data: __tbDecode(payload),
+        data,
+        ports: Object.freeze(ports),
       }));
+      __tbFirePortCloses(materialized.closes);
     };
-    return;
   }
 
+  // `Worker` is exposed on both globals, so a worker can start a nested
+  // worker; the base URL then resolves against the worker script's URL
+  // (<https://html.spec.whatwg.org/multipage/workers.html#dom-worker>).
   const __tbWorkers = new Map();
   const __tbWorkerIds = new WeakMap();
   const __tbWorkerBase = () => {
@@ -172,10 +213,10 @@
         throw new DOMException(`Invalid worker script URL: ${href}`, 'SyntaxError');
       }
       super();
-      if ((parsed.protocol === 'http:' || parsed.protocol === 'https:')
-          && parsed.origin !== globalThis.location.origin) {
-        throw new DOMException(`Worker script must be same-origin: ${parsed.href}`, 'SecurityError');
-      }
+      // An off-origin script is not a constructor error: the fetch fails and
+      // the `Worker` object reports a plain `error` event, the same shape as
+      // any other script that cannot load
+      // (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>).
       const dictionary = options === undefined || options === null ? {} : Object(options);
       const type = dictionary.type === undefined ? 'classic' : String(dictionary.type);
       if (type !== 'classic' && type !== 'module') {
@@ -187,7 +228,11 @@
       __tbWorkers.set(id, this);
     }
     postMessage(message, transfer) {
-      host.__tbWorkerPost(__tbWorkerIds.get(this), __tbEncode(message, transfer).payload);
+      if (arguments.length < 1) {
+        throw new TypeError("Failed to execute 'postMessage' on 'Worker': 1 argument required, but only 0 present.");
+      }
+      const encoded = __tbEncode(message, __tbPostMessageTransfer(transfer));
+      host.__tbWorkerPost(__tbWorkerIds.get(this), encoded.payload, encoded.ports);
     }
     terminate() {
       const id = __tbWorkerIds.get(this);
@@ -205,22 +250,52 @@
     value: Worker, writable: true, configurable: true,
   });
 
-  globalThis.__tbWorkerEvent = function(id, payload) {
+  globalThis.__tbWorkerEvent = function(id, payload, portIds) {
     const worker = __tbWorkers.get(id);
-    if (worker === undefined) return;
+    if (worker === undefined) {
+      __tbDiscardPorts(portIds);
+      return;
+    }
+    const materialized = __tbMaterializePorts(portIds);
+    let data;
+    try {
+      data = __tbDecode(payload, materialized.ports);
+    } catch (error) {
+      __tbDiscardPorts(portIds);
+      return;
+    }
+    const ports = __tbArray.map(portIds, endpoint => materialized.ports[endpoint]);
     worker.dispatchEvent(new MessageEvent('message', {
-      data: __tbDecode(payload),
+      data,
+      ports: Object.freeze(ports),
     }));
+    __tbFirePortCloses(materialized.closes);
   };
   globalThis.__tbWorkerErrorEvent = function(id, message, filename, lineno, colno) {
     const worker = __tbWorkers.get(id);
     if (worker === undefined) return;
-    worker.dispatchEvent(new ErrorEvent('error', {
+    const event = new ErrorEvent('error', {
       message,
       filename,
       lineno,
       colno,
       cancelable: true,
-    }));
+    });
+    // An uncanceled worker error is reported at the `Worker` object's own
+    // realm — the document or the parent worker — exactly like an uncaught
+    // exception there
+    // (<https://html.spec.whatwg.org/multipage/webappapis.html#report-an-exception>).
+    worker.dispatchEvent(event);
+    if (!event.defaultPrevented && typeof host.__tbReportError === 'function') {
+      host.__tbReportError(message, filename, lineno, colno);
+    }
+  };
+  // A worker that never started (fetch, MIME, parse, or realm failure) fires a
+  // plain `error` event at the `Worker` object, with no message
+  // (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>).
+  globalThis.__tbWorkerLoadErrorEvent = function(id) {
+    const worker = __tbWorkers.get(id);
+    if (worker === undefined) return;
+    worker.dispatchEvent(new Event('error'));
   };
 })();

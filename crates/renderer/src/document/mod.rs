@@ -106,9 +106,14 @@ enum Task {
     WorkerMessage {
         worker: crate::worker::WorkerId,
         payload: String,
+        ports: Vec<u64>,
     },
     /// One error a dedicated worker reported to this document.
     WorkerError(crate::worker::WorkerError),
+    /// A worker that never started, or whose script did not parse: a plain
+    /// `error` event at its `Worker` object
+    /// (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>).
+    WorkerLoadFailed(crate::worker::WorkerId),
     /// A subresource event for one element, queued so a listener attached
     /// later in the same script still sees it: `update the image data` and the
     /// stylesheet fetch steps queue a task rather than firing inside the
@@ -1740,14 +1745,28 @@ impl Document {
 
     /// Queues one message a dedicated worker posted to this document's
     /// `Worker` object.
-    pub(crate) fn push_worker_message(&mut self, worker: crate::worker::WorkerId, payload: String) {
-        self.tasks
-            .push_back(Task::WorkerMessage { worker, payload });
+    pub(crate) fn push_worker_message(
+        &mut self,
+        worker: crate::worker::WorkerId,
+        payload: String,
+        ports: Vec<u64>,
+    ) {
+        self.tasks.push_back(Task::WorkerMessage {
+            worker,
+            payload,
+            ports,
+        });
     }
 
     /// Queues one worker error for the `Worker` object's `error` handler.
     pub(crate) fn push_worker_error(&mut self, error: crate::worker::WorkerError) {
         self.tasks.push_back(Task::WorkerError(error));
+    }
+
+    /// Queues the plain `error` event a worker that never started fires at its
+    /// `Worker` object.
+    pub(crate) fn push_worker_load_failed(&mut self, worker: crate::worker::WorkerId) {
+        self.tasks.push_back(Task::WorkerLoadFailed(worker));
     }
 
     /// Dispatches one cross-tab `message` event at this frame's window.

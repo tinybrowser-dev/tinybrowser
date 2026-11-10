@@ -198,6 +198,10 @@ globalThis.XMLHttpRequest = class XMLHttpRequest extends EventTarget {
   }
   get responseXML() {
     // https://xhr.spec.whatwg.org/#response-xml
+    // A worker global has no document response: the attribute is null even
+    // for an XML body
+    // (<https://xhr.spec.whatwg.org/#response-xml>).
+    if (globalThis.document === undefined) return null;
     const data = __tbBrand(this, __tbXhrData);
     if (data.responseType !== '' && data.responseType !== 'document') {
       throw new DOMException('Not a document response', 'InvalidStateError');

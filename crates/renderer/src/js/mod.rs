@@ -44,7 +44,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rquickjs::{
-    Array, Coerced, Context, Ctx, Exception, FromJs, Function, Module, Object, Persistent, Runtime,
+    Array, Coerced, Context, Ctx, Exception, FromJs, Function, Object, Persistent, Runtime,
     TypedArray, Value, context::EvalOptions, prelude::Func,
 };
 use url::Url;
@@ -178,13 +178,30 @@ impl fmt::Display for JsError {
 
 impl std::error::Error for JsError {}
 
+/// Why a worker's top-level classic script did not complete.
+///
+/// The worker host acts on the cases differently: a parse failure discards the
+/// environment and fires a plain `error` event at the `Worker` object, a
+/// runtime exception was already reported at the worker global and leaves the
+/// worker's event loop running, and an interruption stops the worker without a
+/// script-visible event
+/// (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>).
+pub(crate) enum WorkerScriptError {
+    /// The script did not compile; no JavaScript in it ran.
+    Parse,
+    /// The script ran and threw; [`report_script_error`] reported the value.
+    Runtime,
+    /// The renderer turn's deadline or the engine's stop flag cut evaluation.
+    Interrupted,
+}
+
 impl From<rquickjs::Error> for JsError {
     fn from(err: rquickjs::Error) -> Self {
         Self::Engine(err.to_string().into_boxed_str())
     }
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct JsFetchId(i32);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -498,29 +515,102 @@ impl JsRealm {
     /// occupies (0 when unknown), used to translate the inline stack's
     /// script-relative line into a document line
     /// (<https://html.spec.whatwg.org/multipage/webappapis.html#report-the-error>).
+    /// Records the URL of the script about to run, so a dynamic `import()` in
+    /// `eval`'d code can resolve a relative specifier. `QuickJS` compiles
+    /// string eval under the fixed name `<input>`, which no URL can base on
+    /// (<https://tc39.es/ecma262/#sec-hostresolveimportedmodule>).
+    fn enter_script_url<T>(&self, url: &str, run: impl FnOnce() -> T) -> T {
+        let previous = {
+            let mut world = self.world.borrow_mut();
+            let previous = world.state.current_script_url.take();
+            world.state.current_script_url = url::Url::parse(url).ok();
+            previous
+        };
+        let result = run();
+        self.world.borrow_mut().state.current_script_url = previous;
+        result
+    }
+
     pub(crate) fn eval_classic_script(
         &self,
         source: &str,
         base_line: u32,
         filename: &str,
     ) -> Result<(), JsError> {
-        self.with_budget(None, MicrotaskCheckpoint::Perform, || {
-            self.context.with(|ctx| {
-                let mut options = EvalOptions::default();
-                options.strict = false;
-                // The URL names classic-script stacks: CSP `sourceFile` and
-                // `window.onerror` lines attribute to the script that ran,
-                // not to the engine's anonymous eval label.
-                options.filename = Some(filename.into());
-                match ctx.eval_with_options::<Value, _>(source, options) {
-                    Ok(_) => Ok(()),
-                    Err(error) => {
-                        report_script_error(&ctx, &error, base_line, filename);
-                        Err(JsError::from(error))
+        self.enter_script_url(filename, || {
+            self.with_budget(None, MicrotaskCheckpoint::Perform, || {
+                self.context.with(|ctx| {
+                    let mut options = EvalOptions::default();
+                    options.strict = false;
+                    // The URL names classic-script stacks: CSP `sourceFile` and
+                    // `window.onerror` lines attribute to the script that ran,
+                    // not to the engine's anonymous eval label.
+                    options.filename = Some(filename.into());
+                    match ctx.eval_with_options::<Value, _>(source, options) {
+                        Ok(_) => Ok(()),
+                        Err(error) => {
+                            report_script_error(&ctx, &error, base_line, filename);
+                            Err(JsError::from(error))
+                        }
                     }
-                }
+                })
             })
         })
+    }
+
+    /// Evaluates the top-level classic script of a dedicated worker.
+    ///
+    /// A parse failure is not a runtime exception: `QuickJS` compiles the whole
+    /// script before running any of it, so nothing has executed in the worker's
+    /// realm. The spec discards the environment and fires a plain `error`
+    /// event at the `Worker` object for that case, while an exception from a
+    /// script that did run is reported at the worker global and the worker
+    /// keeps its event loop
+    /// (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>,
+    /// step 14).
+    pub(crate) fn eval_worker_script(
+        &self,
+        source: &str,
+        filename: &str,
+    ) -> Result<(), WorkerScriptError> {
+        let outcome = self.enter_script_url(filename, || {
+            self.with_budget(None, MicrotaskCheckpoint::Perform, || {
+                self.context.with(|ctx| {
+                    let mut options = EvalOptions::default();
+                    options.strict = false;
+                    options.filename = Some(filename.into());
+                    match ctx.eval_with_options::<Value, _>(source, options) {
+                        Ok(_) => Ok(None),
+                        // A host failure (allocation) has no thrown JavaScript
+                        // value; report its text like any uncaught exception and
+                        // leave the realm usable.
+                        Err(error) if !error.is_exception() => {
+                            report_script_error(&ctx, &error, 0, filename);
+                            Ok(Some(WorkerScriptError::Runtime))
+                        }
+                        Err(_) => {
+                            let caught = ctx.catch();
+                            if is_script_parse_error(&caught) {
+                                Ok(Some(WorkerScriptError::Parse))
+                            } else {
+                                bindings::report_exception_value(&ctx, caught, 0, filename);
+                                Ok(Some(WorkerScriptError::Runtime))
+                            }
+                        }
+                    }
+                })
+            })
+        });
+        match outcome {
+            Ok(None) => Ok(()),
+            Ok(Some(error)) => Err(error),
+            // The script's own error wins over a job or interrupt error only
+            // when evaluation returned one; `with_budget` reports an interrupt
+            // in place of the result
+            // (<https://html.spec.whatwg.org/multipage/webappapis.html#clean-up-after-running-script>).
+            Err(JsError::Interrupted) => Err(WorkerScriptError::Interrupted),
+            Err(_) => Err(WorkerScriptError::Runtime),
+        }
     }
 
     /// Runs one classic inline script that was inserted from another realm
@@ -538,24 +628,70 @@ impl JsRealm {
     }
 
     pub(crate) fn eval_inline_module(&self, name: &str, source: &str) -> Result<(), JsError> {
-        self.with_budget(None, MicrotaskCheckpoint::Perform, || {
-            self.context.with(|ctx| {
-                let promise = Module::evaluate(ctx, name, source)?;
-                promise.finish::<()>()?;
-                Ok(())
+        self.enter_script_url(name, || {
+            self.with_budget(None, MicrotaskCheckpoint::Perform, || {
+                self.context.with(|ctx| {
+                    let module = modules::declare_inline(&ctx, name, source)?;
+                    let (_, promise) = module.eval()?;
+                    promise.finish::<()>()?;
+                    Ok(())
+                })
             })
         })
     }
 
     pub(crate) fn eval_external_module(&self, url: &str) -> Result<(), JsError> {
-        self.with_budget(None, MicrotaskCheckpoint::Perform, || {
-            self.context.with(|ctx| {
-                let module = modules::load_module(&ctx, url)?;
-                let (_, promise) = module.eval()?;
-                promise.finish::<()>()?;
-                Ok(())
+        self.enter_script_url(url, || {
+            self.with_budget(None, MicrotaskCheckpoint::Perform, || {
+                self.context.with(|ctx| {
+                    let module = modules::load_module(&ctx, url)?;
+                    let (_, promise) = module.eval()?;
+                    promise.finish::<()>()?;
+                    Ok(())
+                })
             })
         })
+    }
+
+    /// Evaluates the top-level module script of a dedicated worker.
+    ///
+    /// A module script that fails to fetch, parse, or link is a load failure:
+    /// nothing in it ran, so the environment is discarded and the owner sees a
+    /// plain `error` event. An exception from the module's own evaluation is a
+    /// runtime error and is reported at the worker global
+    /// (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>,
+    /// step 14).
+    pub(crate) fn eval_worker_module(&self, url: &str) -> Result<(), WorkerScriptError> {
+        let outcome = self.enter_script_url(url, || {
+            self.with_budget(None, MicrotaskCheckpoint::Perform, || {
+                self.context.with(|ctx| {
+                    // The module graph's fetch or parse failed: no module script
+                    // exists to evaluate.
+                    let Ok(module) = modules::load_module(&ctx, url) else {
+                        return Ok(Some(WorkerScriptError::Parse));
+                    };
+                    let Ok((_, promise)) = module.eval() else {
+                        return Ok(Some(WorkerScriptError::Parse));
+                    };
+                    match promise.finish::<()>() {
+                        Ok(()) => Ok(None),
+                        // The rejection is rethrown as a pending exception, so the
+                        // realm's error plumbing reports it like any other
+                        // uncaught evaluation error.
+                        Err(error) => {
+                            report_script_error(&ctx, &error, 0, url);
+                            Ok(Some(WorkerScriptError::Runtime))
+                        }
+                    }
+                })
+            })
+        });
+        match outcome {
+            Ok(None) => Ok(()),
+            Ok(Some(error)) => Err(error),
+            Err(JsError::Interrupted) => Err(WorkerScriptError::Interrupted),
+            Err(_) => Err(WorkerScriptError::Runtime),
+        }
     }
 
     pub(crate) fn eval_value_deadline(
@@ -679,11 +815,17 @@ impl JsRealm {
     /// Dispatches one message a worker posted on its `Worker` object in the
     /// parent realm
     /// (<https://html.spec.whatwg.org/multipage/workers.html#dom-worker-postmessage>).
-    pub(crate) fn deliver_worker_event(&self, worker: u64, payload: &str) -> Result<(), JsError> {
+    pub(crate) fn deliver_worker_event(
+        &self,
+        worker: u64,
+        payload: &str,
+        ports: &[u64],
+    ) -> Result<(), JsError> {
+        let ports = ports.to_vec();
         self.with_budget(None, MicrotaskCheckpoint::Perform, || {
             self.context.with(|ctx| {
                 let deliver: Function = ctx.globals().get("__tbWorkerEvent")?;
-                deliver.call::<_, ()>((worker, payload))?;
+                deliver.call::<_, ()>((worker, payload, ports))?;
                 Ok(())
             })
         })
@@ -707,12 +849,30 @@ impl JsRealm {
         })
     }
 
+    /// Fires the plain `error` event a worker that never started reports at
+    /// its `Worker` object
+    /// (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>).
+    pub(crate) fn deliver_worker_load_error(&self, worker: u64) -> Result<(), JsError> {
+        self.with_budget(None, MicrotaskCheckpoint::Perform, || {
+            self.context.with(|ctx| {
+                let deliver: Function = ctx.globals().get("__tbWorkerLoadErrorEvent")?;
+                deliver.call::<_, ()>((worker,))?;
+                Ok(())
+            })
+        })
+    }
+
     /// Dispatches one message posted to a worker global.
-    pub(crate) fn deliver_worker_message(&self, payload: &str) -> Result<(), JsError> {
+    pub(crate) fn deliver_worker_message(
+        &self,
+        payload: &str,
+        ports: &[u64],
+    ) -> Result<(), JsError> {
+        let ports = ports.to_vec();
         self.with_budget(None, MicrotaskCheckpoint::Perform, || {
             self.context.with(|ctx| {
                 let deliver: Function = ctx.globals().get("__tbWorkerDeliverMessage")?;
-                deliver.call::<_, ()>((payload,))?;
+                deliver.call::<_, ()>((payload, ports))?;
                 Ok(())
             })
         })
@@ -1261,6 +1421,11 @@ impl JsRealm {
             url_parts::install(&ctx)?;
             encoding::install(&ctx)?;
             bindings::install_messaging(&ctx)?;
+            // A worker global exposes the canvas interfaces that do not need a
+            // document: `OffscreenCanvas`, `ImageData`, `ImageBitmap`, and
+            // `createImageBitmap`
+            // (<https://html.spec.whatwg.org/multipage/workers.html#apis-available-to-workers>).
+            crate::js::canvas::install(&ctx)?;
             bridge::evaluate(&ctx, install_worker_apis_js(&ctx)?)?;
             Ok(())
         })
@@ -1279,61 +1444,98 @@ impl JsRealm {
         let import_world = world.clone();
         bridge::object(ctx)?.set(
             "__tbImportScripts",
-            Func::from(move |url: String| -> Option<Vec<u8>> {
+            Func::from(move |url: String| -> Option<String> {
                 let parsed = url::Url::parse(&url).ok()?;
-                if parsed.scheme() == "data" {
+                let body = if parsed.scheme() == "data" {
                     let (content_type, body) = crate::engine::decode_data_url_bounded(&url)?;
                     let essence = content_type
                         .split(';')
                         .next()
                         .unwrap_or(&content_type)
                         .trim();
-                    return javascript_mime_essence(essence).then_some(body);
-                }
-                if parsed.scheme() != "http" && parsed.scheme() != "https" {
-                    return None;
-                }
-                let world = import_world.borrow();
-                let mut dial = DialRequest::new(
-                    RequestPolicy::ClassicScript { crossorigin: None },
-                    &parsed,
-                    &world.origin,
-                );
-                dial.referrer = ReferrerRequest::Client {
-                    url: world.referrer_url.clone(),
-                };
-                dial.referrer_policy = world.policy.referrer_policy.unwrap_or_default();
-                dial.timeout_ms = 30_000;
-                let (send, receive) = std::sync::mpsc::sync_channel(1);
-                let cancel = world.runtime.services.start_dial(
-                    dial,
-                    Box::new(move |outcome| {
-                        let _ = send.send(outcome);
-                    }),
-                );
-                let Ok(Ok(outcome)) = receive.recv_timeout(Duration::from_secs(30)) else {
-                    cancel();
-                    return None;
-                };
-                if !(200..300).contains(&outcome.status) {
-                    return None;
-                }
-                if let Some(content_type) = &outcome.content_type {
-                    let essence = content_type
-                        .split(';')
-                        .next()
-                        .unwrap_or(content_type)
-                        .trim();
                     if !javascript_mime_essence(essence) {
                         return None;
                     }
-                }
-                match outcome.body {
-                    crate::protocol::ResponseBody::Bytes(body) => Some(body),
-                    crate::protocol::ResponseBody::Streamed(_)
-                    | crate::protocol::ResponseBody::Undecodable => None,
-                }
+                    body
+                } else {
+                    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+                        return None;
+                    }
+                    let world = import_world.borrow();
+                    let mut dial = DialRequest::new(
+                        RequestPolicy::ClassicScript { crossorigin: None },
+                        &parsed,
+                        &world.origin,
+                    );
+                    dial.referrer = ReferrerRequest::Client {
+                        url: world.referrer_url.clone(),
+                    };
+                    dial.referrer_policy = world.policy.referrer_policy.unwrap_or_default();
+                    dial.timeout_ms = 30_000;
+                    let (send, receive) = std::sync::mpsc::sync_channel(1);
+                    let cancel = world.runtime.services.start_dial(
+                        dial,
+                        Box::new(move |outcome| {
+                            let _ = send.send(outcome);
+                        }),
+                    );
+                    let Ok(Ok(outcome)) = receive.recv_timeout(Duration::from_secs(30)) else {
+                        cancel();
+                        return None;
+                    };
+                    if !(200..300).contains(&outcome.status) {
+                        return None;
+                    }
+                    if let Some(content_type) = &outcome.content_type {
+                        let essence = content_type
+                            .split(';')
+                            .next()
+                            .unwrap_or(content_type)
+                            .trim();
+                        if !javascript_mime_essence(essence) {
+                            return None;
+                        }
+                    }
+                    match outcome.body {
+                        crate::protocol::ResponseBody::Bytes(body) => body,
+                        crate::protocol::ResponseBody::Streamed(_)
+                        | crate::protocol::ResponseBody::Undecodable => return None,
+                    }
+                };
+                // A classic worker-imported script is decoded with UTF-8
+                // decode, whose replacement mode substitutes U+FFFD and whose
+                // BOM removal drops one leading byte-order mark
+                // (<https://infra.spec.whatwg.org/#utf-8-decode>).
+                let source = String::from_utf8_lossy(&body);
+                let source = source.strip_prefix('\u{feff}').unwrap_or(&source);
+                Some(source.to_owned())
             }),
+        )?;
+        // `importScripts` runs the fetched source as a classic script whose
+        // base URL and error locations are the imported resource's URL, and
+        // rethrows its exception to the caller
+        // (<https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-classic-worker-imported-script>).
+        bridge::object(ctx)?.set(
+            "__tbEvalImportedScript",
+            Func::from(
+                |ctx: Ctx<'_>, url: String, source: String| -> rquickjs::Result<()> {
+                    let mut options = EvalOptions::default();
+                    options.strict = false;
+                    options.filename = Some(url);
+                    match ctx.eval_with_options::<Value, _>(source.as_str(), options) {
+                        Ok(_) => Ok(()),
+                        Err(error) => {
+                            let caught = if error.is_exception() {
+                                ctx.catch()
+                            } else {
+                                rquickjs::String::from_str(ctx.clone(), &error.to_string())?
+                                    .into_value()
+                            };
+                            Err(ctx.throw(caught))
+                        }
+                    }
+                },
+            ),
         )?;
         Ok(())
     }
@@ -2601,6 +2803,44 @@ fn report_script_error(
         }
     };
     bindings::report_exception_value(ctx, caught, base_line, filename);
+}
+
+/// Whether a caught value is the exception a classic-script parse failure
+/// raised.
+///
+/// ECMAScript checks a script's early errors before running any of its
+/// statements, so a parse failure executes no JavaScript. `QuickJS` builds the
+/// parser's `SyntaxError` in `js_parse_error`, which calls `build_backtrace`
+/// with only the source location and no running frame: the whole `stack` is
+/// one `    at <file>:<line>:<col>` line. An exception thrown at runtime,
+/// including one from the script's first statement, always carries the
+/// evaluated script's frame, written `    at <name> (<file>:<line>:<col>)`.
+///
+/// This is the shape the embedding API exposes: rquickjs has no compile-only
+/// eval, and probing with the `Function` constructor would change the grammar
+/// (a function body accepts `return`) and add a CSP `unsafe-eval` surface.
+fn is_script_parse_error(caught: &Value<'_>) -> bool {
+    let Some(object) = caught.as_object() else {
+        return false;
+    };
+    if object
+        .get::<_, Option<String>>("name")
+        .ok()
+        .flatten()
+        .as_deref()
+        != Some("SyntaxError")
+    {
+        return false;
+    }
+    let stack: Option<String> = object.get("stack").ok().flatten();
+    let Some(stack) = stack else {
+        return false;
+    };
+    let frames: Vec<&str> = stack
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    frames.len() == 1 && !frames[0].contains('(')
 }
 
 fn decode_value<'js>(ctx: &rquickjs::Ctx<'js>, value: Value<'js>) -> Result<ScriptValue, JsError> {

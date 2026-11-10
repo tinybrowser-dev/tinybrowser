@@ -522,6 +522,29 @@ fn set_header(list: &mut Vec<(String, String)>, name: &str, value: &str) {
 }
 
 impl NetworkHost for FsServices {
+    fn dial_sync(&self, request: DialRequest) -> Result<DialOutcome, DialFailure> {
+        // A synchronous request is allowed to block its caller: the harness
+        // answers it here on the engine thread, while the browser process does
+        // the same over a synchronous IPC round-trip
+        // (<https://xhr.spec.whatwg.org/#the-send()-method>).
+        //
+        // The engine thread is already inside its own current-thread runtime,
+        // so the fetch runs on a fresh thread and this one waits for it.
+        let agent = self.agent.clone();
+        let (send, receive) = std::sync::mpsc::sync_channel(1);
+        std::thread::Builder::new()
+            .name("wpt-fetch-sync".to_owned())
+            .spawn(move || {
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    fetch(&agent, &request)
+                }))
+                .unwrap_or(Err(DialFailure::Connect));
+                let _ = send.send(outcome);
+            })
+            .map_err(|_| DialFailure::Connect)?;
+        receive.recv().unwrap_or(Err(DialFailure::Connect))
+    }
+
     fn start_dial(&self, request: DialRequest, completion: DialCompletion) -> DialCancellation {
         // The engine thread must not block on the fetch, and it owns a
         // current-thread runtime that cannot be re-entered. A dedicated thread

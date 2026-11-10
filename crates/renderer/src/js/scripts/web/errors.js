@@ -88,16 +88,58 @@
     value: PromiseRejectionEvent, writable: true, configurable: true,
   });
 
-  // The first `file:line:column` a QuickJS stack frame ends with, script-relative.
+  // The first stack frame that names a source location, script-relative:
+  // `at fn (file:line:col)` at runtime, `at file:line:col` for the parser's
+  // own errors.
   const locationOf = stack => {
     if (typeof stack !== 'string') return null;
     for (const frame of stack.split('\n')) {
-      const match = /(\d+):(\d+)\)?\s*$/.exec(frame);
+      const match = /(?:\(|at )([^()\s]+):(\d+):(\d+)\)?\s*$/.exec(frame);
       if (match !== null) {
-        return { line: Number(match[1]), column: Number(match[2]) };
+        return { file: match[1], line: Number(match[2]), column: Number(match[3]) };
       }
     }
     return null;
+  };
+
+  // The throw site's own file wins when the stack names one: an
+  // `importScripts` exception is reported against the imported script, not
+  // the worker script that called it
+  // (<https://html.spec.whatwg.org/multipage/webappapis.html#report-an-exception>).
+  const fileOf = (location, filename) => {
+    if (location === null) return filename;
+    return /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(location.file) ? location.file : filename;
+  };
+
+  // The message browsers put on the `error` event: the thrown value's class,
+  // then its message ("Uncaught TypeError: ..."). Workers WPT checks both
+  // parts, and every engine prefixes the class for an Error or DOMException
+  // (<https://html.spec.whatwg.org/multipage/webappapis.html#report-an-exception>).
+  const describe = caught => {
+    const isObject =
+      caught !== null && (typeof caught === 'object' || typeof caught === 'function');
+    let text;
+    let name = '';
+    let stack = '';
+    if (isObject) {
+      text = caught.message === undefined ? String(caught) : String(caught.message);
+      if (typeof caught.name === 'string') name = caught.name;
+      if (typeof caught.stack === 'string') stack = caught.stack;
+    } else {
+      text = String(caught);
+    }
+    return {
+      message: name === '' ? `Uncaught ${text}` : `Uncaught ${name}: ${text}`,
+      stack,
+    };
+  };
+
+  // A document line is the stack's script-relative line shifted by the
+  // script's first line. A worker script passes 0 because its source starts at
+  // line 1, so the stack line is already the worker line.
+  const lineOf = (location, baseLine) => {
+    if (location === null) return baseLine;
+    return baseLine === 0 ? location.line : baseLine + location.line - 1;
   };
 
   // One report at a time: an exception thrown by the `onerror` handler itself
@@ -105,34 +147,46 @@
   let reporting = false;
 
   host.__tbReportException = function(caught, meta) {
-    if (reporting) return false;
-    reporting = true;
-    try {
-      const isObject =
-        caught !== null && (typeof caught === 'object' || typeof caught === 'function');
-      let message = '';
-      let error = null;
-      let stack = '';
-      if (isObject) {
-        message = caught.message === undefined ? String(caught) : String(caught.message);
-        error = caught;
-        if (typeof caught.stack === 'string') stack = caught.stack;
-      } else {
-        message = String(caught);
-      }
-      const location = locationOf(stack);
+    const info = describe(caught);
+    const location = locationOf(info.stack);
+    const details = () => {
       const baseLine = meta !== null && typeof meta === 'object' &&
         typeof meta.baseLine === 'number' ? meta.baseLine : 0;
       const filename = meta !== null && typeof meta === 'object' &&
         typeof meta.filename === 'string' && meta.filename !== ''
         ? meta.filename
         : String(globalThis.location === undefined ? '' : globalThis.location.href);
-      const event = new ErrorEvent('error', {
-        message: message,
-        filename: filename,
-        lineno: location === null ? baseLine : baseLine + location.line - 1,
+      return {
+        filename: fileOf(location, filename),
+        lineno: lineOf(location, baseLine),
         colno: location === null ? 0 : location.column,
-        error: error,
+      };
+    };
+    if (reporting) {
+      // The exception came from a handler that is already reporting one. It
+      // is not dispatched at this global a second time (that would recurse),
+      // but a worker owner still hears about it: the spec's error reporting
+      // reports the handler's exception like any other uncaught error, and the
+      // `Worker` object is the worker's error event target
+      // (<https://html.spec.whatwg.org/multipage/webappapis.html#report-an-exception>).
+      if (typeof host.__tbWorkerUnhandled === 'function') {
+        const { filename, lineno, colno } = details();
+        host.__tbWorkerUnhandled(info.message, filename, lineno, colno);
+      }
+      return false;
+    }
+    reporting = true;
+    try {
+      const { filename, lineno, colno } = details();
+      const event = new ErrorEvent('error', {
+        message: info.message,
+        filename,
+        lineno,
+        colno,
+        // The thrown value itself, whatever its type: `throw "hello"` reports
+        // the string, not null
+        // (<https://html.spec.whatwg.org/multipage/webappapis.html#report-an-exception>).
+        error: caught,
         cancelable: true,
       });
       host.__tbDispatchTrusted(event);
@@ -140,7 +194,7 @@
       // `error` event on the `Worker` object
       // (<https://html.spec.whatwg.org/multipage/workers.html#runtime-script-errors-in-workers>).
       if (!event.defaultPrevented && typeof host.__tbWorkerUnhandled === 'function') {
-        host.__tbWorkerUnhandled(message, filename, event.lineno, event.colno);
+        host.__tbWorkerUnhandled(info.message, filename, event.lineno, event.colno);
       }
       return event.defaultPrevented;
     } finally {
@@ -148,6 +202,30 @@
     }
   };
   Object.defineProperty(host, '__tbReportException', {
+    writable: false, configurable: false, enumerable: false,
+  });
+
+  // Reports an error that already has its message and location: a worker's
+  // unhandled exception arriving at its owner's global. It follows the same
+  // steps as `__tbReportException` after the error value is known, so a nested
+  // worker keeps walking up to the document
+  // (<https://html.spec.whatwg.org/multipage/webappapis.html#report-an-exception>,
+  // step 7.2).
+  host.__tbReportError = function(message, filename, lineno, colno) {
+    const event = new ErrorEvent('error', {
+      message,
+      filename,
+      lineno,
+      colno,
+      error: null,
+      cancelable: true,
+    });
+    host.__tbDispatchTrusted(event);
+    if (!event.defaultPrevented && typeof host.__tbWorkerUnhandled === 'function') {
+      host.__tbWorkerUnhandled(message, filename, lineno, colno);
+    }
+  };
+  Object.defineProperty(host, '__tbReportError', {
     writable: false, configurable: false, enumerable: false,
   });
 

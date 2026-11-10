@@ -63,6 +63,21 @@ transfer, Blob-URL, and IndexedDB surfaces. A 2,131-file regression slice
 worker-aware files that used to fail immediately with `Worker is not a
 function` now spend their budget and report TIMEOUT instead.
 
+The dedicated-worker surface then grew to 222 passing files / 481 passing
+subtests of 794 on 2026-11-10, again with no subtest lost. The batch adds
+`MessagePort` delivery inside worker realms and port transfer on
+`postMessage`, the full structured-clone codec in worker realms
+(`ImageData`, `ImageBitmap`, `OffscreenCanvas`, `FileList`, boxed BigInt,
+error `cause`, resizable buffers, array non-index properties), module
+workers (`import.meta`, response-URL bases after redirects, `blob:`/`data:`
+graphs, `type: module` option semantics), worker `fetch`/XHR through real
+dials (including synchronous XHR and `FormData`), `importScripts` refusal
+in a module worker, and timer handles that start at 1 as Chromium's do.
+The remaining `workers/` failures are the unimplemented SharedWorker
+(~250 subtests), service-worker fixtures, module CSP/referrer/credentials
+cases that need the in-process harness to implement wptserve pipes, and
+the upstream QuickJS gaps in `docs/upstream.md`.
+
 Every push to `main` now publishes the record to
 `tinybrowser-dev/tinybrowser-wpt-results` and the site at
 `tinybrowser.ericc.ch/wpt` rebuilds from it: subtests passing, files passing,

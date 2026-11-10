@@ -1218,6 +1218,10 @@ pub(crate) enum GlobalKind {
         /// message destination and the owner of its `Worker` object.
         parent: FrameId,
         name: String,
+        /// Whether the worker was constructed with `{type: "module"}`. A
+        /// module worker's `importScripts()` throws a `TypeError`
+        /// (<https://html.spec.whatwg.org/multipage/workers.html#dom-workerglobalscope-importscripts>).
+        module: bool,
     },
 }
 
@@ -1500,6 +1504,11 @@ pub(crate) struct DocumentState {
     /// `current_script` stays unset so `document.currentScript` is null
     /// (<https://html.spec.whatwg.org/multipage/webappapis.html#fetch-the-descendants-of-and-link-a-module-script>).
     pub(crate) module_fetch_root: Option<NodeId>,
+    /// The URL of the script or module currently evaluating. `QuickJS` labels
+    /// code it compiles from a string `<input>`, so a dynamic `import()` in
+    /// `eval` resolves against this URL instead
+    /// (<https://tc39.es/ecma262/#sec-hostresolveimportedmodule>).
+    pub(crate) current_script_url: Option<Url>,
 
     /// Existing elements being synchronously upgraded by a custom-element
     /// constructor. `HTMLElement()` consumes the top candidate.
@@ -1608,6 +1617,7 @@ impl DocumentState {
         self.decoders.clear();
         self.current_script = None;
         self.module_fetch_root = None;
+        self.current_script_url = None;
         self.custom_construction.clear();
         self.implementations.clear();
         self.active_elements.clear();
@@ -1763,6 +1773,7 @@ impl World {
         runtime: &FrameRuntime,
         id: crate::worker::WorkerId,
         name: String,
+        module: bool,
     ) -> Self {
         let mut world = Self::new(
             document_url,
@@ -1770,8 +1781,22 @@ impl World {
             runtime,
             Rc::new(RefCell::new(Vec::new())),
         );
-        world.kind = GlobalKind::DedicatedWorker { id, parent, name };
+        world.kind = GlobalKind::DedicatedWorker {
+            id,
+            parent,
+            name,
+            module,
+        };
         world
+    }
+
+    /// Whether this realm is a module worker, which `importScripts()` must
+    /// refuse.
+    pub(crate) fn worker_is_module(&self) -> bool {
+        match &self.kind {
+            GlobalKind::Document => false,
+            GlobalKind::DedicatedWorker { module, .. } => *module,
+        }
     }
 
     /// The worker name a `DedicatedWorkerGlobalScope` reports, or `None` for
@@ -1839,6 +1864,7 @@ impl World {
         }
         self.state.current_script = None;
         self.state.module_fetch_root = None;
+        self.state.current_script_url = None;
         id
     }
 

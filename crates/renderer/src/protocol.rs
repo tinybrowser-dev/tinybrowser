@@ -91,6 +91,17 @@ impl FrameId {
     pub(crate) fn worker(id: u64) -> Self {
         Self((1u64 << 63) | id)
     }
+
+    /// The worker id behind a synthetic worker frame, if this is one
+    /// (<https://html.spec.whatwg.org/multipage/workers.html#dedicated-workers-and-the-dedicatedworkerglobalscope-interface>).
+    #[must_use]
+    pub(crate) const fn as_worker(self) -> Option<u64> {
+        if self.0 >> 63 == 0 {
+            None
+        } else {
+            Some(self.0 & !(1u64 << 63))
+        }
+    }
 }
 
 /// How a renderer-created frame relates to the frame that created it.

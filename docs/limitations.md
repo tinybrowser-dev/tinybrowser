@@ -38,19 +38,31 @@ a browser that implements the mapping algorithm.
 
 ## Missing surfaces
 
-Dedicated classic workers run in the page engine: construction from HTTP(S)
-and `data:` URLs, `postMessage` with the structured-clone codec, timers,
-`importScripts`, `close()`, `terminate()`, and runtime error propagation to
-the `Worker` object. They share the renderer's thread, so a
-worker that loops blocks the page until the script budget interrupts it.
-SharedWorker, service workers, worker `fetch`/XHR, MessagePort transfer,
-Blob-URL worker scripts, and IndexedDB remain unimplemented. Canvas
-`getContext` returns a working 2D
-context (paths, text, gradients, patterns, filters, layers); the
-`bitmaprenderer` context exists but transfers nothing until `ImageBitmap`
-decoding lands; WebGL returns null. Sync XHR is rejected, customized
-built-in elements are rejected. Shadow-scoped styles and composed-event
-retargeting are upstream gaps (docs/upstream.md).
+Dedicated workers run in the page engine: construction from HTTP(S),
+`blob:`, and `data:` URLs; classic and module scripts; nested workers;
+`postMessage` with the structured-clone codec (ports, transferables,
+`ImageData`, `ImageBitmap`, `OffscreenCanvas`, files); timers;
+`importScripts`; `import.meta`; asynchronous `fetch`/XHR and synchronous
+XHR; `close()`, `terminate()`, and runtime error propagation to the
+`Worker` object. They share the renderer's thread by design, so a worker
+that loops blocks the page until the script budget interrupts it, and a
+parent that blocks waiting for the worker cannot be released. That rules
+out the WPT cases that require true parallelism (`postMessage` racing a
+busy parent) and forcible termination of a worker stuck in synchronous
+script. SharedWorker, service workers, `IndexedDB`, growable
+`SharedArrayBuffer`, and `ReadableStream` transfer remain unimplemented;
+the QuickJS gaps behind the remaining clone and `eval(import())` failures
+are recorded in `docs/upstream.md`. The in-process WPT harness serves
+files directly and does not implement wptserve's `?pipe=header(...)`, so
+the `data:`-worker CORS module-import tests cannot pass there even though
+the engine's module fetch path is the one the tests exercise.
+
+Canvas `getContext` returns a working 2D context (paths, text, gradients,
+patterns, filters, layers); the `bitmaprenderer` context exists but
+transfers nothing until `ImageBitmap` decoding lands; WebGL returns null.
+Sync XHR is rejected on a `Window`, customized built-in elements are
+rejected. Shadow-scoped styles and composed-event retargeting are upstream
+gaps (docs/upstream.md).
 
 `Request` exposes `blob()` only of the body-consumption methods; `text`,
 `json`, `arrayBuffer`, and `bytes` are missing. A `text/plain` document

@@ -36,7 +36,7 @@ use crate::protocol::{
     BrowserEvent, BrowserServices, FrameId, Mount, RendererEvent, ResponseHead, TabError,
 };
 use crate::storage::PendingStorageEvent;
-use crate::worker::{Worker, WorkerId, WorkerRequest};
+use crate::worker::{Worker, WorkerError, WorkerId, WorkerRequest};
 
 /// One child navigable's replay store, owned by the engine that hosts its
 /// documents.
@@ -261,20 +261,30 @@ impl Engine {
             applied = true;
             match request {
                 WorkerRequest::Create(created) => {
-                    match Worker::create(*created, &self.runtime, &self.js_runtime) {
+                    match Worker::create(&created, &self.runtime, &self.js_runtime) {
                         Ok(worker) => {
                             self.workers.insert(worker.id(), worker);
                         }
-                        Err(error) => {
-                            if let Some(document) = self.frames.get_mut(&error.parent) {
-                                document.push_worker_error(error);
-                            }
+                        Err(failure) => {
+                            self.push_worker_load_failed(failure.parent, failure.worker);
                         }
                     }
                 }
-                WorkerRequest::Post { id, payload } => {
-                    if let Some(worker) = self.workers.get_mut(&id) {
-                        worker.queue_message(payload);
+                WorkerRequest::Post { id, payload, ports } => {
+                    if self.workers.contains_key(&id) {
+                        Self::route_endpoints(
+                            &self.runtime.shared,
+                            &ports,
+                            FrameId::worker(id.get()),
+                        );
+                        if let Some(worker) = self.workers.get_mut(&id) {
+                            worker.queue_message(payload, ports);
+                        }
+                    } else {
+                        // The target is gone; the ports it would have received
+                        // are lost with the message
+                        // (<https://html.spec.whatwg.org/multipage/web-messaging.html#transfer-receiving-steps>).
+                        self.runtime.shared.borrow_mut().forget_endpoints(&ports);
                     }
                 }
                 WorkerRequest::Terminate { id } => {
@@ -288,22 +298,81 @@ impl Engine {
                     }
                 }
                 WorkerRequest::Error(error) => {
-                    if let Some(document) = self.frames.get_mut(&error.parent) {
-                        document.push_worker_error(*error);
-                    }
+                    self.push_worker_error(*error);
+                }
+                WorkerRequest::LoadFailed { worker, parent } => {
+                    self.push_worker_load_failed(parent, worker);
                 }
                 WorkerRequest::PostToParent {
                     parent,
                     worker,
                     payload,
+                    ports,
                 } => {
-                    if let Some(document) = self.frames.get_mut(&parent) {
-                        document.push_worker_message(worker, payload);
-                    }
+                    self.push_worker_message(parent, worker, payload, ports);
                 }
             }
         }
         applied
+    }
+
+    /// The worker realm behind a synthetic worker frame, if one is live
+    /// (<https://html.spec.whatwg.org/multipage/workers.html#dedicated-workers-and-the-dedicatedworkerglobalscope-interface>).
+    fn worker_for_frame(&mut self, frame: FrameId) -> Option<&mut Worker> {
+        let id = frame.as_worker()?;
+        self.workers.get_mut(&WorkerId::new(id))
+    }
+
+    /// Queues one message a nested worker posted at its owner's `Worker`
+    /// object. The owner is a document or another worker global; both own the
+    /// `Worker` object in their own realm
+    /// (<https://html.spec.whatwg.org/multipage/workers.html#the-worker's-lifetime>).
+    fn push_worker_message(
+        &mut self,
+        owner: FrameId,
+        worker: WorkerId,
+        payload: String,
+        ports: Vec<u64>,
+    ) {
+        if self.frames.contains_key(&owner) {
+            Self::route_endpoints(&self.runtime.shared, &ports, owner);
+            if let Some(document) = self.frames.get_mut(&owner) {
+                document.push_worker_message(worker, payload, ports);
+            }
+            return;
+        }
+        if self.worker_for_frame(owner).is_some() {
+            Self::route_endpoints(&self.runtime.shared, &ports, owner);
+            if let Some(parent) = self.worker_for_frame(owner) {
+                let _ = parent.deliver_message(worker, &payload, &ports);
+            }
+            return;
+        }
+        self.runtime.shared.borrow_mut().forget_endpoints(&ports);
+    }
+
+    /// Queues one error a worker reported at its owner's `Worker` object.
+    fn push_worker_error(&mut self, error: WorkerError) {
+        if let Some(document) = self.frames.get_mut(&error.parent) {
+            document.push_worker_error(error);
+            return;
+        }
+        let parent = error.parent;
+        if let Some(worker) = self.worker_for_frame(parent) {
+            let _ = worker.deliver_error(&error);
+        }
+    }
+
+    /// Queues the plain `error` event a worker that never started fires at its
+    /// owner's `Worker` object.
+    fn push_worker_load_failed(&mut self, owner: FrameId, worker: WorkerId) {
+        if let Some(document) = self.frames.get_mut(&owner) {
+            document.push_worker_load_failed(worker);
+            return;
+        }
+        if let Some(parent) = self.worker_for_frame(owner) {
+            let _ = parent.deliver_load_failure(worker);
+        }
     }
 
     /// Adopts every child frame the realms created for themselves (an `iframe`
@@ -1136,6 +1205,7 @@ impl Engine {
     #[must_use]
     pub fn has_pending_dials(&self) -> bool {
         self.frames.values().any(Document::has_pending_dials)
+            || self.workers.values().any(Worker::has_pending_dials)
     }
 
     /// Queues one remote `postMessage` payload on the main frame's task
@@ -2153,6 +2223,18 @@ impl Engine {
                                 document.push_port_message(endpoint, payload, ports);
                             }
                         }
+                        // A worker owns its own realm and task queue; the
+                        // message queues there, and the task re-checks the
+                        // endpoint's owner in case the port moved again
+                        // (<https://html.spec.whatwg.org/multipage/web-messaging.html#message-port-post-message-steps>).
+                        Some(frame) if frame.as_worker().is_some() => {
+                            Self::route_endpoints(&self.runtime.shared, &ports, frame);
+                            if let Some(worker) = self.worker_for_frame(frame) {
+                                worker.queue_port_message(endpoint, payload, ports);
+                            } else {
+                                self.runtime.shared.borrow_mut().forget_endpoints(&ports);
+                            }
+                        }
                         Some(_) => {
                             // The owning frame is gone; nothing can receive it.
                             self.runtime.shared.borrow_mut().forget_endpoints(&ports);
@@ -2174,6 +2256,11 @@ impl Engine {
                         Some(frame) if self.frames.contains_key(&frame) => {
                             if let Some(document) = self.frames.get_mut(&frame) {
                                 document.push_port_closed(endpoint);
+                            }
+                        }
+                        Some(frame) if frame.as_worker().is_some() => {
+                            if let Some(worker) = self.worker_for_frame(frame) {
+                                worker.queue_port_closed(endpoint);
                             }
                         }
                         Some(_) => {}

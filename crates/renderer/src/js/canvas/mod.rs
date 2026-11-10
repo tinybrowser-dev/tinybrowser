@@ -229,7 +229,46 @@ pub(crate) fn install(ctx: &Ctx<'_>) -> Result<()> {
     install_path2d(ctx)?;
     install_image_data(ctx)?;
     install_image_bitmap(ctx)?;
+    let host = crate::js::bridge::object(ctx)?;
+    host.set("__tbImageBitmapPixels", Func::from(image_bitmap_pixels))?;
+    host.set("__tbImageBitmapFrom", Func::from(image_bitmap_from))?;
     Ok(())
+}
+
+/// Reads an `ImageBitmap`'s pixels for structured serialization
+/// (<https://html.spec.whatwg.org/multipage/structured-data.html#serializable-objects>).
+fn image_bitmap_pixels<'js>(ctx: Ctx<'js>, image: Value<'js>) -> Result<Value<'js>> {
+    let null = || Value::new_null(ctx.clone());
+    let Some(object) = image.as_object() else {
+        return Ok(null());
+    };
+    if object.get::<_, bool>("__tbClosed").unwrap_or(false) {
+        return Ok(null());
+    }
+    let Ok(id) = object.get::<_, u64>("__tbBitmap") else {
+        return Ok(null());
+    };
+    let bitmap = world(&ctx)?.borrow().registry().borrow().bitmap(id);
+    let Some(bitmap) = bitmap else {
+        return Ok(null());
+    };
+    Ok(TypedArray::new(ctx.clone(), bitmap.pixels.to_vec())?.into_value())
+}
+
+/// Builds a fresh `ImageBitmap` from serialized pixels, so a clone does not
+/// share the source's bitmap
+/// (<https://html.spec.whatwg.org/multipage/structured-data.html#structureddeserialize>).
+fn image_bitmap_from<'js>(
+    ctx: Ctx<'js>,
+    width: u32,
+    height: u32,
+    origin_clean: bool,
+    data: Value<'js>,
+) -> Result<Value<'js>> {
+    let Some(bytes) = typed_array_bytes(&data)? else {
+        return Err(Exception::throw_type(&ctx, "ImageBitmap needs pixel data"));
+    };
+    image_bitmap_object(&ctx, width, height, bytes.into(), origin_clean)
 }
 
 fn install_path2d(ctx: &Ctx<'_>) -> Result<()> {
@@ -1933,6 +1972,11 @@ fn install_image_data(ctx: &Ctx<'_>) -> Result<()> {
         "pixelFormat",
         Accessor::new(image_data_pixel_format, image_data_read_only),
     )?;
+    // https://html.spec.whatwg.org/multipage/canvas.html#imagedata
+    prototype.prop(
+        PredefinedAtom::SymbolToStringTag,
+        Property::from("ImageData").configurable(),
+    )?;
     let ctor =
         rquickjs::function::Constructor::new_prototype(ctx, prototype, ImageDataConstructor)?;
     ctx.globals().set("ImageData", ctor)?;
@@ -2473,6 +2517,11 @@ fn install_image_bitmap(ctx: &Ctx<'_>) -> Result<()> {
         Accessor::new(image_bitmap_height, image_data_read_only),
     )?;
     prototype.prop("close", Func::from(image_bitmap_close))?;
+    // https://html.spec.whatwg.org/multipage/canvas.html#imagebitmap
+    prototype.prop(
+        PredefinedAtom::SymbolToStringTag,
+        Property::from("ImageBitmap").configurable(),
+    )?;
     let ctor = Function::new(ctx.clone(), || {})?;
     ctor.set("prototype", prototype)?;
     ctx.globals().set("ImageBitmap", ctor)?;

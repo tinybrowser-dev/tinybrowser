@@ -2,7 +2,11 @@ const __tbEventConstructor = globalThis.Event;
 const __tbEventTargetConstructor = globalThis.EventTarget;
 host.array = __tbPrivateArray;
 host.push = __tbArray.push;
-host.__tb_timeouts = [];
+// Timer handles are positive integers and the table index is the handle, so
+// slot 0 stays unused: Chromium's first `setTimeout` returns 1 and WPT reads
+// that value
+// (<https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#dom-settimeout>).
+host.__tb_timeouts = [null];
 __tbSetPrototypeOf(host.__tb_timeouts, null);
 host.__tb_intervals = Object.create(null);
 host.__tb_fetchCbs = Object.create(null);

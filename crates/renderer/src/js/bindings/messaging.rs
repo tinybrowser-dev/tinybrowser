@@ -156,6 +156,32 @@ fn post_window_message(
     Ok(())
 }
 
+/// Validates a worker `postMessage` transfer list the way a window message is
+/// validated: the payload must carry the shim's version marker and every
+/// endpoint must be one the calling realm detached. A message that fails is
+/// dropped, and `None` says so
+/// (<https://html.spec.whatwg.org/multipage/web-messaging.html#transfer-receiving-steps>).
+pub(super) fn accept_worker_transfer(
+    ctx: &Ctx<'_>,
+    payload: &str,
+    ports: Vec<f64>,
+) -> Option<Vec<u64>> {
+    if !payload.starts_with(PAYLOAD_VERSION) {
+        return None;
+    }
+    let ports = protocol_ids(ports)?;
+    let world = world(ctx).ok()?;
+    let (frame, shared) = {
+        let world = world.borrow();
+        (world.frame(), world.shared())
+    };
+    shared
+        .borrow()
+        .ports
+        .all_in_transit_from(&ports, frame)
+        .then_some(ports)
+}
+
 fn port_new(ctx: Ctx<'_>) -> Result<Vec<f64>> {
     let world = world(&ctx)?;
     let (frame, shared) = {

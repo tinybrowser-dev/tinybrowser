@@ -465,10 +465,13 @@ pub(crate) fn install_worker(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Resul
     Ok(())
 }
 
-/// The hooks a document's `Worker` constructor calls.
+/// The hooks a realm's `Worker` constructor calls.
+///
+/// Documents and worker globals both construct workers; a nested worker runs in
+/// the same engine and gets the same hooks
+/// (<https://html.spec.whatwg.org/multipage/workers.html#dom-worker>).
 fn install_worker_constructor_hosts(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
     let host = crate::js::bridge::object(ctx)?;
-    host.set("__tbIsWorker", false)?;
     let create_world = Rc::clone(world);
     host.set(
         "__tbWorkerCreate",
@@ -493,17 +496,23 @@ fn install_worker_constructor_hosts(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -
     let post_world = Rc::clone(world);
     host.set(
         "__tbWorkerPost",
-        rquickjs::prelude::Func::from(move |id: u64, payload: String| {
-            post_world
-                .borrow()
-                .runtime
-                .worker_requests
-                .borrow_mut()
-                .push(crate::worker::WorkerRequest::Post {
-                    id: crate::worker::WorkerId::new(id),
-                    payload,
-                });
-        }),
+        rquickjs::prelude::Func::from(
+            move |ctx: Ctx<'_>, id: u64, payload: String, ports: Vec<f64>| {
+                let Some(ports) = messaging::accept_worker_transfer(&ctx, &payload, ports) else {
+                    return;
+                };
+                post_world
+                    .borrow()
+                    .runtime
+                    .worker_requests
+                    .borrow_mut()
+                    .push(crate::worker::WorkerRequest::Post {
+                        id: crate::worker::WorkerId::new(id),
+                        payload,
+                        ports,
+                    });
+            },
+        ),
     )?;
     let terminate_world = Rc::clone(world);
     host.set(
@@ -531,6 +540,10 @@ fn install_worker_global_hosts(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Res
     host.set("__tbIsWorker", true)?;
     host.set("__tbWorkerName", name)?;
     host.set("__tbWorkerURL", url)?;
+    host.set("__tbWorkerModule", world.borrow().worker_is_module())?;
+    // A nested worker's constructor reaches into the same engine
+    // (<https://html.spec.whatwg.org/multipage/workers.html#dom-worker>).
+    install_worker_constructor_hosts(ctx, world)?;
     let unhandled_world = Rc::clone(world);
     host.set(
         "__tbWorkerUnhandled",
@@ -559,7 +572,10 @@ fn install_worker_global_hosts(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Res
     let parent_world = Rc::clone(world);
     host.set(
         "__tbWorkerPostToParent",
-        rquickjs::prelude::Func::from(move |payload: String| {
+        rquickjs::prelude::Func::from(move |ctx: Ctx<'_>, payload: String, ports: Vec<f64>| {
+            let Some(ports) = messaging::accept_worker_transfer(&ctx, &payload, ports) else {
+                return;
+            };
             let world = parent_world.borrow();
             let Some(worker) = world.worker_id() else {
                 return;
@@ -572,6 +588,7 @@ fn install_worker_global_hosts(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Res
                     parent,
                     worker,
                     payload,
+                    ports,
                 },
             );
         }),
@@ -716,6 +733,7 @@ fn install_document(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
     // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-frames
     globals.set("frames", globals.clone())?;
     globals.set("opener", Value::new_null(ctx.clone()))?;
+    crate::js::bridge::object(ctx)?.set("__tbIsWorker", false)?;
     install_worker_constructor_hosts(ctx, world)?;
     Ok(())
 }
