@@ -234,6 +234,56 @@ const __tbPostMessageTransfer = transfer => {
   return transfer.transfer;
 };
 
+/// Drives one transferred stream's sender half.
+///
+/// The original stream is locked here, so a second transfer or a read from
+/// the sender fails as the specification requires. Each `pull` from the
+/// receiver reads one chunk and sends it; the receiver's backpressure is what
+/// paces the source.
+const __tbStartStreamTransfer = (stream, port) => {
+  let reader;
+  try {
+    reader = stream.getReader();
+  } catch (error) {
+    throw __tbCloneFailure();
+  }
+  let busy = false;
+  let closed = false;
+  const finish = (kind, value) => {
+    if (closed) return;
+    closed = true;
+    try { port.postMessage([kind, value]); } catch (error) { /* the peer is gone */ }
+    port.close();
+  };
+  port.onmessage = event => {
+    const message = event.data;
+    if (message === 'pull') {
+      if (busy || closed) return;
+      busy = true;
+      reader.read().then(step => {
+        busy = false;
+        if (step.done) {
+          finish('close');
+        } else {
+          try {
+            port.postMessage(['chunk', step.value]);
+          } catch (error) {
+            finish('error', error);
+          }
+        }
+      }, error => {
+        busy = false;
+        finish('error', error);
+      });
+    } else if (__tbIsArray(message) && message[0] === 'cancel') {
+      if (closed) return;
+      closed = true;
+      reader.cancel(message[1]).catch(() => {});
+      port.close();
+    }
+  };
+};
+
 // Serializes `value` into { payload, ports }, detaching every transferred
 // buffer and endpoint as it does so
 // (<https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializewithtransfer>).
@@ -244,6 +294,8 @@ const __tbEncode = (value, transfer, sourcePort) => {
   // (<https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializewithtransfer>).
   const buffers = new __tbPrivateMap();     // ArrayBuffer -> node slot, or -1 once listed
   const transferred = new __tbPrivateMap(); // MessagePort -> endpoint id
+  const streams = new __tbPrivateMap();     // ReadableStream -> node slot, or -1 once listed
+  const pendingStreams = __tbPrivateArray(); // {stream, port} pairs to start after encoding
   const canvases = new __tbPrivateMap();    // OffscreenCanvas -> node slot, or -1 once listed
   const transferredBitmaps = new __tbPrivateSet();
   const bitmapDescriptors = new __tbPrivateMap();
@@ -258,6 +310,18 @@ const __tbEncode = (value, transfer, sourcePort) => {
       if (itemData.closed) throw new globalThis.DOMException('Cannot transfer a detached MessagePort', 'DataCloneError');
       if (transferred.has(item)) throw new globalThis.DOMException('Transfer list contains duplicate ports', 'DataCloneError');
       transferred.set(item, itemData.id);
+    } else if (typeof globalThis.ReadableStream === 'function'
+               && item instanceof globalThis.ReadableStream) {
+      // Only a locked stream cannot move; a disturbed or byte stream still
+      // has a readable tail, and the receiver always gets a default stream
+      // (<https://streams.spec.whatwg.org/#readable-stream-transfer>).
+      if (item.locked) {
+        throw new globalThis.DOMException('Cannot transfer a locked ReadableStream', 'DataCloneError');
+      }
+      if (streams.has(item)) {
+        throw new globalThis.DOMException('Transfer list contains duplicate streams', 'DataCloneError');
+      }
+      streams.set(item, -1);
     } else if (typeof globalThis.OffscreenCanvas === 'function'
                && item instanceof globalThis.OffscreenCanvas) {
       if (canvases.has(item)) {
@@ -307,6 +371,21 @@ const __tbEncode = (value, transfer, sourcePort) => {
     if (__tbWindowData.get(input) !== undefined) throw __tbCloneFailure();
     if (transferred.has(input)) {
       const index = slot(['port', transferred.get(input)]);
+      seen.set(input, index);
+      return index;
+    }
+    if (typeof globalThis.ReadableStream === 'function'
+        && input instanceof globalThis.ReadableStream) {
+      // A stream is transferable but not serializable. The sender keeps it
+      // locked and pumps one chunk per pull; the receiver wraps the paired
+      // endpoint as a fresh stream
+      // (<https://streams.spec.whatwg.org/#readable-stream-transfer>).
+      if (!streams.has(input)) throw __tbCloneFailure();
+      const channel = new globalThis.MessageChannel();
+      const id = __tbBrand(channel.port2, __tbPortData).id;
+      const index = slot(['stream', id]);
+      transferred.set(channel.port2, id);
+      __tbArray.push(pendingStreams, { __proto__: null, stream: input, port: channel.port1 });
       seen.set(input, index);
       return index;
     }
@@ -577,6 +656,10 @@ const __tbEncode = (value, transfer, sourcePort) => {
     delete __tbPorts[id];
     __tbArray.push(ports, id);
   }
+  for (let index = 0; index < pendingStreams.length; index++) {
+    const pending = pendingStreams[index];
+    __tbStartStreamTransfer(pending.stream, pending.port);
+  }
   return { __proto__: null, payload: __tbPayloadVersion + __tbJsonStringify({ __proto__: null, root, nodes }), ports };
 };
 
@@ -709,6 +792,12 @@ const __tbDecode = (payload, ports) => {
         const port = ports[descriptor[1]];
         if (port === undefined) throw new Error('missing transferred MessagePort');
         values[index] = port;
+        break;
+      }
+      case 'stream': {
+        const port = ports[descriptor[1]];
+        if (port === undefined) throw new Error('missing transferred ReadableStream');
+        values[index] = __tbStreamFromPort(port);
         break;
       }
     }

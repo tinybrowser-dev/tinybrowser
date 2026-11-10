@@ -1,6 +1,62 @@
 // A ReadableStream with a synchronous chunk queue: enough for Blob.stream()
 // and other producers that push all their chunks up front.
 const __tbStreamBrand = value => __tbBrand(value, __tbStreamData);
+
+/// Wraps a transferred endpoint in a stream that pulls one chunk per message
+/// from its peer.
+///
+/// The sender keeps the original stream locked and reads it on demand, so a
+/// transfer moves the stream rather than draining it. Pulling is a message,
+/// not an eager pump, which is what gives the receiving stream backpressure
+/// (<https://streams.spec.whatwg.org/#readable-stream-transfer>).
+const __tbStreamFromPort = port => {
+  const pulls = [];
+  let controller = null;
+  let finished = false;
+  const wake = () => {
+    while (pulls.length > 0) {
+      const resolve = __tbArray.shift(pulls);
+      resolve();
+    }
+  };
+  const stream = new globalThis.ReadableStream({
+    start(value) { controller = value; },
+    pull() {
+      if (finished) return undefined;
+      return new Promise(resolve => {
+        __tbArray.push(pulls, resolve);
+        port.postMessage('pull');
+      });
+    },
+    cancel(reason) {
+      if (finished) return;
+      finished = true;
+      wake();
+      try { port.postMessage(['cancel', reason]); } catch (error) { /* the peer is gone */ }
+      port.close();
+    },
+  });
+  port.onmessage = event => {
+    const message = event.data;
+    if (!__tbIsArray(message)) return;
+    if (message[0] === 'chunk') {
+      controller.enqueue(message[1]);
+      wake();
+    } else if (message[0] === 'close') {
+      finished = true;
+      controller.close();
+      wake();
+      port.close();
+    } else if (message[0] === 'error') {
+      finished = true;
+      controller.error(message[1]);
+      wake();
+      port.close();
+    }
+  };
+  return stream;
+};
+
 // Reader results use a null prototype so a page-installed
 // `Object.prototype.then` cannot turn them into thenables.
 const __tbStreamResult = (value, done) => {

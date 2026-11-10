@@ -3594,6 +3594,103 @@ mod messaging_tests {
         }
     }
 
+    /// A transferred stream moves; it does not copy. The sender's half is
+    /// locked, and the receiver reads the source's chunks through the paired
+    /// endpoint. A stream that is not in the transfer list is not serializable
+    /// (<https://streams.spec.whatwg.org/#readable-stream-transfer>).
+    #[test]
+    fn a_transferred_stream_delivers_its_chunks() {
+        let mut engine = engine();
+        engine
+            .mount_frame(
+                FrameId::MAIN,
+                &mount("https://example.test/stream", "<!doctype html><p>stream"),
+            )
+            .expect("mount");
+        let _ready = engine.drain_ready();
+        let probe = engine
+            .eval_in(
+                FrameId::MAIN,
+                r"
+                (function () {
+                  let notTransferred;
+                  try { structuredClone(new ReadableStream()); }
+                  catch (error) { notTransferred = error.name; }
+                  const source = new ReadableStream({
+                    start(controller) {
+                      controller.enqueue('one');
+                      controller.enqueue('two');
+                      controller.close();
+                    },
+                  });
+                  let copy;
+                  let cloneError = null;
+                  try { copy = structuredClone(source, { transfer: [source] }); }
+                  catch (error) { cloneError = error.name + ': ' + error.message; }
+                  window.__chunks = [];
+                  window.__done = false;
+                  window.__error = null;
+                  if (copy !== undefined) {
+                    (async function () {
+                      const reader = copy.getReader();
+                      for (;;) {
+                        const step = await reader.read();
+                        if (step.done) break;
+                        window.__chunks.push(step.value);
+                      }
+                      window.__done = true;
+                    })().catch(error => {
+                      window.__error = error.name + ': ' + error.message;
+                      window.__done = true;
+                    });
+                  }
+                  return JSON.stringify({
+                    notTransferred,
+                    cloneError,
+                    locked: source.locked,
+                    prototype: copy !== undefined
+                      && Object.getPrototypeOf(copy) === ReadableStream.prototype,
+                  });
+                })()
+                ",
+            )
+            .expect("transfer");
+        assert_eq!(
+            probe,
+            r#"{"notTransferred":"DataCloneError","cloneError":null,"locked":true,"prototype":true}"#
+        );
+        for _ in 0..20 {
+            let _ready = engine.drain_ready();
+            if engine
+                .eval_in(FrameId::MAIN, "String(window.__done)")
+                .expect("done")
+                == "true"
+            {
+                break;
+            }
+        }
+        assert_eq!(
+            engine
+                .eval_in(FrameId::MAIN, "String(window.__done)")
+                .expect("done"),
+            "true",
+            "the transferred stream must close after its two chunks"
+        );
+        assert_eq!(
+            engine
+                .eval_in(FrameId::MAIN, "String(window.__error)")
+                .expect("error"),
+            "null",
+            "the transferred stream must not error"
+        );
+        assert_eq!(
+            engine
+                .eval_in(FrameId::MAIN, "JSON.stringify(window.__chunks)")
+                .expect("chunks"),
+            r#"["one","two"]"#
+        );
+    }
+
     /// Cross-origin isolation needs a secure origin, a `same-origin` opener
     /// policy, and an embedder policy compatible with isolation. A shared
     /// buffer may be cloned only when the sender is isolated
