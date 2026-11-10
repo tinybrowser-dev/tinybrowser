@@ -226,6 +226,24 @@ because `ReadableStream` transfer is a SKIP. `cookies/` and `webmessaging/`
 are unchanged. `docs/upstream.md` records the fixture's remaining wrong
 assertion for an isolated page.
 
+`ReadableStream` transfer then landed: a transfer list entry locks the sender
+and moves the stream over an internal `MessageChannel`, one chunk per pull, so
+the receiver's reads pace the source and close/error/cancel cross the channel.
+Both `structured-clone` files pass completely, taking `workers/` to **968/974
+passing subtests and 242 perfect files** with no loss.
+
+The last engine gap was `eval(import())` inside a blob- or data-URL module
+worker. The eval'd code runs in an imported HTTP module, so the relative
+specifier has a real base URL, but quickjs's `js_dynamic_import` captured the
+fixed `<input>` name for eval frames. The fork now walks out of the eval frames
+to the enclosing script or module (`docs/upstream.md`), and all four module
+files pass: `workers/` reaches **972/974 passing subtests and 246 perfect
+files**, with 0 timeouts, 0 errors, no subtest lost, and only the two
+`workers/data-url*.html` files left, each short one `indexedDB is present`
+assertion. `cookies/` and `webmessaging/` remain unchanged. IndexedDB is the
+last feature-sized gap; it has to be a real implementation, so no
+`"indexedDB" in self` shim was added.
+
 Every push to `main` now publishes the record to
 `tinybrowser-dev/tinybrowser-wpt-results` and the site at
 `tinybrowser.ericc.ch/wpt` rebuilds from it: subtests passing, files passing,

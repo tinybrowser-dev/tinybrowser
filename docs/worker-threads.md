@@ -226,10 +226,13 @@ failures are implementation gaps, not the thread model:
   `WebAssembly.Module`/`Instance` are absent, and quickjs-ng stores
   `byteLength` per object, so a `grow()` in one runtime is not visible through
   another runtime's object.
-- `ReadableStream` transfer is a codec gap, not concurrency. `eval(import())`
-  in a blob- or data-URL module worker cannot resolve a relative specifier,
-  because the URL standard gives those URLs no hierarchical path; Chrome
-  rejects it the same way, and `docs/upstream.md` records the probe.
+- `ReadableStream` transfer is implemented in the message codec: the sender
+  locks the stream and pumps one chunk per pull over an internal
+  `MessageChannel`, so close, error, and cancel cross with it. A relative
+  `eval(import())` resolves against the script that called `eval` (the quickjs
+  fork walks out of the eval frames, `docs/upstream.md`), so a blob- or
+  data-URL module worker reaches an imported HTTP module's relative
+  specifiers.
 - `SharedWorker` concurrency: milestone 6.
 
 ## Registry lifetime
