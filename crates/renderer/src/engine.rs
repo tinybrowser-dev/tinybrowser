@@ -253,6 +253,7 @@ impl Engine {
             turn_deadline: Rc::new(std::cell::Cell::new(None)),
             worker_requests: Rc::new(RefCell::new(Vec::new())),
             next_worker: Rc::new(std::cell::Cell::new(1)),
+            next_broadcast: Rc::new(std::cell::Cell::new(1)),
             font_ctx: fonts.0.clone(),
         };
         let main = Document::with_shared(FrameId::MAIN, &runtime, &init_scripts);
@@ -298,6 +299,14 @@ impl Engine {
                 }
                 WorkerRequest::CreateShared { created, endpoint } => {
                     self.adopt_shared_create(&created, endpoint);
+                }
+                WorkerRequest::BroadcastPost {
+                    origin,
+                    name,
+                    payload,
+                    channel,
+                } => {
+                    self.broadcast_local(&origin, &name, &payload, channel);
                 }
                 WorkerRequest::Post { id, payload, ports } => {
                     if self.workers.contains_key(&id) {
@@ -1484,6 +1493,55 @@ impl Engine {
                 name.to_owned(),
                 payload.to_owned(),
                 source,
+            );
+        }
+        // A worker has no frame entry but its realm can hold channels.
+        let origin_string = origin.to_string();
+        for worker in self.workers.values_mut() {
+            // Two opaque origins never share a `BroadcastChannel`, and the
+            // key has no opaque case at all
+            // (<https://html.spec.whatwg.org/multipage/web-messaging.html#broadcasting-to-other-browsing-contexts>).
+            if !worker.has_origin(origin.origin()) {
+                continue;
+            }
+            worker.queue_broadcast(
+                origin_string.clone(),
+                name.to_owned(),
+                payload.to_owned(),
+                source,
+            );
+        }
+    }
+
+    /// Delivers one opaque-origin `BroadcastChannel` post inside this engine.
+    ///
+    /// An opaque origin has no storage key for the browser to route, but
+    /// realms that share one opaque origin are in the same agent cluster, so
+    /// they are exactly the reachable channels
+    /// (<https://html.spec.whatwg.org/multipage/web-messaging.html#broadcasting-to-other-browsing-contexts>).
+    fn broadcast_local(&mut self, origin: &url::Origin, name: &str, payload: &str, channel: u64) {
+        let origin_string = origin.unicode_serialization();
+        for document in self.frames.values_mut() {
+            let world = document.world();
+            if world.borrow().origin != *origin || !world.borrow().is_attached() {
+                continue;
+            }
+            document.push_broadcast_message(
+                origin_string.clone(),
+                name.to_owned(),
+                payload.to_owned(),
+                Some(channel),
+            );
+        }
+        for worker in self.workers.values_mut() {
+            if !worker.has_origin(origin) {
+                continue;
+            }
+            worker.queue_broadcast(
+                origin_string.clone(),
+                name.to_owned(),
+                payload.to_owned(),
+                Some(channel),
             );
         }
     }

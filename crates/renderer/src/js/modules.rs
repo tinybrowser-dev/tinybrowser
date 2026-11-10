@@ -73,6 +73,7 @@ fn module_request_blocked(
     world_rc: &std::rc::Rc<std::cell::RefCell<super::World>>,
     ctx: &Ctx<'_>,
     name: &str,
+    origin: &url::Origin,
 ) -> Result<()> {
     let Ok(url) = url::Url::parse(name) else {
         return Ok(());
@@ -80,7 +81,7 @@ fn module_request_blocked(
     let violations = {
         let world = world_rc.borrow();
         world.policy.csp.check_request(
-            &world.origin,
+            origin,
             &world.document_url,
             &url,
             crate::csp::Destination::Script,
@@ -130,6 +131,67 @@ pub(super) fn declare_inline<'js>(
     declare_module(ctx, name, source)
 }
 
+/// The request inputs for one module fetch: services, initiator, referrer,
+/// policy, and CSP gate, read under one borrow of the realm.
+type ModuleFetchInputs = (
+    std::sync::Arc<dyn crate::protocol::BrowserServices>,
+    url::Origin,
+    Url,
+    net::ReferrerPolicy,
+    crate::protocol::RequestPolicy,
+    crate::RedirectGate,
+);
+
+fn module_fetch_inputs(world: &crate::js::World, name: &str) -> ModuleFetchInputs {
+    // Every fetch in a module graph keeps the graph root's script fetch
+    // options: its `referrerpolicy` and the credentials mode its
+    // `crossorigin` state selects. The document records the root element as
+    // `current_script` while the graph loads, so the same lookup serves the
+    // root and a dynamic `import()` inside a classic script
+    // (<https://html.spec.whatwg.org/multipage/webappapis.html#fetch-the-descendants-of-and-link-a-module-script>).
+    let options = world
+        .state
+        .module_fetch_root
+        .or(world.state.current_script)
+        .map_or_default(|element| world.subresource_options(element));
+    // A worker's top-level module graph uses the outside settings object's
+    // origin; everything else uses this realm's own origin
+    // (<https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script>).
+    let worker_root =
+        world.state.module_client_origin.is_some() && name == world.document_url.as_str();
+    let initiator = world
+        .state
+        .module_client_origin
+        .clone()
+        .unwrap_or_else(|| world.origin.clone());
+    let policy = if worker_root {
+        // The worker's own script must stay same-origin, even when the server
+        // sends `Access-Control-Allow-Origin`
+        // (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>).
+        crate::protocol::RequestPolicy::ModuleWorkerScript
+    } else {
+        crate::protocol::RequestPolicy::ModuleScript {
+            crossorigin: crate::protocol::cross_origin(options.crossorigin),
+        }
+    };
+    (
+        world.runtime.services.clone(),
+        initiator.clone(),
+        world.referrer_url.clone(),
+        options
+            .referrer_policy
+            .map(crate::protocol::referrer_policy)
+            .or(world.policy.referrer_policy)
+            .unwrap_or_default(),
+        policy,
+        crate::RedirectGate::new(
+            world.policy.csp.clone(),
+            &initiator,
+            crate::csp::Destination::Script,
+        ),
+    )
+}
+
 pub(super) fn load_module<'js>(ctx: &Ctx<'js>, name: &str) -> Result<Module<'js, Declared>> {
     // A JavaScript module graph is fetched before evaluation
     // (<https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script>).
@@ -158,47 +220,17 @@ pub(super) fn load_module<'js>(ctx: &Ctx<'js>, name: &str) -> Result<Module<'js,
         };
         return declare_module(ctx, name, source);
     }
-    let (services, initiator, referrer_url, referrer_policy, crossorigin, gate) = {
+    let (services, initiator, referrer_url, referrer_policy, policy, gate) = {
         let world = world_rc.borrow();
-        // Every fetch in a module graph keeps the graph root's script fetch
-        // options: its `referrerpolicy` and the credentials mode its
-        // `crossorigin` state selects. The document records the root element as
-        // `current_script` while the graph loads, so the same lookup serves the
-        // root and a dynamic `import()` inside a classic script
-        // (<https://html.spec.whatwg.org/multipage/webappapis.html#fetch-the-descendants-of-and-link-a-module-script>).
-        let options = world
-            .state
-            .module_fetch_root
-            .or(world.state.current_script)
-            .map_or_default(|element| world.subresource_options(element));
-        (
-            world.runtime.services.clone(),
-            world.origin.clone(),
-            world.referrer_url.clone(),
-            options
-                .referrer_policy
-                .map(crate::protocol::referrer_policy)
-                .or(world.policy.referrer_policy)
-                .unwrap_or_default(),
-            crate::protocol::cross_origin(options.crossorigin),
-            crate::RedirectGate::new(
-                world.policy.csp.clone(),
-                &world.origin,
-                crate::csp::Destination::Script,
-            ),
-        )
+        module_fetch_inputs(&world, name)
     };
     // A module graph fetch is a script request; check it before the renderer
     // waits on the dial
     // (<https://w3c.github.io/webappsec-csp/#should-block-request>).
-    module_request_blocked(&world_rc, ctx, name)?;
+    module_request_blocked(&world_rc, ctx, name, &initiator)?;
 
     let (send, receive) = mpsc::sync_channel(1);
-    let mut request = DialRequest::new(
-        crate::protocol::RequestPolicy::ModuleScript { crossorigin },
-        &url,
-        &initiator,
-    );
+    let mut request = DialRequest::new(policy, &url, &initiator);
     request.referrer = crate::protocol::ReferrerRequest::Client { url: referrer_url };
     request.csp = Some(Box::new(gate));
     request.referrer_policy = referrer_policy;

@@ -351,6 +351,27 @@ globalThis.XMLHttpRequest = class XMLHttpRequest extends EventTarget {
       __tbXhrFinish(this, data, generation, result[0], result[1], result[2], result[3], true);
       return;
     }
+    // An async XHR of a `blob:` URL resolves in this realm, like `fetch`: the
+    // carrier only speaks http(s) and `data:`
+    // (<https://fetch.spec.whatwg.org/#scheme-fetch>). The completion is
+    // queued as a task so the events never fire inside `send()`.
+    if (data.url.indexOf('blob:') === 0) {
+      const generation = data.generation;
+      const entry = data.method === 'GET' ? __tbLookupObjectUrl(data.url) : null;
+      setTimeout(() => {
+        if (entry === null) {
+          __tbXhrError(this, data, 'error');
+          return;
+        }
+        const bytes = typeof entry.contents === 'string'
+          ? __tbUtf8Encode(entry.contents)
+          : entry.contents;
+        __tbXhrFinish(this, data, generation, 200, bytes, data.url,
+          [['content-type', entry.type]], false);
+      }, 0);
+      __tbXhrTimeout(this, data);
+      return;
+    }
     data.request = __tbQueuePageRequest(data.url, data.method, body, data.headers, {
       mode: 'cors',
       credentials: data.withCredentials ? 'include' : 'same-origin',

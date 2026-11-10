@@ -1521,6 +1521,12 @@ pub(crate) struct DocumentState {
     /// `eval` resolves against this URL instead
     /// (<https://tc39.es/ecma262/#sec-hostresolveimportedmodule>).
     pub(crate) current_script_url: Option<Url>,
+    /// The fetch client origin for a worker's top-level module graph. A worker
+    /// created from a `data:` URL has an opaque origin, but its graph is
+    /// fetched with the outside settings' origin; a later dynamic `import()`
+    /// uses the worker's own origin
+    /// (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>).
+    pub(crate) module_client_origin: Option<url::Origin>,
 
     /// Existing elements being synchronously upgraded by a custom-element
     /// constructor. `HTMLElement()` consumes the top candidate.
@@ -1630,6 +1636,7 @@ impl DocumentState {
         self.current_script = None;
         self.module_fetch_root = None;
         self.current_script_url = None;
+        self.module_client_origin = None;
         self.custom_construction.clear();
         self.implementations.clear();
         self.active_elements.clear();

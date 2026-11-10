@@ -2158,6 +2158,7 @@ mod realm_tests {
             turn_deadline: Rc::new(std::cell::Cell::new(None)),
             worker_requests: Rc::new(RefCell::new(Vec::new())),
             next_worker: Rc::new(std::cell::Cell::new(1)),
+            next_broadcast: Rc::new(std::cell::Cell::new(1)),
             font_ctx: parley::FontContext::default(),
         };
         let mut world = World::new(

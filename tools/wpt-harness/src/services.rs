@@ -275,6 +275,11 @@ impl Origin {
             url,
             headers: request_headers,
         };
+        // wptserve's `?pipe=` pipeline: `header(Name, Value)` appends a
+        // response header and `sub` expands `{{...}}` in the body. The
+        // remaining pipes (for example `trickle`) change timing, not the bytes
+        // or headers this harness serves.
+        let pipes = Pipes::from_url(url);
         // `.any.html` and `.window.html` are synthesized from their script. A
         // wrapper's source can be missing too, and then wptserve answers 404
         // just as it does for any absent file.
@@ -283,7 +288,8 @@ impl Origin {
             let Ok(body) = std::fs::read(&file) else {
                 return Err(Unserved::Missing);
             };
-            let headers = Self::headers_for(&file, &context);
+            let mut headers = Self::headers_for(&file, &context);
+            pipes.apply(&mut headers.list);
             let js_url = &url.path()[..url.path().len() - ".html".len()];
             let html = wrapper.render(&body, &format!("{js_url}.js"));
             let content_type = headers
@@ -299,17 +305,18 @@ impl Origin {
         let Ok(body) = std::fs::read(&file) else {
             return Err(Unserved::Missing);
         };
-        let headers = Self::headers_for(&file, &context);
+        let mut headers = Self::headers_for(&file, &context);
         let content_type = headers
             .content_type
             .clone()
             .unwrap_or_else(|| self.content_type_for(&file));
+        let substitute = path.contains(".sub.") || pipes.apply(&mut headers.list);
         // A `.sub.` path is a wptserve pipe: the body's `{{...}}` expressions
         // are expanded against the request, with the escaping its extension
         // selects (`wptserve/handlers.py::wrap_pipeline`). A body this module
         // cannot expand is a server error, exactly as wptserve raises and
         // answers 500.
-        let body = if path.contains(".sub.") {
+        let body = if substitute {
             let text = String::from_utf8_lossy(&body);
             let template_context = Context {
                 url: context.url,
@@ -338,6 +345,46 @@ impl Origin {
             headers: with_content_type(headers.list, content_type),
             body,
         })
+    }
+}
+
+/// The `?pipe=` pipeline a wptserve URL selects.
+struct Pipes {
+    headers: Vec<(String, String)>,
+    substitute: bool,
+}
+
+impl Pipes {
+    fn from_url(url: &Url) -> Self {
+        let mut pipes = Self {
+            headers: Vec::new(),
+            substitute: false,
+        };
+        for (key, value) in url.query_pairs() {
+            if key != "pipe" {
+                continue;
+            }
+            for pipe in value.split('|') {
+                if pipe == "sub" {
+                    pipes.substitute = true;
+                } else if let Some(arguments) = pipe
+                    .strip_prefix("header(")
+                    .and_then(|rest| rest.strip_suffix(')'))
+                    && let Some((name, value)) = arguments.split_once(',')
+                {
+                    pipes
+                        .headers
+                        .push((name.trim().to_owned(), value.trim().to_owned()));
+                }
+            }
+        }
+        pipes
+    }
+
+    /// Appends the pipeline's headers and reports whether it asked for `sub`.
+    fn apply(&self, list: &mut Vec<(String, String)>) -> bool {
+        list.extend(self.headers.iter().cloned());
+        self.substitute
     }
 }
 

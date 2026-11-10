@@ -74,7 +74,60 @@ pub(crate) fn install_messaging(ctx: &Ctx<'_>) -> Result<()> {
         "__tbSetFrameName",
         rquickjs::prelude::Func::from(set_frame_name),
     )?;
+    globals.set(
+        "__tbBroadcastChannelId",
+        rquickjs::prelude::Func::from(broadcast_channel_id),
+    )?;
+    globals.set(
+        "__tbBroadcastPost",
+        rquickjs::prelude::Func::from(broadcast_post),
+    )?;
     Ok(())
+}
+
+/// Mints one `BroadcastChannel` id from the engine-wide counter. A post names
+/// its sender's channel so that channel does not receive its own message, and
+/// the comparison spans realms.
+fn broadcast_channel_id(ctx: Ctx<'_>) -> Result<f64> {
+    let world = world(&ctx)?;
+    let world = world.borrow();
+    let next = world.runtime.next_broadcast.get();
+    world.runtime.next_broadcast.set(next.saturating_add(1));
+    Ok(crate::js::js_number(next))
+}
+
+/// Posts one `BroadcastChannel` message
+/// (<https://html.spec.whatwg.org/multipage/web-messaging.html#dom-broadcastchannel-postmessage>).
+///
+/// A tuple origin broadcasts through the browser, so every renderer process
+/// with the same storage key hears it. An opaque origin has no storage key:
+/// only realms in this engine that share the same opaque origin can hear it,
+/// which is exactly the agent cluster sharing rule, so the engine routes it
+/// itself.
+fn broadcast_post(ctx: Ctx<'_>, name: String, payload: String, channel: u64) {
+    let Ok(world) = world(&ctx) else {
+        return;
+    };
+    let world = world.borrow();
+    // A channel in a detached iframe must not reach live contexts. A worker
+    // has no frame-tree entry but is live while its realm is.
+    if world.worker_id().is_none() && !world.is_attached() {
+        return;
+    }
+    match world.storage_origin() {
+        Some(origin) => world
+            .runtime
+            .services
+            .broadcast_post(&origin, &name, &payload, channel),
+        None => world.runtime.worker_requests.borrow_mut().push(
+            crate::worker::WorkerRequest::BroadcastPost {
+                origin: world.origin.clone(),
+                name,
+                payload,
+                channel,
+            },
+        ),
+    }
 }
 
 /// Resolves one `targetOrigin` argument without posting. The shim calls this

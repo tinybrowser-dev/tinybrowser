@@ -1587,6 +1587,11 @@ pub enum RequestPolicy {
     /// the creator's origin
     /// (<https://html.spec.whatwg.org/multipage/workers.html#fetch-a-classic-worker-script>).
     WorkerScript,
+    /// A module worker's root script: a module graph fetched in `same-origin`
+    /// mode, so an `Access-Control-Allow-Origin` header cannot make a
+    /// cross-origin worker script load. Descendant imports are ordinary module
+    /// fetches and may use CORS.
+    ModuleWorkerScript,
     /// A module graph fetch: always `cors`, with the credentials mode the
     /// graph root's `crossorigin` attribute selects
     /// (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#cors-settings-attributes>).
@@ -1634,7 +1639,7 @@ impl RequestPolicy {
         match self {
             Self::Fetch(_) => DialKind::JsFetch,
             Self::ClassicScript { .. } | Self::WorkerScript => DialKind::ClassicScript,
-            Self::ModuleScript { .. } => DialKind::ModuleScript,
+            Self::ModuleScript { .. } | Self::ModuleWorkerScript => DialKind::ModuleScript,
             Self::Stylesheet { .. } => DialKind::Stylesheet,
             Self::Image { .. } => DialKind::Image,
             Self::Font => DialKind::Font,
@@ -1656,7 +1661,7 @@ impl RequestPolicy {
             Self::ClassicScript { crossorigin }
             | Self::Stylesheet { crossorigin }
             | Self::Image { crossorigin } => potential_cors(crossorigin),
-            Self::WorkerScript => net::cors::CorsParameters {
+            Self::WorkerScript | Self::ModuleWorkerScript => net::cors::CorsParameters {
                 mode: net::cors::RequestMode::SameOrigin,
                 credentials: net::cors::CredentialsMode::SameOrigin,
                 redirect: net::cors::RedirectMode::Follow,

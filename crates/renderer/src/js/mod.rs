@@ -673,6 +673,13 @@ impl JsRealm {
                     let Ok((_, promise)) = module.eval() else {
                         return Ok(Some(WorkerScriptError::Parse));
                     };
+                    // The graph is linked and its static imports are fetched;
+                    // only the module bodies and their dynamic `import()` jobs
+                    // remain. Those run with the worker's own settings object,
+                    // so the outside origin stops applying before the
+                    // microtask checkpoint that runs them
+                    // (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>).
+                    self.world.borrow_mut().state.module_client_origin = None;
                     match promise.finish::<()>() {
                         Ok(()) => Ok(None),
                         // The rejection is rethrown as a pending exception, so the
@@ -686,6 +693,11 @@ impl JsRealm {
                 })
             })
         });
+        // The root graph has been fetched and linked. A later dynamic import()
+        // runs with the worker's own settings object, so stop applying the
+        // outside origin
+        // (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>).
+        self.world.borrow_mut().state.module_client_origin = None;
         match outcome {
             Ok(None) => Ok(()),
             Ok(Some(error)) => Err(error),
@@ -1989,28 +2001,6 @@ fn install_window_messaging_functions(
                     &key,
                 )
             })
-        }),
-    )?;
-
-    let broadcast = world.clone();
-    bridge::object(ctx)?.set(
-        "__tbBroadcastPost",
-        Func::from(move |name: String, payload: String, channel: u64| {
-            let world = broadcast.borrow();
-            // A channel in a detached iframe must not reach live contexts
-            // (<https://html.spec.whatwg.org/multipage/web-messaging.html#broadcasting-to-other-browsing-contexts>).
-            if !world.is_attached() {
-                return;
-            }
-            // An opaque origin has no area to broadcast in, and the realm's own
-            // origin is the only one a channel can be scoped to.
-            let Some(origin) = world.storage_origin() else {
-                return;
-            };
-            world
-                .runtime
-                .services
-                .broadcast_post(&origin, &name, &payload, channel);
         }),
     )?;
     Ok(())

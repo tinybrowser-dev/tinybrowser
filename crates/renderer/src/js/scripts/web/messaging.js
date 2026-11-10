@@ -1150,7 +1150,6 @@ host.__tbDeliverRemoteMessage = function(origin, payload) {
 // https://html.spec.whatwg.org/multipage/web-messaging.html#broadcastchannel
 const __tbBroadcastData = host.slots('tinybrowser.broadcastchannel.data');
 const __tbBroadcastChannels = new __tbPrivateSet();
-let __tbNextBroadcastChannel = 1;
 
 globalThis.BroadcastChannel = class BroadcastChannel extends EventTarget {
   constructor(name) {
@@ -1159,7 +1158,7 @@ globalThis.BroadcastChannel = class BroadcastChannel extends EventTarget {
     }
     super();
     __tbBroadcastData.set(this, {
-        id: __tbNextBroadcastChannel++, name: String(name), closed: false,
+        id: host.__tbBroadcastChannelId(), name: String(name), closed: false,
         onmessage: null, onmessageerror: null,
     });
     __tbBroadcastChannels.add(this);

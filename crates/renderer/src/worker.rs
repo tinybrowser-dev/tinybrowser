@@ -191,6 +191,16 @@ pub(crate) enum WorkerRequest {
         created: Box<CreatedWorker>,
         endpoint: u64,
     },
+    /// One `BroadcastChannel` post from an opaque origin. The engine routes it
+    /// to every realm that shares the origin, because the browser keys
+    /// broadcasts by storage key and an opaque origin has none
+    /// (<https://html.spec.whatwg.org/multipage/web-messaging.html#broadcasting-to-other-browsing-contexts>).
+    BroadcastPost {
+        origin: url::Origin,
+        name: String,
+        payload: String,
+        channel: u64,
+    },
     Post {
         id: WorkerId,
         payload: String,
@@ -273,6 +283,13 @@ enum WorkerTask {
     /// (<https://html.spec.whatwg.org/multipage/workers.html#shared-workers-and-the-sharedworkerglobalscope-interface>).
     Connect {
         endpoint: u64,
+    },
+    /// One `BroadcastChannel` message this worker's realm must dispatch.
+    Broadcast {
+        origin: String,
+        name: String,
+        payload: String,
+        source: Option<u64>,
     },
     Timer(TimerId),
 }
@@ -413,6 +430,15 @@ impl Worker {
             state.sandbox = created.sandbox;
             state.referrer_url = created.referrer_url.clone();
             state.document_referrer = Some(created.referrer_url.clone());
+            // A module worker's top-level graph is fetched with the outside
+            // settings object's origin, which keeps `data:` worker static
+            // imports same-origin to the creator; the worker keeps its own
+            // origin for dynamic imports after the graph runs
+            // (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>,
+            // step 8).
+            if created.module {
+                state.state.module_client_origin = Some(created.origin.clone());
+            }
         }
         let js = JsRealm::new_worker(
             &js_runtime.handle(),
@@ -524,6 +550,29 @@ impl Worker {
         self.tasks.push_back(WorkerTask::Connect { endpoint });
     }
 
+    /// Queues one `BroadcastChannel` message for this realm.
+    pub(crate) fn queue_broadcast(
+        &mut self,
+        origin: String,
+        name: String,
+        payload: String,
+        source: Option<u64>,
+    ) {
+        if !self.closed {
+            self.tasks.push_back(WorkerTask::Broadcast {
+                origin,
+                name,
+                payload,
+                source,
+            });
+        }
+    }
+
+    /// Whether this worker's origin is `origin`.
+    pub(crate) fn has_origin(&self, origin: &url::Origin) -> bool {
+        self.world.borrow().origin == *origin
+    }
+
     /// Releases transferred endpoints the worker will never adopt.
     fn forget_endpoints(&self, endpoints: &[u64]) {
         if endpoints.is_empty() {
@@ -617,6 +666,19 @@ impl Worker {
                     self.report_error(&error);
                 }
             }
+            WorkerTask::Broadcast {
+                origin,
+                name,
+                payload,
+                source,
+            } => {
+                if let Err(error) = self
+                    .js
+                    .deliver_broadcast_message(&origin, &name, &payload, source)
+                {
+                    self.report_error(&error);
+                }
+            }
             WorkerTask::Timer(id) => {
                 if let Some(timer) = self.timers.remove(&id) {
                     self.js_timers.remove(&timer.js_id);
@@ -681,7 +743,9 @@ impl Worker {
                     self.forget_endpoints(&ports);
                 }
                 WorkerTask::Connect { endpoint } => self.forget_endpoints(&[endpoint]),
-                WorkerTask::PortClosed { .. } | WorkerTask::Timer(_) => {}
+                WorkerTask::PortClosed { .. }
+                | WorkerTask::Broadcast { .. }
+                | WorkerTask::Timer(_) => {}
             }
         }
     }
@@ -927,7 +991,7 @@ fn fetch_module_url(created: &CreatedWorker, runtime: &FrameRuntime) -> Result<U
         return Err(());
     }
     let mut dial = DialRequest::new(
-        RequestPolicy::ModuleScript { crossorigin: None },
+        RequestPolicy::ModuleWorkerScript,
         &created.url,
         &created.origin,
     );

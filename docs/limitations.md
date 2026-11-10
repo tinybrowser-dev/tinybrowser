@@ -43,13 +43,13 @@ Dedicated workers run in the page engine: construction from HTTP(S),
 `postMessage` with the structured-clone codec (ports, transferables,
 `ImageData`, `ImageBitmap`, `OffscreenCanvas`, files); timers;
 `importScripts`; `import.meta`; asynchronous `fetch`/XHR and synchronous
-XHR; `close()`, `terminate()`, and runtime error propagation to the
-`Worker` object. They share the renderer's thread by design, so a worker
-that loops blocks the page until the script budget interrupts it, and a
-parent that blocks waiting for the worker cannot be released. That rules
-out the WPT cases that require true parallelism (`postMessage` racing a
-busy parent) and forcible termination of a worker stuck in synchronous
-script.
+XHR (including `blob:` URLs); `BroadcastChannel`; `close()`, `terminate()`,
+and runtime error propagation to the `Worker` object. They share the
+renderer's thread by design, so a worker that loops blocks the page until
+the script budget interrupts it, and a parent that blocks waiting for the
+worker cannot be released. That rules out the WPT cases that require true
+parallelism (`postMessage` racing a busy parent) and forcible termination
+of a worker stuck in synchronous script.
 
 `SharedWorker` runs the same way. One realm per `(creator origin, script
 URL, name)` receives a `connect` event per constructor call, with the
@@ -62,13 +62,18 @@ processes, and `extendedLifetime` does not outlive the tab. Service
 workers, `IndexedDB`, growable `SharedArrayBuffer`, and `ReadableStream`
 transfer remain unimplemented; the QuickJS gaps behind the remaining
 clone and `eval(import())` failures are recorded in `docs/upstream.md`.
-The in-process WPT harness serves files directly and does not implement
-wptserve's `?pipe=header(...)`, so the `data:`-worker CORS module-import
-tests cannot pass there even though the engine's module fetch path is
-the one the tests exercise. Its standalone session history also does not
-apply a main-frame `history.back()` to a child frame's joint entry, so
-`workers/semantics/navigation/001.html` cannot observe the child document
-being restored; that is a harness gap, not a worker lifetime rule.
+`postMessage` also refuses a `SharedArrayBuffer` or a view over one
+because the engine has no shared-memory transport, so the two
+parallelism tests that post shared memory fail at the clone step before
+their main-thread spin.
+The in-process WPT harness serves files directly and now applies
+wptserve's `header(...)` and `sub` pipes; it does not implement
+`trickle` timing, and it has no popups, so tests that open a window or
+measure `trickle` still cannot run there. Its standalone session history
+also does not apply a main-frame `history.back()` to a child frame's
+joint entry, so `workers/semantics/navigation/001.html` cannot observe
+the child document being restored; that is a harness gap, not a worker
+lifetime rule.
 
 Canvas `getContext` returns a working 2D context (paths, text, gradients,
 patterns, filters, layers); the `bitmaprenderer` context exists but

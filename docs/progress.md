@@ -79,8 +79,8 @@ cases that need the in-process harness to implement wptserve pipes, and
 the upstream QuickJS gaps in `docs/upstream.md`.
 
 SharedWorker landed on 2026-11-10. The `workers/` slice (248 files) moved
-from 222 passing files / 488 passing subtests of 794 to 212 perfect files
-/ 813 passing subtests of 959, with no subtest lost. The realm key is
+from 222 passing files / 488 passing subtests of 794 to 215 perfect files
+/ 843 passing subtests of 965, with no subtest lost. The realm key is
 `(creator origin, script URL, name)`; a connection repeats the key and
 must agree on `type`/`credentials`/`extendedLifetime`, and a mismatch
 fires a plain `error` event on the new `SharedWorker` object without
@@ -91,10 +91,21 @@ failures fan out to every connected `SharedWorker`. Worker script URLs
 now resolve through the document's encoding override (a windows-1252
 document encodes `?ß` as `?%DF`), `name` stores the assigned value as a
 `[Replaceable]` attribute, and the worker construction path exposes
-`document.links`, which the worker navigation tests use. The remaining
+`document.links`, which the worker navigation tests use.
+
+Module workers then got two fixes: the top-level graph fetches with the
+outside settings object's origin, so a `data:` worker's static imports
+are same-origin to its creator and its dynamic imports still use the
+worker's opaque origin; and the worker's root script stays same-origin
+even when the server sends `Access-Control-Allow-Origin`. Async XHR now
+resolves `blob:` URLs in its realm, and a worker realm installs
+`BroadcastChannel` with engine-wide channel ids, so an opaque-origin
+worker can exchange messages with its owner. The in-process harness now
+applies wptserve's `header(...)` and `sub` pipes, which let the module
+CSP/referrer/data-URL and opaque-origin files run. The remaining
 shared-worker failures are `extendedLifetime` cases that need popups the
 harness does not provide, `IndexedDB` absence, the harness cookie jar,
-and the same `?pipe=header(...)`/QuickJS gaps as dedicated workers.
+and the upstream QuickJS gaps.
 
 Every push to `main` now publishes the record to
 `tinybrowser-dev/tinybrowser-wpt-results` and the site at
