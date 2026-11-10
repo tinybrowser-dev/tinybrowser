@@ -3994,4 +3994,156 @@ mod messaging_tests {
             "fifty tasks' mutations before the next paint must share one resolve"
         );
     }
+
+    /// `WebAssembly.Memory` owns a real shared block, and `grow()` extends it
+    /// in place so a view taken before the growth sees the new length
+    /// (<https://webassembly.github.io/spec/js-api/#dom-memory-grow>).
+    #[test]
+    fn web_assembly_memory_grow_extends_a_shared_buffer_in_place() {
+        let mut engine = engine();
+        engine
+            .mount_frame(
+                FrameId::MAIN,
+                &mount("https://example.test/memory", "<!doctype html><p>memory"),
+            )
+            .expect("mount");
+        let _ready = engine.drain_ready();
+        let probe = engine
+            .eval_in(
+                FrameId::MAIN,
+                r"
+                (function () {
+                  const memory = new WebAssembly.Memory({shared: true, initial: 1, maximum: 2});
+                  const buffer = memory.buffer;
+                  const view = new Uint8Array(buffer);
+                  view[0] = 7;
+                  const previous = memory.grow(1);
+                  let overflow;
+                  try { memory.grow(1); } catch (error) { overflow = error.name; }
+                  let missingMaximum;
+                  try { new WebAssembly.Memory({shared: true, initial: 1}); }
+                  catch (error) { missingMaximum = error.name; }
+                  return JSON.stringify({
+                    previous,
+                    sameBuffer: memory.buffer === buffer,
+                    shared: buffer instanceof SharedArrayBuffer,
+                    growable: buffer.growable,
+                    byteLength: memory.buffer.byteLength,
+                    viewLength: view.length,
+                    firstByte: view[0],
+                    overflow,
+                    missingMaximum,
+                  });
+                })()
+                ",
+            )
+            .expect("probe");
+        assert_eq!(
+            probe,
+            r#"{"previous":1,"sameBuffer":true,"shared":true,"growable":true,"byteLength":131072,"viewLength":131072,"firstByte":7,"overflow":"RangeError","missingMaximum":"TypeError"}"#
+        );
+    }
+
+    /// A non-shared memory's buffer is fixed-length: `grow()` detaches the old
+    /// buffer and installs a new fixed one, so `resizable` stays false and
+    /// `maxByteLength` equals `byteLength` even when the memory has room to
+    /// grow (<https://webassembly.github.io/spec/js-api/#ref-for-refresh-the-memory-buffer>).
+    #[test]
+    fn web_assembly_memory_grow_replaces_a_fixed_buffer() {
+        let mut engine = engine();
+        engine
+            .mount_frame(
+                FrameId::MAIN,
+                &mount("https://example.test/memory", "<!doctype html><p>memory"),
+            )
+            .expect("mount");
+        let _ready = engine.drain_ready();
+        let probe = engine
+            .eval_in(
+                FrameId::MAIN,
+                r"
+                (function () {
+                  const memory = new WebAssembly.Memory({initial: 1, maximum: 2});
+                  const buffer = memory.buffer;
+                  new Uint8Array(buffer)[0] = 9;
+                  const resizable = buffer.resizable;
+                  const maxByteLength = buffer.maxByteLength;
+                  const previous = memory.grow(1);
+                  const after = memory.buffer;
+                  let overflow;
+                  try { memory.grow(1); } catch (error) { overflow = error.name; }
+                  const fixed = new WebAssembly.Memory({initial: 1, maximum: 1});
+                  const fixedBuffer = fixed.buffer;
+                  const zero = fixed.grow(0);
+                  return JSON.stringify({
+                    previous,
+                    resizable,
+                    maxByteLength,
+                    oldByteLength: buffer.byteLength,
+                    oldDetached: buffer.detached,
+                    byteLength: after.byteLength,
+                    firstByte: new Uint8Array(after)[0],
+                    resizableAfter: after.resizable,
+                    overflow,
+                    zero,
+                    zeroReplaced: fixed.buffer !== fixedBuffer,
+                    zeroDetached: fixedBuffer.detached,
+                    zeroByteLength: fixed.buffer.byteLength,
+                  });
+                })()
+                ",
+            )
+            .expect("probe");
+        assert_eq!(
+            probe,
+            r#"{"previous":1,"resizable":false,"maxByteLength":65536,"oldByteLength":0,"oldDetached":true,"byteLength":131072,"firstByte":9,"resizableAfter":false,"overflow":"RangeError","zero":1,"zeroReplaced":true,"zeroDetached":true,"zeroByteLength":65536}"#
+        );
+    }
+
+    /// The descriptor follows the memory type's bounds and address type:
+    /// `i32` truncates a fraction, negatives and missing fields are type
+    /// errors, and a page count past the limit is a range error. An `i64`
+    /// memory takes `BigInt` values and returns one from `grow()`.
+    #[test]
+    fn web_assembly_memory_validates_its_descriptor() {
+        let mut engine = engine();
+        engine
+            .mount_frame(
+                FrameId::MAIN,
+                &mount("https://example.test/memory", "<!doctype html><p>memory"),
+            )
+            .expect("mount");
+        let _ready = engine.drain_ready();
+        let probe = engine
+            .eval_in(
+                FrameId::MAIN,
+                r"
+                (function () {
+                  const name = (make) => {
+                    try { make(); return 'none'; } catch (error) { return error.name; }
+                  };
+                  const memory = new WebAssembly.Memory({initial: 1n, maximum: 2n, address: 'i64'});
+                  const grown = memory.grow(1n);
+                  return JSON.stringify({
+                    maximumBelowInitial: name(() => new WebAssembly.Memory({initial: 2, maximum: 1})),
+                    tooManyPages: name(() => new WebAssembly.Memory({initial: 65537})),
+                    negative: name(() => new WebAssembly.Memory({initial: -1})),
+                    missingInitial: name(() => new WebAssembly.Memory({maximum: 1})),
+                    sharedWithoutMaximum: name(() => new WebAssembly.Memory({shared: true, initial: 1})),
+                    nonObject: name(() => new WebAssembly.Memory(null)),
+                    fraction: new WebAssembly.Memory({initial: 1.9}).buffer.byteLength,
+                    numberForI64: name(() => new WebAssembly.Memory({initial: 1, address: 'i64'})),
+                    grown: String(grown),
+                    i64ByteLength: memory.buffer.byteLength,
+                    tag: Object.prototype.toString.call(memory),
+                  });
+                })()
+                ",
+            )
+            .expect("probe");
+        assert_eq!(
+            probe,
+            r#"{"maximumBelowInitial":"RangeError","tooManyPages":"RangeError","negative":"TypeError","missingInitial":"TypeError","sharedWithoutMaximum":"TypeError","nonObject":"TypeError","fraction":65536,"numberForI64":"TypeError","grown":"1","i64ByteLength":131072,"tag":"[object WebAssembly.Memory]"}"#
+        );
+    }
 }

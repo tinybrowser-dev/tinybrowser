@@ -65,10 +65,22 @@ load or parse fires a plain `error` event at every connected `SharedWorker`
 object. A shared worker is shared inside one engine, not across renderer
 processes, and `extendedLifetime` does not outlive the tab; moving the realm
 to its own thread is milestone 6 in `docs/worker-threads.md`. Service
-workers, `IndexedDB`, and `ReadableStream` transfer remain unimplemented;
-growable `SharedArrayBuffer` needs `WebAssembly.Memory` for the WPT fixture,
-though the allocator hooks themselves are in place, and the QuickJS gaps
-behind the remaining clone failures are recorded in `docs/upstream.md`. A
+workers, `IndexedDB`, and `ReadableStream` transfer remain unimplemented.
+`WebAssembly.Memory` exists, including shared memories whose buffer is a real
+`SharedArrayBuffer`, but the module compiler does not, so `WebAssembly.Module`,
+`Instance`, `compile`, and `validate` are absent. A non-shared memory's buffer
+is a fixed-length `ArrayBuffer`, matching the current JS API draft and Chrome:
+`grow()` detaches it and installs a new one, and `toResizableBuffer()` and
+`toFixedLengthBuffer()` are not provided. A shared memory's buffer is a
+growable `SharedArrayBuffer` grown in place; Chrome 152 hands out a
+fixed-length one and replaces it on growth, but JavaScript cannot alias a new
+`SharedArrayBuffer` to an existing block, and the threads proposal requires
+every agent to see the additional memory (`docs/upstream.md`). The
+WPT `Growable SharedArrayBuffer` fixture runs now but fails its own
+`assert_true(sab instanceof ArrayBuffer)`: a `SharedArrayBuffer` is not an
+`ArrayBuffer` in any conforming engine, and Chrome fails the same assertion
+(`docs/upstream.md` records the probe). The QuickJS gaps behind the remaining
+clone failures are recorded in `docs/upstream.md`. A
 relative `eval(import())` in a blob- or data-URL module worker cannot resolve
 because those URLs have no hierarchical path in the URL standard; Chrome
 rejects it the same way, and `docs/upstream.md` records the probe. The cookie

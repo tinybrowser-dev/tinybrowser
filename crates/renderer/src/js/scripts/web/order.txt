@@ -1,6 +1,7 @@
 timers.js
 fetch.js
 encoding.js
+webassembly.js
 streams.js
 file.js
 offscreen_canvas.js

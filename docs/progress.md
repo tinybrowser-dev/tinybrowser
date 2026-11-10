@@ -208,6 +208,21 @@ and `cookies/` and `webmessaging/` are unchanged. A standalone engine records
 no main-frame entry, so a step that would move the main frame is refused rather
 than applied halfway; a browser-hosted tab actor owns the full list.
 
+`WebAssembly.Memory` followed, with non-shared memories backed by a fixed
+`ArrayBuffer` that `grow()` detaches and replaces, and shared memories backed
+by a real growable `SharedArrayBuffer` that `grow()` extends in place. The
+module compiler is still absent, so `Module`, `Instance`, `compile`, and
+`validate` are not exposed. The two `structured-clone` files now reach the
+`Growable SharedArrayBuffer` comparison instead of failing at the missing
+constructor, but they still fail it: the fixture asserts
+`sab instanceof ArrayBuffer`, and a `SharedArrayBuffer` is not an `ArrayBuffer`
+in any conforming engine. Chrome 152 fails the same assertion on the same
+page, so `workers/` stays at **964/974 passing subtests and 240 perfect
+files**, 8 failing, 0 timeout, 0 errors, with no subtest lost;
+`cookies/` and `webmessaging/` are unchanged. `docs/upstream.md` records the
+probe and why the fixture cannot pass without a non-conforming
+`SharedArrayBuffer`.
+
 Every push to `main` now publishes the record to
 `tinybrowser-dev/tinybrowser-wpt-results` and the site at
 `tinybrowser.ericc.ch/wpt` rebuilds from it: subtests passing, files passing,
