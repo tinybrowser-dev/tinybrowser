@@ -44,12 +44,14 @@ Dedicated workers run in the page engine: construction from HTTP(S),
 `ImageData`, `ImageBitmap`, `OffscreenCanvas`, files); timers;
 `importScripts`; `import.meta`; asynchronous `fetch`/XHR and synchronous
 XHR (including `blob:` URLs); `BroadcastChannel`; `close()`, `terminate()`,
-and runtime error propagation to the `Worker` object. They share the
-renderer's thread by design, so a worker that loops blocks the page until
-the script budget interrupts it, and a parent that blocks waiting for the
-worker cannot be released. That rules out the WPT cases that require true
+and runtime error propagation to the `Worker` object. They still share the
+renderer's thread, so a worker that loops blocks the page until the script
+budget interrupts it, and a parent that blocks waiting for the worker
+cannot be released. That rules out the WPT cases that require true
 parallelism (`postMessage` racing a busy parent) and forcible termination
-of a worker stuck in synchronous script.
+of a worker stuck in synchronous script. `docs/worker-threads.md` records
+the migration to one OS thread per worker realm and what is already in
+place for it.
 
 `SharedWorker` runs the same way. One realm per `(creator origin, script
 URL, name)` receives a `connect` event per constructor call, with the

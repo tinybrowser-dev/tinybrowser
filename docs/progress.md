@@ -129,6 +129,15 @@ termination, joint-history traversal in the in-process harness,
 `WebAssembly`'s absence in the growable-SAB fixture, and the QuickJS
 `eval(import())` gap.
 
+The worker-thread migration started with its prerequisite: the cross-realm
+`Shared` state (frame tree, `MessagePort` table, delivery queue) is now
+`Arc<Mutex<Shared>>` behind the same `borrow()` shape, because it is the
+only page state a worker realm on another OS thread touches. The
+`workers/` slice stayed at 886/966 subtests and 218 perfect files with no
+subtest gained or lost. `docs/worker-threads.md` records the thread model,
+the measured `SharedArrayBuffer` transport (two runtimes on two threads
+sharing one buffer), and the milestone order.
+
 Every push to `main` now publishes the record to
 `tinybrowser-dev/tinybrowser-wpt-results` and the site at
 `tinybrowser.ericc.ch/wpt` rebuilds from it: subtests passing, files passing,

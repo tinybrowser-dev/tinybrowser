@@ -78,6 +78,7 @@ Maximize web spec conformance per byte.
   `tools/check` uses `nix develop` when available and the installed toolchain
   otherwise, so the same script runs in CI.
 - **Web API bindings & IDL**: Read `docs/bindings.md` for JS/Rust ownership, WebIDL contracts, and platform objects.
+- **Workers**: Read `docs/worker-threads.md` before touching worker realms; it records the thread model, what is shared across threads, and the milestone order.
 - **Engine behavior**: Read `docs/engines.md` to search and fetch Chromium/Firefox sources without cloning.
 - **Engine forks & submodules**: Read `third_party/README.md` for submodule maintenance, fork branches, and update workflows.
 - **Linked worktrees**: Run `tools/worktree-init` after `git worktree add`. It shares submodule objects with the canonical checkout and leaves WPT to the harness's canonical-checkout fallback; see `third_party/README.md`. Do not initialize a linked worktree with a bare `git submodule update --init --recursive`; it clones object stores and unused upstream test fixtures again.
