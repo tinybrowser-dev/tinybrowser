@@ -170,6 +170,8 @@ pub(crate) enum SameObject {
     ChildNodes,
     /// `Document.scripts`.
     Scripts,
+    /// `Document.links`.
+    Links,
     /// `HTMLCanvasElement.getContext("2d")`.
     Canvas2d,
     /// `HTMLCanvasElement.getContext("bitmaprenderer")`.
@@ -178,7 +180,7 @@ pub(crate) enum SameObject {
 
 impl SameObject {
     /// Every member, for rekeying the cache on adoption.
-    pub(crate) const ALL: [SameObject; 9] = [
+    pub(crate) const ALL: [SameObject; 10] = [
         SameObject::ClassList,
         SameObject::Sandbox,
         SameObject::Attributes,
@@ -186,6 +188,7 @@ impl SameObject {
         SameObject::Dataset,
         SameObject::ChildNodes,
         SameObject::Scripts,
+        SameObject::Links,
         SameObject::Canvas2d,
         SameObject::CanvasBitmap,
     ];

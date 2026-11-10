@@ -476,6 +476,11 @@ impl<'js> document_generated::Document<'js> for JsNode {
     fn get_scripts(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
         self.get_scripts(ctx)
     }
+
+    // https://html.spec.whatwg.org/multipage/dom.html#dom-document-links
+    fn get_links(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
+        self.get_links(ctx)
+    }
 }
 
 impl<'js> document_fragment_generated::DocumentFragment<'js> for JsNode {
@@ -2249,6 +2254,31 @@ impl JsNode {
         world_rc.borrow_mut().intern_same_object(
             self.handle.0,
             SameObject::Scripts,
+            Persistent::save(ctx, weak),
+        );
+        Ok(value)
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/dom.html#dom-document-links>
+    pub(super) fn get_links<'js>(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
+        let world_rc = world(ctx)?;
+        if let Some(saved) = world_rc
+            .borrow()
+            .same_object(self.handle.0, SameObject::Links)
+            && let Some(value) = deref_weak(ctx, saved)?
+        {
+            return Ok(value);
+        }
+        let value = live_collection(
+            ctx,
+            self.handle.0,
+            CollectionKind::HtmlLinks,
+            Some("HTMLCollection"),
+        )?;
+        let weak = make_weak(ctx, value.clone())?;
+        world_rc.borrow_mut().intern_same_object(
+            self.handle.0,
+            SameObject::Links,
             Persistent::save(ctx, weak),
         );
         Ok(value)

@@ -65,7 +65,10 @@ clone and `eval(import())` failures are recorded in `docs/upstream.md`.
 The in-process WPT harness serves files directly and does not implement
 wptserve's `?pipe=header(...)`, so the `data:`-worker CORS module-import
 tests cannot pass there even though the engine's module fetch path is
-the one the tests exercise.
+the one the tests exercise. Its standalone session history also does not
+apply a main-frame `history.back()` to a child frame's joint entry, so
+`workers/semantics/navigation/001.html` cannot observe the child document
+being restored; that is a harness gap, not a worker lifetime rule.
 
 Canvas `getContext` returns a working 2D context (paths, text, gradients,
 patterns, filters, layers); the `bitmaprenderer` context exists but
