@@ -248,7 +248,7 @@ impl Engine {
             stop,
             documents: Rc::new(RefCell::new(DocumentStore::default())),
             registry: Rc::new(RefCell::new(RealmRegistry::default())),
-            shared: Rc::new(RefCell::new(crate::messaging::Shared::default())),
+            shared: crate::messaging::SharedHandle::new(crate::messaging::Shared::default()),
             pending_storage: Rc::new(RefCell::new(Vec::new())),
             turn_deadline: Rc::new(std::cell::Cell::new(None)),
             worker_requests: Rc::new(RefCell::new(Vec::new())),

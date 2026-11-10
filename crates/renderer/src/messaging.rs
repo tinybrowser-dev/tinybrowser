@@ -9,15 +9,44 @@
 //! versioned payload string); the target realm decodes it when the task runs
 //! ([window post message steps](https://html.spec.whatwg.org/multipage/web-messaging.html#window-post-message-steps)).
 
-use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
-use std::rc::Rc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::dom::tree::NodeId;
 use crate::protocol::{FrameId, SandboxFlags, TargetName};
 
 /// Handle every realm of one page engine holds to its shared state.
-pub(crate) type SharedHandle = Rc<RefCell<Shared>>;
+///
+/// The handle is an `Arc<Mutex<_>>`, not an `Rc<RefCell<_>>`, because a worker
+/// realm may run on its own OS thread: `Shared` is plain data (the frame tree,
+/// the port table, and the delivery queue), and it is the only state a worker
+/// thread needs from the page engine. Every access still goes through
+/// [`SharedHandle::borrow`], so call sites keep the shape the single-threaded
+/// engine had, and the lock is held only for the duration of one operation.
+#[derive(Clone)]
+pub(crate) struct SharedHandle(Arc<Mutex<Shared>>);
+
+impl SharedHandle {
+    pub(crate) fn new(shared: Shared) -> Self {
+        Self(Arc::new(Mutex::new(shared)))
+    }
+
+    /// Reads the shared state, blocking while another realm holds it.
+    ///
+    /// A realm that panicked while holding the lock poisons it, but the shared
+    /// state is plain data with no invariant a partial update can break: every
+    /// accessor mutates one map or one queue. Recovering the guard keeps the
+    /// rest of the page alive instead of turning one script's panic into a
+    /// browser-wide failure.
+    pub(crate) fn borrow(&self) -> MutexGuard<'_, Shared> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Writes the shared state, blocking while another realm holds it.
+    pub(crate) fn borrow_mut(&self) -> MutexGuard<'_, Shared> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
 
 /// Child frames one page engine will host; the main frame is not
 /// counted. Encoding-label WPT files create one iframe per label, so this

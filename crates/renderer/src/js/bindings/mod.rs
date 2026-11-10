@@ -2160,7 +2160,7 @@ mod realm_tests {
             stop: Arc::new(Stop::new()),
             documents: Rc::clone(documents),
             registry: Rc::clone(registry),
-            shared: Rc::new(RefCell::new(Shared::default())),
+            shared: crate::messaging::SharedHandle::new(Shared::default()),
             pending_storage: Rc::new(RefCell::new(Vec::new())),
             turn_deadline: Rc::new(std::cell::Cell::new(None)),
             worker_requests: Rc::new(RefCell::new(Vec::new())),

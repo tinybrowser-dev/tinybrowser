@@ -2164,7 +2164,7 @@ impl World {
 
     /// The renderer-process state shared by every realm.
     pub(crate) fn shared(&self) -> SharedHandle {
-        Rc::clone(&self.runtime.shared)
+        self.runtime.shared.clone()
     }
 
     /// Registers a browsing context for every connected `iframe` in this

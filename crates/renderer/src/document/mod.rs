@@ -886,7 +886,7 @@ impl Document {
             committed: false,
             name_resolved: false,
             viewport_size: crate::engine::DEFAULT_VIEWPORT,
-            shared: Rc::clone(&runtime.shared),
+            shared: runtime.shared.clone(),
             url: document_url,
             tasks: VecDeque::new(),
             timers: HashMap::new(),
