@@ -495,8 +495,7 @@ fn install_worker_constructor_hosts(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -
                 let credentials = net::cors::CredentialsMode::from_idl(&credentials)
                     .ok_or_else(|| Exception::throw_type(&ctx, "Invalid worker credentials"))?;
                 let current = create_world.borrow();
-                let id = crate::worker::WorkerId::new(current.runtime.next_worker.get());
-                current.runtime.next_worker.set(id.get().saturating_add(1));
+                let id = current.runtime.next_worker_id();
                 let created = crate::worker::CreatedWorker::from_creator(
                     &current,
                     id,
@@ -504,11 +503,12 @@ fn install_worker_constructor_hosts(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -
                     name,
                     crate::worker::CreatedWorkerOptions::dedicated(module, credentials),
                 );
-                current
-                    .runtime
-                    .worker_requests
-                    .borrow_mut()
-                    .push(crate::worker::WorkerRequest::Create(Box::new(created)));
+                // A dedicated worker starts on its own OS thread here, inside
+                // `new Worker()`: the parallelism tests post and then spin
+                // before their script returns, so a start deferred to the
+                // engine's reconcile could never run in time
+                // (<https://html.spec.whatwg.org/multipage/workers.html#dom-worker>).
+                current.runtime.worker_dir.spawn_dedicated(created);
                 Ok(id.get())
             },
         ),
@@ -526,16 +526,31 @@ fn install_worker_constructor_hosts(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -
                 let Some(ports) = messaging::accept_worker_transfer(&ctx, &payload, ports) else {
                     return;
                 };
-                post_world
-                    .borrow()
-                    .runtime
-                    .worker_requests
-                    .borrow_mut()
-                    .push(crate::worker::WorkerRequest::Post {
-                        id: crate::worker::WorkerId::new(id),
+                let world = post_world.borrow();
+                // The worker's frame owns the transferred endpoints before the
+                // message runs there
+                // (<https://html.spec.whatwg.org/multipage/web-messaging.html#transfer-receiving-steps>).
+                {
+                    let shared_handle = world.shared();
+                    let mut shared = shared_handle.borrow_mut();
+                    for endpoint in &ports {
+                        shared
+                            .ports
+                            .route(*endpoint, crate::protocol::FrameId::worker(id));
+                    }
+                }
+                // The worker thread may already be gone; a transfer that
+                // reaches it is lost with the message
+                // (<https://html.spec.whatwg.org/multipage/web-messaging.html#transfer-receiving-steps>).
+                if !world.runtime.worker_dir.send(
+                    crate::worker::WorkerId::new(id),
+                    crate::worker::WorkerCommand::Post {
                         payload,
-                        ports,
-                    });
+                        ports: ports.clone(),
+                    },
+                ) {
+                    world.shared().borrow_mut().forget_endpoints(&ports);
+                }
             },
         ),
     )?;
@@ -546,11 +561,8 @@ fn install_worker_constructor_hosts(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -
             terminate_world
                 .borrow()
                 .runtime
-                .worker_requests
-                .borrow_mut()
-                .push(crate::worker::WorkerRequest::Terminate {
-                    id: crate::worker::WorkerId::new(id),
-                });
+                .worker_dir
+                .terminate(crate::worker::WorkerId::new(id));
         }),
     )?;
     Ok(())
@@ -577,8 +589,7 @@ fn install_shared_worker_constructor_host(ctx: &Ctx<'_>, world: &Rc<RefCell<Worl
                 let credentials = net::cors::CredentialsMode::from_idl(&credentials)
                     .ok_or_else(|| Exception::throw_type(&ctx, "Invalid worker credentials"))?;
                 let current = shared_world.borrow();
-                let id = crate::worker::WorkerId::new(current.runtime.next_worker.get());
-                current.runtime.next_worker.set(id.get().saturating_add(1));
+                let id = current.runtime.next_worker_id();
                 let created = crate::worker::CreatedWorker::from_creator(
                     &current,
                     id,
@@ -599,7 +610,7 @@ fn install_shared_worker_constructor_host(ctx: &Ctx<'_>, world: &Rc<RefCell<Worl
                 if !shared.borrow_mut().ports.detach(worker_endpoint, frame) {
                     return Err(Exception::throw_type(&ctx, "Cannot transfer MessagePort"));
                 }
-                current.runtime.worker_requests.borrow_mut().push(
+                current.runtime.push_worker_request_waking(
                     crate::worker::WorkerRequest::CreateShared {
                         created: Box::new(created),
                         endpoint: worker_endpoint,
@@ -683,16 +694,18 @@ fn install_worker_global_hosts(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Res
                 let Some(parent) = world.worker_parent() else {
                     return;
                 };
-                world.runtime.worker_requests.borrow_mut().push(
-                    crate::worker::WorkerRequest::Error(Box::new(crate::worker::WorkerError {
-                        worker,
-                        parent,
-                        message,
-                        filename,
-                        lineno,
-                        colno,
-                    })),
-                );
+                world
+                    .runtime
+                    .push_worker_request_waking(crate::worker::WorkerRequest::Error(Box::new(
+                        crate::worker::WorkerError {
+                            worker,
+                            parent,
+                            message,
+                            filename,
+                            lineno,
+                            colno,
+                        },
+                    )));
             },
         ),
     )?;
@@ -710,14 +723,14 @@ fn install_worker_global_hosts(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Res
             let Some(parent) = world.worker_parent() else {
                 return;
             };
-            world.runtime.worker_requests.borrow_mut().push(
-                crate::worker::WorkerRequest::PostToParent {
+            world
+                .runtime
+                .push_worker_request_waking(crate::worker::WorkerRequest::PostToParent {
                     parent,
                     worker,
                     payload,
                     ports,
-                },
-            );
+                });
         }),
     )?;
     let close_world = Rc::clone(world);
@@ -728,11 +741,19 @@ fn install_worker_global_hosts(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Res
             let Some(worker) = world.worker_id() else {
                 return;
             };
-            world
-                .runtime
-                .worker_requests
-                .borrow_mut()
-                .push(crate::worker::WorkerRequest::Close { id: worker });
+            if world.is_shared_worker() {
+                // A shared realm runs in the page engine, so the engine closes
+                // it
+                // (<https://html.spec.whatwg.org/multipage/workers.html#dom-sharedworkerglobalscope-close>).
+                world
+                    .runtime
+                    .push_worker_request(crate::worker::WorkerRequest::Close { id: worker });
+            } else {
+                // A dedicated worker's thread reads the flag after its task
+                // and drops the environment
+                // (<https://html.spec.whatwg.org/multipage/workers.html#dom-dedicatedworkerglobalscope-close>).
+                world.worker_close_requested.set(true);
+            }
         }),
     )?;
     Ok(())
@@ -2152,20 +2173,45 @@ mod realm_tests {
         url: &str,
         html: &str,
     ) -> Rc<RefCell<World>> {
+        let identity = net::ValidIdentity::default();
+        let wake = Arc::new(tokio::sync::Notify::new());
+        let stop = Arc::new(Stop::new());
+        let shared = crate::messaging::SharedHandle::new(Shared::default());
+        let worker_requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let next_worker = Arc::new(std::sync::atomic::AtomicU64::new(1));
+        let next_broadcast = Arc::new(std::sync::atomic::AtomicU64::new(1));
+        let object_urls = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        let shared_buffers = Arc::new(crate::js::SharedBufferTable::default());
+        let worker_dir = Arc::new(crate::worker::WorkerDirectory::new(
+            Arc::clone(services),
+            identity.clone(),
+            Arc::clone(&wake),
+            Arc::clone(&stop),
+            shared.clone(),
+            Arc::clone(&worker_requests),
+            Arc::clone(&next_worker),
+            Arc::clone(&next_broadcast),
+            parley::FontContext::default(),
+            Arc::clone(&object_urls),
+            Arc::clone(&shared_buffers),
+        ));
         let runtime = crate::js::FrameRuntime {
             services: Arc::clone(services),
-            identity: net::ValidIdentity::default(),
+            identity,
             js_runtime: js_runtime.handle(),
-            wake: Arc::new(tokio::sync::Notify::new()),
-            stop: Arc::new(Stop::new()),
+            wake,
+            stop,
             documents: Rc::clone(documents),
             registry: Rc::clone(registry),
-            shared: crate::messaging::SharedHandle::new(Shared::default()),
+            shared,
             pending_storage: Rc::new(RefCell::new(Vec::new())),
             turn_deadline: Rc::new(std::cell::Cell::new(None)),
-            worker_requests: Rc::new(RefCell::new(Vec::new())),
-            next_worker: Rc::new(std::cell::Cell::new(1)),
-            next_broadcast: Rc::new(std::cell::Cell::new(1)),
+            worker_requests,
+            next_worker,
+            next_broadcast,
+            worker_dir,
+            object_urls,
+            shared_buffers,
             font_ctx: parley::FontContext::default(),
         };
         let mut world = World::new(

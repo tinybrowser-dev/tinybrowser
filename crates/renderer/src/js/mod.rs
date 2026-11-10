@@ -32,8 +32,8 @@ mod reactions;
 pub(crate) use bindings::selector_matching_elements;
 pub(crate) use bindings::{element_at_point, element_box, viewport_scroll};
 pub(crate) use bridge::js_number;
-pub(crate) use runtime::FrameRuntime;
 pub use runtime::Stop;
+pub(crate) use runtime::{FrameRuntime, ObjectUrlStore, SharedBufferTable, WorkerRequests};
 pub(crate) use world::{DocumentStreamCommand, FrameNavigation, NavigationTarget, RealmRegistry};
 
 use enumerated::Enumerated;
@@ -41,6 +41,7 @@ use std::cell::{Cell, OnceCell, RefCell};
 use std::fmt;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use rquickjs::{
@@ -363,6 +364,12 @@ impl SharedJsRuntime {
     pub(crate) fn get(&self) -> Result<&Runtime, JsError> {
         let slot = self.0.get_or_init(|| {
             let runtime = Runtime::new().map_err(|err| err.to_string().into_boxed_str())?;
+            // `SharedArrayBuffer` data must be reference-counted across
+            // runtimes: a buffer a page posts to a worker thread is the same
+            // block, and the receiving runtime wraps it with
+            // `JS_NewArrayBuffer(..., is_shared = true)`
+            // (<https://tc39.es/ecma262/#sec-abstract-operations-for-sharedarraybuffer-objects>).
+            runtime.install_shared_array_buffer_hooks();
             runtime.set_loader(modules::WebModuleResolver, modules::WebModuleLoader);
             // QuickJS reports a rejected-without-handler promise and a late
             // handler for one here; the events fire at the microtask
@@ -406,6 +413,9 @@ pub(crate) struct JsRealm {
     context: Context,
     world: Rc<RefCell<World>>,
     stop: Arc<Stop>,
+    /// Set for a worker realm: `terminate()` interrupts its script even when
+    /// the page thread is the one that called it.
+    terminate: Option<Arc<AtomicBool>>,
     /// Nesting depth of [`JsRealm::with_budget`]; reentrant evaluations run
     /// under the outer frame instead of installing their own budget.
     budget_depth: Cell<usize>,
@@ -421,7 +431,7 @@ impl JsRealm {
         world: Rc<RefCell<World>>,
         stop: Arc<Stop>,
     ) -> Result<Self, JsError> {
-        Self::with_install(shared, world, stop, false)
+        Self::with_install(shared, world, stop, None, false)
     }
 
     /// Builds a dedicated worker's realm. It shares the engine's `QuickJS`
@@ -431,14 +441,16 @@ impl JsRealm {
         shared: &JsRuntimeHandle,
         world: Rc<RefCell<World>>,
         stop: Arc<Stop>,
+        terminate: Arc<AtomicBool>,
     ) -> Result<Self, JsError> {
-        Self::with_install(shared, world, stop, true)
+        Self::with_install(shared, world, stop, Some(terminate), true)
     }
 
     fn with_install(
         shared: &JsRuntimeHandle,
         world: Rc<RefCell<World>>,
         stop: Arc<Stop>,
+        terminate: Option<Arc<AtomicBool>>,
         worker: bool,
     ) -> Result<Self, JsError> {
         let runtime = shared.get()?;
@@ -453,6 +465,7 @@ impl JsRealm {
             context,
             world,
             stop,
+            terminate,
             budget_depth: Cell::new(0),
             turn_deadline,
         };
@@ -1325,8 +1338,13 @@ impl JsRealm {
         let interrupted = Rc::new(Cell::new(false));
         let flag = Rc::clone(&interrupted);
         let stop = Arc::clone(&self.stop);
+        let terminate = self.terminate.clone();
         self.runtime.set_interrupt_handler(Some(Box::new(move || {
-            let should_interrupt = stop.is_set() || Instant::now() >= deadline;
+            let should_interrupt = stop.is_set()
+                || terminate
+                    .as_ref()
+                    .is_some_and(|terminate| terminate.load(Ordering::Relaxed))
+                || Instant::now() >= deadline;
             flag.set(should_interrupt);
             should_interrupt
         })));

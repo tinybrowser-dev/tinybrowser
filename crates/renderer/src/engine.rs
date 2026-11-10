@@ -10,7 +10,8 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tokio::sync::Notify;
@@ -37,8 +38,8 @@ use crate::protocol::{
 };
 use crate::storage::PendingStorageEvent;
 use crate::worker::{
-    CreatedWorker, SharedWorkerKey, SharedWorkerOptions, Worker, WorkerError, WorkerId,
-    WorkerRequest,
+    CreatedWorker, SharedWorkerKey, SharedWorkerOptions, Worker, WorkerCommand, WorkerDirectory,
+    WorkerError, WorkerHandle, WorkerId, WorkerRequest,
 };
 
 /// One live shared worker realm, plus the `SharedWorker` objects connected to
@@ -189,8 +190,11 @@ pub struct Engine {
     standalone_history: bool,
     /// JS-truth predicates the browser waits on, evaluated after each drain.
     js_waiters: Vec<JsWaiter>,
-    /// Dedicated workers owned by this engine. A worker shares the engine's
-    /// `QuickJS` runtime and services but owns its own task and timer queues.
+    /// Shared worker realms and any worker realm that runs in this engine.
+    /// A dedicated worker runs on its own OS thread and lives in
+    /// `runtime.worker_dir`; this map holds the shared realms, which the page
+    /// engine hosts
+    /// (<https://html.spec.whatwg.org/multipage/workers.html#shared-worker-creation-steps>).
     workers: BTreeMap<WorkerId, Worker>,
     /// Shared worker realms keyed by `(origin, url, name)`. The realm itself
     /// lives in `workers`; this map records the options its connections agreed
@@ -240,6 +244,25 @@ impl Engine {
     ) -> Self {
         let js_runtime = SharedJsRuntime::default();
         let init_scripts: Rc<RefCell<Vec<(u64, String)>>> = Rc::new(RefCell::new(Vec::new()));
+        let shared = crate::messaging::SharedHandle::new(crate::messaging::Shared::default());
+        let worker_requests = Arc::new(Mutex::new(Vec::new()));
+        let next_worker = Arc::new(AtomicU64::new(1));
+        let next_broadcast = Arc::new(AtomicU64::new(1));
+        let object_urls = Arc::new(Mutex::new(std::collections::HashMap::new()));
+        let shared_buffers = Arc::new(crate::js::SharedBufferTable::default());
+        let worker_dir = Arc::new(WorkerDirectory::new(
+            Arc::clone(&services),
+            identity.clone(),
+            Arc::clone(&wake),
+            Arc::clone(&stop),
+            shared.clone(),
+            Arc::clone(&worker_requests),
+            Arc::clone(&next_worker),
+            Arc::clone(&next_broadcast),
+            fonts.0.clone(),
+            Arc::clone(&object_urls),
+            Arc::clone(&shared_buffers),
+        ));
         let runtime = FrameRuntime {
             services,
             identity,
@@ -248,12 +271,15 @@ impl Engine {
             stop,
             documents: Rc::new(RefCell::new(DocumentStore::default())),
             registry: Rc::new(RefCell::new(RealmRegistry::default())),
-            shared: crate::messaging::SharedHandle::new(crate::messaging::Shared::default()),
+            shared,
             pending_storage: Rc::new(RefCell::new(Vec::new())),
             turn_deadline: Rc::new(std::cell::Cell::new(None)),
-            worker_requests: Rc::new(RefCell::new(Vec::new())),
-            next_worker: Rc::new(std::cell::Cell::new(1)),
-            next_broadcast: Rc::new(std::cell::Cell::new(1)),
+            worker_requests,
+            next_worker,
+            next_broadcast,
+            worker_dir,
+            object_urls,
+            shared_buffers,
             font_ctx: fonts.0.clone(),
         };
         let main = Document::with_shared(FrameId::MAIN, &runtime, &init_scripts);
@@ -279,24 +305,14 @@ impl Engine {
         self.standalone_history = true;
     }
 
-    /// Materializes the worker creates, posts, and terminates that realm host
-    /// functions queued while a script was running.
+    /// Applies the worker events and timer requests a realm or a worker thread
+    /// queued while a script was running.
     fn adopt_worker_requests(&mut self) -> bool {
-        let requests = std::mem::take(&mut *self.runtime.worker_requests.borrow_mut());
+        let requests = self.runtime.take_worker_requests();
         let mut applied = false;
         for request in requests {
             applied = true;
             match request {
-                WorkerRequest::Create(created) => {
-                    match Worker::create(&created, created.id, &self.runtime, &self.js_runtime) {
-                        Ok(worker) => {
-                            self.workers.insert(worker.id(), worker);
-                        }
-                        Err(failure) => {
-                            self.push_worker_load_failed(failure.parent, failure.worker);
-                        }
-                    }
-                }
                 WorkerRequest::CreateShared { created, endpoint } => {
                     self.adopt_shared_create(&created, endpoint);
                 }
@@ -308,27 +324,23 @@ impl Engine {
                 } => {
                     self.broadcast_local(&origin, &name, &payload, channel);
                 }
-                WorkerRequest::Post { id, payload, ports } => {
-                    if self.workers.contains_key(&id) {
-                        Self::route_endpoints(
-                            &self.runtime.shared,
-                            &ports,
-                            FrameId::worker(id.get()),
-                        );
-                        if let Some(worker) = self.workers.get_mut(&id) {
-                            worker.queue_message(payload, ports);
+                WorkerRequest::SetTimer {
+                    worker,
+                    js_id,
+                    delay,
+                } => {
+                    self.runtime.worker_dir.with_workers(|workers| {
+                        if let Some(handle) = workers.get_mut(&worker) {
+                            handle.schedule_timer(delay, js_id);
                         }
-                    } else {
-                        // The target is gone; the ports it would have received
-                        // are lost with the message
-                        // (<https://html.spec.whatwg.org/multipage/web-messaging.html#transfer-receiving-steps>).
-                        self.runtime.shared.borrow_mut().forget_endpoints(&ports);
-                    }
+                    });
                 }
-                WorkerRequest::Terminate { id } => {
-                    if let Some(mut worker) = self.workers.remove(&id) {
-                        worker.terminate();
-                    }
+                WorkerRequest::ClearTimer { worker, js_id } => {
+                    self.runtime.worker_dir.with_workers(|workers| {
+                        if let Some(handle) = workers.get_mut(&worker) {
+                            handle.clear_timer(js_id);
+                        }
+                    });
                 }
                 WorkerRequest::Close { id } => {
                     if let Some(worker) = self.workers.get_mut(&id) {
@@ -408,9 +420,14 @@ impl Engine {
             }
             Some(_) | None => {
                 self.shared_workers.remove(&key);
-                if let Ok(mut worker) =
-                    Worker::create(created, created.id, &self.runtime, &self.js_runtime)
-                {
+                if let Ok(mut worker) = Worker::create(
+                    created,
+                    created.id,
+                    &self.runtime,
+                    &self.js_runtime,
+                    Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                    Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                ) {
                     let id = worker.id();
                     Self::route_endpoints(
                         &self.runtime.shared,
@@ -485,11 +502,51 @@ impl Engine {
         }
     }
 
-    /// The worker realm behind a synthetic worker frame, if one is live
-    /// (<https://html.spec.whatwg.org/multipage/workers.html#dedicated-workers-and-the-dedicatedworkerglobalscope-interface>).
-    fn worker_for_frame(&mut self, frame: FrameId) -> Option<&mut Worker> {
-        let id = frame.as_worker()?;
-        self.workers.get_mut(&WorkerId::new(id))
+    /// Queues one message on whichever worker owns `frame`: a shared realm runs
+    /// in this engine, a dedicated worker on its own thread
+    /// (<https://html.spec.whatwg.org/multipage/web-messaging.html#message-port-post-message-steps>).
+    fn queue_worker_port_message(
+        &mut self,
+        frame: FrameId,
+        endpoint: u64,
+        payload: String,
+        ports: Vec<u64>,
+    ) -> bool {
+        let Some(raw) = frame.as_worker() else {
+            return false;
+        };
+        let id = WorkerId::new(raw);
+        if let Some(worker) = self.workers.get_mut(&id) {
+            worker.queue_port_message(endpoint, payload, ports);
+            return true;
+        }
+        let sent = self.runtime.worker_dir.send(
+            id,
+            WorkerCommand::PortMessage {
+                endpoint,
+                payload,
+                ports: ports.clone(),
+            },
+        );
+        if !sent {
+            self.runtime.shared.borrow_mut().forget_endpoints(&ports);
+        }
+        sent
+    }
+
+    /// Queues one `close` on whichever worker owns `frame`.
+    fn queue_worker_port_closed(&mut self, frame: FrameId, endpoint: u64) -> bool {
+        let Some(raw) = frame.as_worker() else {
+            return false;
+        };
+        let id = WorkerId::new(raw);
+        if let Some(worker) = self.workers.get_mut(&id) {
+            worker.queue_port_closed(endpoint);
+            return true;
+        }
+        self.runtime
+            .worker_dir
+            .send(id, WorkerCommand::PortClosed { endpoint })
     }
 
     /// Queues one message a nested worker posted at its owner's `Worker`
@@ -510,12 +567,23 @@ impl Engine {
             }
             return;
         }
-        if self.worker_for_frame(owner).is_some() {
+        if let Some(raw) = owner.as_worker() {
             Self::route_endpoints(&self.runtime.shared, &ports, owner);
-            if let Some(parent) = self.worker_for_frame(owner) {
+            let id = WorkerId::new(raw);
+            if let Some(parent) = self.workers.get_mut(&id) {
                 let _ = parent.deliver_message(worker, &payload, &ports);
+                return;
             }
-            return;
+            if self.runtime.worker_dir.send(
+                id,
+                WorkerCommand::NestedMessage {
+                    worker: worker.get(),
+                    payload,
+                    ports: ports.clone(),
+                },
+            ) {
+                return;
+            }
         }
         self.runtime.shared.borrow_mut().forget_endpoints(&ports);
     }
@@ -527,8 +595,15 @@ impl Engine {
             return;
         }
         let parent = error.parent;
-        if let Some(worker) = self.worker_for_frame(parent) {
-            let _ = worker.deliver_error(&error);
+        if let Some(raw) = parent.as_worker() {
+            let id = WorkerId::new(raw);
+            if let Some(worker) = self.workers.get_mut(&id) {
+                let _ = worker.deliver_error(&error);
+                return;
+            }
+            self.runtime
+                .worker_dir
+                .send(id, WorkerCommand::NestedError(Box::new(error)));
         }
     }
 
@@ -539,8 +614,18 @@ impl Engine {
             document.push_worker_load_failed(worker);
             return;
         }
-        if let Some(parent) = self.worker_for_frame(owner) {
-            let _ = parent.deliver_load_failure(worker);
+        if let Some(raw) = owner.as_worker() {
+            let id = WorkerId::new(raw);
+            if let Some(parent) = self.workers.get_mut(&id) {
+                let _ = parent.deliver_load_failure(worker);
+                return;
+            }
+            self.runtime.worker_dir.send(
+                id,
+                WorkerCommand::NestedLoadFailure {
+                    worker: worker.get(),
+                },
+            );
         }
     }
 
@@ -1339,7 +1424,27 @@ impl Engine {
                     self.reconcile_frames();
                 }
             }
+            // A dedicated worker's realm runs on its own thread. The engine
+            // only schedules its commands and timers and observes whether its
+            // thread still has work
+            // (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>).
+            let mut dedicated_ran = false;
+            self.runtime.worker_dir.with_workers(|workers| {
+                for worker in workers.values_mut() {
+                    if std::time::Instant::now() >= deadline {
+                        break;
+                    }
+                    if worker.drain_step() {
+                        dedicated_ran = true;
+                    }
+                }
+            });
+            if dedicated_ran {
+                ran = true;
+                self.reconcile_frames();
+            }
             self.workers.retain(|_, worker| !worker.is_closed());
+            self.runtime.worker_dir.remove_closed();
             if !ran {
                 // A pass that ran no task can still have adopted realm work:
                 // stepping the document moves its outbox into a navigation or
@@ -1364,7 +1469,11 @@ impl Engine {
     pub fn has_ready_work(&self) -> bool {
         self.frames.values().any(Document::has_ready_work)
             || self.workers.values().any(Worker::has_ready_work)
-            || !self.runtime.worker_requests.borrow().is_empty()
+            || self
+                .runtime
+                .worker_dir
+                .with_workers(|workers| workers.values().any(WorkerHandle::has_ready_work))
+            || self.runtime.has_worker_requests()
     }
 
     /// Whether any frame's document has a dial queued or in flight.
@@ -1375,6 +1484,10 @@ impl Engine {
     pub fn has_pending_dials(&self) -> bool {
         self.frames.values().any(Document::has_pending_dials)
             || self.workers.values().any(Worker::has_pending_dials)
+            || self
+                .runtime
+                .worker_dir
+                .with_workers(|workers| workers.values().any(WorkerHandle::has_pending_dials))
     }
 
     /// Queues one remote `postMessage` payload on the main frame's task
@@ -1511,6 +1624,19 @@ impl Engine {
                 source,
             );
         }
+        self.runtime.worker_dir.with_workers(|workers| {
+            for worker in workers.values_mut() {
+                if !worker.has_origin(origin.origin()) {
+                    continue;
+                }
+                worker.queue_broadcast(
+                    origin_string.clone(),
+                    name.to_owned(),
+                    payload.to_owned(),
+                    source,
+                );
+            }
+        });
     }
 
     /// Delivers one opaque-origin `BroadcastChannel` post inside this engine.
@@ -1544,6 +1670,19 @@ impl Engine {
                 Some(channel),
             );
         }
+        self.runtime.worker_dir.with_workers(|workers| {
+            for worker in workers.values_mut() {
+                if !worker.has_origin(origin) {
+                    continue;
+                }
+                worker.queue_broadcast(
+                    origin_string.clone(),
+                    name.to_owned(),
+                    payload.to_owned(),
+                    Some(channel),
+                );
+            }
+        });
     }
 
     /// Queues one `localStorage` change that the browser broadcast. The source
@@ -1582,13 +1721,19 @@ impl Engine {
         }
     }
 
-    /// Earliest timer deadline across every frame.
+    /// Earliest timer deadline across every frame and every dedicated worker.
     #[must_use]
     pub fn next_deadline(&self) -> Option<Instant> {
         self.frames
             .values()
             .filter_map(Document::next_deadline)
             .chain(self.workers.values().filter_map(Worker::next_deadline))
+            .chain(self.runtime.worker_dir.with_workers(|workers| {
+                workers
+                    .values()
+                    .filter_map(WorkerHandle::next_deadline)
+                    .min()
+            }))
             .min()
     }
 
@@ -2447,11 +2592,7 @@ impl Engine {
                         // (<https://html.spec.whatwg.org/multipage/web-messaging.html#message-port-post-message-steps>).
                         Some(frame) if frame.as_worker().is_some() => {
                             Self::route_endpoints(&self.runtime.shared, &ports, frame);
-                            if let Some(worker) = self.worker_for_frame(frame) {
-                                worker.queue_port_message(endpoint, payload, ports);
-                            } else {
-                                self.runtime.shared.borrow_mut().forget_endpoints(&ports);
-                            }
+                            self.queue_worker_port_message(frame, endpoint, payload, ports);
                         }
                         Some(_) => {
                             // The owning frame is gone; nothing can receive it.
@@ -2477,9 +2618,7 @@ impl Engine {
                             }
                         }
                         Some(frame) if frame.as_worker().is_some() => {
-                            if let Some(worker) = self.worker_for_frame(frame) {
-                                worker.queue_port_closed(endpoint);
-                            }
+                            self.queue_worker_port_closed(frame, endpoint);
                         }
                         Some(_) => {}
                         None => self
@@ -2586,6 +2725,7 @@ impl Engine {
 
     pub fn shutdown(&mut self) {
         self.workers.clear();
+        self.runtime.worker_dir.terminate_all();
         self.shared_workers.clear();
         for document in self.frames.values_mut() {
             document.shutdown();
@@ -2594,6 +2734,7 @@ impl Engine {
 
     pub fn release(&mut self) {
         self.workers.clear();
+        self.runtime.worker_dir.terminate_all();
         self.shared_workers.clear();
         for document in self.frames.values_mut() {
             document.release();
@@ -2674,6 +2815,7 @@ impl Drop for Engine {
         // outlive the QuickJS heap. The engine's own runtime handle is the
         // last one and drops with the struct.
         self.workers.clear();
+        self.runtime.worker_dir.terminate_all();
         self.shared_workers.clear();
         self.frames.clear();
         self.runtime.registry.borrow_mut().clear();

@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use crate::dom::tree::NodeId;
 
-use rquickjs::{Ctx, Object, Persistent, Result, Value};
+use rquickjs::{Ctx, Exception, Object, Persistent, Result, Value};
 
 use crate::js::world::World;
 
@@ -86,7 +86,64 @@ pub(crate) fn install_messaging(ctx: &Ctx<'_>) -> Result<()> {
         "__tbIsOutOfBoundsView",
         rquickjs::prelude::Func::from(is_out_of_bounds_view),
     )?;
+    globals.set(
+        "__tbRegisterSharedBuffer",
+        rquickjs::prelude::Func::from(register_shared_buffer),
+    )?;
+    globals.set(
+        "__tbCreateSharedBuffer",
+        rquickjs::prelude::Func::from(create_shared_buffer),
+    )?;
     Ok(())
+}
+
+/// Registers one `SharedArrayBuffer` block and returns the id its serialized
+/// form names.
+///
+/// The bytes are not copied: the message names the block, and a receiving
+/// realm, on this thread or a worker's, wraps the same memory
+/// (<https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal>).
+fn register_shared_buffer(ctx: Ctx<'_>, value: Value<'_>) -> Result<Option<u64>> {
+    let Some(lease) = rquickjs::SharedBufferLease::new(&ctx, &value) else {
+        return Ok(None);
+    };
+    let world = world(&ctx)?;
+    let world = world.borrow();
+    Ok(Some(world.runtime.shared_buffers.register(lease)))
+}
+
+/// Wraps a registered `SharedArrayBuffer` block in this realm's runtime.
+///
+/// `byte_length` and `max_byte_length` come from the serialized payload, which
+/// another realm's script can shape, so both are checked against the block's
+/// allocation before `QuickJS` sees them.
+/// `max_byte_length == 0` means the sender's buffer was fixed-length.
+fn create_shared_buffer(
+    ctx: Ctx<'_>,
+    id: u64,
+    byte_length: u64,
+    max_byte_length: u64,
+) -> Result<Option<rquickjs::ArrayBuffer<'_>>> {
+    let world = world(&ctx)?;
+    let table = std::sync::Arc::clone(&world.borrow().runtime.shared_buffers);
+    let Some(lease) = table.get(id) else {
+        return Ok(None);
+    };
+    let invalid = || Exception::throw_range(&ctx, "invalid SharedArrayBuffer length");
+    let byte_length = usize::try_from(byte_length).map_err(|_| invalid())?;
+    let max_byte_length = if max_byte_length == 0 {
+        None
+    } else {
+        Some(usize::try_from(max_byte_length).map_err(|_| invalid())?)
+    };
+    if byte_length > lease.len()
+        || max_byte_length.is_some_and(|max| max < byte_length || max > lease.len())
+    {
+        return Err(invalid());
+    }
+    lease
+        .to_array_buffer_with(&ctx, byte_length, max_byte_length)
+        .map(Some)
 }
 
 /// Whether one structured-clone candidate is a typed array whose buffer is
@@ -106,8 +163,7 @@ fn is_out_of_bounds_view(value: rquickjs::Value<'_>) -> bool {
 fn broadcast_channel_id(ctx: Ctx<'_>) -> Result<f64> {
     let world = world(&ctx)?;
     let world = world.borrow();
-    let next = world.runtime.next_broadcast.get();
-    world.runtime.next_broadcast.set(next.saturating_add(1));
+    let next = world.runtime.next_broadcast_id();
     Ok(crate::js::js_number(next))
 }
 
@@ -134,14 +190,16 @@ fn broadcast_post(ctx: Ctx<'_>, name: String, payload: String, channel: u64) {
             .runtime
             .services
             .broadcast_post(&origin, &name, &payload, channel),
-        None => world.runtime.worker_requests.borrow_mut().push(
-            crate::worker::WorkerRequest::BroadcastPost {
-                origin: world.origin.clone(),
-                name,
-                payload,
-                channel,
-            },
-        ),
+        None => {
+            world
+                .runtime
+                .push_worker_request_waking(crate::worker::WorkerRequest::BroadcastPost {
+                    origin: world.origin.clone(),
+                    name,
+                    payload,
+                    channel,
+                });
+        }
     }
 }
 

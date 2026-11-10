@@ -38,36 +38,32 @@ a browser that implements the mapping algorithm.
 
 ## Missing surfaces
 
-Dedicated workers run in the page engine: construction from HTTP(S),
-`blob:`, and `data:` URLs; classic and module scripts; nested workers;
-`postMessage` with the structured-clone codec (ports, transferables,
-`ImageData`, `ImageBitmap`, `OffscreenCanvas`, files); timers;
-`importScripts`; `import.meta`; asynchronous `fetch`/XHR and synchronous
-XHR (including `blob:` URLs); `BroadcastChannel`; `close()`, `terminate()`,
-and runtime error propagation to the `Worker` object. They still share the
-renderer's thread, so a worker that loops blocks the page until the script
-budget interrupts it, and a parent that blocks waiting for the worker
-cannot be released. That rules out the WPT cases that require true
-parallelism (`postMessage` racing a busy parent) and forcible termination
-of a worker stuck in synchronous script. `docs/worker-threads.md` records
-the migration to one OS thread per worker realm and what is already in
-place for it.
+Dedicated workers run on their own OS thread with their own `QuickJS`
+runtime: construction from HTTP(S), `blob:`, and `data:` URLs; classic and
+module scripts; nested workers; `postMessage` with the structured-clone
+codec (ports, transferables, `ImageData`, `ImageBitmap`, `OffscreenCanvas`,
+files, and `SharedArrayBuffer`); timers; `importScripts`; `import.meta`;
+asynchronous `fetch`/XHR and synchronous XHR (including `blob:` URLs);
+`BroadcastChannel`; `close()`, `terminate()`, and runtime error propagation
+to the `Worker` object. A page that spins on `Atomics` does not block its
+worker, and `terminate()` interrupts a worker stuck in synchronous script.
+`docs/worker-threads.md` records the thread model, the engine-owned timer
+mirror, and the shared-memory transport.
 
-`SharedWorker` runs the same way. One realm per `(creator origin, script
-URL, name)` receives a `connect` event per constructor call, with the
-options (`type`, `credentials`, `extendedLifetime`) required to match.
-Shared-worker runtime errors fire at the worker global only, and a
-script that fails to load or parse fires a plain `error` event at every
-connected `SharedWorker` object. The same-thread limitation applies: a
-shared worker is shared inside one engine, not across renderer
-processes, and `extendedLifetime` does not outlive the tab. Service
-workers, `IndexedDB`, growable `SharedArrayBuffer`, and `ReadableStream`
-transfer remain unimplemented; the QuickJS gaps behind the remaining
-clone and `eval(import())` failures are recorded in `docs/upstream.md`.
-`postMessage` also refuses a `SharedArrayBuffer` or a view over one
-because the engine has no shared-memory transport, so the two
-parallelism tests that post shared memory fail at the clone step before
-their main-thread spin. The cookie jar does not implement the `Partitioned`
+`SharedWorker` still runs in the page engine. One realm per
+`(creator origin, script URL, name)` receives a `connect` event per
+constructor call, with the options (`type`, `credentials`,
+`extendedLifetime`) required to match. Shared-worker runtime errors fire at
+the worker global only, and a script that fails to load or parse fires a
+plain `error` event at every connected `SharedWorker` object. A shared
+worker is shared inside one engine, not across renderer processes, and
+`extendedLifetime` does not outlive the tab; moving the realm to its own
+thread is milestone 6 in `docs/worker-threads.md`. Service workers,
+`IndexedDB`, and `ReadableStream` transfer remain unimplemented; growable
+`SharedArrayBuffer` needs `WebAssembly.Memory` for the WPT fixture, though
+the allocator hooks themselves are in place, and the QuickJS gaps behind the
+remaining clone and `eval(import())` failures are recorded in
+`docs/upstream.md`. The cookie jar does not implement the `Partitioned`
 attribute (CHIPS), so a partitioned cookie is stored as an ordinary one;
 `shared-worker-partitioned-cookies.tentative.https.html` reaches its
 worker assertions and then stops on the popup it opens.

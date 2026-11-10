@@ -78,6 +78,22 @@ The BMP decode feature is not a fork change: which formats an engine carries is 
 
 ### rquickjs (third_party/rquickjs, master)
 
+- Reference-counted `SharedArrayBuffer` blocks for cross-runtime transport.
+  QuickJS's default `SharedArrayBuffer` allocator is per-runtime, so a second
+  runtime on another thread cannot wrap the first runtime's block: its
+  finalizer would free another runtime's allocation. `Runtime::install_shared_array_buffer_hooks`
+  binds `JS_SetSharedArrayBufferFunctions` to a 16-byte-aligned allocator with
+  an atomic reference count in a header, and `SharedBufferLease` holds one
+  reference while a serialized message names the block; the receiving runtime
+  wraps the same pointer with `JS_NewArrayBuffer(..., is_shared = true)`, which
+  calls `sab_dup` and lets each runtime free only its own reference. The class
+  id is probed from a real allocation rather than hardcoded, because QuickJS's
+  `JS_CLASS_SHARED_ARRAY_BUFFER` is internal. The hooks also make growable
+  `SharedArrayBuffer` constructible, which QuickJS otherwise refuses. A unit
+  test shares one buffer between two runtimes on two OS threads and observes a
+  byte through `Atomics`. Required by the worker model: the HTML structured
+  clone keeps a `SharedArrayBuffer` shared, not copied
+  (`https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal`).
 - merged upstream master at b462d97. `sys/quickjs` tracks e2472d7, which merges
   quickjs-ng e22ce4d: the 0.18.0 version bump, asynchronous `import()`, the
   `Array.find` ownership release, the RegExp deletion/BJSON lifetime fixes, the
@@ -129,7 +145,7 @@ Known gaps this engine fails honestly (no fork patch yet):
 
 - `JS_GetScriptOrModuleName` returns `<input>` for every `eval` in the engine, and `js_dynamic_import` captures that name at call time. A dynamic `import()` written in `eval` therefore has no referring module URL; the renderer resolves it against the worker or document URL it recorded instead (`crates/renderer/src/js/modules.rs`). The fallback is right for a classic worker and a page, and wrong inside a blob-URL module worker, whose relative import must resolve against the imported module's `http(s)` URL. `workers/modules/dedicated-worker-import-blob-url.any.html` and `workers/modules/shared-worker-import-blob-url.window.html` both fail their `eval(import())` subtest for this reason. QuickJS's own comment says the fix needs script-or-module information on `JSFunctionBytecode`.
 - `DataView.prototype.byteOffset` and `byteLength` throw `TypeErrorArrayBufferOOB` for a view left out of bounds by `ArrayBuffer.prototype.resize`, where `IsViewOutOfBounds` says both return `+0`. The renderer's structured-clone serializer reads those getters, so an out-of-bounds `DataView` still fails the clone honestly (the throw becomes the required `DataCloneError`), but the getters themselves diverge and the probe that covers typed arrays does not see a `DataView`. A spec-conformant fix needs a `JS_IsDataViewOutOfBounds`-style entry point; the generated per-target bindings make adding one a separate fork change.
-- A growable `SharedArrayBuffer` needs `JS_SetSharedArrayBufferFunctions` allocator hooks the embedder does not install, so `new SharedArrayBuffer(n, {maxByteLength})` throws. The `Growable SharedArrayBuffer` structured-clone subtest is the known fail; cloneable SABs themselves already travel as shared memory only through the transfer list and are refused otherwise.
+- A growable `SharedArrayBuffer`'s `byteLength` is per-object state in quickjs-ng, not the single atomic length the specification requires. `JS_SetSharedArrayBufferFunctions` hooks (installed by the fork) make `new SharedArrayBuffer(n, {maxByteLength})` and structured clone work, and the receiver gets the sender's maximum, but `grow()` in one runtime does not change the length another runtime's object reports. The WPT `Growable SharedArrayBuffer` fixture still cannot run because it obtains its constructor from `WebAssembly.Memory`, which tinybrowser does not implement.
 - `ReadableStream` transfer is not implemented, so the structured-clone transferable battery skips (WPT `SKIP`) its subclass case.
 
 ### Vendored crates (no commits, recorded deltas)

@@ -1,22 +1,29 @@
-//! Dedicated workers: one documentless realm per `new Worker()`.
+//! Workers: one documentless realm per worker.
 //!
-//! A worker runs in the page engine that created it, so it shares the
-//! engine's services, `QuickJS` runtime, and turn deadline. It owns its own
-//! global (`DedicatedWorkerGlobalScope`), task queue, and timers, and it has
-//! no document, browsing context, or history
+//! A dedicated worker runs on its own OS thread with its own `QuickJS`
+//! runtime, so its script runs in parallel with the page
+//! (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>).
+//! It shares the page engine's services and cross-realm state (the frame
+//! tree, the `MessagePort` table, the Blob URL Store, and the
+//! `SharedArrayBuffer` table), and it owns its global
+//! (`DedicatedWorkerGlobalScope`), task queue, and timers. It has no document,
+//! browsing context, or history
 //! (<https://html.spec.whatwg.org/multipage/workers.html#dedicated-workers-and-the-dedicatedworkerglobalscope-interface>).
 //!
-//! `QuickJS` cannot create a context while another context's script runs, so
-//! the constructor only queues a [`WorkerRequest::Create`]. The engine
-//! materializes the realm after the script returns, the same deferred shape
-//! an `iframe` insertion uses.
+//! The thread starts inside `new Worker()`, not at the engine's next turn: a
+//! page may post to the worker and then spin in the constructor's own
+//! synchronous caller
+//! (<https://html.spec.whatwg.org/multipage/workers.html#dom-worker>).
+//!
+//! A `SharedWorker` realm still runs in the page engine, because its identity
+//! is shared by several creators and the engine owns that table.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::rc::Rc;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use tokio::time::Instant;
@@ -24,8 +31,8 @@ use url::Url;
 
 use crate::js::world::World;
 use crate::js::{
-    FrameRuntime, JsError, JsFetchId, JsFetchRequest, JsRealm, PageTimerId, RealmRequest,
-    SharedJsRuntime, WorkerScriptError,
+    FrameRuntime, JsError, JsFetchId, JsFetchRequest, JsRealm, JsRuntimeHandle, PageTimerId,
+    RealmRequest, SharedJsRuntime, Stop, WorkerScriptError,
 };
 use crate::protocol::{
     DialCancellation, DialOutcome, DialRequest, FrameId, PolicyContainer, ReferrerRequest,
@@ -72,7 +79,13 @@ pub(crate) struct CreatedWorker {
     /// The `WorkerOptions.extendedLifetime` a shared worker's connections must
     /// agree on.
     pub(crate) extended_lifetime: bool,
+    /// The creator's origin: the "outside settings object"'s origin, which the
+    /// module graph and the script fetch use.
     pub(crate) origin: url::Origin,
+    /// The origin the worker realm itself gets. A `data:` worker is opaque and
+    /// must match its own broadcast origin, so it cannot reuse the creator's
+    /// (<https://html.spec.whatwg.org/multipage/workers.html#dom-worker>).
+    pub(crate) worker_origin: url::Origin,
     pub(crate) top_level: url::Origin,
     pub(crate) policy: PolicyContainer,
     pub(crate) sandbox: SandboxFlags,
@@ -127,6 +140,11 @@ impl CreatedWorker {
         name: String,
         options: CreatedWorkerOptions,
     ) -> Self {
+        let worker_origin = if url.scheme() == "data" {
+            url::Origin::new_opaque()
+        } else {
+            world.origin.clone()
+        };
         let local_script = (url.scheme() == "blob")
             .then(|| world.object_url_contents(url.as_str()))
             .flatten()
@@ -141,6 +159,7 @@ impl CreatedWorker {
             credentials: options.credentials,
             extended_lifetime: options.extended_lifetime,
             origin: world.origin.clone(),
+            worker_origin,
             top_level: world
                 .top_level
                 .clone()
@@ -180,9 +199,9 @@ pub(crate) struct SharedWorkerOptions {
     pub(crate) extended_lifetime: bool,
 }
 
-/// One lifecycle or message request a worker host function queued.
+/// One lifecycle or message request a worker host function or worker thread
+/// queued for the engine.
 pub(crate) enum WorkerRequest {
-    Create(Box<CreatedWorker>),
     /// A new `SharedWorker` connection: the realm keyed by `created`'s URL and
     /// name, plus the worker-side port endpoint that receives the `connect`
     /// event
@@ -201,22 +220,30 @@ pub(crate) enum WorkerRequest {
         payload: String,
         channel: u64,
     },
-    Post {
-        id: WorkerId,
-        payload: String,
-        ports: Vec<u64>,
-    },
-    Terminate {
-        id: WorkerId,
-    },
-    Close {
-        id: WorkerId,
-    },
     PostToParent {
         parent: FrameId,
         worker: WorkerId,
         payload: String,
         ports: Vec<u64>,
+    },
+    /// A timer a worker realm created. The engine owns worker timers so the
+    /// page engine's clock drives them, exactly as it drives a document's.
+    SetTimer {
+        worker: WorkerId,
+        js_id: PageTimerId,
+        delay: Duration,
+    },
+    /// `clearTimeout` / `clearInterval` inside a worker realm.
+    ClearTimer {
+        worker: WorkerId,
+        js_id: PageTimerId,
+    },
+    /// `close()` inside a shared worker realm. A dedicated worker closes its
+    /// own thread directly; a shared realm lives in the page engine, so the
+    /// engine marks it closed
+    /// (<https://html.spec.whatwg.org/multipage/workers.html#dom-sharedworkerglobalscope-close>).
+    Close {
+        id: WorkerId,
     },
     /// A worker that never started, or whose script did not parse.
     ///
@@ -260,6 +287,472 @@ impl WorkerError {
             colno: 0,
         }
     }
+}
+
+/// One action the engine sends a dedicated worker's thread.
+pub(crate) enum WorkerCommand {
+    Post {
+        payload: String,
+        ports: Vec<u64>,
+    },
+    PortMessage {
+        endpoint: u64,
+        payload: String,
+        ports: Vec<u64>,
+    },
+    PortClosed {
+        endpoint: u64,
+    },
+    Broadcast {
+        origin: String,
+        name: String,
+        payload: String,
+        source: Option<u64>,
+    },
+    FireTimer {
+        js_id: PageTimerId,
+    },
+    /// A nested worker posted at this worker's `Worker` object.
+    NestedMessage {
+        worker: u64,
+        payload: String,
+        ports: Vec<u64>,
+    },
+    /// A nested worker reported a runtime error at this worker's `Worker`
+    /// object.
+    NestedError(Box<WorkerError>),
+    /// A nested worker never started.
+    NestedLoadFailure {
+        worker: u64,
+    },
+    /// `terminate()` was called. The flag in [`WorkerThreadState`] also
+    /// interrupts a thread that is inside script.
+    Terminate,
+}
+
+/// The state a dedicated worker's thread publishes for the engine.
+pub(crate) struct WorkerThreadState {
+    /// Set by `terminate()`. The worker's interrupt handler reads it, so a
+    /// worker stuck in synchronous script stops
+    /// (<https://html.spec.whatwg.org/multipage/workers.html#terminate-a-worker>).
+    terminate: Arc<AtomicBool>,
+    /// Commands the thread accepted but has not finished, plus one while its
+    /// top-level script runs. A nonzero count means a drain still has work.
+    active: Arc<AtomicUsize>,
+    closed: Arc<AtomicBool>,
+    /// Fetch completions the worker thread owns; the engine waits for a drain
+    /// instead of judging the page idle while one is in flight.
+    pending_fetches: Arc<AtomicUsize>,
+}
+
+/// The process-wide handles a worker thread needs to build its own realm.
+pub(crate) struct WorkerDirectory {
+    services: Arc<dyn crate::protocol::BrowserServices>,
+    identity: net::ValidIdentity,
+    wake: Arc<tokio::sync::Notify>,
+    stop: Arc<Stop>,
+    shared: crate::messaging::SharedHandle,
+    requests: crate::js::WorkerRequests,
+    next_worker: Arc<AtomicU64>,
+    next_broadcast: Arc<AtomicU64>,
+    font_ctx: parley::FontContext,
+    object_urls: crate::js::ObjectUrlStore,
+    shared_buffers: Arc<crate::js::SharedBufferTable>,
+    /// Live dedicated workers, read and pruned by the engine.
+    workers: Mutex<BTreeMap<WorkerId, WorkerHandle>>,
+}
+
+impl WorkerDirectory {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one argument per process-wide handle the directory shares with worker threads"
+    )]
+    pub(crate) fn new(
+        services: Arc<dyn crate::protocol::BrowserServices>,
+        identity: net::ValidIdentity,
+        wake: Arc<tokio::sync::Notify>,
+        stop: Arc<Stop>,
+        shared: crate::messaging::SharedHandle,
+        requests: crate::js::WorkerRequests,
+        next_worker: Arc<AtomicU64>,
+        next_broadcast: Arc<AtomicU64>,
+        font_ctx: parley::FontContext,
+        object_urls: crate::js::ObjectUrlStore,
+        shared_buffers: Arc<crate::js::SharedBufferTable>,
+    ) -> Self {
+        Self {
+            services,
+            identity,
+            wake,
+            stop,
+            shared,
+            requests,
+            next_worker,
+            next_broadcast,
+            font_ctx,
+            object_urls,
+            shared_buffers,
+            workers: Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    fn workers(&self) -> MutexGuard<'_, BTreeMap<WorkerId, WorkerHandle>> {
+        self.workers.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The thread-local runtime a worker realm runs on. The process-wide
+    /// handles are cloned; the realm bookkeeping is fresh, because a `QuickJS`
+    /// runtime and its wrappers belong to one thread
+    /// (<https://bellard.org/quickjs/quickjs.html>, `JSRuntime`).
+    fn thread_runtime(self: &Arc<Self>, js_runtime: JsRuntimeHandle) -> FrameRuntime {
+        FrameRuntime {
+            services: Arc::clone(&self.services),
+            identity: self.identity.clone(),
+            js_runtime,
+            wake: Arc::clone(&self.wake),
+            stop: Arc::clone(&self.stop),
+            documents: Rc::new(RefCell::new(crate::documents::DocumentStore::default())),
+            registry: Rc::new(RefCell::new(crate::js::RealmRegistry::default())),
+            shared: self.shared.clone(),
+            pending_storage: Rc::new(RefCell::new(Vec::new())),
+            turn_deadline: Rc::new(std::cell::Cell::new(None)),
+            worker_requests: Arc::clone(&self.requests),
+            next_worker: Arc::clone(&self.next_worker),
+            next_broadcast: Arc::clone(&self.next_broadcast),
+            worker_dir: Arc::clone(self),
+            font_ctx: self.font_ctx.clone(),
+            object_urls: Arc::clone(&self.object_urls),
+            shared_buffers: Arc::clone(&self.shared_buffers),
+        }
+    }
+
+    /// Starts a dedicated worker on its own OS thread.
+    ///
+    /// The thread is spawned here, inside `new Worker()`, not at the engine's
+    /// next reconcile: `Worker-creation-happens-in-parallel` posts and then
+    /// spins in the same synchronous function, so a start deferred until the
+    /// script returns could never win
+    /// (<https://html.spec.whatwg.org/multipage/workers.html#dom-worker>).
+    pub(crate) fn spawn_dedicated(self: &Arc<Self>, created: CreatedWorker) -> WorkerId {
+        let id = created.id;
+        let (commands, received) = std::sync::mpsc::channel();
+        let state = WorkerThreadState {
+            terminate: Arc::new(AtomicBool::new(false)),
+            // The top-level script counts as work until it finishes.
+            active: Arc::new(AtomicUsize::new(1)),
+            closed: Arc::new(AtomicBool::new(false)),
+            pending_fetches: Arc::new(AtomicUsize::new(0)),
+        };
+        let handle = WorkerHandle {
+            origin: created.worker_origin.clone(),
+            commands,
+            terminate: Arc::clone(&state.terminate),
+            active: Arc::clone(&state.active),
+            closed: Arc::clone(&state.closed),
+            pending_fetches: Arc::clone(&state.pending_fetches),
+            timers: HashMap::new(),
+            js_timers: HashMap::new(),
+            next_timer: TimerId::default(),
+            closed_local: false,
+        };
+        self.workers().insert(id, handle);
+
+        let directory = Arc::clone(self);
+        let thread_state = WorkerThreadState {
+            terminate: Arc::clone(&state.terminate),
+            active: Arc::clone(&state.active),
+            closed: Arc::clone(&state.closed),
+            pending_fetches: Arc::clone(&state.pending_fetches),
+        };
+        let spawned = std::thread::Builder::new()
+            .name(format!("tinybrowser-worker-{}", id.get()))
+            .spawn(move || run_worker(&created, &directory, &received, &thread_state));
+        if let Err(error) = spawned {
+            // The environment could not be created: the `Worker` object hears
+            // the same plain `error` event as a script that failed to load
+            // (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>,
+            // step 14).
+            let _ = error;
+            state.closed.store(true, Ordering::Release);
+            state.active.store(0, Ordering::Release);
+        }
+        id
+    }
+
+    /// Sends one command to a dedicated worker.
+    pub(crate) fn send(&self, id: WorkerId, command: WorkerCommand) -> bool {
+        let mut workers = self.workers();
+        let Some(worker) = workers.get_mut(&id) else {
+            return false;
+        };
+        worker.send(command)
+    }
+
+    /// Sets a dedicated worker's terminate flag and wakes its thread.
+    pub(crate) fn terminate(&self, id: WorkerId) {
+        if let Some(worker) = self.workers().get_mut(&id) {
+            worker.terminate();
+        }
+    }
+
+    /// Runs `f` over the live dedicated workers.
+    pub(crate) fn with_workers<R>(
+        &self,
+        f: impl FnOnce(&mut BTreeMap<WorkerId, WorkerHandle>) -> R,
+    ) -> R {
+        f(&mut self.workers())
+    }
+
+    /// Drops every dedicated worker, interrupting its thread.
+    pub(crate) fn terminate_all(&self) {
+        let mut workers = self.workers();
+        for worker in workers.values_mut() {
+            worker.terminate();
+        }
+        workers.clear();
+    }
+
+    /// Removes workers whose thread reported it closed.
+    pub(crate) fn remove_closed(&self) {
+        self.workers().retain(|_, worker| !worker.is_closed());
+    }
+}
+
+/// The engine's handle to one dedicated worker running on another thread.
+///
+/// The realm, its `QuickJS` runtime, and its task queue belong to the worker
+/// thread. The handle owns what the engine schedules: commands, the timer
+/// mirror, and the flags the thread publishes.
+pub(crate) struct WorkerHandle {
+    origin: url::Origin,
+    commands: Sender<WorkerCommand>,
+    terminate: Arc<AtomicBool>,
+    active: Arc<AtomicUsize>,
+    closed: Arc<AtomicBool>,
+    pending_fetches: Arc<AtomicUsize>,
+    /// The engine owns worker timers so the page engine's clock drives them.
+    timers: HashMap<TimerId, WorkerTimer>,
+    js_timers: HashMap<PageTimerId, TimerId>,
+    next_timer: TimerId,
+    closed_local: bool,
+}
+
+impl WorkerHandle {
+    pub(crate) fn has_origin(&self, origin: &url::Origin) -> bool {
+        self.origin == *origin
+    }
+
+    fn send(&mut self, command: WorkerCommand) -> bool {
+        if self.closed_local {
+            return false;
+        }
+        self.active.fetch_add(1, Ordering::AcqRel);
+        if self.commands.send(command).is_err() {
+            self.active.fetch_sub(1, Ordering::AcqRel);
+            return false;
+        }
+        true
+    }
+
+    pub(crate) fn queue_broadcast(
+        &mut self,
+        origin: String,
+        name: String,
+        payload: String,
+        source: Option<u64>,
+    ) {
+        self.send(WorkerCommand::Broadcast {
+            origin,
+            name,
+            payload,
+            source,
+        });
+    }
+
+    /// Runs the commands and timers that are ready, and reports whether work
+    /// remains. The worker thread runs concurrently, so this never executes
+    /// script on the page thread.
+    pub(crate) fn drain_step(&mut self) -> bool {
+        if self.closed_local {
+            return false;
+        }
+        self.fire_due_timers();
+        if self.active.load(Ordering::Acquire) == 0 {
+            return false;
+        }
+        std::thread::yield_now();
+        true
+    }
+
+    pub(crate) fn has_ready_work(&self) -> bool {
+        if self.closed_local {
+            return false;
+        }
+        if self.active.load(Ordering::Acquire) > 0 {
+            return true;
+        }
+        let now = Instant::now();
+        self.timers
+            .values()
+            .any(|timer| !timer.fired && timer.when.is_some_and(|when| when <= now))
+    }
+
+    pub(crate) fn next_deadline(&self) -> Option<Instant> {
+        self.timers
+            .values()
+            .filter(|timer| !timer.fired)
+            .filter_map(|timer| timer.when)
+            .min()
+    }
+
+    pub(crate) fn has_pending_dials(&self) -> bool {
+        self.pending_fetches.load(Ordering::Acquire) > 0
+    }
+
+    pub(crate) fn is_closed(&self) -> bool {
+        self.closed_local || self.closed.load(Ordering::Acquire)
+    }
+
+    /// Schedules a timer a worker realm created, and mirrors the handle the
+    /// worker's JS uses.
+    pub(crate) fn schedule_timer(&mut self, delay: Duration, js_id: PageTimerId) {
+        let id = self.next_timer.take_next();
+        self.timers.insert(
+            id,
+            WorkerTimer {
+                when: Instant::now().checked_add(delay),
+                fired: false,
+                js_id,
+            },
+        );
+        self.js_timers.insert(js_id, id);
+    }
+
+    pub(crate) fn clear_timer(&mut self, js_id: PageTimerId) {
+        if let Some(id) = self.js_timers.remove(&js_id) {
+            self.timers.remove(&id);
+        }
+    }
+
+    pub(crate) fn terminate(&mut self) {
+        self.closed_local = true;
+        self.terminate.store(true, Ordering::Release);
+        self.timers.clear();
+        self.js_timers.clear();
+        // Wakes a thread blocked on the channel; a thread inside script sees
+        // the flag through its interrupt handler.
+        self.active.fetch_add(1, Ordering::AcqRel);
+        if self.commands.send(WorkerCommand::Terminate).is_err() {
+            self.active.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+
+    fn fire_due_timers(&mut self) {
+        while let Some(id) = self.due_timer() {
+            let Some(timer) = self.timers.get(&id) else {
+                continue;
+            };
+            let js_id = timer.js_id;
+            self.send(WorkerCommand::FireTimer { js_id });
+        }
+    }
+
+    fn due_timer(&mut self) -> Option<TimerId> {
+        let now = Instant::now();
+        let id = self
+            .timers
+            .iter()
+            .find(|(_, timer)| !timer.fired && timer.when.is_some_and(|when| when <= now))
+            .map(|(&id, _)| id)?;
+        if let Some(timer) = self.timers.get_mut(&id) {
+            timer.fired = true;
+        }
+        Some(id)
+    }
+}
+
+/// Runs one dedicated worker's realm on its own thread.
+fn run_worker(
+    created: &CreatedWorker,
+    directory: &Arc<WorkerDirectory>,
+    commands: &Receiver<WorkerCommand>,
+    state: &WorkerThreadState,
+) {
+    let js_runtime = SharedJsRuntime::default();
+    let runtime = directory.thread_runtime(js_runtime.handle());
+    let worker = Worker::create(
+        created,
+        created.id,
+        &runtime,
+        &js_runtime,
+        Arc::clone(&state.terminate),
+        Arc::clone(&state.pending_fetches),
+    );
+    let mut worker = match worker {
+        Ok(worker) => worker,
+        Err(failure) => {
+            // The environment never started: the owner's `Worker` object hears
+            // a plain `error` event
+            // (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>,
+            // step 14).
+            runtime.push_worker_request_waking(WorkerRequest::LoadFailed {
+                worker: failure.worker,
+                parent: failure.parent,
+            });
+            state.active.fetch_sub(1, Ordering::AcqRel);
+            state.closed.store(true, Ordering::Release);
+            return;
+        }
+    };
+    // The top-level script runs before any command, and `new Worker()` has
+    // already returned on the page thread
+    // (<https://html.spec.whatwg.org/multipage/workers.html#dom-worker>).
+    worker.drain_until_idle(&state.terminate);
+    state.active.fetch_sub(1, Ordering::AcqRel);
+    if worker.is_closed() || state.terminate.load(Ordering::Acquire) {
+        state.closed.store(true, Ordering::Release);
+        return;
+    }
+    loop {
+        // A fetch completion arrives on the worker's own channel, not the
+        // command channel, so a thread waiting for commands also polls while a
+        // dial is in flight. The engine keeps the page draining on
+        // `has_pending_dials` meanwhile
+        // (<https://fetch.spec.whatwg.org/#fetch-processresponse>).
+        let received = if state.pending_fetches.load(Ordering::Acquire) > 0 {
+            match commands.recv_timeout(Duration::from_millis(2)) {
+                Ok(command) => Ok(command),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    state.active.fetch_add(1, Ordering::AcqRel);
+                    worker.drain_until_idle(&state.terminate);
+                    state.active.fetch_sub(1, Ordering::AcqRel);
+                    if worker.is_closed() || state.terminate.load(Ordering::Acquire) {
+                        state.closed.store(true, Ordering::Release);
+                        return;
+                    }
+                    continue;
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        } else {
+            commands.recv().map_err(|_| ())
+        };
+        let Ok(command) = received else {
+            break;
+        };
+        let terminate = matches!(command, WorkerCommand::Terminate);
+        if !terminate {
+            worker.apply_command(command);
+            worker.drain_until_idle(&state.terminate);
+        }
+        state.active.fetch_sub(1, Ordering::AcqRel);
+        if terminate || worker.is_closed() || state.terminate.load(Ordering::Acquire) {
+            state.closed.store(true, Ordering::Release);
+            return;
+        }
+    }
+    state.active.fetch_sub(1, Ordering::AcqRel);
+    state.closed.store(true, Ordering::Release);
 }
 
 /// One queued task in a worker's event loop.
@@ -367,6 +860,8 @@ impl Worker {
         id: WorkerId,
         runtime: &FrameRuntime,
         js_runtime: &SharedJsRuntime,
+        terminate: Arc<AtomicBool>,
+        pending_fetches: Arc<AtomicUsize>,
     ) -> Result<Self, WorkerLoadFailure> {
         let failure = WorkerLoadFailure {
             worker: id,
@@ -416,16 +911,16 @@ impl Worker {
         let world = Rc::new(RefCell::new(world));
         {
             let mut state = world.borrow_mut();
-            // A `data:` worker gets an opaque origin; every other scheme
-            // inherits the creator's
+            // The realm's origin was fixed when the constructor captured the
+            // worker: a `data:` worker gets its own opaque origin, which is
+            // also the origin its broadcasts carry
             // (<https://html.spec.whatwg.org/multipage/workers.html#dom-worker>).
-            if created.url.scheme() == "data" {
-                state.origin = url::Origin::new_opaque();
-                state.top_level = Some(url::Origin::new_opaque());
+            state.origin = created.worker_origin.clone();
+            state.top_level = Some(if created.url.scheme() == "data" {
+                created.worker_origin.clone()
             } else {
-                state.origin = created.origin.clone();
-                state.top_level = Some(created.top_level.clone());
-            }
+                created.top_level.clone()
+            });
             state.policy = created.policy.clone();
             state.sandbox = created.sandbox;
             state.referrer_url = created.referrer_url.clone();
@@ -445,10 +940,10 @@ impl Worker {
             &js_runtime.handle(),
             Rc::clone(&world),
             Arc::clone(&runtime.stop),
+            terminate,
         )
         .map_err(|_| failure)?;
         let (fetch_tx, fetch_rx) = std::sync::mpsc::channel();
-        let pending_fetches = Arc::new(AtomicUsize::new(0));
         Ok(Self {
             id,
             parent: created.parent,
@@ -586,9 +1081,60 @@ impl Worker {
             .forget_endpoints(endpoints);
     }
 
+    /// Runs the worker's own task queue until it is empty, stopping if the
+    /// engine terminated it.
+    fn drain_until_idle(&mut self, terminate: &Arc<AtomicBool>) {
+        while !terminate.load(Ordering::Acquire) {
+            if !self.drain_step() {
+                break;
+            }
+        }
+    }
+
+    /// Applies one command the engine sent this worker's thread.
+    fn apply_command(&mut self, command: WorkerCommand) {
+        match command {
+            WorkerCommand::Post { payload, ports } => self.queue_message(payload, ports),
+            WorkerCommand::PortMessage {
+                endpoint,
+                payload,
+                ports,
+            } => self.queue_port_message(endpoint, payload, ports),
+            WorkerCommand::PortClosed { endpoint } => self.queue_port_closed(endpoint),
+            WorkerCommand::Broadcast {
+                origin,
+                name,
+                payload,
+                source,
+            } => self.queue_broadcast(origin, name, payload, source),
+            WorkerCommand::FireTimer { js_id } => {
+                if let Err(error) = self.js.fire_timer(js_id) {
+                    self.report_error(&error);
+                }
+            }
+            WorkerCommand::NestedMessage {
+                worker,
+                payload,
+                ports,
+            } => {
+                let _ = self.deliver_message(WorkerId::new(worker), &payload, &ports);
+            }
+            WorkerCommand::NestedError(error) => {
+                let _ = self.deliver_error(&error);
+            }
+            WorkerCommand::NestedLoadFailure { worker } => {
+                let _ = self.deliver_load_failure(WorkerId::new(worker));
+            }
+            WorkerCommand::Terminate => {}
+        }
+    }
+
     /// Runs one task and reports whether the engine must step the worker
     /// again. A closed worker drains nothing.
     pub(crate) fn drain_step(&mut self) -> bool {
+        if self.world.borrow().worker_close_requested.get() {
+            self.close();
+        }
         if self.closed {
             return false;
         }
@@ -718,13 +1264,6 @@ impl Worker {
         self.closed
     }
 
-    pub(crate) fn terminate(&mut self) {
-        self.closed = true;
-        self.discard_queued_tasks();
-        self.timers.clear();
-        self.js_timers.clear();
-    }
-
     /// `close()` stops the worker before its next task; the engine drops the
     /// realm after the current drain so it is never destroyed from inside its
     /// own script. Both close and terminate discard the tasks still queued
@@ -806,9 +1345,7 @@ impl Worker {
         self.world
             .borrow()
             .runtime
-            .worker_requests
-            .borrow_mut()
-            .push(WorkerRequest::Error(Box::new(error)));
+            .push_worker_request_waking(WorkerRequest::Error(Box::new(error)));
     }
 
     fn report_load_failure(&self) {
@@ -823,9 +1360,7 @@ impl Worker {
         self.world
             .borrow()
             .runtime
-            .worker_requests
-            .borrow_mut()
-            .push(request);
+            .push_worker_request_waking(request);
     }
 
     fn adopt_js_work(&mut self) {
@@ -840,12 +1375,36 @@ impl Worker {
     fn apply_realm_request(&mut self, request: RealmRequest) {
         match request {
             RealmRequest::Timer(timeout) => {
-                let id = self.schedule_timer(timeout.delay, timeout.js_id);
-                self.js_timers.insert(timeout.js_id, id);
+                // A dedicated worker's thread cannot see the page engine's
+                // clock, so its timers are scheduled by the engine handle. A
+                // shared worker runs in the page engine and schedules its own.
+                if self.shared {
+                    let id = self.schedule_timer(timeout.delay, timeout.js_id);
+                    self.js_timers.insert(timeout.js_id, id);
+                } else {
+                    self.world
+                        .borrow()
+                        .runtime
+                        .push_worker_request(WorkerRequest::SetTimer {
+                            worker: self.id,
+                            js_id: timeout.js_id,
+                            delay: timeout.delay,
+                        });
+                }
             }
             RealmRequest::ClearTimer(js_id) => {
-                if let Some(id) = self.js_timers.remove(&js_id) {
-                    self.timers.remove(&id);
+                if self.shared {
+                    if let Some(id) = self.js_timers.remove(&js_id) {
+                        self.timers.remove(&id);
+                    }
+                } else {
+                    self.world
+                        .borrow()
+                        .runtime
+                        .push_worker_request(WorkerRequest::ClearTimer {
+                            worker: self.id,
+                            js_id,
+                        });
                 }
             }
             RealmRequest::Fetch(fetch) => self.start_fetch(*fetch),

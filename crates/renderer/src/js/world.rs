@@ -42,10 +42,6 @@ pub(crate) struct RealmRegistry {
     pub(crate) reactions: super::reactions::CustomElementReactions,
     pub(crate) private_slots: Option<PrivateSlots>,
     budget: Rc<RefCell<ResourceBudget>>,
-    /// Blob URLs for every realm in this renderer process, keyed without a
-    /// fragment
-    /// (<https://w3c.github.io/FileAPI/#blob-url-store>).
-    object_urls: HashMap<String, ObjectUrlEntry>,
     /// The World that owns each document id, for wrapper realm resolution.
     documents: HashMap<u32, Weak<RefCell<World>>>,
     /// The World that owns each frame, for `window.parent` and `event.source`.
@@ -766,7 +762,6 @@ impl RealmRegistry {
         self.frame_documents.clear();
         self.creation_realms.clear();
         self.adopted_ids.clear();
-        self.object_urls.clear();
         self.canvases.clear();
         self.canvas_nodes.clear();
         self.bitmaps.clear();
@@ -774,27 +769,6 @@ impl RealmRegistry {
 
     fn budget(&self) -> Rc<RefCell<ResourceBudget>> {
         Rc::clone(&self.budget)
-    }
-
-    fn object_url(&self, url: &str, origin: &url::Origin) -> Option<&ObjectUrlEntry> {
-        let entry = self.object_urls.get(object_url_key(url))?;
-        (entry.origin == *origin).then_some(entry)
-    }
-
-    /// File API unloading-document cleanup: drop matching blob URLs and
-    /// return the bytes they held
-    /// (<https://w3c.github.io/FileAPI/#lifeTime>).
-    fn take_object_urls(&mut self, mut unload: impl FnMut(&ObjectUrlEntry) -> bool) -> usize {
-        let mut released = 0usize;
-        self.object_urls.retain(|_, entry| {
-            if unload(entry) {
-                released = released.saturating_add(entry.contents.len() + entry.content_type.len());
-                false
-            } else {
-                true
-            }
-        });
-        released
     }
 }
 
@@ -1072,8 +1046,8 @@ pub(crate) enum EventTargetKey {
 /// (<https://w3c.github.io/FileAPI/#blob-url>,
 /// <https://w3c.github.io/FileAPI/#blob-url-store>).
 pub(crate) struct ObjectUrlEntry {
-    pub(crate) contents: Rc<str>,
-    pub(crate) content_type: Rc<str>,
+    pub(crate) contents: Arc<str>,
+    pub(crate) content_type: Arc<str>,
     pub(crate) origin: url::Origin,
     frame: FrameId,
     document: Option<u32>,
@@ -1081,7 +1055,7 @@ pub(crate) struct ObjectUrlEntry {
 
 /// The Blob URL Store key: the URL without its fragment
 /// (<https://w3c.github.io/FileAPI/#blob-url-store>).
-fn object_url_key(url: &str) -> &str {
+pub(crate) fn object_url_key(url: &str) -> &str {
     url.split_once('#').map_or(url, |(head, _)| head)
 }
 
@@ -1279,6 +1253,10 @@ pub(crate) struct World {
     /// the stack. Cleared when the realm is torn down, so it never keeps an
     /// old realm alive.
     pub(crate) realm_context: Option<rquickjs::Context>,
+    /// `close()` was called inside this worker realm. The worker thread reads
+    /// it after each task, because the realm cannot reach its own handle
+    /// (<https://html.spec.whatwg.org/multipage/workers.html#dom-dedicatedworkerglobalscope-close>).
+    pub(crate) worker_close_requested: Rc<Cell<bool>>,
     /// Document ids this realm created. Its logs feed every realm's
     /// observers through the union drain.
     owned: HashSet<u32>,
@@ -1744,6 +1722,7 @@ impl World {
             frame_host: None,
             document: None,
             realm_context: None,
+            worker_close_requested: Rc::new(Cell::new(false)),
             owned: HashSet::new(),
             origin: document_url.origin(),
             top_level: None,
@@ -2599,12 +2578,7 @@ impl World {
             url::Origin::Tuple(..) => url.origin() == self.origin,
             url::Origin::Opaque(_) => {
                 let blob_origin = if url.scheme() == "blob" {
-                    self.runtime
-                        .registry
-                        .borrow()
-                        .object_urls
-                        .get(object_url_key(url.as_str()))
-                        .map(|entry| entry.origin.clone())
+                    self.runtime.stored_object_url_origin(url.as_str())
                 } else {
                     None
                 };
@@ -2996,11 +2970,11 @@ impl World {
         }
         let id = object_url_id()?;
         let url = format!("blob:{}/{id}", self.origin.ascii_serialization());
-        self.runtime.registry.borrow_mut().object_urls.insert(
+        self.runtime.insert_object_url(
             url.clone(),
             ObjectUrlEntry {
-                contents: Rc::from(contents),
-                content_type: Rc::from(content_type),
+                contents: Arc::from(contents),
+                content_type: Arc::from(content_type),
                 origin: self.origin.clone(),
                 frame: self.frame,
                 document: self.document,
@@ -3010,29 +2984,17 @@ impl World {
         Some(url)
     }
 
-    pub(crate) fn object_url_contents(&self, url: &str) -> Option<Rc<str>> {
-        self.runtime
-            .registry
-            .borrow()
-            .object_url(url, &self.origin)
-            .map(|entry| Rc::clone(&entry.contents))
+    pub(crate) fn object_url_contents(&self, url: &str) -> Option<Arc<str>> {
+        self.runtime.object_url_contents(url, &self.origin)
     }
 
-    pub(crate) fn object_url_type(&self, url: &str) -> Option<Rc<str>> {
-        self.runtime
-            .registry
-            .borrow()
-            .object_url(url, &self.origin)
-            .map(|entry| Rc::clone(&entry.content_type))
+    pub(crate) fn object_url_type(&self, url: &str) -> Option<Arc<str>> {
+        self.runtime.object_url_type(url, &self.origin)
     }
 
     /// The creator origin stored for `url`, when this document may use it.
     pub(crate) fn object_url_origin(&self, url: &str) -> Option<url::Origin> {
-        self.runtime
-            .registry
-            .borrow()
-            .object_url(url, &self.origin)
-            .map(|entry| entry.origin.clone())
+        self.runtime.object_url_origin(url, &self.origin)
     }
 
     fn refund_object_url_bytes(&self, bytes: usize) {
@@ -3043,19 +3005,13 @@ impl World {
     fn unload_object_urls_for_document(&mut self, document: u32) {
         let released = self
             .runtime
-            .registry
-            .borrow_mut()
             .take_object_urls(|entry| entry.document == Some(document));
         self.refund_object_url_bytes(released);
     }
 
     fn unload_object_urls_for_frame(&mut self) {
         let frame = self.frame;
-        let released = self
-            .runtime
-            .registry
-            .borrow_mut()
-            .take_object_urls(|entry| entry.frame == frame);
+        let released = self.runtime.take_object_urls(|entry| entry.frame == frame);
         self.refund_object_url_bytes(released);
     }
 
@@ -3063,26 +3019,12 @@ impl World {
         // Same-partition check: a cross-origin caller must not remove the
         // entry or refund bytes it did not allocate
         // (<https://w3c.github.io/FileAPI/#dfn-revokeObjectURL>).
-        if self
-            .runtime
-            .registry
-            .borrow()
-            .object_url(url, &self.origin)
-            .is_none()
-        {
+        if self.runtime.object_url_origin(url, &self.origin).is_none() {
             return;
         }
-        if let Some(entry) = self
-            .runtime
-            .registry
-            .borrow_mut()
-            .object_urls
-            .remove(object_url_key(url))
-        {
+        if let Some(released) = self.runtime.remove_object_url(url) {
             let mut budget = self.budget.borrow_mut();
-            budget.object_url_bytes = budget
-                .object_url_bytes
-                .saturating_sub(entry.contents.len() + entry.content_type.len());
+            budget.object_url_bytes = budget.object_url_bytes.saturating_sub(released);
         }
     }
 

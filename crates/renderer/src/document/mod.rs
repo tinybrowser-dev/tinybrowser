@@ -1015,13 +1015,13 @@ impl Document {
     /// An object URL's contents, when this document's origin created it
     /// (<https://w3c.github.io/FileAPI/#blob-url-store>).
     #[must_use]
-    pub(crate) fn object_url_contents(&self, url: &str) -> Option<Rc<str>> {
+    pub(crate) fn object_url_contents(&self, url: &str) -> Option<Arc<str>> {
         self.world.borrow().object_url_contents(url)
     }
 
     /// The `Content-Type` an object URL was created from.
     #[must_use]
-    pub(crate) fn object_url_type(&self, url: &str) -> Option<Rc<str>> {
+    pub(crate) fn object_url_type(&self, url: &str) -> Option<Arc<str>> {
         self.world.borrow().object_url_type(url)
     }
 

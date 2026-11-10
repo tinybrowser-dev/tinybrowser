@@ -400,9 +400,19 @@ const __tbEncode = (value, transfer, sourcePort) => {
       return index;
     }
     if (typeof SharedArrayBuffer === 'function' && input instanceof SharedArrayBuffer) {
-      // Shared memory would need to stay shared across realms; the engine
-      // has no shared-memory transport, so refuse instead of corrupting.
-      throw __tbCloneFailure();
+      // Shared memory is never copied: the payload names the sender's block,
+      // and the receiver wraps the same bytes. Registering here also keeps the
+      // block alive if the sender's object is collected before the message
+      // runs
+      // (<https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal>).
+      const id = host.__tbRegisterSharedBuffer(input);
+      if (id === undefined || id === null) throw __tbCloneFailure();
+      const growable = input.growable === true;
+      const index = slot([
+        'shared', id, input.byteLength, growable ? input.maxByteLength : 0,
+      ]);
+      seen.set(input, index);
+      return index;
     }
     // `ArrayBuffer.isView` is the brand check: the typed-array `length`
     // accessor throws for a view left out of bounds by `resize()`, so probing
@@ -585,6 +595,20 @@ const __tbDecode = (payload, ports) => {
             ? new ArrayBuffer(bytes.length, { maxByteLength: bytes.length })
             : new ArrayBuffer(bytes.length);
         new Uint8Array(buffer).set(bytes);
+        values[index] = buffer;
+        break;
+      }
+      case 'shared': {
+        // A shared buffer is wrapped, not copied: the table entry names the
+        // same bytes the sender registered
+        // (<https://html.spec.whatwg.org/multipage/structured-data.html#structureddeserialize>).
+        const buffer = host.__tbCreateSharedBuffer(
+          nodes[index][1], nodes[index][2], nodes[index][3]);
+        if (buffer === undefined || buffer === null) throw __tbCloneFailure();
+        if (buffer.byteLength !== nodes[index][2]) throw __tbCloneFailure();
+        if (nodes[index][3] !== 0 && buffer.maxByteLength !== nodes[index][3]) {
+          throw __tbCloneFailure();
+        }
         values[index] = buffer;
         break;
       }

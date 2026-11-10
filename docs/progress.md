@@ -124,19 +124,30 @@ state, and the serializer throws the required `DataCloneError`; the four
 `Serializing`/`Transferring OOB TypedArray throws` subtests in the
 dedicated and shared batteries now pass. The remaining failures are
 popup-based `extendedLifetime` and same-site cookie files, `IndexedDB`
-absence, CHIPS partitioning, same-thread parallelism and forcible
-termination, joint-history traversal in the in-process harness,
-`WebAssembly`'s absence in the growable-SAB fixture, and the QuickJS
-`eval(import())` gap.
+absence, CHIPS partitioning, joint-history traversal in the in-process
+harness, `WebAssembly`'s absence in the growable-SAB fixture, and the
+QuickJS `eval(import())` gap.
 
-The worker-thread migration started with its prerequisite: the cross-realm
-`Shared` state (frame tree, `MessagePort` table, delivery queue) is now
-`Arc<Mutex<Shared>>` behind the same `borrow()` shape, because it is the
-only page state a worker realm on another OS thread touches. The
-`workers/` slice stayed at 886/966 subtests and 218 perfect files with no
-subtest gained or lost. `docs/worker-threads.md` records the thread model,
-the measured `SharedArrayBuffer` transport (two runtimes on two threads
-sharing one buffer), and the milestone order.
+Dedicated workers now run on their own OS threads, one `QuickJS` runtime per
+realm, so a page that spins on `Atomics` keeps its worker running and
+`terminate()` interrupts a worker stuck in synchronous script. The engine
+sends commands and fires engine-owned timers over channels; the worker
+publishes an `active` count, a terminate flag, and a pending-fetch count.
+The Blob URL Store became process-wide so a page-created `blob:` URL is
+fetchable from a worker thread, and `SharedArrayBuffer` now crosses realms
+by reference: the rquickjs fork installs reference-counted
+`JS_SetSharedArrayBufferFunctions` hooks and exposes `SharedBufferLease`, so
+the receiver wraps the sender's bytes instead of copying them.
+
+The `workers/` slice went from 886/966 passing subtests and 218 perfect files
+to **897/972 and 223 perfect files**, with five fewer failing files and no
+lost subtest. The gains are the two `happens-in-parallel` files,
+`postMessage_block`, `Worker-terminate-forever-during-evaluation`,
+`Worker_terminate_event_queue`, and `workers/semantics/xhr/001.html` (the
+worker thread polls its fetch channel while a dial is in flight).
+`docs/worker-threads.md` records the thread model, the timer mirror, the
+measured shared-memory transport, and the remaining milestones (shared and
+nested worker threads).
 
 Every push to `main` now publishes the record to
 `tinybrowser-dev/tinybrowser-wpt-results` and the site at
