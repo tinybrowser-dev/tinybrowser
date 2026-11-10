@@ -67,9 +67,11 @@ processes, and `extendedLifetime` does not outlive the tab; moving the realm
 to its own thread is milestone 6 in `docs/worker-threads.md`. Service
 workers, `IndexedDB`, and `ReadableStream` transfer remain unimplemented;
 growable `SharedArrayBuffer` needs `WebAssembly.Memory` for the WPT fixture,
-though the allocator hooks themselves are in place, and the QuickJS gaps behind the
-remaining clone and `eval(import())` failures are recorded in
-`docs/upstream.md`. The cookie jar does not implement the `Partitioned`
+though the allocator hooks themselves are in place, and the QuickJS gaps
+behind the remaining clone failures are recorded in `docs/upstream.md`. A
+relative `eval(import())` in a blob- or data-URL module worker cannot resolve
+because those URLs have no hierarchical path in the URL standard; Chrome
+rejects it the same way, and `docs/upstream.md` records the probe. The cookie jar does not implement the `Partitioned`
 attribute (CHIPS), so a partitioned cookie is stored as an ordinary one;
 `shared-worker-partitioned-cookies.tentative.https.html` now runs through its
 popup and fails only the assertion that reads a partitioned cookie.

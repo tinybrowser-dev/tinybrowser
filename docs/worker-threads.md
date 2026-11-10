@@ -189,8 +189,10 @@ failures are implementation gaps, not the thread model:
   implement, and quickjs-ng stores `byteLength` per object, so a `grow()` in
   one runtime is not visible through another runtime's object
   (`docs/upstream.md`).
-- `ReadableStream` transfer and `eval(import())` in a module worker: codec and
-  QuickJS gaps, not concurrency.
+- `ReadableStream` transfer is a codec gap, not concurrency. `eval(import())`
+  in a blob- or data-URL module worker cannot resolve a relative specifier,
+  because the URL standard gives those URLs no hierarchical path; Chrome
+  rejects it the same way, and `docs/upstream.md` records the probe.
 - `SharedWorker` concurrency: milestone 6.
 
 ## Registry lifetime
