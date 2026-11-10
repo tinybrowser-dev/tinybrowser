@@ -94,11 +94,11 @@ partitioned-cookie files, and the module CSP/referrer files run. The harness
 also answers `/resources/testdriver-vendor.js` with a cookie-backed
 implementation of `get_all_cookies`/`delete_all_cookies`; every cookie those
 tests set is a non-`HttpOnly`, path-`/` cookie, so the page's own
-`document.cookie` is the set they ask about. Its standalone session
-history also does not apply a main-frame `history.back()` to a child frame's
-joint entry, so `workers/semantics/navigation/001.html` cannot observe the
-child document being restored; that is a harness gap, not a worker lifetime
-rule.
+`document.cookie` is the set they ask about. Its standalone session history
+keeps the joint steps itself: a child navigation adds a step, and a main-frame
+or child `history.back()` moves every frame whose entry changes at the target
+step, so `workers/semantics/navigation/001.html` observes the child document
+being restored.
 
 Canvas `getContext` returns a working 2D context (paths, text, gradients,
 patterns, filters, layers); the `bitmaprenderer` context exists but
@@ -171,6 +171,15 @@ an origin per entry; the opaque cases (sandboxed, `data:`, inherited
 assigning `_self` or `_blank` is recorded as no name and that string does not
 survive a commit or a traversal. The spec keeps any string in the document
 state and treats keywords specially only when a target is resolved.
+
+A carrier with no browser tab behind it keeps the joint steps in the engine:
+each used step records the local entry every live frame presents, a child
+navigation adds one, and a same-document push adds one. It records no
+main-frame entry, so a step that would move the main frame is refused instead
+of moving only part of the tab; `history.back()` from the main frame still
+moves a child whose entry differs at the target step, which is what
+`workers/semantics/navigation/001.html` needs. A browser-hosted engine's tab
+actor owns the full list and records every main-frame entry.
 
 A popup's renderer records "auxiliary with a live opener" when it mounts, and
 nothing tells it when that opener closes, so a later cross-origin navigation

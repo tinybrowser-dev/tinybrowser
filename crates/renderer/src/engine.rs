@@ -94,6 +94,19 @@ struct FrameHistoryEntry {
     navigation: Option<FrameNavigation>,
     /// The saved state of an `about:blank` or `about:srcdoc` document.
     state: Option<LocalDocumentState>,
+    /// The URL and classic state of a same-document entry. The document stays
+    /// active across the step, so restoring the entry only swaps the URL and
+    /// fires `popstate`
+    /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#url-and-history-update-steps>).
+    same_document: Option<SameDocumentEntry>,
+}
+
+/// One `pushState()`/`replaceState()` entry.
+#[derive(Clone)]
+struct SameDocumentEntry {
+    url: String,
+    /// The serialized classic history state the realm encoded.
+    state: String,
 }
 
 impl FrameHistory {
@@ -150,13 +163,119 @@ impl FrameHistory {
     /// Inserts a same-document entry so later local positions line up with the
     /// browser's joint list. Its document stays active, so it has no replay
     /// payload of its own.
-    fn push_same_document(&mut self) {
-        self.push(FrameHistoryEntry::default());
+    fn push_same_document(&mut self, entry: SameDocumentEntry) {
+        self.push(FrameHistoryEntry {
+            same_document: Some(entry),
+            ..FrameHistoryEntry::default()
+        });
+    }
+
+    /// Replaces the active entry's same-document URL and state, keeping its
+    /// local position and document.
+    fn replace_same_document(&mut self, entry: SameDocumentEntry) {
+        if let Some(slot) = self.entries.get_mut(self.index) {
+            slot.same_document = Some(entry);
+        }
     }
 
     fn at(&self, index: usize) -> Option<&FrameHistoryEntry> {
         self.entries.get(index)
     }
+}
+
+/// The joint session history a standalone carrier owns.
+///
+/// A browser-hosted engine's tab actor owns the authoritative list. The
+/// embedded and WPT carriers have no tab actor, so the engine keeps the used
+/// steps itself: one step records the local entry each live frame presents at
+/// that step, and a traversal moves every frame whose entry changes
+/// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#joint-session-history>,
+/// <https://html.spec.whatwg.org/multipage/browsing-the-web.html#traverse-the-history-by-a-delta>).
+#[derive(Default)]
+struct StandaloneHistory {
+    /// One map per used step. A step counts every frame that existed when it
+    /// was the active one; a frame created later has no entry in it and
+    /// presents its first local entry there, position 0.
+    steps: Vec<BTreeMap<FrameId, usize>>,
+    /// Position of the active step in `steps`; a delta counts steps, so two
+    /// frame entries that share a step are one step
+    /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#getting-the-history-object-length-and-index>).
+    index: usize,
+}
+
+impl StandaloneHistory {
+    /// A fresh page: one step, with no frame entries yet.
+    fn seed() -> Self {
+        Self {
+            steps: vec![BTreeMap::new()],
+            index: 0,
+        }
+    }
+
+    /// Adds a frame to the active step. Its initial document shares the step
+    /// that was current when the frame appeared
+    /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate>).
+    fn join(&mut self, frame: FrameId, local_index: usize) {
+        self.steps[self.index].insert(frame, local_index);
+    }
+
+    /// The entries every frame presents at the active step.
+    fn active(&self) -> &BTreeMap<FrameId, usize> {
+        &self.steps[self.index]
+    }
+
+    /// Adds a step after the active one, which clears the forward branch of
+    /// every frame
+    /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#clear-the-forward-session-history>).
+    fn push(&mut self, frame: FrameId, local_index: usize) {
+        self.steps.truncate(self.index.saturating_add(1));
+        let mut step = self.steps[self.index].clone();
+        step.insert(frame, local_index);
+        self.steps.push(step);
+        self.index = self.steps.len().saturating_sub(1);
+    }
+
+    /// Replaces a frame's entry in the active step without adding one.
+    fn replace(&mut self, frame: FrameId, local_index: usize) {
+        self.steps[self.index].insert(frame, local_index);
+    }
+
+    /// Drops a frame's entries from every step. A step stays used while any
+    /// other frame presents an entry at it, and the main frame presents one at
+    /// every step the tab has taken
+    /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#getting-the-used-step>).
+    fn leave(&mut self, frame: FrameId) {
+        for step in &mut self.steps {
+            step.remove(&frame);
+        }
+    }
+
+    /// The step `delta` counts away from the active one, or `None` when the
+    /// step is off either end of the list.
+    fn target(&self, delta: i32) -> Option<usize> {
+        self.index
+            .checked_add_signed(delta as isize)
+            .filter(|target| *target < self.steps.len())
+    }
+
+    /// The local entry `frame` presents at `step`. A frame created after that
+    /// step presents its first entry
+    /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#traverse-the-history-by-a-delta>).
+    fn local_at(&self, step: usize, frame: FrameId) -> usize {
+        self.steps[step].get(&frame).copied().unwrap_or(0)
+    }
+}
+
+/// Everything one pass over the documents produced outside their task queues.
+#[derive(Default)]
+struct PendingWork {
+    removed_containers: Vec<crate::dom::tree::NodeId>,
+    navigations: Vec<(FrameId, FrameNavigation)>,
+    traversals: Vec<(FrameId, i32)>,
+    history_updates: Vec<(FrameId, crate::document::HistoryUpdate)>,
+    streams: Vec<(FrameId, bool)>,
+    /// Whether a realm started on a script another realm inserted.
+    ran_scripts: bool,
 }
 
 /// One renderer process's page engine.
@@ -184,10 +303,11 @@ pub struct Engine {
     /// `pushState()` and then `back()` must see the push first
     /// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-history-back>).
     deferred_events: Vec<(FrameId, BrowserEvent)>,
-    /// Whether no browser tab owns the joint history, as in the embedded and
-    /// WPT carriers. A child traversal is then applied against the frame's
-    /// replay store instead of becoming a browser event.
-    standalone_history: bool,
+    /// The joint session history a standalone carrier owns; `None` when a
+    /// browser tab owns it. With no browser, a child traversal resolves
+    /// against this list instead of becoming a browser event
+    /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#joint-session-history>).
+    joint_history: Option<StandaloneHistory>,
     /// JS-truth predicates the browser waits on, evaluated after each drain.
     js_waiters: Vec<JsWaiter>,
     /// Shared worker realms and any worker realm that runs in this engine.
@@ -293,16 +413,17 @@ impl Engine {
             frame_history: HashMap::new(),
             pending_events: Vec::new(),
             deferred_events: Vec::new(),
-            standalone_history: false,
+            joint_history: None,
             js_waiters: Vec::new(),
             workers: BTreeMap::new(),
             shared_workers: HashMap::new(),
         }
     }
 
-    /// Marks this engine as having no browser tab behind it.
+    /// Marks this engine as having no browser tab behind it, so it owns the
+    /// joint session history every frame's `history` object mirrors.
     pub fn use_standalone_history(&mut self) {
-        self.standalone_history = true;
+        self.joint_history = Some(StandaloneHistory::seed());
     }
 
     /// Applies the worker events and timer requests a realm or a worker thread
@@ -805,11 +926,17 @@ impl Engine {
         let state = snapshot
             .then(|| self.frames.get(&frame).map(Document::local_document_state))
             .flatten();
-        let entry = FrameHistoryEntry { navigation, state };
+        let initial = navigation.is_none();
+        let entry = FrameHistoryEntry {
+            navigation,
+            state,
+            same_document: None,
+        };
         // An HTTP load commits in a later task, so its entry is staged until
         // the `Navigated` event. Every local scheme installs synchronously and
         // is real now.
-        let pending = !self.standalone_history
+        let standalone = self.joint_history.is_some();
+        let pending = !standalone
             && url
                 .as_ref()
                 .is_some_and(|url| matches!(url.scheme(), "http" | "https"));
@@ -840,21 +967,92 @@ impl Engine {
                 ),
             },
         };
-        if self.standalone_history {
-            // No browser owns the joint list, so this engine is the authority:
-            // publish the frame's own entries to its `history` object. The
-            // browser-hosted path gets the same mirror through `SetHistory`.
-            let snapshot = crate::protocol::HistorySnapshot {
-                length: history.entries.len(),
-                index: history.index,
-                local_length: history.entries.len(),
-                local_index: history.index,
-                state: None,
-            };
-            self.set_frame_history(frame, &snapshot);
+        if standalone {
+            // No browser owns the joint list, so this engine is the authority.
+            if let Some(joint) = self.joint_history.as_mut() {
+                if initial {
+                    joint.join(frame, local_index);
+                } else if replace {
+                    joint.replace(frame, local_index);
+                } else {
+                    joint.push(frame, local_index);
+                }
+            }
+            self.standalone_navigated(frame);
         } else {
             self.pending_events.push((frame, event));
         }
+    }
+
+    /// Points `frame`'s mirrored history at the joint position its new entry
+    /// occupies and tells every other frame that the step count changed.
+    ///
+    /// A cross-document entry's classic state starts null, and its document
+    /// inherits the mirror across the install; the browser-hosted path gets
+    /// the same values from the tab actor's `SetHistory`
+    /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#getting-the-history-object-length-and-index>).
+    fn standalone_navigated(&mut self, frame: FrameId) {
+        let Some(snapshot) = self.standalone_snapshot(frame, None) else {
+            return;
+        };
+        if let Some(document) = self.frames.get_mut(&frame) {
+            document.update_history_mirror(&snapshot);
+        }
+        self.sync_standalone_histories();
+    }
+
+    /// Republishes the joint step count and position to every frame whose
+    /// mirror disagrees with it, keeping each frame's classic state.
+    fn sync_standalone_histories(&mut self) {
+        let frames: Vec<FrameId> = self.frames.keys().copied().collect();
+        for frame in frames {
+            let Some(current) = self
+                .frames
+                .get(&frame)
+                .map(|document| document.world().borrow().history.clone())
+            else {
+                continue;
+            };
+            let Some(joint) = self.joint_history.as_ref() else {
+                return;
+            };
+            if current.length == joint.steps.len() && current.index == joint.index {
+                continue;
+            }
+            let Some(snapshot) = self.standalone_snapshot(frame, current.state) else {
+                continue;
+            };
+            if let Some(document) = self.frames.get_mut(&frame) {
+                document.update_history_mirror(&snapshot);
+            }
+        }
+    }
+
+    /// The mirror one frame publishes for the joint position it holds, with
+    /// `state` as its classic history state.
+    fn standalone_snapshot(
+        &self,
+        frame: FrameId,
+        state: Option<String>,
+    ) -> Option<crate::protocol::HistorySnapshot> {
+        let joint = self.joint_history.as_ref()?;
+        let index = joint.index;
+        let (local_length, local_index) = self.frame_history.get(&frame).map_or_else(
+            || {
+                (
+                    joint.local_at(index, frame).saturating_add(1),
+                    joint.local_at(index, frame),
+                )
+            },
+            |history| (history.entries.len(), history.index),
+        );
+        Some(crate::protocol::HistorySnapshot {
+            length: joint.steps.len(),
+            index,
+            local_length,
+            local_index,
+            state,
+        })
     }
 
     /// Replaces one frame's mirrored joint history without moving its
@@ -998,6 +1196,17 @@ impl Engine {
                 .borrow_mut()
                 .clone_from(&mount.head.init_scripts);
         }
+        // A fresh page starts a new joint history. A standalone carrier has no
+        // tab actor to publish the step count, so the mounted document carries
+        // it from its first script onward.
+        let mut mounted = None;
+        if frame == FrameId::MAIN && self.joint_history.is_some() {
+            self.joint_history = Some(StandaloneHistory::seed());
+            let mut copy = mount.clone();
+            copy.head.history = self.standalone_snapshot(frame, None).unwrap_or_default();
+            mounted = Some(copy);
+        }
+        let mount = mounted.as_ref().unwrap_or(mount);
         self.remove_descendants(frame);
         self.frame_mut(frame)?.mount(mount);
         self.reconcile_frames();
@@ -1294,22 +1503,23 @@ impl Engine {
                     history.commit_pending();
                 }
             }
-            // A same-document push adds a local position with no replay
-            // payload. Keep the store aligned with the browser's list so a
-            // later traversal names the right index.
+            // A same-document push adds a local position whose replay is its
+            // URL and classic state. Keep the store aligned with the browser's
+            // list so a later traversal names the right index.
             if frame != FrameId::MAIN
-                && matches!(
-                    &event,
-                    RendererEvent::Browser(BrowserEvent::HistoryUpdated {
-                        handling: crate::protocol::HistoryHandling::Push,
-                        ..
-                    })
-                )
+                && let RendererEvent::Browser(BrowserEvent::HistoryUpdated {
+                    url,
+                    state,
+                    handling: crate::protocol::HistoryHandling::Push,
+                }) = &event
             {
                 self.frame_history
                     .entry(frame)
                     .or_default()
-                    .push_same_document();
+                    .push_same_document(SameDocumentEntry {
+                        url: url.clone(),
+                        state: state.clone(),
+                    });
             }
             if let Some(event) = event.into_browser() {
                 out.push((frame, event));
@@ -1529,38 +1739,171 @@ impl Engine {
         self.set_frame_history(frame, history);
     }
 
-    /// Applies a child frame's traversal when no browser is attached.
+    /// Applies a frame's traversal when no browser is attached.
     ///
-    /// The embedded carrier has no joint list, so a child step is resolved
-    /// against the replay store's local positions. A browser-hosted engine
-    /// never calls this: its tab actor owns the joint steps.
+    /// The embedded carrier has no tab actor, so the engine's own joint list
+    /// resolves the step: a delta counts used steps away from the active one,
+    /// and every frame whose entry changes moves with it
+    /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#traverse-the-history-by-a-delta>).
     pub fn traverse_embedded_history(&mut self, frame: FrameId, delta: i32) {
-        if frame == FrameId::MAIN {
+        // `go(0)` reloads the caller's active entry without moving the joint
+        // list
+        // (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-history-go>).
+        if delta == 0 {
+            let Some((index, url, same_document, state, length)) = self.embedded_entry(frame, None)
+            else {
+                return;
+            };
+            let snapshot = self.standalone_snapshot(frame, state).unwrap_or(
+                crate::protocol::HistorySnapshot {
+                    length,
+                    index,
+                    local_length: length,
+                    local_index: index,
+                    state: None,
+                },
+            );
+            self.install_frame_history(frame, index, &url, &snapshot, same_document, true);
             return;
         }
-        let Some((index, url, length)) = self.frame_history.get(&frame).and_then(|history| {
-            let index = if delta == 0 {
-                history.index
-            } else {
-                history.index.checked_add_signed(delta as isize)?
-            };
-            let entry = history.at(index)?;
-            let url = entry
-                .navigation
-                .as_ref()
-                .map_or_else(String::new, |navigation| navigation.spec.clone());
-            Some((index, url, history.entries.len()))
-        }) else {
+        let Some(joint) = self.joint_history.as_ref() else {
             return;
         };
-        let snapshot = crate::protocol::HistorySnapshot {
-            length,
-            index,
-            local_length: length,
-            local_index: index,
-            state: None,
+        let Some(target) = joint.target(delta) else {
+            return;
         };
-        self.install_frame_history(frame, index, &url, &snapshot, false, delta == 0);
+        let length = joint.steps.len();
+        let current_step = joint.index;
+        let target_entries = joint.steps[target].clone();
+        let current_entries = joint.steps[current_step].clone();
+        let moves: Vec<(FrameId, usize)> = self
+            .frames
+            .keys()
+            .copied()
+            .filter_map(|id| {
+                let current = self.frame_history.get(&id).map_or_else(
+                    || current_entries.get(&id).copied().unwrap_or(0),
+                    |history| history.index,
+                );
+                let target = target_entries.get(&id).copied().unwrap_or(0);
+                (target != current).then_some((id, target))
+            })
+            .collect();
+        // A standalone engine records no main-frame entry, so a step that
+        // would move the main frame cannot be applied. Refuse the whole step
+        // rather than moving part of the tab.
+        if moves.iter().any(|(frame, _)| *frame == FrameId::MAIN) {
+            return;
+        }
+        for (frame, index) in moves {
+            let Some((_, url, same_document, state, _)) = self.embedded_entry(frame, Some(index))
+            else {
+                continue;
+            };
+            let snapshot = self.standalone_snapshot_at(frame, target, length, index, state);
+            self.install_frame_history(frame, index, &url, &snapshot, same_document, false);
+        }
+        if let Some(joint) = self.joint_history.as_mut() {
+            joint.index = target;
+        }
+        self.sync_standalone_histories();
+    }
+
+    /// The replay payload one frame's entry carries: the URL to install,
+    /// whether the step is same-document, and the classic state it restores.
+    fn embedded_entry(
+        &self,
+        frame: FrameId,
+        index: Option<usize>,
+    ) -> Option<(usize, String, bool, Option<String>, usize)> {
+        let history = self.frame_history.get(&frame)?;
+        let index = index.unwrap_or(history.index);
+        let entry = history.at(index)?;
+        if let Some(entry) = &entry.same_document {
+            return Some((
+                index,
+                entry.url.clone(),
+                true,
+                Some(entry.state.clone()),
+                history.entries.len(),
+            ));
+        }
+        let url = entry
+            .navigation
+            .as_ref()
+            .map_or_else(String::new, |navigation| navigation.spec.clone());
+        Some((index, url, false, None, history.entries.len()))
+    }
+
+    /// The mirror for an entry a standalone traversal selected, whose joint
+    /// position is `step`.
+    fn standalone_snapshot_at(
+        &self,
+        frame: FrameId,
+        step: usize,
+        length: usize,
+        index: usize,
+        state: Option<String>,
+    ) -> crate::protocol::HistorySnapshot {
+        let local_length = self
+            .frame_history
+            .get(&frame)
+            .map_or(1, |history| history.entries.len());
+        crate::protocol::HistorySnapshot {
+            length,
+            index: step,
+            local_length,
+            local_index: index,
+            state,
+        }
+    }
+
+    /// Applies one same-document history update to the standalone joint list.
+    ///
+    /// A push adds the step its realm already applied to its own mirror. The
+    /// main frame has no replay store, so only its position in the step map is
+    /// recorded, and a later step that would move it is refused.
+    fn apply_standalone_history_update(
+        &mut self,
+        frame: FrameId,
+        update: crate::document::HistoryUpdate,
+    ) {
+        use crate::protocol::HistoryHandling;
+        let Some(joint) = self.joint_history.as_mut() else {
+            return;
+        };
+        match update.handling {
+            HistoryHandling::Push => {
+                let entry = SameDocumentEntry {
+                    url: update.url,
+                    state: update.state,
+                };
+                let local_index = if frame == FrameId::MAIN {
+                    joint
+                        .active()
+                        .get(&frame)
+                        .copied()
+                        .unwrap_or(0)
+                        .saturating_add(1)
+                } else {
+                    let history = self.frame_history.entry(frame).or_default();
+                    history.push_same_document(entry);
+                    history.index
+                };
+                joint.push(frame, local_index);
+            }
+            HistoryHandling::Replace => {
+                if frame != FrameId::MAIN
+                    && let Some(history) = self.frame_history.get_mut(&frame)
+                {
+                    history.replace_same_document(SameDocumentEntry {
+                        url: update.url,
+                        state: update.state,
+                    });
+                }
+            }
+        }
+        self.sync_standalone_histories();
     }
 
     /// Activates one child frame's entry under the browser's joint step.
@@ -1748,6 +2091,7 @@ impl Engine {
         loop {
             let workers = self.adopt_worker_requests();
             let adopted = self.adopt_pending_frames();
+            let standalone = self.joint_history.is_some();
             let removed = self.runtime.shared.borrow_mut().take_removed_frames();
             for (frame, container) in &removed {
                 if let Some(container) = container {
@@ -1759,7 +2103,10 @@ impl Engine {
                     .forget_frame_world(*frame);
                 self.frames.remove(frame);
                 self.frame_history.remove(frame);
-                if !self.standalone_history {
+                if let Some(joint) = self.joint_history.as_mut() {
+                    joint.leave(*frame);
+                }
+                if !standalone {
                     self.pending_events
                         .push((*frame, BrowserEvent::FrameRemoved));
                 }
@@ -1768,37 +2115,14 @@ impl Engine {
                 // here as well; the browser's teardown is idempotent.
                 self.runtime.services.frame_destroyed(*frame);
             }
-            let frame_ids: Vec<FrameId> = self.frames.keys().copied().collect();
-            let mut removed_containers = Vec::new();
-            let mut navigations = Vec::new();
-            let mut traversals = Vec::new();
-            let mut streams = Vec::new();
-            let mut ran_scripts = false;
-            for frame in frame_ids {
-                let Some(document) = self.frames.get_mut(&frame) else {
-                    continue;
-                };
-                // A script appended to a document another realm created could
-                // not run there; its document's realm starts here, so its
-                // effects belong to this turn.
-                ran_scripts |= document.run_deferred_scripts();
-                removed_containers.extend(document.take_removed_containers());
-                navigations.extend(
-                    document
-                        .take_frame_navigations()
-                        .into_iter()
-                        .map(|navigation| (frame, navigation)),
-                );
-                traversals.extend(
-                    document
-                        .take_frame_traversals()
-                        .into_iter()
-                        .map(|delta| (frame, delta)),
-                );
-                if let Some(closed) = document.take_stream_publish() {
-                    streams.push((frame, closed));
-                }
-            }
+            let PendingWork {
+                removed_containers,
+                navigations,
+                traversals,
+                history_updates,
+                streams,
+                ran_scripts,
+            } = self.take_pending_work();
             let deliveries = self.runtime.shared.borrow_mut().take_deliveries();
             let had_work = workers
                 || adopted
@@ -1806,17 +2130,27 @@ impl Engine {
                 || !removed_containers.is_empty()
                 || !navigations.is_empty()
                 || !traversals.is_empty()
+                || !history_updates.is_empty()
                 || !streams.is_empty()
                 || !deliveries.is_empty();
             for container in removed_containers {
                 self.remove_subtree(container);
+            }
+            // A same-document push must take its step before the traversal the
+            // same script queued after it, so `pushState(); back()` sees the
+            // push
+            // (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-history-back>).
+            if standalone {
+                for (frame, update) in history_updates {
+                    self.apply_standalone_history_update(frame, update);
+                }
             }
             self.apply_navigations(navigations);
             // An auxiliary context's realm starts after `window.open`
             // returned, so the opener's proxy writes are replayed here
             // (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-set>).
             let replayed = self.flush_pending_proxy_sets();
-            if self.standalone_history {
+            if standalone {
                 for (frame, delta) in traversals {
                     self.traverse_embedded_history(frame, delta);
                 }
@@ -1837,6 +2171,49 @@ impl Engine {
             applied = true;
         }
         applied
+    }
+
+    /// Drains the work every hosted document produced outside its task queue.
+    ///
+    /// The realms queue navigations, traversals, and history updates in their
+    /// own outboxes; one pass converts them to engine-level requests, and
+    /// [`Self::reconcile_frames`] applies them in a fixed order.
+    fn take_pending_work(&mut self) -> PendingWork {
+        let mut work = PendingWork::default();
+        let frame_ids: Vec<FrameId> = self.frames.keys().copied().collect();
+        for frame in frame_ids {
+            let Some(document) = self.frames.get_mut(&frame) else {
+                continue;
+            };
+            // A script appended to a document another realm created could not
+            // run there; its document's realm starts here, so its effects
+            // belong to this turn.
+            work.ran_scripts |= document.run_deferred_scripts();
+            work.removed_containers
+                .extend(document.take_removed_containers());
+            work.navigations.extend(
+                document
+                    .take_frame_navigations()
+                    .into_iter()
+                    .map(|navigation| (frame, navigation)),
+            );
+            work.traversals.extend(
+                document
+                    .take_frame_traversals()
+                    .into_iter()
+                    .map(|delta| (frame, delta)),
+            );
+            work.history_updates.extend(
+                document
+                    .take_history_updates()
+                    .into_iter()
+                    .map(|update| (frame, update)),
+            );
+            if let Some(closed) = document.take_stream_publish() {
+                work.streams.push((frame, closed));
+            }
+        }
+        work
     }
 
     /// Replays `WindowProxy` writes made before a frame's realm existed.
@@ -1921,7 +2298,10 @@ impl Engine {
         // Dropping the document closes its ports and its realm.
         self.frames.remove(&child);
         self.frame_history.remove(&child);
-        if !self.standalone_history {
+        if let Some(joint) = self.joint_history.as_mut() {
+            joint.leave(child);
+        }
+        if self.joint_history.is_none() {
             self.pending_events
                 .push((child, BrowserEvent::FrameRemoved));
         }
@@ -2903,7 +3283,10 @@ impl Drop for Engine {
 
 #[cfg(test)]
 mod frame_history_tests {
-    use super::{FrameHistory, FrameHistoryEntry, FrameId, FrameNavigation, NavigationTarget};
+    use super::{
+        FrameHistory, FrameHistoryEntry, FrameId, FrameNavigation, NavigationTarget,
+        SameDocumentEntry,
+    };
 
     fn marker(spec: &str) -> FrameHistoryEntry {
         FrameHistoryEntry {
@@ -2912,6 +3295,7 @@ mod frame_history_tests {
                 spec.to_owned(),
             )),
             state: None,
+            same_document: None,
         }
     }
 
@@ -2968,16 +3352,28 @@ mod frame_history_tests {
         );
     }
 
-    /// A same-document push keeps an empty slot so the next document
-    /// navigation's browser index and the replay store's position agree.
+    /// A same-document push keeps its own slot so the next document
+    /// navigation's browser index and the replay store's position agree, and a
+    /// traversal back to it restores its URL and classic state.
     #[test]
     fn a_same_document_push_keeps_positions_aligned() {
         let mut history = FrameHistory::default();
         history.push(marker("http://marker.test/one"));
-        history.push_same_document();
+        history.push_same_document(SameDocumentEntry {
+            url: "http://marker.test/one#pushed".to_owned(),
+            state: "null".to_owned(),
+        });
         history.push(marker("http://marker.test/two"));
         assert_eq!(history.index, 2);
         assert!(history.at(1).expect("placeholder").navigation.is_none());
+        assert_eq!(
+            history
+                .at(1)
+                .and_then(|entry| entry.same_document.as_ref())
+                .expect("same-document entry")
+                .url,
+            "http://marker.test/one#pushed"
+        );
         assert_eq!(
             history
                 .at(2)
@@ -3294,6 +3690,55 @@ mod messaging_tests {
                 .expect("hits"),
             "1",
             "`/` must resolve to the sender's origin, and a document is same origin with itself"
+        );
+    }
+
+    /// A standalone carrier owns the joint steps, so a main-frame
+    /// `history.back()` moves every frame whose entry changes at the target
+    /// step
+    /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#traverse-the-history-by-a-delta>).
+    #[test]
+    fn a_standalone_main_step_restores_a_child_entry() {
+        let mut engine = engine();
+        engine.use_standalone_history();
+        engine
+            .mount_frame(
+                FrameId::MAIN,
+                &mount(
+                    "https://example.test/",
+                    "<!doctype html><iframe srcdoc=\"<p>one</p>\"></iframe>",
+                ),
+            )
+            .expect("mount");
+        let _ready = engine.drain_ready();
+        engine
+            .eval_in(
+                FrameId::MAIN,
+                "document.querySelector('iframe').srcdoc = '<p>two</p>'",
+            )
+            .expect("second load");
+        let _ready = engine.drain_ready();
+        let body = |engine: &mut Engine| {
+            engine
+                .eval_in(
+                    FrameId::MAIN,
+                    "document.querySelector('iframe').contentDocument.body.innerHTML",
+                )
+                .expect("child body")
+        };
+        assert_eq!(body(&mut engine), "<p>two</p>");
+        // The main frame presents the same entry at both steps, so only the
+        // child moves. A step that tried to move the main frame would be
+        // refused instead of moving half the tab.
+        engine.traverse_embedded_history(FrameId::MAIN, -1);
+        let _ready = engine.drain_ready();
+        assert_eq!(body(&mut engine), "<p>one</p>");
+        assert_eq!(
+            engine
+                .eval_in(FrameId::MAIN, "String(history.length)")
+                .expect("length"),
+            "2",
+            "the mirror counts joint steps, not one frame's entries"
         );
     }
 

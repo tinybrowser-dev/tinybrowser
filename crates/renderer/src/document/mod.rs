@@ -150,6 +150,18 @@ pub(crate) struct WindowMessage {
     pub(crate) ports: Vec<u64>,
 }
 
+/// One same-document history update this document applied.
+///
+/// A browser-hosted engine learns it through `BrowserEvent::HistoryUpdated`.
+/// A standalone engine also needs it to add the joint step the update creates;
+/// the event queue is not drained there, so the document keeps this copy
+/// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#url-and-history-update-steps>).
+pub(crate) struct HistoryUpdate {
+    pub(crate) url: String,
+    pub(crate) state: String,
+    pub(crate) handling: crate::protocol::HistoryHandling,
+}
+
 /// The identity of one outstanding dial, shared by its request and its
 /// completion so the frame knows which operation the response belongs to.
 #[derive(Clone, Copy)]
@@ -622,6 +634,10 @@ pub(crate) struct Document {
     /// engine forwards them to the tab actor, which owns the joint steps; an
     /// embedded carrier applies them against the frame's replay store.
     frame_traversals: Vec<i32>,
+    /// Same-document history updates this document applied, for a standalone
+    /// engine's joint list. A browser-hosted engine reads the matching
+    /// `HistoryUpdated` events instead.
+    history_updates: Vec<HistoryUpdate>,
     /// Child frame documents this document's realm created for the engine to
     /// adopt
     /// (<https://html.spec.whatwg.org/multipage/document-sequences.html#document-tree-child-navigable>).
@@ -907,6 +923,7 @@ impl Document {
             initial_blank: true,
             pending_frame_loads: HashMap::new(),
             frame_traversals: Vec::new(),
+            history_updates: Vec::new(),
             new_frames,
             load_fired: false,
             proxy_sets_replayed: false,
@@ -1302,6 +1319,12 @@ impl Document {
     /// Takes the traversals this frame's script requested.
     pub(crate) fn take_frame_traversals(&mut self) -> Vec<i32> {
         std::mem::take(&mut self.frame_traversals)
+    }
+
+    /// Takes the same-document history updates this document applied, in the
+    /// order its scripts made them.
+    pub(crate) fn take_history_updates(&mut self) -> Vec<HistoryUpdate> {
+        std::mem::take(&mut self.history_updates)
     }
 
     pub(crate) fn take_stream_publish(&mut self) -> Option<bool> {

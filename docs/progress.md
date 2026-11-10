@@ -196,6 +196,18 @@ its parent's stored verdict at creation and recomputes on an origin change, and
 and 0 error files, no subtest lost; `cookies/` gains 4 subtests (331 to 335) and
 one perfect file (40 to 41), and `webmessaging/` is unchanged.
 
+Standalone joint session history followed. A carrier with no browser tab (the
+in-process harness and the embedded renderer) now keeps the joint steps itself:
+a child navigation or `pushState()` adds one, and a step moves every frame
+whose entry differs at the target, so a main-frame `history.back()` restores a
+child's entry. `workers/semantics/navigation/001.html` passes, taking
+`workers/` to **964/974 passing subtests and 240 perfect files**, with 8
+failing, 0 timeout, and 0 error files, no subtest lost. The two history
+interface files that navigate an iframe gain their `history.length` subtests,
+and `cookies/` and `webmessaging/` are unchanged. A standalone engine records
+no main-frame entry, so a step that would move the main frame is refused rather
+than applied halfway; a browser-hosted tab actor owns the full list.
+
 Every push to `main` now publishes the record to
 `tinybrowser-dev/tinybrowser-wpt-results` and the site at
 `tinybrowser.ericc.ch/wpt` rebuilds from it: subtests passing, files passing,

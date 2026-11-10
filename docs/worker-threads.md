@@ -205,6 +205,12 @@ renderer host an auxiliary context, so the `extendedLifetime`,
 partitioned-cookie, and module CSP/referrer files run. The remaining worker
 failures are implementation gaps, not the thread model:
 
+- Joint session history is no longer a worker gap: a standalone engine keeps
+  the steps itself (a child navigation or `pushState()` adds one, and a step
+  moves every frame whose entry differs), so
+  `workers/semantics/navigation/001.html` passes. It records no main-frame
+  entry, so a step that would move the main frame is refused; a browser-hosted
+  tab actor owns the full list.
 - Partitioned cookies: the cookie jar keys on the top-level site only, not
   Chrome's cross-site ancestor bit, so `cookies/partitioned-cookies/`
   `partitioned-cookies-a-b-a-embed` sees the top-level partition's cookie in a

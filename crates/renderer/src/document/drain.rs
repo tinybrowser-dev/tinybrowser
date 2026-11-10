@@ -338,6 +338,11 @@ impl Document {
                 handling,
             } => {
                 self.apply_document_url_same_origin(&url);
+                self.history_updates.push(crate::document::HistoryUpdate {
+                    url: url.clone(),
+                    state: state.clone(),
+                    handling,
+                });
                 self.record_event(RendererEvent::Browser(BrowserEvent::HistoryUpdated {
                     url,
                     state,
@@ -345,17 +350,12 @@ impl Document {
                 }));
             }
             RealmRequest::HistoryTraverse { delta } => {
-                if self.frame == crate::protocol::FrameId::MAIN {
-                    // The browser tab owns the main frame's steps.
-                    self.record_event(RendererEvent::Browser(BrowserEvent::HistoryTraversal {
-                        delta,
-                    }));
-                } else {
-                    // A child's step names a joint position its renderer
-                    // cannot resolve alone
-                    // (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#traverse-the-history-by-a-delta>).
-                    self.frame_traversals.push(delta);
-                }
+                // A step names a joint position no single renderer can resolve
+                // alone, so the engine forwards it: a browser-hosted engine
+                // turns it into a tab event, and a standalone engine applies
+                // it against its own joint list
+                // (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#traverse-the-history-by-a-delta>).
+                self.frame_traversals.push(delta);
             }
             RealmRequest::CspViolation(target, violations) => {
                 self.fire_csp_violations(target, &violations);
