@@ -45,6 +45,21 @@ enum SameSite {
     Default,
 }
 
+/// Which `SameSite` cookies one operation may read or write.
+///
+/// A `SharedWorker`'s `sameSiteCookies` option restricts every request and
+/// response its global scope triggers. `none` permits only `SameSite=None`
+/// cookies; `all` is the ordinary jar behavior
+/// (<https://privacycg.github.io/saa-non-cookie-storage/#shared-worker>).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SameSiteCookiePolicy {
+    /// Every cookie the request's own `SameSite` rules allow.
+    #[default]
+    All,
+    /// Only the cookies marked `SameSite=None`.
+    NoneOnly,
+}
+
 #[derive(Clone)]
 struct StoredCookie {
     name: String,
@@ -106,6 +121,8 @@ pub struct CookieOp<'a> {
     pub initiator: Option<&'a Origin>,
     /// Whether a redirect chain has crossed sites before this request.
     pub cross_site_redirect: bool,
+    /// Which `SameSite` values this operation may use.
+    pub same_site_policy: SameSiteCookiePolicy,
 }
 
 /// How a cookie operation reached the jar.
@@ -132,6 +149,15 @@ impl CookieJar {
         let Some(stored) = receive_cookie(parsed, &op, &self.cookies, trustworthy) else {
             return false;
         };
+        // A scope restricted to `SameSite=None` also refuses to store the
+        // other values: a `Set-Cookie` its requests carry is as much a cookie
+        // operation as a read
+        // (<https://privacycg.github.io/saa-non-cookie-storage/#shared-worker>).
+        if op.same_site_policy == SameSiteCookiePolicy::NoneOnly
+            && stored.same_site != SameSite::None
+        {
+            return false;
+        }
         self.cookies
             .retain(|old| !same_cookie_identity(old, &stored));
         if stored.expiry.is_none_or(|exp| exp > op.now) {
@@ -760,7 +786,7 @@ impl StoredCookie {
             op.is_same_site_request(),
             op.initiator_kind,
             op.method_is_safe,
-        )
+        ) && (op.same_site_policy == SameSiteCookiePolicy::All || self.same_site == SameSite::None)
     }
 }
 
@@ -1212,6 +1238,7 @@ mod tests {
             method_is_safe: true,
             initiator: None,
             cross_site_redirect: false,
+            same_site_policy: crate::SameSiteCookiePolicy::All,
         }
     }
 

@@ -582,13 +582,43 @@ fn install_shared_worker_constructor_host(ctx: &Ctx<'_>, world: &Rc<RefCell<Worl
                   name: String,
                   module: bool,
                   credentials: String,
-                  extended_lifetime: bool|
+                  extended_lifetime: bool,
+                  same_site_cookies: Option<String>|
                   -> Result<Vec<f64>> {
                 let parsed = url::Url::parse(&url)
                     .map_err(|_| Exception::throw_type(&ctx, "Invalid worker script URL"))?;
                 let credentials = net::cors::CredentialsMode::from_idl(&credentials)
                     .ok_or_else(|| Exception::throw_type(&ctx, "Invalid worker credentials"))?;
+                let requested = match same_site_cookies.as_deref() {
+                    None => None,
+                    Some(value) => Some(
+                        crate::worker::SharedWorkerSameSiteCookies::from_idl(value)
+                            .ok_or_else(|| {
+                                Exception::throw_type(&ctx, "Invalid sameSiteCookies value")
+                            })?,
+                    ),
+                };
                 let current = shared_world.borrow();
+                // The option defaults to `all` only in a first-party site
+                // context, and an explicit `all` there is refused before the
+                // worker exists
+                // (<https://privacycg.github.io/saa-non-cookie-storage/#shared-worker>).
+                let same_site_cookies = match requested {
+                    Some(crate::worker::SharedWorkerSameSiteCookies::All)
+                        if !current.first_party =>
+                    {
+                        return Err(throw_dom(
+                            &ctx,
+                            "InvalidStateError",
+                            "SharedWorker sameSiteCookies 'all' requires a first-party site context",
+                        ));
+                    }
+                    Some(value) => value,
+                    None if current.first_party => {
+                        crate::worker::SharedWorkerSameSiteCookies::All
+                    }
+                    None => crate::worker::SharedWorkerSameSiteCookies::None,
+                };
                 let id = current.runtime.next_worker_id();
                 let created = crate::worker::CreatedWorker::from_creator(
                     &current,
@@ -600,6 +630,7 @@ fn install_shared_worker_constructor_host(ctx: &Ctx<'_>, world: &Rc<RefCell<Worl
                         shared: true,
                         credentials,
                         extended_lifetime,
+                        same_site_cookies,
                     },
                 );
                 let (frame, shared) = (current.frame(), current.shared());

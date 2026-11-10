@@ -113,6 +113,39 @@ const REPORT: &str = r#"
 })();
 "#;
 
+/// The in-process harness's `testdriver-vendor.js`.
+///
+/// WPT's checked-in file is empty because each browser supplies its own
+/// implementation. The harness backs the cookie commands with the page's own
+/// `document.cookie`: every cookie these tests set is a non-`HttpOnly`,
+/// path-`/` cookie on the test's origin, so the document view is the whole set
+/// they ask about. The rest of the vendor surface stays unimplemented and
+/// fails closed through `testdriver.js`'s defaults.
+const TESTDRIVER_VENDOR: &str = r"
+(function () {
+  const internal = window.test_driver_internal = window.test_driver_internal || {};
+  const pairs = () => String(document.cookie || '')
+    .split('; ')
+    .filter(pair => pair.length !== 0);
+  internal.get_all_cookies = async function (_context) {
+    return pairs().map(pair => {
+      const equals = pair.indexOf('=');
+      return {
+        name: equals < 0 ? pair : pair.slice(0, equals),
+        value: equals < 0 ? '' : pair.slice(equals + 1),
+      };
+    });
+  };
+  internal.delete_all_cookies = async function (_context) {
+    for (const pair of pairs()) {
+      const equals = pair.indexOf('=');
+      const name = equals < 0 ? pair : pair.slice(0, equals);
+      document.cookie = name + '=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/';
+    }
+  };
+})();
+";
+
 /// Why the in-memory origin could not answer a request.
 enum Unserved {
     /// A handler route: wptserve runs a program for this path.
@@ -252,6 +285,13 @@ impl Origin {
                 status: 200,
                 headers: vec![("content-type".to_owned(), "text/javascript".to_owned())],
                 body: REPORT.as_bytes().to_vec(),
+            });
+        }
+        if path == "/resources/testdriver-vendor.js" {
+            return Ok(Served {
+                status: 200,
+                headers: vec![("content-type".to_owned(), "text/javascript".to_owned())],
+                body: TESTDRIVER_VENDOR.as_bytes().to_vec(),
             });
         }
         let relative = Path::new(path.trim_start_matches('/'));

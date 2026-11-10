@@ -56,6 +56,39 @@ impl WorkerId {
     }
 }
 
+/// A `SharedWorker`'s `sameSiteCookies` value, resolved to a concrete choice.
+///
+/// The IDL member is optional; the default is `all` in a first-party site
+/// context and `none` otherwise. The constructor rejects an explicit `all`
+/// outside a first-party site context, so a realm only ever sees a legal value
+/// (<https://privacycg.github.io/saa-non-cookie-storage/#shared-worker>).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum SharedWorkerSameSiteCookies {
+    /// Every `SameSite` value is available to the worker.
+    All,
+    /// Only `SameSite=None` cookies are sent or stored.
+    None,
+}
+
+impl SharedWorkerSameSiteCookies {
+    /// Parses the IDL enum spelling, which is exact-match.
+    pub(crate) fn from_idl(value: &str) -> Option<Self> {
+        match value {
+            "all" => Some(Self::All),
+            "none" => Some(Self::None),
+            _ => None,
+        }
+    }
+
+    /// The jar policy this option selects.
+    pub(crate) const fn cookie_policy(self) -> net::SameSiteCookiePolicy {
+        match self {
+            Self::All => net::SameSiteCookiePolicy::All,
+            Self::None => net::SameSiteCookiePolicy::NoneOnly,
+        }
+    }
+}
+
 /// A worker the constructor queued but the engine has not built yet.
 ///
 /// The realm that constructs a worker captures everything the worker needs
@@ -79,6 +112,11 @@ pub(crate) struct CreatedWorker {
     /// The `WorkerOptions.extendedLifetime` a shared worker's connections must
     /// agree on.
     pub(crate) extended_lifetime: bool,
+    /// The `WorkerOptions.sameSiteCookies` a shared worker's connections must
+    /// agree on, resolved to a concrete value: the option defaults to `all`
+    /// in a first-party site context and `none` otherwise
+    /// (<https://privacycg.github.io/saa-non-cookie-storage/#shared-worker>).
+    pub(crate) same_site_cookies: SharedWorkerSameSiteCookies,
     /// The creator's origin: the "outside settings object"'s origin, which the
     /// module graph and the script fetch use.
     pub(crate) origin: url::Origin,
@@ -116,6 +154,9 @@ pub(crate) struct CreatedWorkerOptions {
     /// The `WorkerOptions.extendedLifetime` a shared worker's connections must
     /// agree on.
     pub(crate) extended_lifetime: bool,
+    /// The resolved `WorkerOptions.sameSiteCookies`; the constructor rejects
+    /// `"all"` outside a first-party site context before it gets here.
+    pub(crate) same_site_cookies: SharedWorkerSameSiteCookies,
 }
 
 impl CreatedWorkerOptions {
@@ -126,6 +167,7 @@ impl CreatedWorkerOptions {
             shared: false,
             credentials,
             extended_lifetime: false,
+            same_site_cookies: SharedWorkerSameSiteCookies::All,
         }
     }
 }
@@ -158,6 +200,7 @@ impl CreatedWorker {
             shared: options.shared,
             credentials: options.credentials,
             extended_lifetime: options.extended_lifetime,
+            same_site_cookies: options.same_site_cookies,
             origin: world.origin.clone(),
             worker_origin,
             top_level: world
@@ -183,11 +226,24 @@ pub(crate) struct SharedWorkerKey {
     pub(crate) origin: url::Origin,
     pub(crate) url: Url,
     pub(crate) name: String,
+    /// Shared workers with other cookie options are a different realm
+    /// (<https://privacycg.github.io/saa-non-cookie-storage/#shared-worker>).
+    pub(crate) same_site_cookies: SharedWorkerSameSiteCookies,
 }
 
 impl SharedWorkerKey {
-    pub(crate) fn new(origin: url::Origin, url: Url, name: String) -> Self {
-        Self { origin, url, name }
+    pub(crate) fn new(
+        origin: url::Origin,
+        url: Url,
+        name: String,
+        same_site_cookies: SharedWorkerSameSiteCookies,
+    ) -> Self {
+        Self {
+            origin,
+            url,
+            name,
+            same_site_cookies,
+        }
     }
 }
 
@@ -197,6 +253,7 @@ pub(crate) struct SharedWorkerOptions {
     pub(crate) module: bool,
     pub(crate) credentials: net::cors::CredentialsMode,
     pub(crate) extended_lifetime: bool,
+    pub(crate) same_site_cookies: SharedWorkerSameSiteCookies,
 }
 
 /// One lifecycle or message request a worker host function or worker thread
@@ -925,6 +982,7 @@ impl Worker {
             state.sandbox = created.sandbox;
             state.referrer_url = created.referrer_url.clone();
             state.document_referrer = Some(created.referrer_url.clone());
+            state.same_site_cookie_policy = created.same_site_cookies.cookie_policy();
             // A module worker's top-level graph is fetched with the outside
             // settings object's origin, which keeps `data:` worker static
             // imports same-origin to the creator; the worker keeps its own
@@ -1439,12 +1497,13 @@ impl Worker {
             self.fail_fetch(js_id);
             return;
         };
-        let (origin, referrer_url, referrer_policy, gate) = {
+        let (origin, referrer_url, referrer_policy, cookie_policy, gate) = {
             let world = self.world.borrow();
             (
                 world.origin.clone(),
                 world.referrer_url.clone(),
                 world.policy.referrer_policy,
+                world.same_site_cookie_policy,
                 crate::RedirectGate::new(
                     world.policy.csp.clone(),
                     &world.origin,
@@ -1453,6 +1512,7 @@ impl Worker {
             )
         };
         let mut dial = DialRequest::new(RequestPolicy::Fetch(fetch.options.cors), &url, &origin);
+        dial.cookie_policy = cookie_policy.into();
         dial.method = fetch.method;
         dial.body = fetch.body;
         dial.content_type = fetch.content_type;
@@ -1561,6 +1621,7 @@ fn fetch_module_url(created: &CreatedWorker, runtime: &FrameRuntime) -> Result<U
         url: created.referrer_url.clone(),
     };
     dial.referrer_policy = created.policy.referrer_policy.unwrap_or_default();
+    dial.cookie_policy = created.same_site_cookies.cookie_policy().into();
     dial.timeout_ms = 30_000;
     let (send, receive) = std::sync::mpsc::sync_channel(1);
     let cancel = runtime.services.start_dial(
@@ -1620,6 +1681,7 @@ fn fetch_worker_source(
         url: created.referrer_url.clone(),
     };
     dial.referrer_policy = created.policy.referrer_policy.unwrap_or_default();
+    dial.cookie_policy = created.same_site_cookies.cookie_policy().into();
     dial.timeout_ms = 30_000;
     let (send, receive) = std::sync::mpsc::sync_channel(1);
     let cancel = runtime.services.start_dial(

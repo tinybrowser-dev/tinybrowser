@@ -277,6 +277,10 @@ pub fn outbound_request<S: BuildHasher>(
         | renderer::ReferrerRequest::Url(_) => net::Referrer::NoReferrer,
     };
     outbound.referrer_policy = request.referrer_policy;
+    outbound.same_site_cookie_policy = match request.cookie_policy {
+        renderer::CookiePolicy::All => net::SameSiteCookiePolicy::All,
+        renderer::CookiePolicy::NoneOnly => net::SameSiteCookiePolicy::NoneOnly,
+    };
     Ok(outbound)
 }
 

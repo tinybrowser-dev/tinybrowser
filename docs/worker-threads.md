@@ -150,6 +150,16 @@ assertions. `FileAPI/url/url-charset.window.html` also gained two subtests
 through the same pending-write replay. `webmessaging/` stayed at 187/232
 passing subtests.
 
+Gate after same-site cookies: `workers/` is **974 subtests, 939 passing, 233
+perfect files**, with 14 failing, 0 timeout, and 1 error file, still with
+zero lost subtests. The harness answers `/resources/testdriver-vendor.js`
+with a `document.cookie`-backed `get_all_cookies`, and the `SharedWorker`
+`sameSiteCookies` option now resolves `all`/`none`/default against the
+creator's first-party site context (its site must match every ancestor's)
+and filters the worker's script, module graph, `fetch`, XHR, and `Set-Cookie`
+storage through the jar. All six `workers/same-site-cookies/` files pass.
+`cookies/` and `webmessaging/` are unchanged.
+
 ## What the remaining failures need
 
 Popups exist now: a host with no tab carrier (the in-process harness) has the
@@ -157,10 +167,6 @@ renderer host an auxiliary context, so the `extendedLifetime`,
 partitioned-cookie, and module CSP/referrer files run. The remaining worker
 failures are implementation gaps, not the thread model:
 
-- Same-site cookies: `test_driver.get_all_cookies()` is missing from the
-  checked-in `testdriver-vendor.js`, and the SharedWorker `sameSiteCookies`
-  option is not implemented, so the third-party files fail on the worker
-  starting when it should not.
 - Partitioned cookies: the jar has no `Partitioned` attribute (CHIPS), so
   `shared-worker-partitioned-cookies` cannot see a partitioned cookie, and
   shared-worker partitioning itself is not implemented.

@@ -238,6 +238,7 @@ pub(super) fn load_module<'js>(ctx: &Ctx<'js>, name: &str) -> Result<Module<'js,
 
     let (send, receive) = mpsc::sync_channel(1);
     let mut request = DialRequest::new(policy, &url, &initiator);
+    request.cookie_policy = world_rc.borrow().same_site_cookie_policy.into();
     request.referrer = crate::protocol::ReferrerRequest::Client { url: referrer_url };
     request.csp = Some(Box::new(gate));
     request.referrer_policy = referrer_policy;

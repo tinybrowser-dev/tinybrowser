@@ -1417,6 +1417,35 @@ pub struct DialRequest {
     /// this is never unset
     /// (<https://fetch.spec.whatwg.org/#concept-request-referrer-policy>).
     pub referrer_policy: net::ReferrerPolicy,
+    /// Which `SameSite` cookies this request may send and store.
+    ///
+    /// A `SharedWorker`'s `sameSiteCookies` option restricts the whole global
+    /// scope, including its script and module graph; a document realm leaves
+    /// this at [`CookiePolicy::All`]
+    /// (<https://privacycg.github.io/saa-non-cookie-storage/#shared-worker>).
+    pub cookie_policy: CookiePolicy,
+}
+
+/// Which `SameSite` cookies one request may send and store.
+///
+/// This is the wire spelling of [`net::SameSiteCookiePolicy`], kept here so
+/// the protocol does not depend on the cookie crate's types.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CookiePolicy {
+    /// Every cookie the request's own `SameSite` rules allow.
+    #[default]
+    All,
+    /// Only cookies marked `SameSite=None`.
+    NoneOnly,
+}
+
+impl From<net::SameSiteCookiePolicy> for CookiePolicy {
+    fn from(policy: net::SameSiteCookiePolicy) -> Self {
+        match policy {
+            net::SameSiteCookiePolicy::All => Self::All,
+            net::SameSiteCookiePolicy::NoneOnly => Self::NoneOnly,
+        }
+    }
 }
 
 impl DialRequest {
@@ -1444,6 +1473,7 @@ impl DialRequest {
             integrity: None,
             cache: RequestCache::Default,
             referrer_policy: net::ReferrerPolicy::default(),
+            cookie_policy: CookiePolicy::All,
         }
     }
 }

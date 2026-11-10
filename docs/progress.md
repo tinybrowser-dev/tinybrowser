@@ -161,10 +161,18 @@ A frame's `load` waits for that replay, so `popup.onload` fires.
 four `extendedLifetime` files, `data-url-shared`, the four module
 CSP/referrer files (they run now and fail only on real CSP/referrer gaps),
 and two partitioned-cookie assertions. Timeouts fell from 9 files to zero.
-The same-site-cookie files reach `test_driver.get_all_cookies()`, which the
-checked-in `testdriver-vendor.js` leaves unimplemented, and the SharedWorker
-`sameSiteCookies` option is still missing; those are the next worker gaps
-alongside CHIPS, module CSP/referrer, `IndexedDB`, and `ReadableStream`.
+
+The same-site-cookie files then went from six errors to six passes. The
+harness serves a `testdriver-vendor.js` backed by the page's
+`document.cookie`, and the `SharedWorker` `sameSiteCookies` option is
+implemented: `all` is refused outside a first-party site context, the absent
+option defaults to `all` there and `none` otherwise, and `none` restricts the
+worker's script, module graph, `fetch`, XHR, and `Set-Cookie` storage to
+`SameSite=None`. The context check walks the creator's ancestor chain, so a
+same-site frame inside a cross-site one is still third-party. `workers/` is
+now **939/974 passing subtests and 233 perfect files**, with 14 failing, 0
+timeout, and 1 error file, no subtest lost; `cookies/` and `webmessaging/`
+are unchanged.
 
 Every push to `main` now publishes the record to
 `tinybrowser-dev/tinybrowser-wpt-results` and the site at

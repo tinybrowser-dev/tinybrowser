@@ -361,8 +361,16 @@
         const extendedLifetime = dictionary.extendedLifetime === undefined
           ? false
           : Boolean(dictionary.extendedLifetime);
+        const sameSiteCookies = dictionary.sameSiteCookies === undefined
+          ? undefined
+          : String(dictionary.sameSiteCookies);
+        if (sameSiteCookies !== undefined
+            && sameSiteCookies !== 'all' && sameSiteCookies !== 'none') {
+          throw new TypeError(
+            'SharedWorker sameSiteCookies must be \'all\' or \'none\': ' + sameSiteCookies);
+        }
         const created = host.__tbSharedWorkerCreate(
-          parsed, name, type === 'module', credentials, extendedLifetime);
+          parsed, name, type === 'module', credentials, extendedLifetime, sameSiteCookies);
         const id = created[0];
         __tbWorkerIds.set(this, id);
         __tbSharedWorkerPorts.set(this, __tbMaterializePort(created[1]));

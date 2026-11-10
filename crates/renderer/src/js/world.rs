@@ -1286,6 +1286,19 @@ pub(crate) struct World {
     /// created; `None` for a top-level realm, which answers its own origin
     /// (<https://html.spec.whatwg.org/multipage/webappapis.html#concept-environment-top-level-origin>).
     pub(crate) top_level: Option<url::Origin>,
+    /// Whether this document is in a first-party site context: its site is
+    /// same-site with every ancestor's site, so no cross-site frame embeds it.
+    ///
+    /// The `SharedWorker` `sameSiteCookies` default and the `all` value both
+    /// read this
+    /// (<https://privacycg.github.io/storage-access/#first-party-site-context>).
+    pub(crate) first_party: bool,
+    /// Which `SameSite` cookies this realm's requests may send and store.
+    ///
+    /// Documents keep [`net::SameSiteCookiePolicy::All`]. A shared worker's
+    /// `sameSiteCookies` option sets the whole global scope
+    /// (<https://privacycg.github.io/saa-non-cookie-storage/#shared-worker>).
+    pub(crate) same_site_cookie_policy: net::SameSiteCookiePolicy,
     /// This document's policy container.
     pub(crate) policy: PolicyContainer,
     /// The sandboxing flags this frame's documents obey, from the `iframe`
@@ -1726,6 +1739,8 @@ impl World {
             owned: HashSet::new(),
             origin: document_url.origin(),
             top_level: None,
+            first_party: true,
+            same_site_cookie_policy: net::SameSiteCookiePolicy::All,
             referrer_url: document_url.clone(),
             document_referrer: None,
             document_url,

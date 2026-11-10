@@ -51,17 +51,23 @@ worker, and `terminate()` interrupts a worker stuck in synchronous script.
 mirror, and the shared-memory transport.
 
 `SharedWorker` still runs in the page engine. One realm per
-`(creator origin, script URL, name)` receives a `connect` event per
-constructor call, with the options (`type`, `credentials`,
-`extendedLifetime`) required to match. Shared-worker runtime errors fire at
-the worker global only, and a script that fails to load or parse fires a
-plain `error` event at every connected `SharedWorker` object. A shared
-worker is shared inside one engine, not across renderer processes, and
-`extendedLifetime` does not outlive the tab; moving the realm to its own
-thread is milestone 6 in `docs/worker-threads.md`. Service workers,
-`IndexedDB`, and `ReadableStream` transfer remain unimplemented; growable
-`SharedArrayBuffer` needs `WebAssembly.Memory` for the WPT fixture, though
-the allocator hooks themselves are in place, and the QuickJS gaps behind the
+`(creator origin, script URL, name, sameSiteCookies)` receives a `connect`
+event per constructor call, with the options (`type`, `credentials`,
+`extendedLifetime`) required to match. `sameSiteCookies: "all"` is refused
+with an `InvalidStateError` unless the creator is in a first-party site
+context; the absent option defaults to `all` there and `none` otherwise, and
+`none` filters every request and `Set-Cookie` line the worker's script,
+module graph, and `fetch`/XHR make down to `SameSite=None`. The context is
+first-party only when the creator's site matches every ancestor's, so a
+same-site frame inside a cross-site one stays third-party. Shared-worker
+runtime errors fire at the worker global only, and a script that fails to
+load or parse fires a plain `error` event at every connected `SharedWorker`
+object. A shared worker is shared inside one engine, not across renderer
+processes, and `extendedLifetime` does not outlive the tab; moving the realm
+to its own thread is milestone 6 in `docs/worker-threads.md`. Service
+workers, `IndexedDB`, and `ReadableStream` transfer remain unimplemented;
+growable `SharedArrayBuffer` needs `WebAssembly.Memory` for the WPT fixture,
+though the allocator hooks themselves are in place, and the QuickJS gaps behind the
 remaining clone and `eval(import())` failures are recorded in
 `docs/upstream.md`. The cookie jar does not implement the `Partitioned`
 attribute (CHIPS), so a partitioned cookie is stored as an ordinary one;
@@ -76,10 +82,11 @@ creates an auxiliary context whose initial `about:blank` is replaced by a
 queued navigation, and the opener's pre-realm `WindowProxy` writes
 (`popup.onload`, a property assignment) are replayed into the popup's first
 real document. That is what lets the `extendedLifetime` cases, the
-partitioned-cookie files, and the module CSP/referrer files run. The
-same-site-cookie files now reach `test_driver.get_all_cookies()`, which the
-checked-in `testdriver-vendor.js` does not implement, and the SharedWorker
-`sameSiteCookies` option itself is not implemented. Its standalone session
+partitioned-cookie files, and the module CSP/referrer files run. The harness
+also answers `/resources/testdriver-vendor.js` with a cookie-backed
+implementation of `get_all_cookies`/`delete_all_cookies`; every cookie those
+tests set is a non-`HttpOnly`, path-`/` cookie, so the page's own
+`document.cookie` is the set they ask about. Its standalone session
 history also does not apply a main-frame `history.back()` to a child frame's
 joint entry, so `workers/semantics/navigation/001.html` cannot observe the
 child document being restored; that is a harness gap, not a worker lifetime

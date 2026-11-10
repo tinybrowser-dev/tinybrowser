@@ -11,7 +11,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::SystemTime;
 
-use cookies::{CookieJar, CookieOp, InitiatorKind, RetrievalKind, schemeful_same_site};
+use cookies::{
+    CookieJar, CookieOp, InitiatorKind, RetrievalKind, SameSiteCookiePolicy, schemeful_same_site,
+};
 use renderer::{
     BrowserEvent, BrowsingContextHost, DialCompletion, DialFailure, DialKind, DialOutcome,
     DialRequest, EmbeddedRenderer, HistoryHandling, MAX_RESPONSE_BODY_BYTES, MessagingHost, Mount,
@@ -392,6 +394,7 @@ fn cookie_header(chain: &Chain) -> String {
         method_is_safe: true,
         initiator: initiator.as_ref(),
         cross_site_redirect: chain.cross_site_redirect,
+        same_site_policy: SameSiteCookiePolicy::All,
     })
 }
 
@@ -428,6 +431,7 @@ fn store_hop_cookies(url: &Url, chain: &Chain, response: &FetchResponse) {
                 method_is_safe: true,
                 initiator: initiator.as_ref(),
                 cross_site_redirect: chain.cross_site_redirect,
+                same_site_policy: SameSiteCookiePolicy::All,
             },
         );
     }
@@ -613,6 +617,7 @@ impl NetworkHost for WasmServices {
             method_is_safe: true,
             initiator: Some(&origin),
             cross_site_redirect: false,
+            same_site_policy: SameSiteCookiePolicy::All,
         })
     }
 
@@ -628,6 +633,7 @@ impl NetworkHost for WasmServices {
                 method_is_safe: true,
                 initiator: Some(&origin),
                 cross_site_redirect: false,
+                same_site_policy: SameSiteCookiePolicy::All,
             },
         );
     }

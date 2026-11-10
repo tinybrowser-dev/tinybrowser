@@ -17,7 +17,7 @@ use crate::transport::{
 };
 use async_compression::tokio::bufread::{BrotliDecoder, DeflateDecoder, GzipDecoder, ZlibDecoder};
 use bytes::Bytes;
-use cookies::{CookieJar, CookieOp, RetrievalKind};
+use cookies::{CookieJar, CookieOp, RetrievalKind, SameSiteCookiePolicy};
 use hyper::body::Body as HttpBody;
 use hyper::header::{self, HeaderValue};
 use percent_encoding::percent_decode_str;
@@ -267,6 +267,7 @@ impl Agent {
             method_is_safe: true,
             initiator: Some(origin),
             cross_site_redirect: false,
+            same_site_policy: SameSiteCookiePolicy::All,
         }
     }
 
@@ -485,6 +486,7 @@ impl Agent {
             initiator_kind: request.initiator_kind,
             initiator: request.initiator.as_ref(),
             on_redirect: request.on_redirect.as_ref(),
+            same_site_cookie_policy: request.same_site_cookie_policy,
         };
         let mut hop = Hop {
             method: request.method,
@@ -655,6 +657,7 @@ impl Agent {
             method_is_safe: hop.method.is_safe(),
             initiator: dial.initiator,
             cross_site_redirect,
+            same_site_policy: dial.same_site_cookie_policy,
         };
         let mut hop_headers = hop.headers.clone();
         self.apply_cors_request(dial.cors, hop, &wire, &mut hop_headers, budget.clone())
@@ -804,6 +807,11 @@ pub struct Request {
     /// policies are filled from the client's policy container, so this is
     /// never unset here.
     pub referrer_policy: ReferrerPolicy,
+    /// Which `SameSite` cookies this request may send and store. A
+    /// `SharedWorker` with `sameSiteCookies: "none"` sets [`SameSiteCookiePolicy::NoneOnly`]
+    /// for every request its global scope makes
+    /// (<https://privacycg.github.io/saa-non-cookie-storage/#shared-worker>).
+    pub same_site_cookie_policy: SameSiteCookiePolicy,
 }
 
 impl std::fmt::Debug for Request {
@@ -821,6 +829,7 @@ impl std::fmt::Debug for Request {
             .field("on_redirect", &self.on_redirect.is_some())
             .field("referrer", &self.referrer)
             .field("referrer_policy", &self.referrer_policy)
+            .field("same_site_cookie_policy", &self.same_site_cookie_policy)
             .finish()
     }
 }
@@ -849,6 +858,7 @@ impl Request {
             on_redirect: None,
             referrer: Referrer::NoReferrer,
             referrer_policy: ReferrerPolicy::default(),
+            same_site_cookie_policy: SameSiteCookiePolicy::All,
         }
     }
 }
@@ -1011,6 +1021,7 @@ struct Dial<'a> {
     initiator_kind: InitiatorKind,
     initiator: Option<&'a url::Origin>,
     on_redirect: Option<&'a RedirectGate>,
+    same_site_cookie_policy: SameSiteCookiePolicy,
 }
 
 impl Dial<'_> {
