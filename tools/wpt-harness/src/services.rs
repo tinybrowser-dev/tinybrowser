@@ -22,7 +22,10 @@ use std::time::Instant;
 
 use bytes::Bytes;
 use dial::cache::NO_PARTITION;
-use dial::{CacheDecision, DialHead, HttpCache, dial_failure, outbound_request};
+use dial::{
+    CacheDecision, DialHead, HttpCache, dial_failure, outbound_request, refused_redirect,
+    watch_redirects,
+};
 use http_body_util::BodyExt;
 use net::{NetError, TransportError, WireRequest, WireResponse};
 use renderer::{
@@ -875,15 +878,24 @@ fn fetch_inner(
         } => (stored, validators),
     };
     validators.apply(&mut outbound)?;
+    let blocked_redirect = watch_redirects(request, &initiator, &mut outbound);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|_| DialFailure::Connect)?;
     runtime.block_on(async move {
-        let response = agent
-            .send(outbound)
-            .await
-            .map_err(|error| dial_failure(&error))?;
+        let response = match agent.send(outbound).await {
+            Ok(response) => response,
+            Err(error) => {
+                // A refused redirect is a policy decision, not a network
+                // failure: the renderer reports it from the status-0 outcome
+                // (<https://w3c.github.io/webappsec-csp/#report-violation>).
+                if let Some(done) = refused_redirect(&blocked_redirect) {
+                    return Ok(done);
+                }
+                return Err(dial_failure(&error));
+            }
+        };
         if response.status() == 304
             && let Some(stored) = stored
         {

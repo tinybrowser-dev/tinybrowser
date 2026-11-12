@@ -57,10 +57,12 @@ is created: the `worker` destination resolves `worker-src`, then `child-src`,
 at the `Worker`/`SharedWorker` object. When the fallback lands on `script-src`
 the list's own pre-request check runs, so a worker created from a
 `'strict-dynamic'` script loads. What is still missing is the other direction:
-a violation raised inside a worker (a static import or `importScripts` the
-worker's own policy blocks) is dropped instead of being reported at the
-creator's document, so the `worker-import` and `worker-import-data` generated
-policy files keep failing their violation-count subtests.
+a violation raised inside a worker is reported at the document that owns the
+worker chain. A worker's own requests run under the policy its script response
+carried; its script graph (the top-level module and static imports) runs under
+the creator's policy, because the outside settings object fetches that graph.
+A `blob:` or `data:` worker has no response headers, so it inherits the
+creator's container.
 
 `SharedWorker` still runs in the page engine. One realm per
 `(creator origin, script URL, name, sameSiteCookies)` receives a `connect`

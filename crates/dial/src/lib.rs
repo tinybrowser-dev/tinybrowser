@@ -10,10 +10,70 @@
 
 pub mod cache;
 
+/// The URL a dial's CSP reports name as their document.
+///
+/// The dial seam carries the initiator origin, not its document URL; an origin
+/// root is the URL the old seam carried too. An opaque origin has no URL, so
+/// reports get `about:blank`; the renderer keeps the real one.
+fn document_url(origin: &url::Origin) -> Url {
+    net::origin_url(origin).unwrap_or_else(net::about_blank)
+}
+
+/// Records a redirect the policy refuses, and refuses the hop.
+///
+/// The stored URL comes back as a status-0 outcome so the renderer can fire
+/// `securitypolicyviolation` and drop the body
+/// (<https://w3c.github.io/webappsec-csp/#should-request-be-blocked-by-content-security-policy>).
+pub fn watch_redirects(
+    request: &DialRequest,
+    initiator: &url::Origin,
+    outbound: &mut Request,
+) -> Arc<Mutex<Option<Url>>> {
+    let blocked = Arc::new(Mutex::new(None));
+    if let Some(csp) = request.csp.clone() {
+        let document_url = document_url(initiator);
+        let blocked = Arc::clone(&blocked);
+        outbound.on_redirect = Some(Arc::new(move |next, redirects| {
+            if csp.allows(&document_url, next, redirects) {
+                return true;
+            }
+            *blocked
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(next.clone());
+            false
+        }));
+    }
+    blocked
+}
+
+/// The status-0 outcome a refused redirect produces, when the gate recorded
+/// one (<https://w3c.github.io/webappsec-csp/#report-violation>).
+#[must_use]
+pub fn refused_redirect(blocked: &Mutex<Option<Url>>) -> Option<DialOutcome> {
+    let url = blocked
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()?;
+    Some(DialOutcome {
+        status: 0,
+        status_text: String::new(),
+        final_url: url,
+        content_type: None,
+        headers: Vec::new(),
+        body: ResponseBody::Bytes(Vec::new()),
+        response_type: net::cors::ResponseType::Basic,
+        crossed_origin: false,
+        redirect_count: 0,
+        cookies_stored: false,
+        referrer: None,
+    })
+}
+
 pub use cache::{CacheDecision, HttpCache, Validators};
 
 use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasher;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use net::{InitiatorKind, Request, isomorphic_decode, isomorphic_encode};

@@ -1968,6 +1968,13 @@ impl Document {
         self.tasks.push_back(Task::WorkerLoadFailed(worker));
     }
 
+    /// Queues `securitypolicyviolation` events a worker's policy raised,
+    /// reported at this document because a worker global has no page-side
+    /// event target (<https://w3c.github.io/webappsec-csp/#report-violation>).
+    pub(crate) fn push_csp_violations(&mut self, violations: Vec<crate::csp::Violation>) {
+        self.tasks.push_back(Task::CspViolation(violations));
+    }
+
     /// Dispatches one cross-tab `message` event at this frame's window.
     fn deliver_remote_message(&mut self, message: &crate::protocol::PostedMessage) {
         // The intended target origin is checked when the task runs, against the

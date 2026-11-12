@@ -335,6 +335,15 @@ pub(crate) enum WorkerRequest {
     SharedLoadFailed {
         worker: WorkerId,
     },
+    /// A worker's policy blocked a request. The violation event belongs at the
+    /// environment's global object, and a worker's global has no page-side
+    /// event target, so the request names the frame that owns the worker and
+    /// the engine reports it at that document
+    /// (<https://w3c.github.io/webappsec-csp/#report-violation>).
+    CspViolation {
+        parent: FrameId,
+        violations: Vec<crate::csp::Violation>,
+    },
     Error(Box<WorkerError>),
 }
 
@@ -396,6 +405,11 @@ pub(crate) enum WorkerCommand {
     /// A nested worker never started.
     NestedLoadFailure {
         worker: u64,
+    },
+    /// A nested worker's policy blocked a request; this worker forwards it
+    /// toward the owning document.
+    CspViolation {
+        violations: Vec<crate::csp::Violation>,
     },
     /// `terminate()` was called. The flag in [`WorkerThreadState`] also
     /// interrupts a thread that is inside script.
@@ -939,17 +953,17 @@ impl Worker {
             worker: id,
             parent: created.parent,
         };
-        let (script, worker_url, own_embedder_policy) = if created.module {
+        let (script, worker_url, own_embedder_policy, response_csp) = if created.module {
             // A module worker's url is its response URL: relative imports,
             // `fetch`, and XHR resolve against the redirect target, not the
             // request URL
             // (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>,
             // step 14).
-            let (url, embedder_policy) =
+            let (url, embedder_policy, csp) =
                 fetch_module_url(created, runtime).map_err(|()| failure)?;
-            (WorkerScript::Module, url, embedder_policy)
+            (WorkerScript::Module, url, embedder_policy, csp)
         } else {
-            let (source, response_url, embedder_policy) =
+            let (source, response_url, embedder_policy, csp) =
                 fetch_worker_source(created, runtime).map_err(|()| failure)?;
             // A script body is decoded with UTF-8 decode, whose replacement
             // mode substitutes U+FFFD rather than failing the load
@@ -958,6 +972,7 @@ impl Worker {
                 WorkerScript::Classic(String::from_utf8_lossy(&source).into_owned()),
                 response_url,
                 embedder_policy,
+                csp,
             )
         };
         let world = if created.shared {
@@ -994,6 +1009,12 @@ impl Worker {
                 created.top_level.clone()
             });
             state.policy = created.policy.clone();
+            // The realm's own requests use the script response's policy; the
+            // creator's container only governs the script graph, which the
+            // outside settings object fetches
+            // (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>).
+            state.policy.csp = response_csp;
+            state.state.worker_owner_csp = Some(created.policy.csp.clone());
             if let Some(compatible) = own_embedder_policy {
                 state.policy.cross_origin_embedder_policy = compatible;
             }
@@ -1080,6 +1101,18 @@ impl Worker {
     /// (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>).
     pub(crate) fn deliver_load_failure(&self, worker: WorkerId) -> Result<(), JsError> {
         self.js.deliver_worker_load_error(worker.get())
+    }
+
+    /// Forwards a nested worker's blocked-request violations to the engine,
+    /// which reports them at the document that owns this realm.
+    pub(crate) fn deliver_csp_violations(&self, violations: Vec<crate::csp::Violation>) {
+        self.world
+            .borrow()
+            .runtime
+            .push_worker_request_waking(WorkerRequest::CspViolation {
+                parent: self.parent,
+                violations,
+            });
     }
 
     pub(crate) fn queue_message(&mut self, payload: String, ports: Vec<u64>) {
@@ -1204,6 +1237,14 @@ impl Worker {
             WorkerCommand::NestedError(error) => {
                 let _ = self.deliver_error(&error);
             }
+            WorkerCommand::CspViolation { violations } => {
+                self.world.borrow().runtime.push_worker_request_waking(
+                    WorkerRequest::CspViolation {
+                        parent: self.parent,
+                        violations,
+                    },
+                );
+            }
             WorkerCommand::NestedLoadFailure { worker } => {
                 let _ = self.deliver_load_failure(WorkerId::new(worker));
             }
@@ -1222,47 +1263,61 @@ impl Worker {
         }
         self.adopt_fetches();
         if let Some(script) = self.script.take() {
-            let _turn = self.js.enter_turn();
-            match script {
-                // A runtime exception was reported at the worker global; the
-                // worker keeps its event loop either way. Only a script that
-                // never compiled discards the environment
-                // (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>).
-                WorkerScript::Classic(source) => {
-                    match self.js.eval_worker_script(&source, self.url.as_str()) {
+            {
+                let _turn = self.js.enter_turn();
+                match script {
+                    // A runtime exception was reported at the worker global; the
+                    // worker keeps its event loop either way. Only a script that
+                    // never compiled discards the environment
+                    // (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>).
+                    WorkerScript::Classic(source) => {
+                        match self.js.eval_worker_script(&source, self.url.as_str()) {
+                            Ok(()) | Err(WorkerScriptError::Runtime) => {}
+                            Err(WorkerScriptError::Parse) => {
+                                self.report_load_failure();
+                                self.closed = true;
+                                return false;
+                            }
+                            // The renderer's turn budget cut a script that never
+                            // yielded; stop the worker without a script-visible
+                            // event
+                            // (<https://html.spec.whatwg.org/multipage/workers.html#terminate-a-worker>).
+                            Err(WorkerScriptError::Interrupted) => {
+                                self.closed = true;
+                                return false;
+                            }
+                        }
+                    }
+                    // A module graph that fails to load or parse is the same
+                    // environment-discarding failure; a module runtime error is
+                    // reported at the worker global
+                    // (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>).
+                    WorkerScript::Module => match self.js.eval_worker_module(self.url.as_str()) {
                         Ok(()) | Err(WorkerScriptError::Runtime) => {}
                         Err(WorkerScriptError::Parse) => {
+                            // The graph failed to load, but the violations that
+                            // blocked it were queued during the load and still
+                            // belong to the document
+                            // (<https://w3c.github.io/webappsec-csp/#report-violation>).
+                            self.adopt_js_work();
                             self.report_load_failure();
                             self.closed = true;
                             return false;
                         }
-                        // The renderer's turn budget cut a script that never
-                        // yielded; stop the worker without a script-visible
-                        // event
-                        // (<https://html.spec.whatwg.org/multipage/workers.html#terminate-a-worker>).
                         Err(WorkerScriptError::Interrupted) => {
+                            self.adopt_js_work();
                             self.closed = true;
                             return false;
                         }
-                    }
+                    },
                 }
-                // A module graph that fails to load or parse is the same
-                // environment-discarding failure; a module runtime error is
-                // reported at the worker global
-                // (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>).
-                WorkerScript::Module => match self.js.eval_worker_module(self.url.as_str()) {
-                    Ok(()) | Err(WorkerScriptError::Runtime) => {}
-                    Err(WorkerScriptError::Parse) => {
-                        self.report_load_failure();
-                        self.closed = true;
-                        return false;
-                    }
-                    Err(WorkerScriptError::Interrupted) => {
-                        self.closed = true;
-                        return false;
-                    }
-                },
             }
+            // A module graph fetch, or a synchronous XHR, can queue a CSP
+            // violation during the top-level script. The environment's task
+            // queue still owns it after the script returns, so forward it
+            // before the worker can go idle
+            // (<https://w3c.github.io/webappsec-csp/#report-violation>).
+            self.adopt_js_work();
             return !self.closed;
         }
         self.adopt_js_work();
@@ -1511,12 +1566,23 @@ impl Worker {
                     cancel();
                 }
             }
+            RealmRequest::CspViolation(_, violations) => {
+                // A worker cannot dispatch `securitypolicyviolation` at a
+                // document; the engine routes it to the document that owns
+                // the worker chain
+                // (<https://w3c.github.io/webappsec-csp/#report-violation>).
+                self.world.borrow().runtime.push_worker_request_waking(
+                    WorkerRequest::CspViolation {
+                        parent: self.parent,
+                        violations,
+                    },
+                );
+            }
             RealmRequest::Script(_)
             | RealmRequest::HistoryPush { .. }
             | RealmRequest::HistoryTraverse { .. }
             | RealmRequest::FragmentNavigation { .. }
             | RealmRequest::CookieChanges
-            | RealmRequest::CspViolation(_, _)
             | RealmRequest::WorkerBlocked(_, _)
             | RealmRequest::DeclarativeRefresh(_)
             | RealmRequest::HtmlWrite(_)
@@ -1661,9 +1727,19 @@ impl Worker {
 fn fetch_module_url(
     created: &CreatedWorker,
     runtime: &FrameRuntime,
-) -> Result<(Url, Option<crate::protocol::CrossOriginEmbedderPolicy>), ()> {
+) -> Result<
+    (
+        Url,
+        Option<crate::protocol::CrossOriginEmbedderPolicy>,
+        crate::csp::List,
+    ),
+    (),
+> {
     if created.url.scheme() == "data" || created.url.scheme() == "blob" {
-        return Ok((created.url.clone(), None));
+        // A `blob:` or `data:` worker has no response headers to take a
+        // policy from, so it inherits its creator's
+        // (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>).
+        return Ok((created.url.clone(), None, created.policy.csp.clone()));
     }
     if created.url.scheme() != "http" && created.url.scheme() != "https" {
         return Err(());
@@ -1705,7 +1781,18 @@ fn fetch_module_url(
         Some(crate::protocol::cross_origin_embedder_policy(
             &outcome.headers,
         )),
+        response_csp(&outcome.headers),
     ))
+}
+
+/// The policy container a worker's script response initializes: the policies
+/// its own `Content-Security-Policy` and `-Report-Only` headers name
+/// (<https://html.spec.whatwg.org/multipage/browsers.html#initialize-a-policy-container-from-a-fetch-response>).
+fn response_csp(headers: &[(String, String)]) -> crate::csp::List {
+    crate::csp::List::from_headers(
+        net::combined_header_in(headers, "content-security-policy").as_deref(),
+        net::combined_header_in(headers, "content-security-policy-report-only").as_deref(),
+    )
 }
 
 /// Fetches a classic worker's script and reports the URL its response came
@@ -1724,14 +1811,16 @@ fn fetch_worker_source(
         Vec<u8>,
         Url,
         Option<crate::protocol::CrossOriginEmbedderPolicy>,
+        crate::csp::List,
     ),
     (),
 > {
     if created.url.scheme() == "data" {
         // A `data:` worker script is not MIME-checked; every MIME type is
-        // allowed, including an empty one (WPT `workers/data-url.html`).
+        // allowed, including an empty one (WPT `workers/data-url.html`). It
+        // inherits its creator's policy container.
         let (_, body) = crate::engine::decode_data_url_bounded(created.url.as_str()).ok_or(())?;
-        return Ok((body, created.url.clone(), None));
+        return Ok((body, created.url.clone(), None, created.policy.csp.clone()));
     }
     if created.url.scheme() == "blob" {
         // A `blob:` worker script is the store entry read when the constructor
@@ -1740,7 +1829,12 @@ fn fetch_worker_source(
         // step 5), so the backing Blob's type is irrelevant
         // (WPT `workers/Worker_script_mimetype.htm`).
         return match &created.local_script {
-            Some(source) => Ok((source.clone().into_bytes(), created.url.clone(), None)),
+            Some(source) => Ok((
+                source.clone().into_bytes(),
+                created.url.clone(),
+                None,
+                created.policy.csp.clone(),
+            )),
             None => Err(()),
         };
     }
@@ -1791,6 +1885,7 @@ fn fetch_worker_source(
             Some(crate::protocol::cross_origin_embedder_policy(
                 &outcome.headers,
             )),
+            response_csp(&outcome.headers),
         )),
         crate::protocol::ResponseBody::Streamed(_) | crate::protocol::ResponseBody::Undecodable => {
             Err(())

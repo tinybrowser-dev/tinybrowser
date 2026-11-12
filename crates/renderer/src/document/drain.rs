@@ -400,8 +400,11 @@ impl Document {
                 // (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#traverse-the-history-by-a-delta>).
                 self.frame_traversals.push(delta);
             }
-            RealmRequest::CspViolation(target, violations) => {
+            RealmRequest::CspViolation(Some(target), violations) => {
                 self.fire_csp_violations(target, &violations);
+            }
+            RealmRequest::CspViolation(None, violations) => {
+                self.deliver_csp_violations(&violations);
             }
             RealmRequest::WorkerBlocked(worker, violations) => {
                 self.deliver_csp_violations(&violations);

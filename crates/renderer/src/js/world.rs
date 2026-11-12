@@ -1550,7 +1550,12 @@ pub(crate) enum RealmRequest {
     /// realm's own turn
     /// (<https://cookiestore.spec.whatwg.org/#process-cookie-changes>).
     CookieChanges,
-    CspViolation(NodeId, Vec<crate::csp::Violation>),
+    /// One policy's violations, queued because the check ran where no event
+    /// can be dispatched directly. `Some` names the node the event belongs
+    /// to; `None` means the realm has no document — a worker — and the
+    /// creator's document reports them
+    /// (<https://w3c.github.io/webappsec-csp/#report-violation>).
+    CspViolation(Option<NodeId>, Vec<crate::csp::Violation>),
     /// A worker script URL its creator's policy blocks. The worker object
     /// exists, so the document reports the violations and then the plain
     /// `error` event at that object; the realm never starts
@@ -1646,6 +1651,12 @@ pub(crate) struct DocumentState {
     /// creator's policy
     /// (<https://html.spec.whatwg.org/multipage/browsers.html#initialize-a-policy-container-from-a-fetch-response>).
     pub(crate) worker_module_csp: Option<crate::csp::List>,
+    /// The creator's policy container, which a worker's script graph is
+    /// fetched under: the outside settings object owns the graph fetch, while
+    /// the worker global scope's own policy comes from the script response
+    /// (<https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script>,
+    /// <https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>).
+    pub(crate) worker_owner_csp: Option<crate::csp::List>,
 
     /// Existing elements being synchronously upgraded by a custom-element
     /// constructor. `HTMLElement()` consumes the top candidate.
@@ -1770,6 +1781,7 @@ impl DocumentState {
         self.declaring_module = false;
         self.worker_referrer_policy = None;
         self.worker_module_csp = None;
+        self.worker_owner_csp = None;
         self.custom_construction.clear();
         self.implementations.clear();
         self.active_elements.clear();
@@ -3033,7 +3045,7 @@ impl World {
             .csp
             .check_base(&self.origin, &document_url, &url);
         if !violations.is_empty() {
-            self.queue_csp_violations(id, violations.clone());
+            self.queue_csp_violations(Some(id), violations.clone());
         }
         if crate::csp::blocks(&violations) {
             self.state.blocked_bases.insert(id);
@@ -3252,7 +3264,7 @@ impl World {
     /// module loader runs inside `QuickJS`).
     pub(crate) fn queue_csp_violations(
         &mut self,
-        target: NodeId,
+        target: Option<NodeId>,
         violations: Vec<crate::csp::Violation>,
     ) {
         self.outbox

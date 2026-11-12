@@ -1779,12 +1779,10 @@ impl JsRealm {
                         document: parsed.id,
                         node: parsed.document.base.root_node().id,
                     });
-                    if let Some(target) = target {
-                        world
-                            .outbox
-                            .borrow_mut()
-                            .push_back(RealmRequest::CspViolation(target, violations));
-                    }
+                    world
+                        .outbox
+                        .borrow_mut()
+                        .push_back(RealmRequest::CspViolation(target, violations));
                 }
                 !blocked
             }),

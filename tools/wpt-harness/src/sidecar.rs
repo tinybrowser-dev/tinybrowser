@@ -89,6 +89,10 @@ fn request_head(request: &WireRequest) -> Vec<u8> {
     // A failed write cannot happen: this is a `Vec`.
     let _ = write!(out, "{} {target} HTTP/1.1\r\n", request.method);
     let _ = write!(out, "Host: {host}\r\n");
+    // The connection is plain loopback http, but the handler must see the
+    // scheme the page used: `request.url` feeds keep-scheme redirects and
+    // every `{{ports[...]}}` template.
+    let _ = write!(out, "X-WPT-Scheme: {}\r\n", request.url.scheme());
     for (name, value) in request.headers.iter() {
         // Framing and connection management belong to this hop.
         if matches!(

@@ -1111,3 +1111,59 @@ and dropped by its drain, so the generated `worker-import` and
 The event belongs at the creator's document
 (`https://w3c.github.io/webappsec-csp/#report-violation`), and the worker
 already records its parent frame.
+
+A worker's own policy was still the creator's policy container, and a
+`securitypolicyviolation` raised inside a worker was queued and then dropped by
+the worker drain, so the generated `worker-import` and `worker-import-data`
+files reported zero events where WPT expects one.
+
+A worker global scope's policy comes from the script response, not from its
+creator; a `blob:` or `data:` script inherits the creator's container because
+it has no response headers
+(`https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model`).
+The realm now builds its `PolicyContainer` from the response's
+`Content-Security-Policy` and `-Report-Only` headers, and keeps the creator's
+list separately for the script graph: the graph belongs to the outside settings
+object, so the creator's policy decides it, while everything the worker body
+starts later uses the response policy. That fixes the classic-worker cases in
+`inside-worker/`, where a network worker previously inherited the document's
+`connect-src` and now does not.
+
+Violations raised in a worker are now forwarded instead of dropped. The worker
+queues them without a node target, the engine routes them up the worker chain
+(`WorkerCommand::CspViolation` for a nested worker), and the document that owns
+the chain reports them, which is where every engine reports a worker's
+violation even though the spec names the worker's global object
+(`https://w3c.github.io/webappsec-csp/#report-violation`). A blocked
+`new Worker()` still reports at the creator's document directly, as the previous
+slice established.
+
+Redirect policy was only enforced by the native browser's network service; the
+in-process WPT host built its dials without the gate, so a redirect the policy
+refused was followed and only the post-response check noticed. The gate now
+lives in the `dial` adapter, `watch_redirects`/`refused_redirect`, and both the
+browser service and the harness call it, so a refused hop yields the same
+status-0 outcome everywhere.
+
+The harness's sidecar runs wptserve on a plain loopback socket, so an `https`
+test request reached a handler as `http` and a keep-scheme redirect was built
+on the wrong scheme. The harness now sends the browser-visible scheme in
+`X-WPT-Scheme` and the sidecar restores it before a handler reads
+`request.url`.
+
+Evidence, subtest diffs against a saved baseline of the committed tree with no
+subtest lost: `content-security-policy` goes from 2743 to **2879 of 3999**.
+`gen/top.http-rp/script-src-self/worker-import.http.html` and its eleven
+siblings go to 12 of 12 (from 7 of 12); the `.https` twins to 11 or 12 of 12
+where the mixed-content downgrade case still cannot load. `inside-worker/
+dedicatedworker-connect-src.html` and `sharedworker-connect-src.sub.html` keep
+their passing subtests and gain the redirect ones. `fetch/api` (2254), `xhr`
+(949), `referrer-policy` (8020), `cookies` (336), `cookiestore` (247),
+`html/webappapis` (1413), `html/browsers` (676), `dom/events` (426),
+`css/selectors` (4528), `css/cssom` (3212), `css/cssom-view` (763) and
+`workers` (974) lose no subtest. `beacon` is 78 of 85 in isolation and the
+`workers/SharedWorker-extendedLifetime-*` files pass in isolation; their batch
+failures are the known multi-file load flake. `html/semantics/forms` loses the
+same `form-double-submit*` subtests the committed tree loses in three isolated
+runs, and `html/semantics/scripting-1` gains 24 while its one lost
+`execution-timing/105.html` subtest passes in three isolated runs.

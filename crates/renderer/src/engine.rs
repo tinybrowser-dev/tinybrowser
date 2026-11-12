@@ -492,6 +492,9 @@ impl Engine {
                 WorkerRequest::SharedLoadFailed { worker } => {
                     self.fail_shared_realm(worker);
                 }
+                WorkerRequest::CspViolation { parent, violations } => {
+                    self.push_csp_violations(parent, violations);
+                }
                 WorkerRequest::PostToParent {
                     parent,
                     worker,
@@ -748,6 +751,27 @@ impl Engine {
 
     /// Queues the plain `error` event a worker that never started fires at its
     /// owner's `Worker` object.
+    /// Reports a worker's blocked-request violations at the document that
+    /// owns the worker chain. A shared realm lives in this engine; a dedicated
+    /// worker forwards through its command channel until a document hears it
+    /// (<https://w3c.github.io/webappsec-csp/#report-violation>).
+    fn push_csp_violations(&mut self, owner: FrameId, violations: Vec<crate::csp::Violation>) {
+        if let Some(document) = self.frames.get_mut(&owner) {
+            document.push_csp_violations(violations);
+            return;
+        }
+        if let Some(raw) = owner.as_worker() {
+            let id = WorkerId::new(raw);
+            if let Some(parent) = self.workers.get_mut(&id) {
+                parent.deliver_csp_violations(violations);
+                return;
+            }
+            self.runtime
+                .worker_dir
+                .send(id, WorkerCommand::CspViolation { violations });
+        }
+    }
+
     fn push_worker_load_failed(&mut self, owner: FrameId, worker: WorkerId) {
         if let Some(document) = self.frames.get_mut(&owner) {
             document.push_worker_load_failed(worker);

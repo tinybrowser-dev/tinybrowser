@@ -1824,7 +1824,7 @@ pub(crate) fn handler_attribute_allowed<'js>(
             // (<https://w3c.github.io/webappsec-csp/#report-violation>).
             owner
                 .borrow_mut()
-                .queue_csp_violations(id, violations.clone());
+                .queue_csp_violations(Some(id), violations.clone());
         }
     }
     !crate::csp::blocks(&violations)

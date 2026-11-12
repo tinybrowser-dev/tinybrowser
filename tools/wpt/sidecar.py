@@ -37,7 +37,25 @@ def main() -> int:
 
     from tools.serve import serve
     from wptserve import stash
-    from wptserve.server import WebTestHttpd
+    from wptserve.server import Http1WebTestRequestHandler, WebTestHttpd
+
+    class SchemeAwareHandler(Http1WebTestRequestHandler):
+        """Restores the browser-visible scheme of the forwarded request.
+
+        The harness serves files itself and forwards only handler routes here
+        over a plain loopback connection, so wptserve would see `http` for an
+        `https` test and build a keep-scheme redirect on the wrong scheme. The
+        harness names the scheme it saw; this puts it back before any handler
+        reads `request.url`.
+        """
+
+        def parse_request(self):
+            parsed = super().parse_request()
+            if parsed:
+                scheme = self.headers.get("X-WPT-Scheme")
+                if scheme in ("http", "https"):
+                    self.scheme = scheme
+            return parsed
 
     logging.basicConfig(stream=sys.stderr, level=logging.WARNING, format="%(message)s")
     logger = logging.getLogger("wpt-sidecar")
@@ -85,6 +103,7 @@ def main() -> int:
                 rewrites=serve.rewrites,
                 config=active,
                 bind_address=False,
+                handler_cls=SchemeAwareHandler,
             )
             server.start()
             print(f"PORT {server.port}", flush=True)

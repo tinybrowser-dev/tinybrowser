@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use dial::{CacheDecision, HttpCache, Validators};
+use dial::{CacheDecision, HttpCache, Validators, refused_redirect, watch_redirects};
 use net::{Agent, AgentOptions, InitiatorKind, Method, Request};
 use renderer::{
     BodyDelivery, DialFailure, DialKind, DialOutcome, DialRequest, ResponseBody, StreamId,
@@ -737,42 +737,6 @@ impl TabNetworkHandle {
     }
 }
 
-/// Records a redirect the policy refuses, and refuses the hop.
-///
-/// The stored URL comes back as a status-0 outcome so the renderer can fire
-/// `securitypolicyviolation` and drop the body.
-/// <https://w3c.github.io/webappsec-csp/#should-request-be-blocked-by-content-security-policy>
-fn watch_redirects(
-    request: &DialRequest,
-    initiator: &url::Origin,
-    outbound: &mut Request,
-) -> Arc<std::sync::Mutex<Option<Url>>> {
-    let blocked = Arc::new(std::sync::Mutex::new(None));
-    if let Some(csp) = request.csp.clone() {
-        let document_url = document_url(initiator);
-        let blocked = Arc::clone(&blocked);
-        outbound.on_redirect = Some(Arc::new(move |next, redirects| {
-            if csp.allows(&document_url, next, redirects) {
-                return true;
-            }
-            *blocked
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(next.clone());
-            false
-        }));
-    }
-    blocked
-}
-
-/// The URL a dial's CSP reports name as their document.
-///
-/// The dial seam carries the initiator origin, not its document URL; an origin
-/// root is the URL the old seam carried too. An opaque origin has no URL, so
-/// reports get `about:blank`; the renderer keeps the real one.
-fn document_url(origin: &url::Origin) -> Url {
-    net::origin_url(origin).unwrap_or_else(net::about_blank)
-}
-
 /// Applies Opaque Response Blocking to one engine-facing opaque response, and
 /// trims the head such a response delivers to what its consumer can use.
 ///
@@ -981,26 +945,6 @@ fn trace_dial_result(
             started.elapsed()
         ),
     }
-}
-
-fn refused_redirect(blocked: &std::sync::Mutex<Option<Url>>) -> Option<DialOutcome> {
-    let url = blocked
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .take()?;
-    Some(DialOutcome {
-        status: 0,
-        status_text: String::new(),
-        final_url: url,
-        content_type: None,
-        headers: Vec::new(),
-        body: ResponseBody::Bytes(Vec::new()),
-        response_type: net::cors::ResponseType::Basic,
-        crossed_origin: false,
-        redirect_count: 0,
-        cookies_stored: false,
-        referrer: None,
-    })
 }
 
 /// A fresh opaque origin.

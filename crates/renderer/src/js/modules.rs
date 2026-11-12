@@ -88,12 +88,13 @@ fn module_request_blocked(
         return Ok(());
     }
     let blocked = crate::csp::blocks(&violations);
-    if let Ok(target) = super::bindings::main_document(ctx) {
-        // The module loader runs inside QuickJS; dispatch later.
-        world_rc
-            .borrow_mut()
-            .queue_csp_violations(target, violations);
-    }
+    // The module loader runs inside QuickJS; dispatch later. A worker realm
+    // has no document, so it queues an untargeted violation for the creator's
+    // document.
+    let target = super::bindings::main_document(ctx).ok();
+    world_rc
+        .borrow_mut()
+        .queue_csp_violations(target, violations);
     if blocked {
         return Err(Error::new_loading(name));
     }
@@ -251,7 +252,20 @@ fn module_fetch_inputs(world: &crate::js::World, name: &str) -> ModuleFetchInput
                     .map(crate::protocol::referrer_policy)
                     .or(world.policy.referrer_policy)
                     .unwrap_or_default(),
-                world.policy.csp.clone(),
+                // The worker's script graph belongs to the outside settings
+                // object, so the creator's policy decides it; the worker
+                // global scope's own policy (from its script response) decides
+                // everything the body starts later
+                // (<https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script>).
+                if worker {
+                    world
+                        .state
+                        .worker_owner_csp
+                        .clone()
+                        .unwrap_or_else(|| world.policy.csp.clone())
+                } else {
+                    world.policy.csp.clone()
+                },
                 // A static import in a worker is a worker request: `worker-src`
                 // decides it, falling back to `child-src` and `script-src`, and
                 // `script-src-elem` never applies
@@ -398,11 +412,10 @@ pub(super) fn load_module<'js>(ctx: &Ctx<'js>, name: &str) -> Result<Module<'js,
         };
         if !violations.is_empty() {
             let blocked = crate::csp::blocks(&violations);
-            if let Ok(target) = super::bindings::main_document(ctx) {
-                world_rc
-                    .borrow_mut()
-                    .queue_csp_violations(target, violations);
-            }
+            let target = super::bindings::main_document(ctx).ok();
+            world_rc
+                .borrow_mut()
+                .queue_csp_violations(target, violations);
             if blocked {
                 return Err(Error::new_loading(name));
             }
