@@ -661,3 +661,13 @@ same-origin proxy now answers from that world instead. `cookiestore/` is
 (65 subtests), and
 `html/semantics/embedded-content/the-iframe-element` (109 subtests) are
 unchanged with no subtest going from pass to fail.
+
+The in-process harness now answers `/resources/WebIDLParser.js` with
+`resources/webidl2/lib/webidl2.js`. The alias is wptserve's
+(`tools/serve/serve.py` rewrites the path), and the sidecar built the server
+without that rewrite table, so every `idlharness` test 404'd the parser and
+failed with `WebIDL2 is not defined`. `cookiestore/idlharness` now runs its
+IDL validation subtests (16 of 17 pass) and fails only in setup, where it
+registers a service worker: `navigator.serviceWorker` is still absent. The
+`cookiestore` slice is **40 of 48 files and 247 of 260 subtests** (the total
+grows because the validation subtests run now). `cookies` stays 336/415.

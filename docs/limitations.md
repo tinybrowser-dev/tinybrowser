@@ -241,14 +241,17 @@ The spec's `delete(name)` step passes `partitioned` as true, but WPT
 (unpartitioned) and expects this delete to remove it, and Chrome and Firefox
 remove it. This implementation passes false.
 
-The `cookiestore` slice passes **40 of 48 files and 231 of 244 subtests**
+The `cookiestore` slice passes **40 of 48 files and 247 of 260 subtests**
 (from 0 of 48 files). The remaining files fail for infrastructure the engine
 does not have:
 
 - `cookieStoreManager_getSubscriptions_*`, `cookieStore_subscribe_arguments`,
   `cookieStore_subscriptions_empty`, `serviceworker_cookieStore_cross_origin`,
   and `serviceworker_cookieStore_subscriptions_reset` need service workers
-  (12 subtests); `idlharness` needs the WebIDL2 script.
+  (12 subtests), and `idlharness` registers one in its setup, so it needs
+  them too. Its IDL validation subtests run and pass now that the harness
+  applies wptserve's `/resources/WebIDLParser.js` rewrite, which is why the
+  subtest total is larger than the 244 reported before the parser resolved.
 
 A same-origin child whose realm has not started yet answers `cookieStore`
 from the creator's realm. An initial `about:blank` inherits the creator's

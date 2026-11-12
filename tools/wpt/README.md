@@ -54,9 +54,12 @@ runner as `--normal-budget`/`--long-budget`.
 
 Two request kinds are not files: a `.py` path is a wptserve handler, and an
 absent path is a 404. `cli.py run in-process` starts the real wptserve on a
-loopback port (`tools/wpt/sidecar.py`) and the transport forwards those
-requests to it, so the handler runs with its request object, templates, and
-stash. The sidecar binds an ephemeral port, prints it on stdout, and exits
+loopback port (`tools/wpt/sidecar.py`) and the transport forwards both kinds
+to it, so the handler runs with its request object, templates, and stash. The
+sidecar also installs `tools/serve/serve.py`'s rewrites, which is where an
+alias such as `/resources/WebIDLParser.js` ->
+`/resources/webidl2/lib/webidl2.js` exists; the file itself is not in the
+checkout. The sidecar binds an ephemeral port, prints it on stdout, and exits
 when the harness closes its stdin. Without it a handler is a network error.
 
 The selection comes from the checkout's `MANIFEST.json`, the same manifest

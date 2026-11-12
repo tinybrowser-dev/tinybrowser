@@ -77,6 +77,12 @@ def main() -> int:
                 port=0,
                 doc_root=wpt_root,
                 routes=routes,
+                # The harness serves files itself and forwards only a missing
+                # path here, so this server also supplies the aliases that
+                # exist only as rewrites: `/resources/WebIDLParser.js` is
+                # `resources/webidl2/lib/webidl2.js` on disk
+                # (`tools/serve/serve.py`).
+                rewrites=serve.rewrites,
                 config=active,
                 bind_address=False,
             )

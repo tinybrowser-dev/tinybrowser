@@ -49,7 +49,8 @@ Sources:
 - **cookies** — `document.cookie` read 78.7%, write 68.3%,
   `SameSite=None` 38.6%, no `SameSite` 31.7%, partitioned 30.7%,
   `CookieStore` 11.9%. WPT 32.6%; `cookiestore` 40/48 files and
-  231/244 subtests. What remains is service workers.
+  247/260 subtests. What remains is service workers (and the `idlharness`
+  setup that registers one).
 - **storage** — `localStorage`/`sessionStorage` read 80.0%, write
   75.8%. WPT `webstorage` 81.5%.
 - **csp** — any CSP 68.9%, HTTP-delivered 50.0%, `unsafe-eval` 54.2%,
