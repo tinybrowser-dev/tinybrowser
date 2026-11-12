@@ -19,6 +19,8 @@ mod bridge;
 mod canvas;
 mod encoding;
 mod events;
+
+pub(crate) use events::handler_attribute_violations;
 mod fonts;
 mod intl;
 mod modules;

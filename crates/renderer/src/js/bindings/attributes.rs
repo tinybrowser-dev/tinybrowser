@@ -1581,7 +1581,17 @@ fn compile_handler_attribute(ctx: &Ctx<'_>, element: NodeId, typ: &str) -> Resul
             // attribute is compiled. A handler blocked here leaves its slot
             // null: setting the attribute must neither run the body nor throw
             // (<https://w3c.github.io/webappsec-csp/#should-block-inline>).
-            if !crate::js::events::handler_attribute_allowed(ctx, object.as_value(), &body) {
+            // The setting script's position becomes the violation's source.
+            let position = crate::js::error_stack_top(ctx);
+            let position = position
+                .as_ref()
+                .map(|(url, line, column)| (url.as_str(), *line, *column));
+            if !crate::js::events::handler_attribute_allowed(
+                ctx,
+                object.as_value(),
+                &body,
+                position,
+            ) {
                 object.set(name.as_str(), Value::new_null(ctx.clone()))?;
                 if forwarded {
                     ctx.globals()

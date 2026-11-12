@@ -764,3 +764,31 @@ budget cannot cover. `dom/events` plus `domparsing`, the dom/forms batch,
 `cookiestore` (247/260), `cookies` (336/415), and `workers` (248/248) are
 unchanged; the two `form-double-submit` subtests still flip between runs on a
 single build.
+
+Parse-time handler checks close the remaining CSP delivery gap for attributes
+the markup carries. HTML checks a handler content attribute when it compiles
+it; this engine compiles them lazily at dispatch, so a parsed `on*` attribute
+was never checked until its element dispatched an event, and
+`targeting-for-inline-handler-in-markup*` waited for a click that never came.
+Once the parser stops, the document now walks its connected elements and runs
+the attribute check for each `on*` value, after the document's scripts
+installed their listeners and before any handler runs. A handler set through
+`setAttribute` also carries the setting script's `sourceFile`, line, and
+column, and a remembered value keeps the invocation check from reporting the
+same blocked handler twice.
+
+Evidence, subtest diffs against the saved baseline with no subtest lost:
+`content-security-policy/securitypolicyviolation` + `.../reporting` go from 76
+to **82 of 138** passing subtests and 51 to **53 OK files**;
+`targeting-for-inline-handler-in-markup.html` (2 of 2) and
+`-in-markup-then-disconnected.html` (2 of 2) are OK, and
+`targeting-for-inline-handler-on-subframe-element.html` gains both column
+assertions (7 of 9). The handler tests that still fail do so only on
+`lineNumber`, which needs the parser's document positions that Blitz does not
+keep; the rest of the `targeting-for-inline-handler-*` files now report the
+event and pass their element, blocked URI, and column assertions where they
+assert them. `script-src` (130/203), `style-src` (51/86), `img-src` (17/20),
+`script-src-attr-elem` (8/8), and `style-src-attr-elem` (3/7) are unchanged
+against the stashed pre-change build; `dom/events` + `domparsing`,
+`html/semantics/forms` (503 files), `cookiestore` (247/260), `cookies`
+(336/415), and `workers` (248/248) lose nothing.

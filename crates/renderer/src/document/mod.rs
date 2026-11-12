@@ -2983,6 +2983,76 @@ impl Document {
         self.resume_scripts();
     }
 
+    /// Runs the inline check for every handler content attribute the parser
+    /// inserted. HTML checks the attribute when it is compiled, and the
+    /// one-shot parser never compiles them, so the walk runs once the parse
+    /// ends: by then the document's own scripts installed their listeners,
+    /// and no handler has been invoked yet
+    /// (<https://w3c.github.io/webappsec-csp/#should-block-inline>,
+    /// <https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes>).
+    fn check_parser_handler_attributes(&mut self) {
+        let handlers: Vec<(crate::dom::tree::NodeId, String)> = {
+            let world = self.world.borrow();
+            let Some(parsed) = world.main_document() else {
+                return;
+            };
+            let base = &parsed.document.base;
+            let document = parsed.id;
+            let mut handlers = Vec::new();
+            let mut stack = vec![base.root_node().id];
+            while let Some(node) = stack.pop() {
+                let Some(tree) = base.get_node(node) else {
+                    continue;
+                };
+                stack.extend(tree.children.iter().copied());
+                let Some(element) = tree.data.downcast_element() else {
+                    continue;
+                };
+                if !crate::dom::tree::is_connected(base, node) {
+                    continue;
+                }
+                let id = crate::dom::tree::NodeId { document, node };
+                for attribute in element.attrs.iter() {
+                    if !attribute.name.ns.is_empty() {
+                        continue;
+                    }
+                    let name = attribute.name.local.as_str();
+                    let Some(typ) = name.strip_prefix("on") else {
+                        continue;
+                    };
+                    if typ.is_empty()
+                        || !typ.chars().all(|character| {
+                            character.is_ascii_lowercase() || character.is_ascii_digit()
+                        })
+                        || attribute.value.trim().is_empty()
+                    {
+                        continue;
+                    }
+                    handlers.push((id, attribute.value.clone()));
+                }
+            }
+            handlers
+        };
+        for (id, source) in handlers {
+            let violations =
+                crate::js::handler_attribute_violations(&self.world.borrow(), id, &source);
+            if violations.is_empty() {
+                continue;
+            }
+            let repeated = self
+                .world
+                .borrow_mut()
+                .state
+                .reported_handlers
+                .insert((id, source.clone()), source.clone())
+                .is_some_and(|previous| previous == source);
+            if repeated {
+                continue;
+            }
+            self.fire_csp_violations(id, &violations);
+        }
+    }
+
     /// Continues the document after a parse settled or a parser-blocking
     /// fetch completed: runs the remaining scripts, then the end-of-parse
     /// steps unless another fetch blocks the walk.
@@ -2992,6 +3062,7 @@ impl Document {
             return;
         }
         self.world.borrow_mut().parser_active = false;
+        self.check_parser_handler_attributes();
         // Deliver parser mutations before the document's events.
         self.deliver_mutations();
         self.fire_document_end();

@@ -1729,13 +1729,44 @@ pub(crate) fn compile_handler_function<'js>(
     compiled
 }
 
-/// Whether an event handler content attribute may run
-/// (<https://w3c.github.io/webappsec-csp/#should-block-inline>). The event
-/// targets the element that carries the attribute.
+/// The violations an event handler content attribute produces under its
+/// element's document policy. The element is the event target while it stays
+/// connected to that document
+/// (<https://w3c.github.io/webappsec-csp/#should-block-inline>,
+/// <https://w3c.github.io/webappsec-csp/#report-violation>).
+pub(crate) fn handler_attribute_violations(
+    world: &crate::js::world::World,
+    id: crate::dom::tree::NodeId,
+    source: &str,
+) -> Vec<crate::csp::Violation> {
+    let document_url =
+        url::Url::parse(&world.document_url_of(id)).unwrap_or_else(|_| world.document_url.clone());
+    let mut violations = world.policy.csp.check_inline(
+        &document_url,
+        &crate::csp::InlineScript {
+            source,
+            nonce: "",
+            nonceable: false,
+            parser_inserted: false,
+            kind: crate::csp::InlineKind::ScriptAttribute,
+        },
+    );
+    for violation in &mut violations {
+        violation.element = Some(id);
+    }
+    violations
+}
+
+/// Whether an event handler content attribute may run. `position` is the call
+/// site that set the attribute, which the report carries as `sourceFile`,
+/// `lineNumber`, and `columnNumber`; a handler the parser inserted has none
+/// (<https://w3c.github.io/webappsec-csp/#should-block-inline>,
+/// <https://w3c.github.io/webappsec-csp/#create-violation-for-global>).
 pub(crate) fn handler_attribute_allowed<'js>(
     ctx: &Ctx<'js>,
     target: &Value<'js>,
     source: &str,
+    position: Option<(&str, u32, u32)>,
 ) -> bool {
     let Some(id) = bindings::host_node_id(ctx, target) else {
         return true;
@@ -1746,35 +1777,33 @@ pub(crate) fn handler_attribute_allowed<'js>(
     let Some(owner) = bindings::owning_world(ctx, id) else {
         return true;
     };
-    let violations = {
-        let world = owner.borrow();
-        let document_url = url::Url::parse(&world.document_url_of(id))
-            .unwrap_or_else(|_| world.document_url.clone());
-        let mut violations = world.policy.csp.check_inline(
-            &document_url,
-            &crate::csp::InlineScript {
-                source,
-                nonce: "",
-                nonceable: false,
-                parser_inserted: false,
-                kind: crate::csp::InlineKind::ScriptAttribute,
-            },
-        );
+    let mut violations = handler_attribute_violations(&owner.borrow(), id, source);
+    if let Some((url, line, column)) = position {
         for violation in &mut violations {
-            // The handler's element is the event target while it stays
-            // connected to its document
-            // (<https://w3c.github.io/webappsec-csp/#report-violation>).
-            violation.element = Some(id);
+            violation.source_file = Some(url.to_owned());
+            violation.line_number = line;
+            violation.column_number = column;
         }
-        violations
-    };
+    }
     if !violations.is_empty() {
-        // Reporting is a task, so a listener attached later in the same script
-        // still sees the event
+        // The attribute is checked again when it is invoked, and the parser
+        // walk checks attributes the parser inserted: report one event per
+        // distinct value, not one per check
         // (<https://w3c.github.io/webappsec-csp/#report-violation>).
-        owner
+        let repeated = owner
             .borrow_mut()
-            .queue_csp_violations(id, violations.clone());
+            .state
+            .reported_handlers
+            .insert((id, source.to_owned()), source.to_owned())
+            .is_some_and(|previous| previous == source);
+        if !repeated {
+            // Reporting is a task, so a listener attached later in the same
+            // script still sees the event
+            // (<https://w3c.github.io/webappsec-csp/#report-violation>).
+            owner
+                .borrow_mut()
+                .queue_csp_violations(id, violations.clone());
+        }
     }
     !crate::csp::blocks(&violations)
 }
@@ -1829,7 +1858,7 @@ fn call_handler_attribute<'js>(
     if handler.as_function().is_none()
         && let Some(source) = handler_attribute_source(ctx, object, &name)?
     {
-        if !handler_attribute_allowed(ctx, object.as_value(), &source) {
+        if !handler_attribute_allowed(ctx, object.as_value(), &source, None) {
             object.set(name.as_str(), Value::new_null(ctx.clone()))?;
             return Ok(());
         }

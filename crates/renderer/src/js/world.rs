@@ -1656,6 +1656,13 @@ pub(crate) struct DocumentState {
     /// reports these as `sourceFile`, `lineNumber`, and `columnNumber`
     /// (<https://w3c.github.io/webappsec-csp/#create-violation-for-global>).
     pub(crate) creator_stacks: HashMap<NodeId, CreatorInfo>,
+    /// The last handler attribute value the inline check reported, per element
+    /// and attribute. A handler is checked when its attribute is set or parsed
+    /// and again when it is invoked, because this engine compiles `on*`
+    /// attributes lazily at dispatch; the remembered value keeps the second
+    /// check from reporting the same blocked handler twice
+    /// (<https://w3c.github.io/webappsec-csp/#report-violation>).
+    pub(crate) reported_handlers: HashMap<(NodeId, String), String>,
     /// Per form-associated element state: the flags and edit buffers that are
     /// neither content attributes nor part of Blitz's sanitized value slot.
     /// They live here so every path that changes a control (a value set, a
@@ -1757,6 +1764,8 @@ impl DocumentState {
         self.nonce_slots.retain(|node, _| node.document != document);
         self.creator_stacks
             .retain(|node, _| node.document != document);
+        self.reported_handlers
+            .retain(|(node, _), _| node.document != document);
         self.controls.retain(|node, _| node.document != document);
     }
 }

@@ -358,11 +358,17 @@ request the parser issues before an inline script has not reached that
 script yet. A request violation fires at the document and an inline
 violation at its element while the element stays connected to the document,
 per the report-a-violation algorithm. Inline handler content attributes are
-only checked when the handler is first invoked, so
-`content-security-policy/securitypolicyviolation/targeting-for-inline-handler-in-markup.html`
-never sees the parse-time event a browser reports. Inline `<style>` and
-`style` attributes still have no CSP check, and `WebSocket` does not exist, so
-`blockeduri-ws-wss-scheme.html` cannot run.
+checked when the attribute is set, when the element is connected, and by a
+walk of the parsed tree once the parser ends, so a parsed handler reports
+before it is first invoked; the value is remembered so the invocation check
+does not report the same blocked handler a second time. A handler's report
+names the script that set the attribute, but its line and column are relative
+to that script because Blitz keeps no source positions; a browser reports the
+document line, which is why the `targeting-for-inline-handler-*` files that
+assert `lineNumber` still fail while their element, blocked URI, and column
+assertions pass. Inline `<style>` and `style` attributes still have no CSP
+check, and `WebSocket` does not exist, so `blockeduri-ws-wss-scheme.html`
+cannot run.
 
 `HTMLScriptElement.text` returns the child text content (the text node
 children only) and its setter replaces every child with one text node;
