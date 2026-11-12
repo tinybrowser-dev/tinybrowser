@@ -1761,7 +1761,13 @@ mod tests {
                 .is_none(),
             "the preference hint stays off plain http"
         );
-        assert!(insecure_request.headers.get("sec-fetch-mode").is_some());
+        assert!(
+            secure_request.headers.get("sec-fetch-mode").is_some(),
+            "the Fetch metadata group is built here and reaches trustworthy hops"
+        );
         assert!(insecure_request.headers.get("accept").is_some());
+        // The group is stripped per hop, where the redirect chain is known, so
+        // this builder still writes it for a plain-http navigation too
+        // (<https://w3c.github.io/webappsec-fetch-metadata/#fetch-integration>).
     }
 }

@@ -343,6 +343,14 @@ dropped beacon rather than a return value. The `BodyInit` union is not
 lowered by the JS binding generator yet, so `sendBeacon` is installed on
 the prototype by hand with the operation's shape.
 
+The Fetch metadata group (`Sec-Fetch-Site`, `-Mode`, `-Dest`, `-User`) is
+applied per hop in the net client: a hop whose URL is not potentially
+trustworthy carries none of them, and a redirect back onto `https` carries them
+again. `Sec-Fetch-Storage-Access` is never sent, because this engine has no
+Storage Access API to report on, and the HTTP `Link` response header is not
+processed, so a `Link: <...>; rel=stylesheet` or `rel=icon` never turns into a
+request (the `fetch/metadata` `header-link` files).
+
 CSP gates string compilation in the engine (`can_compile_strings`), so
 direct `eval` keeps its scope and `Function` and indirect `eval` are
 covered by the same check. Still open: there is no incremental HTML

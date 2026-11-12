@@ -2059,12 +2059,14 @@ pub(super) fn apply_meta_csp(ctx: &Ctx<'_>, id: NodeId) {
 }
 
 /// [Prepares](https://html.spec.whatwg.org/multipage/webappapis.html#prepare-the-script-element)
-/// a classic inline script. Empty scripts return without setting already
-/// started. External and module scripts are not prepared here.
+/// a script element a script connected. An inline classic script runs here.
+/// Every other kind is queued for the element's own document, which resolves
+/// the source and runs it in its own turn.
 pub(crate) fn prepare_classic_script(ctx: &Ctx<'_>, id: NodeId) -> Result<()> {
     enum Kind {
         Inline(String, u32),
         External,
+        Module,
     }
     let kind = {
         let world = world(ctx)?;
@@ -2083,6 +2085,10 @@ pub(crate) fn prepare_classic_script(ctx: &Ctx<'_>, id: NodeId) -> Result<()> {
                 Kind::Inline(source, line)
             }
             Some(crate::js::Script::Classic(crate::js::ScriptSource::Src(_))) => Kind::External,
+            // A module script is always deferred: its graph is fetched as a
+            // script request, and the element's `load` waits for it
+            // (<https://html.spec.whatwg.org/multipage/scripting.html#attr-script-type-module>).
+            Some(crate::js::Script::Module(_)) => Kind::Module,
             _ => return Ok(()),
         }
     };
@@ -2108,7 +2114,7 @@ pub(crate) fn prepare_classic_script(ctx: &Ctx<'_>, id: NodeId) -> Result<()> {
             }
             (source, line)
         }
-        Kind::External => {
+        Kind::External | Kind::Module => {
             // Parser-inserted scripts never reach this path; the parser
             // runs them from `Document::run_scripts`. The fetch for a
             // script-inserted element starts in `Document::adopt_js_work`,

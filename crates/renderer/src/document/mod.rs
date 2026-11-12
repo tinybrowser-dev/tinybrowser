@@ -3552,8 +3552,14 @@ impl Document {
             {
                 steps.push(ParseStep::Base(node_id));
             }
+            // Only a script the parser inserted belongs to this walk. A
+            // script a running script connected is "script-inserted": it
+            // prepares itself on insertion, and walking it here would mark it
+            // started before that preparation could run it
+            // (<https://html.spec.whatwg.org/multipage/scripting.html#parser-inserted>).
             if crate::dom::tree::is_html_element(base, id, "script")
                 && !world.sandbox.scripts_disabled()
+                && world.is_parser_inserted(node_id)
             {
                 steps.push(ParseStep::Script(node_id));
             }
@@ -4272,7 +4278,7 @@ impl Document {
     /// `current_script` stays unset, so `document.currentScript` is null while
     /// a module evaluates
     /// (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-currentscript>).
-    fn with_module_root<R>(
+    pub(in crate::document) fn with_module_root<R>(
         &mut self,
         element: Option<crate::dom::tree::NodeId>,
         body: impl FnOnce(&mut Self) -> R,
@@ -4286,49 +4292,20 @@ impl Document {
 
     fn run_deferred_modules(&mut self) {
         let modules = std::mem::take(&mut self.deferred_modules);
-        for (index, (element, source)) in modules.into_iter().enumerate() {
-            let result = match source {
-                crate::js::ScriptSource::Inline { source, .. } => {
-                    let violations = self.inline_script_violations(&source, element);
-                    if !violations.is_empty() {
-                        self.fire_csp_violations(element, &violations);
+        for (element, source) in modules {
+            match self.run_module_body(element, source) {
+                None => self
+                    .tasks
+                    .push_back(crate::document::Task::NodeError(element)),
+                Some(result) => {
+                    if result.is_err() {
+                        self.record_event(RendererEvent::ScriptFailed);
+                    } else {
+                        self.fire_js(|js| js.fire_node_load(element));
                     }
-                    if crate::csp::blocks(&violations) {
-                        continue;
-                    }
-                    let name = format!("{}#inline-module-{index}", self.url);
-                    self.with_module_root(Some(element), |this| {
-                        this.js
-                            .as_ref()
-                            .map_or(Ok(()), |js| js.eval_inline_module(&name, &source))
-                    })
+                    self.adopt_js_work();
                 }
-                crate::js::ScriptSource::Src(src) => match self.resolve_dial_url(&src) {
-                    Ok(url) => {
-                        let violations = self.script_url_violations(&url, element);
-                        if !violations.is_empty() {
-                            self.fire_csp_violations(element, &violations);
-                        }
-                        if crate::csp::blocks(&violations) {
-                            continue;
-                        }
-                        self.with_module_root(Some(element), |this| {
-                            this.js
-                                .as_ref()
-                                .map_or(Ok(()), |js| js.eval_external_module(url.as_str()))
-                        })
-                    }
-                    Err(_) => Err(crate::js::JsError::Engine(
-                        "invalid module script URL".into(),
-                    )),
-                },
-            };
-            if result.is_err() {
-                self.record_event(RendererEvent::ScriptFailed);
-            } else {
-                self.fire_js(|js| js.fire_node_load(element));
             }
-            self.adopt_js_work();
         }
     }
 

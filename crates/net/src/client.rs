@@ -610,7 +610,8 @@ impl Agent {
             .initiator
             .as_ref()
             .map(|origin| FetchSite::between(origin, &request.url));
-        write_fetch_site(&mut hop.headers, fetch_site);
+        let fetch_metadata = FetchMetadata::capture(&hop.headers);
+        fetch_metadata.append(&mut hop.headers, &request.url, fetch_site);
         let mut url = request.url;
         // The referrer source and policy are typed request state, and main
         // fetch runs "Determine request's Referrer" before the first hop as
@@ -683,7 +684,7 @@ impl Agent {
             cross_site_redirect |= !cookies::schemeful_same_site(&url, &next);
             apply_redirect_policy(hop_status, &url, &next, &mut hop);
             fetch_site = FetchSite::widen(fetch_site, request.initiator.as_ref(), &next);
-            write_fetch_site(&mut hop.headers, fetch_site);
+            fetch_metadata.append(&mut hop.headers, &next, fetch_site);
             // Main fetch runs "determine request's referrer" again for the
             // redirect hop, with the referrer the previous hop sent as the
             // source; a `no referrer` result stops the chain
@@ -1085,6 +1086,59 @@ fn write_fetch_site(headers: &mut HeaderMap, site: Option<FetchSite>) {
         header::HeaderName::from_static("sec-fetch-site"),
         HeaderValue::from_static(site.map_or("none", FetchSite::token)),
     );
+}
+
+/// The Fetch metadata headers that describe the request itself: its mode,
+/// destination, and whether user activation started it. `Sec-Fetch-Site` is not
+/// here because the answer is per URL, so the request's whole list decides it.
+///
+/// The caller writes these where it knows the destination and mode; this
+/// captures them once, and every hop appends them or drops them together
+/// (<https://w3c.github.io/webappsec-fetch-metadata/#fetch-integration>).
+struct FetchMetadata {
+    mode: Option<HeaderValue>,
+    dest: Option<HeaderValue>,
+    user: Option<HeaderValue>,
+}
+
+impl FetchMetadata {
+    fn capture(headers: &HeaderMap) -> Self {
+        Self {
+            mode: headers.value("sec-fetch-mode").cloned(),
+            dest: headers.value("sec-fetch-dest").cloned(),
+            user: headers.value("sec-fetch-user").cloned(),
+        }
+    }
+
+    /// Applies "append the Fetch metadata headers" to one hop. All four are one
+    /// group: a URL that is not potentially trustworthy carries none of them,
+    /// so a destination served over plain `http` learns nothing about its
+    /// requester, and a hop that redirects from `http` to `https` carries them
+    /// again.
+    fn append(&self, headers: &mut HeaderMap, url: &Url, site: Option<FetchSite>) {
+        if !secure_context::is_potentially_trustworthy(url) {
+            for name in [
+                "sec-fetch-site",
+                "sec-fetch-mode",
+                "sec-fetch-dest",
+                "sec-fetch-user",
+            ] {
+                headers.remove(name);
+            }
+            return;
+        }
+        write_fetch_site(headers, site);
+        for (name, value) in [
+            ("sec-fetch-mode", &self.mode),
+            ("sec-fetch-dest", &self.dest),
+            ("sec-fetch-user", &self.user),
+        ] {
+            match value {
+                Some(value) => headers.set(header::HeaderName::from_static(name), value.clone()),
+                None => headers.remove(name),
+            }
+        }
+    }
 }
 
 /// Writes the headers one hop carries after the CORS decision: the
@@ -1963,12 +2017,9 @@ mod transport_port_tests {
             .expect_err("no ACAO");
         assert!(matches!(error, NetError::RejectedRequest));
         let seen = seen.lock().unwrap_or_else(PoisonError::into_inner);
-        assert_eq!(
-            seen.iter()
-                .find(|(name, _)| name == "sec-fetch-site")
-                .map(|(_, value)| value.as_str()),
-            Some("cross-site"),
-            "the core shapes the request before the transport sees it"
+        assert!(
+            seen.iter().all(|(name, _)| !name.starts_with("sec-fetch-")),
+            "a plain-http target gets no Fetch metadata headers" // <https://w3c.github.io/webappsec-fetch-metadata/#fetch-integration>
         );
         assert_eq!(
             seen.iter()

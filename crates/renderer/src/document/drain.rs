@@ -423,16 +423,12 @@ impl Document {
         if self.world.borrow().sandbox.scripts_disabled() {
             return;
         }
-        let Some((src, started)) = self.world.borrow().with_document(element, |parsed| {
-            (
-                crate::dom::tree::attr(&parsed.document.base, element.node, "src")
-                    .map(str::to_owned),
-                parsed.document.script_already_started(element.node),
-            )
-        }) else {
+        let Some(script) = crate::js::script_at(&self.world.borrow(), element) else {
             return;
         };
-        let Some(src) = src else {
+        let Some(started) = self.world.borrow().with_document(element, |parsed| {
+            parsed.document.script_already_started(element.node)
+        }) else {
             return;
         };
         if started {
@@ -441,6 +437,27 @@ impl Document {
         if let Some(mut parsed) = self.world.borrow().document_mut(element) {
             parsed.document.mark_script_started(element.node);
         }
+        if let crate::js::Script::Module(source) = script {
+            // The graph runs now; the element's `load` or `error` is an element
+            // task, so it lands after the current script's turn ends
+            // (<https://html.spec.whatwg.org/multipage/scripting.html#attr-script-type-module>).
+            match self.run_module_body(element, source) {
+                None => self.tasks.push_back(Task::NodeError(element)),
+                Some(result) => {
+                    if result.is_err() {
+                        self.record_event(RendererEvent::ScriptFailed);
+                        self.tasks.push_back(Task::NodeError(element));
+                    } else {
+                        self.tasks.push_back(Task::NodeLoad(element));
+                    }
+                    self.adopt_js_work();
+                }
+            }
+            return;
+        }
+        let crate::js::Script::Classic(crate::js::ScriptSource::Src(src)) = script else {
+            return;
+        };
         let Ok(url) = self.resolve_dial_url(&src) else {
             self.tasks.push_back(Task::NodeError(element));
             return;
@@ -479,6 +496,59 @@ impl Document {
         // `load` waits for that set to drain
         // (<https://html.spec.whatwg.org/multipage/parsing.html#the-end>).
         self.queue_dial(dial);
+    }
+
+    /// Runs the module graph of one module script element. The element itself
+    /// gets `load` or `error`, so the caller decides when that task runs: a
+    /// deferred parser module fires it in the same turn the graph finishes,
+    /// and a script-inserted one that prepared after parsing queues the task
+    /// (<https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script>).
+    ///
+    /// `None` means CSP blocked the script before its fetch: the caller fires
+    /// `error` without running anything
+    /// (<https://html.spec.whatwg.org/multipage/scripting.html#prepare-the-script-element>).
+    pub(super) fn run_module_body(
+        &mut self,
+        element: crate::dom::tree::NodeId,
+        source: crate::js::ScriptSource,
+    ) -> Option<Result<(), crate::js::JsError>> {
+        let result = match source {
+            crate::js::ScriptSource::Inline { source, .. } => {
+                let violations = self.inline_script_violations(&source, element);
+                if !violations.is_empty() {
+                    self.fire_csp_violations(element, &violations);
+                }
+                if crate::csp::blocks(&violations) {
+                    return None;
+                }
+                let name = format!("{}#inline-module-{element:?}", self.url);
+                self.with_module_root(Some(element), |this| {
+                    this.js
+                        .as_ref()
+                        .map_or(Ok(()), |js| js.eval_inline_module(&name, &source))
+                })
+            }
+            crate::js::ScriptSource::Src(src) => match self.resolve_dial_url(&src) {
+                Ok(url) => {
+                    let violations = self.script_url_violations(&url, element);
+                    if !violations.is_empty() {
+                        self.fire_csp_violations(element, &violations);
+                    }
+                    if crate::csp::blocks(&violations) {
+                        return None;
+                    }
+                    self.with_module_root(Some(element), |this| {
+                        this.js
+                            .as_ref()
+                            .map_or(Ok(()), |js| js.eval_external_module(url.as_str()))
+                    })
+                }
+                Err(_) => Err(crate::js::JsError::Engine(
+                    "invalid module script URL".into(),
+                )),
+            },
+        };
+        Some(result)
     }
 
     /// Hands off the `keepalive` requests this document queued but never

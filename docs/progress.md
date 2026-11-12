@@ -983,3 +983,64 @@ window case was unreachable while `addEventListener` threw — and 27 more in
 subtest-identical, and `dom/nodes` (+17), `dom/events`, `domparsing` (+3), and
 `webmessaging` lose nothing. `tools/check clippy`, `cargo fmt --check`, and the
 renderer, wpt-harness, cookies, and browser unit tests pass.
+
+Fetch Metadata headers were the next `fetch` gap, and the biggest one left in
+`fetch/metadata` (3 of 78 files, 345 of 1542 subtests). Two separate bugs:
+
+`Sec-Fetch-Mode`, `Sec-Fetch-Dest` and `Sec-Fetch-User` were built once, by
+whoever knew the request's mode and destination, and then travelled with the
+request unchanged. "Append the Fetch metadata headers" is a per-URL step: all
+of them are one group gated on the hop's URL being potentially trustworthy, so
+a destination served over plain `http` must learn nothing about its requester,
+and a hop that redirects `http` to `https` must carry them again
+(`https://w3c.github.io/webappsec-fetch-metadata/#fetch-integration`). The net
+client now captures the three headers when the request arrives and applies the
+group to every hop, next to the `Sec-Fetch-Site` it already wrote per hop.
+
+The larger bug was the parser walk. `Document::run_scripts` walks every
+`<script>` in the tree and runs it as a parser script, which is the stand-in
+for the missing incremental parser. It treated a script inserted by a running
+script as a parser script too, and marked it started before the dynamic
+preparation path could: `scripts.map(s => ...)` inserting 36 `<script>` elements
+had every one of them marked started and then dropped, so the element got no
+`load`, its `src` was never fetched, and `element-script.sub.html` sat at 0 of
+36. The walk now takes only parser-inserted scripts
+(`https://html.spec.whatwg.org/multipage/scripting.html#parser-inserted`); a
+script a script connected prepares itself on insertion, as it should.
+
+`type=module` scripts inserted by script had no path at all: preparation queued
+the element, the queue read its `src` and ran it as a classic script, and an
+inline module never ran. The dynamic path now shares `run_module_body` with the
+parser's deferred-module queue, so both fetch the graph as a module script
+request and fire `load` or `error` at the element; CSP blocks either path
+before the fetch and fires `error`.
+
+Evidence, subtest diffs against a saved baseline of the same tree with no
+subtest lost: `fetch/metadata` goes from 345 to **620 of 1542**, and the
+fully-passing files from 3 to **43 of 78**. `generated/element-script.sub.html`
+goes 0 of 36 to 36, `element-script.https.sub.html` 1 to 36,
+`script-module-import-static.sub.html` 0 to 18 (and its `.https` twin),
+`element-img`, `form-submission` and `window-location` each 16 to 36, and the
+`element-a`/`area`/`frame`/`iframe`/`fetch`/`header-refresh`/dynamic-import
+files 8 to 18. Six subtests in `generated/css-font-face*.tentative.html`
+differ, and those files are nondeterministic in this harness: three isolated
+runs give 0 to 3 of 19 and 0 to 3 of 18 passes on both the old and the new
+tree, so the difference is font-load timing, not these changes.
+
+`html/semantics/scripting-1` goes from 2015 to **2037**, including
+`load-error-events.html` (inline and `src` 404 for a script-inserted element)
+and the `execution-timing` scheduler files. Two `106-*-module-import.html`
+subtests ("stylesheets blocking ... module scripts") fail under the batch run
+and pass in three isolated runs of `execution-timing`, the same load-order
+flake the CSS slices show. `fetch/api` (2254), `beacon` (76), `dom/nodes`,
+`dom/events`, `domparsing`, `webmessaging`, `html/browsers` (676),
+`html/webappapis` (1413), `html/semantics/forms`, `cookiestore` (247),
+`cookies` (336), `workers` (974), `css/selectors` (4528), `css/cssom` (3212)
+and `css/cssom-view` (763) lose no subtest; `beacon` is 76 of 76 in three
+isolated runs (it timed out one subtest in the batch).
+
+Still open in `fetch/metadata`: the HTTP `Link` response header is not
+processed, so `header-link.sub.html`'s `rel=icon` and `rel=stylesheet` requests
+never happen; `sec-fetch-storage-access` is never sent (this engine has no
+Storage Access API); `img srcset` never finishes loading, which times out
+`element-picture`; and the service-worker files need a service worker.
