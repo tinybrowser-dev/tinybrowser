@@ -371,6 +371,13 @@ impl Agent {
             .records_for(self.fetch_op(uri, &origin, RetrievalKind::NonHttp, partition_key))
     }
 
+    /// Every live cookie in the jar, including session cookies
+    /// (<https://w3c.github.io/webdriver/#get-all-cookies>).
+    #[must_use]
+    pub fn all_cookie_records(&self) -> Vec<crate::CookieRecord> {
+        self.jar().all_records(self.clock.now())
+    }
+
     /// Drops every cookie from the live jar
     /// (<https://w3c.github.io/webdriver/#delete-all-cookies>).
     pub fn clear_cookies(&self) {

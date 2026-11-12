@@ -137,6 +137,18 @@ const TESTDRIVER_VENDOR: &str = r"
       };
     });
   };
+  // The jar is the authoritative store: `document.cookie` cannot see a
+  // cookie's path, domain, expiry, or SameSite, and hides HttpOnly cookies.
+  // The origin answers this route from the jar's live records.
+  internal.get_named_cookie = async function (name, _context) {
+    const response = await fetch('/resources/testdriver-cookie?name=' +
+        encodeURIComponent(String(name)));
+    if (!response.ok) {
+      return null;
+    }
+    const body = await response.text();
+    return body === 'null' ? null : JSON.parse(body);
+  };
   internal.delete_all_cookies = async function (_context) {
     for (const pair of pairs()) {
       const equals = pair.indexOf('=');
@@ -192,13 +204,22 @@ struct Origin {
     /// `cli.py`. An extension it does not name is `application/octet-stream`,
     /// exactly like `guess_content_type`.
     content_types: HashMap<String, String>,
+    /// The jar's live records, refreshed after every operation that can store
+    /// a cookie. The origin serves the harness's `get_named_cookie` route from
+    /// here because it cannot reach the agent whose transport it is.
+    cookies: Arc<Mutex<Vec<net::CookieRecord>>>,
 }
 
 impl Origin {
-    fn new(root: PathBuf, content_types: HashMap<String, String>) -> Self {
+    fn new(
+        root: PathBuf,
+        content_types: HashMap<String, String>,
+        cookies: Arc<Mutex<Vec<net::CookieRecord>>>,
+    ) -> Self {
         Self {
             root,
             content_types,
+            cookies,
         }
     }
 
@@ -294,6 +315,9 @@ impl Origin {
                 headers: vec![("content-type".to_owned(), "text/javascript".to_owned())],
                 body: TESTDRIVER_VENDOR.as_bytes().to_vec(),
             });
+        }
+        if path == "/resources/testdriver-cookie" {
+            return Ok(driver_cookie(url, &self.cookies));
         }
         let relative = Path::new(path.trim_start_matches('/'));
         // A test URL is trusted input, but a `..` segment would read outside
@@ -392,6 +416,120 @@ impl Origin {
             body,
         })
     }
+}
+
+/// The `get_named_cookie` answer: one serialized cookie for the name in the
+/// query, or `null`. The request comes from the test's own document, so its
+/// host scopes the search the way `WebDriver`'s "associated cookies of the
+/// active document" does
+/// (<https://w3c.github.io/webdriver/#get-named-cookie>).
+///
+/// The path is deliberately not part of the match. `WebDriver` scopes by the
+/// document's URL, but this route's own request path is the harness's
+/// `/resources/testdriver-cookie`, which no test cookie's path is a prefix of.
+fn driver_cookie(url: &Url, cookies: &Mutex<Vec<net::CookieRecord>>) -> Served {
+    let Some((_, name)) = url
+        .query_pairs()
+        .find(|(key, _)| key == "name")
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+    else {
+        return Served {
+            status: 400,
+            headers: vec![("content-type".to_owned(), "text/plain".to_owned())],
+            body: b"missing name".to_vec(),
+        };
+    };
+    let host = url.host_str().unwrap_or_default();
+    let cookies = cookies.lock().unwrap_or_else(PoisonError::into_inner);
+    let record = cookies
+        .iter()
+        .find(|record| record.name == name && cookie_domain_covers(record, host));
+    let body = match record {
+        Some(record) => serde_json::to_vec(&DriverCookie::new(record))
+            .expect("a driver cookie is plain JSON scalars"),
+        None => b"null".to_vec(),
+    };
+    Served {
+        status: 200,
+        headers: vec![
+            ("content-type".to_owned(), "application/json".to_owned()),
+            ("cache-control".to_owned(), "no-store".to_owned()),
+        ],
+        body,
+    }
+}
+
+/// Whether `record` is visible to `host`: a host-only cookie names it
+/// exactly, and a `Domain` cookie covers the host and its subdomains
+/// (<https://httpwg.org/http-extensions/draft-ietf-httpbis-rfc6265bis.html#section-5.1.3>).
+fn cookie_domain_covers(record: &net::CookieRecord, host: &str) -> bool {
+    if record.host_only {
+        record.domain == host
+    } else {
+        record.domain == host
+            || host
+                .strip_suffix(&record.domain)
+                .is_some_and(|prefix| prefix.ends_with('.'))
+    }
+}
+
+/// One cookie as `WebDriver` serializes it
+/// (<https://w3c.github.io/webdriver/#dfn-serialized-cookie>,
+/// <https://w3c.github.io/webdriver/#dfn-table-for-cookie-conversion>).
+///
+/// `expiry` is omitted for a session cookie, which is how the JSON says
+/// `undefined` to the test that reads it.
+#[derive(serde::Serialize)]
+struct DriverCookie<'a> {
+    name: &'a str,
+    value: &'a str,
+    path: &'a str,
+    domain: &'a str,
+    secure: bool,
+    #[serde(rename = "httpOnly")]
+    http_only: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expiry: Option<f64>,
+    #[serde(rename = "sameSite")]
+    same_site: &'static str,
+}
+
+impl<'a> DriverCookie<'a> {
+    fn new(record: &'a net::CookieRecord) -> Self {
+        Self {
+            name: &record.name,
+            value: &record.value,
+            path: &record.path,
+            domain: &record.domain,
+            secure: record.secure,
+            http_only: record.http_only,
+            // WebDriver's `expiry` is seconds since the Unix epoch, and may
+            // be fractional.
+            expiry: record
+                .expiry
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|elapsed| elapsed.as_secs_f64()),
+            same_site: driver_same_site(record.same_site),
+        }
+    }
+}
+
+fn driver_same_site(same_site: net::CookieSameSite) -> &'static str {
+    // A cookie with no `SameSite` attribute is subject to the browser's
+    // default policy. Chrome's cookie store reports that policy, `Lax`,
+    // through WebDriver, and the spec's table says the same default for an
+    // omitted value, so `Default` joins `Lax`.
+    match same_site {
+        net::CookieSameSite::Strict => "Strict",
+        net::CookieSameSite::Lax | net::CookieSameSite::Default => "Lax",
+        net::CookieSameSite::None => "None",
+    }
+}
+
+/// Copies the jar's live records into the origin's view.
+fn publish_cookies(agent: &net::Agent, view: &Mutex<Vec<net::CookieRecord>>) {
+    let records = agent.all_cookie_records();
+    *view.lock().unwrap_or_else(PoisonError::into_inner) = records;
 }
 
 /// The `?pipe=` pipeline a wptserve URL selects.
@@ -560,6 +698,9 @@ pub struct FsServices {
     /// with its virtual time.
     clock: Arc<HarnessClock>,
     storage: Mutex<HashMap<(StorageKind, StorageKey, String), String>>,
+    /// The jar's live records, published for the origin's `get_named_cookie`
+    /// route. It is the same `Arc` the origin holds.
+    cookies: Arc<Mutex<Vec<net::CookieRecord>>>,
 }
 
 impl FsServices {
@@ -573,7 +714,8 @@ impl FsServices {
         content_types: HashMap<String, String>,
         sidecar: Option<Sidecar>,
     ) -> Self {
-        let origin = Arc::new(Origin::new(root, content_types));
+        let cookies = Arc::new(Mutex::new(Vec::new()));
+        let origin = Arc::new(Origin::new(root, content_types, Arc::clone(&cookies)));
         let transport = Arc::new(FrameTransport {
             origin: Arc::clone(&origin),
             sidecar,
@@ -591,6 +733,7 @@ impl FsServices {
             cache,
             clock,
             storage: Mutex::new(HashMap::new()),
+            cookies,
         }
     }
 
@@ -613,6 +756,16 @@ impl FsServices {
                 self.agent.set_cookie(value, url);
             }
         }
+        self.publish_cookies();
+    }
+
+    /// Copies the jar's live records into the origin's view, which the
+    /// `get_named_cookie` route reads. Every path that can store a cookie
+    /// calls this once it is done: a script write, a response header the
+    /// harness applied itself, or a page fetch that let [`net::Agent`] apply
+    /// the response's `Set-Cookie` fields.
+    fn publish_cookies(&self) {
+        publish_cookies(&self.agent, &self.cookies);
     }
 
     /// Drops cookies, stored responses, and storage between files.
@@ -622,6 +775,7 @@ impl FsServices {
     /// tests.
     pub fn clear(&self) {
         self.agent.clear_cookies();
+        self.publish_cookies();
         self.cache.clear();
         self.storage
             .lock()
@@ -750,6 +904,7 @@ impl NetworkHost for FsServices {
         // so the fetch runs on a fresh thread and this one waits for it.
         let agent = self.agent.clone();
         let cache = Arc::clone(&self.cache);
+        let cookies = Arc::clone(&self.cookies);
         let (send, receive) = std::sync::mpsc::sync_channel(1);
         std::thread::Builder::new()
             .name("wpt-fetch-sync".to_owned())
@@ -758,6 +913,7 @@ impl NetworkHost for FsServices {
                     fetch(&agent, &cache, &request)
                 }))
                 .unwrap_or(Err(DialFailure::Connect));
+                publish_cookies(&agent, &cookies);
                 let _ = send.send(outcome);
             })
             .map_err(|_| DialFailure::Connect)?;
@@ -771,6 +927,7 @@ impl NetworkHost for FsServices {
         // `block_on`.
         let agent = self.agent.clone();
         let cache = Arc::clone(&self.cache);
+        let cookies = Arc::clone(&self.cookies);
         let cancelled = Arc::new(AtomicBool::new(false));
         let thread_flag = Arc::clone(&cancelled);
         let cancel_flag = Arc::clone(&cancelled);
@@ -785,6 +942,7 @@ impl NetworkHost for FsServices {
                     }))
                     .unwrap_or(Err(DialFailure::Connect))
                 };
+                publish_cookies(&agent, &cookies);
                 completion(outcome);
             })
             .expect("spawn the WPT fetch thread");
@@ -797,6 +955,7 @@ impl NetworkHost for FsServices {
 
     fn set_cookie(&self, value: &str, url: &Url, partition_key: Option<&str>) {
         let _stored = self.agent.set_cookie_partition(value, url, partition_key);
+        self.publish_cookies();
     }
 
     fn cookie_store_records(
@@ -820,6 +979,7 @@ impl NetworkHost for FsServices {
         let _stored = self
             .agent
             .set_script_cookie_partition(write, url, partition_key);
+        self.publish_cookies();
     }
 }
 
@@ -1003,6 +1163,77 @@ mod tests {
                 headers: &[],
             },
         )
+    }
+
+    fn driver_record(name: &str, domain: &str, host_only: bool) -> net::CookieRecord {
+        net::CookieRecord {
+            name: name.to_owned(),
+            value: "value".to_owned(),
+            expiry: None,
+            domain: domain.to_owned(),
+            path: "/".to_owned(),
+            created: std::time::SystemTime::UNIX_EPOCH,
+            last_access: std::time::SystemTime::UNIX_EPOCH,
+            host_only,
+            secure: true,
+            http_only: false,
+            same_site: net::CookieSameSite::Strict,
+            partition_key: None,
+        }
+    }
+
+    /// The route answers with the cookie's `WebDriver` fields, scoped to the
+    /// requesting host, and a session cookie has no `expiry` key at all.
+    #[test]
+    fn the_driver_cookie_route_scopes_by_host() {
+        let services = services("driver-cookie");
+        let route = |host: &str, name: &str| {
+            url::Url::parse(&format!(
+                "http://{host}:8000/resources/testdriver-cookie?name={name}"
+            ))
+            .expect("route URL")
+        };
+        let page = route("web-platform.test", "a");
+        *services
+            .cookies
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            vec![driver_record("a", "web-platform.test", true)];
+
+        let Ok(served) = services.origin.respond(&page, &[]) else {
+            panic!("the testdriver cookie route must answer");
+        };
+        let body: serde_json::Value = serde_json::from_slice(&served.body).expect("cookie JSON");
+        assert_eq!(body["name"], "a");
+        assert_eq!(body["value"], "value");
+        assert_eq!(body["path"], "/");
+        assert_eq!(body["domain"], "web-platform.test");
+        assert_eq!(body["secure"], true);
+        assert_eq!(body["httpOnly"], false);
+        assert_eq!(body["sameSite"], "Strict");
+        assert!(
+            body.get("expiry").is_none(),
+            "a session cookie must not carry an expiry"
+        );
+
+        // A host-only cookie does not cover a subdomain.
+        let sub = route("sub.web-platform.test", "a");
+        let Ok(served) = services.origin.respond(&sub, &[]) else {
+            panic!("the testdriver cookie route must answer");
+        };
+        assert_eq!(served.body, b"null");
+
+        // A `Domain` cookie does.
+        *services
+            .cookies
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            vec![driver_record("a", "web-platform.test", false)];
+        let Ok(served) = services.origin.respond(&sub, &[]) else {
+            panic!("the testdriver cookie route must answer");
+        };
+        let body: serde_json::Value = serde_json::from_slice(&served.body).expect("cookie JSON");
+        assert_eq!(body["domain"], "web-platform.test");
     }
 
     #[test]

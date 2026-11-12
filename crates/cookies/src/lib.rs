@@ -302,6 +302,15 @@ impl CookieJar {
         }
     }
 
+    /// Every live cookie in the jar, session and persistent, in storage
+    /// order. This is the `WebDriver` cookie view, which is not scoped to a
+    /// URL and includes `HttpOnly` cookies
+    /// (<https://w3c.github.io/webdriver/#get-all-cookies>).
+    pub fn all_records(&mut self, now: SystemTime) -> Vec<CookieRecord> {
+        self.evict_expired(now);
+        self.cookies.iter().map(StoredCookie::record).collect()
+    }
+
     /// Persistent cookies from the live jar. Session cookies are omitted.
     #[must_use]
     pub fn snapshot(&self) -> Vec<CookieRecord> {

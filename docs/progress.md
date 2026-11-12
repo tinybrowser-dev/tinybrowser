@@ -569,3 +569,15 @@ plus the IDL harness), the iframe realm before its creating script (2), a
 detached frame's `contentWindow` (1), HTTP-initiated change events (7), and
 `fetch_tests_from_window` completion (`cookieStore_delete_domain`, whose two
 subtests pass). `docs/limitations.md` records each gap.
+
+WPT's `get_named_cookie` now works in the harness, closing the last
+testdriver gap in the cookie suite. The vendor script asks a
+`/resources/testdriver-cookie?name=` route, and the origin answers from the
+jar's live records filtered by the request host, so the result carries the
+cookie's path, domain, `Secure`, `HttpOnly`, expiry, and `SameSite` rather
+than the subset `document.cookie` exposes. The jar publishes that snapshot
+after every operation that can store a cookie, including a page fetch whose
+response carried `Set-Cookie`. `cookieListItem_attributes` and
+`cookieStore_set_path` now pass all 14 subtests, and `cookiestore/` is
+**37 of 48 files and 221 of 244 subtests** when its two budget-sensitive
+files complete.

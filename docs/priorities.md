@@ -48,9 +48,9 @@ Sources:
   24.8%. WPT 34.8%; `fetch/api` 71.8%.
 - **cookies** — `document.cookie` read 78.7%, write 68.3%,
   `SameSite=None` 38.6%, no `SameSite` 31.7%, partitioned 30.7%,
-  `CookieStore` 11.9%. WPT 32.6%; `cookiestore` 34/48 files and
-  208/244 subtests. What remains is HTTP-initiated change events, service
-  workers, and the testdriver cookie read.
+  `CookieStore` 11.9%. WPT 32.6%; `cookiestore` 37/48 files and
+  221/244 subtests. What remains is HTTP-initiated change events, service
+  workers, and two budget-sensitive files.
 - **storage** — `localStorage`/`sessionStorage` read 80.0%, write
   75.8%. WPT `webstorage` 81.5%.
 - **csp** — any CSP 68.9%, HTTP-delivered 50.0%, `unsafe-eval` 54.2%,
@@ -91,9 +91,9 @@ Ordered by reach × current gap:
    71.0% against 44.1% for css; `css/cssom-view` 17.1%, `css/cssom`
    29.5%.
 2. **cookies** — read on 78.7% of pages against 32.6% WPT. SameSite and
-   partitioned cookies are in; `CookieStore` (11.9%) is 34/48 files, and
-   the rest needs HTTP change events, service workers, and testdriver
-   `get_named_cookie`.
+   partitioned cookies are in; `CookieStore` (11.9%) is 37/48 files. The
+   rest needs HTTP change events, service workers, and a same-document
+   fragment navigation (one file is budget-sensitive on it).
 3. **csp** — 68.9% reach against 26.6%. A response-header path with a
    small surface.
 4. **fetch** — 72.7% reach against 34.8%. The Body/Headers/stream

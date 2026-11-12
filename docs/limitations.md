@@ -225,12 +225,10 @@ The spec's `delete(name)` step passes `partitioned` as true, but WPT
 (unpartitioned) and expects this delete to remove it, and Chrome and Firefox
 remove it. This implementation passes false.
 
-The `cookiestore` slice passes **34 of 48 files and 208 of 244 subtests**
-(from 0 of 48 files). The remaining files fail for infrastructure the engine
-does not have:
+The `cookiestore` slice passes **37 of 48 files and 221 of 244 subtests**
+(from 0 of 48 files) when both budget-sensitive files complete. The
+remaining files fail for infrastructure the engine does not have:
 
-- `cookieListItem_attributes` and `cookieStore_set_path` need testdriver's
-  `get_named_cookie`, which the harness does not implement (13 subtests).
 - `cookieStoreManager_getSubscriptions_*`, `cookieStore_subscribe_arguments`,
   `cookieStore_subscriptions_empty`, `serviceworker_cookieStore_cross_origin`,
   and `serviceworker_cookieStore_subscriptions_reset` need service workers
@@ -243,8 +241,20 @@ does not have:
 - `cookieStore_delete_domain` passes both subtests but
   `fetch_tests_from_window` never reports the child's completion, so the
   file times out.
+- `cookieStore_getAll_arguments` passes its 12 subtests when it completes,
+  but it assigns `location = '#foo'`; a fragment-only `Location` write
+  reloads the document instead of running a same-document fragment
+  navigation, so the file sometimes exceeds the harness budget.
 - `change_eventhandler_for_http_cookie_and_set_cookie_headers` needs
   HTTP-initiated change events (7 subtests).
+
+WPT's `get_named_cookie` runs from a harness route,
+`/resources/testdriver-cookie?name=`, that answers from the jar's live
+records. It is a test-harness surface, not engine code: the vendor script
+fetches it, and the origin filters by the cookie's domain against the
+request host. The jar publishes a snapshot after every operation that can
+store a cookie, including a page fetch whose response carried
+`Set-Cookie`.
 
 ## HTTP cache
 
