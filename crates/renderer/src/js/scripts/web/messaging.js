@@ -41,13 +41,6 @@ const __tbFrameProxies = Object.create(null);
 // non-JS turn, and the engine then flushes these through
 // `__tbFlushFrameSets` (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-set>).
 const __tbFramePendingSets = Object.create(null);
-// EventTarget methods captured at realm init from our own prototype (like
-// `cssom.js`): the WindowProxy below binds these, never the target realm's
-// lazily-read (and page-clobberable) own properties.
-const __tbProxyEventTarget = globalThis.EventTarget.prototype;
-const __tbProxyAddEventListener = __tbProxyEventTarget.addEventListener;
-const __tbProxyRemoveEventListener = __tbProxyEventTarget.removeEventListener;
-const __tbProxyDispatchEvent = __tbProxyEventTarget.dispatchEvent;
 const __tbFramePending = frame => {
   let pending = __tbFramePendingSets[frame];
   if (pending === undefined) {
@@ -56,6 +49,13 @@ const __tbFramePending = frame => {
   }
   return pending;
 };
+// `addEventListener` and friends called on a `WindowProxy` whose target realm
+// has not started: a child navigable's realm begins at the next turn, but a
+// listener added to it in this task must still reach that window, so the calls
+// replay when the realm starts
+// (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-get>,
+// <https://dom.spec.whatwg.org/#interface-eventtarget>).
+const __tbFramePendingCalls = Object.create(null);
 // The members a same-origin frame whose realm has not started presents from the
 // inserting realm. Only callable interfaces (constructors and functions with a
 // prototype) and the intrinsic namespace objects qualify: everything else a
@@ -131,14 +131,16 @@ const __tbFrameNavigator = frame => {
 };
 host.__tbFlushFrameSets = function(frame) {
   const pending = __tbFramePendingSets[frame];
-  if (pending === undefined) return false;
+  const calls = __tbFramePendingCalls[frame];
+  if (pending === undefined && calls === undefined) return false;
   const target = host.__tbFrameGlobal(frame);
   // A frame whose realm is not up yet keeps its writes: the document that
   // starts next, not the initial about:blank a navigation replaces, is the one
   // they belong to
   // (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-set>).
   if (target == null) return false;
-  for (const key of Reflect.ownKeys(pending)) {
+  delete __tbFramePendingCalls[frame];
+  for (const key of pending === undefined ? [] : Reflect.ownKeys(pending)) {
     if (key === '__proto__' || typeof key === 'symbol') {
       // `CreateDataProperty`: a `__proto__` write must not walk the prototype
       // setter, and symbol keys need `defineProperty` to become own data
@@ -148,6 +150,11 @@ host.__tbFlushFrameSets = function(frame) {
       });
     } else {
       target[key] = pending[key];
+    }
+  }
+  if (calls !== undefined) {
+    for (const [hostName, args] of calls) {
+      __tbApply(host[hostName], undefined, [frame, ...args]);
     }
   }
   return true;
@@ -1127,8 +1134,33 @@ const __tbFrameProxy = frame => {
   };
   // One helper for the three EventTarget bindings below (was three
   // near-identical `cachedMember` blocks).
-  const bindTargetMethod = (key, targetGlobal, method) => cachedMember(key, targetGlobal, () =>
-    function() { return __tbApply(method, proxy, arguments); });
+  // A window in another frame is not a platform object in this realm, so its
+  // EventTarget members cannot come from the target realm's prototype: the
+  // receiver would fail the interface's brand check. Address the target frame
+  // directly instead, the way `postMessage` does
+  // (<https://dom.spec.whatwg.org/#interface-eventtarget>,
+  // <https://html.spec.whatwg.org/multipage/window-object.html#the-windowproxy-exotic-object>).
+  const eventTargetMethod = (key, hostName) => cachedMember(key, 'frame', () =>
+    function() {
+      if (host.__tbFrameGlobal(frame) != null && !host.__tbFrameAwaitingReplay(frame)) {
+        return __tbApply(host[hostName], undefined, [frame, ...arguments]);
+      }
+      // A same-origin child's realm cannot start until this script returns, so
+      // the call waits in the pending call log and replays when it does
+      // (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-get>).
+      if (key === 'dispatchEvent') {
+        // The window has no listener before its realm exists, and the event
+        // has nothing else to cancel.
+        return true;
+      }
+      let calls = __tbFramePendingCalls[frame];
+      if (calls === undefined) {
+        calls = [];
+        __tbFramePendingCalls[frame] = calls;
+      }
+      calls.push([hostName, __tbArrayFrom(arguments)]);
+      return undefined;
+    });
   const handler = {
     get(target, property) {
       // Cross-origin-safe window properties only; everything else needs the
@@ -1177,6 +1209,15 @@ const __tbFrameProxy = frame => {
           if (host.__tbFrameSameOrigin(frame)) {
             if (property === 'name') return host.__tbFrameName(frame);
             if (property === 'navigator') return __tbFrameNavigator(frame);
+            if (property === 'addEventListener') {
+              return eventTargetMethod(property, '__tbFrameAddEventListener');
+            }
+            if (property === 'removeEventListener') {
+              return eventTargetMethod(property, '__tbFrameRemoveEventListener');
+            }
+            if (property === 'dispatchEvent') {
+              return eventTargetMethod(property, '__tbFrameDispatchEvent');
+            }
             if (property === 'location') {
               if (pendingLocation === undefined) {
                 pendingLocation = host.__tbFrameLocation(frame);
@@ -1224,9 +1265,9 @@ const __tbFrameProxy = frame => {
         // `window_world_for_call` resolves the target frame
         // (<https://dom.spec.whatwg.org/#interface-eventtarget>,
         // <https://html.spec.whatwg.org/multipage/window-object.html#the-windowproxy-exotic-object>).
-        case 'addEventListener': return bindTargetMethod(property, sameOrigin, __tbProxyAddEventListener);
-        case 'removeEventListener': return bindTargetMethod(property, sameOrigin, __tbProxyRemoveEventListener);
-        case 'dispatchEvent': return bindTargetMethod(property, sameOrigin, __tbProxyDispatchEvent);
+        case 'addEventListener': return eventTargetMethod(property, '__tbFrameAddEventListener');
+        case 'removeEventListener': return eventTargetMethod(property, '__tbFrameRemoveEventListener');
+        case 'dispatchEvent': return eventTargetMethod(property, '__tbFrameDispatchEvent');
       }
       return sameOrigin[property];
     },
@@ -1286,6 +1327,8 @@ const __tbFrameProxy = frame => {
       if (pending !== undefined && property in pending) return true;
       if (!host.__tbFrameSameOrigin(frame)) return false;
       if (property === 'location' || property === 'name' || property === 'document') return true;
+      if (property === 'addEventListener' || property === 'removeEventListener'
+          || property === 'dispatchEvent') return true;
       return __tbFrameForwarded(property, globalThis[property]);
     },
     getPrototypeOf() {

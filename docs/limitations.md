@@ -209,6 +209,16 @@ already-started flag onto the whole subtree, so a cloned `<script>` does not
 run when the clone is connected
 (<https://html.spec.whatwg.org/multipage/scripting.html#script-processing-model:cloning-steps>).
 
+A `keepalive` request outlives its environment: the document or worker that
+made it hands the request to the network before its realm goes away, and the
+completion is discarded because nothing is left to read it. The request never
+starts in the same turn: a document that is dropped in the turn its script ran
+still sends it from teardown, but a script that queues one and never yields is
+the same as any other pending task. `pagehide` reports `persisted: false`
+always — this engine keeps no back/forward cache — and an `iframe` removal runs
+the child's unload steps even though HTML's removing steps say no unload events
+fire; that deliberate divergence is in `docs/upstream.md`.
+
 Still open in `dom/events`: `window.event` inside a shadow tree and for a
 listener installed from another global (`event-global-extra.window.html`, two
 subtests), and `Event-dispatch-single-activation-behavior.html` exceeds the

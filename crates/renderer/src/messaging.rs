@@ -46,6 +46,26 @@ impl SharedHandle {
     pub(crate) fn borrow_mut(&self) -> MutexGuard<'_, Shared> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
+
+    /// Counts one `keepalive` fetch whose environment is gone and whose
+    /// completion no ledger will read. The network is still working for the
+    /// page, so the engine is not idle until the count returns to zero
+    /// (<https://fetch.spec.whatwg.org/#keepalive-flag>).
+    pub(crate) fn begin_keepalive_fetch(&self) {
+        self.borrow_mut().keepalive_fetches += 1;
+    }
+
+    /// Counts one such fetch finishing, successfully or not.
+    pub(crate) fn end_keepalive_fetch(&self) {
+        let mut shared = self.borrow_mut();
+        shared.keepalive_fetches = shared.keepalive_fetches.saturating_sub(1);
+    }
+
+    /// Whether a `keepalive` fetch outlived the document or worker that
+    /// started it and is still on the network.
+    pub(crate) fn has_keepalive_fetches(&self) -> bool {
+        self.borrow().keepalive_fetches > 0
+    }
 }
 
 /// Child frames one page engine will host; the main frame is not
@@ -821,6 +841,8 @@ pub(crate) struct Shared {
     pub(crate) ports: PortTable,
     /// Completed sends waiting to be routed to their frame's task queue.
     pub(crate) deliveries: Vec<Delivery>,
+    /// `keepalive` fetches running after their environment went away.
+    keepalive_fetches: usize,
     /// Frame ids are minted here so a frame's browsing context can be created
     /// from inside a script (an `iframe` insertion), not only from the engine.
     next_frame: u64,
@@ -842,6 +864,7 @@ impl Default for Shared {
             tree: FrameTree::default(),
             ports: PortTable::default(),
             deliveries: Vec::new(),
+            keepalive_fetches: 0,
             // `FrameId::MAIN` is 0 and is not minted here.
             next_frame: 1,
             document_ids: HashMap::new(),

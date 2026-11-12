@@ -1352,7 +1352,23 @@ impl Worker {
     /// (<https://html.spec.whatwg.org/multipage/workers.html#close-a-worker>).
     pub(crate) fn close(&mut self) {
         self.closed = true;
+        // A `keepalive` request outlives the worker that made it, so the ones
+        // still in the realm's queue start before the realm goes away; every
+        // other queued request dies with it
+        // (<https://fetch.spec.whatwg.org/#keepalive-flag>).
+        self.start_queued_keepalive_fetches();
         self.discard_queued_tasks();
+    }
+
+    /// Starts the `keepalive` fetches this realm queued but has not run.
+    fn start_queued_keepalive_fetches(&mut self) {
+        let pending = {
+            let world = self.world.borrow();
+            world.take_queued_keepalive_fetches()
+        };
+        for request in pending {
+            self.apply_realm_request(request);
+        }
     }
 
     /// Drops every queued task, releasing the endpoints its messages carried.

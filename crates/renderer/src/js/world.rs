@@ -1230,6 +1230,20 @@ pub(crate) struct ParentContext {
     pub(crate) first_party: bool,
 }
 
+/// Whether the `WindowProxy` state other realms recorded for a document has
+/// been replayed into the realm that document started
+/// (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-set>).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProxyReplay {
+    /// A realm starts after the script that created its frame returns, and a
+    /// queued navigation replaces the document the state would land on, so in
+    /// both cases the replay has to wait
+    /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate>).
+    Owed,
+    /// The recorded state reached this realm.
+    Done,
+}
+
 pub(crate) struct World {
     /// The handles every frame of this renderer process shares: trees,
     /// registry and wrapper cache, ports, JS heap, wake handle, and stop flag.
@@ -1388,6 +1402,10 @@ pub(crate) struct World {
     /// `navigator.userActivation.hasBeenActive`
     /// (<https://html.spec.whatwg.org/multipage/interaction.html#dom-useractivation-hasbeenactive>).
     sticky_activation: bool,
+    /// Whether the `WindowProxy` writes and calls other realms made for this
+    /// document have been replayed into it
+    /// (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-set>).
+    proxy_replay: ProxyReplay,
     brands: HashMap<String, Persistent<Object<'static>>>,
     pub(crate) bridge: Option<Persistent<Object<'static>>>,
     /// The realm's `Location` object. `window.location` is
@@ -1886,6 +1904,7 @@ impl World {
             clicks_in_progress: HashSet::new(),
             transient_activation: None,
             sticky_activation: false,
+            proxy_replay: ProxyReplay::Owed,
             brands: HashMap::new(),
             bridge: None,
             location_object: None,
@@ -2719,16 +2738,70 @@ impl World {
 
     /// Destroys the child navigable of each `iframe` container.
     ///
-    /// HTML iframe [removing steps] run destroy-a-child-navigable and do not
-    /// fire `pagehide`/`unload` synchronously
+    /// HTML's iframe removing steps run destroy-a-child-navigable, whose note
+    /// says no unload events fire
     /// (<https://html.spec.whatwg.org/multipage/iframe-embed-object.html#the-iframe-element:html-element-removing-steps>).
+    /// Every browser fires them synchronously anyway, and script depends on it:
+    /// a `keepalive` fetch started from an iframe's `unload` handler is how
+    /// pages report on teardown, and WPT asserts it
+    /// (`fetch/api/basic/keepalive.any.js`,
+    /// <https://github.com/whatwg/html/issues/10194>). The document is
+    /// destroyed after its own unload steps, so script still sees a live
+    /// document.
     pub(crate) fn destroy_child_navigables(&self, containers: &[NodeId]) {
-        let mut shared = self.runtime.shared.borrow_mut();
         for container in containers {
-            if let Some(frame) = shared.tree.frame_for_container(*container) {
+            let Some(frame) = self.frame_for_container(*container) else {
+                continue;
+            };
+            self.fire_frame_unload(frame);
+            // `unload` runs script, which can destroy this navigable, a later
+            // one in `containers`, or connect a new frame to the container.
+            let mut shared = self.runtime.shared.borrow_mut();
+            if shared.tree.frame_for_container(*container) == Some(frame) {
                 shared.remove_child_navigable(frame, *container);
             }
         }
+    }
+
+    /// Closes an auxiliary context its opener closed. Closing a top-level
+    /// traversable unloads its active document and its inclusive descendant
+    /// navigables, so each of them runs its unload steps before the tree drops
+    /// it
+    /// (<https://html.spec.whatwg.org/multipage/document-sequences.html#definitely-close-a-top-level-traversable>).
+    pub(crate) fn close_auxiliary(&self, frame: FrameId) {
+        let victims = {
+            let shared = self.runtime.shared.borrow();
+            if shared.tree.opener(frame).is_none() {
+                return;
+            }
+            let mut victims = vec![frame];
+            let mut pending: Vec<FrameId> = shared.tree.children(frame).to_vec();
+            while let Some(child) = pending.pop() {
+                pending.extend(shared.tree.children(child).iter().copied());
+                victims.push(child);
+            }
+            victims
+        };
+        for frame in victims {
+            self.fire_frame_unload(frame);
+        }
+        self.runtime.shared.borrow_mut().close_auxiliary(frame);
+    }
+
+    /// Runs a frame's unload steps in that frame's own realm
+    /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#unload>).
+    pub(crate) fn fire_frame_unload(&self, frame: FrameId) {
+        let Some(world) = self.runtime.registry.borrow().frame_world(frame) else {
+            return;
+        };
+        let Some(context) = world.borrow().realm_context.clone() else {
+            return;
+        };
+        context.with(|realm_ctx| {
+            if let Err(error) = crate::js::events::fire_document_unload(&realm_ctx) {
+                crate::js::bindings::host::report_callback_error(&realm_ctx, &error);
+            }
+        });
     }
 
     /// The serialized origin of this realm's document
@@ -3069,11 +3142,51 @@ impl World {
     }
 
     pub(crate) fn queue_frame_navigation(&mut self, navigation: FrameNavigation) {
+        // The navigation replaces the target's document. A `WindowProxy` write
+        // or call made from now on belongs to the document that replaces it, so
+        // the target owes a replay even though its current realm still runs
+        // (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate>).
+        let target = match &navigation.target {
+            NavigationTarget::Frame(frame) => Some(*frame),
+            NavigationTarget::Container(container) => self.frame_for_container(*container),
+            // The engine chooses the frame once the script stops, too late to
+            // mark it here; its own replay runs when that document commits.
+            NavigationTarget::Target(_) => None,
+        };
+        if let Some(frame) = target
+            && frame != self.frame
+            && let Some(world) = self.frame_world(frame)
+        {
+            world.borrow_mut().await_proxy_sets_replay();
+        }
         self.state.frame_navigations.push(navigation);
     }
 
     pub(crate) fn take_frame_navigations(&mut self) -> Vec<FrameNavigation> {
         std::mem::take(&mut self.state.frame_navigations)
+    }
+
+    /// Whether the `WindowProxy` state other realms recorded for this realm
+    /// still owes a replay into it.
+    ///
+    /// A frame's realm starts after the script that created it returns, and a
+    /// queued navigation replaces the document it would otherwise land on, so
+    /// the write or call waits for the document that survives both
+    /// (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-set>).
+    pub(crate) fn needs_proxy_sets_replay(&self) -> bool {
+        self.proxy_replay == ProxyReplay::Owed
+    }
+
+    /// Records that the state recorded for this realm reached it.
+    pub(crate) fn mark_proxy_sets_replayed(&mut self) {
+        self.proxy_replay = ProxyReplay::Done;
+    }
+
+    /// Marks that this document is being replaced, so a `WindowProxy` write or
+    /// call belongs to the document that replaces it
+    /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate>).
+    pub(crate) fn await_proxy_sets_replay(&mut self) {
+        self.proxy_replay = ProxyReplay::Owed;
     }
 
     /// Whether a queued navigation has not been handed to the engine yet.
@@ -3163,6 +3276,26 @@ impl World {
     /// Pops the oldest outgoing request, in enqueue order.
     pub(crate) fn pop_outbox(&self) -> Option<RealmRequest> {
         self.outbox.borrow_mut().pop_front()
+    }
+
+    /// Removes the queued `keepalive` fetches, leaving every other request in
+    /// order. A `keepalive` request has to reach the network even when the
+    /// environment drops its queue before the next turn, so a realm that is
+    /// going away starts these first
+    /// (<https://fetch.spec.whatwg.org/#keepalive-flag>).
+    pub(crate) fn take_queued_keepalive_fetches(&self) -> Vec<RealmRequest> {
+        let mut outbox = self.outbox.borrow_mut();
+        let mut taken = Vec::new();
+        let mut kept = VecDeque::with_capacity(outbox.len());
+        for request in outbox.drain(..) {
+            if matches!(&request, RealmRequest::Fetch(fetch) if fetch.options.keepalive) {
+                taken.push(request);
+            } else {
+                kept.push_back(request);
+            }
+        }
+        *outbox = kept;
+        taken
     }
 
     pub(crate) fn has_outbox_work(&self) -> bool {

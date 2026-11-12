@@ -100,6 +100,22 @@ pub(crate) fn install_messaging(ctx: &Ctx<'_>) -> Result<()> {
     )?;
     globals.set("__tbCloseFrame", rquickjs::prelude::Func::from(close_frame))?;
     globals.set(
+        "__tbFrameAwaitingReplay",
+        rquickjs::prelude::Func::from(frame_awaiting_replay),
+    )?;
+    globals.set(
+        "__tbFrameAddEventListener",
+        rquickjs::prelude::Func::from(frame_add_event_listener),
+    )?;
+    globals.set(
+        "__tbFrameRemoveEventListener",
+        rquickjs::prelude::Func::from(frame_remove_event_listener),
+    )?;
+    globals.set(
+        "__tbFrameDispatchEvent",
+        rquickjs::prelude::Func::from(frame_dispatch_event),
+    )?;
+    globals.set(
         "__tbRegisterSharedBuffer",
         rquickjs::prelude::Func::from(register_shared_buffer),
     )?;
@@ -184,13 +200,111 @@ fn close_frame(ctx: Ctx<'_>, frame: f64) {
         return;
     };
     let caller = world.borrow().frame();
-    let shared = world.borrow().shared();
-    let mut shared = shared.borrow_mut();
     let frame = FrameId::new(frame);
-    if shared.tree.opener(frame) != Some(caller) {
-        return;
+    {
+        let shared = world.borrow().shared();
+        if shared.borrow().tree.opener(frame) != Some(caller) {
+            return;
+        }
     }
-    shared.close_auxiliary(frame);
+    // The closing window and every navigable it owns run their unload steps
+    // first, then the context is destroyed
+    // (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#unload>).
+    world.borrow().close_auxiliary(frame);
+}
+
+/// The world an `EventTarget` call on `frame`'s window targets.
+///
+/// A `WindowProxy` is not a platform object in the calling realm, so
+/// `addEventListener` reached through it cannot pass the interface's receiver
+/// check. The target frame is named explicitly instead, as `postMessage` does
+/// (<https://html.spec.whatwg.org/multipage/window-object.html#the-windowproxy-exotic-object>,
+/// <https://dom.spec.whatwg.org/#interface-eventtarget>).
+fn frame_event_target(ctx: &Ctx<'_>, frame: u64) -> Result<Rc<RefCell<World>>> {
+    let current = world(ctx)?;
+    let Some(target) = current.borrow().frame_world(FrameId::new(frame)) else {
+        return Err(Exception::throw_type(ctx, "incompatible receiver"));
+    };
+    let same_origin = target.borrow().origin == current.borrow().origin;
+    if !same_origin {
+        return Err(Exception::throw_type(ctx, "incompatible receiver"));
+    }
+    Ok(target)
+}
+
+/// Whether `frame`'s document still owes a replay of the `WindowProxy` state
+/// other realms recorded for it. A call made now would land on a document the
+/// frame is about to replace, so the caller holds it instead
+/// (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-set>).
+fn frame_awaiting_replay(ctx: Ctx<'_>, frame: f64) -> Result<bool> {
+    let Some(frame) = protocol_id(frame) else {
+        return Ok(false);
+    };
+    let current = world(&ctx)?;
+    Ok(current
+        .borrow()
+        .frame_world(FrameId::new(frame))
+        .is_some_and(|target| target.borrow().needs_proxy_sets_replay()))
+}
+
+/// Window `addEventListener` addressed to `frame`
+/// (<https://dom.spec.whatwg.org/#dom-eventtarget-addeventlistener>).
+fn frame_add_event_listener<'js>(
+    ctx: Ctx<'js>,
+    frame: f64,
+    typ: Value<'js>,
+    callback: Value<'js>,
+    options: rquickjs::function::Opt<Value<'js>>,
+) -> Result<()> {
+    let Some(frame) = protocol_id(frame) else {
+        return Err(Exception::throw_type(&ctx, "incompatible receiver"));
+    };
+    let target = frame_event_target(&ctx, frame)?;
+    crate::js::events::add_listener_in(
+        &ctx,
+        &target,
+        crate::js::world::EventTargetKey::Window,
+        typ,
+        callback,
+        options.0,
+    )
+}
+
+/// Window `removeEventListener` addressed to `frame`
+/// (<https://dom.spec.whatwg.org/#dom-eventtarget-removeeventlistener>).
+fn frame_remove_event_listener<'js>(
+    ctx: Ctx<'js>,
+    frame: f64,
+    typ: Value<'js>,
+    callback: Value<'js>,
+    options: rquickjs::function::Opt<Value<'js>>,
+) -> Result<()> {
+    let Some(frame) = protocol_id(frame) else {
+        return Err(Exception::throw_type(&ctx, "incompatible receiver"));
+    };
+    let target = frame_event_target(&ctx, frame)?;
+    crate::js::events::remove_listener_in(
+        &ctx,
+        &target,
+        crate::js::world::EventTargetKey::Window,
+        typ,
+        callback,
+        options.0,
+    )
+}
+
+/// Window `dispatchEvent` addressed to `frame`
+/// (<https://dom.spec.whatwg.org/#dom-eventtarget-dispatchevent>).
+fn frame_dispatch_event<'js>(
+    ctx: Ctx<'js>,
+    frame: f64,
+    event: rquickjs::Class<'js, crate::js::events::JsEvent>,
+) -> Result<bool> {
+    let Some(frame) = protocol_id(frame) else {
+        return Err(Exception::throw_type(&ctx, "incompatible receiver"));
+    };
+    let target = frame_event_target(&ctx, frame)?;
+    crate::js::events::dispatch_event_for_window(&ctx, &target, &event)
 }
 
 /// Mints one `BroadcastChannel` id from the engine-wide counter. A post names

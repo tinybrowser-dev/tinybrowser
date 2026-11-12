@@ -253,6 +253,11 @@ __tbDefineProperty(globalThis.BeforeUnloadEvent.prototype, 'returnValue', {
   set(value) { __tbEventEntry(this, __tbBeforeUnloadEventData, () => ({ returnValue: '' })).returnValue = __tbEventString(value); },
   enumerable: true, configurable: true,
 });
+const __tbPageTransitionEventData = host.slots('tinybrowser.pagetransitionevent.data');
+__tbExposeEvent('PageTransitionEvent', __tbEventConstructor, __tbPageTransitionEventData,
+  () => ({ persisted: false }),
+  init => ({ persisted: Boolean(init.persisted) }),
+  ['persisted']);
 const __tbHashChangeEventData = host.slots('tinybrowser.hashchangeevent.data');
 __tbExposeEvent('HashChangeEvent', __tbEventConstructor, __tbHashChangeEventData,
   () => ({ oldURL: '', newURL: '' }),

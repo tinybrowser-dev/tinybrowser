@@ -1711,6 +1711,7 @@ impl Engine {
     #[must_use]
     pub fn has_pending_dials(&self) -> bool {
         self.frames.values().any(Document::has_pending_dials)
+            || self.runtime.shared.has_keepalive_fetches()
             || self.workers.values().any(Worker::has_pending_dials)
             || self
                 .runtime
@@ -2116,7 +2117,7 @@ impl Engine {
                     .registry
                     .borrow_mut()
                     .forget_frame_world(*frame);
-                self.frames.remove(frame);
+                self.drop_frame_document(*frame);
                 self.frame_history.remove(frame);
                 if let Some(joint) = self.joint_history.as_mut() {
                     joint.leave(*frame);
@@ -2255,6 +2256,17 @@ impl Engine {
             if !self.frames.get(&frame).is_some_and(Document::has_realm) {
                 continue;
             }
+            // A frame loading a new document keeps them too: the navigation
+            // replaces the document a replay would land on, so they belong to
+            // the document that replaces it
+            // (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate>).
+            if self
+                .frames
+                .get(&frame)
+                .is_some_and(Document::has_pending_frame_load)
+            {
+                continue;
+            }
             let writers: Vec<FrameId> = self.frames.keys().copied().collect();
             for writer in writers {
                 if let Some(document) = self.frames.get_mut(&writer) {
@@ -2270,6 +2282,16 @@ impl Engine {
             replayed = true;
         }
         replayed
+    }
+
+    /// Drops a frame's document after handing off the `keepalive` requests it
+    /// queued but never sent: a `keepalive` fetch outlives the environment that
+    /// made it, and the environment is gone as soon as this document is
+    /// (<https://fetch.spec.whatwg.org/#keepalive-flag>).
+    fn drop_frame_document(&mut self, frame: FrameId) {
+        if let Some(mut document) = self.frames.remove(&frame) {
+            document.flush_keepalive_fetches();
+        }
     }
 
     /// Removes a frame and every descendant it owns before the backing
@@ -2311,7 +2333,7 @@ impl Engine {
             shared.forget_document(child);
         }
         // Dropping the document closes its ports and its realm.
-        self.frames.remove(&child);
+        self.drop_frame_document(child);
         self.frame_history.remove(&child);
         if let Some(joint) = self.joint_history.as_mut() {
             joint.leave(child);

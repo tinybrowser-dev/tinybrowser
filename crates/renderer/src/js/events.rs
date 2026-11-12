@@ -1095,6 +1095,28 @@ pub(crate) fn fire_trusted_hashchange(ctx: &Ctx<'_>, old_url: &str, new_url: &st
     Ok(())
 }
 
+/// Fires the trusted `pagehide` of a document unload step, with `persisted`
+/// false because this engine keeps no page in a back/forward cache
+/// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#the-pagetransitionevent-interface>).
+pub(crate) fn fire_trusted_pagehide(ctx: &Ctx<'_>) -> Result<()> {
+    let event = realm_event(ctx, JsEvent::trusted("pagehide", false, false))?;
+    if let Some(prototype) = bindings::world(ctx)?.borrow().brand("PageTransitionEvent") {
+        event.set_prototype(Some(&prototype.restore(ctx)?))?;
+    }
+    dispatch(ctx, EventTargetKey::Window, &event, None)?;
+    Ok(())
+}
+
+/// Runs a document's unload steps in `ctx`'s realm: trusted `pagehide` (this
+/// engine keeps no page in a back/forward cache, so `persisted` is false) then
+/// `unload`, both on the window
+/// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#the-pagetransitionevent-interface>,
+/// <https://html.spec.whatwg.org/multipage/browsing-the-web.html#unload>).
+pub(crate) fn fire_document_unload(ctx: &Ctx<'_>) -> Result<()> {
+    fire_trusted_pagehide(ctx)?;
+    fire_trusted(ctx, EventTargetKey::Window, "unload", false, false)
+}
+
 /// Fires a trusted event and reports whether it was not canceled, for
 /// cancelable events that gate a following action such as `reset`.
 pub(crate) fn fire_trusted_cancelable(

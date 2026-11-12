@@ -921,3 +921,65 @@ No regression in the checked slices: `css/cssom` (3212 of 3928) and
 same build without this change. `tools/check clippy` (renderer and blitz-dom),
 `cargo fmt --check` for the renderer, and the renderer, wpt-harness, cookies,
 browser, and blitz-dom unit tests pass.
+
+`keepalive` was the next `fetch` gap: `fetch(..., {keepalive: true})` is how a
+page reports on its own teardown, so the request has to survive the document
+that made it. It did not. `DialLedger::terminate` runs from `Document::release`
+and from every realm reset, so the teardown of the very document that queued
+the request cancelled it before the next drain step started it.
+`fetch/api/basic/keepalive.any.html` was 9 of 14 (every `unload` and
+`pagehide` case) and `fetch/api/cors/cors-keepalive.any.html` timed out at 15
+of 55.
+
+Now a `keepalive` request leaves the ledger's ownership when its environment
+goes away. A document being dropped takes its queued `keepalive` fetches out of
+the realm outbox and the dial queue and starts them itself
+(`Document::flush_keepalive_fetches`, called by `Engine::drop_frame_document`),
+a closing worker does the same for its queue, and `DialLedger::terminate`
+leaves a started `keepalive` dial running instead of running its cancellation
+handle. The dial's completion reaches a channel nothing reads, which is what
+outliving the document means here, so the request also leaves the engine's
+"pending dials" set; an in-flight `keepalive` count in the shared state stands
+in for it, and `Engine::has_pending_dials` reports it, so the renderer stays
+awake until the network answers instead of reporting itself idle.
+
+Teardown events had to exist for any of that to be reachable. A document now
+runs its unload steps as trusted `pagehide` then trusted `unload`
+(`PageTransitionEvent` is new), and an `iframe` removal runs them in the
+child's realm before destroying its navigable. HTML's iframe removing steps say
+"without any unload events firing"
+(`https://html.spec.whatwg.org/multipage/iframe-embed-object.html#the-iframe-element:html-element-removing-steps`),
+but every shipped engine fires them, the tests depend on it
+(`https://github.com/whatwg/html/issues/10194`), and
+`fetch/api/basic/keepalive.any.js` asserts the fetch that a child's `unload`
+handler issues; the contradiction is recorded in `docs/upstream.md`. Closing an
+auxiliary context unloads its active document and its inclusive descendant
+navigables before the tree drops them
+(`https://html.spec.whatwg.org/multipage/document-sequences.html#definitely-close-a-top-level-traversable`).
+
+`contentWindow.addEventListener` was broken for every frame, not just a
+pending one: a `WindowProxy` is not a platform object in the calling realm, so
+the target realm's `EventTarget.prototype` member failed the interface brand
+check with "incompatible receiver". The three window `EventTarget` members now
+name the target frame explicitly, the way `postMessage` does, and a call made
+before the target's realm exists — or while a queued navigation is about to
+replace its document — waits in the writer realm's pending call log and replays
+when the replacement document's realm starts, next to the `WindowProxy` writes
+that already worked that way. `fetch/api/redirect/redirect-keepalive.any.html`
+(0 of 6, timed out) is the acceptance test: its popup registers `unload` on a
+freshly created `iframe`'s window and closes itself from the opener.
+
+Evidence, subtest diffs against the saved baselines with no subtest lost:
+`fetch/api` goes from 2157 to **2254 of 2473** (+97). `basic/keepalive.any.html`
+is 14 of 14 (from 9), `cors/cors-keepalive.any.html` 95 of 95 (from 15 of 55
+with a timeout), and `redirect/redirect-keepalive.any.html` 12 of 12 (from 0 of
+6 with a timeout). `html/browsers` goes from 641 to **676** (+35), including
+`javascript-url-no-beforeunload.window.html` 8 of 8 (from 4 of 8) — its opened
+window case was unreachable while `addEventListener` threw — and 27 more in
+`javascript-url-referrer` and the `same-document-traversal` files.
+`html/webappapis` 1410 to **1413**, `html/semantics/forms` 4200 to **4201**.
+`beacon` (76), `cookiestore` (247), `cookies` (336), `workers` (974),
+`css/selectors` (4528), `css/cssom` (3212), and `css/cssom-view` (763) are
+subtest-identical, and `dom/nodes` (+17), `dom/events`, `domparsing` (+3), and
+`webmessaging` lose nothing. `tools/check clippy`, `cargo fmt --check`, and the
+renderer, wpt-harness, cookies, and browser unit tests pass.

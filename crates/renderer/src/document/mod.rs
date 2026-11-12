@@ -663,12 +663,6 @@ pub(crate) struct Document {
     new_frames: Rc<RefCell<Vec<CreatedFrame>>>,
     /// Whether this document's `load` event has fired.
     load_fired: bool,
-    /// Whether the writes made through this frame's `WindowProxy` before its
-    /// realm existed were replayed into that realm. `window.open` and
-    /// `iframe.contentWindow` return before the new realm starts, so an
-    /// `onload` written on the proxy is held by the writer realm until then
-    /// (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-set>).
-    proxy_sets_replayed: bool,
     /// Whether the shared declarative refresh steps already ran for this
     /// document; a later `Refresh` value is ignored
     /// (<https://html.spec.whatwg.org/multipage/semantics.html#attr-meta-http-equiv-refresh>).
@@ -959,7 +953,6 @@ impl Document {
             history_updates: Vec::new(),
             new_frames,
             load_fired: false,
-            proxy_sets_replayed: false,
             will_declaratively_refresh: false,
             pending_refresh: None,
             refresh_timer: None,
@@ -1212,8 +1205,8 @@ impl Document {
 
     /// Whether this frame still owes the pre-realm `WindowProxy` writes a replay.
     #[must_use]
-    pub(crate) const fn needs_proxy_sets_replay(&self) -> bool {
-        !self.proxy_sets_replayed
+    pub(crate) fn needs_proxy_sets_replay(&self) -> bool {
+        self.world.borrow().needs_proxy_sets_replay()
     }
 
     /// Whether this frame's `load` waits for the engine to replay the writes
@@ -1226,12 +1219,19 @@ impl Document {
     /// (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-set>).
     #[must_use]
     pub(crate) fn awaits_proxy_replay(&self) -> bool {
-        self.frame.get() != FrameId::MAIN.get() && !self.proxy_sets_replayed
+        self.frame.get() != FrameId::MAIN.get() && self.needs_proxy_sets_replay()
+    }
+
+    /// Whether a load of a new document for this frame is queued or in
+    /// flight, so this document is being replaced.
+    #[must_use]
+    pub(crate) fn has_pending_frame_load(&self) -> bool {
+        self.dials.has_pending_frame_load()
     }
 
     /// Records that the pre-realm writes reached this frame's realm.
-    pub(crate) const fn mark_proxy_sets_replayed(&mut self) {
-        self.proxy_sets_replayed = true;
+    pub(crate) fn mark_proxy_sets_replayed(&mut self) {
+        self.world.borrow_mut().mark_proxy_sets_replayed();
     }
 
     /// Takes the child frames this document's realm created for the engine to
@@ -2660,7 +2660,7 @@ impl Document {
         // A new realm needs the opener's or parent's pre-realm `WindowProxy`
         // writes again: the old realm is gone with the document
         // (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-set>).
-        self.proxy_sets_replayed = false;
+        self.world.borrow_mut().await_proxy_sets_replay();
         // The realm is gone; do not keep its context alive through the world.
         self.world.borrow_mut().realm_context = None;
         self.init_scripts_deferred = false;

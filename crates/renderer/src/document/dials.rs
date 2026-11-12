@@ -42,6 +42,10 @@ pub(crate) struct InFlightDial {
     /// Held from dial start until `settle` drops the entry, which is what
     /// delays the document's `load` event.
     _delay: Option<LoadDelayGuard>,
+    /// Whether the request carries Fetch's keepalive flag, which makes it
+    /// outlive the document that started it
+    /// (<https://fetch.spec.whatwg.org/#keepalive-flag>).
+    keepalive: bool,
     cancel: DialCancellation,
 }
 
@@ -98,6 +102,26 @@ impl DialLedger {
         self.queued.pop_front()
     }
 
+    /// Takes the queued `keepalive` page fetches, leaving every other dial
+    /// behind. A `keepalive` request must reach the network even when the
+    /// document is destroyed before the next drain step, so the teardown
+    /// starts these directly
+    /// (<https://fetch.spec.whatwg.org/#keepalive-flag>).
+    pub(crate) fn take_queued_keepalive(&mut self) -> Vec<QueuedEntry> {
+        let mut taken = Vec::new();
+        let mut kept = VecDeque::with_capacity(self.queued.len());
+        for entry in self.queued.drain(..) {
+            if entry.dial.req.keepalive && matches!(entry.dial.context, DialContext::JsFetch { .. })
+            {
+                taken.push(entry);
+            } else {
+                kept.push_back(entry);
+            }
+        }
+        self.queued = kept;
+        taken
+    }
+
     /// Whether the document owes dial work: an unstarted dial, a started dial
     /// that has not completed, or a completion that was sent and has not been
     /// adopted yet.
@@ -128,6 +152,7 @@ impl DialLedger {
         let stop = Arc::clone(&self.stop);
         let pending = Arc::clone(&self.pending);
         let context = dial.context;
+        let dial_keepalive = dial.req.keepalive;
         let request = dial.req.clone();
         let cancel = start(
             request,
@@ -151,6 +176,7 @@ impl DialLedger {
             InFlightDial {
                 context,
                 _delay: delay,
+                keepalive: dial_keepalive,
                 cancel,
             },
         );
@@ -229,10 +255,18 @@ impl DialLedger {
     }
 
     /// Aborts the whole document: every queued and started dial is cancelled
-    /// and its `load`-event delay is released.
+    /// and its `load`-event delay is released, except a `keepalive` request,
+    /// which the environment's destruction does not cancel
+    /// (<https://fetch.spec.whatwg.org/#keepalive-flag>). Dropping its
+    /// cancellation handle leaves the request running in the network process;
+    /// its completion lands in a channel nothing reads, which is what
+    /// outliving the document means here.
     pub(crate) fn terminate(mut self) {
         self.queued.clear();
         for (_, dial) in std::mem::take(&mut self.in_flight) {
+            if dial.keepalive {
+                continue;
+            }
             (dial.cancel)();
         }
     }

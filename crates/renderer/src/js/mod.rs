@@ -2385,7 +2385,13 @@ fn install_auxiliary_host_functions(
     let close = world.clone();
     bridge::object(ctx)?.set(
         "__tbCloseWindow",
-        Func::from(move || {
+        Func::from(move |ctx: Ctx<'_>| {
+            // The unload steps run in this realm before its browsing context
+            // goes away, which is where a `keepalive` report is issued
+            // (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#unload>).
+            if let Err(error) = crate::js::events::fire_document_unload(&ctx) {
+                crate::js::bindings::host::report_callback_error(&ctx, &error);
+            }
             let world = close.borrow();
             // A browser tab closes through the same `window_close` the opener's
             // `WindowProxy.close()` uses, so either side reaches one path
@@ -2398,11 +2404,7 @@ fn install_auxiliary_host_functions(
             }
             // A renderer-hosted blob popup is not a tab, so its frame is the
             // context to close. An iframe has no opener and is left alone.
-            world
-                .runtime
-                .shared
-                .borrow_mut()
-                .close_auxiliary(world.frame());
+            world.close_auxiliary(world.frame());
         }),
     )?;
     Ok(())

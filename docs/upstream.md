@@ -279,3 +279,19 @@ Known gaps this engine fails honestly (no fork patch yet):
   invalidation maps record the exact elements whose style depends on the
   change, and this engine has none, so those arguments need that machinery
   rather than an ancestor flag. Open.
+- An `iframe` removal runs the child document's unload steps (`pagehide` then
+  `unload`) before destroying its navigable. HTML says the removing steps
+  "destroy a child navigable" and that this "happens without any unload events
+  firing"
+  (<https://html.spec.whatwg.org/multipage/iframe-embed-object.html#the-iframe-element:html-element-removing-steps>);
+  Chromium, Firefox, and WebKit all fire them, pages depend on it for teardown
+  reporting, and `fetch/api/basic/keepalive.any.js` fails without it
+  (<https://github.com/whatwg/html/issues/10194>). We follow the browsers.
+- A `WindowProxy`'s `EventTarget` members are addressed by frame identity
+  instead of forwarding the target realm's prototype member: that member's
+  receiver check rejects a `WindowProxy`, which is not a platform object in the
+  calling realm (`incompatible receiver`). Calls made before the target's realm
+  starts, or while a queued navigation is replacing its document, are held by
+  the writer realm and replayed when the replacement document's realm starts —
+  the same model already used for `WindowProxy` writes
+  (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-set>).

@@ -481,6 +481,46 @@ impl Document {
         self.queue_dial(dial);
     }
 
+    /// Hands off the `keepalive` requests this document queued but never
+    /// started, then starts them. A `keepalive` fetch must outlive the
+    /// environment that made it, which is the whole point of the flag: pages
+    /// report on teardown from an `unload` handler, when the document's next
+    /// turn will never run
+    /// (<https://fetch.spec.whatwg.org/#keepalive-flag>). Every other queued
+    /// request dies with the document, as aborting it requires.
+    pub(crate) fn flush_keepalive_fetches(&mut self) {
+        let pending = {
+            let world = self.world.borrow();
+            world.take_queued_keepalive_fetches()
+        };
+        for request in pending {
+            if let RealmRequest::Fetch(fetch) = request {
+                self.queue_js_fetch(*fetch);
+            }
+        }
+        let services = &*self.services;
+        let shared = self.world.borrow().runtime.shared.clone();
+        for entry in self.dials.take_queued_keepalive() {
+            // Nothing will read this dial's completion, but the request is
+            // still running, so the count keeps the engine from reporting
+            // itself idle before the network answers
+            // (<https://fetch.spec.whatwg.org/#keepalive-flag>).
+            shared.begin_keepalive_fetch();
+            let settle = shared.clone();
+            self.dials
+                .start(entry.dial, entry.delay, &|request, completion| {
+                    let settle = settle.clone();
+                    services.start_dial(
+                        request,
+                        Box::new(move |outcome| {
+                            settle.end_keepalive_fetch();
+                            completion(outcome);
+                        }),
+                    )
+                });
+        }
+    }
+
     fn fail_js_fetch(&mut self, js_id: JsFetchId) {
         self.record_event(RendererEvent::FetchFailed);
         self.settle_js_fetch(js_id, None);
