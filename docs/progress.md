@@ -634,3 +634,17 @@ message boundary (keyed by source and test name), so `cookiestore/` is
 **38 of 48 files and 228 of 244 subtests with no timeouts**, and
 `cookies` stays 336/415, `fetch/api` 2142/2418, `xhr` 941/1435, and
 `resource-timing` 3 subtests, with no subtest going from pass to fail.
+
+`cookieStore_get_set_across_frames` passes both subtests. A same-origin
+iframe has no realm until the engine adopts it, so `iframe.contentWindow`
+is a pending `WindowProxy` while the inserting script runs.
+`cookieStore_get_set_across_frames` read `.cookieStore` through that proxy
+and got `undefined`. The pending proxy now answers `cookieStore` from the
+creator's realm: an initial `about:blank` inherits the creator's cookie URL,
+so both objects read and write the same cookies (only the creation URL used
+to validate a `url` option differs). `cookiestore/` is **39 of 48 files and
+230 of 244 subtests** with 39 perfect files, and `cookies` stays 336/415.
+`html/browsers/the-windowproxy-exotic-object`, `html/browsers/windows`
+(65 subtests each), and
+`html/semantics/embedded-content/the-iframe-element` (109 subtests) are
+unchanged with no subtest going from pass to fail.

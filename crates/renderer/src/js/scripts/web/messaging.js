@@ -83,6 +83,16 @@ const __tbFrameIntrinsics = {
   Uint16Array: true, Int32Array: true, Uint32Array: true, Float32Array: true,
   Float64Array: true, BigInt64Array: true, BigUint64Array: true,
 };
+// A pending same-origin child has not started a realm, but an initial
+// `about:blank` already inherits its creator's cookie URL, so the creator's
+// `CookieStore` reads and writes exactly the cookies the child would. A page
+// that reads `contentWindow.cookieStore` in the task that inserted the iframe
+// gets a working store instead of `undefined`
+// (<https://cookiestore.spec.whatwg.org/#cookie-store>).
+const __tbFrameForwardedState = {
+  __proto__: null,
+  cookieStore: true,
+};
 const __tbFrameOwnMembers = {
   __proto__: null,
   location: true, name: true, document: true, parent: true, top: true,
@@ -92,8 +102,10 @@ const __tbFrameOwnMembers = {
 };
 const __tbFrameForwarded = (property, value) => {
   if (typeof property !== 'string' || __tbFrameOwnMembers[property] === true) return false;
+  if (value === undefined) return false;
   if (typeof value !== 'function' || value.prototype === undefined) {
-    return __tbFrameForwardedNamespaces[property] === true;
+    return __tbFrameForwardedNamespaces[property] === true ||
+        __tbFrameForwardedState[property] === true;
   }
   if (__tbFrameIntrinsics[property] === true) return true;
   // An interface's prototype carries its `Symbol.toStringTag`; a function the

@@ -241,7 +241,7 @@ The spec's `delete(name)` step passes `partitioned` as true, but WPT
 (unpartitioned) and expects this delete to remove it, and Chrome and Firefox
 remove it. This implementation passes false.
 
-The `cookiestore` slice passes **38 of 48 files and 228 of 244 subtests**
+The `cookiestore` slice passes **39 of 48 files and 230 of 244 subtests**
 (from 0 of 48 files). The remaining files fail for infrastructure the engine
 does not have:
 
@@ -249,11 +249,15 @@ does not have:
   `cookieStore_subscriptions_empty`, `serviceworker_cookieStore_cross_origin`,
   and `serviceworker_cookieStore_subscriptions_reset` need service workers
   (12 subtests); `idlharness` needs the WebIDL2 script.
-- `cookieStore_get_set_across_frames` needs a script-created iframe's realm
-  before the creating script runs, so `iframe.contentWindow.cookieStore` is
-  undefined (2 subtests).
 - `cookieStore_in_detached_frame` reads `contentWindow` of a removed iframe,
   which the engine reports as a cross-origin access (1 subtest).
+
+A same-origin child whose realm has not started yet answers `cookieStore`
+from the creator's realm. An initial `about:blank` inherits the creator's
+cookie URL, so both objects read and write the same cookies; the stand-in
+differs only in the creation URL used to validate a `url` option, which the
+Cookie Store tests in this slice do not pass. Once the child's realm starts,
+`contentWindow.cookieStore` is the child's own object.
 
 `cookieStore_delete_domain` passes its two subtests and the file reports
 `OK`: the harness reporter drops a duplicate remote result. A child frame's
