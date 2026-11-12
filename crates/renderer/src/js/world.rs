@@ -1551,6 +1551,12 @@ pub(crate) enum RealmRequest {
     /// (<https://cookiestore.spec.whatwg.org/#process-cookie-changes>).
     CookieChanges,
     CspViolation(NodeId, Vec<crate::csp::Violation>),
+    /// A worker script URL its creator's policy blocks. The worker object
+    /// exists, so the document reports the violations and then the plain
+    /// `error` event at that object; the realm never starts
+    /// (<https://w3c.github.io/webappsec-csp/#should-block-request>,
+    /// <https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>).
+    WorkerBlocked(crate::worker::WorkerId, Vec<crate::csp::Violation>),
     /// A `meta http-equiv=refresh` value the document should run the shared
     /// declarative refresh steps on. The realm cannot schedule a navigation
     /// itself; the document owns the timer
@@ -3252,6 +3258,19 @@ impl World {
         self.outbox
             .borrow_mut()
             .push_back(RealmRequest::CspViolation(target, violations));
+    }
+
+    /// Queues a worker's blocked-script violations for the document, which
+    /// reports them and fails the worker object
+    /// (<https://w3c.github.io/webappsec-csp/#report-violation>).
+    pub(crate) fn queue_worker_blocked(
+        &self,
+        worker: crate::worker::WorkerId,
+        violations: Vec<crate::csp::Violation>,
+    ) {
+        self.outbox
+            .borrow_mut()
+            .push_back(RealmRequest::WorkerBlocked(worker, violations));
     }
 
     /// Queues one `document.write` body, reserving the shared stream budget

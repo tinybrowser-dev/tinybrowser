@@ -1517,6 +1517,7 @@ impl Worker {
             | RealmRequest::FragmentNavigation { .. }
             | RealmRequest::CookieChanges
             | RealmRequest::CspViolation(_, _)
+            | RealmRequest::WorkerBlocked(_, _)
             | RealmRequest::DeclarativeRefresh(_)
             | RealmRequest::HtmlWrite(_)
             | RealmRequest::DocumentStream(_) => {}

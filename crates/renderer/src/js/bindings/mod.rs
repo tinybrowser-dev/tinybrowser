@@ -465,8 +465,41 @@ pub(crate) fn install_worker(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Resul
     Ok(())
 }
 
-/// The hooks a realm's `Worker` constructor calls.
+/// Whether `creator`'s policy blocks a worker script at `url`, queueing the
+/// violations for the creator's document when it does.
 ///
+/// The worker script fetch carries the `worker` destination, so `worker-src`
+/// decides it, falling back to `child-src`, `script-src`, and `default-src`
+/// (<https://w3c.github.io/webappsec-csp/#effective-directive-for-a-request>).
+/// When the fallback lands on `script-src`, that list's own pre-request check
+/// runs, so a worker created by a nonce-carrying script survives
+/// `'strict-dynamic'` (<https://w3c.github.io/webappsec-csp/#script-pre-request>).
+/// A blocked worker never fetches; its object still exists and reports the
+/// plain `error` event a failed load always gives
+/// (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>).
+fn worker_script_blocked(creator: &World, worker: crate::worker::WorkerId, url: &url::Url) -> bool {
+    let violations = creator.policy.csp.check_request(
+        &creator.origin,
+        &creator.document_url,
+        url,
+        crate::csp::Destination::Worker,
+        // The constructor is script-initiated, so `'strict-dynamic'` applies
+        // and no nonce or integrity metadata can vouch for the URL
+        // (<https://w3c.github.io/webappsec-csp/#script-src-strict-dynamic>).
+        Some(crate::csp::ScriptRequest {
+            nonce: "",
+            parser_inserted: false,
+            integrity: "",
+        }),
+    );
+    if violations.is_empty() {
+        return false;
+    }
+    let blocked = crate::csp::blocks(&violations);
+    creator.queue_worker_blocked(worker, violations);
+    blocked
+}
+
 /// Documents and worker globals both construct workers; a nested worker runs in
 /// the same engine and gets the same hooks
 /// (<https://html.spec.whatwg.org/multipage/workers.html#dom-worker>).
@@ -496,6 +529,9 @@ fn install_worker_constructor_hosts(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -
                     .ok_or_else(|| Exception::throw_type(&ctx, "Invalid worker credentials"))?;
                 let current = create_world.borrow();
                 let id = current.runtime.next_worker_id();
+                if worker_script_blocked(&current, id, &parsed) {
+                    return Ok(id.get());
+                }
                 let created = crate::worker::CreatedWorker::from_creator(
                     &current,
                     id,
@@ -620,6 +656,19 @@ fn install_shared_worker_constructor_host(ctx: &Ctx<'_>, world: &Rc<RefCell<Worl
                     None => crate::worker::SharedWorkerSameSiteCookies::None,
                 };
                 let id = current.runtime.next_worker_id();
+                let (frame, shared) = (current.frame(), current.shared());
+                if worker_script_blocked(&current, id, &parsed) {
+                    // The connection's port pair still exists — `port` is
+                    // readable and `start()` is a no-op — but the worker side
+                    // goes away, so nothing ever arrives from it.
+                    let (page_endpoint, worker_endpoint) =
+                        shared.borrow_mut().ports.new_pair(frame);
+                    shared.borrow_mut().forget_endpoints(&[worker_endpoint]);
+                    return Ok(vec![
+                        crate::js::js_number(id.get()),
+                        crate::js::js_number(page_endpoint),
+                    ]);
+                }
                 let created = crate::worker::CreatedWorker::from_creator(
                     &current,
                     id,
@@ -633,7 +682,6 @@ fn install_shared_worker_constructor_host(ctx: &Ctx<'_>, world: &Rc<RefCell<Worl
                         same_site_cookies,
                     },
                 );
-                let (frame, shared) = (current.frame(), current.shared());
                 let (page_endpoint, worker_endpoint) = shared.borrow_mut().ports.new_pair(frame);
                 // The worker side leaves this realm now; the engine aims it at
                 // the shared realm's frame when it adopts the connection

@@ -1071,3 +1071,43 @@ own `Content-Type` consistently, so it is load, not header mix-up. Still open in
 `beacon`: `headers/header-content-type-and-body.html` needs
 `performance.getEntriesByName()` (Resource Timing), and `idlharness` reports
 "Unexpected global object" for the `Navigator` interface.
+
+Worker scripts had no Content Security Policy check at all. `new Worker()` and
+`new SharedWorker()` handed the URL straight to the engine, so a policy that
+blocked the script still let it run: `worker-src-none`'s classic and module
+files all loaded the worker they said must never load. The constructor now
+checks the URL against the creator's policy before anything is created. The
+request carries the `worker` destination, so `worker-src` decides it, then
+`child-src`, `script-src`, and `default-src`
+(`https://w3c.github.io/webappsec-csp/#effective-directive-for-a-request`).
+A blocked worker reports the violations at the creator's document and then
+fires the plain `error` event at the `Worker`/`SharedWorker` object, which is
+the shape a failed load always has
+(`https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model`);
+a `SharedWorker` still hands back a connected-looking port whose worker side is
+gone.
+
+The first version of the check broke `script-src 'strict-dynamic'`: it treated
+every worker as a `worker-src` request, and `worker-src`'s pre-request check is
+URL matching only. The directive the fallback lands on decides the check, so a
+worker that falls back to `script-src` gets that list's pre-request step and a
+script-created worker survives `'strict-dynamic'`, while `worker-src` and
+`child-src` themselves stay URL-only. The violation still reports the canonical
+directive name for the destination, not the fallback directive that decided it.
+
+Evidence, subtest diffs against a saved baseline of the same tree with no
+subtest lost: `content-security-policy` goes from 2254 to **2743 of 3999**,
+and its `gen` directory from 1382 to **1872 of 2480**. Every `worker-src-none`
+file passes except the four worklet files, which need a CSS worklet API this
+engine lacks. `workers` (974), `html/webappapis` (1413), `fetch/api` (2254),
+`cookies` (336), `cookiestore` (247) and `dom/events` (426) lose no subtest;
+`beacon` is 78 of 85 in two of three isolated runs, with the third losing only
+the known `beacon-basic` load flake.
+
+Still open: a violation raised inside a worker — a static import or
+`importScripts` the worker's own policy blocks — is queued in the worker realm
+and dropped by its drain, so the generated `worker-import` and
+`worker-import-data` files still fail their "one violation event" subtests.
+The event belongs at the creator's document
+(`https://w3c.github.io/webappsec-csp/#report-violation`), and the worker
+already records its parent frame.

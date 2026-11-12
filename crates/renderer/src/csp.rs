@@ -529,6 +529,10 @@ impl List {
                 redirects,
             ) {
                 violations.push(Violation {
+                    // The canonical directive name for the destination, even
+                    // when the list that decided the check came from lower in
+                    // the fallback chain
+                    // (<https://w3c.github.io/webappsec-csp/#get-the-effective-directive>).
                     effective_directive: effective.name().to_owned(),
                     original_policy: policy.serialized.clone(),
                     disposition: policy.disposition,
@@ -778,9 +782,14 @@ fn policy_request_violation(
         };
         // A directive lower in the fallback chain only executes when no
         // higher-priority directive is present; the loop order guarantees
-        // that, so the first present directive decides.
+        // that, so the first present directive decides. The check is the
+        // found directive's own: a worker that falls back to `script-src` is
+        // a script request for `'strict-dynamic'`, while a worker decided by
+        // `worker-src` or `child-src` is URL-matched only
+        // (<https://w3c.github.io/webappsec-csp/#effective-directive>).
+        let script_semantics = matches!(name, "script-src" | "script-src-elem");
         return request_check_blocks(
-            effective,
+            script_semantics,
             list,
             origin,
             document_url,
@@ -919,7 +928,7 @@ fn parse_serialized(serialized: &str, _source: Source, disposition: Disposition)
 }
 
 fn request_check_blocks(
-    effective: Effective,
+    script_semantics: bool,
     list: &[String],
     origin: &Origin,
     document_url: &Url,
@@ -932,7 +941,7 @@ fn request_check_blocks(
     // check is URL-only, so a policy with `'strict-dynamic'` does not block
     // every response
     // (<https://w3c.github.io/webappsec-csp/#script-pre-request>).
-    if redirects == 0 && matches!(effective, Effective::ScriptSrcElem | Effective::ScriptSrc) {
+    if redirects == 0 && script_semantics {
         let script = script.unwrap_or(ScriptRequest {
             nonce: "",
             parser_inserted: true,

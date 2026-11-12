@@ -403,6 +403,10 @@ impl Document {
             RealmRequest::CspViolation(target, violations) => {
                 self.fire_csp_violations(target, &violations);
             }
+            RealmRequest::WorkerBlocked(worker, violations) => {
+                self.deliver_csp_violations(&violations);
+                self.push_worker_load_failed(worker);
+            }
             RealmRequest::HtmlWrite(write) => {
                 self.write_text(&write.html);
             }
