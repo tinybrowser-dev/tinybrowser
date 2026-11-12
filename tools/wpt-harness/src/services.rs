@@ -92,8 +92,54 @@ const DIAL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Replaces wptrunner's report script. The page records the same completion
 /// payload the `WebDriver` harness reads from its message queue.
+///
+/// A child frame's test messages can reach this window twice: once live, when
+/// the frame's posted tasks run after the `load` handler attached
+/// testharness's listener, and once in the `getmessages` replay that recovers
+/// the messages posted before it. testharness counts one result per remote
+/// test, so the repeat would decrement its pending count twice and make the
+/// file time out with every subtest passing. The two copies are the same
+/// message, not two results, so the repeat is dropped before testharness sees
+/// it. `result` names the one test whose outcome is being reported; `complete`
+/// closes the exchange.
 const REPORT: &str = r#"
 (function () {
+  var reported = new WeakMap();
+  var completed = new WeakSet();
+  // Only testharness's own protocol is deduplicated: a reported test carries
+  // an index and a status, and a completion carries the test list and the
+  // harness status. A page's own message with a `type` field keeps its own
+  // meaning.
+  function isReportedTest(test) {
+    return test !== null && typeof test === 'object' &&
+        'index' in test && 'status' in test;
+  }
+  addEventListener('message', function (event) {
+    var source = event.source;
+    var data = event.data;
+    if (!source || !data || typeof data !== 'object') {
+      return;
+    }
+    if (data.type === 'result' && isReportedTest(data.test)) {
+      var seen = reported.get(source);
+      if (!seen) {
+        seen = new Set();
+        reported.set(source, seen);
+      }
+      if (seen.has(data.test.name)) {
+        event.stopImmediatePropagation();
+        return;
+      }
+      seen.add(data.test.name);
+    } else if (data.type === 'complete' && Array.isArray(data.tests) &&
+               data.status && typeof data.status === 'object') {
+      if (completed.has(source)) {
+        event.stopImmediatePropagation();
+        return;
+      }
+      completed.add(source);
+    }
+  }, true);
   add_completion_callback(function (tests, harness_status) {
     window.__tinybrowser_result = JSON.stringify({
       status: harness_status.status,

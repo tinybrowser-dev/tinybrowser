@@ -92,8 +92,7 @@ Ordered by reach × current gap:
    29.5%.
 2. **cookies** — read on 78.7% of pages against 32.6% WPT. SameSite and
    partitioned cookies are in; `CookieStore` (11.9%) is 38/48 files. The
-   rest needs service workers, `fetch_tests_from_window` completion for one
-   file, and a realm for a script-created iframe.
+   rest needs service workers and a realm for a script-created iframe.
 3. **csp** — 68.9% reach against 26.6%. A response-header path with a
    small surface.
 4. **fetch** — 72.7% reach against 34.8%. The Body/Headers/stream

@@ -622,3 +622,15 @@ subtests, and `cookiestore/` is **38 of 48 files and 228 of 244 subtests**.
 against the jar at process time, so a response that stores the same value
 leaves nothing to report. `cookies` stays 336/415, `fetch/api` 2142/2418,
 and `xhr` 941/1435 subtests.
+
+`cookieStore_delete_domain` no longer times out. Its two subtests already
+passed, but the child frame's `result` message reached the parent twice: once
+live, when the frame's posted task ran after the `load` handler attached
+testharness's listener, and once in the `getmessages` replay that recovers
+the messages posted before it. testharness counts one result per remote test,
+so the repeat drove its pending count negative and its own timeout fired with
+both subtests passing. The harness reporter now drops the repeat at the
+message boundary (keyed by source and test name), so `cookiestore/` is
+**38 of 48 files and 228 of 244 subtests with no timeouts**, and
+`cookies` stays 336/415, `fetch/api` 2142/2418, `xhr` 941/1435, and
+`resource-timing` 3 subtests, with no subtest going from pass to fail.

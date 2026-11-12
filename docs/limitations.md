@@ -254,9 +254,13 @@ does not have:
   undefined (2 subtests).
 - `cookieStore_in_detached_frame` reads `contentWindow` of a removed iframe,
   which the engine reports as a cross-origin access (1 subtest).
-- `cookieStore_delete_domain` passes both subtests but
-  `fetch_tests_from_window` never reports the child's completion, so the
-  file times out.
+
+`cookieStore_delete_domain` passes its two subtests and the file reports
+`OK`: the harness reporter drops a duplicate remote result. A child frame's
+messages can reach the parent twice in this engine, live and again through
+the `getmessages` replay; testharness counts one result per remote test, so
+the repeat used to drive its pending count negative and time the file out
+with every subtest passing.
 
 WPT's `get_named_cookie` runs from a harness route,
 `/resources/testdriver-cookie?name=`, that answers from the jar's live
