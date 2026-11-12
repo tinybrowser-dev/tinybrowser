@@ -176,6 +176,15 @@
     if (info.selectorText !== undefined) {
       __tbDefineProperty(rule, 'selectorText', {
         get() { const next = read(); return next && next.selectorText ? next.selectorText : ''; },
+        // A valid selector list replaces the rule's selectors and re-enters the
+        // cascade; an invalid one leaves the rule unchanged without throwing
+        // (<https://drafts.csswg.org/cssom/#dom-cssstylerule-selectortext>).
+        set(value) {
+          if (entry.detached) return;
+          host.__tb_sheet_rule_set_selector_text(
+            sheet.__tbOwner, sheet.__tbId, __tbRulePath(entry.path), String(value),
+          );
+        },
         enumerable: true, configurable: true,
       });
     }

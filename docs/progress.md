@@ -792,3 +792,20 @@ assert them. `script-src` (130/203), `style-src` (51/86), `img-src` (17/20),
 against the stashed pre-change build; `dom/events` + `domparsing`,
 `html/semantics/forms` (503 files), `cookiestore` (247/260), `cookies`
 (336/415), and `workers` (248/248) lose nothing.
+
+`CSSStyleRule.selectorText` has a setter. The JS layer exposed only a getter,
+so every assignment in `CSSStyleRule-set-selectorText.html` and its namespace
+variant silently did nothing: 62 of 82 and most of the namespace variant
+failed on a stale selector. The setter parses the new selector list with the
+document's selector parser, leaves the rule untouched on a parse error, and on
+success reports the rule changed so the stylist re-runs the cascade
+(<https://drafts.csswg.org/cssom/#dom-cssstylerule-selectortext>). A detached
+rule ignores the write, as it already did for every other mutation.
+
+Evidence, subtest diff against `cssom-after.json` with no subtest lost:
+`css/cssom` goes from 2846 to **2915 of 3928** passing subtests (+69), 105 to
+108 passing files; `CSSStyleRule-set-selectorText.html` goes from 20 to 78 of
+82 and `CSSStyleRule-selectorText-setter.html` passes. The four remaining
+selector failures are `:lang()` matching and `:first-line`/`::first-line`
+serialization, which are cascade and parser gaps, not the setter: the rule
+keeps the new text but matching or serializing it is wrong.

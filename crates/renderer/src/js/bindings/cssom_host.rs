@@ -53,6 +53,10 @@ pub(super) fn install(ctx: &Ctx<'_>) -> Result<()> {
         rquickjs::prelude::Func::from(sheet_style_set_property),
     )?;
     bridge.set(
+        "__tb_sheet_rule_set_selector_text",
+        rquickjs::prelude::Func::from(sheet_rule_set_selector_text),
+    )?;
+    bridge.set(
         "__tb_sheet_insert_rule",
         rquickjs::prelude::Func::from(sheet_insert_rule),
     )?;
@@ -366,6 +370,43 @@ fn sheet_style_set_property<'js>(
         .document
         .base
         .cssom_rule_style_set_property(sheet, &path, &name, &value, important)
+        .map_err(|err| cssom_throw(&ctx, err))
+}
+
+/// Replaces a style rule's selectors (`CSSStyleRule.selectorText` setter). An
+/// invalid selector list leaves the rule unchanged and throws nothing
+/// (<https://drafts.csswg.org/cssom/#dom-cssstylerule-selectortext>).
+fn sheet_rule_set_selector_text<'js>(
+    ctx: Ctx<'js>,
+    element: Value<'js>,
+    id: f64,
+    path: String,
+    selectors: String,
+) -> Result<()> {
+    let world = world(&ctx)?;
+    let Some(node) = host_node_id(&ctx, &element) else {
+        return Err(Exception::throw_type(&ctx, "not a stylesheet owner"));
+    };
+    let Some(sheet) = sheet_id(id) else {
+        return Err(Exception::throw_type(&ctx, "not a stylesheet"));
+    };
+    let Some(path) = with_path(&path) else {
+        return Err(Exception::throw_type(&ctx, "bad rule path"));
+    };
+    let world = world.borrow();
+    let current = world
+        .document(node)
+        .and_then(|parsed| parsed.document.base.node_cssom_sheet_id(node.node));
+    if current != Some(sheet) {
+        return Err(throw_dom(&ctx, "InvalidStateError", "stylesheet is gone"));
+    }
+    let Some(mut parsed) = world.document_mut(node) else {
+        return Err(Exception::throw_type(&ctx, "no document"));
+    };
+    parsed
+        .document
+        .base
+        .stylesheet_rule_set_selector_text(node.node, &path, &selectors)
         .map_err(|err| cssom_throw(&ctx, err))
 }
 
