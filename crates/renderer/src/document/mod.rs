@@ -1780,6 +1780,54 @@ impl Document {
         }
     }
 
+    /// Queues the same-document fragment navigation a link, a form, or a
+    /// `Location` assignment asked for. The URL and the realm's history mirror
+    /// move now, and the document delivers `hashchange` in its next turn
+    /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate-to-a-fragment>).
+    pub(crate) fn queue_fragment_navigation(&self, url: Url) {
+        let mut world = self.world.borrow_mut();
+        let old_url = world.document_url.as_str().to_owned();
+        // "auto" history handling replaces the active entry when the
+        // navigation names the URL it started from
+        // (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate-to-a-fragment>).
+        let handling = if world.document_url == url {
+            crate::protocol::HistoryHandling::Replace
+        } else {
+            crate::protocol::HistoryHandling::Push
+        };
+        world.document_url = url.clone();
+        // A fragment navigation never carries classic history state.
+        world.history.apply("null".to_owned(), handling);
+        world
+            .outbox
+            .borrow_mut()
+            .push_back(crate::js::world::RealmRequest::FragmentNavigation {
+                old_url,
+                url,
+                handling,
+            });
+    }
+
+    /// Points `:target` at the element the document URL's fragment names, or
+    /// clears it when the URL has none
+    /// (<https://drafts.csswg.org/selectors-4/#the-target-pseudo>).
+    fn update_url_target(&mut self) {
+        let fragment = self.url.fragment().map(|fragment| {
+            percent_encoding::percent_decode_str(fragment)
+                .decode_utf8_lossy()
+                .into_owned()
+        });
+        let fragment = fragment.as_deref();
+        let world = self.world.borrow();
+        let Some(id) = self.document_node() else {
+            return;
+        };
+        let Some(mut parsed) = world.document_mut(id) else {
+            return;
+        };
+        parsed.document.base.set_url_target(fragment);
+    }
+
     fn apply_document_url_same_origin(&mut self, url: &str) {
         if let Ok(url) = Url::parse(url) {
             let origin = self.world.borrow().origin.clone();
@@ -3062,6 +3110,10 @@ impl Document {
             return;
         }
         self.world.borrow_mut().parser_active = false;
+        // A document loaded with a fragment has its target element only now
+        // that the tree is complete
+        // (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#scroll-to-fragid>).
+        self.update_url_target();
         self.check_parser_handler_attributes();
         // Deliver parser mutations before the document's events.
         self.deliver_mutations();

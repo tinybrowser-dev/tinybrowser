@@ -22,6 +22,7 @@ use crate::RemoteValue;
 use crate::document::{CreatedFrame, Document, LocalDocumentState, WindowMessage, about_blank};
 use crate::js::FrameRuntime;
 use crate::js::Stop;
+use crate::js::world::same_document_url;
 
 /// The engine's default frame viewport in device pixels, used until CDP
 /// emulation (or a mount) sets another size.
@@ -329,6 +330,20 @@ struct JsWaiter {
     id: u64,
     frame: FrameId,
     source: crate::protocol::ScriptSource,
+}
+
+/// What [`Engine::navigate_frame`] did with a navigation, which decides whether
+/// the caller owes the frame's replay store a history entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NavOutcome {
+    /// A new document load is in flight.
+    Loaded,
+    /// The frame kept the document it had: no usable URL, or a blank `src`.
+    KeptDocument,
+    /// A same-document fragment navigation ran. The frame's own realm records
+    /// the history entry and delivers `hashchange`, so the caller must not
+    /// record a second one.
+    Fragment,
 }
 
 impl Engine {
@@ -2330,7 +2345,12 @@ impl Engine {
     /// The embedder is read from the tree: it is the initiator for every
     /// navigation a fresh `iframe` starts, and only a link that targets another
     /// navigable splits the two.
-    fn navigate_frame(&mut self, child: FrameId, initiator: FrameId, navigation: &FrameNavigation) {
+    fn navigate_frame(
+        &mut self,
+        child: FrameId,
+        initiator: FrameId,
+        navigation: &FrameNavigation,
+    ) -> NavOutcome {
         let (embedder, container) = {
             let shared = self.runtime.shared.borrow();
             (shared.tree.parent(child), shared.tree.container(child))
@@ -2344,7 +2364,7 @@ impl Engine {
             if let (Some(embedder), Some(container)) = (embedder, container) {
                 self.mark_frame_load_pending(container, embedder);
             }
-            return;
+            return NavOutcome::Loaded;
         }
         // An empty `src` is a container with no URL to load; it keeps its
         // `about:blank`. Every other navigation resolves an empty string
@@ -2375,12 +2395,26 @@ impl Engine {
             if let (Some(embedder), Some(container)) = (embedder, container) {
                 self.mark_frame_load_pending(container, embedder);
             }
-            return;
+            return NavOutcome::KeptDocument;
         };
+        // A URL that differs from the target frame's document URL only in its
+        // fragment is a same-document navigation: the document and its realm
+        // survive, the URL and the history entry change, and `hashchange` is
+        // queued for that document's next turn. Loading it instead would
+        // replace the page, so a link to `#fragment` would reload the document
+        // (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate-to-a-fragment>).
+        if url.fragment().is_some()
+            && let Some(document) = self.frames.get(&child)
+            && same_document_url(&document.world().borrow().document_url, &url)
+        {
+            document.queue_fragment_navigation(url);
+            return NavOutcome::Fragment;
+        }
         self.load_frame_url(child, &url, initiator, navigation);
         if let (Some(embedder), Some(container)) = (embedder, container) {
             self.mark_frame_load_pending(container, embedder);
         }
+        NavOutcome::Loaded
     }
 
     /// Whether `initiator`'s active sandboxing flag set lets it navigate
@@ -2991,8 +3025,12 @@ impl Engine {
                 .frames
                 .get(&chosen)
                 .is_some_and(Document::is_initial_blank);
-            self.navigate_frame(chosen, initiator, &navigation);
-            self.record_navigation(chosen, initiator, &navigation, replace);
+            // Only a load adds an entry to the frame's replay store; a
+            // same-document navigation reports its entry from the frame's own
+            // realm, which also delivers `hashchange`.
+            if self.navigate_frame(chosen, initiator, &navigation) == NavOutcome::Loaded {
+                self.record_navigation(chosen, initiator, &navigation, replace);
+            }
             if let Some(container) = container {
                 self.publish_frame_document(container, chosen);
             }

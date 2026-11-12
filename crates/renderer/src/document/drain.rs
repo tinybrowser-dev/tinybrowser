@@ -368,6 +368,11 @@ impl Document {
                 // `hashchange` is the part this turn delivers
                 // (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate-to-a-fragment>).
                 self.apply_document_url_same_origin(url.as_str());
+                // The URL now names a fragment, so `:target` moves to the
+                // element it names before the `hashchange` handler can read a
+                // style
+                // (<https://drafts.csswg.org/selectors-4/#the-target-pseudo>).
+                self.update_url_target();
                 let url = url.to_string();
                 self.history_updates.push(crate::document::HistoryUpdate {
                     url: url.clone(),

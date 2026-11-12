@@ -395,11 +395,15 @@ parses to nothing and reads back empty. Conformance for this surface is WPT
 
 ## Session history
 
-A fragment navigation is a same-document navigation: a `Location` assignment
-that changes only the fragment updates the document URL and appends (or
-replaces, when the assignment names the current URL) one joint step with a
-null classic state, fires `popstate` synchronously in the owner realm, and
-delivers `hashchange` in the document's next turn. `location.hash` follows
+A fragment navigation is a same-document navigation: any navigation whose URL
+differs from the target frame's document URL only in its fragment — a
+`Location` assignment, a followed `<a href="#...">`, or a form whose action
+names a fragment — updates the document URL and appends (or replaces, when the
+navigation names the current URL) one joint step with a null classic state,
+fires `popstate` synchronously in the owner realm, and delivers `hashchange` in
+the document's next turn. The element the fragment names becomes the
+document's target element, so `:target` matches it and its ancestors can key
+`div:has(:target)` on it. `location.hash` follows
 its own setter steps, not the URL interface's: it strips one leading `#`,
 sets the fragment to the empty string, and parses the rest into it, so
 clearing a fragment leaves a bare `#` while writing an unchanged fragment

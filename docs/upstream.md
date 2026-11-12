@@ -267,3 +267,15 @@ Known gaps this engine fails honestly (no fork patch yet):
   value and priority, `cssText` replacement, and `setProperty` with an
   explicit `!important` flag. The renderer's `CSSStyleDeclaration` is a thin
   shell over it. Fixed in fork.
+- `blitz-dom` enables `:has()` and `:nth-child(An+B of S)` and invalidates
+  their anchors (blitz@f3e1467ad): both parse gates default off in the style
+  crate's prefs, and selector matching records the relative-selector anchors on
+  the elements themselves, so a restyle for an attribute, child-list, or state
+  change hints each anchor's subtree. `:target` reads
+  `ElementState::URLTARGET`, which `BaseDocument::set_url_target` sets from the
+  document URL's fragment. Fixed in fork. A relative selector argument that
+  looks outside the anchor's subtree (`div:has(~ .x)`, `div:has(+ .x)`, and a
+  complex `:not()`/`:is()` that spans siblings) still goes stale: Servo's
+  invalidation maps record the exact elements whose style depends on the
+  change, and this engine has none, so those arguments need that machinery
+  rather than an ancestor flag. Open.

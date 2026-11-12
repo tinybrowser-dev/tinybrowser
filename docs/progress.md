@@ -863,3 +863,61 @@ nothing; `html/semantics/forms` (503 files), `cookiestore` (247/260),
 `cookies` (336/415), and `workers` (248/248) are unchanged. `tools/check
 clippy` (both workspaces), `cargo fmt --check` for the renderer, and the
 renderer, wpt-harness, cookies, and browser unit tests pass.
+
+A followed link to a fragment reloaded the page. The `Location` setter knew
+that a URL differing only in its fragment is a same-document navigation, but a
+link click, a form action, and every other queued navigation went straight to
+a frame load, so `<a href="#fragment">` replaced the document, re-ran its
+scripts, and delivered no `hashchange`. The engine now makes that decision
+where every navigation converges (`Engine::navigate_frame`): a URL that
+differs from the target frame's document URL only in its fragment, with a
+fragment present, becomes a `FragmentNavigation` request for the frame's
+realm, which moves the URL and the history mirror, records the same-document
+entry, and delivers `hashchange` in its next turn.
+`html/browsers/history/the-location-interface` goes from 68 to **71 of 252**
+subtests with nothing lost, and `history-traversal` (24 of 87) and
+`scroll-to-fragid` (6 of 24) are unchanged subtest for subtest. A page whose
+script clicks the same anchor twice now navigates twice instead of reloading
+in a loop.
+
+`:target` never matched: Blitz's selector matcher answered `false` for the
+pseudo-class unconditionally. The document now applies HTML's "update the
+target element" for the fragment (ID first, then `a[name]`, in tree order),
+clears the bit from the element the previous fragment named, and snapshots
+each element before its state changes so only the rules that read `:target`
+are invalidated. A document loaded with a fragment sets it at the end of
+parsing, when the tree is complete.
+
+`:has()` and `:nth-child(An+B of S)` were parsed by nothing: the style crate
+gates both behind prefs that default off in this build. Turning them on is
+what makes 876 of the 5784 `css/selectors` subtests match. Matching alone was
+not enough: invalidation stayed stale because a relative selector depends on
+the subtree below its anchor and this engine's restyle hints only flow
+downwards, so an attribute, child-list, or state change below an anchor now
+hints the anchor's subtree. The anchor flags live only on element, anonymous
+block, and document nodes, which the walk checks.
+
+Evidence, subtest diffs against the saved baselines with no subtest lost
+outside the recorded engine gap: `css/selectors` goes from 3647 to **4528 of
+5784** (+881) with the same number of OK files (384), including
+`invalidation/target-pseudo-in-has.html` (1 of 1),
+`nth-child-of.html` and the other `nth-child-of*` files, `has-basic.html`,
+`parse-has.html`, `has-style-sharing-*`, and `has-visited.html`. The 74
+subtests that still go from pass to fail are all `:has()` arguments that look
+outside the anchor's subtree (`invalidation/not-pseudo-containing-complex-in-has`,
+`is-pseudo-containing-complex-in-has`, `has-in-sibling-position`,
+`has-sibling-insertion-removal`, `has-in-adjacent-position`); they only passed
+before because `:has()` parsed to nothing and the rules never matched, so those
+subtests asserted the un-styled color. Their correct values need the
+relative-selector invalidation maps Servo keeps and this engine does not
+(recorded in `docs/upstream.md`).
+
+No regression in the checked slices: `css/cssom` (3212 of 3928) and
+`css/cssom-view` (763) are subtest-identical, `dom/events` + `domparsing` and
+`html/semantics/forms` (503 files) lose nothing, `dom/nodes` + `html/dom` +
+`webmessaging` lose nothing and gain 14 (`:target` in `querySelector`),
+`cookiestore` + `cookies` + `workers` (1557) are identical, and
+`html/semantics/links/following-hyperlinks` is byte-identical to a run of the
+same build without this change. `tools/check clippy` (renderer and blitz-dom),
+`cargo fmt --check` for the renderer, and the renderer, wpt-harness, cookies,
+browser, and blitz-dom unit tests pass.
