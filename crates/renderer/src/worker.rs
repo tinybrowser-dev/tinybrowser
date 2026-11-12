@@ -1498,6 +1498,7 @@ impl Worker {
             RealmRequest::Script(_)
             | RealmRequest::HistoryPush { .. }
             | RealmRequest::HistoryTraverse { .. }
+            | RealmRequest::FragmentNavigation { .. }
             | RealmRequest::CspViolation(_, _)
             | RealmRequest::DeclarativeRefresh(_)
             | RealmRequest::HtmlWrite(_)

@@ -50,7 +50,7 @@ Sources:
   `SameSite=None` 38.6%, no `SameSite` 31.7%, partitioned 30.7%,
   `CookieStore` 11.9%. WPT 32.6%; `cookiestore` 37/48 files and
   221/244 subtests. What remains is HTTP-initiated change events, service
-  workers, and two budget-sensitive files.
+  workers, and the harness's child-test completion.
 - **storage** — `localStorage`/`sessionStorage` read 80.0%, write
   75.8%. WPT `webstorage` 81.5%.
 - **csp** — any CSP 68.9%, HTTP-delivered 50.0%, `unsafe-eval` 54.2%,
@@ -92,8 +92,8 @@ Ordered by reach × current gap:
    29.5%.
 2. **cookies** — read on 78.7% of pages against 32.6% WPT. SameSite and
    partitioned cookies are in; `CookieStore` (11.9%) is 37/48 files. The
-   rest needs HTTP change events, service workers, and a same-document
-   fragment navigation (one file is budget-sensitive on it).
+   rest needs HTTP change events, service workers, and
+   `fetch_tests_from_window` completion for one file.
 3. **csp** — 68.9% reach against 26.6%. A response-header path with a
    small surface.
 4. **fetch** — 72.7% reach against 34.8%. The Body/Headers/stream

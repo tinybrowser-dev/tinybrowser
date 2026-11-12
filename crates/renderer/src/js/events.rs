@@ -1080,6 +1080,21 @@ pub(crate) fn fire_trusted_popstate<'js>(ctx: &Ctx<'js>, state: Value<'js>) -> R
     Ok(())
 }
 
+/// Fires the trusted `hashchange` of a same-document fragment navigation.
+/// `oldURL` and `newURL` live in the interface's JavaScript slot map, so the
+/// shim writes them while this function owns the trust flag and dispatch
+/// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#the-hashchangeevent-interface>).
+pub(crate) fn fire_trusted_hashchange(ctx: &Ctx<'_>, old_url: &str, new_url: &str) -> Result<()> {
+    let event = realm_event(ctx, JsEvent::trusted("hashchange", false, false))?;
+    if let Some(prototype) = bindings::world(ctx)?.borrow().brand("HashChangeEvent") {
+        event.set_prototype(Some(&prototype.restore(ctx)?))?;
+    }
+    let setter: Function = crate::js::bridge::object(ctx)?.get("__tbSetHashChange")?;
+    let _: Value = setter.call((Class::into_value(event.clone()), old_url, new_url))?;
+    dispatch(ctx, EventTargetKey::Window, &event, None)?;
+    Ok(())
+}
+
 /// Fires a trusted event and reports whether it was not canceled, for
 /// cancelable events that gate a following action such as `reset`.
 pub(crate) fn fire_trusted_cancelable(

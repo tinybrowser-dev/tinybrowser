@@ -872,6 +872,8 @@ fn install_document(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
     Class::<JsMutationRecord>::define(&globals)?;
     node::install_custom_construction(ctx)?;
     crate::js::bridge::object(ctx)?.set("__tb_handlerNames", HANDLER_ATTRIBUTES.to_vec())?;
+    crate::js::bridge::object(ctx)?
+        .set("__tb_windowHandlerNames", WINDOW_HANDLER_NAMES.to_vec())?;
     crate::js::bridge::object(ctx)?.set(
         "__tbGetNodeHandler",
         rquickjs::prelude::Func::from(get_node_handler),
@@ -2924,6 +2926,71 @@ mod realm_tests {
                 Some(Url::parse("https://creator.test/dir/page").expect("creator URL"));
             assert_eq!(world.cookie_url().as_str(), "https://creator.test/dir/page");
         }
+    }
+
+    /// A `Location` assignment that changes only the fragment is a
+    /// same-document navigation: the URL and history move now and nothing is
+    /// queued for the engine to load. A different path still navigates
+    /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate-to-a-fragment>).
+    #[test]
+    fn a_fragment_assignment_does_not_queue_a_load() {
+        let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
+        let shared = SharedJsRuntime::default();
+        let stop = Arc::new(Stop::new());
+        let documents = Rc::new(RefCell::new(crate::documents::DocumentStore::default()));
+        let registry = Rc::new(RefCell::new(crate::js::RealmRegistry::default()));
+        let world = world_with_document(
+            &shared,
+            &services,
+            &documents,
+            &registry,
+            "https://a.test/dir/page",
+            "<!doctype html><p>hello</p>",
+        );
+        // A mounted document starts on one joint history step.
+        world.borrow_mut().history = crate::protocol::HistorySnapshot {
+            length: 1,
+            local_length: 1,
+            ..crate::protocol::HistorySnapshot::default()
+        };
+        let realm = JsRealm::new(&shared.handle(), world.clone(), stop).expect("realm");
+        let before = world.borrow().history.length;
+
+        let observed = realm
+            .eval(
+                "window.__seen = [];\
+                 window.onpopstate = event => __seen.push([event.type, event.state]);\
+                 location = '#frag';\
+                 JSON.stringify(__seen) + '|' + location.href + '|' + history.length + '|' + (history.state === null)",
+            )
+            .expect("fragment assignment");
+        assert_eq!(
+            observed, r#"[["popstate",null]]|https://a.test/dir/page#frag|2|true"#,
+            "the setter fires popstate and updates history before it returns"
+        );
+        {
+            let world = world.borrow();
+            assert_eq!(world.document_url.as_str(), "https://a.test/dir/page#frag");
+            assert_eq!(world.history.length, before.saturating_add(1));
+            assert!(
+                !world.has_frame_navigations(),
+                "a fragment assignment must not load a document"
+            );
+        }
+
+        let href = realm
+            .eval("location.hash = 'other'; location.href")
+            .expect("hash assignment");
+        assert_eq!(href, "https://a.test/dir/page#other");
+        assert!(!world.borrow().has_frame_navigations());
+
+        realm
+            .eval("location = '/elsewhere'")
+            .expect("path assignment");
+        assert!(
+            world.borrow().has_frame_navigations(),
+            "a different path is a document load"
+        );
     }
 
     #[test]

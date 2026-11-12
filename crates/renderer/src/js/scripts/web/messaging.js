@@ -1535,6 +1535,15 @@ Object.defineProperty(globalThis, 'name', {
       });
     }
   }
+  // `WindowEventHandlers` adds names that no element exposes
+  // (<https://html.spec.whatwg.org/multipage/webappapis.html#windoweventhandlers>).
+  for (const name of host.__tb_windowHandlerNames || []) {
+    Object.defineProperty(globalThis, name, {
+      get() { return host.__tbGetWindowHandler(name); },
+      set(value) { host.__tbSetWindowHandler(name, value); },
+      enumerable: true, configurable: true,
+    });
+  }
 })();
 
 // ── auxiliary windows ──────────────────────────────────────────────────

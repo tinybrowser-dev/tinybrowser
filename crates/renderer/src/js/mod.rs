@@ -1075,6 +1075,18 @@ impl JsRealm {
         })
     }
 
+    /// Fires the trusted `hashchange` a same-document fragment navigation
+    /// owes, after the URL and history entry already changed
+    /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#the-hashchangeevent-interface>).
+    pub(crate) fn fire_hash_change(&self, old_url: &str, new_url: &str) -> Result<(), JsError> {
+        self.with_budget(None, MicrotaskCheckpoint::Perform, || {
+            self.context.with(|ctx| {
+                events::fire_trusted_hashchange(&ctx, old_url, new_url)?;
+                Ok(())
+            })
+        })
+    }
+
     pub(crate) fn fire_popstate(&self, state: &Persistent<Value<'static>>) -> Result<(), JsError> {
         self.with_budget(None, MicrotaskCheckpoint::Perform, || {
             self.context.with(|ctx| {
@@ -1425,11 +1437,13 @@ impl JsRealm {
             bridge::evaluate(&ctx, install_web_apis_js(&ctx)?)?;
             crate::js::canvas::install_serialization(&ctx)?;
             reactions::capture(&ctx)?;
-            let constructor: Object = ctx.globals().get("PopStateEvent")?;
-            let prototype: Object = constructor.get("prototype")?;
-            world
-                .borrow_mut()
-                .intern_brand("PopStateEvent", Persistent::save(&ctx, prototype));
+            for name in ["PopStateEvent", "HashChangeEvent"] {
+                let constructor: Object = ctx.globals().get(name)?;
+                let prototype: Object = constructor.get("prototype")?;
+                world
+                    .borrow_mut()
+                    .intern_brand(name, Persistent::save(&ctx, prototype));
+            }
             // The `createEvent` interfaces, captured before page script can
             // replace the globals. Missing entries stay missing: the legacy
             // lookup below reports them as unexposed.

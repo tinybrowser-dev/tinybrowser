@@ -579,5 +579,28 @@ than the subset `document.cookie` exposes. The jar publishes that snapshot
 after every operation that can store a cookie, including a page fetch whose
 response carried `Set-Cookie`. `cookieListItem_attributes` and
 `cookieStore_set_path` now pass all 14 subtests, and `cookiestore/` is
-**37 of 48 files and 221 of 244 subtests** when its two budget-sensitive
-files complete.
+**37 of 48 files and 221 of 244 subtests**.
+
+Same-document fragment navigation landed next. A `Location` assignment that
+changes only the fragment (`window.location = '#x'`, `location.href`, and
+`location.hash`) now updates the document URL and appends its history entry
+in place, fires a trusted `hashchange` with `oldURL`/`newURL`, and queues no
+load; a different path still navigates. A `Location` whose browsing context
+is gone ignores every assignment, as the setter steps require. The
+`html/browsers/history/the-location-interface` directory is **69 of 252
+subtests** (from 61): `location_hash.html` gains four, and
+`location_hashchange_infinite_loop`, `location-hash-about-blank`,
+`location_hash_set_empty_string`, `location-hash-setter-empty-string`, and
+`no-browsing-context` one each. `html/browsers/browsing-the-web/history-traversal`
+goes from 19 to **24 of 87 subtests**, including
+`hashchange-same-fragment-does-not-fire`, `hash-empty-string`, and the
+`before-load-hash` pair. No subtest anywhere in either directory went from
+passing to failing. `same-hash.html` started running instead of erroring; its
+subtests fail because the engine exposes no `scrollY` for the scroll tests to
+read. `cookieStore_getAll_arguments` now finishes in about 65 ms instead of
+reloading and sometimes exceeding the budget.
+
+`WindowEventHandlers` handlers (`onhashchange`, `onpopstate`, and the rest of
+the set) are now installed from their own name list, window-only, so an
+element with one of those attributes has no handler and `window.onhashchange`
+is a real handler property instead of a plain data property.

@@ -226,8 +226,8 @@ The spec's `delete(name)` step passes `partitioned` as true, but WPT
 remove it. This implementation passes false.
 
 The `cookiestore` slice passes **37 of 48 files and 221 of 244 subtests**
-(from 0 of 48 files) when both budget-sensitive files complete. The
-remaining files fail for infrastructure the engine does not have:
+(from 0 of 48 files). The remaining files fail for infrastructure the engine
+does not have:
 
 - `cookieStoreManager_getSubscriptions_*`, `cookieStore_subscribe_arguments`,
   `cookieStore_subscriptions_empty`, `serviceworker_cookieStore_cross_origin`,
@@ -241,10 +241,6 @@ remaining files fail for infrastructure the engine does not have:
 - `cookieStore_delete_domain` passes both subtests but
   `fetch_tests_from_window` never reports the child's completion, so the
   file times out.
-- `cookieStore_getAll_arguments` passes its 12 subtests when it completes,
-  but it assigns `location = '#foo'`; a fragment-only `Location` write
-  reloads the document instead of running a same-document fragment
-  navigation, so the file sometimes exceeds the harness budget.
 - `change_eventhandler_for_http_cookie_and_set_cookie_headers` needs
   HTTP-initiated change events (7 subtests).
 
@@ -311,6 +307,19 @@ never origin-clean because the fetch path does not record a CORS
 approval. Conformance for this surface is WPT `css/cssom/`.
 
 ## Session history
+
+A fragment navigation is a same-document navigation: a `Location` assignment
+that changes only the fragment updates the document URL and appends (or
+replaces, when the assignment names the current URL) one joint step with a
+null classic state, fires `popstate` synchronously in the owner realm, and
+delivers `hashchange` in the document's next turn. `location.hash` follows
+its own setter steps, not the URL interface's: it strips one leading `#`,
+sets the fragment to the empty string, and parses the rest into it, so
+clearing a fragment leaves a bare `#` while writing an unchanged fragment
+bails out before navigating
+(`https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-hash`).
+Two gaps remain: nothing scrolls to the fragment target, and
+`location.assign`, `replace`, and `reload` are still unimplemented.
 
 A session-history entry stores its URL, title, classic state, and the
 document state's navigable target name. It does not store the document

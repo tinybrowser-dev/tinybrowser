@@ -107,10 +107,23 @@ impl Component {
             Self::Port => {
                 let _ = url::quirks::set_port(url, value);
             }
-            // `href` names a whole URL; `origin` is read-only. `hash` needs
-            // "navigate to a fragment", which this engine has no algorithm for,
-            // and a full reload would be the wrong answer.
-            Self::Href | Self::Hash | Self::Origin => return false,
+            // `Location.hash` is not the URL interface's `hash`: it strips one
+            // leading `#`, sets the fragment to the empty string, then parses
+            // the rest into it, so `location.hash = ""` leaves a bare `#`
+            // instead of removing the fragment. A redundant write bails out
+            // before navigating, which is what keeps a page's scroll handler
+            // from appending history entries
+            // (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-hash>).
+            Self::Hash => {
+                let input = value.strip_prefix('#').unwrap_or(value);
+                let previous = url.fragment().unwrap_or_default().to_owned();
+                url.set_fragment(Some(input));
+                if url.fragment().unwrap_or_default() == previous {
+                    return false;
+                }
+            }
+            // `href` names a whole URL; `origin` is read-only.
+            Self::Href | Self::Origin => return false,
         }
         url.as_str() != before
     }
@@ -155,7 +168,15 @@ fn parse_location(ctx: &Ctx<'_>, caller: &Rc<RefCell<World>>, value: &str) -> Re
 /// current URL and navigates only when that changed something.
 fn set_component(owner: &Rc<RefCell<World>>, component: Component, value: Value<'_>) -> Result<()> {
     let ctx = value.ctx().clone();
+    // Web IDL converts the assigned value before the setter steps run, so a
+    // throwing `toString` still throws on a `Location` with no browsing
+    // context. The steps' first branch is "if this's relevant Document is
+    // null, then return"
+    // (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-href>).
     let value = super::webidl::webidl_to_string(&ctx, value)?;
+    if !owner.borrow().has_browsing_context() {
+        return Ok(());
+    }
     // The entry settings object supplies the resolution base; the incumbent
     // document supplies the referrer, policy, and sandbox rules when a script
     // in one frame assigns another frame's `location`
@@ -164,14 +185,96 @@ fn set_component(owner: &Rc<RefCell<World>>, component: Component, value: Value<
     let source = caller.borrow().frame();
     if matches!(component, Component::Href) {
         let url = parse_location(&ctx, &caller, &value)?;
-        navigate_location(owner, url.as_str().to_owned(), Some(source));
+        if only_fragment_changed(owner, &url) {
+            navigate_to_fragment(&ctx, &caller, owner, &url);
+        } else {
+            navigate_location(owner, url.as_str().to_owned(), Some(source));
+        }
         return Ok(());
     }
     let mut url = owner.borrow().document_url.clone();
     if component.replace(&mut url, &value) {
-        navigate_location(owner, url.as_str().to_owned(), Some(source));
+        if only_fragment_changed(owner, &url) {
+            navigate_to_fragment(&ctx, &caller, owner, &url);
+        } else {
+            navigate_location(owner, url.as_str().to_owned(), Some(source));
+        }
     }
     Ok(())
+}
+
+/// Whether `url` differs from `owner`'s document URL only in its fragment and
+/// names one. That is the condition "navigate" uses to take the same-document
+/// branch instead of loading a document
+/// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#beginning-navigation>).
+fn only_fragment_changed(owner: &Rc<RefCell<World>>, url: &url::Url) -> bool {
+    url.fragment().is_some() && {
+        let world = owner.borrow();
+        crate::js::world::same_document_url(&world.document_url, url)
+    }
+}
+
+/// "Navigate to a fragment": the URL and the session history entry change now,
+/// the owner realm observes `popstate` and the new `history` state in this
+/// turn, and the document delivers `hashchange` in its next turn
+/// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate-to-a-fragment>).
+fn navigate_to_fragment(
+    ctx: &Ctx<'_>,
+    caller: &Rc<RefCell<World>>,
+    owner: &Rc<RefCell<World>>,
+    url: &url::Url,
+) {
+    let (old_url, handling) = {
+        let mut world = owner.borrow_mut();
+        let old_url = world.document_url.as_str().to_owned();
+        // "auto" resolves to replace when the assignment names the current
+        // URL, and to push otherwise.
+        let handling = if world.document_url == *url {
+            crate::protocol::HistoryHandling::Replace
+        } else {
+            crate::protocol::HistoryHandling::Push
+        };
+        world.document_url = url.clone();
+        // A fragment navigation never carries classic history state.
+        world.history.apply("null".to_owned(), handling);
+        (old_url, handling)
+    };
+    sync_fragment_state(ctx, caller, owner);
+    owner.borrow_mut().outbox.borrow_mut().push_back(
+        crate::js::world::RealmRequest::FragmentNavigation {
+            old_url,
+            url: url.clone(),
+            handling,
+        },
+    );
+}
+
+/// Updates the owner realm's live `history.length` and `history.state`, then
+/// fires the synchronous `popstate` the entry activation owes. A caller in
+/// another frame runs this through the owner's realm context
+/// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate-to-a-fragment>,
+/// <https://html.spec.whatwg.org/multipage/browsing-the-web.html#update-document-for-history-step-application>).
+fn sync_fragment_state(ctx: &Ctx<'_>, caller: &Rc<RefCell<World>>, owner: &Rc<RefCell<World>>) {
+    let update = |ctx: &Ctx<'_>| -> Result<()> {
+        let length = owner.borrow().history.length;
+        let restore: rquickjs::Function =
+            crate::js::bridge::object(ctx)?.get("__tbHistoryRestore")?;
+        let _: Value = restore.call((Option::<String>::None, length))?;
+        crate::js::events::fire_trusted_popstate(ctx, Value::new_null(ctx.clone()))
+    };
+    let result = if Rc::ptr_eq(caller, owner) {
+        update(ctx)
+    } else if let Some(owner_context) = owner.borrow().realm_context.clone() {
+        owner_context.with(|owner_ctx| update(&owner_ctx))
+    } else {
+        // The owner has no realm yet, so it has no `history` object to move.
+        // The document drain still records the joint entry, and the realm
+        // reads the mirror when it is created.
+        return;
+    };
+    if let Err(error) = result {
+        super::host::report_callback_error(ctx, &error);
+    }
 }
 
 /// Installs the `Location` object
@@ -181,10 +284,10 @@ fn set_component(owner: &Rc<RefCell<World>>, component: Component, value: Value<
 /// <https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-search>
 /// and <https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-hash>.
 ///
-/// Assigning to a window's `location` navigates, like `Location.href`. The
-/// `hash` setter stays read-only: its same-document branch needs "navigate to
-/// a fragment", which this engine has no algorithm for, and a full reload
-/// would be the wrong answer.
+/// Assigning to a window's `location` navigates, like `Location.href`. A
+/// change that touches only the fragment is the same-document "navigate to a
+/// fragment" case, not a reload
+/// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate-to-a-fragment>).
 pub(crate) fn install_location<'js>(
     ctx: &Ctx<'js>,
     globals: &Object<'js>,
@@ -235,7 +338,7 @@ pub(crate) fn build_location<'js>(
     for (name, component) in components {
         let owner = Rc::clone(world);
         let getter = Accessor::new_get(move || component.read(&owner.borrow()));
-        if matches!(component, Component::Hash | Component::Origin) {
+        if matches!(component, Component::Origin) {
             location.prop(name, getter.enumerable())?;
             continue;
         }

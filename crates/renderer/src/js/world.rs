@@ -1059,7 +1059,7 @@ pub(crate) fn object_url_key(url: &str) -> &str {
     url.split_once('#').map_or(url, |(head, _)| head)
 }
 
-fn same_document_url(document_url: &Url, url: &Url) -> bool {
+pub(crate) fn same_document_url(document_url: &Url, url: &Url) -> bool {
     let mut own = document_url.clone();
     let mut other = url.clone();
     own.set_fragment(None);
@@ -1507,6 +1507,18 @@ pub(crate) enum RealmRequest {
     },
     HistoryTraverse {
         delta: i32,
+    },
+    /// A same-document fragment navigation. The setter already moved the
+    /// document URL and the history mirror; the document fires `hashchange`,
+    /// updates the realm's `history` view, and records the joint step
+    /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate-to-a-fragment>).
+    FragmentNavigation {
+        /// The document URL before the assignment, for `hashchange.oldURL`.
+        old_url: String,
+        /// The URL the assignment named, parsed once by the setter.
+        url: Url,
+        /// Whether the assignment appended or replaced the active entry.
+        handling: crate::protocol::HistoryHandling,
     },
     CspViolation(NodeId, Vec<crate::csp::Violation>),
     /// A `meta http-equiv=refresh` value the document should run the shared
@@ -2206,6 +2218,13 @@ impl World {
     /// The frame this realm belongs to.
     pub(crate) fn frame(&self) -> FrameId {
         self.frame
+    }
+
+    /// Whether this realm's frame still has a browsing context. A `Location`
+    /// object can outlive its navigable, and every setter is then a no-op
+    /// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-href>).
+    pub(crate) fn has_browsing_context(&self) -> bool {
+        self.runtime.shared.borrow().tree.is_alive(self.frame)
     }
 
     /// The origin of this frame's top-level traversable

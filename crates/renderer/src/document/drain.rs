@@ -349,6 +349,36 @@ impl Document {
                     handling,
                 }));
             }
+            RealmRequest::FragmentNavigation {
+                old_url,
+                url,
+                handling,
+            } => {
+                // The setter moved the document URL, the joint entry, and the
+                // owner realm's `history` view and `popstate` already. The
+                // document URL the loader keeps must move too, and the
+                // `hashchange` is the part this turn delivers
+                // (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate-to-a-fragment>).
+                self.apply_document_url_same_origin(url.as_str());
+                let url = url.to_string();
+                self.history_updates.push(crate::document::HistoryUpdate {
+                    url: url.clone(),
+                    state: "null".to_owned(),
+                    handling,
+                });
+                // A fragment navigation never carries classic state, so the
+                // realm restores `null` rather than a serialized payload.
+                let length = self.world.borrow().history.length;
+                self.fire_js(|js| {
+                    js.restore_history(None, length)?;
+                    js.fire_hash_change(&old_url, &url)
+                });
+                self.record_event(RendererEvent::Browser(BrowserEvent::HistoryUpdated {
+                    url,
+                    state: "null".to_owned(),
+                    handling,
+                }));
+            }
             RealmRequest::HistoryTraverse { delta } => {
                 // A step names a joint position no single renderer can resolve
                 // alone, so the engine forwards it: a browser-hosted engine

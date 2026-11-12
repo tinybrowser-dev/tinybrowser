@@ -756,6 +756,27 @@ pub(crate) const HANDLER_ATTRIBUTES: &[&str] = &[
     "onwheel",
 ];
 
+/// `WindowEventHandlers` names that are not also element handlers. They are
+/// properties of the window only, so a `div` with one of these attribute
+/// names has no handler
+/// (<https://html.spec.whatwg.org/multipage/webappapis.html#windoweventhandlers>).
+pub(crate) const WINDOW_HANDLER_NAMES: &[&str] = &[
+    "onafterprint",
+    "onbeforeprint",
+    "onbeforeunload",
+    "onhashchange",
+    "onlanguagechange",
+    "onoffline",
+    "ononline",
+    "onpagehide",
+    "onpageshow",
+    "onpopstate",
+    "onrejectionhandled",
+    "onstorage",
+    "onunhandledrejection",
+    "onunload",
+];
+
 /// The "Window-reflecting body element event handler set": handlers a `body`
 /// or `frameset` element mirrors from its `Window`, replacing the generic
 /// element handler of the same name

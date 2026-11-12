@@ -253,10 +253,19 @@ __tbDefineProperty(globalThis.BeforeUnloadEvent.prototype, 'returnValue', {
   set(value) { __tbEventEntry(this, __tbBeforeUnloadEventData, () => ({ returnValue: '' })).returnValue = __tbEventString(value); },
   enumerable: true, configurable: true,
 });
-__tbExposeEvent('HashChangeEvent', __tbEventConstructor, host.slots('tinybrowser.hashchangeevent.data'),
+const __tbHashChangeEventData = host.slots('tinybrowser.hashchangeevent.data');
+__tbExposeEvent('HashChangeEvent', __tbEventConstructor, __tbHashChangeEventData,
   () => ({ oldURL: '', newURL: '' }),
   init => ({ oldURL: __tbEventString(init.oldURL), newURL: __tbEventString(init.newURL) }),
   ['oldURL', 'newURL']);
+// The engine fires its own trusted `hashchange`; it owns the event object and
+// trust flag, and this writes the interface's slot map for it.
+host.__tbSetHashChange = (event, oldURL, newURL) => {
+  __tbHashChangeEventData.set(event, {
+    oldURL: __tbEventString(oldURL),
+    newURL: __tbEventString(newURL),
+  });
+};
 __tbExposeEvent('DeviceMotionEvent', __tbEventConstructor, host.slots('tinybrowser.devicemotionevent.data'),
   () => ({ acceleration: null, accelerationIncludingGravity: null, rotationRate: null, interval: 0 }),
   init => ({
