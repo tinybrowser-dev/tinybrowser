@@ -1,13 +1,14 @@
 // https://w3c.github.io/IndexedDB/
 //
-// The first IndexedDB slice: the factory, database open/upgrade, and object
-// store records. The host seam stores opaque encoded rows in the profile's
-// IndexedDB area, so the browser owns the data and every renderer of a
-// profile sees one store, like `localStorage`.
+// The factory, database open/upgrade, object stores and their records,
+// indexes, and cursors. The host seam stores opaque encoded rows in the
+// profile's IndexedDB area, so the browser owns the data and every renderer of
+// a profile sees one store, like `localStorage`.
 //
-// Not implemented yet: indexes, cursors, upgrade blocking between open
-// connections, and a live key generator shared across connections. A missing
-// member is absent, so a page gets a TypeError instead of a result.
+// Not implemented yet: upgrade blocking between open connections, transaction
+// scheduling across overlapping connections, and a key generator shared across
+// connections. A missing member is absent, so a page gets a TypeError instead
+// of a result.
 //
 // Rows:
 //   m\0<database>                     metadata, JSON
@@ -21,6 +22,9 @@ const __tbIdbFactoryState = host.slots('tinybrowser.indexeddb.factory');
 const __tbIdbDatabaseState = host.slots('tinybrowser.indexeddb.database');
 const __tbIdbTransactionState = host.slots('tinybrowser.indexeddb.transaction');
 const __tbIdbObjectStoreState = host.slots('tinybrowser.indexeddb.objectstore');
+const __tbIdbIndexState = host.slots('tinybrowser.indexeddb.index');
+const __tbIdbCursorState = host.slots('tinybrowser.indexeddb.cursor');
+const __tbIdbRecordState = host.slots('tinybrowser.indexeddb.record');
 const __tbIdbKeyRangeState = host.slots('tinybrowser.indexeddb.keyrange');
 
 const __tbIdbSetTimeout = globalThis.setTimeout;
@@ -40,6 +44,18 @@ const __tbIdbSplit = (text, separator) => __tbApply(__tbStringSplit, text, [sepa
 /// (<https://w3c.github.io/IndexedDB/#tasks>).
 const __tbIdbTask = callback => {
   __tbIdbSetTimeout(callback, 0);
+};
+
+/// Deactivates a transaction at the end of the task that dispatched an event
+/// for it. The task is queued before the event, so it runs after the event's
+/// microtasks but before any timer the listeners queued
+/// (<https://w3c.github.io/IndexedDB/#cleanup-indexed-database-transactions>).
+const __tbIdbCleanup = data => {
+  __tbIdbTask(() => {
+    if (data.finished || data.explicitCommit) return;
+    data.committing = true;
+    __tbIdbSchedule(data);
+  });
 };
 
 /// Constructs an instance of `constructor` without running its illegal-
@@ -139,7 +155,25 @@ const __tbIdbEvaluate = (value, keyPath) => {
   const parts = __tbIdbSplit(keyPath, '.');
   for (let index = 0; index < parts.length; index++) {
     if (current === null || current === undefined) return undefined;
+    if (typeof current === 'string') {
+      if (parts[index] !== 'length') return undefined;
+      current = current.length;
+      continue;
+    }
+    // A File and a Blob expose these identifiers outside their own
+    // properties (<https://w3c.github.io/IndexedDB/#evaluate-a-key-path>).
+    if (globalThis.File !== undefined && current instanceof globalThis.File
+      && (parts[index] === 'name' || parts[index] === 'lastModified')) {
+      current = current[parts[index]];
+      continue;
+    }
+    if (globalThis.Blob !== undefined && current instanceof globalThis.Blob
+      && (parts[index] === 'size' || parts[index] === 'type')) {
+      current = current[parts[index]];
+      continue;
+    }
     if (typeof current !== 'object' && typeof current !== 'function') return undefined;
+    if (!__tbApply(__tbHasOwnProperty, current, [parts[index]])) return undefined;
     current = current[parts[index]];
     if (current === undefined) return undefined;
   }
@@ -183,6 +217,13 @@ const __tbIdbToKey = (value, seen) => {
       bytes = new __tbUint8Array(value);
     } else if (__tbIsTypedArray(value) || __tbIsDataView(value)) {
       bytes = new __tbUint8Array(value.buffer, value.byteOffset, value.byteLength);
+    } else if (globalThis.SharedArrayBuffer !== undefined
+      && value instanceof globalThis.SharedArrayBuffer) {
+      // A shared buffer is a valid binary key once the page is allowed to
+      // create one; WPT's sharedarraybuffer-key.https.html requires it even
+      // though the older key-construct text called it an invalid type
+      // (<https://w3c.github.io/IndexedDB/#convert-value-to-key>).
+      bytes = new __tbUint8Array(value);
     } else {
       return undefined;
     }
@@ -238,8 +279,25 @@ const __tbIdbCompare = (first, second) => {
   return 0;
 };
 
-const __tbIdbEncodeKey = key => __tbJsonStringify(key);
-const __tbIdbDecodeKey = text => __tbJsonParse(text);
+const __tbIdbInfinity = '\u0000infinity';
+/// JSON for IndexedDB data. Plain JSON turns Infinity and -Infinity into
+/// null, but both are valid keys, so the encoder tags them and the decoder
+/// restores them.
+const __tbIdbJson = value => __tbJsonStringify(value, (name, item) => {
+  if (typeof item === 'number' && !__tbNumberIsFinite(item)) {
+    return { __proto__: null, [__tbIdbInfinity]: item > 0 ? 1 : -1 };
+  }
+  return item;
+});
+const __tbIdbUnjson = text => __tbJsonParse(text, (name, item) => {
+  if (item !== null && typeof item === 'object'
+    && item[__tbIdbInfinity] !== undefined) {
+    return item[__tbIdbInfinity] > 0 ? Infinity : -Infinity;
+  }
+  return item;
+});
+const __tbIdbEncodeKey = key => __tbIdbJson(key);
+const __tbIdbDecodeKey = text => __tbIdbUnjson(text);
 
 /// The JavaScript value of a key. Keys live as tagged objects so they compare
 /// and encode stably, but every result and range bound exposes the ordinary
@@ -276,14 +334,133 @@ const __tbIdbRangeIncludes = (range, key) => {
   return true;
 };
 
+/// Converts a value to a multiEntry key: an array keeps the valid, distinct
+/// members as subkeys and drops the rest; any other value becomes an ordinary
+/// key (<https://w3c.github.io/IndexedDB/#convert-value-to-a-multientry-key>).
+const __tbIdbToMultiEntryKey = value => {
+  if (!__tbIsArray(value)) return __tbIdbToKey(value, __tbPrivateSet());
+  const items = [];
+  const seen = __tbPrivateSet();
+  seen.add(value);
+  for (let index = 0; index < value.length; index++) {
+    let key;
+    try {
+      key = __tbIdbToKey(value[index], seen);
+    } catch (error) {
+      key = undefined;
+    }
+    if (key === undefined) continue;
+    let duplicate = false;
+    for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
+      if (__tbIdbCompare(items[itemIndex], key) !== 0) continue;
+      duplicate = true;
+      break;
+    }
+    if (!duplicate) __tbArray.push(items, key);
+  }
+  return { __proto__: null, t: 'array', v: items };
+};
+
+/// The key an index extracts from a stored value, or `undefined` when the
+/// value has no valid key at the index's key path
+/// (<https://w3c.github.io/IndexedDB/#extract-a-key-from-a-value-using-a-key-path>).
+const __tbIdbExtractKey = (value, keyPath, multiEntry) => {
+  const candidate = __tbIdbEvaluate(value, keyPath);
+  if (candidate === undefined) return undefined;
+  try {
+    return multiEntry
+      ? __tbIdbToMultiEntryKey(candidate)
+      : __tbIdbToKey(candidate, __tbPrivateSet());
+  } catch (error) {
+    return undefined;
+  }
+};
+
+/// The stored records sorted by key, built once per mutation
+/// (<https://w3c.github.io/IndexedDB/#object-store-construct>).
+const __tbIdbRowList = state => {
+  if (state.rowList !== null) return state.rowList;
+  const rows = [];
+  for (const entry of state.rows.entries()) __tbArray.push(rows, entry);
+  __tbArray.sort(rows, (first, second) => __tbIdbCompare(
+    __tbIdbDecodeKey(first[0]), __tbIdbDecodeKey(second[0])));
+  state.rowList = rows;
+  return rows;
+};
+
+/// The records of one index, sorted by index key and then by the primary key
+/// of the referenced record
+/// (<https://w3c.github.io/IndexedDB/#index-construct>).
+const __tbIdbIndexEntries = (state, indexMeta) => {
+  const cached = state.indexEntries.get(indexMeta);
+  if (cached !== undefined) return cached;
+  const entries = [];
+  const rows = __tbIdbRowList(state);
+  for (let index = 0; index < rows.length; index++) {
+    const row = rows[index][1];
+    const value = __tbIdbReadValue(row.value);
+    const indexKey = __tbIdbExtractKey(value, indexMeta.keyPath, indexMeta.multiEntry);
+    if (indexKey === undefined) continue;
+    if (indexMeta.multiEntry && indexKey.t === 'array') {
+      for (let subIndex = 0; subIndex < indexKey.v.length; subIndex++) {
+        __tbArray.push(entries, {
+          __proto__: null,
+          key: indexKey.v[subIndex],
+          primaryKey: row.key,
+          row,
+        });
+      }
+      continue;
+    }
+    __tbArray.push(entries, { __proto__: null, key: indexKey, primaryKey: row.key, row });
+  }
+  __tbArray.sort(entries, (first, second) => {
+    const order = __tbIdbCompare(first.key, second.key);
+    return order !== 0 ? order : __tbIdbCompare(first.primaryKey, second.primaryKey);
+  });
+  state.indexEntries.set(indexMeta, entries);
+  return entries;
+};
+
+/// Throws when a record with `primaryKey` cannot be written because one of the
+/// store's unique indexes already maps that index key to another record
+/// (<https://w3c.github.io/IndexedDB/#store-a-record-into-an-object-store>,
+/// step 9).
+const __tbIdbCheckUnique = (state, value, primaryKey) => {
+  const indexes = state.meta.indexes;
+  for (let index = 0; index < indexes.length; index++) {
+    const indexMeta = indexes[index];
+    if (!indexMeta.unique || indexMeta.pending) continue;
+    const indexKey = __tbIdbExtractKey(value, indexMeta.keyPath, indexMeta.multiEntry);
+    if (indexKey === undefined) continue;
+    const candidates = indexMeta.multiEntry && indexKey.t === 'array'
+      ? indexKey.v
+      : [indexKey];
+    const entries = __tbIdbIndexEntries(state, indexMeta);
+    for (let candidateIndex = 0; candidateIndex < candidates.length; candidateIndex++) {
+      const candidate = candidates[candidateIndex];
+      for (let entryIndex = 0; entryIndex < entries.length; entryIndex++) {
+        const entry = entries[entryIndex];
+        if (__tbIdbCompare(entry.primaryKey, primaryKey) === 0) continue;
+        if (__tbIdbCompare(entry.key, candidate) !== 0) continue;
+        throw new globalThis.DOMException(
+          'The index already contains a record with that key.',
+          'ConstraintError',
+        );
+      }
+    }
+  }
+};
+
+
 const __tbIdbReadMeta = name => {
   const text = host.__tbStorageGet(__tbIdbArea, __tbIdbMetaPrefix + name);
   if (text === null || text === undefined) return null;
-  return __tbJsonParse(text);
+  return __tbIdbUnjson(text);
 };
 
 const __tbIdbWriteMeta = (name, meta) => {
-  if (!host.__tbStorageSet(__tbIdbArea, __tbIdbMetaPrefix + name, __tbJsonStringify(meta))) {
+  if (!host.__tbStorageSet(__tbIdbArea, __tbIdbMetaPrefix + name, __tbIdbJson(meta))) {
     throw new globalThis.QuotaExceededError('The database could not be written.');
   }
 };
@@ -303,7 +480,7 @@ const __tbIdbAddRecordKeys = (keys, prefix, rows) => {
     if (!__tbIdbStartsWith(rowKey, prefix)) continue;
     const text = host.__tbStorageGet(__tbIdbArea, rowKey);
     if (text === null || text === undefined) continue;
-    const row = __tbJsonParse(text);
+    const row = __tbIdbUnjson(text);
     rows.set(__tbIdbEncodeKey(row.key), row);
   }
 };
@@ -311,7 +488,19 @@ const __tbIdbAddRecordKeys = (keys, prefix, rows) => {
 const __tbIdbNewStoreState = (transaction, meta, initial) => {
   const rows = new __tbPrivateMap();
   for (const entry of initial.entries()) rows.set(entry[0], entry[1]);
-  return { __proto__: null, transaction, meta, rows, initial, deleted: false };
+  return {
+    __proto__: null,
+    transaction,
+    meta,
+    rows,
+    initial,
+    deleted: false,
+    renamed: false,
+    created: false,
+    rowList: null,
+    indexEntries: __tbPrivateMap(),
+    indexHandles: __tbPrivateMap(),
+  };
 };
 
 /// Builds the store records for one transaction scope. A transaction reads one
@@ -332,6 +521,7 @@ const __tbIdbNewTransaction = (db, names, mode) => {
     running: false,
     scheduled: false,
     committing: false,
+    explicitCommit: false,
     finished: false,
     aborted: false,
     error: null,
@@ -363,7 +553,7 @@ const __tbIdbNewTransaction = (db, names, mode) => {
     __tbArray.push(scope, name);
     const initial = new __tbPrivateMap();
     __tbIdbAddRecordKeys(keys, __tbIdbRecordPrefixFor(dbName, name), initial);
-    const state = __tbIdbNewStoreState(data, __tbJsonParse(__tbJsonStringify(storeMeta)), initial);
+    const state = __tbIdbNewStoreState(data, __tbIdbUnjson(__tbIdbJson(storeMeta)), initial);
     stores.set(name, state);
   }
   // A versionchange transaction starts with every existing store in scope
@@ -376,7 +566,7 @@ const __tbIdbNewTransaction = (db, names, mode) => {
       const initial = new __tbPrivateMap();
       __tbIdbAddRecordKeys(keys, __tbIdbRecordPrefixFor(dbName, storeMeta.name), initial);
       stores.set(storeMeta.name, __tbIdbNewStoreState(
-        data, __tbJsonParse(__tbJsonStringify(storeMeta)), initial));
+        data, __tbIdbUnjson(__tbIdbJson(storeMeta)), initial));
     }
   }
   return transaction;
@@ -403,6 +593,11 @@ const __tbIdbRun = data => {
     return;
   }
   data.running = true;
+  // A request's event dispatch runs with the transaction active, even if the
+  // previous task's cleanup already marked it inactive. An explicit commit()
+  // keeps it inactive for every later call
+  // (<https://w3c.github.io/IndexedDB/#fire-a-success-event>).
+  data.committing = data.explicitCommit;
   const request = __tbArray.shift(data.queue);
   __tbIdbTask(() => __tbIdbPerform(data, request));
 };
@@ -415,7 +610,46 @@ const __tbIdbAbort = (data, error) => {
   data.queue.length = 0;
   if (data.versionChange) {
     const dbState = __tbIdbDatabaseState.get(data.db);
-    if (dbState !== undefined) dbState.transaction = null;
+    if (dbState !== undefined) {
+      // The connection reverts to the version and object store set it had
+      // before the upgrade, and handles created during the transaction are
+      // marked deleted (<https://w3c.github.io/IndexedDB/#abort-a-transaction>).
+      dbState.meta = data.oldMeta === null
+        ? { __proto__: null, version: 0, stores: [] }
+        : __tbIdbUnjson(__tbIdbJson(data.oldMeta));
+      dbState.version = data.oldMeta === null ? 0 : data.oldMeta.version;
+      dbState.transaction = null;
+    }
+    for (const entry of data.stores.entries()) {
+      const storeState = entry[1];
+      if (storeState.created) {
+        storeState.deleted = true;
+        continue;
+      }
+      if (storeState.originalName !== undefined) storeState.meta.name = storeState.originalName;
+      const survivingIndexes = [];
+      for (let index = 0; index < storeState.meta.indexes.length; index++) {
+        const indexMeta = storeState.meta.indexes[index];
+        if (indexMeta.created === true) continue;
+        __tbArray.push(survivingIndexes, indexMeta);
+      }
+      storeState.meta.indexes = survivingIndexes;
+      for (const indexEntry of storeState.indexHandles.entries()) {
+        const indexState = __tbIdbIndexState.get(indexEntry[1]);
+        if (indexState === undefined) continue;
+        if (indexState.meta.created === true) {
+          indexState.deleted = true;
+        } else if (indexState.originalName !== undefined) {
+          indexState.meta.name = indexState.originalName;
+        }
+      }
+    }
+    const scope = [];
+    const storeCount = dbState === undefined ? 0 : dbState.meta.stores.length;
+    for (let index = 0; index < storeCount; index++) {
+      __tbArray.push(scope, dbState.meta.stores[index].name);
+    }
+    data.scope = scope;
   }
   __tbIdbTask(() => {
     __tbDispatch(data.transaction, new __tbEventConstructor('abort'));
@@ -426,6 +660,7 @@ const __tbIdbAbort = (data, error) => {
 const __tbIdbComplete = (data, request, error, result) => {
   const state = __tbIdbRequestState.get(request);
   state.done = true;
+  __tbIdbCleanup(data);
   if (error === null) {
     state.result = result;
     state.error = null;
@@ -439,12 +674,12 @@ const __tbIdbComplete = (data, request, error, result) => {
       return;
     }
   }
-  // With no request left, the transaction is now committing: `abort()` from a
-  // later task must throw, and a new request is no longer allowed
-  // (<https://w3c.github.io/IndexedDB/#cleanup-indexed-database-transactions>).
-  if (!data.finished && data.queue.length === 0) data.committing = true;
+  // With no request left, the cleanup task commits the transaction, not this
+  // one: listeners and their promise continuations still run here and the
+  // transaction stays active for them
+  // (<https://w3c.github.io/IndexedDB/#fire-a-success-event>).
   data.running = false;
-  if (!data.finished) __tbIdbSchedule(data);
+  if (!data.finished && data.committing) __tbIdbSchedule(data);
 };
 
 const __tbDispatch = (target, event) => {
@@ -479,44 +714,65 @@ const __tbIdbCommit = data => {
   const applied = [];
   let failure = null;
   try {
-    for (const entry of data.stores.entries()) {
-      const storeName = entry[0];
-      const store = entry[1];
-      const prefix = __tbIdbRecordPrefixFor(dbState.name, storeName);
-      for (const rowEntry of store.rows.entries()) {
-        const key = rowEntry[0];
-        const old = store.initial.get(key);
-        if (old !== undefined && old.value === rowEntry[1].value) continue;
-        __tbArray.push(applied, { __proto__: null, kind: 'record', key: prefix + key, old });
-        if (!host.__tbStorageSet(__tbIdbArea, prefix + key, __tbJsonStringify(rowEntry[1]))) {
+    // Remove the rows of deleted and renamed-away stores before writing, so a
+    // store that takes over a freed name writes into an empty prefix and a
+    // swap of two names never deletes rows written earlier in this commit
+    // (<https://w3c.github.io/IndexedDB/#commit-a-transaction>).
+    for (let index = 0; index < data.removedStores.length; index++) {
+      const prefix = __tbIdbRecordPrefixFor(dbState.name, data.removedStores[index]);
+      const keys = __tbIdbAllKeys();
+      for (let keyIndex = 0; keyIndex < keys.length; keyIndex++) {
+        if (!__tbIdbStartsWith(keys[keyIndex], prefix)) continue;
+        const old = host.__tbStorageGet(__tbIdbArea, keys[keyIndex]);
+        __tbArray.push(applied, { __proto__: null, kind: 'raw', key: keys[keyIndex], old });
+        if (!host.__tbStorageRemove(__tbIdbArea, keys[keyIndex])) {
           failure = new globalThis.QuotaExceededError('The transaction could not be written.');
           break;
         }
       }
       if (failure !== null) break;
-      for (const key of store.initial.keys()) {
-        if (store.rows.has(key)) continue;
-        __tbArray.push(applied, { __proto__: null, kind: 'record', key: prefix + key, old: store.initial.get(key) });
-        if (!host.__tbStorageRemove(__tbIdbArea, prefix + key)) {
-          failure = new globalThis.QuotaExceededError('The transaction could not be written.');
-          break;
-        }
-      }
-      if (failure !== null) break;
-      const storeMeta = __tbArray.find(meta.stores, candidate => candidate.name === storeName);
-      if (storeMeta !== undefined) storeMeta.nextKey = store.meta.nextKey;
     }
     if (failure === null) {
-      for (let index = 0; index < data.removedStores.length; index++) {
-        const prefix = __tbIdbRecordPrefixFor(dbState.name, data.removedStores[index]);
-        const keys = __tbIdbAllKeys();
-        for (let keyIndex = 0; keyIndex < keys.length; keyIndex++) {
-          if (!__tbIdbStartsWith(keys[keyIndex], prefix)) continue;
-          __tbArray.push(applied, { __proto__: null, kind: 'record', key: keys[keyIndex], old: undefined });
-          if (!host.__tbStorageRemove(__tbIdbArea, keys[keyIndex])) {
+      for (const entry of data.stores.entries()) {
+        const storeName = entry[0];
+        const store = entry[1];
+        const prefix = __tbIdbRecordPrefixFor(dbState.name, storeName);
+        for (const rowEntry of store.rows.entries()) {
+          const key = rowEntry[0];
+          const old = store.renamed ? undefined : store.initial.get(key);
+          if (old !== undefined && old.value === rowEntry[1].value) continue;
+          __tbArray.push(applied, { __proto__: null, kind: 'record', key: prefix + key, old });
+          if (!host.__tbStorageSet(__tbIdbArea, prefix + key, __tbIdbJson(rowEntry[1]))) {
             failure = new globalThis.QuotaExceededError('The transaction could not be written.');
             break;
           }
+        }
+        if (failure !== null) break;
+        for (const key of store.initial.keys()) {
+          if (store.rows.has(key)) continue;
+          __tbArray.push(applied, { __proto__: null, kind: 'record', key: prefix + key, old: store.initial.get(key) });
+          if (!host.__tbStorageRemove(__tbIdbArea, prefix + key)) {
+            failure = new globalThis.QuotaExceededError('The transaction could not be written.');
+            break;
+          }
+        }
+        if (failure !== null) break;
+        const storeMeta = __tbArray.find(meta.stores, candidate => candidate.name === storeName);
+        if (storeMeta !== undefined) {
+          storeMeta.nextKey = store.meta.nextKey;
+          const indexes = [];
+          for (let index = 0; index < store.meta.indexes.length; index++) {
+            const indexMeta = store.meta.indexes[index];
+            __tbArray.push(indexes, {
+              __proto__: null,
+              name: indexMeta.name,
+              keyPath: indexMeta.keyPath,
+              unique: indexMeta.unique,
+              multiEntry: indexMeta.multiEntry,
+            });
+          }
+          storeMeta.indexes = indexes;
+          storeMeta.keyPath = store.meta.keyPath;
         }
       }
     }
@@ -532,11 +788,14 @@ const __tbIdbCommit = data => {
       const entry = applied[index];
       if (entry.kind === 'meta') {
         if (entry.old === null) __tbIdbRemoveMeta(dbState.name);
-        else host.__tbStorageSet(__tbIdbArea, __tbIdbMetaPrefix + dbState.name, __tbJsonStringify(entry.old));
+        else host.__tbStorageSet(__tbIdbArea, __tbIdbMetaPrefix + dbState.name, __tbIdbJson(entry.old));
+      } else if (entry.kind === 'raw') {
+        if (entry.old === null || entry.old === undefined) host.__tbStorageRemove(__tbIdbArea, entry.key);
+        else host.__tbStorageSet(__tbIdbArea, entry.key, entry.old);
       } else if (entry.old === undefined) {
         host.__tbStorageRemove(__tbIdbArea, entry.key);
       } else {
-        host.__tbStorageSet(__tbIdbArea, entry.key, __tbJsonStringify(entry.old));
+        host.__tbStorageSet(__tbIdbArea, entry.key, __tbIdbJson(entry.old));
       }
     }
     data.running = false;
@@ -573,15 +832,21 @@ const __tbIdbRequest = (data, source, operation) => {
   return request;
 };
 
-/// Checks the order every object-store operation shares: the transaction must
-/// still be active, a write needs a `readwrite` transaction, and the store must
-/// not have been deleted by `deleteObjectStore()`
+/// Checks the order every object-store operation shares: the store must not
+/// have been deleted, the transaction must still be active, and a write needs a
+/// `readwrite` transaction
 /// (<https://w3c.github.io/IndexedDB/#add-or-put-operation>,
 /// <https://w3c.github.io/IndexedDB/#delete-records-operation>).
 const __tbIdbCheckStore = (store, what, write) => {
   const state = __tbIdbObjectStoreState.get(store);
   if (state === undefined) throw new TypeError('Illegal invocation');
   const data = state.transaction;
+  if (state.deleted) {
+    throw new globalThis.DOMException(
+      `The ${what} request was not allowed on a deleted object store.`,
+      'InvalidStateError',
+    );
+  }
   if (data.finished || data.aborted || data.committing) {
     throw new globalThis.DOMException(
       `The ${what} request was not allowed on this transaction.`,
@@ -594,19 +859,50 @@ const __tbIdbCheckStore = (store, what, write) => {
       'ReadOnlyError',
     );
   }
-  if (state.deleted) {
+  return state;
+};
+
+/// Checks the same order for an index: a deleted index or a deleted referenced
+/// object store precedes an inactive transaction
+/// (<https://w3c.github.io/IndexedDB/#dom-idbindex-get>).
+const __tbIdbCheckIndex = (index, what) => {
+  const state = __tbIdbIndexState.get(index);
+  if (state === undefined) throw new TypeError('Illegal invocation');
+  const data = state.transaction;
+  if (state.deleted || state.store.deleted) {
     throw new globalThis.DOMException(
-      `The ${what} request was not allowed on a deleted object store.`,
+      `The ${what} request was not allowed on a deleted index.`,
       'InvalidStateError',
+    );
+  }
+  if (data.finished || data.aborted || data.committing) {
+    throw new globalThis.DOMException(
+      `The ${what} request was not allowed on this transaction.`,
+      'TransactionInactiveError',
     );
   }
   return state;
 };
 
+const __tbIdbGeneratorLimit = 9007199254740992;
+
+/// The next generated key, or `null` when the generator is exhausted
+/// (<https://w3c.github.io/IndexedDB/#generate-a-key>).
 const __tbIdbGenerateKey = state => {
-  const key = { __proto__: null, t: 'number', v: state.meta.nextKey };
-  state.meta.nextKey += 1;
-  return key;
+  const value = state.meta.nextKey;
+  if (value > __tbIdbGeneratorLimit) return null;
+  state.meta.nextKey = value + 1;
+  return { __proto__: null, t: 'number', v: value };
+};
+
+/// Advances the generator past an explicit numeric key, capped at 2^53
+/// (<https://w3c.github.io/IndexedDB/#possibly-update-the-key-generator>).
+const __tbIdbPossiblyUpdateKey = (state, key) => {
+  if (!state.meta.autoIncrement || key.t !== 'number') return;
+  let value = key.v;
+  if (value > __tbIdbGeneratorLimit) value = __tbIdbGeneratorLimit;
+  value = __tbIdbFloor(value);
+  if (value >= state.meta.nextKey) state.meta.nextKey = value + 1;
 };
 
 /// Injects a generated key into a record at `keyPath`, creating the
@@ -633,40 +929,59 @@ const __tbIdbInjectKey = (value, keyPath, key) => {
   }
 };
 
-const __tbIdbStoreKey = (state, value, provided) => {
+/// Whether a generated key can be injected at `keyPath` into `value` without
+/// hitting a non-object intermediate value
+/// (<https://w3c.github.io/IndexedDB/#check-that-a-key-could-be-injected-into-a-value>).
+const __tbIdbCanInject = (value, keyPath) => {
+  const parts = __tbIdbSplit(keyPath, '.');
+  let current = value;
+  for (let index = 0; index + 1 < parts.length; index++) {
+    if (current === null || typeof current !== 'object') return false;
+    if (!__tbApply(__tbHasOwnProperty, current, [parts[index]])) return true;
+    current = current[parts[index]];
+  }
+  return current !== null && typeof current === 'object';
+};
+
+/// The explicit key a new record gets, or `undefined` when the request will
+/// generate one. The key is converted before the value is cloned
+/// (<https://w3c.github.io/IndexedDB/#add-or-put-operation>, steps 4-6).
+const __tbIdbExplicitKey = (state, provided) => {
   const keyPath = state.meta.keyPath;
-  let candidate;
   if (keyPath !== null) {
     // A store with an inline key path takes its key from the value, so an
-    // explicit key argument is a caller error
-    // (<https://w3c.github.io/IndexedDB/#add-or-put-operation>, step 5).
+    // explicit key argument is a caller error (step 4).
     if (provided !== undefined) throw __tbIdbDataError();
-    candidate = __tbIdbEvaluate(value, keyPath);
-    if (candidate === undefined) {
-      if (!state.meta.autoIncrement) throw __tbIdbDataError();
-      // The generated key becomes part of the stored record, so the record
-      // reads back with the key at its key path.
-      const generated = __tbIdbGenerateKey(state);
-      __tbIdbInjectKey(value, keyPath, __tbIdbKeyValue(generated));
-      return generated;
-    }
-  } else {
-    if (provided === undefined) {
-      if (state.meta.autoIncrement) return __tbIdbGenerateKey(state);
-      throw __tbIdbDataError();
-    }
-    candidate = provided;
+    return undefined;
   }
-  const key = __tbIdbToKey(candidate, __tbPrivateSet());
+  if (provided === undefined) {
+    if (state.meta.autoIncrement) return undefined;
+    throw __tbIdbDataError();
+  }
+  const key = __tbIdbToKey(provided, __tbPrivateSet());
   if (key === undefined) throw __tbIdbDataError();
-  if (state.meta.autoIncrement && key.t === 'number' && key.v >= state.meta.nextKey) {
-    state.meta.nextKey = __tbIdbFloor(key.v) + 1;
-  }
   return key;
 };
 
-const __tbIdbQuery = (value, optional) => {
-  if (optional && (value === undefined)) {
+/// The key at an inline key path in an already-cloned value, `null` when the
+/// generator supplies one, or an error when the path cannot be used
+/// (<https://w3c.github.io/IndexedDB/#add-or-put-operation>, step 8).
+const __tbIdbInlineKey = (state, value) => {
+  const keyPath = state.meta.keyPath;
+  const candidate = __tbIdbEvaluate(value, keyPath);
+  if (candidate === undefined) {
+    if (!state.meta.autoIncrement) throw __tbIdbDataError();
+    if (!__tbIdbCanInject(value, keyPath)) throw __tbIdbDataError();
+    return null;
+  }
+  const key = __tbIdbToKey(candidate, __tbPrivateSet());
+  if (key === undefined) throw __tbIdbDataError();
+  return key;
+};
+
+const __tbIdbQuery = (value, disallowNull) => {
+  if (value === undefined || value === null) {
+    if (disallowNull && value === null) throw __tbIdbDataError();
     return { __proto__: null, lower: null, upper: null, lowerOpen: false, upperOpen: false };
   }
   const range = __tbIdbKeyRangeState.get(value);
@@ -676,11 +991,13 @@ const __tbIdbQuery = (value, optional) => {
   return { __proto__: null, lower: key, upper: key, lowerOpen: false, upperOpen: false };
 };
 
-const __tbIdbSortedRows = state => {
-  const rows = [];
-  for (const entry of state.rows.entries()) __tbArray.push(rows, entry);
-  return __tbArray.sort(rows, (first, second) => __tbIdbCompare(
-    __tbIdbDecodeKey(first[0]), __tbIdbDecodeKey(second[0])));
+const __tbIdbSortedRows = state => __tbIdbRowList(state);
+
+/// Drops the derived record lists after a write, so the next query rebuilds
+/// them from the transaction's rows.
+const __tbIdbInvalidate = state => {
+  state.rowList = null;
+  state.indexEntries.clear();
 };
 
 const __tbIdbStoreValue = value => __tbEncode(value, undefined, null).payload;
@@ -689,58 +1006,183 @@ const __tbIdbReadValue = payload => __tbDecode(payload, { __proto__: null });
 
 const __tbIdbPut = (store, value, key, add) => {
   const state = __tbIdbCheckStore(store, add ? 'add' : 'put', true);
-  // Clone before extracting the key, so a generated key lands in the stored
-  // record and never mutates the caller's object
-  // (<https://w3c.github.io/IndexedDB/#add-or-put-operation>, step 8).
+  const explicit = __tbIdbExplicitKey(state, key);
+  // Clone before extracting an inline key, so a generated key lands in the
+  // stored record and never mutates the caller's object
+  // (<https://w3c.github.io/IndexedDB/#add-or-put-operation>, step 7).
   const clone = __tbIdbReadValue(__tbIdbStoreValue(value));
-  const recordKey = __tbIdbStoreKey(state, clone, key);
-  const payload = __tbIdbStoreValue(clone);
+  const prepared = state.meta.keyPath !== null
+    ? __tbIdbInlineKey(state, clone)
+    : explicit === undefined ? null : explicit;
   return __tbIdbRequest(state.transaction, store, () => {
-    const encoded = __tbIdbEncodeKey(recordKey);
-    if (add && state.rows.has(encoded)) {
-      throw new globalThis.DOMException('The key already exists in the object store.', 'ConstraintError');
+    const previousNextKey = state.meta.nextKey;
+    try {
+      // Key generation happens when the request runs, so requests queued before
+      // this one take the lower keys
+      // (<https://w3c.github.io/IndexedDB/#store-a-record-into-an-object-store>).
+      let recordKey = prepared;
+      if (recordKey === null) {
+        recordKey = __tbIdbGenerateKey(state);
+        if (recordKey === null) {
+          throw new globalThis.DOMException(
+            'The key generator has no keys left.',
+            'ConstraintError',
+          );
+        }
+        if (state.meta.keyPath !== null) {
+          __tbIdbInjectKey(clone, state.meta.keyPath, __tbIdbKeyValue(recordKey));
+        }
+      } else {
+        __tbIdbPossiblyUpdateKey(state, recordKey);
+      }
+      const payload = __tbIdbStoreValue(clone);
+      const encoded = __tbIdbEncodeKey(recordKey);
+      if (add && state.rows.has(encoded)) {
+        throw new globalThis.DOMException('The key already exists in the object store.', 'ConstraintError');
+      }
+      __tbIdbCheckUnique(state, clone, recordKey);
+      state.rows.set(encoded, { __proto__: null, key: recordKey, value: payload });
+      __tbIdbInvalidate(state);
+      return __tbIdbKeyValue(recordKey);
+    } catch (error) {
+      // A failed operation leaves no trace, including a key the generator
+      // handed out before the constraint check failed.
+      state.meta.nextKey = previousNextKey;
+      throw error;
     }
-    state.rows.set(encoded, { __proto__: null, key: recordKey, value: payload });
-    return __tbIdbKeyValue(recordKey);
   });
+};
+
+/// [EnforceRange] unsigned long conversion
+/// (<https://webidl.spec.whatwg.org/#es-unsigned-long>).
+const __tbIdbCountValue = value => {
+  const number = Number(value);
+  if (!__tbNumberIsFinite(number) || number < 0 || number > 4294967295) {
+    throw new TypeError('The count provided is outside the range of a valid count.');
+  }
+  return __tbIdbTrunc(number);
+};
+
+/// Whether the first argument of getAll()/getAllKeys() is a key or key range
+/// rather than an options dictionary: any value convertible to a key, even one
+/// that fails conversion later, counts
+/// (<https://w3c.github.io/IndexedDB/#potentially-valid-key-range>).
+const __tbIdbPotentiallyValidRange = value => {
+  if (__tbIdbKeyRangeState.get(value) !== undefined) return true;
+  if (typeof value === 'number' || typeof value === 'string') return true;
+  if (typeof value !== 'object' || value === null) return false;
+  return __tbIsDate(value)
+    || __tbIsArray(value)
+    || __tbIsArrayBuffer(value)
+    || __tbIsTypedArray(value)
+    || __tbIsDataView(value);
+};
+
+/// `IDBGetAllOptions` dictionary conversion
+/// (<https://w3c.github.io/IndexedDB/#dictdef-idbgetalloptions>).
+const __tbIdbGetAllOptions = value => {
+  if (value === undefined || value === null) {
+    return { __proto__: null, query: undefined, count: undefined, direction: 'next' };
+  }
+  if (typeof value !== 'object' && typeof value !== 'function') {
+    throw new TypeError('The options argument is not an object.');
+  }
+  return {
+    __proto__: null,
+    query: value.query,
+    count: value.count,
+    direction: __tbIdbDirection(value.direction),
+  };
+};
+
+/// Retrieves values, keys, or record snapshots from an object store or index
+/// for getAll(), getAllKeys(), and getAllRecords()
+/// (<https://w3c.github.io/IndexedDB/#retrieve-multiple-items-from-an-index>).
+const __tbIdbRetrieve = (handle, state, indexMeta, kind, index, queryOrOptions, count) => {
+  let range;
+  let direction;
+  let limit;
+  if (index && (__tbIdbPotentiallyValidRange(queryOrOptions)
+    || queryOrOptions === undefined || queryOrOptions === null)) {
+    range = __tbIdbQuery(queryOrOptions, false);
+    direction = 'next';
+    limit = count === undefined ? Infinity : __tbIdbCountValue(count);
+  } else {
+    const options = __tbIdbGetAllOptions(queryOrOptions);
+    range = __tbIdbQuery(options.query, false);
+    direction = options.direction;
+    limit = options.count === undefined ? Infinity : __tbIdbCountValue(options.count);
+  }
+  if (limit === 0) limit = Infinity;
+  const unique = direction === 'nextunique' || direction === 'prevunique';
+  const reverse = direction === 'prev' || direction === 'prevunique';
+  const storeState = indexMeta === null ? state : state.store;
+  return __tbIdbRequest(state.transaction, handle, () => {
+    const source = __tbIdbSourceRecords(storeState, indexMeta);
+    const records = [];
+    for (let recordIndex = 0; recordIndex < source.length; recordIndex++) {
+      const record = source[recordIndex];
+      if (!__tbIdbRangeIncludes(range, record.key)) continue;
+      if (unique && records.length > 0
+        && __tbIdbCompare(records[records.length - 1].key, record.key) === 0) continue;
+      __tbArray.push(records, record);
+    }
+    if (reverse) {
+      const reversed = [];
+      for (let recordIndex = records.length - 1; recordIndex >= 0; recordIndex--) {
+        __tbArray.push(reversed, records[recordIndex]);
+      }
+      records.length = 0;
+      for (let recordIndex = 0; recordIndex < reversed.length; recordIndex++) {
+        __tbArray.push(records, reversed[recordIndex]);
+      }
+    }
+    if (records.length > limit) records.length = limit;
+    if (kind === 'value') {
+      const values = [];
+      for (let recordIndex = 0; recordIndex < records.length; recordIndex++) {
+        __tbArray.push(values, __tbIdbReadValue(records[recordIndex].row.value));
+      }
+      return values;
+    }
+    if (kind === 'key') {
+      const keys = [];
+      for (let recordIndex = 0; recordIndex < records.length; recordIndex++) {
+        __tbArray.push(keys, __tbIdbKeyValue(records[recordIndex].primaryKey));
+      }
+      return keys;
+    }
+    const snapshots = [];
+    for (let recordIndex = 0; recordIndex < records.length; recordIndex++) {
+      __tbArray.push(snapshots, __tbIdbRecordSnapshot(records[recordIndex]));
+    }
+    return snapshots;
+  });
+};
+
+const __tbIdbGetAll = (handle, state, indexMeta, kind, index, queryOrOptions, count) => {
+  if (kind === 'record') return __tbIdbRetrieve(handle, state, indexMeta, kind, false, queryOrOptions, undefined);
+  return __tbIdbRetrieve(handle, state, indexMeta, kind, index, queryOrOptions, count);
 };
 
 const __tbIdbGet = (store, query, wantKey, all, count) => {
   const state = __tbIdbCheckStore(store, all ? 'getAll' : 'get');
-  const range = __tbIdbQuery(query, all);
-  let limit = Infinity;
-  if (count !== undefined) {
-    const number = Number(count);
-    if (!__tbNumberIsFinite(number) || number < 0 || number > 4294967295) {
-      throw new TypeError("The count provided is outside the range of a valid count.");
-    }
-    limit = __tbIdbTrunc(number);
-  }
+  if (all) return __tbIdbGetAll(store, state, null, wantKey ? 'key' : 'value', true, query, count);
+  const range = __tbIdbQuery(query, true);
   return __tbIdbRequest(state.transaction, store, () => {
-    const matching = [];
     const rows = __tbIdbSortedRows(state);
-    for (let index = 0; index < rows.length && matching.length < limit; index++) {
+    for (let index = 0; index < rows.length; index++) {
       const entry = rows[index];
-      if (!__tbIdbRangeIncludes(range, __tbIdbDecodeKey(entry[0]))) continue;
-      __tbArray.push(matching, entry[1]);
+      if (!__tbIdbRangeIncludes(range, entry[1].key)) continue;
+      return wantKey ? __tbIdbKeyValue(entry[1].key) : __tbIdbReadValue(entry[1].value);
     }
-    if (!all) {
-      if (matching.length === 0) return undefined;
-      return wantKey ? __tbIdbKeyValue(matching[0].key) : __tbIdbReadValue(matching[0].value);
-    }
-    const values = [];
-    for (let index = 0; index < matching.length; index++) {
-      __tbArray.push(values, wantKey
-        ? __tbIdbKeyValue(matching[index].key)
-        : __tbIdbReadValue(matching[index].value));
-    }
-    return values;
+    return undefined;
   });
 };
 
 const __tbIdbCount = (store, query) => {
   const state = __tbIdbCheckStore(store, 'count');
-  const range = __tbIdbQuery(query, true);
+  const range = __tbIdbQuery(query, false);
   return __tbIdbRequest(state.transaction, store, () => {
     const rows = __tbIdbSortedRows(state);
     let count = 0;
@@ -753,7 +1195,7 @@ const __tbIdbCount = (store, query) => {
 
 const __tbIdbDelete = (store, query) => {
   const state = __tbIdbCheckStore(store, 'delete', true);
-  const range = __tbIdbQuery(query, false);
+  const range = __tbIdbQuery(query, true);
   return __tbIdbRequest(state.transaction, store, () => {
     const rows = __tbIdbSortedRows(state);
     for (let index = 0; index < rows.length; index++) {
@@ -761,6 +1203,7 @@ const __tbIdbDelete = (store, query) => {
         state.rows.delete(rows[index][0]);
       }
     }
+    __tbIdbInvalidate(state);
     return undefined;
   });
 };
@@ -769,9 +1212,544 @@ const __tbIdbClear = store => {
   const state = __tbIdbCheckStore(store, 'clear', true);
   return __tbIdbRequest(state.transaction, store, () => {
     state.rows.clear();
+    __tbIdbInvalidate(state);
     return undefined;
   });
 };
+
+// ── indexes
+
+const __tbIdbIndexHandle = (storeState, storeHandle, meta) => {
+  const cached = storeState.indexHandles.get(meta.name);
+  if (cached !== undefined && !__tbIdbIndexState.get(cached).deleted) return cached;
+  const handle = __tbIdbConstruct(__tbIdbIndexConstructor);
+  __tbIdbIndexState.set(handle, {
+    __proto__: null,
+    transaction: storeState.transaction,
+    store: storeState,
+    storeHandle,
+    meta,
+    deleted: false,
+    keyPathValue: null,
+  });
+  storeState.indexHandles.set(meta.name, handle);
+  return handle;
+};
+
+/// Validation runs as a database task after the requests queued before the
+/// index existed, so an upgrade that already wrote conflicting records aborts
+/// when the index is created rather than when the conflicting record is stored
+/// (<https://w3c.github.io/IndexedDB/#dom-idbobjectstore-createindex>).
+const __tbIdbValidateIndex = (state, indexMeta) => {
+  if (!indexMeta.unique) return;
+  const entries = __tbIdbIndexEntries(state, indexMeta);
+  for (let index = 1; index < entries.length; index++) {
+    if (__tbIdbCompare(entries[index - 1].key, entries[index].key) !== 0) continue;
+    throw new globalThis.DOMException(
+      `The index '${indexMeta.name}' already contains duplicate keys.`,
+      'ConstraintError',
+    );
+  }
+};
+
+/// `IDBIndexParameters` dictionary conversion: `null` is an empty dictionary
+/// and any other non-object throws a `TypeError`
+/// (<https://webidl.spec.whatwg.org/#es-dictionary>).
+const __tbIdbIndexParameters = value => {
+  if (value === undefined || value === null) {
+    return { __proto__: null, unique: false, multiEntry: false };
+  }
+  if (typeof value !== 'object' && typeof value !== 'function') {
+    throw new TypeError('The options argument is not an object.');
+  }
+  return {
+    __proto__: null,
+    unique: Boolean(value.unique),
+    multiEntry: Boolean(value.multiEntry),
+  };
+};
+
+const __tbIdbCreateIndex = (store, name, keyPath, options) => {
+  const indexName = String(name);
+  const indexKeyPath = __tbIdbConvertKeyPath(keyPath);
+  const parameters = __tbIdbIndexParameters(options);
+  const state = __tbIdbObjectStoreState.get(store);
+  if (state === undefined) throw new TypeError('Illegal invocation');
+  const data = state.transaction;
+  if (!data.versionChange) {
+    throw new globalThis.DOMException(
+      'An index can only be created inside a version change transaction.',
+      'InvalidStateError',
+    );
+  }
+  if (state.deleted) {
+    throw new globalThis.DOMException(
+      'The index cannot be created on a deleted object store.',
+      'InvalidStateError',
+    );
+  }
+  if (data.finished || data.aborted || data.committing) {
+    throw new globalThis.DOMException(
+      'The index cannot be created on an inactive transaction.',
+      'TransactionInactiveError',
+    );
+  }
+  if (__tbArray.find(state.meta.indexes, index => index.name === indexName) !== undefined) {
+    throw new globalThis.DOMException(
+      `An index named '${indexName}' already exists.`,
+      'ConstraintError',
+    );
+  }
+  if (indexKeyPath === null || !__tbIdbValidKeyPath(indexKeyPath)) {
+    throw new globalThis.DOMException(
+      `The key path '${indexKeyPath}' is not a valid key path.`,
+      'SyntaxError',
+    );
+  }
+  if (parameters.multiEntry && __tbIsArray(indexKeyPath)) {
+    throw new globalThis.DOMException(
+      'A multiEntry index cannot use a sequence key path.',
+      'InvalidAccessError',
+    );
+  }
+  const meta = {
+    __proto__: null,
+    name: indexName,
+    keyPath: indexKeyPath,
+    unique: parameters.unique,
+    multiEntry: parameters.multiEntry,
+    // The index's uniqueness applies to records stored after its creation
+    // request runs, not to requests already queued when createIndex() was
+    // called (<https://w3c.github.io/IndexedDB/#dom-idbobjectstore-createindex>).
+    pending: true,
+    created: true,
+  };
+  __tbArray.push(state.meta.indexes, meta);
+  const index = __tbIdbIndexHandle(state, store, meta);
+  __tbIdbRequest(data, index, () => {
+    __tbIdbValidateIndex(state, meta);
+    meta.pending = false;
+  });
+  return index;
+};
+
+const __tbIdbStoreIndex = (store, name) => {
+  const state = __tbIdbObjectStoreState.get(store);
+  if (state === undefined) throw new TypeError('Illegal invocation');
+  if (state.deleted) {
+    throw new globalThis.DOMException('The object store has been deleted.', 'InvalidStateError');
+  }
+  if (state.transaction.finished) {
+    throw new globalThis.DOMException('The transaction has finished.', 'InvalidStateError');
+  }
+  const indexName = String(name);
+  const meta = __tbArray.find(state.meta.indexes, index => index.name === indexName);
+  if (meta === undefined) {
+    throw new globalThis.DOMException(`The index '${indexName}' does not exist.`, 'NotFoundError');
+  }
+  return __tbIdbIndexHandle(state, store, meta);
+};
+
+const __tbIdbDeleteIndex = (store, name) => {
+  const state = __tbIdbObjectStoreState.get(store);
+  if (state === undefined) throw new TypeError('Illegal invocation');
+  const data = state.transaction;
+  if (!data.versionChange) {
+    throw new globalThis.DOMException(
+      'An index can only be deleted inside a version change transaction.',
+      'InvalidStateError',
+    );
+  }
+  if (state.deleted) {
+    throw new globalThis.DOMException('The object store has been deleted.', 'InvalidStateError');
+  }
+  if (data.finished || data.aborted || data.committing) {
+    throw new globalThis.DOMException(
+      'The index cannot be deleted on an inactive transaction.',
+      'TransactionInactiveError',
+    );
+  }
+  const indexName = String(name);
+  const index = __tbArray.findIndex(state.meta.indexes, entry => entry.name === indexName);
+  if (index === -1) {
+    throw new globalThis.DOMException(`The index '${indexName}' does not exist.`, 'NotFoundError');
+  }
+  __tbArray.splice(state.meta.indexes, index, 1);
+  const handle = state.indexHandles.get(indexName);
+  if (handle !== undefined) __tbIdbIndexState.get(handle).deleted = true;
+  state.indexHandles.delete(indexName);
+  __tbIdbInvalidate(state);
+};
+
+const __tbIdbIndexQuery = (index, query, wantKey, all, count) => {
+  const state = __tbIdbCheckIndex(index, all ? 'getAll' : 'get');
+  if (all) return __tbIdbGetAll(index, state, state.meta, wantKey ? 'key' : 'value', true, query, count);
+  const range = __tbIdbQuery(query, true);
+  return __tbIdbRequest(state.transaction, index, () => {
+    const entries = __tbIdbIndexEntries(state.store, state.meta);
+    for (let entryIndex = 0; entryIndex < entries.length; entryIndex++) {
+      const entry = entries[entryIndex];
+      if (!__tbIdbRangeIncludes(range, entry.key)) continue;
+      return wantKey
+        ? __tbIdbKeyValue(entry.primaryKey)
+        : __tbIdbReadValue(entry.row.value);
+    }
+    return undefined;
+  });
+};
+
+const __tbIdbIndexCount = (index, query) => {
+  const state = __tbIdbCheckIndex(index, 'count');
+  const range = __tbIdbQuery(query, false);
+  return __tbIdbRequest(state.transaction, index, () => {
+    const entries = __tbIdbIndexEntries(state.store, state.meta);
+    let count = 0;
+    for (let entryIndex = 0; entryIndex < entries.length; entryIndex++) {
+      if (__tbIdbRangeIncludes(range, entries[entryIndex].key)) count++;
+    }
+    return count;
+  });
+};
+
+// ── cursors
+
+/// The records of an object store or index in ascending order: an index's
+/// records are ordered by index key and then by primary key
+/// (<https://w3c.github.io/IndexedDB/#cursor-construct>).
+const __tbIdbSourceRecords = (store, indexMeta) => {
+  if (indexMeta !== null) return __tbIdbIndexEntries(store, indexMeta);
+  const rows = __tbIdbRowList(store);
+  const records = [];
+  for (let index = 0; index < rows.length; index++) {
+    const row = rows[index][1];
+    __tbArray.push(records, {
+      __proto__: null,
+      key: row.key,
+      primaryKey: row.key,
+      row,
+    });
+  }
+  return records;
+};
+
+const __tbIdbCursorRecords = state => __tbIdbSourceRecords(state.store, state.indexMeta);
+
+/// The first record a "next" or "nextunique" cursor moves to
+/// (<https://w3c.github.io/IndexedDB/#cursor-iteration-operation>).
+const __tbIdbCursorNext = (state, records, key, primaryKey, unique) => {
+  for (let index = 0; index < records.length; index++) {
+    const record = records[index];
+    if (!__tbIdbRangeIncludes(state.range, record.key)) continue;
+    if (key !== undefined) {
+      const order = __tbIdbCompare(record.key, key);
+      if (order < 0) continue;
+      if (order === 0 && primaryKey !== undefined
+        && __tbIdbCompare(record.primaryKey, primaryKey) < 0) continue;
+    }
+    if (state.position !== undefined) {
+      const order = __tbIdbCompare(record.key, state.position);
+      if (order < 0) continue;
+      if (order === 0) {
+        if (unique || state.indexMeta === null) continue;
+        if (__tbIdbCompare(record.primaryKey, state.objectStorePosition) <= 0) continue;
+      }
+    }
+    return record;
+  }
+  return null;
+};
+
+/// The last record a "prev" cursor moves to, or the last record a
+/// "prevunique" cursor considers before it snaps to that key's first record
+/// (<https://w3c.github.io/IndexedDB/#cursor-iteration-operation>).
+const __tbIdbCursorPrev = (state, records, key, primaryKey, unique) => {
+  for (let index = records.length - 1; index >= 0; index--) {
+    const record = records[index];
+    if (!__tbIdbRangeIncludes(state.range, record.key)) continue;
+    if (key !== undefined) {
+      const order = __tbIdbCompare(record.key, key);
+      if (order > 0) continue;
+      if (order === 0 && primaryKey !== undefined && !unique
+        && __tbIdbCompare(record.primaryKey, primaryKey) > 0) continue;
+    }
+    if (state.position !== undefined) {
+      const order = __tbIdbCompare(record.key, state.position);
+      if (order > 0) continue;
+      if (order === 0) {
+        if (unique || state.indexMeta === null) continue;
+        if (__tbIdbCompare(record.primaryKey, state.objectStorePosition) >= 0) continue;
+      }
+    }
+    return record;
+  }
+  return null;
+};
+
+const __tbIdbCursorForward = direction => direction === 'next' || direction === 'nextunique';
+
+/// Moves a cursor `count` records, or to `key`/`primaryKey`, and returns the
+/// cursor or null when the iteration is exhausted
+/// (<https://w3c.github.io/IndexedDB/#cursor-iteration-operation>).
+const __tbIdbIterateCursor = (state, key, primaryKey, count) => {
+  const records = __tbIdbCursorRecords(state);
+  const unique = state.direction === 'nextunique' || state.direction === 'prevunique';
+  const forward = __tbIdbCursorForward(state.direction);
+  let remaining = count === undefined ? 1 : count;
+  let found = null;
+  while (remaining > 0) {
+    found = forward
+      ? __tbIdbCursorNext(state, records, key, primaryKey, unique)
+      : __tbIdbCursorPrev(state, records, key, primaryKey, unique);
+    if (found === null) break;
+    if (!forward && unique) {
+      // "prevunique" visits the same records as "nextunique", in reverse
+      // order, so the record it settles on is the first record with the key.
+      for (let index = 0; index < records.length; index++) {
+        if (__tbIdbCompare(records[index].key, found.key) !== 0) continue;
+        found = records[index];
+        break;
+      }
+    }
+    state.position = found.key;
+    state.objectStorePosition = found.primaryKey;
+    remaining--;
+  }
+  if (found === null) {
+    state.key = undefined;
+    state.primaryKey = undefined;
+    state.keyValue = undefined;
+    state.primaryKeyValue = undefined;
+    state.value = undefined;
+    state.gotValue = false;
+    if (state.indexMeta !== null) state.objectStorePosition = undefined;
+    return null;
+  }
+  state.key = found.key;
+  state.primaryKey = found.primaryKey;
+  state.keyValue = __tbIdbKeyValue(found.key);
+  state.primaryKeyValue = __tbIdbKeyValue(found.primaryKey);
+  state.value = state.keyOnly ? undefined : __tbIdbReadValue(found.row.value);
+  state.gotValue = true;
+  return state.handle;
+};
+
+const __tbIdbDirection = value => {
+  const direction = value === undefined ? 'next' : String(value);
+  switch (direction) {
+    case 'next':
+    case 'nextunique':
+    case 'prev':
+    case 'prevunique':
+      return direction;
+  }
+  throw new TypeError(
+    `The provided value '${direction}' is not a valid enum value of type IDBCursorDirection.`,
+  );
+};
+
+/// Creates a cursor and queues its first iteration as a request
+/// (<https://w3c.github.io/IndexedDB/#dom-idbobjectstore-opencursor>).
+const __tbIdbOpenCursor = (handle, storeState, indexMeta, query, direction, keyOnly) => {
+  const range = __tbIdbQuery(query, false);
+  const cursor = __tbIdbConstruct(
+    keyOnly ? __tbIdbCursorConstructor : __tbIdbCursorWithValueConstructor);
+  const state = {
+    __proto__: null,
+    handle: cursor,
+    source: handle,
+    transaction: storeState.transaction,
+    store: storeState,
+    indexMeta,
+    range,
+    direction,
+    keyOnly,
+    position: undefined,
+    objectStorePosition: undefined,
+    key: undefined,
+    primaryKey: undefined,
+    keyValue: undefined,
+    primaryKeyValue: undefined,
+    value: undefined,
+    gotValue: false,
+    request: null,
+  };
+  __tbIdbCursorState.set(cursor, state);
+  const request = __tbIdbRequest(storeState.transaction, handle, () => {
+    state.gotValue = false;
+    return __tbIdbIterateCursor(state);
+  });
+  state.request = request;
+  return request;
+};
+
+/// Queues the cursor's existing request again, so every step fires `success`
+/// at the request that opened the cursor
+/// (<https://w3c.github.io/IndexedDB/#dom-idbcursor-continue>).
+const __tbIdbCursorQueue = (state, operation) => {
+  const requestState = __tbIdbRequestState.get(state.request);
+  requestState.done = false;
+  requestState.result = undefined;
+  requestState.error = null;
+  requestState.operation = operation;
+  state.gotValue = false;
+  __tbIdbQueue(state.transaction, state.request);
+};
+
+const __tbIdbCursorStateOf = cursor => {
+  const state = __tbIdbCursorState.get(cursor);
+  if (state === undefined) throw new TypeError('Illegal invocation');
+  return state;
+};
+
+const __tbIdbCursorCheck = (state, what, readOnly) => {
+  const data = state.transaction;
+  if (data.finished || data.aborted || data.committing) {
+    throw new globalThis.DOMException(
+      `The ${what} request was not allowed on this transaction.`,
+      'TransactionInactiveError',
+    );
+  }
+  if (readOnly && data.mode === 'readonly') {
+    throw new globalThis.DOMException(
+      `The ${what} request was not allowed on a read-only transaction.`,
+      'ReadOnlyError',
+    );
+  }
+  if (state.store.deleted || state.indexMeta !== null
+    && __tbArray.indexOf(state.store.meta.indexes, state.indexMeta) === -1) {
+    throw new globalThis.DOMException('The cursor source has been deleted.', 'InvalidStateError');
+  }
+};
+
+const __tbIdbCursorAdvance = (cursor, count) => {
+  const state = __tbIdbCursorStateOf(cursor);
+  const number = Number(count);
+  if (!__tbNumberIsFinite(number) || number < 0 || number > 4294967295) {
+    throw new TypeError('The count provided is outside the range of a valid count.');
+  }
+  if (__tbIdbTrunc(number) === 0) {
+    throw new TypeError("Failed to execute 'advance' on 'IDBCursor': count must be greater than 0.");
+  }
+  __tbIdbCursorCheck(state, 'advance');
+  if (!state.gotValue) {
+    throw new globalThis.DOMException('The cursor is not positioned on a record.', 'InvalidStateError');
+  }
+  const steps = __tbIdbTrunc(number);
+  __tbIdbCursorQueue(state, () => __tbIdbIterateCursor(state, undefined, undefined, steps));
+};
+
+const __tbIdbCursorContinue = (cursor, key) => {
+  const state = __tbIdbCursorStateOf(cursor);
+  __tbIdbCursorCheck(state, 'continue');
+  if (!state.gotValue) {
+    throw new globalThis.DOMException('The cursor is not positioned on a record.', 'InvalidStateError');
+  }
+  let target;
+  if (key !== undefined) {
+    target = __tbIdbToKey(key, __tbPrivateSet());
+    if (target === undefined) throw __tbIdbDataError();
+    const order = __tbIdbCompare(target, state.position);
+    if (__tbIdbCursorForward(state.direction) ? order <= 0 : order >= 0) {
+      throw new globalThis.DOMException(
+        'The key is not beyond the cursor position.',
+        'DataError',
+      );
+    }
+  }
+  __tbIdbCursorQueue(state, () => __tbIdbIterateCursor(state, target, undefined, 1));
+};
+
+const __tbIdbCursorContinuePrimaryKey = (cursor, key, primaryKey) => {
+  const state = __tbIdbCursorStateOf(cursor);
+  __tbIdbCursorCheck(state, 'continuePrimaryKey');
+  if (state.indexMeta === null) {
+    throw new globalThis.DOMException(
+      'continuePrimaryKey is only allowed on an index cursor.',
+      'InvalidAccessError',
+    );
+  }
+  if (state.direction !== 'next' && state.direction !== 'prev') {
+    throw new globalThis.DOMException(
+      'continuePrimaryKey is not allowed on a unique cursor.',
+      'InvalidAccessError',
+    );
+  }
+  if (!state.gotValue) {
+    throw new globalThis.DOMException('The cursor is not positioned on a record.', 'InvalidStateError');
+  }
+  const target = __tbIdbToKey(key, __tbPrivateSet());
+  if (target === undefined) throw __tbIdbDataError();
+  const targetPrimary = __tbIdbToKey(primaryKey, __tbPrivateSet());
+  if (targetPrimary === undefined) throw __tbIdbDataError();
+  const forward = state.direction === 'next';
+  const order = __tbIdbCompare(target, state.position);
+  if (forward ? order < 0 : order > 0) {
+    throw new globalThis.DOMException('The key is not beyond the cursor position.', 'DataError');
+  }
+  if (order === 0) {
+    const primaryOrder = __tbIdbCompare(targetPrimary, state.objectStorePosition);
+    if (forward ? primaryOrder <= 0 : primaryOrder >= 0) {
+      throw new globalThis.DOMException(
+        'The primary key is not beyond the cursor position.',
+        'DataError',
+      );
+    }
+  }
+  __tbIdbCursorQueue(state, () => __tbIdbIterateCursor(state, target, targetPrimary, 1));
+};
+
+const __tbIdbCursorUpdate = (cursor, value) => {
+  const state = __tbIdbCursorStateOf(cursor);
+  const data = state.transaction;
+  __tbIdbCursorCheck(state, 'update', true);
+  if (!state.gotValue) {
+    throw new globalThis.DOMException('The cursor is not positioned on a record.', 'InvalidStateError');
+  }
+  if (state.keyOnly) {
+    throw new globalThis.DOMException(
+      'A key-only cursor cannot update a record.',
+      'InvalidStateError',
+    );
+  }
+  const clone = __tbIdbReadValue(__tbIdbStoreValue(value));
+  const keyPath = state.store.meta.keyPath;
+  if (keyPath !== null) {
+    const key = __tbIdbExtractKey(clone, keyPath, false);
+    if (key === undefined || __tbIdbCompare(key, state.primaryKey) !== 0) throw __tbIdbDataError();
+  }
+  const payload = __tbIdbStoreValue(clone);
+  return __tbIdbRequest(data, cursor, () => {
+    __tbIdbCheckUnique(state.store, clone, state.primaryKey);
+    state.store.rows.set(__tbIdbEncodeKey(state.primaryKey), {
+      __proto__: null,
+      key: state.primaryKey,
+      value: payload,
+    });
+    __tbIdbInvalidate(state.store);
+    return __tbIdbKeyValue(state.primaryKey);
+  });
+};
+
+const __tbIdbCursorDelete = cursor => {
+  const state = __tbIdbCursorStateOf(cursor);
+  const data = state.transaction;
+  __tbIdbCursorCheck(state, 'delete', true);
+  if (!state.gotValue) {
+    throw new globalThis.DOMException('The cursor is not positioned on a record.', 'InvalidStateError');
+  }
+  if (state.keyOnly) {
+    throw new globalThis.DOMException(
+      'A key-only cursor cannot delete a record.',
+      'InvalidStateError',
+    );
+  }
+  return __tbIdbRequest(data, cursor, () => {
+    state.store.rows.delete(__tbIdbEncodeKey(state.primaryKey));
+    __tbIdbInvalidate(state.store);
+    return undefined;
+  });
+};
+
 
 /// One `DOMStringList`, the interface `objectStoreNames`, `indexNames`, and
 /// `IDBTransaction.objectStoreNames` return
@@ -880,7 +1858,7 @@ const __tbIdbOpen = (request, name, version) => {
 const __tbIdbUpgrade = (request, name, oldMeta, version) => {
   const meta = oldMeta === null
     ? { __proto__: null, version, stores: [] }
-    : __tbJsonParse(__tbJsonStringify(oldMeta));
+    : __tbIdbUnjson(__tbIdbJson(oldMeta));
   meta.version = version;
   const db = __tbIdbDatabase(name, version, meta);
   const transaction = __tbIdbNewTransaction(db, [], 'versionchange');
@@ -1055,8 +2033,9 @@ const __tbIdbKeyRangeConstructor = globalThis.IDBKeyRange = class IDBKeyRange {
       );
     }
     const first = __tbIdbToKey(lower, __tbPrivateSet());
+    if (first === undefined) throw __tbIdbDataError();
     const second = __tbIdbToKey(upper, __tbPrivateSet());
-    if (first === undefined || second === undefined) throw __tbIdbDataError();
+    if (second === undefined) throw __tbIdbDataError();
     if (__tbIdbCompare(first, second) > 0) throw __tbIdbDataError();
     const range = __tbIdbConstruct(__tbIdbKeyRangeConstructor);
     __tbIdbKeyRangeState.set(range, {
@@ -1103,6 +2082,187 @@ const __tbIdbKeyRangeConstructor = globalThis.IDBKeyRange = class IDBKeyRange {
 };
 Object.defineProperty(globalThis.IDBKeyRange.prototype, Symbol.toStringTag, { value: 'IDBKeyRange', configurable: true });
 
+// https://w3c.github.io/IndexedDB/#idbrecord
+const __tbIdbRecordConstructor = globalThis.IDBRecord = class IDBRecord {
+  constructor() { throw new TypeError('Illegal constructor'); }
+  get key() {
+    const state = __tbIdbRecordState.get(this);
+    if (state === undefined) throw new TypeError('Illegal invocation');
+    return state.keyValue;
+  }
+  get primaryKey() {
+    const state = __tbIdbRecordState.get(this);
+    if (state === undefined) throw new TypeError('Illegal invocation');
+    return state.primaryKeyValue;
+  }
+  get value() {
+    const state = __tbIdbRecordState.get(this);
+    if (state === undefined) throw new TypeError('Illegal invocation');
+    return state.value;
+  }
+};
+Object.defineProperty(globalThis.IDBRecord.prototype, Symbol.toStringTag, { value: 'IDBRecord', configurable: true });
+
+const __tbIdbRecordSnapshot = record => {
+  const snapshot = __tbIdbConstruct(__tbIdbRecordConstructor);
+  __tbIdbRecordState.set(snapshot, {
+    __proto__: null,
+    keyValue: __tbIdbKeyValue(record.key),
+    primaryKeyValue: __tbIdbKeyValue(record.primaryKey),
+    value: __tbIdbReadValue(record.row.value),
+  });
+  return snapshot;
+};
+
+// https://w3c.github.io/IndexedDB/#idbindex
+const __tbIdbIndexConstructor = globalThis.IDBIndex = class IDBIndex {
+  constructor() { throw new TypeError('Illegal constructor'); }
+  get name() {
+    const state = __tbIdbIndexState.get(this);
+    if (state === undefined) throw new TypeError('Illegal invocation');
+    return state.meta.name;
+  }
+  set name(value) {
+    const state = __tbIdbIndexState.get(this);
+    if (state === undefined) throw new TypeError('Illegal invocation');
+    const data = state.transaction;
+    if (!data.versionChange) {
+      throw new globalThis.DOMException(
+        'An index can only be renamed inside a version change transaction.',
+        'InvalidStateError',
+      );
+    }
+    if (data.finished || data.aborted || data.committing) {
+      throw new globalThis.DOMException(
+        'The index cannot be renamed on an inactive transaction.',
+        'TransactionInactiveError',
+      );
+    }
+    if (state.deleted || state.store.deleted) {
+      throw new globalThis.DOMException('The index has been deleted.', 'InvalidStateError');
+    }
+    const newName = String(value);
+    const oldName = state.meta.name;
+    if (newName === oldName) return;
+    if (__tbArray.find(state.store.meta.indexes, index => index.name === newName) !== undefined) {
+      throw new globalThis.DOMException(
+        `An index named '${newName}' already exists.`,
+        'ConstraintError',
+      );
+    }
+    state.meta.name = newName;
+    if (state.originalName === undefined) state.originalName = oldName;
+    const handle = state.store.indexHandles.get(oldName);
+    if (handle !== undefined) {
+      state.store.indexHandles.delete(oldName);
+      state.store.indexHandles.set(newName, handle);
+    }
+  }
+  get objectStore() {
+    const state = __tbIdbIndexState.get(this);
+    if (state === undefined) throw new TypeError('Illegal invocation');
+    return state.storeHandle;
+  }
+  get keyPath() {
+    const state = __tbIdbIndexState.get(this);
+    if (state === undefined) throw new TypeError('Illegal invocation');
+    if (state.keyPathValue === null) {
+      state.keyPathValue = typeof state.meta.keyPath === 'string'
+        ? state.meta.keyPath
+        : __tbArray.slice(state.meta.keyPath);
+    }
+    return state.keyPathValue;
+  }
+  get multiEntry() {
+    const state = __tbIdbIndexState.get(this);
+    if (state === undefined) throw new TypeError('Illegal invocation');
+    return state.meta.multiEntry;
+  }
+  get unique() {
+    const state = __tbIdbIndexState.get(this);
+    if (state === undefined) throw new TypeError('Illegal invocation');
+    return state.meta.unique;
+  }
+  get(query) {
+    if (arguments.length < 1) throw new TypeError("Failed to execute 'get' on 'IDBIndex': 1 argument required, but only 0 present.");
+    return __tbIdbIndexQuery(this, query, false, false);
+  }
+  getKey(query) {
+    if (arguments.length < 1) throw new TypeError("Failed to execute 'getKey' on 'IDBIndex': 1 argument required, but only 0 present.");
+    return __tbIdbIndexQuery(this, query, true, false);
+  }
+  getAll(query, count) { return __tbIdbIndexQuery(this, query, false, true, count); }
+  getAllKeys(query, count) { return __tbIdbIndexQuery(this, query, true, true, count); }
+  getAllRecords(options) {
+    const state = __tbIdbCheckIndex(this, 'getAllRecords');
+    return __tbIdbGetAll(this, state, state.meta, 'record', false, options, undefined);
+  }
+  count(query) { return __tbIdbIndexCount(this, query); }
+  openCursor(query, direction) {
+    const state = __tbIdbIndexState.get(this);
+    if (state === undefined) throw new TypeError('Illegal invocation');
+    const dir = __tbIdbDirection(direction);
+    __tbIdbCheckIndex(this, 'openCursor');
+    return __tbIdbOpenCursor(this, state.store, state.meta, query, dir, false);
+  }
+  openKeyCursor(query, direction) {
+    const state = __tbIdbIndexState.get(this);
+    if (state === undefined) throw new TypeError('Illegal invocation');
+    const dir = __tbIdbDirection(direction);
+    __tbIdbCheckIndex(this, 'openKeyCursor');
+    return __tbIdbOpenCursor(this, state.store, state.meta, query, dir, true);
+  }
+};
+Object.defineProperty(globalThis.IDBIndex.prototype, Symbol.toStringTag, { value: 'IDBIndex', configurable: true });
+
+// https://w3c.github.io/IndexedDB/#idbcursor
+const __tbIdbCursorConstructor = globalThis.IDBCursor = class IDBCursor {
+  constructor() { throw new TypeError('Illegal constructor'); }
+  get source() {
+    return __tbIdbCursorStateOf(this).source;
+  }
+  get direction() {
+    return __tbIdbCursorStateOf(this).direction;
+  }
+  get key() {
+    return __tbIdbCursorStateOf(this).keyValue;
+  }
+  get primaryKey() {
+    return __tbIdbCursorStateOf(this).primaryKeyValue;
+  }
+  get request() {
+    return __tbIdbCursorStateOf(this).request;
+  }
+  advance(count) {
+    if (arguments.length < 1) throw new TypeError("Failed to execute 'advance' on 'IDBCursor': 1 argument required, but only 0 present.");
+    __tbIdbCursorAdvance(this, count);
+  }
+  continue(key) {
+    __tbIdbCursorContinue(this, key);
+  }
+  continuePrimaryKey(key, primaryKey) {
+    if (arguments.length < 2) throw new TypeError("Failed to execute 'continuePrimaryKey' on 'IDBCursor': 2 arguments required.");
+    __tbIdbCursorContinuePrimaryKey(this, key, primaryKey);
+  }
+  update(value) {
+    if (arguments.length < 1) throw new TypeError("Failed to execute 'update' on 'IDBCursor': 1 argument required, but only 0 present.");
+    return __tbIdbCursorUpdate(this, value);
+  }
+  delete() {
+    return __tbIdbCursorDelete(this);
+  }
+};
+Object.defineProperty(globalThis.IDBCursor.prototype, Symbol.toStringTag, { value: 'IDBCursor', configurable: true });
+
+// https://w3c.github.io/IndexedDB/#idbcursorwithvalue
+const __tbIdbCursorWithValueConstructor = globalThis.IDBCursorWithValue = class IDBCursorWithValue extends globalThis.IDBCursor {
+  constructor() { throw new TypeError('Illegal constructor'); }
+  get value() {
+    return __tbIdbCursorStateOf(this).value;
+  }
+};
+Object.defineProperty(globalThis.IDBCursorWithValue.prototype, Symbol.toStringTag, { value: 'IDBCursorWithValue', configurable: true });
+
 // https://w3c.github.io/IndexedDB/#idbobjectstore
 const __tbIdbObjectStoreConstructor = globalThis.IDBObjectStore = class IDBObjectStore {
   constructor() { throw new TypeError('Illegal constructor'); }
@@ -1110,6 +2270,54 @@ const __tbIdbObjectStoreConstructor = globalThis.IDBObjectStore = class IDBObjec
     const state = __tbIdbObjectStoreState.get(this);
     if (state === undefined) throw new TypeError('Illegal invocation');
     return state.meta.name;
+  }
+  set name(value) {
+    const state = __tbIdbObjectStoreState.get(this);
+    if (state === undefined) throw new TypeError('Illegal invocation');
+    const data = state.transaction;
+    if (!data.versionChange) {
+      throw new globalThis.DOMException(
+        'An object store can only be renamed inside a version change transaction.',
+        'InvalidStateError',
+      );
+    }
+    if (data.finished || data.aborted || data.committing) {
+      throw new globalThis.DOMException(
+        'The object store cannot be renamed on an inactive transaction.',
+        'TransactionInactiveError',
+      );
+    }
+    if (state.deleted) {
+      throw new globalThis.DOMException('The object store has been deleted.', 'InvalidStateError');
+    }
+    const newName = String(value);
+    const oldName = state.meta.name;
+    if (newName === oldName) return;
+    const dbState = __tbIdbDatabaseState.get(data.db);
+    if (__tbArray.find(dbState.meta.stores, store => store.name === newName) !== undefined) {
+      throw new globalThis.DOMException(
+        `An object store named '${newName}' already exists.`,
+        'ConstraintError',
+      );
+    }
+    state.meta.name = newName;
+    state.renamed = true;
+    if (state.originalName === undefined) state.originalName = oldName;
+    const scopeIndex = __tbArray.indexOf(data.scope, oldName);
+    if (scopeIndex !== -1) data.scope[scopeIndex] = newName;
+    const storeState = data.stores.get(oldName);
+    if (storeState !== undefined) {
+      data.stores.delete(oldName);
+      data.stores.set(newName, storeState);
+    }
+    const handle = data.handles.get(oldName);
+    if (handle !== undefined) {
+      data.handles.delete(oldName);
+      data.handles.set(newName, handle);
+    }
+    const dbStore = __tbArray.find(dbState.meta.stores, store => store.name === oldName);
+    if (dbStore !== undefined) dbStore.name = newName;
+    __tbArray.push(data.removedStores, oldName);
   }
   get keyPath() {
     const state = __tbIdbObjectStoreState.get(this);
@@ -1129,7 +2337,33 @@ const __tbIdbObjectStoreConstructor = globalThis.IDBObjectStore = class IDBObjec
   get indexNames() {
     const state = __tbIdbObjectStoreState.get(this);
     if (state === undefined) throw new TypeError('Illegal invocation');
-    return __tbIdbNames([]);
+    return __tbIdbNames(__tbArray.map(state.meta.indexes, index => index.name));
+  }
+  createIndex(name, keyPath, options) {
+    if (arguments.length < 2) throw new TypeError("Failed to execute 'createIndex' on 'IDBObjectStore': 2 arguments required.");
+    return __tbIdbCreateIndex(this, name, keyPath, options);
+  }
+  index(name) {
+    if (arguments.length < 1) throw new TypeError("Failed to execute 'index' on 'IDBObjectStore': 1 argument required, but only 0 present.");
+    return __tbIdbStoreIndex(this, name);
+  }
+  deleteIndex(name) {
+    if (arguments.length < 1) throw new TypeError("Failed to execute 'deleteIndex' on 'IDBObjectStore': 1 argument required, but only 0 present.");
+    __tbIdbDeleteIndex(this, name);
+  }
+  openCursor(query, direction) {
+    const state = __tbIdbObjectStoreState.get(this);
+    if (state === undefined) throw new TypeError('Illegal invocation');
+    const dir = __tbIdbDirection(direction);
+    __tbIdbCheckStore(this, 'openCursor', false);
+    return __tbIdbOpenCursor(this, state, null, query, dir, false);
+  }
+  openKeyCursor(query, direction) {
+    const state = __tbIdbObjectStoreState.get(this);
+    if (state === undefined) throw new TypeError('Illegal invocation');
+    const dir = __tbIdbDirection(direction);
+    __tbIdbCheckStore(this, 'openKeyCursor', false);
+    return __tbIdbOpenCursor(this, state, null, query, dir, true);
   }
   add(value, key) {
     if (arguments.length < 1) throw new TypeError("Failed to execute 'add' on 'IDBObjectStore': 1 argument required, but only 0 present.");
@@ -1149,6 +2383,10 @@ const __tbIdbObjectStoreConstructor = globalThis.IDBObjectStore = class IDBObjec
   }
   getAll(query, count) { return __tbIdbGet(this, query, false, true, count); }
   getAllKeys(query, count) { return __tbIdbGet(this, query, true, true, count); }
+  getAllRecords(options) {
+    const state = __tbIdbCheckStore(this, 'getAllRecords');
+    return __tbIdbGetAll(this, state, null, 'record', false, options, undefined);
+  }
   count(query) { return __tbIdbCount(this, query); }
   delete(query) {
     if (arguments.length < 1) throw new TypeError("Failed to execute 'delete' on 'IDBObjectStore': 1 argument required, but only 0 present.");
@@ -1180,6 +2418,11 @@ const __tbIdbTransactionConstructor = globalThis.IDBTransaction = class IDBTrans
     const data = __tbIdbTransactionState.get(this);
     if (data === undefined) throw new TypeError('Illegal invocation');
     return __tbIdbNames(data.scope);
+  }
+  get error() {
+    const data = __tbIdbTransactionState.get(this);
+    if (data === undefined) throw new TypeError('Illegal invocation');
+    return data.error;
   }
   objectStore(name) {
     const data = __tbIdbTransactionState.get(this);
@@ -1218,6 +2461,7 @@ const __tbIdbTransactionConstructor = globalThis.IDBTransaction = class IDBTrans
       );
     }
     data.committing = true;
+    data.explicitCommit = true;
     if (!data.running && data.queue.length === 0) __tbIdbCommit(data);
     else __tbIdbSchedule(data);
   }
@@ -1295,6 +2539,7 @@ const __tbIdbDatabaseConstructor = globalThis.IDBDatabase = class IDBDatabase ex
     };
     __tbArray.push(data.meta.stores, storeMeta);
     const state = __tbIdbNewStoreState(transaction, storeMeta, new __tbPrivateMap());
+    state.created = true;
     transaction.stores.set(storeName, state);
     __tbArray.push(transaction.scope, storeName);
     const store = __tbIdbConstruct(__tbIdbObjectStoreConstructor);
@@ -1338,8 +2583,10 @@ const __tbIdbDatabaseConstructor = globalThis.IDBDatabase = class IDBDatabase ex
   close() {
     const data = __tbIdbDatabaseState.get(this);
     if (data === undefined) throw new TypeError('Illegal invocation');
+    // The connection is close-pending rather than gone: a running version
+    // change transaction still finishes and its requests still work
+    // (<https://w3c.github.io/IndexedDB/#dom-idbdatabase-close>).
     data.closed = true;
-    data.transaction = null;
   }
   get onabort() { return __tbIdbDatabaseState.get(this)?.onabort ?? null; }
   set onabort(value) {
@@ -1415,7 +2662,7 @@ const __tbIdbFactoryConstructor = globalThis.IDBFactory = class IDBFactory {
       if (!__tbIdbStartsWith(key, __tbIdbMetaPrefix)) continue;
       const text = host.__tbStorageGet(__tbIdbArea, key);
       if (text === null || text === undefined) continue;
-      const meta = __tbJsonParse(text);
+      const meta = __tbIdbUnjson(text);
       __tbArray.push(names, {
         __proto__: null,
         name: __tbIdbSlice(key, __tbIdbMetaPrefix.length),

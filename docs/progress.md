@@ -263,6 +263,21 @@ transactions, object stores, binary keys, delete) passes 142 of 150 subtests
 and 12 of 16 files; the eight remaining subtests all need indexes or cursors,
 which are the next milestone and are absent rather than stubbed.
 
+The index and cursor milestone landed next. `createIndex`, `deleteIndex`,
+`index`, `indexNames`, unique and multiEntry constraints, every `IDBIndex`
+query, `IDBObjectStore`/`IDBIndex` `openCursor` and `openKeyCursor`, all four
+cursor directions, `continue`, `advance`, `continuePrimaryKey`, `update`, and
+`delete` are implemented, together with the new `getAllRecords()` and
+`IDBGetAllOptions` forms of `getAll`/`getAllKeys`, object-store and index
+renames, key-generator ordering, and `Infinity` keys. The whole IndexedDB
+directory now passes **1258 of 1403 subtests and 165 of 234 files**, up from
+439 subtests and 53 files. The WPT harness also stopped treating
+`storage_remove`/`storage_clear` as no-ops, so an in-process transaction that
+deletes a row no longer aborts with a false `QuotaExceededError`. What remains
+is connection semantics: upgrade blocking, transaction scheduling across
+overlapping connections, a shared key generator, `AbortError` on an uncaught
+listener exception, and the last metadata-revert cases.
+
 The WPT work also exposed an engine bug outside IndexedDB: reading an
 undeclared global name returned `undefined` instead of throwing
 `ReferenceError`, because the Window named-properties proxy on the global

@@ -67,20 +67,23 @@ processes, and `extendedLifetime` does not outlive the tab; moving the realm
 to its own thread is milestone 6 in `docs/worker-threads.md`. Service
 workers remain unimplemented. `indexedDB` exists on windows and workers and
 implements the factory, database open and upgrade, one versionchange
-transaction per upgrade, object-store create/delete, and the record
-operations `put`, `add`, `get`, `getKey`, `getAll`, `getAllKeys`, `count`,
-`delete`, and `clear` over `IDBKeyRange` bounds. Records live in the profile
-as opaque encoded rows behind `StorageKind::IndexedDb`, so every renderer of
-a profile sees one store and the browser persists it like `localStorage`.
-`databases()`, `deleteDatabase()`, inline and generated keys, binary and array
-keys, and the `DOMStringList` members are implemented. Indexes and cursors are
-not: `createIndex`, `index`, `indexNames` contents, `openCursor`, and
-`openKeyCursor` are absent, so a page that needs them gets a `TypeError`
-rather than a wrong result. Upgrade blocking between open connections and a
-key generator shared across connections are also absent; two connections can
-still issue overlapping version changes, and generated keys are allocated per
-transaction snapshot. The area enforces the same 5 MiB per-origin cap as
-`localStorage` instead of a separate IndexedDB quota. A `ReadableStream` is
+transaction per upgrade, object-store create/delete, the record operations
+`put`, `add`, `get`, `getKey`, `getAll`, `getAllKeys`, `getAllRecords`,
+`count`, `delete`, and `clear` over `IDBKeyRange` bounds, and the cursor
+surface `openCursor`/`openKeyCursor`, `continue`, `advance`,
+`continuePrimaryKey`, `update`, and `delete`. Indexes are implemented:
+`createIndex`, `index`, `deleteIndex`, `indexNames`, unique and multiEntry
+constraints, and every `IDBIndex` query. Inline and generated keys, binary,
+array, and `SharedArrayBuffer` keys, `databases()`, `deleteDatabase()`, and
+object-store and index renames are implemented too. Records live in the profile
+as opaque encoded rows behind `StorageKind::IndexedDb`, so every renderer of a
+profile sees one store and the browser persists it like `localStorage`.
+Upgrade blocking between open connections, transaction scheduling across
+overlapping connections, a key generator shared across connections, and the
+`AbortError` a listener's uncaught exception must produce are still absent;
+metadata deleted during an aborted upgrade is only partly restored. The area
+enforces the same 5 MiB per-origin cap as `localStorage` instead of a separate
+IndexedDB quota. A `ReadableStream` is
 transferable: the transfer list locks the sender and moves the stream over an
 internal `MessageChannel`, one chunk per pull, so close, error, and cancel all
 cross with it. `crossOriginIsolated` is exposed on windows and workers and is computed from a

@@ -730,11 +730,16 @@ impl StorageHost for FsServices {
         key: &str,
         _source: FrameId,
     ) -> Option<StorageChange> {
-        self.storage
+        let old_value = self
+            .storage
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .remove(&(kind, origin.clone(), key.to_owned()));
-        None
+            .remove(&(kind, origin.clone(), key.to_owned()))?;
+        Some(StorageChange {
+            key: Some(key.to_owned()),
+            old_value: Some(old_value),
+            new_value: None,
+        })
     }
 
     fn storage_clear(
@@ -745,8 +750,16 @@ impl StorageHost for FsServices {
         _source: FrameId,
     ) -> Option<StorageChange> {
         let mut storage = self.storage.lock().unwrap_or_else(PoisonError::into_inner);
+        let before = storage.len();
         storage.retain(|(key_kind, key_origin, _), _| !(*key_kind == kind && key_origin == origin));
-        None
+        if storage.len() == before {
+            return None;
+        }
+        Some(StorageChange {
+            key: None,
+            old_value: None,
+            new_value: None,
+        })
     }
 }
 
