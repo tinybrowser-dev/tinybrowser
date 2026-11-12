@@ -1,5 +1,7 @@
 //! The single `Node` wrapper class and its members.
 
+use std::cell::Cell;
+
 use rquickjs::{Ctx, Exception, Result, class::Trace};
 
 use crate::dom::tree::NodeId;
@@ -35,20 +37,25 @@ pub(super) fn install(ctx: &Ctx<'_>) -> Result<()> {
 #[derive(Trace, rquickjs::JsLifetime)]
 #[rquickjs::class(rename = "Node")]
 pub(crate) struct JsNode {
-    pub(crate) handle: Handle,
+    /// The node this wrapper points at. Adoption can retarget a wrapper
+    /// while its own native method is still on the stack (a listener that
+    /// moves the dispatching target into another document), so the identity
+    /// is interior-mutable: retargeting needs no `borrow_mut` on the class.
+    #[qjs(skip_trace)]
+    pub(crate) handle: Cell<Handle>,
 }
 
 impl super::host::SharedClass for JsNode {
     // https://webidl.spec.whatwg.org/#es-attributes
     // https://webidl.spec.whatwg.org/#es-operations
     fn require_interface(&self, ctx: &Ctx<'_>, interface: &str) -> Result<()> {
-        super::host::require_node_interface(ctx, self.handle.0, interface)
+        super::host::require_node_interface(ctx, self.handle.get().0, interface)
     }
 }
 
 impl JsNode {
     pub(crate) fn node_id(&self) -> NodeId {
-        self.handle.0
+        self.handle.get().0
     }
 }
 

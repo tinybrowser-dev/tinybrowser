@@ -74,7 +74,7 @@ impl<'js> htmlli_element_generated::HTMLLIElement<'js> for JsNode {
     // `value` is a plain long defaulting to zero
     // (<https://html.spec.whatwg.org/multipage/grouping-content.html#dom-li-value>).
     fn get_value(&self, ctx: &Ctx<'js>) -> Result<i32> {
-        Ok(content_attr(ctx, self.handle.0, "value")
+        Ok(content_attr(ctx, self.handle.get().0, "value")
             .as_deref()
             .and_then(crate::dom::parse::parse_integer)
             .unwrap_or(0))
@@ -82,7 +82,7 @@ impl<'js> htmlli_element_generated::HTMLLIElement<'js> for JsNode {
 
     // https://html.spec.whatwg.org/multipage/grouping-content.html#dom-li-value
     fn set_value(&self, ctx: &Ctx<'js>, value: i32) -> Result<()> {
-        set_attribute_sync(ctx, self.handle.0, "value", &value.to_string())
+        set_attribute_sync(ctx, self.handle.get().0, "value", &value.to_string())
     }
 }
 
@@ -90,7 +90,7 @@ impl<'js> htmlo_list_element_generated::HTMLOListElement<'js> for JsNode {
     // `start` defaults to 1
     // (<https://html.spec.whatwg.org/multipage/grouping-content.html#dom-ol-start>).
     fn get_start(&self, ctx: &Ctx<'js>) -> Result<i32> {
-        Ok(content_attr(ctx, self.handle.0, "start")
+        Ok(content_attr(ctx, self.handle.get().0, "start")
             .as_deref()
             .and_then(crate::dom::parse::parse_integer)
             .unwrap_or(1))
@@ -98,7 +98,7 @@ impl<'js> htmlo_list_element_generated::HTMLOListElement<'js> for JsNode {
 
     // https://html.spec.whatwg.org/multipage/grouping-content.html#dom-ol-start
     fn set_start(&self, ctx: &Ctx<'js>, value: i32) -> Result<()> {
-        set_attribute_sync(ctx, self.handle.0, "start", &value.to_string())
+        set_attribute_sync(ctx, self.handle.get().0, "start", &value.to_string())
     }
 }
 
@@ -106,7 +106,7 @@ impl<'js> html_pre_element_generated::HTMLPreElement<'js> for JsNode {
     // `width` is a plain long defaulting to zero
     // (<https://html.spec.whatwg.org/multipage/obsolete.html#dom-pre-width>).
     fn get_width(&self, ctx: &Ctx<'js>) -> Result<i32> {
-        Ok(content_attr(ctx, self.handle.0, "width")
+        Ok(content_attr(ctx, self.handle.get().0, "width")
             .as_deref()
             .and_then(crate::dom::parse::parse_integer)
             .unwrap_or(0))
@@ -114,7 +114,7 @@ impl<'js> html_pre_element_generated::HTMLPreElement<'js> for JsNode {
 
     // https://html.spec.whatwg.org/multipage/obsolete.html#dom-pre-width
     fn set_width(&self, ctx: &Ctx<'js>, value: i32) -> Result<()> {
-        set_attribute_sync(ctx, self.handle.0, "width", &value.to_string())
+        set_attribute_sync(ctx, self.handle.get().0, "width", &value.to_string())
     }
 }
 
@@ -123,7 +123,7 @@ impl<'js> html_table_cell_element_generated::HTMLTableCellElement<'js> for JsNod
     // (<https://html.spec.whatwg.org/multipage/tables.html#dom-tdth-colspan>).
     fn get_col_span(&self, ctx: &Ctx<'js>) -> Result<usize> {
         Ok(usize::try_from(reflect_clamped_ulong(
-            content_attr(ctx, self.handle.0, "colspan").as_deref(),
+            content_attr(ctx, self.handle.get().0, "colspan").as_deref(),
             1,
             1,
             1000,
@@ -133,14 +133,14 @@ impl<'js> html_table_cell_element_generated::HTMLTableCellElement<'js> for JsNod
 
     // https://html.spec.whatwg.org/multipage/tables.html#dom-tdth-colspan
     fn set_col_span(&self, ctx: &Ctx<'js>, value: u32) -> Result<()> {
-        host::reflect_set_ulong_defaulting(ctx, self.handle.0, "colspan", value, 1)
+        host::reflect_set_ulong_defaulting(ctx, self.handle.get().0, "colspan", value, 1)
     }
 
     // `rowSpan` parses 0..65534, defaulting to 1
     // (<https://html.spec.whatwg.org/multipage/tables.html#dom-tdth-rowspan>).
     fn get_row_span(&self, ctx: &Ctx<'js>) -> Result<usize> {
         Ok(usize::try_from(reflect_clamped_ulong(
-            content_attr(ctx, self.handle.0, "rowspan").as_deref(),
+            content_attr(ctx, self.handle.get().0, "rowspan").as_deref(),
             1,
             0,
             65534,
@@ -150,7 +150,7 @@ impl<'js> html_table_cell_element_generated::HTMLTableCellElement<'js> for JsNod
 
     // https://html.spec.whatwg.org/multipage/tables.html#dom-tdth-rowspan
     fn set_row_span(&self, ctx: &Ctx<'js>, value: u32) -> Result<()> {
-        host::reflect_set_ulong_defaulting(ctx, self.handle.0, "rowspan", value, 1)
+        host::reflect_set_ulong_defaulting(ctx, self.handle.get().0, "rowspan", value, 1)
     }
 }
 
@@ -159,7 +159,7 @@ impl<'js> html_table_col_element_generated::HTMLTableColElement<'js> for JsNode 
     // (<https://html.spec.whatwg.org/multipage/tables.html#dom-col-span>).
     fn get_span(&self, ctx: &Ctx<'js>) -> Result<usize> {
         Ok(usize::try_from(reflect_clamped_ulong(
-            content_attr(ctx, self.handle.0, "span").as_deref(),
+            content_attr(ctx, self.handle.get().0, "span").as_deref(),
             1,
             1,
             1000,
@@ -169,7 +169,7 @@ impl<'js> html_table_col_element_generated::HTMLTableColElement<'js> for JsNode 
 
     // https://html.spec.whatwg.org/multipage/tables.html#dom-col-span
     fn set_span(&self, ctx: &Ctx<'js>, value: u32) -> Result<()> {
-        host::reflect_set_ulong_defaulting(ctx, self.handle.0, "span", value, 1)
+        host::reflect_set_ulong_defaulting(ctx, self.handle.get().0, "span", value, 1)
     }
 }
 
@@ -180,18 +180,18 @@ impl<'js> html_base_element_generated::HTMLBaseElement<'js> for JsNode {
     fn get_href(&self, ctx: &Ctx<'js>) -> Result<crate::dom_string::DomString> {
         // Probe the node's owner document, not the calling realm's: a node
         // reached across documents must answer from its own attributes.
-        let present = world_for_node(ctx, self.handle.0)
+        let present = world_for_node(ctx, self.handle.get().0)
             .ok()
             .and_then(|owner| {
-                owner.borrow().with_document(self.handle.0, |parsed| {
-                    attr(&parsed.document.base, self.handle.0.node, "href").is_some()
+                owner.borrow().with_document(self.handle.get().0, |parsed| {
+                    attr(&parsed.document.base, self.handle.get().0.node, "href").is_some()
                 })
             })
             .unwrap_or(false);
         if present {
-            host::reflect_url_string(ctx, self.handle.0, "href")
+            host::reflect_url_string(ctx, self.handle.get().0, "href")
         } else {
-            Ok(document_base_url_string(ctx, self.handle.0).into())
+            Ok(document_base_url_string(ctx, self.handle.get().0).into())
         }
     }
 }
@@ -199,24 +199,24 @@ impl<'js> html_base_element_generated::HTMLBaseElement<'js> for JsNode {
 impl<'js> html_link_element_generated::HTMLLinkElement<'js> for JsNode {
     // https://html.spec.whatwg.org/multipage/semantics.html#dom-link-crossorigin
     fn get_cross_origin(&self, ctx: &Ctx<'js>) -> Result<Option<rquickjs::String<'js>>> {
-        reflect_cross_origin(ctx, self.handle.0)
+        reflect_cross_origin(ctx, self.handle.get().0)
     }
 
     // https://html.spec.whatwg.org/multipage/semantics.html#dom-link-crossorigin
     fn set_cross_origin(&self, ctx: &Ctx<'js>, value: Option<rquickjs::String<'js>>) -> Result<()> {
-        set_cross_origin(ctx, self.handle.0, value)
+        set_cross_origin(ctx, self.handle.get().0, value)
     }
 }
 
 impl<'js> html_script_element_generated::HTMLScriptElement<'js> for JsNode {
     // https://html.spec.whatwg.org/multipage/scripting.html#dom-script-crossorigin
     fn get_cross_origin(&self, ctx: &Ctx<'js>) -> Result<Option<rquickjs::String<'js>>> {
-        reflect_cross_origin(ctx, self.handle.0)
+        reflect_cross_origin(ctx, self.handle.get().0)
     }
 
     // https://html.spec.whatwg.org/multipage/scripting.html#dom-script-crossorigin
     fn set_cross_origin(&self, ctx: &Ctx<'js>, value: Option<rquickjs::String<'js>>) -> Result<()> {
-        set_cross_origin(ctx, self.handle.0, value)
+        set_cross_origin(ctx, self.handle.get().0, value)
     }
 }
 
@@ -230,7 +230,7 @@ impl<'js> html_object_element_generated::HTMLObjectElement<'js> for JsNode {
     // (<https://html.spec.whatwg.org/multipage/obsolete.html#dom-object-hspace>).
     fn get_hspace(&self, ctx: &Ctx<'js>) -> Result<usize> {
         Ok(usize::try_from(reflect_ulong(
-            content_attr(ctx, self.handle.0, "hspace").as_deref(),
+            content_attr(ctx, self.handle.get().0, "hspace").as_deref(),
             0,
         ))
         .unwrap_or(usize::MAX))
@@ -238,13 +238,13 @@ impl<'js> html_object_element_generated::HTMLObjectElement<'js> for JsNode {
 
     // https://html.spec.whatwg.org/multipage/obsolete.html#dom-object-hspace
     fn set_hspace(&self, ctx: &Ctx<'js>, value: u32) -> Result<()> {
-        host::reflect_set_ulong_defaulting(ctx, self.handle.0, "hspace", value, 0)
+        host::reflect_set_ulong_defaulting(ctx, self.handle.get().0, "hspace", value, 0)
     }
 
     // https://html.spec.whatwg.org/multipage/obsolete.html#dom-object-vspace
     fn get_vspace(&self, ctx: &Ctx<'js>) -> Result<usize> {
         Ok(usize::try_from(reflect_ulong(
-            content_attr(ctx, self.handle.0, "vspace").as_deref(),
+            content_attr(ctx, self.handle.get().0, "vspace").as_deref(),
             0,
         ))
         .unwrap_or(usize::MAX))
@@ -252,7 +252,7 @@ impl<'js> html_object_element_generated::HTMLObjectElement<'js> for JsNode {
 
     // https://html.spec.whatwg.org/multipage/obsolete.html#dom-object-vspace
     fn set_vspace(&self, ctx: &Ctx<'js>, value: u32) -> Result<()> {
-        host::reflect_set_ulong_defaulting(ctx, self.handle.0, "vspace", value, 0)
+        host::reflect_set_ulong_defaulting(ctx, self.handle.get().0, "vspace", value, 0)
     }
 
     // `codeBase` resolves against the document base URL
@@ -261,13 +261,13 @@ impl<'js> html_object_element_generated::HTMLObjectElement<'js> for JsNode {
         // `DOMString` preserves code units exactly: convert through UTF-16
         // rather than lossy UTF-8.
         let resolved: crate::dom_string::DomString =
-            host::reflect_url_string(ctx, self.handle.0, "codebase")?;
+            host::reflect_url_string(ctx, self.handle.get().0, "codebase")?;
         rquickjs::String::from_utf16(ctx.clone(), &resolved.units())
     }
 
     // https://html.spec.whatwg.org/multipage/obsolete.html#dom-object-codebase
     fn set_code_base(&self, ctx: &Ctx<'js>, value: rquickjs::String<'js>) -> Result<()> {
-        set_attribute_sync(ctx, self.handle.0, "codebase", &value.to_string()?)
+        set_attribute_sync(ctx, self.handle.get().0, "codebase", &value.to_string()?)
     }
 }
 
@@ -276,7 +276,7 @@ impl<'js> html_table_element_generated::HTMLTableElement<'js> for JsNode {
     fn get_t_bodies(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
         live_collection(
             ctx,
-            self.handle.0,
+            self.handle.get().0,
             CollectionKind::TableBodies,
             Some("HTMLCollection"),
         )
@@ -286,7 +286,7 @@ impl<'js> html_table_element_generated::HTMLTableElement<'js> for JsNode {
     fn get_rows(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
         live_collection(
             ctx,
-            self.handle.0,
+            self.handle.get().0,
             CollectionKind::TableRows,
             Some("HTMLCollection"),
         )
@@ -294,7 +294,7 @@ impl<'js> html_table_element_generated::HTMLTableElement<'js> for JsNode {
 
     /// <https://html.spec.whatwg.org/multipage/tables.html#dom-table-deleterow>
     fn delete_row(&self, ctx: Ctx<'js>, index: i32) -> Result<()> {
-        delete_table_row(&ctx, self.handle.0, index)
+        delete_table_row(&ctx, self.handle.get().0, index)
     }
 }
 
@@ -303,7 +303,7 @@ impl<'js> html_table_section_element_generated::HTMLTableSectionElement<'js> for
     fn get_rows(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
         live_collection(
             ctx,
-            self.handle.0,
+            self.handle.get().0,
             CollectionKind::TableSectionRows,
             Some("HTMLCollection"),
         )
@@ -315,7 +315,7 @@ impl<'js> html_table_row_element_generated::HTMLTableRowElement<'js> for JsNode 
     fn get_cells(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
         live_collection(
             ctx,
-            self.handle.0,
+            self.handle.get().0,
             CollectionKind::TableRowCells,
             Some("HTMLCollection"),
         )
@@ -327,7 +327,7 @@ impl JsNode {
     pub(super) fn title<'js>(&self, ctx: &Ctx<'js>) -> Result<rquickjs::String<'js>> {
         let world = world(ctx)?;
         let parsed = world.borrow();
-        let Some(parsed) = parsed.document(self.handle.0) else {
+        let Some(parsed) = parsed.document(self.handle.get().0) else {
             return rquickjs::String::from_str(ctx.clone(), "");
         };
         let title = document_first(&parsed, "title");
@@ -342,7 +342,7 @@ impl JsNode {
         let text = exact.to_string_lossy().into_owned();
         let world = world(ctx)?;
         let world = world.borrow();
-        let Some(mut parsed) = world.document_mut(self.handle.0) else {
+        let Some(mut parsed) = world.document_mut(self.handle.get().0) else {
             return Ok(());
         };
         let base_root = parsed.document.base.root_node().id;

@@ -671,3 +671,26 @@ IDL validation subtests (16 of 17 pass) and fails only in setup, where it
 registers a service worker: `navigator.serviceWorker` is still absent. The
 `cookiestore` slice is **40 of 48 files and 247 of 260 subtests** (the total
 grows because the validation subtests run now). `cookies` stays 336/415.
+
+Two `dom/events` bugs are fixed. Cloning a node lost the script
+already-started flag on every descendant: `Event-dispatch-bubbles-{false,true}`
+clone the document element into a new `Document`, and the clone's inline
+`<script>` re-ran on connection, recursively executing the page 40 times and
+reporting 200 duplicate subtests. The binding clone path now copies the flag
+across the materialized subtree, so both files are **5 of 5 subtests and OK**
+(from `ERROR` with four duplicated passes each). Adopting a node during
+dispatch panicked with `AlreadyBorrowed`: a listener that moves the
+dispatching target retargets a wrapper whose class rquickjs has borrowed for
+the native call. `JsNode.handle` is a `Cell`, so retargeting needs no
+`borrow_mut`, and `event-global-extra.window.html` runs **4 of 6** subtests
+(from `ERROR: engine panicked`). Across `dom/events`, unique passing subtests
+go from 449 to 454 with none lost and 96 OK files (from 93).
+
+No regression in the checked slices: `dom/nodes`, `dom/ranges`,
+`dom/traversal`, `html/dom`, `webmessaging`, and `html/semantics/forms`
+(325 files) are identical before and after with zero lost subtests;
+`css/cssom` and `domparsing` (374 files) have zero lost subtests;
+`cookiestore` stays 247/260 and `cookies` 336/415; `workers` is 248/248.
+`Event-dispatch-click.html` times out in some batch runs on both trees; two
+`form-double-submit` subtests flip between pass and fail across runs on a
+single build.

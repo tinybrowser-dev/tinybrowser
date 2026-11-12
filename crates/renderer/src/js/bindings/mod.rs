@@ -1249,7 +1249,11 @@ pub(super) fn retarget_wrapper(ctx: &Ctx<'_>, from: NodeId, to: NodeId) -> Resul
     let Ok(class) = Class::<JsNode>::from_js(ctx, value) else {
         return Ok(());
     };
-    class.borrow_mut().handle = Handle(to);
+    // The wrapper may be the receiver of the native call that is adopting
+    // the node (a listener moving the dispatching target), so its class is
+    // borrowed immutably right now. The handle is a `Cell`, which is what
+    // lets the retarget happen under that borrow.
+    class.borrow().handle.set(Handle(to));
     Ok(())
 }
 
@@ -1316,7 +1320,9 @@ fn instantiate_node<'js>(ctx: &Ctx<'js>, id: NodeId) -> Result<Value<'js>> {
 /// Instantiates a `JsNode` wrapper with the realm-owner's prototype for
 /// `brand`.
 fn wrap_with_brand<'js>(ctx: &Ctx<'js>, id: NodeId, brand: &str) -> Result<Value<'js>> {
-    let value = JsNode { handle: Handle(id) };
+    let value = JsNode {
+        handle: std::cell::Cell::new(Handle(id)),
+    };
     let class = if let Some(prototype) = node_wrapper_prototype(ctx, id, brand)? {
         host::instance_proto(value, prototype)?
     } else {

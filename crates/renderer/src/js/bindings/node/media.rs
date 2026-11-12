@@ -38,18 +38,18 @@ impl<'js> html_media_element_generated::HTMLMediaElement<'js> for JsNode {
         // NETWORK_NO_SOURCE instead of NETWORK_LOADING.
         const NETWORK_NO_SOURCE: u16 = 3;
         const NETWORK_EMPTY: u16 = 0;
-        let selected = world_for_node(ctx, self.handle.0)
+        let selected = world_for_node(ctx, self.handle.get().0)
             .ok()
             .and_then(|owner| {
-                owner.borrow().with_document(self.handle.0, |parsed| {
+                owner.borrow().with_document(self.handle.get().0, |parsed| {
                     let base = &parsed.document.base;
-                    if is_connected(base, self.handle.0.node) {
+                    if is_connected(base, self.handle.get().0.node) {
                         return true;
                     }
-                    if attr(base, self.handle.0.node, "src").is_some() {
+                    if attr(base, self.handle.get().0.node, "src").is_some() {
                         return true;
                     }
-                    base.get_node(self.handle.0.node).is_some_and(|node| {
+                    base.get_node(self.handle.get().0.node).is_some_and(|node| {
                         node.children.iter().any(|kid| {
                             base.get_node(*kid).is_some_and(|candidate| {
                                 candidate.data.downcast_element().is_some_and(|element| {
@@ -77,12 +77,12 @@ impl<'js> html_media_element_generated::HTMLMediaElement<'js> for JsNode {
 
     // https://html.spec.whatwg.org/multipage/media.html#dom-media-crossorigin
     fn get_cross_origin(&self, ctx: &Ctx<'js>) -> Result<Option<rquickjs::String<'js>>> {
-        reflect_cross_origin(ctx, self.handle.0)
+        reflect_cross_origin(ctx, self.handle.get().0)
     }
 
     // https://html.spec.whatwg.org/multipage/media.html#dom-media-crossorigin
     fn set_cross_origin(&self, ctx: &Ctx<'js>, value: Option<rquickjs::String<'js>>) -> Result<()> {
-        set_cross_origin(ctx, self.handle.0, value)
+        set_cross_origin(ctx, self.handle.get().0, value)
     }
 }
 
@@ -90,7 +90,7 @@ impl<'js> html_video_element_generated::HTMLVideoElement<'js> for JsNode {
     // https://html.spec.whatwg.org/multipage/embedded-content.html#dom-video-width
     fn get_width(&self, ctx: &Ctx<'js>) -> Result<usize> {
         Ok(usize::try_from(reflect_ulong(
-            content_attr(ctx, self.handle.0, "width").as_deref(),
+            content_attr(ctx, self.handle.get().0, "width").as_deref(),
             0,
         ))
         .unwrap_or(usize::MAX))
@@ -98,13 +98,13 @@ impl<'js> html_video_element_generated::HTMLVideoElement<'js> for JsNode {
 
     // https://html.spec.whatwg.org/multipage/embedded-content.html#dom-video-width
     fn set_width(&self, ctx: &Ctx<'js>, value: u32) -> Result<()> {
-        host::reflect_set_ulong_defaulting(ctx, self.handle.0, "width", value, 0)
+        host::reflect_set_ulong_defaulting(ctx, self.handle.get().0, "width", value, 0)
     }
 
     // https://html.spec.whatwg.org/multipage/embedded-content.html#dom-video-height
     fn get_height(&self, ctx: &Ctx<'js>) -> Result<usize> {
         Ok(usize::try_from(reflect_ulong(
-            content_attr(ctx, self.handle.0, "height").as_deref(),
+            content_attr(ctx, self.handle.get().0, "height").as_deref(),
             0,
         ))
         .unwrap_or(usize::MAX))
@@ -112,7 +112,7 @@ impl<'js> html_video_element_generated::HTMLVideoElement<'js> for JsNode {
 
     // https://html.spec.whatwg.org/multipage/embedded-content.html#dom-video-height
     fn set_height(&self, ctx: &Ctx<'js>, value: u32) -> Result<()> {
-        host::reflect_set_ulong_defaulting(ctx, self.handle.0, "height", value, 0)
+        host::reflect_set_ulong_defaulting(ctx, self.handle.get().0, "height", value, 0)
     }
 }
 
@@ -135,7 +135,7 @@ impl<'js> html_canvas_element_generated::HTMLCanvasElement<'js> for JsNode {
     // https://html.spec.whatwg.org/multipage/canvas.html#dom-canvas-width
     fn get_width(&self, ctx: &Ctx<'js>) -> Result<usize> {
         Ok(
-            usize::try_from(canvas_dimension(ctx, self.handle.0, "width", 300))
+            usize::try_from(canvas_dimension(ctx, self.handle.get().0, "width", 300))
                 .unwrap_or(usize::MAX),
         )
     }
@@ -144,14 +144,14 @@ impl<'js> html_canvas_element_generated::HTMLCanvasElement<'js> for JsNode {
         // Out-of-range values write the default rather than the raw value
         // (<https://html.spec.whatwg.org/multipage/canvas.html#dom-canvas-width>).
         let value = if value > 2_147_483_647 { 300 } else { value };
-        set_attribute_sync(ctx, self.handle.0, "width", &value.to_string())?;
-        reset_canvas(ctx, self.handle.0)
+        set_attribute_sync(ctx, self.handle.get().0, "width", &value.to_string())?;
+        reset_canvas(ctx, self.handle.get().0)
     }
 
     // https://html.spec.whatwg.org/multipage/canvas.html#dom-canvas-height
     fn get_height(&self, ctx: &Ctx<'js>) -> Result<usize> {
         Ok(
-            usize::try_from(canvas_dimension(ctx, self.handle.0, "height", 150))
+            usize::try_from(canvas_dimension(ctx, self.handle.get().0, "height", 150))
                 .unwrap_or(usize::MAX),
         )
     }
@@ -160,8 +160,8 @@ impl<'js> html_canvas_element_generated::HTMLCanvasElement<'js> for JsNode {
         // Out-of-range values write the default rather than the raw value
         // (<https://html.spec.whatwg.org/multipage/canvas.html#dom-canvas-height>).
         let value = if value > 2_147_483_647 { 150 } else { value };
-        set_attribute_sync(ctx, self.handle.0, "height", &value.to_string())?;
-        reset_canvas(ctx, self.handle.0)
+        set_attribute_sync(ctx, self.handle.get().0, "height", &value.to_string())?;
+        reset_canvas(ctx, self.handle.get().0)
     }
 
     // https://html.spec.whatwg.org/multipage/canvas.html#dom-canvas-getcontext
@@ -180,7 +180,7 @@ impl<'js> html_canvas_element_generated::HTMLCanvasElement<'js> for JsNode {
             _ => return Ok(None),
         };
         let world_rc = world(&ctx)?;
-        if let Some(saved) = world_rc.borrow().same_object(self.handle.0, member)
+        if let Some(saved) = world_rc.borrow().same_object(self.handle.get().0, member)
             && let Some(value) = super::super::deref_weak(&ctx, saved)?
         {
             return Ok(Some(context_variant(member, value)));
@@ -189,7 +189,7 @@ impl<'js> html_canvas_element_generated::HTMLCanvasElement<'js> for JsNode {
             crate::js::world::SameObject::Canvas2d => crate::js::world::SameObject::CanvasBitmap,
             _ => crate::js::world::SameObject::Canvas2d,
         };
-        if let Some(saved) = world_rc.borrow().same_object(self.handle.0, other)
+        if let Some(saved) = world_rc.borrow().same_object(self.handle.get().0, other)
             && super::super::deref_weak(&ctx, saved)?.is_some()
         {
             // A canvas has one context mode
@@ -208,21 +208,20 @@ impl<'js> html_canvas_element_generated::HTMLCanvasElement<'js> for JsNode {
             .borrow()
             .registry()
             .borrow()
-            .canvas_mode_for_node(self.handle.0)
+            .canvas_mode_for_node(self.handle.get().0)
             && mode != crate::js::world::CanvasMode::None
             && mode != requested_mode
         {
             return Ok(None);
         }
         crate::js::canvas::read_context_options(&ctx, Some(&options))?;
-        let width = crate::js::canvas::canvas_dimension(&ctx, self.handle.0, "width", 300);
-        let height = crate::js::canvas::canvas_dimension(&ctx, self.handle.0, "height", 150);
-        let canvas_id =
-            world_rc
-                .borrow()
-                .registry()
-                .borrow_mut()
-                .element_canvas(self.handle.0, width, height);
+        let width = crate::js::canvas::canvas_dimension(&ctx, self.handle.get().0, "width", 300);
+        let height = crate::js::canvas::canvas_dimension(&ctx, self.handle.get().0, "height", 150);
+        let canvas_id = world_rc.borrow().registry().borrow_mut().element_canvas(
+            self.handle.get().0,
+            width,
+            height,
+        );
         let value = if member == crate::js::world::SameObject::Canvas2d {
             world_rc
                 .borrow()
@@ -236,11 +235,11 @@ impl<'js> html_canvas_element_generated::HTMLCanvasElement<'js> for JsNode {
                 .registry()
                 .borrow_mut()
                 .set_canvas_mode(canvas_id, crate::js::world::CanvasMode::Bitmap);
-            bitmap_context_object(&ctx, self.handle.0)?
+            bitmap_context_object(&ctx, self.handle.get().0)?
         };
         let weak = super::super::make_weak(&ctx, value.clone())?;
         world_rc.borrow_mut().intern_same_object(
-            self.handle.0,
+            self.handle.get().0,
             member,
             rquickjs::Persistent::save(&ctx, weak),
         );
@@ -274,7 +273,7 @@ impl<'js> html_image_element_generated::HTMLImageElement<'js> for JsNode {
     // (<https://html.spec.whatwg.org/multipage/embedded-content.html#dom-img-width>).
     fn get_width(&self, ctx: &Ctx<'js>) -> Result<u32> {
         Ok(reflect_ulong(
-            content_attr(ctx, self.handle.0, "width").as_deref(),
+            content_attr(ctx, self.handle.get().0, "width").as_deref(),
             0,
         ))
     }
@@ -282,26 +281,26 @@ impl<'js> html_image_element_generated::HTMLImageElement<'js> for JsNode {
     // https://html.spec.whatwg.org/multipage/embedded-content.html#dom-img-height
     fn get_height(&self, ctx: &Ctx<'js>) -> Result<u32> {
         Ok(reflect_ulong(
-            content_attr(ctx, self.handle.0, "height").as_deref(),
+            content_attr(ctx, self.handle.get().0, "height").as_deref(),
             0,
         ))
     }
 
     // https://html.spec.whatwg.org/multipage/embedded-content.html#dom-img-crossorigin
     fn get_cross_origin(&self, ctx: &Ctx<'js>) -> Result<Option<rquickjs::String<'js>>> {
-        reflect_cross_origin(ctx, self.handle.0)
+        reflect_cross_origin(ctx, self.handle.get().0)
     }
 
     // https://html.spec.whatwg.org/multipage/embedded-content.html#dom-img-crossorigin
     fn set_cross_origin(&self, ctx: &Ctx<'js>, value: Option<rquickjs::String<'js>>) -> Result<()> {
-        set_cross_origin(ctx, self.handle.0, value)
+        set_cross_origin(ctx, self.handle.get().0, value)
     }
 
     // Obsolete `hspace`/`vspace` default to zero
     // (<https://html.spec.whatwg.org/multipage/obsolete.html#dom-img-hspace>).
     fn get_hspace(&self, ctx: &Ctx<'js>) -> Result<usize> {
         Ok(usize::try_from(reflect_ulong(
-            content_attr(ctx, self.handle.0, "hspace").as_deref(),
+            content_attr(ctx, self.handle.get().0, "hspace").as_deref(),
             0,
         ))
         .unwrap_or(usize::MAX))
@@ -309,13 +308,13 @@ impl<'js> html_image_element_generated::HTMLImageElement<'js> for JsNode {
 
     // https://html.spec.whatwg.org/multipage/obsolete.html#dom-img-hspace
     fn set_hspace(&self, ctx: &Ctx<'js>, value: u32) -> Result<()> {
-        host::reflect_set_ulong_defaulting(ctx, self.handle.0, "hspace", value, 0)
+        host::reflect_set_ulong_defaulting(ctx, self.handle.get().0, "hspace", value, 0)
     }
 
     // https://html.spec.whatwg.org/multipage/obsolete.html#dom-img-vspace
     fn get_vspace(&self, ctx: &Ctx<'js>) -> Result<usize> {
         Ok(usize::try_from(reflect_ulong(
-            content_attr(ctx, self.handle.0, "vspace").as_deref(),
+            content_attr(ctx, self.handle.get().0, "vspace").as_deref(),
             0,
         ))
         .unwrap_or(usize::MAX))
@@ -323,7 +322,7 @@ impl<'js> html_image_element_generated::HTMLImageElement<'js> for JsNode {
 
     // https://html.spec.whatwg.org/multipage/obsolete.html#dom-img-vspace
     fn set_vspace(&self, ctx: &Ctx<'js>, value: u32) -> Result<()> {
-        host::reflect_set_ulong_defaulting(ctx, self.handle.0, "vspace", value, 0)
+        host::reflect_set_ulong_defaulting(ctx, self.handle.get().0, "vspace", value, 0)
     }
 }
 
@@ -334,32 +333,32 @@ impl<'js> html_meter_element_generated::HTMLMeterElement<'js> for JsNode {
     // the optimum defaults to the midpoint
     // (<https://html.spec.whatwg.org/multipage/form-elements.html#the-meter-element>).
     fn get_value(&self, ctx: &Ctx<'js>) -> Result<f64> {
-        Ok(meter_gauge(ctx, self.handle.0).value)
+        Ok(meter_gauge(ctx, self.handle.get().0).value)
     }
 
     // https://html.spec.whatwg.org/multipage/form-elements.html#dom-meter-value
     fn get_min(&self, ctx: &Ctx<'js>) -> Result<f64> {
-        Ok(meter_gauge(ctx, self.handle.0).min)
+        Ok(meter_gauge(ctx, self.handle.get().0).min)
     }
 
     // https://html.spec.whatwg.org/multipage/form-elements.html#dom-meter-min
     fn get_max(&self, ctx: &Ctx<'js>) -> Result<f64> {
-        Ok(meter_gauge(ctx, self.handle.0).max)
+        Ok(meter_gauge(ctx, self.handle.get().0).max)
     }
 
     // https://html.spec.whatwg.org/multipage/form-elements.html#dom-meter-max
     fn get_low(&self, ctx: &Ctx<'js>) -> Result<f64> {
-        Ok(meter_gauge(ctx, self.handle.0).low)
+        Ok(meter_gauge(ctx, self.handle.get().0).low)
     }
 
     // https://html.spec.whatwg.org/multipage/form-elements.html#dom-meter-low
     fn get_high(&self, ctx: &Ctx<'js>) -> Result<f64> {
-        Ok(meter_gauge(ctx, self.handle.0).high)
+        Ok(meter_gauge(ctx, self.handle.get().0).high)
     }
 
     // https://html.spec.whatwg.org/multipage/form-elements.html#dom-meter-high
     fn get_optimum(&self, ctx: &Ctx<'js>) -> Result<f64> {
-        Ok(meter_gauge(ctx, self.handle.0).optimum)
+        Ok(meter_gauge(ctx, self.handle.get().0).optimum)
     }
 }
 
@@ -368,9 +367,12 @@ impl<'js> html_progress_element_generated::HTMLProgressElement<'js> for JsNode {
     // maximum; anything else (including an indeterminate bar) reads 0
     // (<https://html.spec.whatwg.org/multipage/form-elements.html#dom-progress-value>).
     fn get_value(&self, ctx: &Ctx<'js>) -> Result<f64> {
-        let max = reflect_limited_double(content_attr(ctx, self.handle.0, "max").as_deref(), 1.0);
+        let max = reflect_limited_double(
+            content_attr(ctx, self.handle.get().0, "max").as_deref(),
+            1.0,
+        );
         Ok(
-            match content_attr(ctx, self.handle.0, "value")
+            match content_attr(ctx, self.handle.get().0, "value")
                 .as_deref()
                 .and_then(crate::dom::parse::parse_double)
             {
@@ -384,7 +386,7 @@ impl<'js> html_progress_element_generated::HTMLProgressElement<'js> for JsNode {
     // (<https://html.spec.whatwg.org/multipage/form-elements.html#dom-progress-max>).
     fn get_max(&self, ctx: &Ctx<'js>) -> Result<f64> {
         Ok(reflect_limited_double(
-            content_attr(ctx, self.handle.0, "max").as_deref(),
+            content_attr(ctx, self.handle.get().0, "max").as_deref(),
             1.0,
         ))
     }
@@ -396,7 +398,7 @@ impl<'js> html_progress_element_generated::HTMLProgressElement<'js> for JsNode {
         if value.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
             return Ok(());
         }
-        host::reflect_set_double(ctx, self.handle.0, "max", value)
+        host::reflect_set_double(ctx, self.handle.get().0, "max", value)
     }
 }
 
@@ -406,7 +408,7 @@ impl<'js> html_marquee_element_generated::HTMLMarqueeElement<'js> for JsNode {
     // (<https://html.spec.whatwg.org/multipage/obsolete.html#dom-marquee-scrollamount>).
     fn get_scroll_amount(&self, ctx: &Ctx<'js>) -> Result<usize> {
         Ok(usize::try_from(reflect_ulong(
-            content_attr(ctx, self.handle.0, "scrollamount").as_deref(),
+            content_attr(ctx, self.handle.get().0, "scrollamount").as_deref(),
             6,
         ))
         .unwrap_or(usize::MAX))
@@ -414,13 +416,13 @@ impl<'js> html_marquee_element_generated::HTMLMarqueeElement<'js> for JsNode {
 
     // https://html.spec.whatwg.org/multipage/obsolete.html#dom-marquee-scrollamount
     fn set_scroll_amount(&self, ctx: &Ctx<'js>, value: u32) -> Result<()> {
-        host::reflect_set_ulong_defaulting(ctx, self.handle.0, "scrollamount", value, 6)
+        host::reflect_set_ulong_defaulting(ctx, self.handle.get().0, "scrollamount", value, 6)
     }
 
     // https://html.spec.whatwg.org/multipage/obsolete.html#dom-marquee-scrolldelay
     fn get_scroll_delay(&self, ctx: &Ctx<'js>) -> Result<usize> {
         Ok(usize::try_from(reflect_ulong(
-            content_attr(ctx, self.handle.0, "scrolldelay").as_deref(),
+            content_attr(ctx, self.handle.get().0, "scrolldelay").as_deref(),
             85,
         ))
         .unwrap_or(usize::MAX))
@@ -428,13 +430,13 @@ impl<'js> html_marquee_element_generated::HTMLMarqueeElement<'js> for JsNode {
 
     // https://html.spec.whatwg.org/multipage/obsolete.html#dom-marquee-scrolldelay
     fn set_scroll_delay(&self, ctx: &Ctx<'js>, value: u32) -> Result<()> {
-        host::reflect_set_ulong_defaulting(ctx, self.handle.0, "scrolldelay", value, 85)
+        host::reflect_set_ulong_defaulting(ctx, self.handle.get().0, "scrolldelay", value, 85)
     }
 
     // `loop` is a plain long defaulting to -1
     // (<https://html.spec.whatwg.org/multipage/obsolete.html#dom-marquee-loop>).
     fn get_loop(&self, ctx: &Ctx<'js>) -> Result<i32> {
-        Ok(content_attr(ctx, self.handle.0, "loop")
+        Ok(content_attr(ctx, self.handle.get().0, "loop")
             .as_deref()
             .and_then(crate::dom::parse::parse_integer)
             .unwrap_or(-1))
@@ -442,14 +444,14 @@ impl<'js> html_marquee_element_generated::HTMLMarqueeElement<'js> for JsNode {
 
     // https://html.spec.whatwg.org/multipage/obsolete.html#dom-marquee-loop
     fn set_loop(&self, ctx: &Ctx<'js>, value: i32) -> Result<()> {
-        set_attribute_sync(ctx, self.handle.0, "loop", &value.to_string())
+        set_attribute_sync(ctx, self.handle.get().0, "loop", &value.to_string())
     }
 
     // Obsolete `hspace`/`vspace` default to zero
     // (<https://html.spec.whatwg.org/multipage/obsolete.html#dom-marquee-hspace>).
     fn get_hspace(&self, ctx: &Ctx<'js>) -> Result<usize> {
         Ok(usize::try_from(reflect_ulong(
-            content_attr(ctx, self.handle.0, "hspace").as_deref(),
+            content_attr(ctx, self.handle.get().0, "hspace").as_deref(),
             0,
         ))
         .unwrap_or(usize::MAX))
@@ -457,13 +459,13 @@ impl<'js> html_marquee_element_generated::HTMLMarqueeElement<'js> for JsNode {
 
     // https://html.spec.whatwg.org/multipage/obsolete.html#dom-marquee-hspace
     fn set_hspace(&self, ctx: &Ctx<'js>, value: u32) -> Result<()> {
-        host::reflect_set_ulong_defaulting(ctx, self.handle.0, "hspace", value, 0)
+        host::reflect_set_ulong_defaulting(ctx, self.handle.get().0, "hspace", value, 0)
     }
 
     // https://html.spec.whatwg.org/multipage/obsolete.html#dom-marquee-vspace
     fn get_vspace(&self, ctx: &Ctx<'js>) -> Result<usize> {
         Ok(usize::try_from(reflect_ulong(
-            content_attr(ctx, self.handle.0, "vspace").as_deref(),
+            content_attr(ctx, self.handle.get().0, "vspace").as_deref(),
             0,
         ))
         .unwrap_or(usize::MAX))
@@ -471,29 +473,33 @@ impl<'js> html_marquee_element_generated::HTMLMarqueeElement<'js> for JsNode {
 
     // https://html.spec.whatwg.org/multipage/obsolete.html#dom-marquee-vspace
     fn set_vspace(&self, ctx: &Ctx<'js>, value: u32) -> Result<()> {
-        host::reflect_set_ulong_defaulting(ctx, self.handle.0, "vspace", value, 0)
+        host::reflect_set_ulong_defaulting(ctx, self.handle.get().0, "vspace", value, 0)
     }
 }
 
 impl JsNode {
     // https://html.spec.whatwg.org/multipage/embedded-content.html#dom-img-naturalwidth
     pub(super) fn natural_width(&self, ctx: Ctx<'_>) -> Result<u32> {
-        Ok(img_size(&ctx, self.handle.0)?.map_or(0, |(width, _)| width))
+        Ok(img_size(&ctx, self.handle.get().0)?.map_or(0, |(width, _)| width))
     }
 
     // https://html.spec.whatwg.org/multipage/embedded-content.html#dom-img-naturalheight
     pub(super) fn natural_height(&self, ctx: Ctx<'_>) -> Result<u32> {
-        Ok(img_size(&ctx, self.handle.0)?.map_or(0, |(_, height)| height))
+        Ok(img_size(&ctx, self.handle.get().0)?.map_or(0, |(_, height)| height))
     }
 
     // https://html.spec.whatwg.org/multipage/embedded-content.html#dom-img-complete
     pub(super) fn complete(&self, ctx: Ctx<'_>) -> Result<bool> {
-        let owner = world_for_node(&ctx, self.handle.0)?;
+        let owner = world_for_node(&ctx, self.handle.get().0)?;
         let is_img = owner
             .borrow()
-            .document(self.handle.0)
+            .document(self.handle.get().0)
             .is_some_and(|parsed| {
-                crate::dom::tree::is_html_element(&parsed.document.base, self.handle.0.node, "img")
+                crate::dom::tree::is_html_element(
+                    &parsed.document.base,
+                    self.handle.get().0.node,
+                    "img",
+                )
             });
         if !is_img {
             return Ok(false);
@@ -505,30 +511,34 @@ impl JsNode {
         // (<https://html.spec.whatwg.org/multipage/embedded-content.html#dom-img-complete>).
         let (src_empty, srcset_present) =
             world
-                .document(self.handle.0)
+                .document(self.handle.get().0)
                 .map_or((true, false), |parsed| {
                     let base = &parsed.document.base;
                     (
-                        attr(base, self.handle.0.node, "src").is_none_or(str::is_empty),
-                        attr(base, self.handle.0.node, "srcset").is_some(),
+                        attr(base, self.handle.get().0.node, "src").is_none_or(str::is_empty),
+                        attr(base, self.handle.get().0.node, "srcset").is_some(),
                     )
                 });
         if src_empty && !srcset_present {
             return Ok(true);
         }
         Ok(world
-            .image_request(self.handle.0)
+            .image_request(self.handle.get().0)
             .is_some_and(|request| request.status != blitz_dom::ImageRequestStatus::Pending))
     }
 
     // https://html.spec.whatwg.org/multipage/embedded-content.html#dom-img-currentsrc
     pub(super) fn current_src(&self, ctx: Ctx<'_>) -> Result<String> {
-        let owner = world_for_node(&ctx, self.handle.0)?;
+        let owner = world_for_node(&ctx, self.handle.get().0)?;
         let is_img = owner
             .borrow()
-            .document(self.handle.0)
+            .document(self.handle.get().0)
             .is_some_and(|parsed| {
-                crate::dom::tree::is_html_element(&parsed.document.base, self.handle.0.node, "img")
+                crate::dom::tree::is_html_element(
+                    &parsed.document.base,
+                    self.handle.get().0.node,
+                    "img",
+                )
             });
         if !is_img {
             return Ok(String::new());
@@ -536,7 +546,7 @@ impl JsNode {
         let world = world(&ctx)?;
         Ok(world
             .borrow()
-            .image_request(self.handle.0)
+            .image_request(self.handle.get().0)
             .map_or_default(|request| {
                 request
                     .final_url

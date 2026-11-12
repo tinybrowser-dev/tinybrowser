@@ -249,18 +249,18 @@ impl<'js> node_generated::Node<'js> for JsNode {
 impl<'js> character_data_generated::CharacterData<'js> for JsNode {
     // https://dom.spec.whatwg.org/#dom-characterdata-data
     fn get_data(&self, ctx: &Ctx<'js>) -> Result<rquickjs::String<'js>> {
-        dom_string(ctx, &character_data(ctx, self.handle.0)?)
+        dom_string(ctx, &character_data(ctx, self.handle.get().0)?)
     }
 
     // https://dom.spec.whatwg.org/#dom-characterdata-data
     fn set_data(&self, ctx: &Ctx<'js>, value: rquickjs::String<'js>) -> Result<()> {
         let data = crate::dom_string::DomString::from_utf16(value.to_utf16()?);
-        set_character_data(ctx, self.handle.0, &data)
+        set_character_data(ctx, self.handle.get().0, &data)
     }
 
     // https://dom.spec.whatwg.org/#dom-characterdata-length
     fn get_length(&self, ctx: &Ctx<'js>) -> Result<usize> {
-        Ok(character_data(ctx, self.handle.0)?.len())
+        Ok(character_data(ctx, self.handle.get().0)?.len())
     }
 
     // https://dom.spec.whatwg.org/#dom-characterdata-substringdata
@@ -270,7 +270,9 @@ impl<'js> character_data_generated::CharacterData<'js> for JsNode {
         offset: u32,
         count: u32,
     ) -> Result<rquickjs::String<'js>> {
-        let units = character_data(&ctx, self.handle.0)?.units().into_owned();
+        let units = character_data(&ctx, self.handle.get().0)?
+            .units()
+            .into_owned();
         let offset = character_data_offset(&ctx, offset, units.len())?;
         let end = offset
             .saturating_add(usize::try_from(count).unwrap_or(usize::MAX))
@@ -280,10 +282,10 @@ impl<'js> character_data_generated::CharacterData<'js> for JsNode {
 
     // https://dom.spec.whatwg.org/#dom-characterdata-appenddata
     fn append_data(&self, ctx: Ctx<'js>, data: rquickjs::String<'js>) -> Result<()> {
-        let length = character_data(&ctx, self.handle.0)?.units().len();
+        let length = character_data(&ctx, self.handle.get().0)?.units().len();
         replace_character_data(
             &ctx,
-            self.handle.0,
+            self.handle.get().0,
             u32::try_from(length).unwrap_or(u32::MAX),
             0,
             &crate::dom_string::DomString::from_utf16(data.to_utf16()?),
@@ -292,11 +294,11 @@ impl<'js> character_data_generated::CharacterData<'js> for JsNode {
 
     // https://dom.spec.whatwg.org/#dom-characterdata-insertdata
     fn insert_data(&self, ctx: Ctx<'js>, offset: u32, data: rquickjs::String<'js>) -> Result<()> {
-        let length = character_data(&ctx, self.handle.0)?.units().len();
+        let length = character_data(&ctx, self.handle.get().0)?.units().len();
         character_data_offset(&ctx, offset, length)?;
         replace_character_data(
             &ctx,
-            self.handle.0,
+            self.handle.get().0,
             offset,
             0,
             &crate::dom_string::DomString::from_utf16(data.to_utf16()?),
@@ -305,11 +307,11 @@ impl<'js> character_data_generated::CharacterData<'js> for JsNode {
 
     // https://dom.spec.whatwg.org/#dom-characterdata-deletedata
     fn delete_data(&self, ctx: Ctx<'js>, offset: u32, count: u32) -> Result<()> {
-        let length = character_data(&ctx, self.handle.0)?.units().len();
+        let length = character_data(&ctx, self.handle.get().0)?.units().len();
         character_data_offset(&ctx, offset, length)?;
         replace_character_data(
             &ctx,
-            self.handle.0,
+            self.handle.get().0,
             offset,
             count,
             &crate::dom_string::DomString::default(),
@@ -324,11 +326,11 @@ impl<'js> character_data_generated::CharacterData<'js> for JsNode {
         count: u32,
         data: rquickjs::String<'js>,
     ) -> Result<()> {
-        let length = character_data(&ctx, self.handle.0)?.units().len();
+        let length = character_data(&ctx, self.handle.get().0)?.units().len();
         character_data_offset(&ctx, offset, length)?;
         replace_character_data(
             &ctx,
-            self.handle.0,
+            self.handle.get().0,
             offset,
             count,
             &crate::dom_string::DomString::from_utf16(data.to_utf16()?),
@@ -339,30 +341,30 @@ impl<'js> character_data_generated::CharacterData<'js> for JsNode {
 impl<'js> text_generated::Text<'js> for JsNode {
     /// <https://dom.spec.whatwg.org/#dom-text-splittext>
     fn split_text(&self, ctx: Ctx<'js>, offset: u32) -> Result<Value<'js>> {
-        split_text_node(&ctx, self.handle.0, offset)
+        split_text_node(&ctx, self.handle.get().0, offset)
     }
 
     /// <https://dom.spec.whatwg.org/#dom-text-wholetext>
     fn get_whole_text(&self, ctx: &Ctx<'js>) -> Result<rquickjs::String<'js>> {
-        dom_string(ctx, &whole_text(ctx, self.handle.0)?)
+        dom_string(ctx, &whole_text(ctx, self.handle.get().0)?)
     }
 }
 
 impl<'js> processing_instruction_generated::ProcessingInstruction<'js> for JsNode {
     /// <https://dom.spec.whatwg.org/#dom-processinginstruction-target>
     fn get_target(&self, ctx: &Ctx<'js>) -> Result<rquickjs::String<'js>> {
-        let target = pi_target(ctx, self.handle.0);
+        let target = pi_target(ctx, self.handle.get().0);
         rquickjs::String::from_str(ctx.clone(), &target)
     }
 
     /// <https://dom.spec.whatwg.org/#dom-processinginstruction-hasattributes>
     fn has_attributes(&self, ctx: Ctx<'js>) -> Result<bool> {
-        Ok(!pi_attributes(&ctx, self.handle.0)?.is_empty())
+        Ok(!pi_attributes(&ctx, self.handle.get().0)?.is_empty())
     }
 
     /// <https://dom.spec.whatwg.org/#dom-processinginstruction-getattributenames>
     fn get_attribute_names(&self, ctx: Ctx<'js>) -> Result<Vec<String>> {
-        Ok(pi_attributes(&ctx, self.handle.0)?
+        Ok(pi_attributes(&ctx, self.handle.get().0)?
             .into_iter()
             .map(|(name, _)| name)
             .collect())
@@ -375,7 +377,7 @@ impl<'js> processing_instruction_generated::ProcessingInstruction<'js> for JsNod
         arg_0: rquickjs::String<'js>,
     ) -> Result<Option<rquickjs::String<'js>>> {
         let name = arg_0.to_string()?;
-        match pi_attributes(&ctx, self.handle.0)?
+        match pi_attributes(&ctx, self.handle.get().0)?
             .into_iter()
             .find(|(attribute, _)| attribute == &name)
         {
@@ -400,7 +402,7 @@ impl<'js> processing_instruction_generated::ProcessingInstruction<'js> for JsNod
             ));
         }
         let value = arg_1.to_string()?;
-        let mut attributes = pi_attributes(&ctx, self.handle.0)?;
+        let mut attributes = pi_attributes(&ctx, self.handle.get().0)?;
         if let Some((_, stored)) = attributes
             .iter_mut()
             .find(|(attribute, _)| attribute == &name)
@@ -409,15 +411,15 @@ impl<'js> processing_instruction_generated::ProcessingInstruction<'js> for JsNod
         } else {
             attributes.push((name, value));
         }
-        set_pi_attributes(&ctx, self.handle.0, attributes)
+        set_pi_attributes(&ctx, self.handle.get().0, attributes)
     }
 
     /// <https://dom.spec.whatwg.org/#dom-processinginstruction-removeattribute>
     fn remove_attribute(&self, ctx: Ctx<'js>, arg_0: rquickjs::String<'js>) -> Result<()> {
         let name = arg_0.to_string()?;
-        let mut attributes = pi_attributes(&ctx, self.handle.0)?;
+        let mut attributes = pi_attributes(&ctx, self.handle.get().0)?;
         attributes.retain(|(attribute, _)| attribute != &name);
-        set_pi_attributes(&ctx, self.handle.0, attributes)
+        set_pi_attributes(&ctx, self.handle.get().0, attributes)
     }
 
     /// <https://dom.spec.whatwg.org/#dom-processinginstruction-toggleattribute>
@@ -435,12 +437,12 @@ impl<'js> processing_instruction_generated::ProcessingInstruction<'js> for JsNod
                 "attribute name is not a valid attribute local name",
             ));
         }
-        let mut attributes = pi_attributes(&ctx, self.handle.0)?;
+        let mut attributes = pi_attributes(&ctx, self.handle.get().0)?;
         let exists = attributes.iter().any(|(attribute, _)| attribute == &name);
         if !exists {
             if arg_1.unwrap_or(true) {
                 attributes.push((name, String::new()));
-                set_pi_attributes(&ctx, self.handle.0, attributes)?;
+                set_pi_attributes(&ctx, self.handle.get().0, attributes)?;
                 return Ok(true);
             }
             return Ok(false);
@@ -451,14 +453,14 @@ impl<'js> processing_instruction_generated::ProcessingInstruction<'js> for JsNod
             return Ok(true);
         }
         attributes.retain(|(attribute, _)| attribute != &name);
-        set_pi_attributes(&ctx, self.handle.0, attributes)?;
+        set_pi_attributes(&ctx, self.handle.get().0, attributes)?;
         Ok(false)
     }
 
     /// <https://dom.spec.whatwg.org/#dom-processinginstruction-hasattribute>
     fn has_attribute(&self, ctx: Ctx<'js>, arg_0: rquickjs::String<'js>) -> Result<bool> {
         let name = arg_0.to_string()?;
-        Ok(pi_attributes(&ctx, self.handle.0)?
+        Ok(pi_attributes(&ctx, self.handle.get().0)?
             .iter()
             .any(|(attribute, _)| attribute == &name))
     }
@@ -467,19 +469,23 @@ impl<'js> processing_instruction_generated::ProcessingInstruction<'js> for JsNod
 impl<'js> document_type_generated::DocumentType<'js> for JsNode {
     /// <https://dom.spec.whatwg.org/#dom-documenttype-name>
     fn get_name(&self, ctx: &Ctx<'js>) -> Result<rquickjs::String<'js>> {
-        let name = doctype_field(ctx, self.handle.0, |name, _, _| name.to_owned());
+        let name = doctype_field(ctx, self.handle.get().0, |name, _, _| name.to_owned());
         rquickjs::String::from_str(ctx.clone(), &name)
     }
 
     /// <https://dom.spec.whatwg.org/#dom-documenttype-publicid>
     fn get_public_id(&self, ctx: &Ctx<'js>) -> Result<rquickjs::String<'js>> {
-        let public_id = doctype_field(ctx, self.handle.0, |_, public_id, _| public_id.to_owned());
+        let public_id = doctype_field(ctx, self.handle.get().0, |_, public_id, _| {
+            public_id.to_owned()
+        });
         rquickjs::String::from_str(ctx.clone(), &public_id)
     }
 
     /// <https://dom.spec.whatwg.org/#dom-documenttype-systemid>
     fn get_system_id(&self, ctx: &Ctx<'js>) -> Result<rquickjs::String<'js>> {
-        let system_id = doctype_field(ctx, self.handle.0, |_, _, system_id| system_id.to_owned());
+        let system_id = doctype_field(ctx, self.handle.get().0, |_, _, system_id| {
+            system_id.to_owned()
+        });
         rquickjs::String::from_str(ctx.clone(), &system_id)
     }
 }
@@ -489,7 +495,7 @@ impl<'js> parent_node_generated::ParentNode<'js> for JsNode {
     fn get_children(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
         live_collection(
             ctx,
-            self.handle.0,
+            self.handle.get().0,
             CollectionKind::ElementChildren,
             Some("HTMLCollection"),
         )
@@ -500,11 +506,11 @@ impl<'js> parent_node_generated::ParentNode<'js> for JsNode {
         let world = world(ctx)?;
         let found = {
             let parsed = world.borrow();
-            let Some(parsed) = parsed.document(self.handle.0) else {
+            let Some(parsed) = parsed.document(self.handle.get().0) else {
                 return Ok(Value::new_null(ctx.clone()));
             };
             let base = &parsed.document.base;
-            base.get_node(self.handle.0.node).and_then(|node| {
+            base.get_node(self.handle.get().0.node).and_then(|node| {
                 node.children
                     .iter()
                     .find(|kid| is_element(base, **kid))
@@ -522,11 +528,11 @@ impl<'js> parent_node_generated::ParentNode<'js> for JsNode {
         let world = world(ctx)?;
         let found = {
             let parsed = world.borrow();
-            let Some(parsed) = parsed.document(self.handle.0) else {
+            let Some(parsed) = parsed.document(self.handle.get().0) else {
                 return Ok(Value::new_null(ctx.clone()));
             };
             let base = &parsed.document.base;
-            base.get_node(self.handle.0.node).and_then(|node| {
+            base.get_node(self.handle.get().0.node).and_then(|node| {
                 node.children
                     .iter()
                     .rev()
@@ -544,11 +550,11 @@ impl<'js> parent_node_generated::ParentNode<'js> for JsNode {
     fn get_child_element_count(&self, ctx: &Ctx<'js>) -> Result<usize> {
         let world = world(ctx)?;
         let parsed = world.borrow();
-        let Some(parsed) = parsed.document(self.handle.0) else {
+        let Some(parsed) = parsed.document(self.handle.get().0) else {
             return Ok(0);
         };
         let base = &parsed.document.base;
-        Ok(base.get_node(self.handle.0.node).map_or(0, |node| {
+        Ok(base.get_node(self.handle.get().0.node).map_or(0, |node| {
             node.children
                 .iter()
                 .filter(|kid| is_element(base, **kid))
@@ -562,9 +568,10 @@ impl<'js> parent_node_generated::ParentNode<'js> for JsNode {
         ctx: Ctx<'js>,
         nodes: Vec<parent_node_generated::DOMStringOrNode<'js>>,
     ) -> Result<()> {
-        let node = convert_union_nodes_into_node(&ctx, self.handle.0, union_nodes(nodes))?;
-        let (node, _) = insertion_tree_nodes(&ctx, self.handle.0, NodeReference::Tree(node), None)?;
-        insert_tree_node(&ctx, self.handle.0, node, None)
+        let node = convert_union_nodes_into_node(&ctx, self.handle.get().0, union_nodes(nodes))?;
+        let (node, _) =
+            insertion_tree_nodes(&ctx, self.handle.get().0, NodeReference::Tree(node), None)?;
+        insert_tree_node(&ctx, self.handle.get().0, node, None)
     }
 
     // https://dom.spec.whatwg.org/#dom-parentnode-prepend
@@ -575,7 +582,7 @@ impl<'js> parent_node_generated::ParentNode<'js> for JsNode {
     ) -> Result<()> {
         // Adoption by copy leaves a stale handle behind; prepend to the live
         // parent (https://dom.spec.whatwg.org/#concept-node-adopt).
-        let parent = self.handle.0;
+        let parent = self.handle.get().0;
         let node = convert_union_nodes_into_node(&ctx, parent, union_nodes(nodes))?;
         let reference = {
             let world = world(&ctx)?;
@@ -613,7 +620,7 @@ impl<'js> parent_node_generated::ParentNode<'js> for JsNode {
         // current children excluded, then replace all.
         // https://dom.spec.whatwg.org/#convert-nodes-into-a-node
         // https://github.com/whatwg/dom/issues/1045
-        let parent = self.handle.0;
+        let parent = self.handle.get().0;
         let node = convert_union_nodes_into_node(&ctx, parent, union_nodes(nodes))?;
         let excluded = {
             let world = world(&ctx)?;
@@ -654,7 +661,7 @@ impl<'js> parent_node_generated::ParentNode<'js> for JsNode {
         node: NodeReference,
         child: Option<NodeReference>,
     ) -> Result<()> {
-        move_before_node(&ctx, self.handle.0, node, child)
+        move_before_node(&ctx, self.handle.get().0, node, child)
     }
 
     // https://dom.spec.whatwg.org/#dom-parentnode-queryselector
@@ -667,7 +674,7 @@ impl<'js> parent_node_generated::ParentNode<'js> for JsNode {
         let selectors = selector_matching_elements(&selectors);
         // Adoption by copy leaves a stale handle behind; search the live
         // subtree (https://dom.spec.whatwg.org/#concept-node-adopt).
-        let scope = self.handle.0;
+        let scope = self.handle.get().0;
         let world = world(&ctx)?;
         let found = {
             let parsed = world.borrow();
@@ -697,7 +704,7 @@ impl<'js> parent_node_generated::ParentNode<'js> for JsNode {
         let selectors = selector_matching_elements(&selectors);
         // Adoption by copy leaves a stale handle behind; search the live
         // subtree (https://dom.spec.whatwg.org/#concept-node-adopt).
-        let scope = self.handle.0;
+        let scope = self.handle.get().0;
         let world = world(&ctx)?;
         let ids = {
             let parsed = world.borrow();
@@ -739,7 +746,7 @@ impl<'js> child_node_generated::ChildNode<'js> for JsNode {
         // Parent and the viable sibling are captured before conversion.
         // Converting can move `this` into a fragment
         // (https://dom.spec.whatwg.org/#dom-childnode-before).
-        let target = self.handle.0;
+        let target = self.handle.get().0;
         let nodes = union_nodes(nodes);
         let excluded = argument_node_ids(&nodes);
         let Some(parent) = tree_parent(&ctx, target)? else {
@@ -790,7 +797,7 @@ impl<'js> child_node_generated::ChildNode<'js> for JsNode {
         // Parent and the viable sibling are captured before conversion.
         // Converting can move `this` into a fragment
         // (https://dom.spec.whatwg.org/#dom-childnode-after).
-        let target = self.handle.0;
+        let target = self.handle.get().0;
         let nodes = union_nodes(nodes);
         let excluded = argument_node_ids(&nodes);
         let Some(parent) = tree_parent(&ctx, target)? else {
@@ -827,7 +834,7 @@ impl<'js> child_node_generated::ChildNode<'js> for JsNode {
         // Parent and the viable sibling are captured before conversion.
         // A parentless child returns before any node is moved
         // (https://dom.spec.whatwg.org/#dom-childnode-replacewith).
-        let target = self.handle.0;
+        let target = self.handle.get().0;
         let nodes = union_nodes(nodes);
         let excluded = argument_node_ids(&nodes);
         let Some(parent) = tree_parent(&ctx, target)? else {
@@ -878,22 +885,22 @@ impl<'js> child_node_generated::ChildNode<'js> for JsNode {
     fn remove(&self, ctx: Ctx<'js>) -> Result<()> {
         let world = world(&ctx)?;
         let world = world.borrow();
-        let Some(mut parsed) = world.document_mut(self.handle.0) else {
+        let Some(mut parsed) = world.document_mut(self.handle.get().0) else {
             return Ok(());
         };
-        if parsed.document.base.root_node().id == self.handle.0.node {
+        if parsed.document.base.root_node().id == self.handle.get().0.node {
             return Err(throw_dom(
                 &ctx,
                 "HierarchyRequestError",
                 "a document cannot be removed",
             ));
         }
-        let iframes = iframe_containers_in_subtrees(&parsed, &[self.handle.0]);
-        unlink_journaled(&mut parsed, self.handle.0);
+        let iframes = iframe_containers_in_subtrees(&parsed, &[self.handle.get().0]);
+        unlink_journaled(&mut parsed, self.handle.get().0);
         drop(parsed);
         world.destroy_child_navigables(&iframes);
         drop(world);
-        fixup_focus_after_removal(&ctx, self.handle.0)?;
+        fixup_focus_after_removal(&ctx, self.handle.get().0)?;
         schedule_mutation_delivery(&ctx)
     }
 }
@@ -901,12 +908,12 @@ impl<'js> child_node_generated::ChildNode<'js> for JsNode {
 impl<'js> non_document_type_child_node_generated::NonDocumentTypeChildNode<'js> for JsNode {
     // https://dom.spec.whatwg.org/#dom-nondocumenttypechildnode-previouselementsibling
     fn get_previous_element_sibling(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
-        element_sibling_value(ctx, self.handle.0, false)
+        element_sibling_value(ctx, self.handle.get().0, false)
     }
 
     // https://dom.spec.whatwg.org/#dom-nondocumenttypechildnode-nextelementsibling
     fn get_next_element_sibling(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
-        element_sibling_value(ctx, self.handle.0, true)
+        element_sibling_value(ctx, self.handle.get().0, true)
     }
 }
 
@@ -931,7 +938,7 @@ impl<'js> From<child_node_generated::DOMStringOrNode<'js>> for NodeOrString<'js>
 impl JsNode {
     pub(super) fn node_type(&self, ctx: &Ctx<'_>) -> Result<u16> {
         // https://dom.spec.whatwg.org/#dom-node-nodetype
-        with_node_data(ctx, self.handle.0, |data| {
+        with_node_data(ctx, self.handle.get().0, |data| {
             crate::dom::tree::node_type(data)
                 .ok_or_else(|| Exception::throw_type(ctx, "stale node"))
         })?
@@ -940,14 +947,14 @@ impl JsNode {
     // https://dom.spec.whatwg.org/#dom-node-nodename
     // https://dom.spec.whatwg.org/#concept-element-html-uppercased-qualified-name
     pub(super) fn node_name<'js>(&self, ctx: &Ctx<'js>) -> Result<rquickjs::String<'js>> {
-        let uppercase = document_is_html_content(ctx, self.handle.0);
-        let world = world_for_node(ctx, self.handle.0)?;
+        let uppercase = document_is_html_content(ctx, self.handle.get().0);
+        let world = world_for_node(ctx, self.handle.get().0)?;
         let borrowed = world.borrow();
-        let Some(parsed) = borrowed.document(self.handle.0) else {
+        let Some(parsed) = borrowed.document(self.handle.get().0) else {
             return Err(Exception::throw_type(ctx, "stale node"));
         };
         let name =
-            crate::dom::tree::node_name(&parsed.document.base, self.handle.0.node, uppercase)
+            crate::dom::tree::node_name(&parsed.document.base, self.handle.get().0.node, uppercase)
                 .ok_or_else(|| Exception::throw_type(ctx, "stale node"))?;
         rquickjs::String::from_str(ctx.clone(), &name)
     }
@@ -956,7 +963,7 @@ impl JsNode {
     pub(super) fn first_child<'js>(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
         // Adoption by copy leaves a stale handle behind; read the live node's
         // children (https://dom.spec.whatwg.org/#concept-node-adopt).
-        let id = self.handle.0;
+        let id = self.handle.get().0;
         let world = world(ctx)?;
         let id = world.borrow().document(id).and_then(|parsed| {
             parsed
@@ -975,43 +982,49 @@ impl JsNode {
     // https://dom.spec.whatwg.org/#dom-node-lastchild
     pub(super) fn last_child<'js>(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
         let world = world(ctx)?;
-        let id = world.borrow().document(self.handle.0).and_then(|parsed| {
-            parsed
-                .document
-                .base
-                .get_node(self.handle.0.node)
-                .and_then(|node| node.children.last().copied())
-                .map(|node| NodeId {
-                    document: parsed.id,
-                    node,
-                })
-        });
+        let id = world
+            .borrow()
+            .document(self.handle.get().0)
+            .and_then(|parsed| {
+                parsed
+                    .document
+                    .base
+                    .get_node(self.handle.get().0.node)
+                    .and_then(|node| node.children.last().copied())
+                    .map(|node| NodeId {
+                        document: parsed.id,
+                        node,
+                    })
+            });
         child_value(ctx, id)
     }
 
     // https://dom.spec.whatwg.org/#dom-node-nextsibling
     pub(super) fn next_sibling<'js>(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
-        sibling_value(ctx, self.handle.0, true)
+        sibling_value(ctx, self.handle.get().0, true)
     }
 
     // https://dom.spec.whatwg.org/#dom-node-previoussibling
     pub(super) fn previous_sibling<'js>(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
-        sibling_value(ctx, self.handle.0, false)
+        sibling_value(ctx, self.handle.get().0, false)
     }
 
     pub(super) fn parent_node<'js>(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
         let world = world(ctx)?;
-        let id = world.borrow().document(self.handle.0).and_then(|parsed| {
-            parsed
-                .document
-                .base
-                .get_node(self.handle.0.node)
-                .and_then(|node| node.parent)
-                .map(|node| NodeId {
-                    document: parsed.id,
-                    node,
-                })
-        });
+        let id = world
+            .borrow()
+            .document(self.handle.get().0)
+            .and_then(|parsed| {
+                parsed
+                    .document
+                    .base
+                    .get_node(self.handle.get().0.node)
+                    .and_then(|node| node.parent)
+                    .map(|node| NodeId {
+                        document: parsed.id,
+                        node,
+                    })
+            });
         child_value(ctx, id)
     }
 
@@ -1021,15 +1034,15 @@ impl JsNode {
         let world_rc = world(ctx)?;
         if let Some(saved) = world_rc
             .borrow()
-            .same_object(self.handle.0, SameObject::ChildNodes)
+            .same_object(self.handle.get().0, SameObject::ChildNodes)
             && let Some(value) = deref_weak(ctx, saved)?
         {
             return Ok(value);
         }
-        let value = live_collection(ctx, self.handle.0, CollectionKind::Children, None)?;
+        let value = live_collection(ctx, self.handle.get().0, CollectionKind::Children, None)?;
         let weak = make_weak(ctx, value.clone())?;
         world_rc.borrow_mut().intern_same_object(
-            self.handle.0,
+            self.handle.get().0,
             SameObject::ChildNodes,
             Persistent::save(ctx, weak),
         );
@@ -1042,9 +1055,9 @@ impl JsNode {
         ctx: Ctx<'js>,
         node: NodeReference,
     ) -> Result<Value<'js>> {
-        let (node, _) = insertion_tree_nodes(&ctx, self.handle.0, node, None)?;
-        let node = adopt_node(&ctx, self.handle.0, node)?;
-        let parent = self.handle.0;
+        let (node, _) = insertion_tree_nodes(&ctx, self.handle.get().0, node, None)?;
+        let node = adopt_node(&ctx, self.handle.get().0, node)?;
+        let parent = self.handle.get().0;
         insert_tree_node(&ctx, parent, node, None)?;
         wrap_node(&ctx, node)
     }
@@ -1054,7 +1067,7 @@ impl JsNode {
         // Adoption by copy leaves a stale handle behind; the owner is the
         // live node's document
         // (https://dom.spec.whatwg.org/#concept-node-adopt).
-        let id = self.handle.0;
+        let id = self.handle.get().0;
         let world = world(ctx)?;
         let id = world.borrow().document(id).and_then(|parsed| {
             let root = parsed.document.base.root_node().id;
@@ -1070,13 +1083,13 @@ impl JsNode {
     pub(super) fn has_child_nodes(&self, ctx: Ctx<'_>) -> Result<bool> {
         let world = world(&ctx)?;
         let parsed = world.borrow();
-        let Some(parsed) = parsed.document(self.handle.0) else {
+        let Some(parsed) = parsed.document(self.handle.get().0) else {
             return Ok(false);
         };
         Ok(parsed
             .document
             .base
-            .get_node(self.handle.0.node)
+            .get_node(self.handle.get().0.node)
             .is_some_and(|node| !node.children.is_empty()))
     }
 
@@ -1084,13 +1097,13 @@ impl JsNode {
     pub(super) fn node_value<'js>(&self, ctx: &Ctx<'js>) -> Result<Option<rquickjs::String<'js>>> {
         let world = world(ctx)?;
         let parsed = world.borrow();
-        let Some(parsed) = parsed.document(self.handle.0) else {
+        let Some(parsed) = parsed.document(self.handle.get().0) else {
             return Ok(None);
         };
         let is_character_data = parsed
             .document
             .base
-            .get_node(self.handle.0.node)
+            .get_node(self.handle.get().0.node)
             .is_some_and(|node| {
                 matches!(
                     node.data,
@@ -1101,7 +1114,11 @@ impl JsNode {
                 )
             });
         if is_character_data {
-            return dom_string(ctx, &parsed.document.character_data(self.handle.0.node)).map(Some);
+            return dom_string(
+                ctx,
+                &parsed.document.character_data(self.handle.get().0.node),
+            )
+            .map(Some);
         }
         Ok(None)
     }
@@ -1117,14 +1134,14 @@ impl JsNode {
         let skip = world(ctx).is_ok_and(|world| {
             world
                 .borrow()
-                .document(self.handle.0)
+                .document(self.handle.get().0)
                 .is_some_and(|parsed| {
-                    parsed.document.is_fragment(self.handle.0.node)
-                        || parsed.document.base.root_node().id == self.handle.0.node
+                    parsed.document.is_fragment(self.handle.get().0.node)
+                        || parsed.document.base.root_node().id == self.handle.get().0.node
                         || parsed
                             .document
                             .base
-                            .get_node(self.handle.0.node)
+                            .get_node(self.handle.get().0.node)
                             .is_some_and(|node| matches!(node.data, NodeData::Doctype { .. }))
                 })
         });
@@ -1135,7 +1152,7 @@ impl JsNode {
             Some(value) => crate::dom_string::DomString::from_utf16(value.to_utf16()?),
             None => crate::dom_string::DomString::default(),
         };
-        set_character_data(ctx, self.handle.0, &value)
+        set_character_data(ctx, self.handle.get().0, &value)
     }
 
     // https://dom.spec.whatwg.org/#dom-node-textcontent
@@ -1145,13 +1162,13 @@ impl JsNode {
     ) -> Result<Option<rquickjs::String<'js>>> {
         let world = world(ctx)?;
         let parsed = world.borrow();
-        let Some(parsed) = parsed.document(self.handle.0) else {
+        let Some(parsed) = parsed.document(self.handle.get().0) else {
             return Ok(None);
         };
         let kind = parsed
             .document
             .base
-            .get_node(self.handle.0.node)
+            .get_node(self.handle.get().0.node)
             .map(|node| match &node.data {
                 NodeData::Element(_) | NodeData::Fragment { .. } | NodeData::ShadowRoot { .. } => {
                     0u8
@@ -1164,12 +1181,16 @@ impl JsNode {
             });
         match kind {
             Some(0) => {
-                let text = parsed.document.descendant_dom_text(self.handle.0.node);
+                let text = parsed
+                    .document
+                    .descendant_dom_text(self.handle.get().0.node);
                 dom_string(ctx, &text).map(Some)
             }
-            Some(1) => {
-                dom_string(ctx, &parsed.document.character_data(self.handle.0.node)).map(Some)
-            }
+            Some(1) => dom_string(
+                ctx,
+                &parsed.document.character_data(self.handle.get().0.node),
+            )
+            .map(Some),
             _ => Ok(None),
         }
     }
@@ -1190,7 +1211,7 @@ impl JsNode {
         let world_rc = world(ctx)?;
         let character_data = {
             let world = world_rc.borrow();
-            let Some(parsed) = world.document(self.handle.0) else {
+            let Some(parsed) = world.document(self.handle.get().0) else {
                 return Ok(());
             };
             // A `CharacterData` node [replaces its data] in place; every other
@@ -1198,7 +1219,7 @@ impl JsNode {
             parsed
                 .document
                 .base
-                .get_node(self.handle.0.node)
+                .get_node(self.handle.get().0.node)
                 .is_some_and(|node| {
                     matches!(
                         node.data,
@@ -1210,21 +1231,21 @@ impl JsNode {
                 })
         };
         if character_data {
-            return set_character_data(ctx, self.handle.0, &text);
+            return set_character_data(ctx, self.handle.get().0, &text);
         }
         let world = world_rc.borrow();
-        let Some(mut parsed) = world.document_mut(self.handle.0) else {
+        let Some(mut parsed) = world.document_mut(self.handle.get().0) else {
             return Ok(());
         };
         // Document and DocumentType ignore the setter
         // (<https://dom.spec.whatwg.org/#dom-node-textcontent>).
-        if parsed.document.base.root_node().id == self.handle.0.node {
+        if parsed.document.base.root_node().id == self.handle.get().0.node {
             return Ok(());
         }
         if parsed
             .document
             .base
-            .get_node(self.handle.0.node)
+            .get_node(self.handle.get().0.node)
             .is_some_and(|node| matches!(node.data, NodeData::Doctype { .. }))
         {
             return Ok(());
@@ -1238,7 +1259,7 @@ impl JsNode {
                 node,
             }]
         };
-        let iframes = replace_all_journaled(&mut parsed, self.handle.0, added);
+        let iframes = replace_all_journaled(&mut parsed, self.handle.get().0, added);
         drop(parsed);
         world.destroy_child_navigables(&iframes);
         drop(world);
@@ -1249,14 +1270,14 @@ impl JsNode {
     pub(super) fn matches(&self, ctx: Ctx<'_>, selectors: WebIdlString) -> Result<bool> {
         let world = world(&ctx)?;
         let parsed = world.borrow();
-        let Some(parsed) = parsed.document(self.handle.0) else {
+        let Some(parsed) = parsed.document(self.handle.get().0) else {
             return Ok(false);
         };
         let selectors = selector_matching_elements(&selectors.0);
         parsed
             .document
             .base
-            .matches_selector(self.handle.0.node, &selectors)
+            .matches_selector(self.handle.get().0.node, &selectors)
             .map_err(|err| select_error(&ctx, &err))
     }
 
@@ -1269,14 +1290,14 @@ impl JsNode {
         let world = world(&ctx)?;
         let found = {
             let parsed = world.borrow();
-            let Some(parsed) = parsed.document(self.handle.0) else {
+            let Some(parsed) = parsed.document(self.handle.get().0) else {
                 return Ok(Value::new_null(ctx));
             };
             let selectors = selector_matching_elements(&selectors.0);
             parsed
                 .document
                 .base
-                .closest(self.handle.0.node, &selectors)
+                .closest(self.handle.get().0.node, &selectors)
                 .map_err(|err| select_error(&ctx, &err))?
                 .map(|node| NodeId {
                     document: parsed.id,
@@ -1294,7 +1315,7 @@ impl JsNode {
     ) -> Result<Value<'js>> {
         live_collection(
             &ctx,
-            self.handle.0,
+            self.handle.get().0,
             CollectionKind::ElementsByClass(names.0),
             Some("HTMLCollection"),
         )
@@ -1308,12 +1329,12 @@ impl JsNode {
     pub(super) fn normalize(&self, ctx: Ctx<'_>) -> Result<()> {
         let world = world(&ctx)?;
         let world = world.borrow();
-        let Some(mut parsed) = world.document_mut(self.handle.0) else {
+        let Some(mut parsed) = world.document_mut(self.handle.get().0) else {
             return Ok(());
         };
         let document = parsed.id;
-        let mut containers: Vec<BlitzId> = vec![self.handle.0.node];
-        let mut stack = vec![self.handle.0.node];
+        let mut containers: Vec<BlitzId> = vec![self.handle.get().0.node];
+        let mut stack = vec![self.handle.get().0.node];
         while let Some(id) = stack.pop() {
             if let Some(node) = parsed.document.base.get_node(id) {
                 for kid in &node.children.clone() {
@@ -1444,7 +1465,7 @@ impl JsNode {
         ctx: Ctx<'_>,
         other: NodeReference,
     ) -> Result<u16> {
-        compare_node_position(&ctx, NodeReference::Tree(self.handle.0), other)
+        compare_node_position(&ctx, NodeReference::Tree(self.handle.get().0), other)
     }
 
     // https://dom.spec.whatwg.org/#dom-node-parentelement
@@ -1452,13 +1473,13 @@ impl JsNode {
         let world_rc = world(ctx)?;
         let parent = {
             let parsed = world_rc.borrow();
-            let Some(parsed) = parsed.document(self.handle.0) else {
+            let Some(parsed) = parsed.document(self.handle.get().0) else {
                 return Ok(Value::new_null(ctx.clone()));
             };
             parsed
                 .document
                 .base
-                .get_node(self.handle.0.node)
+                .get_node(self.handle.get().0.node)
                 .and_then(|node| node.parent)
                 .filter(|parent| is_element(&parsed.document.base, *parent))
                 .map(|parent| NodeId {
@@ -1471,7 +1492,7 @@ impl JsNode {
 
     // https://dom.spec.whatwg.org/#dom-node-issamenode
     pub(super) fn is_same_node(&self, other: Option<NodeReference>) -> bool {
-        other == Some(NodeReference::Tree(self.handle.0))
+        other == Some(NodeReference::Tree(self.handle.get().0))
     }
 
     // https://dom.spec.whatwg.org/#dom-node-isequalnode
@@ -1481,7 +1502,11 @@ impl JsNode {
         };
         let world = world(&ctx)?;
         let world = world.borrow();
-        Ok(equality::nodes_equal(&world.store(), self.handle.0, other))
+        Ok(equality::nodes_equal(
+            &world.store(),
+            self.handle.get().0,
+            other,
+        ))
     }
 
     // https://dom.spec.whatwg.org/#dom-node-contains
@@ -1489,18 +1514,18 @@ impl JsNode {
         let Some(NodeReference::Tree(other)) = other else {
             return Ok(false);
         };
-        if other.document != self.handle.0.document {
+        if other.document != self.handle.get().0.document {
             return Ok(false);
         }
         let world = world(&ctx)?;
         let parsed = world.borrow();
-        let Some(parsed) = parsed.document(self.handle.0) else {
+        let Some(parsed) = parsed.document(self.handle.get().0) else {
             return Ok(false);
         };
         let base = &parsed.document.base;
         let mut cursor = Some(other.node);
         while let Some(id) = cursor {
-            if id == self.handle.0.node {
+            if id == self.handle.get().0.node {
                 return Ok(true);
             }
             cursor = base.get_node(id).and_then(|node| node.parent);
@@ -1517,10 +1542,10 @@ impl JsNode {
         // `composed: true` returns the shadow-including root
         // (<https://dom.spec.whatwg.org/#dom-node-getrootnode>).
         let world = world(&ctx)?;
-        let mut root = self.handle.0;
+        let mut root = self.handle.get().0;
         {
             let parsed = world.borrow();
-            let Some(parsed) = parsed.document(self.handle.0) else {
+            let Some(parsed) = parsed.document(self.handle.get().0) else {
                 return Ok(Value::new_null(ctx));
             };
             let base = &parsed.document.base;
@@ -1546,10 +1571,13 @@ impl JsNode {
     pub(super) fn is_connected(&self, ctx: &Ctx<'_>) -> Result<bool> {
         let world = world(ctx)?;
         let parsed = world.borrow();
-        let Some(parsed) = parsed.document(self.handle.0) else {
+        let Some(parsed) = parsed.document(self.handle.get().0) else {
             return Ok(false);
         };
-        Ok(is_connected(&parsed.document.base, self.handle.0.node))
+        Ok(is_connected(
+            &parsed.document.base,
+            self.handle.get().0.node,
+        ))
     }
 
     // https://dom.spec.whatwg.org/#dom-node-clonenode
@@ -1557,15 +1585,15 @@ impl JsNode {
         let world_rc = world(&ctx)?;
         let is_document = {
             let world = world_rc.borrow();
-            let Some(parsed) = world.document(self.handle.0) else {
+            let Some(parsed) = world.document(self.handle.get().0) else {
                 return Err(Exception::throw_type(&ctx, "no document"));
             };
-            self.handle.0.node == parsed.document.base.root_node().id
+            self.handle.get().0.node == parsed.document.base.root_node().id
         };
         if is_document {
-            return clone_document(&ctx, self.handle.0, deep);
+            return clone_document(&ctx, self.handle.get().0, deep);
         }
-        if node_is_shadow_root(&ctx, self.handle.0)? {
+        if node_is_shadow_root(&ctx, self.handle.get().0)? {
             // https://dom.spec.whatwg.org/#dom-node-clonenode
             return Err(throw_dom(
                 &ctx,
@@ -1579,37 +1607,54 @@ impl JsNode {
             let snapshot = world_rc
                 .borrow()
                 .store()
-                .get(self.handle.0.document)
+                .get(self.handle.get().0.document)
                 .and_then(|parsed| {
-                    crate::dom::adoption::import_snapshot(&parsed.document, self.handle.0, deep)
+                    crate::dom::adoption::import_snapshot(
+                        &parsed.document,
+                        self.handle.get().0,
+                        deep,
+                    )
                 })
                 .ok_or_else(|| Exception::throw_type(&ctx, "stale node"))?;
-            let owner = world_for_node(&ctx, self.handle.0)?;
+            let owner = world_for_node(&ctx, self.handle.get().0)?;
             let world = owner.borrow();
-            let Some(mut parsed) = world.document_mut(self.handle.0) else {
+            let Some(mut parsed) = world.document_mut(self.handle.get().0) else {
                 return Err(Exception::throw_type(&ctx, "no document"));
             };
-            let clone = materialize_import(&mut parsed.document, self.handle.0.document, &snapshot)
-                .map_err(|err| throw_dom_error(&ctx, err))?;
+            let clone = materialize_import(
+                &mut parsed.document,
+                self.handle.get().0.document,
+                &snapshot,
+            )
+            .map_err(|err| throw_dom_error(&ctx, err))?;
+            // The cloning steps copy the already-started flag onto the clone,
+            // including every descendant (<https://html.spec.whatwg.org/multipage/scripting.html#script-processing-model:cloning-steps>).
+            // Without it a cloned `<script>` runs again when the clone is
+            // connected, so appending a cloned document element re-executes
+            // the page's inline scripts.
+            parsed
+                .document
+                .copy_script_started(self.handle.get().0.node, clone.node);
             drop(parsed);
             drop(world);
             // Cloning copies the cryptographic nonce slots into the fresh
             // subtree (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#nonce-attributes> cloning steps).
-            copy_nonce_subtree(&owner, self.handle.0, clone);
+            copy_nonce_subtree(&owner, self.handle.get().0, clone);
             clone
         } else {
             let world = world_rc.borrow();
-            let Some(mut parsed) = world.document_mut(self.handle.0) else {
+            let Some(mut parsed) = world.document_mut(self.handle.get().0) else {
                 return Err(Exception::throw_type(&ctx, "no document"));
             };
             let store = parsed.id;
-            let clone = clone_within_document(&mut parsed.document, store, self.handle.0, deep)
-                .map_err(|err| throw_dom_error(&ctx, err))?;
+            let clone =
+                clone_within_document(&mut parsed.document, store, self.handle.get().0, deep)
+                    .map_err(|err| throw_dom_error(&ctx, err))?;
             drop(parsed);
             drop(world);
             // Cloning copies the cryptographic nonce slots into the fresh
             // subtree (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#nonce-attributes> cloning steps).
-            copy_nonce_subtree(&world_rc, self.handle.0, clone);
+            copy_nonce_subtree(&world_rc, self.handle.get().0, clone);
             clone
         };
         wrap_node(&ctx, clone)
@@ -1622,9 +1667,9 @@ impl JsNode {
         node: NodeReference,
         child: Option<NodeReference>,
     ) -> Result<Value<'js>> {
-        let (node, child) = insertion_tree_nodes(&ctx, self.handle.0, node, child)?;
-        let node = adopt_node(&ctx, self.handle.0, node)?;
-        insert_tree_node(&ctx, self.handle.0, node, child)?;
+        let (node, child) = insertion_tree_nodes(&ctx, self.handle.get().0, node, child)?;
+        let node = adopt_node(&ctx, self.handle.get().0, node)?;
+        insert_tree_node(&ctx, self.handle.get().0, node, child)?;
         wrap_node(&ctx, node)
     }
 
@@ -1639,7 +1684,7 @@ impl JsNode {
             .ok_or_else(|| throw_dom(&ctx, "NotFoundError", "attributes have no parent"))?;
         let world = world(&ctx)?;
         let world = world.borrow();
-        let Some(mut parsed) = world.document_mut(self.handle.0) else {
+        let Some(mut parsed) = world.document_mut(self.handle.get().0) else {
             return Err(Exception::throw_type(&ctx, "no document"));
         };
         let parented = parsed
@@ -1647,8 +1692,8 @@ impl JsNode {
             .base
             .get_node(child.node)
             .and_then(|node| node.parent)
-            == Some(self.handle.0.node)
-            && child.document == self.handle.0.document;
+            == Some(self.handle.get().0.node)
+            && child.document == self.handle.get().0.document;
         if !parented {
             return Err(throw_dom(
                 &ctx,
@@ -1676,7 +1721,7 @@ impl JsNode {
         // Adoption copies by snapshot; pre-existing wrappers still point at the
         // detached original instead of following the copy
         // (https://dom.spec.whatwg.org/#concept-node-adopt).
-        let parent = self.handle.0;
+        let parent = self.handle.get().0;
         // `replace` excludes the child being replaced from the document
         // content-model counts
         // (<https://dom.spec.whatwg.org/#concept-node-replace>).
@@ -1717,12 +1762,12 @@ impl JsNode {
             .filter(|value| !value.is_empty());
         let world = world(&ctx)?;
         let parsed = world.borrow();
-        let Some(parsed) = parsed.document(self.handle.0) else {
+        let Some(parsed) = parsed.document(self.handle.get().0) else {
             return Ok(Value::new_null(ctx));
         };
         match crate::dom::namespaces::locate_namespace(
             &parsed.document,
-            self.handle.0,
+            self.handle.get().0,
             prefix.as_deref(),
         ) {
             Some(namespace) => string_value(&ctx, &namespace),
@@ -1745,10 +1790,14 @@ impl JsNode {
         };
         let world = world(&ctx)?;
         let parsed = world.borrow();
-        let Some(parsed) = parsed.document(self.handle.0) else {
+        let Some(parsed) = parsed.document(self.handle.get().0) else {
             return Ok(Value::new_null(ctx));
         };
-        match crate::dom::namespaces::locate_prefix(&parsed.document, self.handle.0, &namespace) {
+        match crate::dom::namespaces::locate_prefix(
+            &parsed.document,
+            self.handle.get().0,
+            &namespace,
+        ) {
             Some(prefix) => string_value(&ctx, &prefix),
             None => Ok(Value::new_null(ctx)),
         }
@@ -1766,10 +1815,11 @@ impl JsNode {
             .filter(|value| !value.is_empty());
         let world = world(&ctx)?;
         let parsed = world.borrow();
-        let Some(parsed) = parsed.document(self.handle.0) else {
+        let Some(parsed) = parsed.document(self.handle.get().0) else {
             return Ok(false);
         };
-        let found = crate::dom::namespaces::locate_namespace(&parsed.document, self.handle.0, None);
+        let found =
+            crate::dom::namespaces::locate_namespace(&parsed.document, self.handle.get().0, None);
         Ok(found.as_deref() == namespace.as_deref())
     }
 }

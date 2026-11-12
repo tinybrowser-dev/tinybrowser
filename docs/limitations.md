@@ -197,6 +197,25 @@ step 3 of the append algorithm does not exempt that case, and Chrome and
 Firefox fail the same two subtests. WPT `fetch/api/cors/` covers the
 surface.
 
+## DOM events
+
+A node can be adopted into another document while its own native method is
+still on the stack: an event listener that moves the dispatching target.
+Adoption retargets the wrapper the page already holds, so the node identity
+is interior-mutable (`JsNode.handle` is a `Cell`) and the retarget happens
+under the receiver's immutable borrow
+(<https://dom.spec.whatwg.org/#concept-node-adopt>). Cloning copies the
+already-started flag onto the whole subtree, so a cloned `<script>` does not
+run when the clone is connected
+(<https://html.spec.whatwg.org/multipage/scripting.html#script-processing-model:cloning-steps>).
+
+Still open in `dom/events`: `window.event` inside a shadow tree and for a
+listener installed from another global (`event-global-extra.window.html`, two
+subtests), and `Event-dispatch-single-activation-behavior.html` exceeds the
+harness budget. `Event-dispatch-click.html` is flaky under the in-process
+harness: it passes its 33 subtests in some batch runs and hits the per-file
+budget in others, on both the old and the new tree.
+
 ## Cookie Store
 
 `CookieStore`, `CookieChangeEvent`, and the `cookieStore` attribute are a

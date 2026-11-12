@@ -111,7 +111,10 @@ impl<'js> html_input_element_generated::HTMLInputElement<'js> for JsNode {
     // throws
     // (<https://html.spec.whatwg.org/multipage/input.html#dom-input-size>).
     fn get_size(&self, ctx: &Ctx<'js>) -> Result<usize> {
-        let value = reflect_ulong(content_attr(ctx, self.handle.0, "size").as_deref(), 20);
+        let value = reflect_ulong(
+            content_attr(ctx, self.handle.get().0, "size").as_deref(),
+            20,
+        );
         Ok(usize::try_from(if value == 0 { 20 } else { value }).unwrap_or(usize::MAX))
     }
 
@@ -121,29 +124,29 @@ impl<'js> html_input_element_generated::HTMLInputElement<'js> for JsNode {
             return Err(throw_dom(ctx, "IndexSizeError", "input size is zero"));
         }
         // Out-of-range values write the default rather than the raw value.
-        host::reflect_set_ulong_defaulting(ctx, self.handle.0, "size", value, 20)
+        host::reflect_set_ulong_defaulting(ctx, self.handle.get().0, "size", value, 20)
     }
 
     // Image-button dimensions default to zero, and read zero outside the
     // image state; the setters are generated from `[ReflectSetter]`
     // (<https://html.spec.whatwg.org/multipage/input.html#dom-input-width>).
     fn get_width(&self, ctx: &Ctx<'js>) -> Result<u32> {
-        if !is_image_input(ctx, self.handle.0) {
+        if !is_image_input(ctx, self.handle.get().0) {
             return Ok(0);
         }
         Ok(reflect_ulong(
-            content_attr(ctx, self.handle.0, "width").as_deref(),
+            content_attr(ctx, self.handle.get().0, "width").as_deref(),
             0,
         ))
     }
 
     // https://html.spec.whatwg.org/multipage/input.html#dom-input-height
     fn get_height(&self, ctx: &Ctx<'js>) -> Result<u32> {
-        if !is_image_input(ctx, self.handle.0) {
+        if !is_image_input(ctx, self.handle.get().0) {
             return Ok(0);
         }
         Ok(reflect_ulong(
-            content_attr(ctx, self.handle.0, "height").as_deref(),
+            content_attr(ctx, self.handle.get().0, "height").as_deref(),
             0,
         ))
     }
@@ -152,7 +155,7 @@ impl<'js> html_input_element_generated::HTMLInputElement<'js> for JsNode {
     // the content attribute
     // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#attr-fe-autocomplete>).
     fn get_autocomplete(&self, ctx: &Ctx<'js>) -> Result<rquickjs::String<'js>> {
-        host::reflect_string(ctx, self.handle.0, "autocomplete")
+        host::reflect_string(ctx, self.handle.get().0, "autocomplete")
     }
 
     // Upstream selection accessors are nullable, keeping the spec-prose
@@ -164,14 +167,14 @@ impl<'js> html_input_element_generated::HTMLInputElement<'js> for JsNode {
     fn get_selection_start(&self, ctx: &Ctx<'js>) -> Result<Option<u32>> {
         let world = world(ctx)?;
         let parsed = world.borrow();
-        let Some(parsed) = parsed.document(self.handle.0) else {
+        let Some(parsed) = parsed.document(self.handle.get().0) else {
             return Ok(None);
         };
-        if !crate::dom::forms::selection_applies(&parsed.document.base, self.handle.0.node) {
+        if !crate::dom::forms::selection_applies(&parsed.document.base, self.handle.get().0.node) {
             return Ok(None);
         }
         drop(parsed);
-        Ok(Some(selection_start_of(ctx, self.handle.0)?))
+        Ok(Some(selection_start_of(ctx, self.handle.get().0)?))
     }
 
     // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#dom-textarea/input-selectionstart
@@ -184,14 +187,14 @@ impl<'js> html_input_element_generated::HTMLInputElement<'js> for JsNode {
     fn get_selection_end(&self, ctx: &Ctx<'js>) -> Result<Option<u32>> {
         let world = world(ctx)?;
         let parsed = world.borrow();
-        let Some(parsed) = parsed.document(self.handle.0) else {
+        let Some(parsed) = parsed.document(self.handle.get().0) else {
             return Ok(None);
         };
-        if !crate::dom::forms::selection_applies(&parsed.document.base, self.handle.0.node) {
+        if !crate::dom::forms::selection_applies(&parsed.document.base, self.handle.get().0.node) {
             return Ok(None);
         }
         drop(parsed);
-        Ok(Some(selection_end_of(ctx, self.handle.0)?))
+        Ok(Some(selection_end_of(ctx, self.handle.get().0)?))
     }
 
     // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#dom-textarea/input-selectionend
@@ -204,14 +207,14 @@ impl<'js> html_input_element_generated::HTMLInputElement<'js> for JsNode {
     fn get_selection_direction(&self, ctx: &Ctx<'js>) -> Result<Option<rquickjs::String<'js>>> {
         let world = world(ctx)?;
         let parsed = world.borrow();
-        let Some(parsed) = parsed.document(self.handle.0) else {
+        let Some(parsed) = parsed.document(self.handle.get().0) else {
             return Ok(None);
         };
-        if !crate::dom::forms::selection_applies(&parsed.document.base, self.handle.0.node) {
+        if !crate::dom::forms::selection_applies(&parsed.document.base, self.handle.get().0.node) {
             return Ok(None);
         }
         drop(parsed);
-        let direction = selection_direction_of(ctx, self.handle.0)?;
+        let direction = selection_direction_of(ctx, self.handle.get().0)?;
         rquickjs::String::from_str(ctx.clone(), direction_name(direction)).map(Some)
     }
 
@@ -265,7 +268,7 @@ impl<'js> html_text_area_element_generated::HTMLTextAreaElement<'js> for JsNode 
 
     // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#dom-textarea/input-selectionstart
     fn get_selection_start(&self, ctx: &Ctx<'js>) -> Result<usize> {
-        Ok(selection_start_of(ctx, self.handle.0)? as usize)
+        Ok(selection_start_of(ctx, self.handle.get().0)? as usize)
     }
 
     // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#dom-textarea/input-selectionstart
@@ -275,7 +278,7 @@ impl<'js> html_text_area_element_generated::HTMLTextAreaElement<'js> for JsNode 
 
     // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#dom-textarea/input-selectionend
     fn get_selection_end(&self, ctx: &Ctx<'js>) -> Result<usize> {
-        Ok(selection_end_of(ctx, self.handle.0)? as usize)
+        Ok(selection_end_of(ctx, self.handle.get().0)? as usize)
     }
 
     // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#dom-textarea/input-selectionend
@@ -285,7 +288,7 @@ impl<'js> html_text_area_element_generated::HTMLTextAreaElement<'js> for JsNode 
 
     // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#dom-textarea/input-selectiondirection
     fn get_selection_direction(&self, ctx: &Ctx<'js>) -> Result<rquickjs::String<'js>> {
-        let direction = selection_direction_of(ctx, self.handle.0)?;
+        let direction = selection_direction_of(ctx, self.handle.get().0)?;
         rquickjs::String::from_str(ctx.clone(), direction_name(direction))
     }
 
@@ -303,7 +306,7 @@ impl<'js> html_text_area_element_generated::HTMLTextAreaElement<'js> for JsNode 
     // the content attribute
     // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#attr-fe-autocomplete>).
     fn get_autocomplete(&self, ctx: &Ctx<'js>) -> Result<rquickjs::String<'js>> {
-        host::reflect_string(ctx, self.handle.0, "autocomplete")
+        host::reflect_string(ctx, self.handle.get().0, "autocomplete")
     }
 }
 
@@ -348,7 +351,7 @@ impl<'js> html_select_element_generated::HTMLSelectElement<'js> for JsNode {
     // the content attribute
     // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#attr-fe-autocomplete>).
     fn get_autocomplete(&self, ctx: &Ctx<'js>) -> Result<rquickjs::String<'js>> {
-        host::reflect_string(ctx, self.handle.0, "autocomplete")
+        host::reflect_string(ctx, self.handle.get().0, "autocomplete")
     }
 }
 
@@ -458,11 +461,11 @@ impl JsNode {
     pub(super) fn value(&self, ctx: Ctx<'_>) -> Result<String> {
         let world = world(&ctx)?;
         let world = world.borrow();
-        let local = world.document(self.handle.0).and_then(|parsed| {
+        let local = world.document(self.handle.get().0).and_then(|parsed| {
             parsed
                 .document
                 .base
-                .get_node(self.handle.0.node)
+                .get_node(self.handle.get().0.node)
                 .and_then(|node| node.data.downcast_element())
                 .filter(|element| element.name.ns == html_namespace())
                 .map(|element| element.name.local.to_string())
@@ -471,25 +474,25 @@ impl JsNode {
             return Ok(String::new());
         };
         if local == "select" {
-            let Some(mut parsed) = world.document_mut(self.handle.0) else {
+            let Some(mut parsed) = world.document_mut(self.handle.get().0) else {
                 return Err(Exception::throw_type(&ctx, "no document"));
             };
             return Ok(crate::dom::forms::select_value(
                 &mut parsed,
-                self.handle.0.node,
+                self.handle.get().0.node,
             ));
         }
-        let Some(parsed) = world.document(self.handle.0) else {
+        let Some(parsed) = world.document(self.handle.get().0) else {
             return Err(Exception::throw_type(&ctx, "no document"));
         };
         let base = &parsed.document.base;
         Ok(match local.as_str() {
-            "textarea" => crate::dom::forms::textarea_api_value(base, self.handle.0.node),
-            "option" => crate::dom::forms::option_value(base, self.handle.0.node),
-            "input" => crate::dom::input::current_value(&parsed, self.handle.0.node),
+            "textarea" => crate::dom::forms::textarea_api_value(base, self.handle.get().0.node),
+            "option" => crate::dom::forms::option_value(base, self.handle.get().0.node),
+            "input" => crate::dom::input::current_value(&parsed, self.handle.get().0.node),
             // Every other element reflects its `value` content attribute
             // (<https://html.spec.whatwg.org/multipage/form-elements.html#dom-button-value>).
-            _ => attr(base, self.handle.0.node, "value")
+            _ => attr(base, self.handle.get().0.node, "value")
                 .unwrap_or_default()
                 .to_owned(),
         })
@@ -497,7 +500,7 @@ impl JsNode {
 
     // https://html.spec.whatwg.org/multipage/input.html#dom-input-value
     pub(super) fn set_value(&self, ctx: Ctx<'_>, value: LegacyNullString) -> Result<()> {
-        let local = with_node_data(&ctx, self.handle.0, |data| {
+        let local = with_node_data(&ctx, self.handle.get().0, |data| {
             data.and_then(|data| data.downcast_element())
                 .filter(|element| element.name.ns == html_namespace())
                 .map(|element| element.name.local.to_string())
@@ -512,22 +515,23 @@ impl JsNode {
                 let world_rc = world(&ctx)?;
                 let (kind, sanitized, previous) = {
                     let world = world_rc.borrow();
-                    let Some(mut parsed) = world.document_mut(self.handle.0) else {
+                    let Some(mut parsed) = world.document_mut(self.handle.get().0) else {
                         return Ok(());
                     };
                     let base = &mut parsed.document.base;
-                    let Some(kind) = crate::dom::input::input_type(base, self.handle.0.node) else {
+                    let Some(kind) = crate::dom::input::input_type(base, self.handle.get().0.node)
+                    else {
                         return Ok(());
                     };
                     if kind.value_mode() == crate::dom::input::ValueMode::Current {
                         let sanitized = crate::dom::input::sanitize_with_device(
                             base,
-                            self.handle.0.node,
+                            self.handle.get().0.node,
                             kind,
                             &value.0,
                         );
                         let previous =
-                            crate::dom::input::current_value(&parsed, self.handle.0.node);
+                            crate::dom::input::current_value(&parsed, self.handle.get().0.node);
                         (kind, Some(sanitized), Some(previous))
                     } else {
                         (kind, None, None)
@@ -541,7 +545,7 @@ impl JsNode {
                     ),
                     crate::dom::input::ValueMode::Default
                     | crate::dom::input::ValueMode::DefaultOn => {
-                        set_attribute_sync(&ctx, self.handle.0, "value", &value.0)
+                        set_attribute_sync(&ctx, self.handle.get().0, "value", &value.0)
                     }
                     crate::dom::input::ValueMode::Filename => {
                         if !value.0.is_empty() {
@@ -553,12 +557,12 @@ impl JsNode {
                         }
                         world_rc
                             .borrow_mut()
-                            .set_input_files(self.handle.0, Vec::new());
+                            .set_input_files(self.handle.get().0, Vec::new());
                         Ok(())
                     }
                 }
             }
-            _ => set_attribute_sync(&ctx, self.handle.0, "value", &value.0),
+            _ => set_attribute_sync(&ctx, self.handle.get().0, "value", &value.0),
         };
         // A script assignment is not a user edit, and it ends any in-progress
         // edit buffer or bad-input state. Only a successful assignment gets
@@ -567,7 +571,9 @@ impl JsNode {
         if result.is_ok()
             && let Ok(world) = world(&ctx)
         {
-            world.borrow_mut().clear_control_edit_state(self.handle.0);
+            world
+                .borrow_mut()
+                .clear_control_edit_state(self.handle.get().0);
         }
         result
     }
@@ -598,25 +604,28 @@ impl JsNode {
         let world_rc = world(ctx)?;
         let applies = {
             let world = world_rc.borrow();
-            world.document(self.handle.0).is_some_and(|parsed| {
-                crate::dom::forms::selection_applies(&parsed.document.base, self.handle.0.node)
+            world.document(self.handle.get().0).is_some_and(|parsed| {
+                crate::dom::forms::selection_applies(
+                    &parsed.document.base,
+                    self.handle.get().0.node,
+                )
             })
         };
         {
             let world = world_rc.borrow();
-            let Some(mut parsed) = world.document_mut(self.handle.0) else {
+            let Some(mut parsed) = world.document_mut(self.handle.get().0) else {
                 return Ok(());
             };
-            parsed
-                .document
-                .base
-                .mutate()
-                .set_value(self.handle.0.node, value, Dirtiness::Set);
+            parsed.document.base.mutate().set_value(
+                self.handle.get().0.node,
+                value,
+                Dirtiness::Set,
+            );
         }
         if changed && applies {
             world_rc
                 .borrow_mut()
-                .set_selection(self.handle.0, collapsed, collapsed, 0);
+                .set_selection(self.handle.get().0, collapsed, collapsed, 0);
         }
         Ok(())
     }
@@ -625,7 +634,7 @@ impl JsNode {
     pub(super) fn set_textarea_default_value(&self, ctx: &Ctx<'_>, value: String) -> Result<()> {
         let world = world(ctx)?;
         let world = world.borrow();
-        let Some(mut parsed) = world.document_mut(self.handle.0) else {
+        let Some(mut parsed) = world.document_mut(self.handle.get().0) else {
             return Err(Exception::throw_type(ctx, "no document"));
         };
         let added = if value.is_empty() {
@@ -637,7 +646,7 @@ impl JsNode {
                 node: text,
             }]
         };
-        let iframes = replace_all_journaled(&mut parsed, self.handle.0, added);
+        let iframes = replace_all_journaled(&mut parsed, self.handle.get().0, added);
         drop(parsed);
         world.destroy_child_navigables(&iframes);
         drop(world);
@@ -649,10 +658,14 @@ impl JsNode {
     pub(super) fn set_select_value(&self, ctx: &Ctx<'_>, value: String) -> Result<()> {
         let world = world(ctx)?;
         let world = world.borrow();
-        let Some(mut parsed) = world.document_mut(self.handle.0) else {
+        let Some(mut parsed) = world.document_mut(self.handle.get().0) else {
             return Err(Exception::throw_type(ctx, "no document"));
         };
-        crate::dom::forms::set_select_value_selectedness(&mut parsed, self.handle.0.node, &value);
+        crate::dom::forms::set_select_value_selectedness(
+            &mut parsed,
+            self.handle.get().0.node,
+            &value,
+        );
         Ok(())
     }
 
@@ -660,14 +673,14 @@ impl JsNode {
     pub(super) fn default_value(&self, ctx: Ctx<'_>) -> Result<String> {
         let world = world(&ctx)?;
         let world = world.borrow();
-        let Some(parsed) = world.document(self.handle.0) else {
+        let Some(parsed) = world.document(self.handle.get().0) else {
             return Err(Exception::throw_type(&ctx, "no document"));
         };
         // The default value is the element's child text content
         // (<https://html.spec.whatwg.org/multipage/form-elements.html#dom-textarea-defaultvalue>).
         Ok(crate::dom::text::child_text_content(
             &parsed.document.base,
-            self.handle.0.node,
+            self.handle.get().0.node,
         ))
     }
 
@@ -680,7 +693,7 @@ impl JsNode {
     pub(super) fn text_length(&self, ctx: Ctx<'_>) -> Result<u32> {
         let world = world(&ctx)?;
         let world = world.borrow();
-        let Some(parsed) = world.document(self.handle.0) else {
+        let Some(parsed) = world.document(self.handle.get().0) else {
             return Ok(0);
         };
         // The control's value (dirty value when set, otherwise the attribute
@@ -688,7 +701,7 @@ impl JsNode {
         // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#dom-textarea/input-textlength>).
         Ok(u32::try_from(crate::dom::forms::control_value_len(
             &parsed,
-            self.handle.0.node,
+            self.handle.get().0.node,
         ))
         .unwrap_or(u32::MAX))
     }
@@ -702,17 +715,20 @@ impl JsNode {
         let world_rc = world(&ctx)?;
         let (applies, len, current) = {
             let world = world_rc.borrow();
-            let Some(parsed) = world.document(self.handle.0) else {
+            let Some(parsed) = world.document(self.handle.get().0) else {
                 return Ok(());
             };
             (
-                crate::dom::forms::selection_applies(&parsed.document.base, self.handle.0.node),
+                crate::dom::forms::selection_applies(
+                    &parsed.document.base,
+                    self.handle.get().0.node,
+                ),
                 u32::try_from(crate::dom::forms::control_value_len(
                     &parsed,
-                    self.handle.0.node,
+                    self.handle.get().0.node,
                 ))
                 .unwrap_or(u32::MAX),
-                world.selection_of(self.handle.0),
+                world.selection_of(self.handle.get().0),
             )
         };
         if !applies {
@@ -726,7 +742,7 @@ impl JsNode {
         let (_, end, direction) = current;
         world_rc
             .borrow_mut()
-            .set_selection(self.handle.0, start, end.max(start), direction);
+            .set_selection(self.handle.get().0, start, end.max(start), direction);
         Ok(())
     }
 
@@ -735,17 +751,20 @@ impl JsNode {
         let world_rc = world(&ctx)?;
         let (applies, len, current) = {
             let world = world_rc.borrow();
-            let Some(parsed) = world.document(self.handle.0) else {
+            let Some(parsed) = world.document(self.handle.get().0) else {
                 return Ok(());
             };
             (
-                crate::dom::forms::selection_applies(&parsed.document.base, self.handle.0.node),
+                crate::dom::forms::selection_applies(
+                    &parsed.document.base,
+                    self.handle.get().0.node,
+                ),
                 u32::try_from(crate::dom::forms::control_value_len(
                     &parsed,
-                    self.handle.0.node,
+                    self.handle.get().0.node,
                 ))
                 .unwrap_or(u32::MAX),
-                world.selection_of(self.handle.0),
+                world.selection_of(self.handle.get().0),
             )
         };
         if !applies {
@@ -759,7 +778,7 @@ impl JsNode {
         let (start, _, direction) = current;
         world_rc
             .borrow_mut()
-            .set_selection(self.handle.0, start.min(end), end, direction);
+            .set_selection(self.handle.get().0, start.min(end), end, direction);
         Ok(())
     }
 
@@ -768,12 +787,15 @@ impl JsNode {
         let world_rc = world(&ctx)?;
         let (applies, current) = {
             let world = world_rc.borrow();
-            let Some(parsed) = world.document(self.handle.0) else {
+            let Some(parsed) = world.document(self.handle.get().0) else {
                 return Ok(());
             };
             (
-                crate::dom::forms::selection_applies(&parsed.document.base, self.handle.0.node),
-                world.selection_of(self.handle.0),
+                crate::dom::forms::selection_applies(
+                    &parsed.document.base,
+                    self.handle.get().0.node,
+                ),
+                world.selection_of(self.handle.get().0),
             )
         };
         if !applies {
@@ -786,18 +808,22 @@ impl JsNode {
         let (start, end, _) = current;
         world_rc
             .borrow_mut()
-            .set_selection(self.handle.0, start, end, direction);
+            .set_selection(self.handle.get().0, start, end, direction);
         Ok(())
     }
 
     // https://html.spec.whatwg.org/multipage/forms.html#dom-form-reset
     pub(super) fn reset_form(&self, ctx: Ctx<'_>) -> Result<()> {
-        let owner = world_for_node(&ctx, self.handle.0)?;
+        let owner = world_for_node(&ctx, self.handle.get().0)?;
         let is_form = owner
             .borrow()
-            .document(self.handle.0)
+            .document(self.handle.get().0)
             .is_some_and(|parsed| {
-                crate::dom::tree::is_html_element(&parsed.document.base, self.handle.0.node, "form")
+                crate::dom::tree::is_html_element(
+                    &parsed.document.base,
+                    self.handle.get().0.node,
+                    "form",
+                )
             });
         if !is_form {
             return Err(throw_dom(
@@ -811,7 +837,7 @@ impl JsNode {
         // (<https://html.spec.whatwg.org/multipage/forms.html#concept-form-reset>).
         if !crate::js::events::fire_trusted_cancelable(
             &ctx,
-            crate::js::world::EventTargetKey::Node(self.handle.0),
+            crate::js::world::EventTargetKey::Node(self.handle.get().0),
             "reset",
             true,
             true,
@@ -821,10 +847,11 @@ impl JsNode {
         let world_rc = world(&ctx)?;
         let (document, controls, outputs) = {
             let world = world_rc.borrow();
-            let Some(mut parsed) = world.document_mut(self.handle.0) else {
+            let Some(mut parsed) = world.document_mut(self.handle.get().0) else {
                 return Ok(());
             };
-            let controls = form_controls(&parsed.document.base, parsed.id, self.handle.0.node);
+            let controls =
+                form_controls(&parsed.document.base, parsed.id, self.handle.get().0.node);
             {
                 let mut mutator = parsed.document.base.mutate();
                 for control in &controls {
@@ -904,11 +931,12 @@ impl JsNode {
         let world_rc = world(&ctx)?;
         let raw = world_rc
             .borrow()
-            .document(self.handle.0)
+            .document(self.handle.get().0)
             .and_then(|parsed| {
-                attr(&parsed.document.base, self.handle.0.node, "action").map(ToOwned::to_owned)
+                attr(&parsed.document.base, self.handle.get().0.node, "action")
+                    .map(ToOwned::to_owned)
             });
-        let base = document_base_url_string(&ctx, self.handle.0);
+        let base = document_base_url_string(&ctx, self.handle.get().0);
         let Some(raw) = raw else {
             return Ok(base);
         };
@@ -921,10 +949,18 @@ impl JsNode {
     // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#dom-fs-formaction
     pub(super) fn form_action(&self, ctx: Ctx<'_>) -> Result<String> {
         let world = world(&ctx)?;
-        let raw = world.borrow().document(self.handle.0).and_then(|parsed| {
-            attr(&parsed.document.base, self.handle.0.node, "formaction").map(ToOwned::to_owned)
-        });
-        let base = document_base_url_string(&ctx, self.handle.0);
+        let raw = world
+            .borrow()
+            .document(self.handle.get().0)
+            .and_then(|parsed| {
+                attr(
+                    &parsed.document.base,
+                    self.handle.get().0.node,
+                    "formaction",
+                )
+                .map(ToOwned::to_owned)
+            });
+        let base = document_base_url_string(&ctx, self.handle.get().0);
         let Some(raw) = raw else {
             return Ok(base);
         };
@@ -941,7 +977,7 @@ impl JsNode {
         // (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#limited-to-only-known-values>).
         // The form-submission plan and this getter share the engine's parser,
         // so they cannot disagree about a value such as `" post"`.
-        match content_attr(&ctx, self.handle.0, "formmethod") {
+        match content_attr(&ctx, self.handle.get().0, "formmethod") {
             None => "",
             Some(raw) => blitz_dom::form::FormMethod::from_str(&raw)
                 .unwrap_or(blitz_dom::form::FormMethod::Get)
@@ -957,7 +993,7 @@ impl JsNode {
     pub(super) fn form_enctype(&self, ctx: Ctx<'_>) -> &'static str {
         // Absent reads empty, like `formMethod`; no whitespace stripping
         // (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#limited-to-only-known-values>).
-        match content_attr(&ctx, self.handle.0, "formenctype") {
+        match content_attr(&ctx, self.handle.get().0, "formenctype") {
             None => "",
             Some(raw) => blitz_dom::form::RequestContentType::from_str(&raw)
                 .unwrap_or(blitz_dom::form::RequestContentType::FormUrlEncoded)
@@ -974,11 +1010,11 @@ impl JsNode {
         let form = {
             let world = world(&ctx)?;
             let world = world.borrow();
-            world.document(self.handle.0).and_then(|parsed| {
+            world.document(self.handle.get().0).and_then(|parsed| {
                 form_owner_of(
                     &parsed.document.base,
-                    self.handle.0.document,
-                    self.handle.0.node,
+                    self.handle.get().0.document,
+                    self.handle.get().0.node,
                 )
             })
         };
@@ -992,11 +1028,11 @@ impl JsNode {
     pub(super) fn checked(&self, ctx: Ctx<'_>) -> Result<bool> {
         let world = world(&ctx)?;
         let world = world.borrow();
-        Ok(world.document(self.handle.0).is_some_and(|parsed| {
+        Ok(world.document(self.handle.get().0).is_some_and(|parsed| {
             parsed
                 .document
                 .base
-                .get_node(self.handle.0.node)
+                .get_node(self.handle.get().0.node)
                 .and_then(|node| node.data.downcast_element())
                 .is_some_and(blitz_dom::ElementData::checkedness)
         }))
@@ -1009,30 +1045,30 @@ impl JsNode {
         let group = if value {
             let world = world(&ctx)?;
             let world = world.borrow();
-            let Some(parsed) = world.document(self.handle.0) else {
+            let Some(parsed) = world.document(self.handle.get().0) else {
                 return Ok(());
             };
             let base = &parsed.document.base;
             let is_radio = base
-                .get_node(self.handle.0.node)
+                .get_node(self.handle.get().0.node)
                 .and_then(|node| node.data.downcast_element())
                 .is_some_and(|element| {
                     element.name.ns == html_namespace()
                         && element.name.local.as_str() == "input"
-                        && attr(base, self.handle.0.node, "type")
+                        && attr(base, self.handle.get().0.node, "type")
                             .unwrap_or("text")
                             .trim()
                             .eq_ignore_ascii_case("radio")
                 });
             if is_radio {
-                let name = attr(base, self.handle.0.node, "name")
+                let name = attr(base, self.handle.get().0.node, "name")
                     .unwrap_or_default()
                     .to_owned();
                 crate::dom::forms::radio_group_members(
                     base,
-                    self.handle.0.document,
+                    self.handle.get().0.document,
                     &name,
-                    self.handle.0.node,
+                    self.handle.get().0.node,
                 )
             } else {
                 Vec::new()
@@ -1042,7 +1078,7 @@ impl JsNode {
         };
         let world = world(&ctx)?;
         let world = world.borrow();
-        let Some(mut parsed) = world.document_mut(self.handle.0) else {
+        let Some(mut parsed) = world.document_mut(self.handle.get().0) else {
             return Ok(());
         };
         let mut mutator = parsed.document.base.mutate();
@@ -1051,7 +1087,7 @@ impl JsNode {
         }
         // The checked IDL attribute also sets the dirty checkedness flag
         // (<https://html.spec.whatwg.org/multipage/input.html#dom-input-checked>).
-        mutator.set_checkedness(self.handle.0.node, value, Dirtiness::Set);
+        mutator.set_checkedness(self.handle.get().0.node, value, Dirtiness::Set);
         Ok(())
     }
 
@@ -1059,11 +1095,11 @@ impl JsNode {
     pub(super) fn indeterminate_flag(&self, ctx: Ctx<'_>) -> Result<bool> {
         let world = world(&ctx)?;
         let world = world.borrow();
-        Ok(world.document(self.handle.0).is_some_and(|parsed| {
+        Ok(world.document(self.handle.get().0).is_some_and(|parsed| {
             parsed
                 .document
                 .base
-                .get_node(self.handle.0.node)
+                .get_node(self.handle.get().0.node)
                 .and_then(|node| node.data.downcast_element())
                 .is_some_and(|element| element.form_state.indeterminate())
         }))
@@ -1072,14 +1108,14 @@ impl JsNode {
     pub(super) fn set_indeterminate_flag(&self, ctx: Ctx<'_>, value: bool) -> Result<()> {
         let world = world(&ctx)?;
         let world = world.borrow();
-        let Some(mut parsed) = world.document_mut(self.handle.0) else {
+        let Some(mut parsed) = world.document_mut(self.handle.get().0) else {
             return Ok(());
         };
         parsed
             .document
             .base
             .mutate()
-            .set_indeterminate(self.handle.0.node, value);
+            .set_indeterminate(self.handle.get().0.node, value);
         Ok(())
     }
 
@@ -1087,22 +1123,22 @@ impl JsNode {
     pub(super) fn selected(&self, ctx: Ctx<'_>) -> Result<bool> {
         let world = world(&ctx)?;
         let world = world.borrow();
-        let Some(mut parsed) = world.document_mut(self.handle.0) else {
+        let Some(mut parsed) = world.document_mut(self.handle.get().0) else {
             return Ok(false);
         };
         Ok(crate::dom::forms::option_effective_selected(
             &mut parsed,
-            self.handle.0.node,
+            self.handle.get().0.node,
         ))
     }
 
     pub(super) fn set_selected(&self, ctx: Ctx<'_>, value: bool) -> Result<()> {
         let world = world(&ctx)?;
         let world = world.borrow();
-        let Some(mut parsed) = world.document_mut(self.handle.0) else {
+        let Some(mut parsed) = world.document_mut(self.handle.get().0) else {
             return Ok(());
         };
-        crate::dom::forms::set_option_selected(&mut parsed, self.handle.0.node, value);
+        crate::dom::forms::set_option_selected(&mut parsed, self.handle.get().0.node, value);
         Ok(())
     }
 
@@ -1111,13 +1147,14 @@ impl JsNode {
         let world = world(&ctx)?;
         let world = world.borrow();
         Ok(world
-            .document(self.handle.0)
+            .document(self.handle.get().0)
             .map_or_else(String::new, |parsed| {
                 let base = &parsed.document.base;
-                crate::dom::tree::attr_no_namespace(base, self.handle.0.node, "label").map_or_else(
-                    || crate::dom::forms::option_text(base, self.handle.0.node),
-                    str::to_owned,
-                )
+                crate::dom::tree::attr_no_namespace(base, self.handle.get().0.node, "label")
+                    .map_or_else(
+                        || crate::dom::forms::option_text(base, self.handle.get().0.node),
+                        str::to_owned,
+                    )
             }))
     }
 
@@ -1126,9 +1163,9 @@ impl JsNode {
         let world = world(&ctx)?;
         let world = world.borrow();
         Ok(world
-            .document(self.handle.0)
+            .document(self.handle.get().0)
             .map_or_else(String::new, |parsed| {
-                crate::dom::forms::option_text(&parsed.document.base, self.handle.0.node)
+                crate::dom::forms::option_text(&parsed.document.base, self.handle.get().0.node)
             }))
     }
 
@@ -1138,7 +1175,7 @@ impl JsNode {
         let text = value.0.to_string_lossy().into_owned();
         let world = world(&ctx)?;
         let world = world.borrow();
-        let Some(mut parsed) = world.document_mut(self.handle.0) else {
+        let Some(mut parsed) = world.document_mut(self.handle.get().0) else {
             return Ok(());
         };
         let added = if text.is_empty() {
@@ -1150,7 +1187,7 @@ impl JsNode {
                 node: text,
             }]
         };
-        let iframes = replace_all_journaled(&mut parsed, self.handle.0, added);
+        let iframes = replace_all_journaled(&mut parsed, self.handle.get().0, added);
         drop(parsed);
         world.destroy_child_navigables(&iframes);
         drop(world);
@@ -1161,24 +1198,24 @@ impl JsNode {
     pub(super) fn index(&self, ctx: Ctx<'_>) -> Result<i32> {
         let world = world(&ctx)?;
         let world = world.borrow();
-        let Some(parsed) = world.document(self.handle.0) else {
+        let Some(parsed) = world.document(self.handle.get().0) else {
             return Ok(0);
         };
         let base = &parsed.document.base;
-        let Some(select) =
-            crate::dom::forms::option_select_owner(base, self.handle.0.node).map(|node| NodeId {
-                document: self.handle.0.document,
+        let Some(select) = crate::dom::forms::option_select_owner(base, self.handle.get().0.node)
+            .map(|node| NodeId {
+                document: self.handle.get().0.document,
                 node,
             })
         else {
             return Ok(0);
         };
         for (index, option) in
-            crate::dom::forms::select_options(base, self.handle.0.document, select.node)
+            crate::dom::forms::select_options(base, self.handle.get().0.document, select.node)
                 .into_iter()
                 .enumerate()
         {
-            if option == self.handle.0 {
+            if option == self.handle.get().0 {
                 return Ok(i32::try_from(index).unwrap_or(i32::MAX));
             }
         }
@@ -1189,29 +1226,33 @@ impl JsNode {
     pub(super) fn selected_index(&self, ctx: Ctx<'_>) -> Result<i32> {
         let world = world(&ctx)?;
         let world = world.borrow();
-        let Some(mut parsed) = world.document_mut(self.handle.0) else {
+        let Some(mut parsed) = world.document_mut(self.handle.get().0) else {
             return Ok(-1);
         };
         Ok(crate::dom::forms::selected_index_of(
             &mut parsed,
-            self.handle.0.node,
+            self.handle.get().0.node,
         ))
     }
 
     pub(super) fn set_selected_index(&self, ctx: Ctx<'_>, value: i32) -> Result<()> {
         let world = world(&ctx)?;
         let world = world.borrow();
-        let Some(mut parsed) = world.document_mut(self.handle.0) else {
+        let Some(mut parsed) = world.document_mut(self.handle.get().0) else {
             return Ok(());
         };
-        crate::dom::forms::set_select_selected_index_value(&mut parsed, self.handle.0.node, value);
+        crate::dom::forms::set_select_selected_index_value(
+            &mut parsed,
+            self.handle.get().0.node,
+            value,
+        );
         Ok(())
     }
 
     pub(super) fn options<'js>(&self, ctx: Ctx<'js>) -> Result<Value<'js>> {
         live_collection(
             &ctx,
-            self.handle.0,
+            self.handle.get().0,
             CollectionKind::SelectOptions,
             Some("HTMLOptionsCollection"),
         )
@@ -1221,7 +1262,7 @@ impl JsNode {
     pub(super) fn selected_options<'js>(&self, ctx: Ctx<'js>) -> Result<Value<'js>> {
         live_collection(
             &ctx,
-            self.handle.0,
+            self.handle.get().0,
             CollectionKind::SelectedOptions,
             Some("HTMLCollection"),
         )
