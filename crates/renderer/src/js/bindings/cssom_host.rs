@@ -57,6 +57,30 @@ pub(super) fn install(ctx: &Ctx<'_>) -> Result<()> {
         rquickjs::prelude::Func::from(sheet_rule_set_selector_text),
     )?;
     bridge.set(
+        "__tb_inline_style_css_text",
+        rquickjs::prelude::Func::from(inline_style_css_text),
+    )?;
+    bridge.set(
+        "__tb_inline_style_property_names",
+        rquickjs::prelude::Func::from(inline_style_property_names),
+    )?;
+    bridge.set(
+        "__tb_inline_style_get_property",
+        rquickjs::prelude::Func::from(inline_style_get_property),
+    )?;
+    bridge.set(
+        "__tb_inline_style_set_css_text",
+        rquickjs::prelude::Func::from(inline_style_set_css_text),
+    )?;
+    bridge.set(
+        "__tb_inline_style_set_property",
+        rquickjs::prelude::Func::from(inline_style_set_property),
+    )?;
+    bridge.set(
+        "__tb_inline_style_remove_property",
+        rquickjs::prelude::Func::from(inline_style_remove_property),
+    )?;
+    bridge.set(
         "__tb_sheet_insert_rule",
         rquickjs::prelude::Func::from(sheet_insert_rule),
     )?;
@@ -408,6 +432,142 @@ fn sheet_rule_set_selector_text<'js>(
         .base
         .stylesheet_rule_set_selector_text(node.node, &path, &selectors)
         .map_err(|err| cssom_throw(&ctx, err))
+}
+
+/// The element's inline declaration block, serialized
+/// (`CSSStyleDeclaration.cssText` getter). `null` when the element carries no
+/// `style` attribute
+/// (<https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-csstext>).
+fn inline_style_css_text<'js>(ctx: Ctx<'js>, element: Value<'js>) -> Result<Value<'js>> {
+    let world = world(&ctx)?;
+    let Some(node) = host_node_id(&ctx, &element) else {
+        return Ok(Value::new_null(ctx));
+    };
+    let world = world.borrow();
+    let Some(parsed) = world.document(node) else {
+        return Ok(Value::new_null(ctx.clone()));
+    };
+    match parsed.document.base.inline_style_css_text(node.node) {
+        Some(css) => Ok(Value::from(rquickjs::String::from_str(ctx, &css)?)),
+        None => Ok(Value::new_null(ctx)),
+    }
+}
+
+/// The declaration names of the inline block, in specified order
+/// (`CSSStyleDeclaration.item()` and the indexed getter). `null` when the
+/// element carries no `style` attribute
+/// (<https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-item>).
+fn inline_style_property_names<'js>(ctx: Ctx<'js>, element: Value<'js>) -> Result<Value<'js>> {
+    let world = world(&ctx)?;
+    let Some(node) = host_node_id(&ctx, &element) else {
+        return Ok(Value::new_null(ctx));
+    };
+    let world = world.borrow();
+    let Some(parsed) = world.document(node) else {
+        return Ok(Value::new_null(ctx.clone()));
+    };
+    let Some(names) = parsed.document.base.inline_style_property_names(node.node) else {
+        return Ok(Value::new_null(ctx.clone()));
+    };
+    let array = Array::new(ctx.clone())?;
+    for (index, name) in names.iter().enumerate() {
+        array.set(index, name.as_str())?;
+    }
+    Ok(Value::from(array))
+}
+
+/// The serialized value and `!important` flag of `name` in the inline block
+/// (`getPropertyValue()` / `getPropertyPriority()`)
+/// (<https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-getpropertyvalue>).
+fn inline_style_get_property<'js>(
+    ctx: Ctx<'js>,
+    element: Value<'js>,
+    name: String,
+) -> Result<Value<'js>> {
+    let world = world(&ctx)?;
+    let Some(node) = host_node_id(&ctx, &element) else {
+        return Ok(Value::new_null(ctx));
+    };
+    let world = world.borrow();
+    let Some(parsed) = world.document(node) else {
+        return Ok(Value::new_null(ctx.clone()));
+    };
+    let Some((value, important)) = parsed
+        .document
+        .base
+        .inline_style_get_property(node.node, &name)
+    else {
+        return Ok(Value::new_null(ctx.clone()));
+    };
+    let object = Object::new(ctx.clone())?;
+    object.set("value", value)?;
+    object.set("important", important)?;
+    Ok(Value::from(object))
+}
+
+/// Replace the inline declarations with those parsed from `text`
+/// (`cssText` setter). The caller writes the attribute back afterwards
+/// (<https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-csstext>).
+fn inline_style_set_css_text<'js>(ctx: Ctx<'js>, element: Value<'js>, text: String) -> Result<()> {
+    let world = world(&ctx)?;
+    let Some(node) = host_node_id(&ctx, &element) else {
+        return Ok(());
+    };
+    let world = world.borrow();
+    let Some(mut parsed) = world.document_mut(node) else {
+        return Ok(());
+    };
+    parsed
+        .document
+        .base
+        .set_inline_style_css_text(node.node, &text);
+    Ok(())
+}
+
+/// Set one declaration in the inline block, returning whether the block
+/// changed so the caller can skip the attribute write when it did not. An
+/// invalid value leaves the block unchanged
+/// (<https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-setproperty>).
+fn inline_style_set_property<'js>(
+    ctx: Ctx<'js>,
+    element: Value<'js>,
+    name: String,
+    value: String,
+    important: bool,
+) -> Result<bool> {
+    let world = world(&ctx)?;
+    let Some(node) = host_node_id(&ctx, &element) else {
+        return Ok(false);
+    };
+    let world = world.borrow();
+    let Some(mut parsed) = world.document_mut(node) else {
+        return Ok(false);
+    };
+    let base = &mut parsed.document.base;
+    let before = base.inline_style_css_text(node.node);
+    base.set_style_property_with_importance(node.node, &name, &value, important);
+    Ok(before != base.inline_style_css_text(node.node))
+}
+
+/// Remove one declaration from the inline block, returning whether the block
+/// changed (<https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-removeproperty>).
+fn inline_style_remove_property<'js>(
+    ctx: Ctx<'js>,
+    element: Value<'js>,
+    name: String,
+) -> Result<bool> {
+    let world = world(&ctx)?;
+    let Some(node) = host_node_id(&ctx, &element) else {
+        return Ok(false);
+    };
+    let world = world.borrow();
+    let Some(mut parsed) = world.document_mut(node) else {
+        return Ok(false);
+    };
+    let base = &mut parsed.document.base;
+    let before = base.inline_style_css_text(node.node);
+    base.remove_style_property(node.node, &name);
+    Ok(before != base.inline_style_css_text(node.node))
 }
 
 fn sheet_insert_rule<'js>(

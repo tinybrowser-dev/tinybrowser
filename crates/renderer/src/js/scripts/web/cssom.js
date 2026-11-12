@@ -567,6 +567,10 @@
         get(target, property, receiver) {
           if (typeof property !== 'string') return Reflect.get(target, property, receiver);
           if (property === 'getPropertyValue') return read;
+          // A computed style carries no priority flags, so no declaration it
+          // reports is `!important`
+          // (<https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-getpropertypriority>).
+          if (property === 'getPropertyPriority') return () => '';
           const kebab = property.replace(/[A-Z]/g, letter => '-' + letter.toLowerCase());
           const engine = resolved(kebab);
           if (engine !== '') return engine;

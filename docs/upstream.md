@@ -252,3 +252,18 @@ Known gaps this engine fails honestly (no fork patch yet):
 - `blitz-traits`' `RequestKind` has an `Other` variant with no destination, so an embedder that gates requests by destination has to guess what the request is. Today the only unclassified resource a document hands Blitz is an image a style sheet named, and tinybrowser treats `Other` as an image in one exhaustive match (`crates/renderer/src/document/mod.rs`). Blitz classifying what it fetches would delete the guess. Open, handled on our side.
 - Fetch's main fetch makes a `no-cors` request whose redirect mode is not `"follow"` a network error before it is sent, but CSP's deprecated `report-uri` delivery requires `redirect mode "error"` on a request it leaves at `no-cors`. Chromium sends the report anyway and refuses a redirect response, which is the CSP intent; tinybrowser does the same (`RequestPolicy::CspReportUri`). Spec disagreement, recorded rather than worked around by changing the request.
 - HTML's secure-context environment rule asks only for the top-level creation URL, so by its text an `http:` iframe inside an `https:` page would be secure, and a popup would not inherit its opener's bit. Chromium instead carries the bit in the policy container (`is_web_secure_context` on `PolicyContainerPolicies`), computes it from the document's own URL and its creator's bit at commit, and clones the initiator's whole container for local-scheme documents, which is what WPT `secure-contexts/` enforces for frames and popups alike. tinybrowser now does the same: `protocol::PolicyContainer` carries the bit, and `is_secure_environment(url, creator)` runs once per commit (`crates/secure-context`, `crates/renderer/src/document/mod.rs`). Spec disagreement, recorded rather than followed off a cliff.
+- The `style` crate (Servo) does not parse or store `page-break-before`,
+  `page-break-after`, `page-break-inside`, `orphans`, `widows`,
+  `alignment-baseline`, or the deprecated `outline-color: invert` keyword.
+  `PropertyId` rejects those names, so the declaration is dropped at parse and
+  a CSSOM read serializes to the empty string. The previous inline-style shim
+  echoed the raw attribute text and reported them, which hid the gap: with the
+  declaration block as the source of truth, 24 `css/cssom/serialize-values.html`
+  subtests now report the empty string a browser without those properties
+  would. The modern `break-before`/`break-after`/`break-inside` longhands are
+  supported. Open upstream, not worked around.
+- `blitz-dom` exposes the inline `style` declaration block (blitz@2ee9c1d3d):
+  CSSOM serialization, declaration names in specified order, per-property
+  value and priority, `cssText` replacement, and `setProperty` with an
+  explicit `!important` flag. The renderer's `CSSStyleDeclaration` is a thin
+  shell over it. Fixed in fork.

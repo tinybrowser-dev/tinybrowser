@@ -381,10 +381,17 @@ its body arrives later
 still absent because the generated contract has no lowering for them.
 
 Associated stylesheets expose `cssRules`, per-interface rule objects, and
-declaration accessors. Still open: constructable `insertRule` /
-`deleteRule` throw `NotSupportedError`, and a cross-origin `<link>` is
-never origin-clean because the fetch path does not record a CORS
-approval. Conformance for this surface is WPT `css/cssom/`.
+declaration accessors. The inline `ElementCSSInlineStyle.style` declaration
+block is the style engine's parsed `style` attribute: reads serialize through
+Stylo, mutations go through the same declaration block the cascade uses, and
+every successful mutation or `cssText` write rewrites the content attribute
+with the serialized block, as "update style attribute" requires. Still open:
+constructable `insertRule` / `deleteRule` throw `NotSupportedError`, a
+cross-origin `<link>` is never origin-clean because the fetch path does not
+record a CORS approval, and the style engine does not implement a handful of
+properties (see `docs/upstream.md`), so an inline declaration of one of them
+parses to nothing and reads back empty. Conformance for this surface is WPT
+`css/cssom/`.
 
 ## Session history
 

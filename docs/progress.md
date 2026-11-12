@@ -809,3 +809,57 @@ Evidence, subtest diff against `cssom-after.json` with no subtest lost:
 selector failures are `:lang()` matching and `:first-line`/`::first-line`
 serialization, which are cascade and parser gaps, not the setter: the rule
 keeps the new text but matching or serializing it is wrong.
+
+The inline `style` declaration block is now the engine's parsed block instead
+of a JS shim. The shim split the `style` attribute text on `;` and echoed each
+value back, so `style="background-position: 5% .5%"` read back as `5% .5%`
+instead of CSSOM's `5% 0.5%`, `url(http://host/)` never gained its quotes, and
+shorthands were reported as the author wrote them instead of as the longhands
+the indexed getter exposes. Every read (`cssText`, `length`, `item`,
+`getPropertyValue`, `getPropertyPriority`) now serializes through
+`PropertyDeclarationBlock::to_css` and `property_value_to_css`, and every
+mutation (`setProperty` with its priority, `removeProperty`, the `cssText`
+setter) goes through the same declaration block the cascade uses. A successful
+mutation rewrites the `style` content attribute with the serialized block
+("update style attribute"), so `getAttribute("style")` and attribute mutation
+observers see CSSOM changes; an unchanged block leaves the attribute alone,
+while the `cssText` setter always writes because the spec always updates.
+`setProperty` maps `null` to the empty string (removing) and leaves
+`undefined` to fail parsing, and a priority other than empty or `important`
+makes the call a no-op. Indexed (`style[0]`) and named (`style.color`) access,
+`in`, `delete`, and enumeration come from the same block.
+
+The style engine also gained `set_style_property_with_importance` and the
+inline-block readers/writers (`inline_style_css_text`,
+`inline_style_property_names`, `inline_style_get_property`,
+`set_inline_style_css_text`) on `BaseDocument`, so the host bridge stays thin.
+
+Evidence, subtest diff against the saved baseline with no subtest lost except
+where recorded: `css/cssom` goes from 2915 to **3212 of 3928** passing
+subtests (+297). `serialize-values.html` **533 to 673 of 697**,
+`cssstyledeclaration-all-shorthand.html` **3 to 21 of 27**,
+`style-attr-stray-braces.tentative.html` 0 to 10 of 16, `shorthand-values.html`
+**6 to 20 of 20**, `CSSStyleDeclaration-indexed-properties.html` 0 to 6,
+`variable-names.html` 0 to 6, `cssstyledeclaration-csstext.html` 4 to 10 of 11,
+`cssstyledeclaration-csstext-setter.window.html` 0 to 9,
+`style-background-position.html` 0 to 7, `functional-values-comma.html` 1 to 7,
+`font-family-serialization-001.html` 18 to 24 of 27, and
+`MutationObserver-style.html` 1 to 2.
+
+24 subtests in `serialize-values.html` move from pass to fail, all for
+`page-break-before`, `page-break-after`, `page-break-inside`, `orphans`,
+`widows`, `alignment-baseline`, and `outline-color: invert`, which the Servo
+`style` crate does not implement. The old shim passed them only because it
+echoed the attribute text without parsing; a declaration the engine drops
+must serialize to the empty string, so the test now reports that gap instead
+of hiding it (recorded in `docs/upstream.md`).
+
+No regression elsewhere: `css/css-style-attr` (15 of 16) is unchanged;
+`css/cssom-view` has identical file statuses and gains 3 subtests
+(`scroll-behavior-invalid.html`) with no real loss (the subtest churn there is
+NOTRUN reporting inside files that crash or time out in both runs);
+`dom/events` + `domparsing` gain 3 (`style_attribute_html.html`) and lose
+nothing; `html/semantics/forms` (503 files), `cookiestore` (247/260),
+`cookies` (336/415), and `workers` (248/248) are unchanged. `tools/check
+clippy` (both workspaces), `cargo fmt --check` for the renderer, and the
+renderer, wpt-harness, cookies, and browser unit tests pass.
