@@ -723,3 +723,32 @@ no subtest lost; `html/semantics/scripting-1` (538 files) gains
 (they pass 3 of 3 in their own directory) because they race a trickling
 stylesheet. `document.write` during parsing is still dropped; the remaining
 `strict-dynamic` parser-inserted files depend on it.
+
+CSP violation delivery now matches the spec's two rules. Events are queued as
+tasks instead of dispatched at report time, and a violation reported while the
+parser is active waits for the parser, because a parser-inserted subresource
+can be blocked before the inline script that listens for it has run: the
+one-shot parser stops at the previous parser-blocking `<script src>`, so the
+image request is drained while the listener does not exist yet. The queue
+mirrors the existing deferred image `load`/`error` events. A request violation
+fires at the document and an inline violation at its element while the element
+stays connected to that document
+(<https://w3c.github.io/webappsec-csp/#report-violation>), so `img-src` and
+`icon-blocked` events target the document while inline script and handler
+events keep their element.
+
+Evidence, all subtest-level diffs against saved baselines and zero lost
+subtests: `content-security-policy/securitypolicyviolation` plus
+`content-security-policy/reporting` go from 70 to 74 passing subtests (of 138)
+and 44 to 49 OK files; `content-security-policy/img-src` goes from 9 to 12
+passing files (of 15), with `img-src-targeting.html` 2 of 2,
+`img-src-none-blocks-css-background-image.html` 1 of 1, and
+`report-blocked-data-uri.sub.html` 1 of 1; `content-security-policy/style-src`
+gains three violation-event subtests (21 of 42 files pass, from 18);
+`content-security-policy/script-src` is identical at 129 of 203. The
+remaining reporting timeouts need `ReportingObserver` or service workers, or
+wait out a server-side 20 second "no report expected" poll that the harness
+budget cannot cover. `dom/events` plus `domparsing`, the dom/forms batch,
+`cookiestore` (247/260), `cookies` (336/415), and `workers` (248/248) are
+unchanged; the two `form-double-submit` subtests still flip between runs on a
+single build.

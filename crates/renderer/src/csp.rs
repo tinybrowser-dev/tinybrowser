@@ -87,6 +87,10 @@ pub(crate) struct Violation {
     /// Reporting API `csp-violation` POST and suppresses `report-uri`
     /// (<https://w3c.github.io/webappsec-csp/#directive-report-to>).
     pub report_to: Vec<String>,
+    /// The element the violation names, when an inline check names one. A
+    /// request violation has no element, so its event fires at the document
+    /// (<https://w3c.github.io/webappsec-csp/#report-violation>).
+    pub element: Option<crate::dom::tree::NodeId>,
 }
 
 impl Violation {
@@ -537,6 +541,7 @@ impl List {
                     status_code: 0,
                     report_uris: report_uris(policy),
                     report_to: report_to(policy),
+                    element: None,
                 });
             }
         }
@@ -582,6 +587,7 @@ impl List {
                 status_code: 0,
                 report_uris: report_uris(policy),
                 report_to: report_to(policy),
+                element: None,
             });
         }
         violations
@@ -616,6 +622,7 @@ impl List {
                     status_code: 0,
                     report_uris: report_uris(policy),
                     report_to: report_to(policy),
+                    element: None,
                 });
             }
         }
@@ -656,6 +663,7 @@ impl List {
                     status_code: 0,
                     report_uris: report_uris(policy),
                     report_to: report_to(policy),
+                    element: None,
                 });
             }
         }

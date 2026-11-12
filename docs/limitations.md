@@ -350,6 +350,20 @@ CSP3, and a policy naming it still needs `'unsafe-eval'`); and
 sandboxed child's `postMessage` to the parent's handler, which the
 converted WebKit test expected to lose a parse-order race.
 
+`securitypolicyviolation` events are queued as tasks, as CSP requires. A
+violation reported while the one-shot parser is still waiting on a blocking
+script waits for the parser to finish, because that is when the document's
+own scripts install their listeners; there is no incremental parser, so a
+request the parser issues before an inline script has not reached that
+script yet. A request violation fires at the document and an inline
+violation at its element while the element stays connected to the document,
+per the report-a-violation algorithm. Inline handler content attributes are
+only checked when the handler is first invoked, so
+`content-security-policy/securitypolicyviolation/targeting-for-inline-handler-in-markup.html`
+never sees the parse-time event a browser reports. Inline `<style>` and
+`style` attributes still have no CSP check, and `WebSocket` does not exist, so
+`blockeduri-ws-wss-scheme.html` cannot run.
+
 `HTMLScriptElement.text` returns the child text content (the text node
 children only) and its setter replaces every child with one text node;
 `document.writeln` appends U+000A. A child-list change on a connected script

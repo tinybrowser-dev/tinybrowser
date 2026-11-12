@@ -122,6 +122,11 @@ enum Task {
     /// <https://html.spec.whatwg.org/multipage/semantics.html#the-link-element>).
     NodeLoad(crate::dom::tree::NodeId),
     NodeError(crate::dom::tree::NodeId),
+    /// One queued `securitypolicyviolation` dispatch. The event fires in a
+    /// task, never at report time, so a listener installed after the
+    /// violation was reported still sees it
+    /// (<https://w3c.github.io/webappsec-csp/#report-violation>).
+    CspViolation(Vec<crate::csp::Violation>),
 }
 
 /// Why a realm is being replaced.
@@ -613,6 +618,11 @@ pub(crate) struct Document {
     /// installs later still sees them
     /// (<https://html.spec.whatwg.org/multipage/images.html#update-the-image-data>).
     deferred_image_events: VecDeque<Task>,
+    /// `securitypolicyviolation` events reported while the parser was still
+    /// active. They wait for the parser so the listeners the document's own
+    /// scripts install are in place
+    /// (<https://w3c.github.io/webappsec-csp/#report-violation>).
+    pending_csp_events: VecDeque<Task>,
     /// The token that delays this document's `load` event for each connected
     /// `<img>` whose current request has not settled
     /// (<https://html.spec.whatwg.org/multipage/images.html#update-the-image-data>,
@@ -938,6 +948,7 @@ impl Document {
             next_timer_id: TimerId::default(),
             dials: DialLedger::new(Arc::clone(&runtime.stop), Arc::clone(&runtime.wake)),
             deferred_image_events: VecDeque::new(),
+            pending_csp_events: VecDeque::new(),
             image_load_delays: HashMap::new(),
             connected_images: HashSet::new(),
             linked_sheets: HashMap::new(),
@@ -2600,6 +2611,7 @@ impl Document {
         self.subresource_bytes.clear();
         self.style_policies.clear();
         self.deferred_image_events.clear();
+        self.pending_csp_events.clear();
         self.image_load_delays.clear();
         self.connected_images.clear();
         self.timers.retain(|_, timer| timer.js_id.is_none());
@@ -3030,7 +3042,7 @@ impl Document {
             || (String::new(), false),
             |parsed| crate::csp::element_nonce(&parsed.document.base, id.node, slot),
         );
-        world.policy.csp.check_inline(
+        let mut violations = world.policy.csp.check_inline(
             &self.url,
             &crate::csp::InlineScript {
                 source,
@@ -3039,7 +3051,14 @@ impl Document {
                 parser_inserted,
                 kind: crate::csp::InlineKind::Script,
             },
-        )
+        );
+        for violation in &mut violations {
+            // An inline check names its element, so the event fires there
+            // while that element is connected to this document
+            // (<https://w3c.github.io/webappsec-csp/#report-violation>).
+            violation.element = Some(id);
+        }
+        violations
     }
 
     fn navigation_script_violations(
@@ -3125,12 +3144,20 @@ impl Document {
         out
     }
 
-    /// Dispatches the `securitypolicyviolation` events a check produced,
-    /// and queues the legacy `report-uri` POSTs. Reports are fire-and-forget
-    /// dials: the response is dropped, they never gate load, and they carry
-    /// no CSP gate of their own, so a restrictive policy cannot silence its
-    /// own reports
+    /// Reports the violations a check produced: queues the legacy
+    /// `report-uri` POSTs and queues the `securitypolicyviolation` events.
+    /// Reports are fire-and-forget dials: the response is dropped, they never
+    /// gate load, and they carry no CSP gate of their own, so a restrictive
+    /// policy cannot silence its own reports
     /// (<https://w3c.github.io/webappsec-csp/#report-violation>).
+    ///
+    /// `target` attributes a request violation's report to the element whose
+    /// trigger (insertion or connected `src` set) the executing script ran.
+    /// The event itself fires at the document, because a request violation
+    /// names no element. While the parser is still active the events wait:
+    /// the violation can be reported before the parser reaches the script
+    /// that would install its listener, and a task queued now would run
+    /// before that script's fetch settles.
     pub(crate) fn fire_csp_violations(
         &mut self,
         target: crate::dom::tree::NodeId,
@@ -3161,8 +3188,57 @@ impl Document {
                 }
             }
         }
-        self.fire_js(|js| js.fire_csp_violations(target, &enriched));
         self.queue_csp_reports(&enriched);
+        self.queue_csp_events(enriched);
+    }
+
+    /// Queues the event dispatch for one batch of violations, or holds it
+    /// until the parser finishes. A parser-inserted blocked subresource can
+    /// be reported while the parser is still waiting on a blocking script, so
+    /// dispatching now would run before a listener that appears later in the
+    /// document
+    /// (<https://w3c.github.io/webappsec-csp/#report-violation>).
+    fn queue_csp_events(&mut self, violations: Vec<crate::csp::Violation>) {
+        if self.world.borrow().parser_active {
+            self.pending_csp_events
+                .push_back(Task::CspViolation(violations));
+        } else {
+            self.tasks.push_back(Task::CspViolation(violations));
+        }
+    }
+
+    /// Dispatches one queued `securitypolicyviolation` batch. An inline
+    /// violation fires at its element while that element is connected to the
+    /// document the policy belongs to; anything else fires at the document
+    /// (<https://w3c.github.io/webappsec-csp/#report-violation>).
+    fn deliver_csp_violations(&mut self, violations: &[crate::csp::Violation]) {
+        let Some(document) = self.document_node() else {
+            return;
+        };
+        for violation in violations {
+            let target = violation
+                .element
+                .filter(|element| self.csp_element_target(*element, document))
+                .unwrap_or(document);
+            self.fire_js(|js| js.fire_csp_violations(target, std::slice::from_ref(violation)));
+        }
+        self.adopt_js_work();
+    }
+
+    /// Whether an inline violation's element is still connected to `document`,
+    /// which is what lets the event fire there instead of at the document
+    /// (<https://w3c.github.io/webappsec-csp/#report-violation>).
+    fn csp_element_target(
+        &self,
+        element: crate::dom::tree::NodeId,
+        document: crate::dom::tree::NodeId,
+    ) -> bool {
+        if element.document != document.document {
+            return false;
+        }
+        self.world.borrow().document(element).is_some_and(|parsed| {
+            crate::dom::tree::is_connected(&parsed.document.base, element.node)
+        })
     }
 
     /// Queues the `report-uri` / `report-to` POSTs for violations without
@@ -4219,6 +4295,7 @@ impl Document {
         self.drain_blitz_fetches();
         if !self.world.borrow().parser_active {
             self.tasks.append(&mut self.deferred_image_events);
+            self.tasks.append(&mut self.pending_csp_events);
         }
         if self.load_fired {
             return false;

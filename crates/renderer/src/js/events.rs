@@ -1750,7 +1750,7 @@ pub(crate) fn handler_attribute_allowed<'js>(
         let world = owner.borrow();
         let document_url = url::Url::parse(&world.document_url_of(id))
             .unwrap_or_else(|_| world.document_url.clone());
-        world.policy.csp.check_inline(
+        let mut violations = world.policy.csp.check_inline(
             &document_url,
             &crate::csp::InlineScript {
                 source,
@@ -1759,7 +1759,14 @@ pub(crate) fn handler_attribute_allowed<'js>(
                 parser_inserted: false,
                 kind: crate::csp::InlineKind::ScriptAttribute,
             },
-        )
+        );
+        for violation in &mut violations {
+            // The handler's element is the event target while it stays
+            // connected to its document
+            // (<https://w3c.github.io/webappsec-csp/#report-violation>).
+            violation.element = Some(id);
+        }
+        violations
     };
     if !violations.is_empty() {
         // Reporting is a task, so a listener attached later in the same script

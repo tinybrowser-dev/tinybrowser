@@ -297,6 +297,7 @@ impl Document {
                 self.fire_js(|js| js.fire_node_error(element));
                 self.adopt_js_work();
             }
+            Task::CspViolation(violations) => self.deliver_csp_violations(&violations),
         }
     }
 
