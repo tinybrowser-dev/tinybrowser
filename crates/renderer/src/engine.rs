@@ -2795,19 +2795,34 @@ impl Engine {
             .get(&child)
             .is_some_and(Document::is_initial_blank);
         // The inline check for a `javascript:` navigation uses the initiator's
-        // policy, not the target frame's
-        // (<https://w3c.github.io/webappsec-csp/#should-block-navigation-request>).
-        let policy = self
+        // policy, not the target frame's, and the violation names the
+        // navigable's container element in the initiator's document; the
+        // target frame has no listener for it
+        // (<https://w3c.github.io/webappsec-csp/#should-block-navigation-request>,
+        // <https://w3c.github.io/webappsec-csp/#report-violation>).
+        let container = self.runtime.shared.borrow().tree.container(child);
+        let violations = self
             .frames
             .get(&initiator)
-            .map_or_default(|document| document.world().borrow().policy.csp.clone());
+            .map_or_default(|document| document.javascript_url_violations(&source));
+        let blocked = crate::csp::blocks(&violations);
+        if !violations.is_empty()
+            && let Some(document) = self.frames.get_mut(&initiator)
+            && let Some(target) = container.or_else(|| document.document_node())
+        {
+            let mut violations = violations;
+            for violation in &mut violations {
+                violation.element = container;
+            }
+            document.fire_csp_violations(target, &violations);
+        }
         if let Some(document) = self.frames.get_mut(&child) {
             if initial {
                 // The script runs in the document the browser already created;
                 // a string result still replaces it.
-                document.eval_frame_script(&script, &source, &policy);
+                document.eval_frame_script(&script, blocked);
             } else {
-                document.load_javascript_frame(&script, &source, &policy);
+                document.load_javascript_frame(&script, blocked);
             }
         }
     }

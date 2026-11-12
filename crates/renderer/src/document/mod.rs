@@ -1661,43 +1661,35 @@ impl Document {
     /// observes the page's own state, not a fresh blank realm. The result
     /// document keeps the target's URL
     /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#javascript-protocol>).
-    pub(crate) fn load_javascript_frame(
-        &mut self,
-        script: &str,
-        source: &str,
-        policy: &crate::csp::List,
-    ) {
+    pub(crate) fn load_javascript_frame(&mut self, script: &str, blocked: bool) {
         if self.js.is_none() {
             self.ensure_js_ok();
         }
-        self.eval_frame_script(script, source, policy);
+        self.eval_frame_script(script, blocked);
     }
 
-    /// Runs one `javascript:` URL script in this frame's realm. A string
-    /// result replaces the document with that string parsed as HTML
-    /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#javascript-protocol>).
-    ///
-    /// `source` is the serialized `javascript:` URL, which is what CSP source
-    /// matching and hashes use
+    /// The violations a `javascript:` navigation URL produces under this
+    /// document's policy. The initiator, never the target frame, owns the
+    /// check and the report
     /// (<https://w3c.github.io/webappsec-csp/#should-block-navigation-request>).
-    pub(crate) fn eval_frame_script(
-        &mut self,
-        script: &str,
-        source: &str,
-        policy: &crate::csp::List,
-    ) {
+    ///
+    /// The caller fires them, because the violation names the navigable's
+    /// container element in this document
+    /// (<https://w3c.github.io/webappsec-csp/#report-violation>).
+    #[must_use]
+    pub(crate) fn javascript_url_violations(&self, source: &str) -> Vec<crate::csp::Violation> {
+        let world = self.world.borrow();
+        Self::navigation_script_violations(&world.policy.csp, &self.url, source)
+    }
+
+    /// Runs one `javascript:` URL script in this frame's realm once the
+    /// initiator's policy allowed it. A string result replaces the document
+    /// with that string parsed as HTML
+    /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#javascript-protocol>).
+    pub(crate) fn eval_frame_script(&mut self, script: &str, blocked: bool) {
         // A `javascript:` navigation does nothing while scripting is disabled
         // (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#javascript-protocol>).
-        if script.is_empty() || self.world.borrow().sandbox.scripts_disabled() {
-            return;
-        }
-        let violations = Self::navigation_script_violations(policy, &self.url, source);
-        if !violations.is_empty()
-            && let Some(target) = self.document_node()
-        {
-            self.fire_csp_violations(target, &violations);
-        }
-        if crate::csp::blocks(&violations) {
+        if script.is_empty() || self.world.borrow().sandbox.scripts_disabled() || blocked {
             return;
         }
         match self.eval(script) {

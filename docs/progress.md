@@ -737,15 +737,27 @@ stays connected to that document
 `icon-blocked` events target the document while inline script and handler
 events keep their element.
 
+A `javascript:` URL's violation belongs to the initiator's document and
+names the navigable's container element, not the target frame: `script-sample`
+installs its listener on the `<iframe>` it navigates, and the target frame has
+no listener for it. The engine now checks the initiator's policy, fires there
+with the container as the violation's element, and passes only the blocking
+decision to the frame that runs the script
+(<https://w3c.github.io/webappsec-csp/#should-block-navigation-request>,
+<https://w3c.github.io/webappsec-csp/#report-violation>).
+
 Evidence, all subtest-level diffs against saved baselines and zero lost
 subtests: `content-security-policy/securitypolicyviolation` plus
-`content-security-policy/reporting` go from 70 to 74 passing subtests (of 138)
-and 44 to 49 OK files; `content-security-policy/img-src` goes from 9 to 12
+`content-security-policy/reporting` go from 70 to 76 passing subtests (of 138)
+and 44 to 51 OK files, gaining both `report-original-url` cases,
+`report-strips-fragment`, `report-strips-username-password`, and both
+`script-sample` files; `content-security-policy/img-src` goes from 9 to 12
 passing files (of 15), with `img-src-targeting.html` 2 of 2,
 `img-src-none-blocks-css-background-image.html` 1 of 1, and
 `report-blocked-data-uri.sub.html` 1 of 1; `content-security-policy/style-src`
-gains three violation-event subtests (21 of 42 files pass, from 18);
-`content-security-policy/script-src` is identical at 129 of 203. The
+adds three violation-event subtests and three OK files (48 to 51 of 86, 27 to
+30 of 42); `content-security-policy/script-src` goes from 129 to 130 of 203
+(`javascript-window-open-blocked.html`). The
 remaining reporting timeouts need `ReportingObserver` or service workers, or
 wait out a server-side 20 second "no report expected" poll that the harness
 budget cannot cover. `dom/events` plus `domparsing`, the dom/forms batch,
