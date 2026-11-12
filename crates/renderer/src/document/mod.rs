@@ -3652,6 +3652,11 @@ impl Document {
             integrity,
         } = done;
         let redirected = outcome.final_url != req.url;
+        // A response `Set-Cookie` is a cookie store change like a script
+        // write. The other realms process it in their own turn; this one
+        // below, before the response reaches its caller
+        // (<https://cookiestore.spec.whatwg.org/#process-cookie-changes>).
+        let cookies_stored = outcome.cookies_stored;
         match context {
             DialContext::JsFetch { id } => {
                 self.finish_js_fetch_dial(id, redirected, &req.url, outcome);
@@ -3739,6 +3744,10 @@ impl Document {
             // Fire-and-forget: the endpoint already stored the report, if it
             // cares. A failure is invisible by design.
             DialContext::CspReport => {}
+        }
+        if cookies_stored {
+            self.world.borrow().notify_cookie_changes();
+            self.fire_js(crate::js::JsRealm::process_cookie_changes);
         }
         self.adopt_js_work();
     }
@@ -3917,6 +3926,13 @@ impl Document {
                 }
             }
         }
+        // A failed dial may still have stored a cookie: a hop applies its
+        // `Set-Cookie` before the check that refuses the exchange, so a
+        // redirect chain can end in a CORS, gate, or transport error with the
+        // jar already changed. The jar is the record, so every realm diffs it
+        // (<https://cookiestore.spec.whatwg.org/#process-cookie-changes>).
+        self.world.borrow().notify_cookie_changes();
+        self.fire_js(crate::js::JsRealm::process_cookie_changes);
         self.adopt_js_work();
     }
 

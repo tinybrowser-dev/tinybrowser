@@ -57,6 +57,31 @@ struct CachedResponse {
     seq: u64,
 }
 
+impl CachedResponse {
+    /// A stored answer for the exchange `outcome` completed. The jar reacted
+    /// to that exchange's `Set-Cookie` when it arrived and the change events
+    /// were delivered then, so an entry never carries the flag: every answer
+    /// built from one is a cache hit, and a hit exchanges no headers
+    /// (<https://www.rfc-editor.org/rfc/rfc9111#section-4>).
+    fn stored_exchange(
+        outcome: &DialOutcome,
+        stored_at: Instant,
+        stored_wall: SystemTime,
+        request_headers: Vec<(String, String)>,
+        seq: u64,
+    ) -> Self {
+        let mut outcome = outcome.clone();
+        outcome.cookies_stored = false;
+        Self {
+            outcome,
+            stored_at,
+            stored_wall,
+            request_headers,
+            seq,
+        }
+    }
+}
+
 type Entries = HashMap<CacheKey, Vec<CachedResponse>>;
 
 /// The request headers a stored response makes the next dial conditional:
@@ -322,13 +347,13 @@ impl HttpCache {
         if directives.no_store || !storable(request, outcome, effective_mode(request)) {
             return;
         }
-        let entry = CachedResponse {
-            outcome: outcome.clone(),
-            stored_at: self.clock.monotonic(),
-            stored_wall: self.clock.now(),
-            request_headers: sent.to_vec(),
-            seq: self.next_seq.fetch_add(1, Ordering::Relaxed),
-        };
+        let entry = CachedResponse::stored_exchange(
+            outcome,
+            self.clock.monotonic(),
+            self.clock.now(),
+            sent.to_vec(),
+            self.next_seq.fetch_add(1, Ordering::Relaxed),
+        );
         let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
         insert_cached(
             &mut entries,
@@ -382,13 +407,13 @@ impl HttpCache {
         let mut headers = sent.to_vec();
         headers
             .retain(|(name, _)| !is_conditional_name(name) && !name.eq_ignore_ascii_case("range"));
-        let entry = CachedResponse {
-            outcome: outcome.clone(),
-            stored_at: self.clock.monotonic(),
-            stored_wall: self.clock.now(),
-            request_headers: headers,
-            seq: self.next_seq.fetch_add(1, Ordering::Relaxed),
-        };
+        let entry = CachedResponse::stored_exchange(
+            outcome,
+            self.clock.monotonic(),
+            self.clock.now(),
+            headers,
+            self.next_seq.fetch_add(1, Ordering::Relaxed),
+        );
         let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
         insert_cached(&mut entries, cache_key(&get, initiator, partition), entry);
     }
@@ -461,6 +486,11 @@ impl HttpCache {
         merged.final_url = response.final_url().clone();
         merged.referrer = response.referrer().cloned();
         merged.crossed_origin = response.crossed_origin();
+        // The `304` was a real exchange, and its own `Set-Cookie` fields were
+        // stored when it arrived, unlike the cached `200` being refreshed
+        // (<https://www.rfc-editor.org/rfc/rfc6265bis.html#section-5.2>,
+        // <https://www.rfc-editor.org/rfc/rfc9111#section-4.3.4>).
+        merged.cookies_stored = response.cookies_stored();
         // The response now dates from the validation, so the age it arrived
         // with is gone (<https://www.rfc-editor.org/rfc/rfc9111#section-4.2.3>).
         merged
@@ -530,6 +560,7 @@ fn gateway_timeout(request: &DialRequest) -> DialOutcome {
         response_type: net::cors::ResponseType::Basic,
         crossed_origin: false,
         redirect_count: 0,
+        cookies_stored: false,
         referrer: None,
     }
 }
@@ -1445,6 +1476,7 @@ mod tests {
             response_type: net::cors::ResponseType::Basic,
             crossed_origin: false,
             redirect_count: 0,
+            cookies_stored: false,
             referrer: None,
         }
     }
@@ -1514,6 +1546,26 @@ mod tests {
         assert_eq!(hit(&cache, &first).expect("fresh hit").body_bytes(), b"hit");
         manual.advance(61);
         assert!(hit(&cache, &first).is_none(), "an expired entry is a miss");
+    }
+
+    /// A cache hit exchanges no headers, so it stores no cookie: the flag
+    /// belongs to the exchange that filled the cache, and a replayed `true`
+    /// would make every realm snapshot the jar for nothing
+    /// (<https://www.rfc-editor.org/rfc/rfc9111#section-4>).
+    #[test]
+    fn a_cache_hit_does_not_claim_a_stored_cookie() {
+        let manual = ManualClock::new();
+        let cache = HttpCache::new(manual.clock());
+        let mut first = request(RequestCache::Default, "http://a.test/data");
+        first.method = Method::GET;
+        let mut stored = outcome(&[("cache-control", "max-age=60")], b"hit");
+        stored.cookies_stored = true;
+        store(&cache, &first, &stored);
+        let answered = hit(&cache, &first).expect("fresh hit");
+        assert!(
+            !answered.cookies_stored,
+            "the answer is a cache hit, not a response that stored a cookie"
+        );
     }
 
     #[test]

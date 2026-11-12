@@ -115,16 +115,10 @@ if (globalThis.document) {
   Object.defineProperty(document, 'cookie', {
     get() { return host.__cookieGet(); },
     set(v) {
-      // The CookieStore change event covers `document.cookie` writes too, and
-      // the diff is against the jar as it stood before this write
+      // The write is a cookie store change like any other, so the host
+      // queues the observation in every realm
       // (<https://cookiestore.spec.whatwg.org/#process-cookie-changes>).
-      const snapshot = globalThis.__tbCookieStoreSnapshot;
-      const before = typeof snapshot === 'function' ? snapshot() : null;
       host.__cookieSet(String(v));
-      const changed = globalThis.__tbCookieStoreDidWrite;
-      if (before !== null && typeof changed === 'function') {
-        changed(before);
-      }
     }
   });
 }

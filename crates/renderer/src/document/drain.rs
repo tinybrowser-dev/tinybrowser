@@ -201,6 +201,7 @@ impl Document {
                                 response_type: net::cors::ResponseType::Basic,
                                 crossed_origin: false,
                                 redirect_count: 0,
+                                cookies_stored: false,
                                 referrer: None,
                             },
                         });
@@ -325,6 +326,12 @@ impl Document {
                 if let Some(page_id) = self.js_timers.remove(&js_id) {
                     self.timers.remove(&page_id);
                 }
+            }
+            RealmRequest::CookieChanges => {
+                // Each realm diffs the jar against what it last processed, so
+                // two writes before this turn report one event with both
+                // (<https://cookiestore.spec.whatwg.org/#process-cookie-changes>).
+                self.fire_js(crate::js::JsRealm::process_cookie_changes);
             }
             RealmRequest::Fetch(fetch) => self.queue_js_fetch(*fetch),
             RealmRequest::AbortFetch(js_id) => self.dials.cancel_fetch(js_id),

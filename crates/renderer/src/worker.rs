@@ -1499,6 +1499,7 @@ impl Worker {
             | RealmRequest::HistoryPush { .. }
             | RealmRequest::HistoryTraverse { .. }
             | RealmRequest::FragmentNavigation { .. }
+            | RealmRequest::CookieChanges
             | RealmRequest::CspViolation(_, _)
             | RealmRequest::DeclarativeRefresh(_)
             | RealmRequest::HtmlWrite(_)
@@ -1579,8 +1580,18 @@ impl Worker {
         while let Ok((js_id, outcome)) = self.fetch_rx.try_recv() {
             self.pending_fetches.fetch_sub(1, Ordering::Release);
             self.fetches.remove(&js_id);
+            // A worker's fetch stores cookies in the same jar a Window reads.
+            // The worker has no `CookieStore` of its own, so every Window is
+            // queued and each diffs against its own baseline
+            // (<https://cookiestore.spec.whatwg.org/#process-cookie-changes>).
+            let cookies_stored = outcome
+                .as_ref()
+                .is_some_and(|outcome| outcome.cookies_stored);
             if let Err(error) = self.js.finish_js_fetch(js_id, outcome) {
                 self.report_error(&error);
+            }
+            if cookies_stored {
+                self.world.borrow().notify_cookie_changes();
             }
             self.adopt_js_work();
         }

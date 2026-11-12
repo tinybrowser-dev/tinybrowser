@@ -524,16 +524,21 @@ impl Agent {
         Ok(())
     }
 
+    /// Stores every `Set-Cookie` line and reports whether the jar kept one,
+    /// which can be an insertion, a replacement, or an expiry
+    /// (<https://httpwg.org/http-extensions/draft-ietf-httpbis-rfc6265bis.html#section-5.6>).
     fn store_set_cookie_lines(
         &self,
         operation: CookieOp<'_>,
         lines: impl IntoIterator<Item = impl AsRef<str>>,
-    ) {
+    ) -> bool {
         let mut jar = self.jar();
         let now = self.clock.now();
+        let mut stored = false;
         for line in lines {
-            jar.store(line.as_ref(), CookieOp { now, ..operation });
+            stored |= jar.store(line.as_ref(), CookieOp { now, ..operation });
         }
+        stored
     }
 
     /// Sends `request` and follows HTTP redirects per
@@ -618,6 +623,11 @@ impl Agent {
         Self::write_referer(&mut hop.headers, determined.as_ref())?;
         let mut followed = 0u32;
         let mut cross_site_redirect = false;
+        // A redirect hop stores its own `Set-Cookie` before the next one is
+        // requested, so the flag the caller sees covers the whole exchange,
+        // not just the response that ended it
+        // (<https://www.rfc-editor.org/rfc/rfc6265bis.html#section-5.2>).
+        let mut stored_any = false;
         let mut budget = self.call_budget();
         // The request's own deadline only tightens the engine's global
         // timeout; a later deadline must not stretch it.
@@ -634,9 +644,11 @@ impl Agent {
             // the new document's referrer, and a redirect changes it exactly
             // the way the header changed.
             response.referrer.clone_from(&determined);
+            stored_any |= response.cookies_stored();
             let hop_status = response.status();
             if self.max_redirects == 0 {
                 cors_gate(&response, &dial, &hop)?;
+                response.cookies_stored = stored_any;
                 return Ok(response);
             }
             // A redirect response's `Referrer-Policy` field updates the
@@ -649,7 +661,10 @@ impl Agent {
                     .filter_map(|value| std::str::from_utf8(value).ok()),
             );
             let next = match classify_response(response, &url, &dial, &hop)? {
-                HopOutcome::Final(response) => return Ok(*response),
+                HopOutcome::Final(mut response) => {
+                    response.cookies_stored = stored_any;
+                    return Ok(*response);
+                }
                 HopOutcome::Redirect { next } => next,
             };
             if let Some(policy) = redirect_policy {
@@ -765,7 +780,7 @@ impl Agent {
                 .map(|coding| coding.to_ascii_lowercase())
                 .filter(|coding| !coding.is_empty())
                 .collect();
-        let response = Response {
+        let mut response = Response {
             status,
             status_text: reason_phrase(status, http2),
             headers: response_headers,
@@ -794,12 +809,13 @@ impl Agent {
             },
             referrer: None,
             crossed_origin: hop.crossed_origin,
+            cookies_stored: false,
         };
         // Only when the credentials mode admits cookies for this origin. The
         // jar is the only reader: the response's internal header list keeps
         // each `Set-Cookie`, and page script never sees it.
         if send_credentials {
-            self.store_set_cookie_lines(
+            response.cookies_stored = self.store_set_cookie_lines(
                 operation,
                 response
                     .internal_headers()
@@ -1561,6 +1577,9 @@ pub struct Response {
     filtering: crate::cors::Filtering,
     referrer: Option<Url>,
     crossed_origin: bool,
+    /// Whether the jar stored a cookie from this response's `Set-Cookie`
+    /// fields.
+    cookies_stored: bool,
 }
 
 impl Response {
@@ -1640,6 +1659,13 @@ impl Response {
     #[must_use]
     pub fn referrer(&self) -> Option<&Url> {
         self.referrer.as_ref()
+    }
+
+    /// Whether the jar stored a cookie from this response's `Set-Cookie`
+    /// fields.
+    #[must_use]
+    pub fn cookies_stored(&self) -> bool {
+        self.cookies_stored
     }
 
     /// Consumes the response and returns its decoded body stream.

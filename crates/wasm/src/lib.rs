@@ -497,6 +497,7 @@ fn basic_outcome(
         response_type: net::cors::ResponseType::Basic,
         crossed_origin: false,
         redirect_count: 0,
+        cookies_stored: false,
         referrer: None,
     }
 }

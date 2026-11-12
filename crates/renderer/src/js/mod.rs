@@ -1075,6 +1075,18 @@ impl JsRealm {
         })
     }
 
+    /// Runs this realm's "process cookie changes" in its own turn; see
+    /// [`process_cookie_changes_now`]
+    /// (<https://cookiestore.spec.whatwg.org/#process-cookie-changes>).
+    pub(crate) fn process_cookie_changes(&self) -> Result<(), JsError> {
+        self.with_budget(None, MicrotaskCheckpoint::Perform, || {
+            self.context.with(|ctx| {
+                process_cookie_changes_now(&ctx)?;
+                Ok(())
+            })
+        })
+    }
+
     /// Fires the trusted `hashchange` a same-document fragment navigation
     /// owes, after the URL and history entry already changed
     /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#the-hashchangeevent-interface>).
@@ -1803,7 +1815,7 @@ impl JsRealm {
 
         bridge::object(ctx)?.set(
             "__cookieSet",
-            Func::from(move |value: String| {
+            Func::from(move |ctx: Ctx<'_>, value: String| -> rquickjs::Result<()> {
                 let (services, url, partition_key) = {
                     let world = cookie_set.borrow();
                     (
@@ -1813,6 +1825,13 @@ impl JsRealm {
                     )
                 };
                 services.set_cookie(&value, &url, partition_key.as_deref());
+                // A script write is one of the store changes every Window
+                // processes; the jar may still have refused the line, and
+                // each realm's diff decides that
+                // (<https://cookiestore.spec.whatwg.org/#process-cookie-changes>).
+                cookie_set.borrow().notify_cookie_changes();
+                report_cookie_change_failure(&ctx, process_cookie_changes_now(&ctx));
+                Ok(())
             }),
         )?;
 
@@ -1909,19 +1928,23 @@ impl JsRealm {
         let store_set = world.clone();
         bridge::object(ctx)?.set(
             "__tbCookieStoreSet",
-            Func::from(move |options: Object<'_>| {
-                let write = cookie_store_write(&options)?;
-                let (services, url, partition_key) = {
-                    let world = store_set.borrow();
-                    (
-                        world.runtime.services.clone(),
-                        cookie_store_url(&world),
-                        world.partition_key(),
-                    )
-                };
-                services.cookie_store_store(&write, &url, partition_key.as_deref());
-                Ok::<(), rquickjs::Error>(())
-            }),
+            Func::from(
+                move |ctx: Ctx<'_>, options: Object<'_>| -> rquickjs::Result<()> {
+                    let write = cookie_store_write(&options)?;
+                    let (services, url, partition_key) = {
+                        let world = store_set.borrow();
+                        (
+                            world.runtime.services.clone(),
+                            cookie_store_url(&world),
+                            world.partition_key(),
+                        )
+                    };
+                    services.cookie_store_store(&write, &url, partition_key.as_deref());
+                    store_set.borrow().notify_cookie_changes();
+                    report_cookie_change_failure(&ctx, process_cookie_changes_now(&ctx));
+                    Ok(())
+                },
+            ),
         )?;
         Ok(())
     }
@@ -2007,6 +2030,32 @@ impl JsRealm {
             Func::from(move || realm_origin.borrow().origin_string()),
         )?;
         Ok(())
+    }
+}
+
+/// Runs this realm's cookie-change observer now: it diffs the jar against
+/// what it last saw and queues the `CookieChangeEvent` it owes
+/// (<https://cookiestore.spec.whatwg.org/#process-cookie-changes>).
+///
+/// An opaque origin has no cookie URL whose in-scope cookies could change, so
+/// the observable set is always empty and the shim installs no observer for
+/// it. The absent global is that origin, not a missing feature.
+fn process_cookie_changes_now(ctx: &Ctx<'_>) -> rquickjs::Result<()> {
+    let process: Option<rquickjs::Function> = ctx.globals().get("__tbCookieStoreProcessChanges")?;
+    let Some(process) = process else {
+        return Ok(());
+    };
+    let _: Value = process.call(())?;
+    Ok(())
+}
+
+/// Reports a failed observation instead of throwing it out of the cookie
+/// write that triggered it. A write has already happened by then, and the
+/// setter's own steps never throw
+/// (<https://html.spec.whatwg.org/multipage/webappapis.html#report-the-error>).
+fn report_cookie_change_failure(ctx: &Ctx<'_>, result: rquickjs::Result<()>) {
+    if let Err(error) = result {
+        bindings::host::report_callback_error(ctx, &error);
     }
 }
 

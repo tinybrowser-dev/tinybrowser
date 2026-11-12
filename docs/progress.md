@@ -604,3 +604,21 @@ reloading and sometimes exceeding the budget.
 the set) are now installed from their own name list, window-only, so an
 element with one of those attributes has no handler and `window.onhashchange`
 is a real handler property instead of a plain data property.
+
+`CookieStore` change events now cover HTTP responses. The jar reports
+whether it stored a `Set-Cookie` through `DialOutcome::cookies_stored`
+(the header itself is a forbidden response-header name and never reaches the
+renderer), and every store event queues "process cookie changes" in each
+live realm of the renderer. Each realm keeps its own snapshot of the jar's
+script-visible records and diffs it, so `cookieStore.set`/`delete`,
+`document.cookie`, and a response header all take one path. The realm that
+made or received the change processes it before the operation returns; the
+rest process it in their own next turn. A cache hit clears the flag, since
+it exchanges no headers, while a `304` carries its own response's flag.
+
+`change_eventhandler_for_http_cookie_and_set_cookie_headers` passes 7 of 7
+subtests, and `cookiestore/` is **38 of 48 files and 228 of 244 subtests**.
+`HTTP duplicate cookie should not be observed` passes as well: the diff runs
+against the jar at process time, so a response that stores the same value
+leaves nothing to report. `cookies` stays 336/415, `fetch/api` 2142/2418,
+and `xhr` 941/1435 subtests.

@@ -284,13 +284,16 @@
     if (cookie === null) {
       throw new TypeError('cookie rejected');
     }
-    const before = snapshotCookies();
     // The write is typed, not a `Set-Cookie` line: the API's `path` is
     // stored verbatim, and a line would split a `path` holding U+003B (;)
     // into extra attributes
     // (<https://cookiestore.spec.whatwg.org/#set-a-cookie>).
+    //
+    // The host processes this realm's observation before it returns and
+    // queues every other live one, so a `Set-Cookie` response and a script
+    // write take the same path through `processCookieChanges`
+    // (<https://cookiestore.spec.whatwg.org/#process-cookie-changes>).
     host.__tbCookieStoreSet(cookie);
-    queueCookieChanges(before);
   }
 
   // `CookieChangeEvent` and the script-side change notification. A cookie
@@ -328,45 +331,60 @@
     }
   }
 
-  /// Fires one `change` event for the cookies that changed between `before`
-  /// and `after`, both captured at the write. A replaced cookie keeps its
-  /// slot, so an attribute-only change is seen; a cookie that disappeared
-  /// from the slot is a deletion
+  /// The jar state this realm last processed. A change is reported once, by
+  /// diffing the jar against this when the host asks for it, whether the
+  /// write came from this realm's script, a response header, or another
+  /// frame. A navigation installs a fresh realm, so every document starts
+  /// its own observation and a cookie its navigation stored is not a change
+  /// it witnessed
   /// (<https://cookiestore.spec.whatwg.org/#process-cookie-changes>).
-  function fireCookieChanges(before, after) {
-    const next = after;
+  let observed = snapshotCookies();
+
+  /// Prepares the changed and deleted lists between two jar views. A
+  /// replaced cookie keeps its slot, so an attribute-only change is seen; a
+  /// cookie that disappeared from the slot is a deletion
+  /// (<https://cookiestore.spec.whatwg.org/#prepare-lists>).
+  function cookieChangeLists(before, after) {
     const changed = [];
     const deleted = [];
-    for (const [key, cookie] of next) {
+    for (const [key, cookie] of after) {
       const old = before.get(key);
       if (old === undefined || old.state !== cookie.state) {
         changed.push({name: cookie.name, value: cookie.value});
       }
     }
     for (const [key, cookie] of before) {
-      if (!next.has(key)) {
+      if (!after.has(key)) {
         // A deleted item's value is undefined
         // (<https://cookiestore.spec.whatwg.org/#prepare-lists>).
         deleted.push({name: cookie.name, value: undefined});
       }
     }
-    if (changed.length === 0 && deleted.length === 0) {
-      return;
-    }
-    globalThis.cookieStore.dispatchEvent(
-        new CookieChangeEvent('change', {changed, deleted}));
+    return {changed, deleted};
   }
 
-  function queueCookieChanges(before) {
-    // The change set is the jar at the write, not at delivery: a later write
-    // from a response header must not join this event
-    // (<https://cookiestore.spec.whatwg.org/#observable-changes>).
+  /// "Process cookie changes": the change set is the jar now, not at
+  /// delivery, so two writes that land before this runs are one event
+  /// (<https://cookiestore.spec.whatwg.org/#process-cookie-changes>).
+  function processCookieChanges() {
     const after = snapshotCookies();
+    const lists = cookieChangeLists(observed, after);
+    observed = after;
+    if (lists.changed.length === 0 && lists.deleted.length === 0) {
+      return;
+    }
     // The spec queues a global task on the DOM manipulation task source
     // (<https://cookiestore.spec.whatwg.org/#process-cookie-changes>); this
     // realm has no task source the shim can queue on, so the event is a
     // promise job instead. See docs/limitations.md.
-    Promise.resolve().then(() => fireCookieChanges(before, after));
+    //
+    // "Fire a change event" creates the event itself, so it carries the
+    // trusted flag: script dispatch would clear it.
+    Promise.resolve().then(() => {
+      host.__tbDispatchTargetTrusted(
+          globalThis.cookieStore,
+          new CookieChangeEvent('change', lists));
+    });
   }
 
   function cookieStoreOperation(steps) {
@@ -512,12 +530,10 @@
     writable: false,
   });
 
-  // The `document.cookie` setter runs through the earlier cookie shim, which
-  // snapshots before the write and calls this after it, so a script-visible
-  // change is observed with the same diff a `CookieStore` write uses. An
-  // opaque origin has no cookie access at all, so it gets no hook to run.
+  // The host queues "process cookie changes" in every live realm when the
+  // jar changes, whichever way it changed. An opaque origin exposes no
+  // `CookieStore`, so it installs no observer to run.
   if (!kOpaqueOrigin) {
-    globalThis.__tbCookieStoreSnapshot = snapshotCookies;
-    globalThis.__tbCookieStoreDidWrite = queueCookieChanges;
+    globalThis.__tbCookieStoreProcessChanges = processCookieChanges;
   }
 })();

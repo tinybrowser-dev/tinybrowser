@@ -39,6 +39,9 @@ pub struct DialHead {
     crossed_origin: bool,
     redirect_count: u32,
     referrer: Option<Url>,
+    /// Whether the jar stored a cookie from this response; the header list
+    /// cannot say, as [`DialOutcome::cookies_stored`] explains.
+    cookies_stored: bool,
     /// A page-visible opaque response has a null body
     /// (<https://fetch.spec.whatwg.org/#concept-filtered-response-opaque>).
     null_body: bool,
@@ -60,6 +63,7 @@ impl DialHead {
             crossed_origin: response.crossed_origin(),
             redirect_count: response.redirect_count(),
             referrer: response.referrer().cloned(),
+            cookies_stored: response.cookies_stored(),
             null_body: false,
         }
     }
@@ -90,6 +94,7 @@ impl DialHead {
                 response.redirect_count()
             },
             referrer: response.referrer().cloned(),
+            cookies_stored: response.cookies_stored(),
             null_body: filtered.response_type().is_opaque(),
         }
     }
@@ -145,6 +150,7 @@ impl DialHead {
             response_type: self.response_type,
             crossed_origin: self.crossed_origin,
             redirect_count: self.redirect_count,
+            cookies_stored: self.cookies_stored,
             referrer: self.referrer,
         }
     }

@@ -614,6 +614,14 @@ impl RealmRegistry {
         self.frames.remove(&frame);
     }
 
+    /// Every realm with a live browsing context in this renderer, in no
+    /// particular order. A realm whose frame is gone is not a Window any more
+    /// and observes nothing
+    /// (<https://cookiestore.spec.whatwg.org/#process-cookie-changes>).
+    pub(crate) fn live_worlds(&self) -> Vec<Rc<RefCell<World>>> {
+        self.frames.values().filter_map(Weak::upgrade).collect()
+    }
+
     /// The realm that owns the document `id` points into, if still alive.
     pub(crate) fn owner_world(&self, id: NodeId) -> Option<Rc<RefCell<World>>> {
         self.documents
@@ -1520,6 +1528,10 @@ pub(crate) enum RealmRequest {
         /// Whether the assignment appended or replaced the active entry.
         handling: crate::protocol::HistoryHandling,
     },
+    /// The cookie jar changed: process the observable changes now, in this
+    /// realm's own turn
+    /// (<https://cookiestore.spec.whatwg.org/#process-cookie-changes>).
+    CookieChanges,
     CspViolation(NodeId, Vec<crate::csp::Violation>),
     /// A `meta http-equiv=refresh` value the document should run the shared
     /// declarative refresh steps on. The realm cannot schedule a navigation
@@ -3058,6 +3070,38 @@ impl World {
     /// Whether a queued navigation has not been handed to the engine yet.
     pub(crate) fn has_frame_navigations(&self) -> bool {
         !self.state.frame_navigations.is_empty()
+    }
+
+    /// Queues this realm for the cookie-change observation a jar write owes it.
+    /// A request already at the back of the queue is enough: both would diff
+    /// the same jar, and only the second would find nothing
+    /// (<https://cookiestore.spec.whatwg.org/#process-cookie-changes>).
+    pub(crate) fn queue_cookie_changes(&self) {
+        let mut outbox = self.outbox.borrow_mut();
+        if matches!(outbox.back(), Some(RealmRequest::CookieChanges)) {
+            return;
+        }
+        outbox.push_back(RealmRequest::CookieChanges);
+    }
+
+    /// Queues "process cookie changes" in every live realm of this renderer
+    /// except this one, when this realm is a Window: the caller processes its
+    /// own realm so its observers see the change before the operation that
+    /// made it returns. The jar is shared by the tab's frames, so a change one
+    /// realm made or received is one every Window observes
+    /// (<https://cookiestore.spec.whatwg.org/#process-cookie-changes>).
+    ///
+    /// A request queued for a document that is then replaced dies with it:
+    /// a navigation installs a fresh realm whose observer starts from the jar
+    /// it sees, so there is no change left for it to report.
+    pub(crate) fn notify_cookie_changes(&self) {
+        let worlds = self.runtime.registry.borrow().live_worlds();
+        for world in worlds {
+            if world.borrow().frame() == self.frame {
+                continue;
+            }
+            world.borrow().queue_cookie_changes();
+        }
     }
 
     /// Queues a connected `<script src>` element for its fetch prepare steps.

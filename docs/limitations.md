@@ -208,13 +208,29 @@ U+003B (;) reaches the jar intact. A document that inherits its origin uses
 its creator's cookie URL, captured when the document is installed; the
 document's own `<base href>` never moves it.
 
-Change events compare the jar's script-visible records before and after a
-script-initiated write (`cookieStore.set`/`delete` and `document.cookie`).
-Two gaps remain:
+Change events work from a per-realm snapshot of the jar's script-visible
+records. Anything that stores a cookie — `cookieStore.set`/`delete`,
+`document.cookie`, or a `Set-Cookie` on a response this renderer dialled —
+queues "process cookie changes" in every live realm of the renderer, and
+each realm diffs its snapshot against the jar. The realm that made the
+change processes it before the operation returns, so its own observers see
+the change in order. A response that stored a cookie says so through
+`DialOutcome::cookies_stored`, because `Set-Cookie` is a forbidden
+response-header name and never reaches the renderer in the header list
+(<https://fetch.spec.whatwg.org/#forbidden-response-header-name>); a failed
+dial processes too, since a hop stores its `Set-Cookie` before the check
+that can refuse the exchange. Three gaps remain:
 
-- A `Set-Cookie` response header, another tab, or WebDriver inserts or
-  evicts a cookie without a script write, so no `change` event is fired for
-  it. The next script write reports only its own diff.
+- Another renderer (a second tab), a service worker, or WebDriver can change
+  the jar with no message to this one, so no `change` event fires for it.
+  The realms here process only changes this renderer made or received. A
+  top-level navigation is browser-dialled for the same reason: its response
+  carries no `cookies_stored` into the renderer, and the Window it would have
+  notified is replaced by the commit.
+- A cookie that only expires is evicted lazily by the next jar operation, so
+  nothing fires a `deleted` event at the expiry instant
+  (<https://cookiestore.spec.whatwg.org/#cookie-store> condition 2). A jar
+  write after the expiry does report it.
 - The spec queues a global task on the DOM manipulation task source
   (<https://cookiestore.spec.whatwg.org/#process-cookie-changes>). This realm
   has no task source the shim can queue on, so the event is a promise job:
@@ -225,7 +241,7 @@ The spec's `delete(name)` step passes `partitioned` as true, but WPT
 (unpartitioned) and expects this delete to remove it, and Chrome and Firefox
 remove it. This implementation passes false.
 
-The `cookiestore` slice passes **37 of 48 files and 221 of 244 subtests**
+The `cookiestore` slice passes **38 of 48 files and 228 of 244 subtests**
 (from 0 of 48 files). The remaining files fail for infrastructure the engine
 does not have:
 
@@ -241,8 +257,6 @@ does not have:
 - `cookieStore_delete_domain` passes both subtests but
   `fetch_tests_from_window` never reports the child's completion, so the
   file times out.
-- `change_eventhandler_for_http_cookie_and_set_cookie_headers` needs
-  HTTP-initiated change events (7 subtests).
 
 WPT's `get_named_cookie` runs from a harness route,
 `/resources/testdriver-cookie?name=`, that answers from the jar's live

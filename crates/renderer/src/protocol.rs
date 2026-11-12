@@ -2004,6 +2004,13 @@ pub struct DialOutcome {
     pub crossed_origin: bool,
     /// Redirect hops followed before this response.
     pub redirect_count: u32,
+    /// Whether the jar stored a `Set-Cookie` from this response. The header
+    /// list above never carries the field
+    /// (<https://fetch.spec.whatwg.org/#forbidden-response-header-name>), so
+    /// this is how a renderer learns the jar changed under it and the
+    /// `CookieStore` change events are owed
+    /// (<https://cookiestore.spec.whatwg.org/#process-cookie-changes>).
+    pub cookies_stored: bool,
     /// The stripped referrer the final hop was sent with, when it sent one.
     /// A navigated document reports it as `document.referrer`
     /// (<https://html.spec.whatwg.org/multipage/document-lifecycle.html#creating-and-initializing-a-document-object>).

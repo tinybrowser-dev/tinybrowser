@@ -998,6 +998,7 @@ fn refused_redirect(blocked: &std::sync::Mutex<Option<Url>>) -> Option<DialOutco
         response_type: net::cors::ResponseType::Basic,
         crossed_origin: false,
         redirect_count: 0,
+        cookies_stored: false,
         referrer: None,
     })
 }
@@ -1116,6 +1117,7 @@ mod tests {
                 response_type: net::cors::ResponseType::Opaque,
                 crossed_origin: true,
                 redirect_count: 0,
+                cookies_stored: false,
                 referrer: None,
             }
         }

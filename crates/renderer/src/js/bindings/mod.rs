@@ -2928,6 +2928,51 @@ mod realm_tests {
         }
     }
 
+    /// A jar change queues "process cookie changes" in every live realm but
+    /// the one that made it: the source processes the change itself before
+    /// the operation returns, so a later write cannot join its event
+    /// (<https://cookiestore.spec.whatwg.org/#process-cookie-changes>).
+    #[test]
+    fn a_cookie_change_queues_every_other_realm() {
+        let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
+        let shared = SharedJsRuntime::default();
+        let stop = Arc::new(Stop::new());
+        let documents = Rc::new(RefCell::new(crate::documents::DocumentStore::default()));
+        let registry = Rc::new(RefCell::new(crate::js::RealmRegistry::default()));
+        let main = world_with_document(
+            &shared,
+            &services,
+            &documents,
+            &registry,
+            "https://a.test/",
+            "<!doctype html><p>page</p>",
+        );
+        let child_frame = FrameId::new(1);
+        let child = Rc::new(RefCell::new(World::new(
+            Url::parse("https://a.test/frame").expect("child URL"),
+            child_frame,
+            &main.borrow().runtime,
+            Rc::new(RefCell::new(Vec::new())),
+        )));
+        registry.borrow_mut().insert_frame(child_frame, &child);
+        let _realm =
+            JsRealm::new(&shared.handle(), main.clone(), Arc::clone(&stop)).expect("realm");
+
+        main.borrow().notify_cookie_changes();
+        assert!(
+            !main.borrow().has_outbox_work(),
+            "the realm that made the change processes it itself"
+        );
+        assert!(matches!(
+            child.borrow().pop_outbox(),
+            Some(crate::js::RealmRequest::CookieChanges)
+        ));
+        assert!(
+            !child.borrow().has_outbox_work(),
+            "one request per realm per change"
+        );
+    }
+
     /// A `Location` assignment that changes only the fragment is a
     /// same-document navigation: the URL and history move now and nothing is
     /// queued for the engine to load. A different path still navigates
