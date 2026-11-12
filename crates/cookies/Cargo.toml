@@ -10,5 +10,6 @@ workspace = true
 
 [dependencies]
 publicsuffix = "2.3.0"
+serde = { version = "1", features = ["derive"] }
 secure-context = { workspace = true }
 url = "2"

@@ -278,6 +278,17 @@ is connection semantics: upgrade blocking, transaction scheduling across
 overlapping connections, a shared key generator, `AbortError` on an uncaught
 listener exception, and the last metadata-revert cases.
 
+Traversal moved next, because `dom/traversal` was the cheapest large hole in
+tier 0. `TreeWalker` now implements all six traversal algorithms, the
+`currentNode` setter, the read-only attributes, and the filter re-entrancy
+guard that throws `InvalidStateError`; `NodeIterator`, `createNodeIterator`,
+`detach()`, and the reference/pointer traversal are new. `dom/traversal`
+moves from 11.1% of files to **13 of 18 files and 1573 of 1608 subtests**:
+`TreeWalker.html` passes 761 of 761, `NodeIterator.html` 766 of 766, and every
+TreeWalker functional file passes. The five remaining files need the
+NodeIterator pre-remove steps, named-property access to an iframe, or
+`srcdoc`.
+
 The WPT work also exposed an engine bug outside IndexedDB: reading an
 undeclared global name returned `undefined` instead of throwing
 `ReferenceError`, because the Window named-properties proxy on the global
@@ -359,3 +370,202 @@ commit.
 800 ms per subtest (7.2 s total) before checking, above the 3 s default, so
 those files get a 6 s budget (8 s with grace, still under testharness.js's
 10 s clock). See `tools/wpt/README.md`.
+
+## URL failure consistency, 2026-11-11
+
+`url/failure.html` ran every failure input through five APIs. Three of them
+already threw; the last two were engine gaps. `URL.href` silently kept the old
+value instead of throwing `TypeError`, and XHR/fetch compared a missing parse
+with `=== null`, so an `undefined` answer slipped through. Both now throw.
+
+`window.open(url)` also returned `null` for an unparsable URL because the
+engine's window-open plan conflated "no URL" with "bad URL". The shim now
+encodes and parses a non-empty URL first and throws `SyntaxError`, which is the
+window-open step before any context is chosen.
+
+The `Location` case exposed a structural gap: assigning
+`frame.contentWindow.location` for an `iframe` created in the same task read
+`undefined`, because a `QuickJS` realm cannot start while the inserting script
+runs. The `WindowProxy` now sees a pending same-origin frame
+(`__tbFrameSameOrigin`), answers its globals from the inserting realm, and
+builds a `Location` bound to the child frame, so the assignment parses, throws
+`SyntaxError` for a bad URL, and queues the child's navigation for a good one.
+`dom/traversal/TreeWalker-realm.html` passes for the same reason.
+
+`url/failure.html` moves from 795 to **1175 of 1175 subtests**, `url/` from
+8505 to **8885 of 10020**, and `dom/traversal` from 1573 to **1575 of 1608**.
+
+## Beacons, 2026-11-11
+
+`navigator.sendBeacon()` was absent, so `beacon/` passed 2 of 73 subtests.
+It now sends through the same dial as `fetch` with the keepalive flag:
+`BodyInit` extraction (string, `Blob`, buffer source, `FormData`,
+`URLSearchParams`), the `http`/`https` scheme check, `no-cors` for a
+CORS-safelisted body type and `cors` otherwise, and the 64 KiB in-flight
+quota. The quota is per document and released when a request finishes,
+which the parallel WPT cases require.
+
+`beacon/` moves to **64 of 73 subtests and 13 of 16 files**, with
+`beacon-basic` and `beacon-cors` fully passing. The three remaining files
+are outside the beacon surface: `idlharness.any` needs `WebIDL2`,
+`header-content-type-and-body` needs `performance.getEntriesByName()`, and
+`header-origin-same-origin` expects `Origin: null` on a cross-origin
+`no-cors` request where this engine (like the spec's append algorithm)
+sends the origin.
+
+A same-origin `iframe` inserted by a script still has no realm until the
+script returns, so its `WindowProxy` now hands out a `Navigator` instance of
+its own. That keeps per-document state (the beacon quota) with the child
+instead of borrowing the inserting document's.
+
+## HTTP cache, 2026-11-12
+
+The in-process harness had no HTTP cache: its `fetch()` called the fetch
+core and the transport directly, so `fetch/http-cache` measured the
+harness as much as the engine, and the browser's cache was a second copy
+inside `crates/browser`. Both hosts now run `dial::HttpCache`
+(`crates/dial/src/cache.rs`), one implementation of selection, freshness,
+revalidation, and invalidation, with the browser and harness passing their
+own partition and clock.
+
+The cache implements the Fetch and RFC 9111 behaviors the suite checks:
+`Vary` representations stored per base key, request directives
+(`no-store`, `no-cache`, `max-age`, `min-fresh`, `max-stale`,
+`only-if-cached` with its generated 504), a private cache that ignores
+`s-maxage`, an unparsable `Expires` treated as already stale, response
+`Pragma: no-cache`, heuristic freshness from `Last-Modified`, `Age`
+correction, 304 header merges, unsafe-method invalidation of the request
+URL and same-origin `Location`/`Content-Location` plus storage of a
+`Content-Location` response under a GET key, byte ranges (slicing a stored
+`200`/`206` and completing a stored `206` with `Range: bytes=<end>-`), and
+`No-Vary-Search` lookup across query variants.
+
+The harness also got a `HarnessClock` the engine advances with its
+virtual-time jumps, so a `pause()` in a test really ages the cache and the
+cookie jar instead of leaving them frozen.
+
+`fetch/http-cache` moves from 73 of 142 subtests and 0 of 15 files to
+**139 of 142 and 12 of 15**, with `304-update`, `cache-mode`,
+`cc-request`, `credentials`, `freshness`, `heuristic`, `invalidate`,
+`no-vary-search`, `partial`, `pragma-no-cache-with-cache-control`,
+`status`, and `vary` fully passing. The three remaining files are
+recorded in `docs/limitations.md`: cache partitioning by top-level site,
+the absent HTTP authentication cache, and an upstream `post-patch` body
+expectation.
+
+A review of the slice folded in the Fetch and RFC 9111 behavior the first
+pass missed. `only-if-cached` now separates the cache mode (any stored
+response, stale included; a miss is a network error) from the request
+directive (the generated 504). `Vary` compares the headers that actually go
+on the wire, so a `Vary: Cookie` response is not reused across login
+states. Revalidation requires a conditional dial and a matching strong
+validator, the 304 merge keeps the stored status and refuses to rewrite
+framing or coding headers, and a served hit reports its current `Age`.
+Range handling serves a stored `206` that covers the whole representation
+as a complete `200`, completes only a stored prefix, and honors `If-Range`
+(ignoring a weak validator). A same-origin request is no longer answered
+by a cached cross-origin redirect, invalidation stays inside its
+partition, `force-cache` still validates a `no-cache` directive, and
+`No-Vary-Search` decodes percent-encoded keys, ignores unknown dictionary
+members, and compares username and password. Integrity metadata is checked
+for every hit and for a buffered network body in the in-process host,
+which previously checked it only when a stale entry happened to exist.
+A streamed unsafe response now invalidates as soon as its head arrives and
+stores its `Content-Location` entry when the body completes, so a browser
+`POST` result page is cached with its bytes instead of an empty body: the
+webdriver lane returns `"abc"` for the `post-patch` reuse.
+
+A cache is a behavior change for every suite that fetches a URL twice, so
+it was measured against a build with the harness cache disabled:
+`fetch/api` gains six files (`conditional-get`, `integrity.sub` 18/18,
+`request-cache-default`, `-force-cache`, `-only-if-cached` 14/14,
+`-reload`) and `xhr/`, `fetch/range`, and `fetch/redirects` keep every
+subtest they had. No file regresses.
+
+## Content Security Policy, 2026-11-12
+
+The whole `content-security-policy/` directory now runs instead of
+erroring on its support scripts, and the checks it exercises landed in
+the engine rather than in page shims. `wptserve` answers an absent
+`{{GET[key]}}` with the empty string, and the CSP support scripts rely on
+that (`tools/wpt-harness/src/template.rs`).
+
+String compilation is gated where the engine compiles a string
+(`Runtime::set_can_compile_strings`), so direct `eval` keeps direct-eval
+scope and `Function` and indirect `eval` share one check. The check
+follows the spec: only `'unsafe-eval'` allows a compilation; a matching
+hash source names an inline script and does not, and `'wasm-unsafe-eval'`
+covers WebAssembly rather than strings. An event handler content
+attribute is compiled by HTML, not by page script, so its compilation is
+not an evaluation: the inline check (`script-src-attr` and its fallback)
+runs when the attribute is set and again at dispatch, and the handler
+slot stays null when it blocks. `setTimeout`/`setInterval` compile a
+string handler when the timer is created and return 0 when CSP blocks
+it; the firing path runs the already-checked string without compiling it
+again, so a meta policy added later neither skips a timer nor reports
+twice.
+
+`base-uri` is implemented: a `<base href>` is resolved against the
+fallback base URL, checked against every policy that names the directive
+(no `default-src` fallback), and a refused element leaves the fallback
+base in place. The check runs from the parser walk, from the insertion
+steps, and when `href` is set, changed, or removed, and each `href` value
+is checked once. An unparseable or `data:`/`javascript:` href keeps the
+fallback, as HTML requires, and report-only policies report without
+blocking. `document.baseURI` and every relative URL resolve through the
+same frozen base.
+
+Violations are queued rather than dispatched inside `setAttribute`, so a
+listener attached after the setter still sees the event. The handler
+check reads the element's own Document's policy list, and a violation
+sample is sent only when the deciding directive carries
+`'report-sample'`.
+
+The harness polls its result expression with `document.eval` while a page
+is parsing. That evaluation used to adopt every pending iframe, starting
+`src` loads before the parser-blocking scripts ahead of them ran; it now
+leaves adoption to the parse walk. A parser-created frame's `about:blank`
+document is additionally registered when it is materialized, so a classic
+script that follows the `<iframe>` sees `contentDocument`, and a child
+frame's about base URL is the creator's document base URL, not its
+document URL.
+
+`content-security-policy/` moves from **2176 to 2201 passing subtests**
+and from **697 to 703 passing files** (884 files, 3977 reported
+subtests). `base-uri` is 5 of 6 files and 10 of 11 subtests,
+`unsafe-eval` is 12 of 15 files (15 of 23 subtests), `script-src` is 78
+of 90 files (125 of 203 subtests), and `generic` is 23 of 29 files (84 of
+99). The `securitypolicyviolation` sample and targeting files gained 9
+subtests. The only regression is `sandbox/sandbox-empty.sub.html`,
+recorded in `docs/limitations.md`: a child's `postMessage` now reaches
+the parent handler that the test expected to miss it.
+
+`CookieStore` landed as a shim over the cookie jar, taking `cookiestore/`
+from **0 to 34 passing files** and from 0 to **208 of 244 passing
+subtests**. The interface is secure-context only and absent in an opaque
+origin's methods, which reject with `SecurityError`; the overloads, the
+name/value validation, the default path, the `__Host-`/`__Secure-` prefix
+rules, the UTF-8 size limits, the `Domain` suffix and public-suffix rules,
+and the `sameSite`/`partitioned` conversions run in the shim, while the jar
+keeps storage, retrieval order, and the storage model's refusals. A write
+crosses as a typed `ScriptCookieWrite`, so a `path` holding `;` cannot inject
+attributes; a read is the jar's script-visible records with their storage
+slot and an observable-attribute state. `CookieChangeEvent` diffs the jar
+before and after each script-initiated write, and `onchange` is an event
+handler attribute read at dispatch, so it is called once.
+
+The slice also fixed two latent bugs the review found: a document's cookie
+URL used the current document base URL, so a `<base href>` in an
+`about:blank` frame could move the cookie query out of the renderer's
+authorized site (the browser treats that as a violation and kills the
+renderer); the URL is now captured when the document is installed and never
+follows `<base>`. `CookieJar::records_for` now returns the retrieval model's
+order (longest path first, then oldest), which is what `get()` returns as its
+first item.
+
+`cookiestore/` is 34 of 48 files and 208 of 244 subtests. The remaining
+files need testdriver `get_named_cookie` (13 subtests), service workers (12,
+plus the IDL harness), the iframe realm before its creating script (2), a
+detached frame's `contentWindow` (1), HTTP-initiated change events (7), and
+`fetch_tests_from_window` completion (`cookieStore_delete_domain`, whose two
+subtests pass). `docs/limitations.md` records each gap.

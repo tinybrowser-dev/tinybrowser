@@ -2468,6 +2468,9 @@ pub(super) fn run_html_insertion_steps(
                 apply_meta_csp(ctx, id);
                 apply_meta_refresh(ctx, id);
             }
+            InsertionStep::Base(id) => {
+                world(ctx)?.borrow_mut().apply_base_element(id);
+            }
         }
     }
     // Spec gates this on a header-delivered CSP

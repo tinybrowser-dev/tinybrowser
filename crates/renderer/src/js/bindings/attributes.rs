@@ -1577,6 +1577,18 @@ fn compile_handler_attribute(ctx: &Ctx<'_>, element: NodeId, typ: &str) -> Resul
             } else {
                 &["event"] as &[&str]
             };
+            // The inline check belongs to the attribute, so it runs when the
+            // attribute is compiled. A handler blocked here leaves its slot
+            // null: setting the attribute must neither run the body nor throw
+            // (<https://w3c.github.io/webappsec-csp/#should-block-inline>).
+            if !crate::js::events::handler_attribute_allowed(ctx, object.as_value(), &body) {
+                object.set(name.as_str(), Value::new_null(ctx.clone()))?;
+                if forwarded {
+                    ctx.globals()
+                        .set(name.as_str(), Value::new_null(ctx.clone()))?;
+                }
+                return Ok(());
+            }
             match crate::js::events::compile_handler_function(ctx, params, &body) {
                 Ok(compiled) => {
                     object.set(name.as_str(), compiled.clone())?;
@@ -1899,6 +1911,19 @@ pub(crate) fn after_attribute_change(
         "value" | "min" | "max" | "step" | "multiple" | "colorspace" | "alpha"
     ) {
         apply_input_value_attribute_change(ctx, element, local)?;
+    }
+    // A `<base href>` (set, changed, or removed) re-runs HTML's set the frozen
+    // base URL, which is where `base-uri` is enforced
+    // (<https://html.spec.whatwg.org/multipage/semantics.html#the-base-element>,
+    // <https://w3c.github.io/webappsec-csp/#is-base-allowed-for-document>).
+    if local == "href" {
+        let owner = world_for_node(ctx, element)?;
+        let is_base = owner.borrow().document(element).is_some_and(|parsed| {
+            crate::dom::tree::is_html_element(&parsed.document.base, element.node, "base")
+        });
+        if is_base {
+            owner.borrow_mut().apply_base_element(element);
+        }
     }
     if local != "src" && local != "srcdoc" {
         return Ok(());

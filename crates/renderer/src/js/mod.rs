@@ -391,6 +391,23 @@ impl SharedJsRuntime {
                     // No realm behind this context: no policy to enforce.
                     return true;
                 };
+                // The timer initialization steps already checked the string
+                // when the timer was created; running the handler is not a
+                // second evaluation. Consume the allowance so an `eval`
+                // inside the handler is checked again.
+                if world.borrow().timer_string.replace(false) {
+                    return true;
+                }
+                // An event handler content attribute is compiled as a
+                // function body by the engine, not by page script. CSP governs
+                // it with the inline check (`script-src-attr`), which runs
+                // when the handler is dispatched; subjecting it to `can
+                // compile strings` would demand `'unsafe-eval'` for an
+                // `onload` attribute
+                // (<https://w3c.github.io/webappsec-csp/#can-compile-strings>).
+                if world.borrow().compiling_handler.get() {
+                    return true;
+                }
                 match csp_eval_violations(&ctx, &world, source) {
                     Ok(violations) if !crate::csp::blocks(&violations) => true,
                     Ok(violations) => {
@@ -1696,6 +1713,20 @@ impl JsRealm {
                 },
             ),
         )?;
+        let begin_timer = world.clone();
+        bridge::object(ctx)?.set(
+            "__tbTimerStringBegin",
+            Func::from(move || {
+                begin_timer.borrow().timer_string.set(true);
+            }),
+        )?;
+        let end_timer = world.clone();
+        bridge::object(ctx)?.set(
+            "__tbTimerStringEnd",
+            Func::from(move || {
+                end_timer.borrow().timer_string.set(false);
+            }),
+        )?;
         // A synchronous XHR cannot reach the dial queue's connect check, so
         // the shim asks this hook instead and the drain dispatches the
         // queued violations
@@ -1768,6 +1799,114 @@ impl JsRealm {
                     )
                 };
                 services.set_cookie(&value, &url, partition_key.as_deref());
+            }),
+        )?;
+
+        Self::install_cookie_store_host_functions(ctx, world)
+    }
+
+    /// The `CookieStore` host functions: the cookie URL, the jar query, and
+    /// the typed write the shim builds from the spec's algorithm
+    /// (<https://cookiestore.spec.whatwg.org/#cookie-store-interface>).
+    fn install_cookie_store_host_functions(
+        ctx: &Ctx<'_>,
+        world: &Rc<RefCell<World>>,
+    ) -> Result<(), JsError> {
+        // `cookieStore` resolves against the document's creation URL, so a
+        // `pushState` to another path does not move the default path
+        // (<https://cookiestore.spec.whatwg.org/#dom-cookiestore-get>).
+        let creation_url = world.clone();
+        bridge::object(ctx)?.set(
+            "__tbCookieStoreCreationUrl",
+            Func::from(move || cookie_store_url(&creation_url.borrow()).to_string()),
+        )?;
+
+        // The `Domain` attribute may not name a public suffix, which the
+        // cookie jar's list decides
+        // (<https://cookiestore.spec.whatwg.org/#set-a-cookie>).
+        bridge::object(ctx)?.set(
+            "__tbCookieStorePublicSuffix",
+            Func::from(|domain: String| net::is_public_suffix(&domain)),
+        )?;
+
+        // The spec host-parses the `domain` option before comparing it, so an
+        // IDN option compares as its punycoded host
+        // (<https://cookiestore.spec.whatwg.org/#set-a-cookie> step 12).
+        bridge::object(ctx)?.set(
+            "__tbCookieStoreParseDomain",
+            Func::from(|domain: String| {
+                url::Host::parse(&domain).ok().map(|host| host.to_string())
+            }),
+        )?;
+
+        // A host that is an IP address has no registrable domain suffix
+        // (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#is-a-registrable-domain-suffix-of-or-is-equal-to>).
+        bridge::object(ctx)?.set(
+            "__tbCookieStoreIsIp",
+            Func::from(|host: String| {
+                let bare = host
+                    .strip_prefix('[')
+                    .and_then(|rest| rest.strip_suffix(']'))
+                    .unwrap_or(&host);
+                bare.parse::<std::net::IpAddr>().is_ok()
+            }),
+        )?;
+
+        // The `url` option parses against the API base URL, which is the
+        // document base URL
+        // (<https://html.spec.whatwg.org/multipage/webappapis.html#api-base-url>).
+        let api_base = world.clone();
+        bridge::object(ctx)?.set(
+            "__tbCookieStoreApiBaseUrl",
+            Func::from(move || api_base.borrow().main_base_url().to_string()),
+        )?;
+
+        let store_get_all = world.clone();
+        bridge::object(ctx)?.set(
+            "__tbCookieStoreGetAll",
+            Func::from(move || {
+                let (services, url, partition_key) = {
+                    let world = store_get_all.borrow();
+                    (
+                        world.runtime.services.clone(),
+                        cookie_store_url(&world),
+                        world.partition_key(),
+                    )
+                };
+                // A cookie name and value cannot contain NUL, LF, `;`, or
+                // whitespace, so the pair encoding survives every cookie the
+                // jar can hold
+                // (<https://datatracker.ietf.org/doc/html/rfc6265#section-4.1.1>).
+                let mut encoded = String::new();
+                for record in services.cookie_store_records(&url, partition_key.as_deref()) {
+                    encoded.push_str(&record.slot);
+                    encoded.push('\0');
+                    encoded.push_str(&record.name);
+                    encoded.push('\0');
+                    encoded.push_str(&record.value);
+                    encoded.push('\0');
+                    encoded.push_str(&record.state);
+                    encoded.push('\n');
+                }
+                encoded
+            }),
+        )?;
+
+        let store_set = world.clone();
+        bridge::object(ctx)?.set(
+            "__tbCookieStoreSet",
+            Func::from(move |options: Object<'_>| {
+                let write = cookie_store_write(&options)?;
+                let (services, url, partition_key) = {
+                    let world = store_set.borrow();
+                    (
+                        world.runtime.services.clone(),
+                        cookie_store_url(&world),
+                        world.partition_key(),
+                    )
+                };
+                services.cookie_store_store(&write, &url, partition_key.as_deref());
+                Ok::<(), rquickjs::Error>(())
             }),
         )?;
         Ok(())
@@ -2954,6 +3093,45 @@ fn render_eval_result<'js>(ctx: &rquickjs::Ctx<'js>, value: Value<'js>) -> Resul
         return Ok(String::new());
     }
     Ok(Coerced::<String>::from_js(ctx, value)?.0)
+}
+
+/// The typed write `cookies.js` hands `__tbCookieStoreSet`: the API's
+/// algorithm already validated and defaulted every field, so this only checks
+/// the shape at the boundary
+/// (<https://cookiestore.spec.whatwg.org/#set-a-cookie>).
+fn cookie_store_write(options: &Object<'_>) -> rquickjs::Result<net::ScriptCookieWrite> {
+    let same_site = match options.get::<_, String>("sameSite")?.as_str() {
+        "strict" => net::CookieSameSite::Strict,
+        "lax" => net::CookieSameSite::Lax,
+        "none" => net::CookieSameSite::None,
+        other => {
+            return Err(Exception::throw_type(
+                options.ctx(),
+                &format!("sameSite: {other:?} is not a CookieSameSite"),
+            ));
+        }
+    };
+    Ok(net::ScriptCookieWrite {
+        name: options.get("name")?,
+        value: options.get("value")?,
+        expires_millis: options.get("expires")?,
+        max_age: options.get("maxAge")?,
+        domain: options.get("domain")?,
+        path: options.get("path")?,
+        same_site,
+        partitioned: options.get("partitioned")?,
+    })
+}
+
+/// The URL a `CookieStore` operation uses as its resource. It is the
+/// document's creation URL, which a `pushState` does not move
+/// (<https://cookiestore.spec.whatwg.org/#dom-cookiestore-get>). A document
+/// that inherits its origin (an initial `about:blank` or `about:srcdoc`) has
+/// no URL of its own that cookies apply to, so it uses its creator's cookie
+/// URL, captured when the document was installed
+/// (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-cookie>).
+fn cookie_store_url(world: &World) -> Url {
+    world.cookie_url()
 }
 
 fn millis(delay: f64) -> u32 {

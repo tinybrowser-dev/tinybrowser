@@ -1268,10 +1268,37 @@ pub(crate) struct World {
     /// it after each task, because the realm cannot reach its own handle
     /// (<https://html.spec.whatwg.org/multipage/workers.html#dom-dedicatedworkerglobalscope-close>).
     pub(crate) worker_close_requested: Rc<Cell<bool>>,
+    /// Set while the engine compiles an event handler content attribute into a
+    /// function. That compilation is HTML's, and CSP governs the handler with
+    /// its inline check rather than the `unsafe-eval` rule that applies to
+    /// page script compiling strings
+    /// (<https://w3c.github.io/webappsec-csp/#can-compile-strings>).
+    ///
+    /// A `Cell` because the string-compilation hook reads it from a shared
+    /// borrow while the handler's constructor call is in flight.
+    pub(crate) compiling_handler: Cell<bool>,
+    /// Set for the one compilation a timer's string handler performs. The
+    /// handler is checked once when the timer is created, not every time it
+    /// fires, so the hook admits this compilation and then resumes normal
+    /// checking for any `eval` the handler itself runs
+    /// (<https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#timer-initialisation-steps>).
+    pub(crate) timer_string: Cell<bool>,
     /// Document ids this realm created. Its logs feed every realm's
     /// observers through the union drain.
     owned: HashSet<u32>,
     pub document_url: Url,
+    /// The URL the document was created with. A same-document history update
+    /// changes [`Self::document_url`] but not this one, and `CookieStore`
+    /// resolves its default path and its `url` option against it
+    /// (<https://cookiestore.spec.whatwg.org/#dom-cookiestore-get>).
+    pub(crate) creation_url: Url,
+    /// The cookie URL a document that inherits its origin uses: the creator's
+    /// cookie URL, captured when the `about:blank` or `about:srcdoc` document
+    /// was installed. `None` for an ordinary document, whose own creation URL
+    /// is its cookie URL. It never follows a later `<base href>`, which is
+    /// what makes it different from the document base URL
+    /// (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-cookie>).
+    pub(crate) inherited_cookie_url: Option<Url>,
     /// The URL the `"client"` referrer branch reads. It is the document URL,
     /// except for an `iframe srcdoc` document, where the spec walks to the
     /// container document's URL
@@ -1505,6 +1532,18 @@ pub(crate) type Outbox = Rc<RefCell<VecDeque<RealmRequest>>>;
 pub(crate) struct DocumentState {
     /// `meta` elements whose policy was already appended.
     pub(crate) applied_csp_metas: HashSet<NodeId>,
+    /// `base` elements a `base-uri` policy refused. The document URL stays
+    /// the base, and a later `base` element is not consulted: HTML freezes
+    /// the first one that carries an `href`
+    /// (<https://w3c.github.io/webappsec-csp/#is-base-allowed-for-document>).
+    pub(crate) blocked_bases: HashSet<NodeId>,
+    /// The `href` each `base` element was last checked with, so a resumed
+    /// parse walk does not repeat a check that already ran for the same
+    /// value (<https://html.spec.whatwg.org/multipage/semantics.html#the-base-element>).
+    pub(crate) base_href_seen: HashMap<NodeId, Option<String>>,
+    /// The base URL each `base` element may freeze, or `None` when its
+    /// `href` is refused or unusable.
+    base_results: HashMap<NodeId, Option<Url>>,
     frame_navigations: Vec<FrameNavigation>,
     /// Script elements the HTML parser inserted; script insertion clears the
     /// bit (<https://html.spec.whatwg.org/multipage/scripting.html#parser-inserted>).
@@ -1662,6 +1701,9 @@ impl DocumentState {
     /// are pruned by id in [`Self::forget_document`] instead.
     fn reset(&mut self) {
         self.applied_csp_metas.clear();
+        self.blocked_bases.clear();
+        self.base_href_seen.clear();
+        self.base_results.clear();
         self.frame_navigations.clear();
         self.parser_inserted.clear();
         self.decoders.clear();
@@ -1683,6 +1725,11 @@ impl DocumentState {
 
     /// Drops the entries one document's nodes left behind.
     fn forget_document(&mut self, document: u32) {
+        self.blocked_bases.retain(|node| node.document != document);
+        self.base_href_seen
+            .retain(|node, _| node.document != document);
+        self.base_results
+            .retain(|node, _| node.document != document);
         self.nonce_slots.retain(|node, _| node.document != document);
         self.creator_stacks
             .retain(|node, _| node.document != document);
@@ -1775,6 +1822,8 @@ impl World {
             document: None,
             realm_context: None,
             worker_close_requested: Rc::new(Cell::new(false)),
+            compiling_handler: Cell::new(false),
+            timer_string: Cell::new(false),
             owned: HashSet::new(),
             origin: document_url.origin(),
             top_level: None,
@@ -1783,6 +1832,8 @@ impl World {
             same_site_cookie_policy: net::SameSiteCookiePolicy::All,
             referrer_url: document_url.clone(),
             document_referrer: None,
+            creation_url: document_url.clone(),
+            inherited_cookie_url: None,
             document_url,
             base_url: None,
             policy: PolicyContainer {
@@ -2822,20 +2873,138 @@ impl World {
         "about:blank".to_owned()
     }
 
+    /// Runs HTML's set-the-frozen-base-URL for one `base` element: resolve
+    /// its `href` against the fallback base URL and run the `base-uri` check
+    /// (<https://html.spec.whatwg.org/multipage/semantics.html#the-base-element>,
+    /// <https://w3c.github.io/webappsec-csp/#is-base-allowed-for-document>).
+    ///
+    /// Returns the base URL the element may freeze. A repeated call with the
+    /// same `href` reuses the earlier answer, so a resumed parse walk neither
+    /// repeats the check nor the violation.
+    pub(crate) fn apply_base_element(&mut self, id: NodeId) -> Option<Url> {
+        let href = self.document(id).and_then(|parsed| {
+            crate::dom::tree::attr(&parsed.document.base, id.node, "href").map(str::to_owned)
+        });
+        if self.state.base_href_seen.get(&id) == Some(&href) {
+            return self.state.base_results.get(&id).cloned().flatten();
+        }
+        self.state.base_href_seen.insert(id, href.clone());
+        let Some(href) = href else {
+            self.state.blocked_bases.remove(&id);
+            self.state.base_results.insert(id, None);
+            return None;
+        };
+        let fallback = self.document_base_url(id);
+        // HTML returns the fallback before CSP runs when the value is not a
+        // URL or names a `data:`/`javascript:` resource
+        // (<https://html.spec.whatwg.org/multipage/semantics.html#the-base-element>).
+        let Some(url) = fallback
+            .join(&href)
+            .ok()
+            .filter(|url| !matches!(url.scheme(), "data" | "javascript"))
+        else {
+            self.state.blocked_bases.remove(&id);
+            self.state.base_results.insert(id, None);
+            return None;
+        };
+        let document_url =
+            Url::parse(&self.document_url_of(id)).unwrap_or_else(|_| self.document_url.clone());
+        let violations = self
+            .policy
+            .csp
+            .check_base(&self.origin, &document_url, &url);
+        if !violations.is_empty() {
+            self.queue_csp_violations(id, violations.clone());
+        }
+        if crate::csp::blocks(&violations) {
+            self.state.blocked_bases.insert(id);
+            self.state.base_results.insert(id, None);
+            None
+        } else {
+            self.state.blocked_bases.remove(&id);
+            self.state.base_results.insert(id, Some(url.clone()));
+            Some(url)
+        }
+    }
+
     /// The document's base URL: the first `base` element's `href` resolved
     /// against the fallback base URL, or the fallback itself
     /// (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#document-base-url>).
     pub(crate) fn document_base_url_of(&self, id: NodeId) -> String {
-        let fallback = self.document_url_of(id);
+        self.document_base_url(id).to_string()
+    }
+
+    /// This realm's document base URL, resolved from the frozen base URL
+    /// (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#document-base-url>).
+    pub(crate) fn document_base_url(&self, id: NodeId) -> Url {
+        let document_url = self.document_url_of(id);
+        let parsed = Url::parse(&document_url).ok();
+        // An `about:srcdoc` document's fallback base URL is the creator's base
+        // URL; its own URL cannot be a base
+        // (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#fallback-base-url>).
+        let fallback = self
+            .is_main_document(id)
+            .then(|| self.base_url.clone())
+            .flatten()
+            .or(parsed)
+            .unwrap_or_else(|| Url::parse("about:blank").expect("static URL parses"));
         let Some(parsed) = self.document(id) else {
             return fallback;
         };
+        let Some(href) = self.frozen_base_href(&parsed) else {
+            return fallback;
+        };
+        // A `data:` or `javascript:` href is not a base, and an unparseable
+        // one leaves the fallback in place
+        // (<https://html.spec.whatwg.org/multipage/semantics.html#the-base-element>).
+        fallback
+            .join(&href)
+            .ok()
+            .filter(|url| !matches!(url.scheme(), "data" | "javascript"))
+            .unwrap_or(fallback)
+    }
+
+    /// The URL the document's cookies belong to: its own creation URL, or the
+    /// creator's cookie URL when the document inherits its origin. A `<base
+    /// href>` never moves it
+    /// (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-cookie>).
+    pub(crate) fn cookie_url(&self) -> Url {
+        self.inherited_cookie_url
+            .clone()
+            .unwrap_or_else(|| self.creation_url.clone())
+    }
+
+    /// This realm's main document base URL, for a caller that only has the
+    /// realm.
+    pub(crate) fn main_base_url(&self) -> Url {
+        let fallback = self
+            .base_url
+            .clone()
+            .unwrap_or_else(|| self.document_url.clone());
+        let Some(parsed) = self.main_document() else {
+            return fallback;
+        };
+        let Some(href) = self.frozen_base_href(&parsed) else {
+            return fallback;
+        };
+        fallback
+            .join(&href)
+            .ok()
+            .filter(|url| !matches!(url.scheme(), "data" | "javascript"))
+            .unwrap_or(fallback)
+    }
+
+    /// The frozen base URL's `href`: the first `base` element in tree order
+    /// that carries one and that no `base-uri` policy refused
+    /// (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#document-base-url>,
+    /// <https://w3c.github.io/webappsec-csp/#is-base-allowed-for-document>).
+    ///
+    /// A refused element stays the one whose `href` defines the frozen base
+    /// URL, so the walk does not move on to the next `base`: the document
+    /// falls back to its fallback base URL instead.
+    pub(crate) fn frozen_base_href(&self, parsed: &Parsed) -> Option<String> {
         let base = &parsed.document.base;
-        // Frozen base URL: the first `base` element *with* an `href`, in tree
-        // order (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#document-base-url>).
-        // A pre-order walk visits nodes in tree order, so the first match wins.
         let mut stack = vec![base.root_node().id];
-        let mut href: Option<String> = None;
         while let Some(current) = stack.pop() {
             let Some(node) = base.get_node(current) else {
                 continue;
@@ -2845,26 +3014,18 @@ impl World {
                     && element.name.local.as_str() == "base"
             }) && let Some(value) = crate::dom::tree::attr(base, current, "href")
             {
-                href = Some(value.to_owned());
-                break;
+                let id = NodeId {
+                    document: parsed.id,
+                    node: current,
+                };
+                if self.state.blocked_bases.contains(&id) {
+                    return None;
+                }
+                return Some(value.to_owned());
             }
             stack.extend(node.children.iter().rev().copied());
         }
-        // An `about:srcdoc` document's fallback base URL is the creator's base
-        // URL; its own URL cannot be a base
-        // (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#fallback-base-url>).
-        let fallback = self
-            .base_url
-            .as_ref()
-            .map(std::string::ToString::to_string)
-            .unwrap_or(fallback);
-        let Some(href) = href else {
-            return fallback;
-        };
-        url::Url::parse(&fallback)
-            .ok()
-            .and_then(|url| url.join(&href).ok())
-            .map_or(fallback, |url| url.to_string())
+        None
     }
 
     pub(crate) fn queue_frame_navigation(&mut self, navigation: FrameNavigation) {

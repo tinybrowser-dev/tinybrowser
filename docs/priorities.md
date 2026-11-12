@@ -39,7 +39,7 @@ Sources:
   `IntersectionObserver` 55.4%, `ResizeObserver` 46.4%,
   `getRootNode()` 43.9%, `isConnected` 40.9%, `attachShadow()` 22.2%,
   `customElements.define()` 19.7%. WPT 59.1%; `dom/nodes` 80.5%,
-  `dom/events` 28.0%, `dom/ranges` 50.0%, `dom/traversal` 11.1%.
+  `dom/events` 28.0%, `dom/ranges` 50.0%, `dom/traversal` 97.9%.
 
 ### Tier 1 — high reach
 
@@ -48,11 +48,13 @@ Sources:
   24.8%. WPT 34.8%; `fetch/api` 71.8%.
 - **cookies** — `document.cookie` read 78.7%, write 68.3%,
   `SameSite=None` 38.6%, no `SameSite` 31.7%, partitioned 30.7%,
-  `CookieStore` 11.9%. WPT 32.6%; `cookiestore` 0/48.
+  `CookieStore` 11.9%. WPT 32.6%; `cookiestore` 34/48 files and
+  208/244 subtests. What remains is HTTP-initiated change events, service
+  workers, and the testdriver cookie read.
 - **storage** — `localStorage`/`sessionStorage` read 80.0%, write
   75.8%. WPT `webstorage` 81.5%.
 - **csp** — any CSP 68.9%, HTTP-delivered 50.0%, `unsafe-eval` 54.2%,
-  `strict-dynamic` 43.1%. WPT 26.6%.
+  `strict-dynamic` 43.1%. WPT 55.3% of subtests (703/884 files).
 - **referrer-policy** — `SetReferrerPolicy` 66.6%, response header
   32.3%, meta 27.8%, iframe attribute 6.2%. WPT 16.5%.
 
@@ -88,21 +90,23 @@ Ordered by reach × current gap:
    `display` 93.2%, `matchMedia()` 66.2%, `getBoundingClientRect()`
    71.0% against 44.1% for css; `css/cssom-view` 17.1%, `css/cssom`
    29.5%.
-2. **cookies** — read on 78.7% of pages against 32.6% WPT. SameSite,
-   partitioned cookies, and `CookieStore` (11.9%, 0/48).
+2. **cookies** — read on 78.7% of pages against 32.6% WPT. SameSite and
+   partitioned cookies are in; `CookieStore` (11.9%) is 34/48 files, and
+   the rest needs HTTP change events, service workers, and testdriver
+   `get_named_cookie`.
 3. **csp** — 68.9% reach against 26.6%. A response-header path with a
    small surface.
 4. **fetch** — 72.7% reach against 34.8%. The Body/Headers/stream
    rewrite took `fetch/api` from 26.2% to 71.8%; what remains is
-   `sendBeacon()` (52.6% of pages, still 0/16), `fetch/metadata` 1/87,
-   `fetch/h1-parsing` 1/20, and `fetch/http-cache` 1/15.
+   `sendBeacon()` (52.6% of pages, 13/16 files), `fetch/metadata` 1/87,
+   `fetch/h1-parsing` 1/20, and `fetch/http-cache` 12/15.
 5. **html forms and semantics** — 81.0% of pages have a form; html is
    46.7%, but `html/semantics` is 32.2% and `html/webappapis` 20.4%.
    Controls, submission, and script/timer plumbing.
 6. **selectors** — 84.2% reach against `css/selectors` 51.0%.
-7. **dom parsing and events** — `dom/events` 28.0% and
-   `dom/traversal` 11.1% behind universal DOM reach; parser work stays
-   in `domparsing`.
+7. **dom parsing and events** — `dom/events` 28.0% behind universal DOM
+   reach, with `dom/traversal` now at 97.9%; parser work stays in
+   `domparsing`.
 
 `encoding` (68–79%) and `messaging` (82.1%) pass enough that they need
 targeted fixes, not a push.

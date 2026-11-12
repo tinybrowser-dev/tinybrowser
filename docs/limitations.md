@@ -94,6 +94,29 @@ worker creator's) capability. Serializing a `SharedArrayBuffer` throws a
 `DataCloneError` unless the sender is cross-origin isolated, as the HTML
 structured-clone algorithm requires, so the `Growable SharedArrayBuffer` WPT
 case passes through its non-isolated branch.
+
+`TreeWalker` and `NodeIterator` implement every traversal method, the
+whatToShow bitmask, the filter callback with its re-entrancy guard, and
+`createTreeWalker`/`createNodeIterator`. The NodeIterator pre-remove steps
+are absent: removing a node does not move a live iterator's reference, so
+`NodeIterator-removal.html` fails. The cross-realm traversal files also
+depend on named-property access to an iframe and on `srcdoc`, not on the
+traversal interfaces.
+
+A `QuickJS` realm cannot start while another realm's script runs, so a
+same-origin `iframe` inserted by a script has its document but not its realm
+until the script returns. Its `WindowProxy` answers the inserting realm's
+globals (`DOMException`, the ECMAScript intrinsics, and the interfaces whose
+prototype carries a `Symbol.toStringTag`) and a `Location` bound to the child
+frame, so `contentWindow.DOMException` and `contentWindow.location = url`
+behave as the spec requires in that same task. It also hands out a `Navigator`
+of its own so per-document state such as the beacon quota stays with the
+child. Those objects still execute in the inserting realm, though: a relative
+URL handed to the stand-in `Navigator.sendBeacon` resolves against the
+inserting document's base URL and queues with its client settings, not the
+child's, until the child realm starts. The constructors also come from the
+inserting realm rather than the child's own realm, which is observably
+different only before the child realm exists.
 `WebAssembly.Memory` exists, including shared memories whose buffer is a real
 `SharedArrayBuffer`, but the module compiler does not, so `WebAssembly.Module`,
 `Instance`, `compile`, and `validate` are absent. A non-shared memory's buffer
@@ -165,22 +188,111 @@ site, which shares its process). A header value holding a control byte
 other than TAB (Fetch permits e.g. `0x01`) is refused by the HTTP layer,
 so WPT `fetch/api/cors/cors-preflight-not-cors-safelisted.any.js` still
 fails on the `accept-language`/`content-language` `0x01` rows. `fetch`
-also ignores request `integrity` metadata
-(SRI is enforced for scripts only, `crates/renderer/src/csp.rs`); the old
-cross-origin block hid both that and the sandbox-origin gap, so
-`fetch/api/basic/integrity.sub.any.html` and
-`xhr/access-control-sandboxed-iframe-*.htm` now fail honestly. A
-same-origin `cors` POST that survives a 307/308 redirect sends `Origin`,
+enforces request `integrity` at the dial for the native browser and the
+in-process host alike (`dial::integrity_ok`), re-checks a cached body
+before answering, and treats an opaque or undecodable body as a failure.
+A same-origin `cors` POST that survives a 307/308 redirect sends `Origin`,
 which `fetch/api/redirect/redirect-origin.any.js` expects to be absent;
 step 3 of the append algorithm does not exempt that case, and Chrome and
 Firefox fail the same two subtests. WPT `fetch/api/cors/` covers the
 surface.
 
-CSP `eval`/`Function` gating shadows the globals in JS because the
-engine has no compilation hook; direct `eval` therefore evaluates
-indirectly (global scope) even when allowed. Blocking and report
-delivery (`report-uri`/`report-to`), `frame-ancestors`, and per-element
-violation source positions are not implemented yet.
+## Cookie Store
+
+`CookieStore`, `CookieChangeEvent`, and the `cookieStore` attribute are a
+shim over the cookie jar. The shim owns the API's validation, default path,
+and overloads; the jar owns storage, retrieval order, path and domain
+matching, and the storage model's refusals. A write crosses to the jar as a
+typed `ScriptCookieWrite`, not as a `Set-Cookie` line, so a `path` holding
+U+003B (;) reaches the jar intact. A document that inherits its origin uses
+its creator's cookie URL, captured when the document is installed; the
+document's own `<base href>` never moves it.
+
+Change events compare the jar's script-visible records before and after a
+script-initiated write (`cookieStore.set`/`delete` and `document.cookie`).
+Two gaps remain:
+
+- A `Set-Cookie` response header, another tab, or WebDriver inserts or
+  evicts a cookie without a script write, so no `change` event is fired for
+  it. The next script write reports only its own diff.
+- The spec queues a global task on the DOM manipulation task source
+  (<https://cookiestore.spec.whatwg.org/#process-cookie-changes>). This realm
+  has no task source the shim can queue on, so the event is a promise job:
+  it runs before the write continuation's timers, not after them.
+
+The spec's `delete(name)` step passes `partitioned` as true, but WPT
+`cookieStore_get_delete_basic` sets the cookie with the positional overload
+(unpartitioned) and expects this delete to remove it, and Chrome and Firefox
+remove it. This implementation passes false.
+
+The `cookiestore` slice passes **34 of 48 files and 208 of 244 subtests**
+(from 0 of 48 files). The remaining files fail for infrastructure the engine
+does not have:
+
+- `cookieListItem_attributes` and `cookieStore_set_path` need testdriver's
+  `get_named_cookie`, which the harness does not implement (13 subtests).
+- `cookieStoreManager_getSubscriptions_*`, `cookieStore_subscribe_arguments`,
+  `cookieStore_subscriptions_empty`, `serviceworker_cookieStore_cross_origin`,
+  and `serviceworker_cookieStore_subscriptions_reset` need service workers
+  (12 subtests); `idlharness` needs the WebIDL2 script.
+- `cookieStore_get_set_across_frames` needs a script-created iframe's realm
+  before the creating script runs, so `iframe.contentWindow.cookieStore` is
+  undefined (2 subtests).
+- `cookieStore_in_detached_frame` reads `contentWindow` of a removed iframe,
+  which the engine reports as a cross-origin access (1 subtest).
+- `cookieStore_delete_domain` passes both subtests but
+  `fetch_tests_from_window` never reports the child's completion, so the
+  file times out.
+- `change_eventhandler_for_http_cookie_and_set_cookie_headers` needs
+  HTTP-initiated change events (7 subtests).
+
+## HTTP cache
+
+`crates/dial/src/cache.rs` holds the one response cache, shared by the
+native browser and the in-process WPT harness, so a verdict measures the
+same freshness, `Vary`, revalidation, and invalidation rules the browser
+runs. Entries are keyed by method, URL, credentials mode, initiator
+origin, and the storage partition, and each base key keeps one stored
+response per `Vary` representation.
+
+Still open: the partition is the browser's renderer assignment, not the
+top-level site Fetch's "HTTP cache partitions" defines, so a same-site
+frame inside a cross-site top-level page reuses the opener's entries
+(`fetch/http-cache/split-cache.html`, last subtest). There is no HTTP
+authentication cache, so `basic-auth-cache-test.html` never finishes.
+`post-patch.any.html` cannot pass as written: its second request omits
+`response_body`, so the harness expects the default UUID while the
+correct `Content-Location` reuse answers `"abc"`. `stale-while-revalidate`
+background revalidation is not implemented; a stored
+`206` is completed with a synthetic `Range: bytes=<end>-` request rather
+than being assembled from several stored ranges.
+
+`navigator.sendBeacon()` builds the same `POST` dial as `fetch` with the
+keepalive flag: `BodyInit` extraction, the scheme check, the CORS mode
+chosen from the content type, and the in-flight quota. The quota is
+accounted per document in the shim, so a `fetch(..., {keepalive: true})`
+in the same document does not consume it; the browser's process-wide
+reservation is still the hard limit and a rejected dial surfaces as a
+dropped beacon rather than a return value. The `BodyInit` union is not
+lowered by the JS binding generator yet, so `sendBeacon` is installed on
+the prototype by hand with the operation's shape.
+
+CSP gates string compilation in the engine (`can_compile_strings`), so
+direct `eval` keeps its scope and `Function` and indirect `eval` are
+covered by the same check. Still open: there is no incremental HTML
+parser, so scripts a page writes with `document.write` during parsing
+never run (this blocks the strict-dynamic and about-blank iframe cases
+that depend on it); `report-uri`/`report-to` endpoint delivery is
+partial; `base-uri` is checked when the parser reaches a `<base>`, when
+a base is inserted, and when its `href` changes, but during parsing the
+live document base URL can still see a `<base>` the parser has not
+reached yet; the CSP list does not carry the self-origin, so `'self'` in
+an inherited policy resolves against the document origin; the tentative
+`'eval-sha256-…'` source expression is not implemented (it is not in
+CSP3, and a policy naming it still needs `'unsafe-eval'`); and
+`content-security-policy/sandbox/sandbox-empty.sub.html` now delivers a
+sandboxed child's `postMessage` to the parent's handler, which the
+converted WebKit test expected to lose a parse-order race.
 
 Associated stylesheets expose `cssRules`, per-interface rule objects, and
 declaration accessors. Still open: constructable `insertRule` /

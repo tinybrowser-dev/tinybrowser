@@ -343,6 +343,33 @@ impl NetworkHost for HostServices {
             partition_key: partition_key.map(str::to_owned),
         }));
     }
+
+    fn cookie_store_records(
+        &self,
+        url: &Url,
+        partition_key: Option<&str>,
+    ) -> Vec<renderer::ScriptCookie> {
+        match self.call(ServiceCall::Network(NetworkCall::CookieStoreGet {
+            url: url.to_string(),
+            partition_key: partition_key.map(str::to_owned),
+        })) {
+            Some(ServiceReply::CookieStore(records)) => records,
+            _ => Vec::new(),
+        }
+    }
+
+    fn cookie_store_store(
+        &self,
+        write: &net::ScriptCookieWrite,
+        url: &Url,
+        partition_key: Option<&str>,
+    ) {
+        let _reply = self.call(ServiceCall::Network(NetworkCall::CookieStoreSet {
+            write: write.clone(),
+            url: url.to_string(),
+            partition_key: partition_key.map(str::to_owned),
+        }));
+    }
 }
 
 /// One storage key as the wire claim, which is the serialized origin.

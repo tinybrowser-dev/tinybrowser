@@ -303,6 +303,22 @@ impl Agent {
         )
     }
 
+    /// Stores one typed `CookieStore` write. Unlike a `Set-Cookie` line, a
+    /// path holding U+003B (;) reaches the jar intact
+    /// (<https://cookiestore.spec.whatwg.org/#set-a-cookie>).
+    pub fn set_script_cookie_partition(
+        &self,
+        write: &crate::ScriptCookieWrite,
+        uri: &Url,
+        partition_key: Option<&str>,
+    ) -> bool {
+        let origin = uri.origin();
+        self.jar().store_script(
+            write,
+            self.fetch_op(uri, &origin, RetrievalKind::NonHttp, partition_key),
+        )
+    }
+
     /// `document.cookie` setter for a request with no top-level site.
     pub fn set_cookie(&self, value: &str, uri: &Url) {
         let _stored = self.set_cookie_partition(value, uri, None);
@@ -338,6 +354,21 @@ impl Agent {
         let origin = uri.origin();
         self.jar()
             .records_for(self.fetch_op(uri, &origin, RetrievalKind::Http, partition_key))
+    }
+
+    /// The cookies a `CookieStore` query for `uri` sees: `HttpOnly` cookies
+    /// are excluded, and `partition_key`'s partition is included beside the
+    /// unpartitioned jar
+    /// (<https://cookiestore.spec.whatwg.org/#query-cookies>).
+    #[must_use]
+    pub fn script_cookie_records_partition(
+        &self,
+        uri: &Url,
+        partition_key: Option<&str>,
+    ) -> Vec<crate::CookieRecord> {
+        let origin = uri.origin();
+        self.jar()
+            .records_for(self.fetch_op(uri, &origin, RetrievalKind::NonHttp, partition_key))
     }
 
     /// Drops every cookie from the live jar

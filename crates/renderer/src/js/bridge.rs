@@ -61,6 +61,11 @@ pub(crate) fn install(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
     bridge.set("__tbSecureContext", secure_context)?;
     let cross_origin_isolated = world.borrow().is_cross_origin_isolated();
     bridge.set("__tbCrossOriginIsolated", cross_origin_isolated)?;
+    // A sandboxed document has an opaque origin, and every `CookieStore`
+    // method rejects with a `SecurityError` there
+    // (<https://cookiestore.spec.whatwg.org/#dom-cookiestore-get>).
+    let opaque_origin = matches!(world.borrow().origin, url::Origin::Opaque(_));
+    bridge.set("__tbOpaqueOrigin", opaque_origin)?;
     let install: Function = ctx.eval(format!(
         "(function(host) {{ 'use strict';\n{}\n{}\n}})",
         include_str!("scripts/primordials.js"),

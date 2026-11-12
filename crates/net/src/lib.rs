@@ -15,8 +15,8 @@ mod transport;
 
 pub use client::{Agent, AgentOptions, Body, Clock, ClockSource, Request, Response};
 pub use cookies::{
-    CookieRecord, CookieSameSite, InitiatorKind, SameSiteCookiePolicy, origins_same_site, site,
-    site_for_origin,
+    CookieRecord, CookieSameSite, InitiatorKind, SameSiteCookiePolicy, ScriptCookieWrite,
+    is_public_suffix, origins_same_site, site, site_for_origin,
 };
 pub use error::{NetError, TimeoutKind, TransportError};
 pub use identity::{

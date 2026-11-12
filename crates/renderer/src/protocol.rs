@@ -417,6 +417,35 @@ pub enum BrowserEvent {
     HistoryTraversal { delta: i32 },
 }
 
+/// One script-visible cookie a `CookieStore` operation sees. `CookieListItem`
+/// exposes exactly these two fields
+/// (<https://cookiestore.spec.whatwg.org/#cookie-list-item>).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScriptCookie {
+    /// Cookie name.
+    pub name: String,
+    /// Cookie value.
+    pub value: String,
+    /// The storage slot the cookie occupies, for change detection.
+    pub slot: String,
+    /// A digest of every observable attribute; unequal values mean a change.
+    pub state: String,
+}
+
+impl ScriptCookie {
+    /// The wire view of one stored cookie, so every carrier builds the same
+    /// record.
+    #[must_use]
+    pub fn from_record(record: &net::CookieRecord) -> Self {
+        Self {
+            name: record.name.clone(),
+            value: record.value.clone(),
+            slot: record.slot(),
+            state: record.state(),
+        }
+    }
+}
+
 /// Which per-origin key/value area a host storage call names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum StorageKind {
@@ -2032,6 +2061,23 @@ pub trait NetworkHost: Send + Sync + 'static {
 
     /// `document.cookie` setter for `url`.
     fn set_cookie(&self, value: &str, url: &Url, partition_key: Option<&str>);
+
+    /// The cookies a `CookieStore` query for `url` sees: script-visible
+    /// (`HttpOnly` cookies excluded) and restricted to `partition_key`'s
+    /// partition plus the unpartitioned jar
+    /// (<https://cookiestore.spec.whatwg.org/#query-cookies>).
+    fn cookie_store_records(&self, url: &Url, partition_key: Option<&str>) -> Vec<ScriptCookie>;
+
+    /// Stores one typed `CookieStore` write. The API's steps return success
+    /// even when the storage model refuses the cookie, so this reports
+    /// nothing back to script
+    /// (<https://cookiestore.spec.whatwg.org/#set-a-cookie>).
+    fn cookie_store_store(
+        &self,
+        write: &net::ScriptCookieWrite,
+        url: &Url,
+        partition_key: Option<&str>,
+    );
 }
 
 /// Web Storage effects the page engine asks its host to perform.

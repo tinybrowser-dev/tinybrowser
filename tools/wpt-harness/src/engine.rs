@@ -295,6 +295,7 @@ async fn run_testharness(
         };
         if !delay.is_zero() {
             if virtual_time {
+                session.services.advance_clock(delay);
                 tokio::time::advance(delay).await;
             } else {
                 tokio::time::sleep(delay.min(Duration::from_millis(50))).await;
@@ -344,6 +345,7 @@ async fn run_crashtest(
         match renderer.time_until_deadline() {
             Some(delay) if !delay.is_zero() => {
                 if virtual_time {
+                    session.services.advance_clock(delay);
                     tokio::time::advance(delay).await;
                 } else {
                     tokio::time::sleep(delay.min(Duration::from_millis(50))).await;
@@ -483,6 +485,7 @@ async fn settle_reftest(
         };
         if !delay.is_zero() {
             if virtual_time {
+                session.services.advance_clock(delay);
                 tokio::time::advance(delay).await;
             } else {
                 tokio::time::sleep(delay.min(Duration::from_millis(50))).await;

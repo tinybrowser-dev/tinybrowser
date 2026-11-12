@@ -260,7 +260,7 @@ globalThis.XMLHttpRequest = class XMLHttpRequest extends EventTarget {
     if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(verb)) throw new DOMException('Invalid HTTP method', 'SyntaxError');
     if (/^(CONNECT|TRACE|TRACK)$/i.test(verb)) throw new DOMException('Forbidden HTTP method', 'SecurityError');
     const parsed = host.__tbResolveUrl(String(url), undefined);
-    if (parsed === null) throw new DOMException('Invalid URL', 'SyntaxError');
+    if (parsed == null) throw new DOMException('Invalid URL', 'SyntaxError');
     // Omitted stays true. An explicit `undefined` is the boolean false, which
     // legacy content depends on
     // (<https://xhr.spec.whatwg.org/#the-open()-method>).

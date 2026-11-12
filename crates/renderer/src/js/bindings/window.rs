@@ -136,9 +136,9 @@ fn navigate_location(owner: &Rc<RefCell<World>>, spec: String, source: Option<Fr
 /// requires when it is not a valid URL
 /// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-href>).
 ///
-/// The navigation keeps the caller's own string, so the target document
-/// resolves it again against the same base; this call only decides whether the
-/// assignment throws.
+/// The parsed absolute URL is what the navigation uses, so a `<base>` in the
+/// target document cannot re-resolve a relative assignment against a different
+/// base than the one that was checked.
 fn parse_location(ctx: &Ctx<'_>, caller: &Rc<RefCell<World>>, value: &str) -> Result<url::Url> {
     let caller = caller.borrow();
     let base = caller
@@ -151,9 +151,8 @@ fn parse_location(ctx: &Ctx<'_>, caller: &Rc<RefCell<World>>, value: &str) -> Re
 
 /// The `Location` setter shared by every component that navigates.
 ///
-/// `href` names a whole URL, resolved when the navigation runs; every other
-/// component replaces itself in the current URL and navigates only when that
-/// changed something.
+/// `href` names a whole URL; every other component replaces itself in the
+/// current URL and navigates only when that changed something.
 fn set_component(owner: &Rc<RefCell<World>>, component: Component, value: Value<'_>) -> Result<()> {
     let ctx = value.ctx().clone();
     let value = super::webidl::webidl_to_string(&ctx, value)?;
@@ -164,8 +163,8 @@ fn set_component(owner: &Rc<RefCell<World>>, component: Component, value: Value<
     let caller = world(&ctx)?;
     let source = caller.borrow().frame();
     if matches!(component, Component::Href) {
-        let _ = parse_location(&ctx, &caller, &value)?;
-        navigate_location(owner, value, Some(source));
+        let url = parse_location(&ctx, &caller, &value)?;
+        navigate_location(owner, url.as_str().to_owned(), Some(source));
         return Ok(());
     }
     let mut url = owner.borrow().document_url.clone();
@@ -191,6 +190,36 @@ pub(crate) fn install_location<'js>(
     globals: &Object<'js>,
     world: &Rc<RefCell<World>>,
 ) -> Result<()> {
+    let location = build_location(ctx, world)?;
+    world.borrow_mut().location_object = Some(Persistent::save(ctx, location));
+    let getter_owner = Rc::clone(world);
+    let setter_owner = Rc::clone(world);
+    globals.prop(
+        "location",
+        Accessor::new(
+            move |ctx: Ctx<'js>| -> Result<Value<'js>> {
+                let saved = getter_owner.borrow().location_object.clone();
+                let Some(saved) = saved else {
+                    return Err(Exception::throw_internal(&ctx, "location is gone"));
+                };
+                Ok(saved.restore(&ctx)?.into_value())
+            },
+            move |value: Value<'js>| set_component(&setter_owner, Component::Href, value),
+        )
+        .enumerable(),
+    )?;
+    Ok(())
+}
+
+/// The `Location` object for `world`, built in the calling realm's context but
+/// bound to `world`, so its setters navigate that world's frame. `install_location`
+/// stores it on the world; a child window whose realm has not started yet gets
+/// one through its `WindowProxy` instead
+/// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#the-location-interface>).
+pub(crate) fn build_location<'js>(
+    ctx: &Ctx<'js>,
+    world: &Rc<RefCell<World>>,
+) -> Result<Object<'js>> {
     let components = [
         ("pathname", Component::Pathname),
         ("href", Component::Href),
@@ -218,24 +247,14 @@ pub(crate) fn install_location<'js>(
                 .enumerable(),
         )?;
     }
-    world.borrow_mut().location_object = Some(Persistent::save(ctx, location));
-    let getter_owner = Rc::clone(world);
-    let setter_owner = Rc::clone(world);
-    globals.prop(
-        "location",
-        Accessor::new(
-            move |ctx: Ctx<'js>| -> Result<Value<'js>> {
-                let saved = getter_owner.borrow().location_object.clone();
-                let Some(saved) = saved else {
-                    return Err(Exception::throw_internal(&ctx, "location is gone"));
-                };
-                Ok(saved.restore(&ctx)?.into_value())
-            },
-            move |value: Value<'js>| set_component(&setter_owner, Component::Href, value),
-        )
-        .enumerable(),
-    )?;
-    Ok(())
+    Ok(location)
+}
+
+/// The `Window.location` setter for a frame whose realm is not running: it
+/// throws the same `SyntaxError` and queues the same navigation as the
+/// accessor `install_location` installs.
+pub(crate) fn set_location_href(owner: &Rc<RefCell<World>>, value: Value<'_>) -> Result<()> {
+    set_component(owner, Component::Href, value)
 }
 
 /// The window a `Window` method call targets, resolving a sloppy bare call.

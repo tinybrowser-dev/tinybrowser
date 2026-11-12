@@ -210,12 +210,15 @@ fn value(expression: &str, context: &Context<'_>) -> Result<String, String> {
             let [Selector::Index(key)] = selectors.as_slice() else {
                 return Err(format!("GET needs [key] in {{{{{expression}}}}}"));
             };
-            context
+            // wptserve's `FirstWrapper` answers an absent parameter with the
+            // empty string, and the CSP support scripts rely on it: they
+            // reference `{{GET[timeout]}}` and treat `""` as the default
+            // (<https://github.com/web-platform-tests/wpt/blob/master/tools/wptserve/wptserve/pipes.py>).
+            Ok(context
                 .url
                 .query_pairs()
                 .find(|(name, _)| name.as_ref() == key.as_str())
-                .map(|(_, value)| value.into_owned())
-                .ok_or_else(|| format!("missing query parameter {key}"))
+                .map_or_else(String::new, |(_, value)| value.into_owned()))
         }
         "location" => {
             let [Selector::Index(field)] = selectors.as_slice() else {
@@ -409,6 +412,11 @@ mod tests {
         assert_eq!(expand("{{hosts[alt][]}}", ""), "not-web-platform.test");
         assert_eq!(expand("{{GET[id]}}", "?id=42"), "42");
         assert_eq!(
+            expand("{{GET[timeout]}}", "?alerts=[]"),
+            "",
+            "an absent parameter substitutes as the empty string"
+        );
+        assert_eq!(
             expand("{{location[host]}}", ""),
             "www.web-platform.test:8000"
         );
@@ -436,7 +444,6 @@ mod tests {
         for text in [
             "{{nope}}",
             "{{ports[http]}}",
-            "{{GET[missing]}}",
             "{{domains[unknown]}}",
             "{{location[nope]}}",
             "{{$missing}}",

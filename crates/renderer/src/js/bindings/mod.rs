@@ -2898,6 +2898,34 @@ mod realm_tests {
         drop(shared);
     }
 
+    /// A `<base href>` moves the document base URL, which resolves relative
+    /// URLs, but not the URL the document's cookies belong to. An inherited
+    /// document uses its creator's cookie URL instead of its own
+    /// `about:blank`.
+    #[test]
+    fn the_cookie_url_ignores_the_document_base() {
+        let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
+        let shared = SharedJsRuntime::default();
+        let documents = Rc::new(RefCell::new(crate::documents::DocumentStore::default()));
+        let registry = Rc::new(RefCell::new(crate::js::RealmRegistry::default()));
+        let world = world_with_document(
+            &shared,
+            &services,
+            &documents,
+            &registry,
+            "https://a.test/dir/page",
+            "<!doctype html><base href='https://other.example/'>",
+        );
+        {
+            let mut world = world.borrow_mut();
+            world.base_url = Some(Url::parse("https://other.example/").expect("base URL"));
+            assert_eq!(world.cookie_url().as_str(), "https://a.test/dir/page");
+            world.inherited_cookie_url =
+                Some(Url::parse("https://creator.test/dir/page").expect("creator URL"));
+            assert_eq!(world.cookie_url().as_str(), "https://creator.test/dir/page");
+        }
+    }
+
     #[test]
     fn realms_share_a_heap_and_resolve_their_own_world() {
         let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());

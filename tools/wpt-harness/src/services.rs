@@ -21,7 +21,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 use bytes::Bytes;
-use dial::{DialHead, dial_failure, outbound_request};
+use dial::cache::NO_PARTITION;
+use dial::{CacheDecision, DialHead, HttpCache, dial_failure, outbound_request};
 use http_body_util::BodyExt;
 use net::{NetError, TransportError, WireRequest, WireResponse};
 use renderer::{
@@ -498,6 +499,50 @@ impl net::Transport for FrameTransport {
     }
 }
 
+/// The clock the harness's fetch core runs on: a wall clock and a monotonic
+/// clock that only move when the engine advances its virtual time.
+///
+/// A page's timers run on the paused Tokio clock, so a test that waits three
+/// seconds really advances three seconds of page time without sleeping. The
+/// response cache and the cookie jar must see that same elapsed time, or a
+/// test that pauses and then expects a stored response to be stale would read
+/// a cache entry that never aged.
+pub struct HarnessClock {
+    wall_base: std::time::SystemTime,
+    monotonic_base: std::time::Instant,
+    offset_nanos: std::sync::atomic::AtomicU64,
+}
+
+impl HarnessClock {
+    fn new() -> Self {
+        Self {
+            wall_base: std::time::SystemTime::now(),
+            monotonic_base: std::time::Instant::now(),
+            offset_nanos: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    /// Records `delay` of page time passing.
+    pub fn advance(&self, delay: std::time::Duration) {
+        let nanos = u64::try_from(delay.as_nanos()).unwrap_or(u64::MAX);
+        self.offset_nanos.fetch_add(nanos, Ordering::Relaxed);
+    }
+
+    fn elapsed(&self) -> std::time::Duration {
+        std::time::Duration::from_nanos(self.offset_nanos.load(Ordering::Relaxed))
+    }
+}
+
+impl net::ClockSource for HarnessClock {
+    fn wall(&self) -> std::time::SystemTime {
+        self.wall_base + self.elapsed()
+    }
+
+    fn monotonic(&self) -> std::time::Instant {
+        self.monotonic_base + self.elapsed()
+    }
+}
+
 /// A host that maps every URL path to a file under one checkout.
 pub struct FsServices {
     /// Kept for the tests that inspect the checkout root and content types.
@@ -507,6 +552,13 @@ pub struct FsServices {
     /// The real fetch core. Every policy decision is this crate's; only the
     /// one exchange underneath is the in-memory transport.
     agent: net::Agent,
+    /// The browser's own response cache, so a verdict here measures the cache
+    /// the native browser runs instead of one this host invents
+    /// (<https://fetch.spec.whatwg.org/#http-cache>).
+    cache: Arc<HttpCache>,
+    /// The clock the cache and the cookie jar read; the engine advances it
+    /// with its virtual time.
+    clock: Arc<HarnessClock>,
     storage: Mutex<HashMap<(StorageKind, StorageKey, String), String>>,
 }
 
@@ -526,12 +578,26 @@ impl FsServices {
             origin: Arc::clone(&origin),
             sidecar,
         });
+        let clock = Arc::new(HarnessClock::new());
+        let options = net::AgentOptions {
+            clock: net::Clock::new(Arc::clone(&clock)),
+            ..net::AgentOptions::default()
+        };
+        let cache = Arc::new(HttpCache::new(options.clock.clone()));
         Self {
             #[cfg(test)]
             origin,
-            agent: net::Agent::with_transport(net::AgentOptions::default(), transport),
+            agent: net::Agent::with_transport(options, transport),
+            cache,
+            clock,
             storage: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Records `delay` of page time passing, so the cache and the cookie jar
+    /// age with the page's timers.
+    pub fn advance_clock(&self, delay: std::time::Duration) {
+        self.clock.advance(delay);
     }
 
     /// Stores a response's `Set-Cookie` fields in the jar.
@@ -549,13 +615,14 @@ impl FsServices {
         }
     }
 
-    /// Drops cookies and storage between files.
+    /// Drops cookies, stored responses, and storage between files.
     ///
     /// A worker builds a fresh engine per file, so state a file leaves behind
     /// must not reach the next one. Upstream also clears browser state between
     /// tests.
     pub fn clear(&self) {
         self.agent.clear_cookies();
+        self.cache.clear();
         self.storage
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -568,14 +635,46 @@ impl FsServices {
     }
 }
 
-/// Runs one dial through the real fetch core and buffers its body.
-fn fetch(agent: &net::Agent, request: &DialRequest) -> Result<DialOutcome, DialFailure> {
+/// Runs one dial through the real fetch core and the real response cache, and
+/// buffers its body.
+fn fetch(
+    agent: &net::Agent,
+    cache: &HttpCache,
+    request: &DialRequest,
+) -> Result<DialOutcome, DialFailure> {
+    let outcome = fetch_inner(agent, cache, request)?;
+    // The native browser verifies integrity while it reads the body; a host
+    // that buffers it verifies once the body is complete. Either way the rule
+    // is the same one the cache applies to a stored body
+    // (<https://fetch.spec.whatwg.org/#concept-main-fetch>).
+    if !dial::integrity_ok(request, &outcome) {
+        return Err(DialFailure::Connect);
+    }
+    Ok(outcome)
+}
+
+fn fetch_inner(
+    agent: &net::Agent,
+    cache: &HttpCache,
+    request: &DialRequest,
+) -> Result<DialOutcome, DialFailure> {
     let initiator = request
         .initiator
         .to_url()
         .map_or_else(|| net::about_blank().origin(), |url| url.origin());
     let sheets = HashMap::new();
-    let outbound = outbound_request(request, &initiator, Instant::now() + DIAL_DEADLINE, &sheets)?;
+    let mut outbound =
+        outbound_request(request, &initiator, Instant::now() + DIAL_DEADLINE, &sheets)?;
+    // `Vary` compares the request as it will go on the wire, cookies and
+    // fetch metadata included (<https://www.rfc-editor.org/rfc/rfc9111#section-4.1>).
+    let sent = dial::sent_headers(&outbound);
+    let (stored, validators) = match cache.read(request, &sent, &initiator, NO_PARTITION)? {
+        CacheDecision::Hit(hit) => return Ok(hit),
+        CacheDecision::Miss {
+            stored, validators, ..
+        } => (stored, validators),
+    };
+    validators.apply(&mut outbound)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -585,6 +684,16 @@ fn fetch(agent: &net::Agent, request: &DialRequest) -> Result<DialOutcome, DialF
             .send(outbound)
             .await
             .map_err(|error| dial_failure(&error))?;
+        if response.status() == 304
+            && let Some(stored) = stored
+        {
+            let Some(merged) = HttpCache::merge_not_modified(&stored, &response, &validators)
+            else {
+                return Err(DialFailure::Connect);
+            };
+            cache.remember(request, &sent, &initiator, NO_PARTITION, &merged);
+            return Ok(merged);
+        }
         let head = DialHead::read(request, &response);
         let body = if head.null_body() {
             ResponseBody::Bytes(Vec::new())
@@ -605,7 +714,9 @@ fn fetch(agent: &net::Agent, request: &DialRequest) -> Result<DialOutcome, DialF
             }
             ResponseBody::Bytes(bytes)
         };
-        Ok(head.into_outcome(body))
+        let outcome = head.into_outcome(body);
+        cache.remember(request, &sent, &initiator, NO_PARTITION, &outcome);
+        Ok(outcome)
     })
 }
 
@@ -638,12 +749,13 @@ impl NetworkHost for FsServices {
         // The engine thread is already inside its own current-thread runtime,
         // so the fetch runs on a fresh thread and this one waits for it.
         let agent = self.agent.clone();
+        let cache = Arc::clone(&self.cache);
         let (send, receive) = std::sync::mpsc::sync_channel(1);
         std::thread::Builder::new()
             .name("wpt-fetch-sync".to_owned())
             .spawn(move || {
                 let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    fetch(&agent, &request)
+                    fetch(&agent, &cache, &request)
                 }))
                 .unwrap_or(Err(DialFailure::Connect));
                 let _ = send.send(outcome);
@@ -658,6 +770,7 @@ impl NetworkHost for FsServices {
         // with its own runtime keeps the core async without a nested
         // `block_on`.
         let agent = self.agent.clone();
+        let cache = Arc::clone(&self.cache);
         let cancelled = Arc::new(AtomicBool::new(false));
         let thread_flag = Arc::clone(&cancelled);
         let cancel_flag = Arc::clone(&cancelled);
@@ -668,7 +781,7 @@ impl NetworkHost for FsServices {
                     Err(DialFailure::Cancelled)
                 } else {
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        fetch(&agent, &request)
+                        fetch(&agent, &cache, &request)
                     }))
                     .unwrap_or(Err(DialFailure::Connect))
                 };
@@ -684,6 +797,29 @@ impl NetworkHost for FsServices {
 
     fn set_cookie(&self, value: &str, url: &Url, partition_key: Option<&str>) {
         let _stored = self.agent.set_cookie_partition(value, url, partition_key);
+    }
+
+    fn cookie_store_records(
+        &self,
+        url: &Url,
+        partition_key: Option<&str>,
+    ) -> Vec<renderer::ScriptCookie> {
+        self.agent
+            .script_cookie_records_partition(url, partition_key)
+            .into_iter()
+            .map(|record| renderer::ScriptCookie::from_record(&record))
+            .collect()
+    }
+
+    fn cookie_store_store(
+        &self,
+        write: &net::ScriptCookieWrite,
+        url: &Url,
+        partition_key: Option<&str>,
+    ) {
+        let _stored = self
+            .agent
+            .set_script_cookie_partition(write, url, partition_key);
     }
 }
 
@@ -849,6 +985,7 @@ mod tests {
             url::Url::parse(&format!("http://web-platform.test:8000{path}")).expect("test URL");
         fetch(
             &services.agent,
+            &services.cache,
             &renderer::DialRequest::new(
                 renderer::RequestPolicy::Image { crossorigin: None },
                 &url,
@@ -949,7 +1086,7 @@ mod tests {
         let url = url::Url::parse("http://web-platform.test:8000/dir/page.html").expect("test URL");
         let request =
             renderer::DialRequest::new(renderer::RequestPolicy::FrameLoad, &url, &url.origin());
-        fetch(&services.agent, &request).expect("navigation");
+        fetch(&services.agent, &services.cache, &request).expect("navigation");
         assert!(
             services.agent.cookies_for(&url).contains("NAME=1"),
             "a navigation stores the response's Set-Cookie: {}",

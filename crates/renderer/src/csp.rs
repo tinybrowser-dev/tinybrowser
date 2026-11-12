@@ -543,6 +543,50 @@ impl List {
         violations
     }
 
+    /// The violations a `<base href>` produces, one per policy whose
+    /// `base-uri` list refuses the resolved URL
+    /// (<https://w3c.github.io/webappsec-csp/#is-base-allowed-for-document>).
+    ///
+    /// `blockedURI` is the resolved URL, which is what Chrome reports and
+    /// what `content-security-policy/base-uri/` asserts. The algorithm says
+    /// to set the violation's resource to `"inline"`; the shipped browsers
+    /// and the tests disagree with that sentence.
+    #[must_use]
+    pub(crate) fn check_base(
+        &self,
+        origin: &Origin,
+        document_url: &Url,
+        base: &Url,
+    ) -> Vec<Violation> {
+        let mut violations = Vec::new();
+        for policy in &self.policies {
+            let Some(list) = directive_value(policy, "base-uri") else {
+                continue;
+            };
+            // `base-uri` has no fallback list: a policy without the directive
+            // does not constrain the base element
+            // (<https://w3c.github.io/webappsec-csp/#directive-fallback-list>).
+            if url_matches_list(base, list, origin, document_url, 0) {
+                continue;
+            }
+            violations.push(Violation {
+                effective_directive: "base-uri".to_owned(),
+                original_policy: policy.serialized.clone(),
+                disposition: policy.disposition,
+                blocked_uri: strip_url(base),
+                sample: None,
+                document_uri: strip_url(document_url),
+                source_file: None,
+                line_number: 0,
+                column_number: 0,
+                status_code: 0,
+                report_uris: report_uris(policy),
+                report_to: report_to(policy),
+            });
+        }
+        violations
+    }
+
     /// The violations an inline classic script or `javascript:` navigation
     /// produces
     /// (<https://w3c.github.io/webappsec-csp/#should-elements-inline-type-behavior-be-blocked-by-content-security-policy>).
@@ -555,13 +599,16 @@ impl List {
         let effective = inline.effective();
         let mut violations = Vec::new();
         for policy in &self.policies {
-            if policy_inline_violation(policy, inline) {
+            if let Some(list) = policy_inline_violation(policy, inline) {
                 violations.push(Violation {
                     effective_directive: effective.name().to_owned(),
                     original_policy: policy.serialized.clone(),
                     disposition: policy.disposition,
                     blocked_uri: inline.blocked_uri(),
-                    sample: Some(inline.sample()),
+                    // A sample is opt-in: only a directive carrying
+                    // `'report-sample'` sends the source prefix
+                    // (<https://w3c.github.io/webappsec-csp/#violation-sample>).
+                    sample: has_keyword(list, "'report-sample'").then(|| inline.sample()),
                     document_uri: strip_url(document_url),
                     source_file: None,
                     line_number: 0,
@@ -737,16 +784,19 @@ fn policy_request_violation(
     false
 }
 
-/// Whether the fallback chain for the inline kind violates `policy`.
-fn policy_inline_violation(policy: &Policy, inline: &InlineScript<'_>) -> bool {
+/// The source list that decides an inline check, when it blocks.
+fn policy_inline_violation<'a>(
+    policy: &'a Policy,
+    inline: &InlineScript<'_>,
+) -> Option<&'a [String]> {
     let effective = inline.effective();
     for &name in effective.fallback() {
         let Some(list) = directive_value(policy, name) else {
             continue;
         };
-        return inline_check_blocks(effective, list, inline);
+        return inline_check_blocks(effective, list, inline).then_some(list);
     }
-    false
+    None
 }
 
 /// `meta http-equiv=content-security-policy` content when the element is in
@@ -995,7 +1045,7 @@ pub fn integrity_verifies(integrity: &str, bytes: &[u8]) -> bool {
 /// (<https://w3c.github.io/webappsec-csp/#should-block-inline>).
 fn inline_check_blocks(effective: Effective, list: &[String], inline: &InlineScript<'_>) -> bool {
     match effective {
-        Effective::ScriptSrc => evaluation_blocks(list, inline.source),
+        Effective::ScriptSrc => evaluation_blocks(list),
         Effective::ScriptSrcElem | Effective::ScriptSrcAttr => !element_matches(list, inline),
         Effective::StyleSrcElem
         | Effective::ConnectSrc
@@ -1006,16 +1056,17 @@ fn inline_check_blocks(effective: Effective, list: &[String], inline: &InlineScr
     }
 }
 
-/// Whether a source list blocks compiling `source`
-/// (<https://w3c.github.io/webappsec-csp/#can-compile-strings>): only
-/// `'unsafe-eval'` and matching hash-sources allow evaluation.
-fn evaluation_blocks(list: &[String], source: &str) -> bool {
-    if has_keyword(list, "'unsafe-eval'") {
-        return false;
-    }
-    !list
-        .iter()
-        .any(|expression| hash_matches(expression, source))
+/// Whether a source list blocks compiling a string
+/// (<https://w3c.github.io/webappsec-csp/#can-compile-strings>).
+///
+/// Only `'unsafe-eval'` allows evaluation. A hash source names an inline
+/// script's contents, and `'wasm-unsafe-eval'` covers WebAssembly compilation,
+/// so neither opens this door. The `'eval-<algorithm>-<hash>'` form some
+/// browsers prototype is not in the spec
+/// (<https://w3c.github.io/webappsec-csp/#directive-script-src>); a policy that
+/// names it still needs `'unsafe-eval'` here.
+fn evaluation_blocks(list: &[String]) -> bool {
+    !has_keyword(list, "'unsafe-eval'")
 }
 
 fn directive_value<'a>(policy: &'a Policy, name: &str) -> Option<&'a [String]> {
@@ -1741,6 +1792,49 @@ mod tests {
         assert!(is_base64_value("YWJj=="));
         assert!(!is_base64_value("a=b"));
         assert!(!is_base64_value(""));
+    }
+
+    #[test]
+    fn base_uri_blocks_only_a_policy_that_names_it() {
+        let origin = Url::parse("http://a.test/page").expect("page URL").origin();
+        let document = Url::parse("http://a.test/page").expect("page URL");
+        let other = Url::parse("http://b.test/").expect("base URL");
+        let list = List::from_headers(Some("base-uri http://b.test/"), None);
+        assert!(
+            list.check_base(&origin, &document, &other).is_empty(),
+            "a matching base is allowed"
+        );
+        let own = Url::parse("http://a.test/").expect("base URL");
+        let blocked = list.check_base(&origin, &document, &own);
+        assert_eq!(blocked.len(), 1);
+        assert_eq!(blocked[0].effective_directive, "base-uri");
+        assert_eq!(blocked[0].blocked_uri, "http://a.test/");
+        assert!(blocked[0].blocks());
+        // A policy that says nothing about base-uri does not constrain it.
+        let silent = List::from_headers(Some("default-src 'none'"), None);
+        assert!(silent.check_base(&origin, &document, &own).is_empty());
+        // A report-only policy reports without blocking.
+        let report = List::from_headers(Some("default-src 'none'"), Some("base-uri 'none'"));
+        let reported = report.check_base(&origin, &document, &own);
+        assert_eq!(reported.len(), 1);
+        assert!(!reported[0].blocks());
+    }
+
+    #[test]
+    fn evaluation_needs_unsafe_eval_and_not_a_matching_hash() {
+        // sha256("t1.done();") is a valid hash source; it names an inline
+        // script, so it must not allow `eval` of the same text.
+        let hash_only = vec!["'sha256-wmuLCpoj8EMqfQlPnt5NIMgKkCK62CxAkAiewI0zZps='".to_owned()];
+        assert!(evaluation_blocks(&hash_only));
+        let unsafe_eval = vec!["'unsafe-eval'".to_owned()];
+        assert!(!evaluation_blocks(&unsafe_eval));
+        let wasm = vec!["'wasm-unsafe-eval'".to_owned()];
+        assert!(
+            evaluation_blocks(&wasm),
+            "WebAssembly compilation is not string compilation"
+        );
+        let nested = vec!["'unsafe-inline'".to_owned(), "'unsafe-eval'".to_owned()];
+        assert!(!evaluation_blocks(&nested));
     }
 
     #[test]

@@ -21,9 +21,21 @@ globalThis.clearTimeout = function(id) {
 // reschedules with its original ID after invoking its handler.
 // <https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#timer-initialisation-steps>
 const __tbTimer = (handler, ms, args, repeat) => {
-  var id = host.__tb_timeouts.length;
   var delay = Math.max(0, Number(ms) | 0);
-  var callback = typeof handler === 'function' ? handler : String(handler);
+  var callback;
+  if (typeof handler === 'function') {
+    callback = handler;
+  } else {
+    callback = String(handler);
+    // The timer initialization steps compile a string handler when the timer
+    // is created and return 0 when compilation fails, which is what CSP
+    // blocking an evaluation does
+    // (<https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#timer-initialisation-steps>).
+    if (!host.__tbCspAllowsEval(callback)) {
+      return 0;
+    }
+  }
+  var id = host.__tb_timeouts.length;
   var nesting;
   function schedule() {
     // Chromium increments before clamping (crbug.com/1108877); HTML clamps first.
@@ -37,8 +49,16 @@ const __tbTimer = (handler, ms, args, repeat) => {
     try {
       if (typeof callback === 'function') {
         __tbApply(callback, globalThis, args);
-      } else if (host.__tbCspAllowsEval(callback)) {
-        (0, eval)(callback);
+      } else {
+        // The string was checked when the timer was created; running it is
+        // not a second compilation
+        // (<https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#timer-initialisation-steps>).
+        host.__tbTimerStringBegin();
+        try {
+          (0, eval)(callback);
+        } finally {
+          host.__tbTimerStringEnd();
+        }
       }
     } finally {
       try {
@@ -94,6 +114,17 @@ if (typeof globalThis.console === 'undefined') {
 if (globalThis.document) {
   Object.defineProperty(document, 'cookie', {
     get() { return host.__cookieGet(); },
-    set(v) { host.__cookieSet(String(v)); }
+    set(v) {
+      // The CookieStore change event covers `document.cookie` writes too, and
+      // the diff is against the jar as it stood before this write
+      // (<https://cookiestore.spec.whatwg.org/#process-cookie-changes>).
+      const snapshot = globalThis.__tbCookieStoreSnapshot;
+      const before = typeof snapshot === 'function' ? snapshot() : null;
+      host.__cookieSet(String(v));
+      const changed = globalThis.__tbCookieStoreDidWrite;
+      if (before !== null && typeof changed === 'function') {
+        changed(before);
+      }
+    }
   });
 }

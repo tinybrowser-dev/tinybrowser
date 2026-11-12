@@ -619,6 +619,52 @@ impl NetworkHost for WasmServices {
         })
     }
 
+    fn cookie_store_records(
+        &self,
+        url: &Url,
+        partition_key: Option<&str>,
+    ) -> Vec<renderer::ScriptCookie> {
+        let origin = url.origin();
+        lock(cookie_jar())
+            .records_for(CookieOp {
+                url,
+                now: SystemTime::now(),
+                kind: RetrievalKind::NonHttp,
+                initiator_kind: InitiatorKind::Fetch,
+                method_is_safe: true,
+                initiator: Some(&origin),
+                cross_site_redirect: false,
+                same_site_policy: SameSiteCookiePolicy::All,
+                partition_key,
+            })
+            .into_iter()
+            .map(|record| renderer::ScriptCookie::from_record(&record))
+            .collect()
+    }
+
+    fn cookie_store_store(
+        &self,
+        write: &net::ScriptCookieWrite,
+        url: &Url,
+        partition_key: Option<&str>,
+    ) {
+        let origin = url.origin();
+        let _stored = lock(cookie_jar()).store_script(
+            write,
+            CookieOp {
+                url,
+                now: SystemTime::now(),
+                kind: RetrievalKind::NonHttp,
+                initiator_kind: InitiatorKind::Fetch,
+                method_is_safe: true,
+                initiator: Some(&origin),
+                cross_site_redirect: false,
+                same_site_policy: SameSiteCookiePolicy::All,
+                partition_key,
+            },
+        );
+    }
+
     fn cookies_for(&self, url: &Url, partition_key: Option<&str>) -> String {
         let origin = url.origin();
         lock(cookie_jar()).cookie_string(CookieOp {

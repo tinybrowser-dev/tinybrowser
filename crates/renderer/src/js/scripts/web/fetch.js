@@ -834,7 +834,7 @@ globalThis.Request = class Request {
     let url;
     if (source === null) {
       const resolved = host.__tbResolveUrl(__tbToUSVString(input), undefined);
-      if (resolved === null) throw new TypeError('Invalid URL');
+      if (resolved == null) throw new TypeError('Invalid URL');
       const parsed = new URL(resolved);
       if (parsed.username !== '' || parsed.password !== '') throw new TypeError('URL with credentials');
       url = resolved;

@@ -8,10 +8,10 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use net::{Agent, AgentOptions, InitiatorKind, Method, Request, isomorphic_decode};
+use dial::{CacheDecision, HttpCache, Validators};
+use net::{Agent, AgentOptions, InitiatorKind, Method, Request};
 use renderer::{
-    BodyDelivery, DialFailure, DialKind, DialOutcome, DialRequest, RequestCache, RequestPolicy,
-    ResponseBody, StreamId,
+    BodyDelivery, DialFailure, DialKind, DialOutcome, DialRequest, ResponseBody, StreamId,
 };
 use tokio::sync::Semaphore;
 use tokio::sync::mpsc::UnboundedSender;
@@ -68,47 +68,6 @@ impl Drop for KeepaliveReservation {
     }
 }
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-struct CacheKey {
-    method: net::Method,
-    /// The request URL.
-    url: Url,
-    /// The request's mode. A `no-cors` response is opaque while the same URL
-    /// fetched in `cors` or `navigate` mode is readable, so one mode must not
-    /// answer another from the cache
-    /// (<https://fetch.spec.whatwg.org/#concept-request-response-tainting>).
-    mode: net::cors::RequestMode,
-    /// The request's credentials mode. A response fetched with `include` is
-    /// not the response an `omit` request may reuse.
-    credentials: net::cors::CredentialsMode,
-    initiator: url::Origin,
-    partition: RendererAssignmentId,
-}
-
-/// A whole buffered response. The fetch body is already bounded by
-/// `MAX_RESPONSE_BODY_BYTES`, so the cache holds at most that much per entry.
-#[derive(Clone)]
-struct CachedResponse {
-    outcome: DialOutcome,
-    stored_at: Instant,
-    request_headers: Vec<(String, String)>,
-}
-
-type ResponseCache = Arc<Mutex<HashMap<CacheKey, CachedResponse>>>;
-
-/// The HTTP cache decision for one dial.
-enum CacheDecision {
-    /// The stored outcome answers the request without a network dial.
-    Hit(DialOutcome),
-    /// The dial goes out. `stored` is what a 304 may merge into, and `etag` is
-    /// the validator it may revalidate with.
-    Miss {
-        mode: RequestCache,
-        stored: Option<CachedResponse>,
-        etag: Option<String>,
-    },
-}
-
 /// The answer from one dial once the response head is in.
 enum DialProgress {
     /// The dial has its answer: a refused redirect or a 304 merged into the
@@ -132,45 +91,13 @@ struct DialPermits {
     _tab: tokio::sync::OwnedSemaphorePermit,
 }
 
-const CACHE_MAX_ENTRIES: usize = 64;
-const CACHE_MAX_BYTES: usize = 64 * 1024 * 1024;
-
-/// The bytes a cache entry holds. Only buffered bodies are ever stored: a
-/// streamed response is buffered into the store as it arrives, and an
-/// undecodable one has nothing to reuse.
+/// The bytes a buffered outcome holds, for the cache tests.
+#[cfg(test)]
 fn stored_bytes(outcome: &DialOutcome) -> usize {
     match &outcome.body {
         ResponseBody::Bytes(bytes) => bytes.len(),
         ResponseBody::Undecodable | ResponseBody::Streamed(_) => 0,
     }
-}
-
-fn insert_cached(
-    cache: &mut HashMap<CacheKey, CachedResponse>,
-    key: CacheKey,
-    entry: CachedResponse,
-) {
-    let body_len = stored_bytes(&entry.outcome);
-    if body_len > renderer::MAX_RESPONSE_BODY_BYTES {
-        return;
-    }
-    let mut total = cache
-        .values()
-        .map(|entry| stored_bytes(&entry.outcome))
-        .sum::<usize>();
-    while cache.len() >= CACHE_MAX_ENTRIES || total.saturating_add(body_len) > CACHE_MAX_BYTES {
-        let Some(oldest) = cache
-            .iter()
-            .min_by_key(|(_, entry)| entry.stored_at)
-            .map(|(key, _)| key.clone())
-        else {
-            break;
-        };
-        if let Some(removed) = cache.remove(&oldest) {
-            total = total.saturating_sub(stored_bytes(&removed.outcome));
-        }
-    }
-    cache.insert(key, entry);
 }
 
 enum StreamMessage {
@@ -198,191 +125,6 @@ fn abort_stream(entry: Option<StreamEntry>) {
     }
 }
 
-fn cache_key(
-    request: &DialRequest,
-    initiator: &url::Origin,
-    partition: RendererAssignmentId,
-) -> CacheKey {
-    CacheKey {
-        method: request.method.clone(),
-        url: request.url.clone(),
-        mode: request.policy.cors().mode,
-        credentials: request.policy.cors().credentials,
-        initiator: initiator.clone(),
-        partition,
-    }
-}
-
-fn has_page_conditional(request: &DialRequest) -> bool {
-    request.headers.iter().any(|(name, _)| {
-        name.eq_ignore_ascii_case("if-none-match")
-            || name.eq_ignore_ascii_case("if-modified-since")
-            || name.eq_ignore_ascii_case("if-match")
-            || name.eq_ignore_ascii_case("if-unmodified-since")
-            || name.eq_ignore_ascii_case("if-range")
-    })
-}
-
-/// Whether the response's `Cache-Control` carries the `no-store` directive
-/// (<https://www.rfc-editor.org/rfc/rfc9111#section-5.2>).
-fn response_forbids_storage(outcome: &DialOutcome) -> bool {
-    net::get_decode_split_decoded(&outcome.headers, "cache-control").is_some_and(|directives| {
-        directives.iter().any(|directive| {
-            let (name, _) = directive.split_once('=').unwrap_or((directive, ""));
-            name.trim_matches([' ', '\t'])
-                .eq_ignore_ascii_case("no-store")
-        })
-    })
-}
-
-fn vary_matches(entry: &CachedResponse, request: &DialRequest) -> bool {
-    let vary = net::get_decode_split_decoded(&entry.outcome.headers, "vary");
-    let Some(vary) = vary else {
-        return true;
-    };
-    vary.iter().filter(|field| !field.is_empty()).all(|field| {
-        if field == "*" {
-            return false;
-        }
-        let stored = net::combined_header_in(&entry.request_headers, field);
-        stored == net::combined_header_in(&request.headers, field)
-    })
-}
-
-/// Whether a stored response is still fresh for a request arriving at `now`
-/// (<https://www.rfc-editor.org/rfc/rfc9111#section-4.2>).
-fn fresh(entry: &CachedResponse, clock: &net::Clock) -> bool {
-    let age = clock
-        .monotonic()
-        .saturating_duration_since(entry.stored_at)
-        .as_secs();
-    let mut saw_max_age = false;
-    let cache_control = net::get_decode_split_decoded(&entry.outcome.headers, "cache-control");
-    for directive in cache_control.iter().flatten() {
-        let Some((name, value)) = directive.split_once('=') else {
-            continue;
-        };
-        if name
-            .trim_matches([' ', '\t'])
-            .eq_ignore_ascii_case("max-age")
-        {
-            saw_max_age = true;
-            // Freshness lasts for `max-age` seconds from the store, so an
-            // entry stored at second 0 is stale once the whole second has
-            // passed: at `age == max_age` the lifetime is spent
-            // (<https://www.rfc-editor.org/rfc/rfc9111#section-4.2>).
-            if value
-                .trim_matches([' ', '\t'])
-                .parse::<u64>()
-                .is_ok_and(|max_age| age < max_age)
-            {
-                return true;
-            }
-        }
-    }
-    if saw_max_age {
-        return false;
-    }
-    entry.outcome.headers.iter().any(|(name, value)| {
-        name.eq_ignore_ascii_case("expires")
-            && httpdate::parse_http_date(value).is_ok_and(|expires| expires > clock.now())
-    })
-}
-
-fn etag(outcome: &DialOutcome) -> Option<String> {
-    outcome
-        .headers
-        .iter()
-        .find(|(name, _)| name.eq_ignore_ascii_case("etag"))
-        .map(|(_, value)| value.clone())
-}
-
-/// Reuses the stored body for a validated 304 and applies the new headers.
-///
-/// Only a page `fetch` stores a response, so the merged header list is the one
-/// the page sees; the internal list would carry `Set-Cookie` back into it.
-fn merge_not_modified(cached: &DialOutcome, response: &net::Response) -> DialOutcome {
-    let mut merged = cached.clone();
-    merged.status = 200;
-    merged.final_url = response.final_url().clone();
-    merged.referrer = response.referrer().cloned();
-    merged.crossed_origin = response.crossed_origin();
-    for (name, value) in response.filtered().headers() {
-        let value = isomorphic_decode(value);
-        if let Some((_, existing)) = merged
-            .headers
-            .iter_mut()
-            .find(|(existing, _)| existing.eq_ignore_ascii_case(name))
-        {
-            *existing = value;
-        } else {
-            merged.headers.push((name.to_owned(), value));
-        }
-    }
-    merged
-}
-
-fn should_store(request: &DialRequest, outcome: &DialOutcome, mode: RequestCache) -> bool {
-    request.policy.exposes_response()
-        && !has_page_conditional(request)
-        && request.method == net::Method::GET
-        // A body that failed to decode has nothing to reuse. Storing it would
-        // replay the failure on every hit and every 304 merge, and a
-        // transient truncation would become permanent
-        // (<https://fetch.spec.whatwg.org/#concept-http-network-fetch>).
-        && !matches!(outcome.body, ResponseBody::Undecodable)
-        && (200..300).contains(&outcome.status)
-        // An opaque response has no readable body and cannot satisfy a later
-        // CORS request, so keeping it only creates a response-type mismatch.
-        && !outcome.response_type.is_opaque()
-        && mode != RequestCache::NoStore
-        && !response_forbids_storage(outcome)
-}
-
-/// Stores one complete response for `key`, evicting older entries as needed.
-fn store_response(
-    cache: &ResponseCache,
-    key: CacheKey,
-    outcome: DialOutcome,
-    request_headers: Vec<(String, String)>,
-    clock: &net::Clock,
-) {
-    let mut cache = cache
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    insert_cached(
-        &mut cache,
-        key,
-        CachedResponse {
-            outcome,
-            stored_at: clock.monotonic(),
-            request_headers,
-        },
-    );
-}
-
-/// Rechecks the request-mode rules that produced a cached filtered response.
-/// The cache partition keeps other origins away, but one document can still
-/// switch modes between requests.
-fn cache_usable(request: &DialRequest, initiator: &url::Origin, entry: &CachedResponse) -> bool {
-    if entry.outcome.response_type.is_opaque() {
-        return false;
-    }
-    let url = &request.url;
-    // Only a page `fetch` reads the cache, so the policy is always `Fetch`
-    // (<https://fetch.spec.whatwg.org/#http-cache>).
-    let RequestPolicy::Fetch(cors) = request.policy else {
-        return false;
-    };
-    match cors.mode {
-        renderer::CorsMode::SameOrigin => url.origin() == *initiator,
-        renderer::CorsMode::NoCors => {
-            !matches!(entry.outcome.response_type, net::cors::ResponseType::Cors)
-        }
-        renderer::CorsMode::Cors => true,
-    }
-}
-
 /// One completed navigation dial: the response head the tab mounts plus the
 /// streaming body.
 pub(crate) struct NavOutcome {
@@ -394,13 +136,11 @@ pub(crate) struct NavOutcome {
 /// Live network state for one storage partition.
 pub(crate) struct NetworkContext {
     agent: Agent,
-    /// The clock the HTTP cache stamps and reads entries with, so an
-    /// embedder that injects one through [`AgentOptions`] gets a cache that
-    /// agrees with it. Dial deadlines stay on the reactor clock, which is what
-    /// drives tokio timers.
-    clock: net::Clock,
     permits: NetworkPermits,
-    cache: ResponseCache,
+    /// The HTTP cache stamps and reads entries with the clock an embedder
+    /// injects through [`AgentOptions`], so freshness agrees with it. Dial
+    /// deadlines stay on the reactor clock, which is what drives tokio timers.
+    cache: Arc<HttpCache>,
     streams: StreamMap,
     next_stream: Arc<AtomicU64>,
 }
@@ -416,9 +156,8 @@ impl NetworkContext {
         let clock = options.clock.clone();
         Self {
             agent: Agent::new(options),
-            clock,
+            cache: Arc::new(HttpCache::new(clock)),
             permits: NetworkPermits::new(),
-            cache: Arc::new(Mutex::new(HashMap::new())),
             streams: Arc::new(Mutex::new(HashMap::new())),
             next_stream: Arc::new(AtomicU64::new(1)),
         }
@@ -429,7 +168,6 @@ impl NetworkContext {
     pub(crate) fn tab_handle(&self) -> TabNetworkHandle {
         TabNetworkHandle {
             agent: self.agent.clone(),
-            clock: self.clock.clone(),
             permits: self.permits.clone(),
             tab: Arc::new(Semaphore::new(MAX_TAB_DIALS)),
             cache: Arc::clone(&self.cache),
@@ -492,12 +230,9 @@ const MAX_TAB_DIALS: usize = 8;
 #[derive(Clone)]
 pub(crate) struct TabNetworkHandle {
     agent: Agent,
-    /// The clock the cache stamps and reads entries with; see
-    /// [`NetworkContext::clock`].
-    clock: net::Clock,
     permits: NetworkPermits,
     tab: Arc<Semaphore>,
-    cache: ResponseCache,
+    cache: Arc<HttpCache>,
     streams: StreamMap,
     next_stream: Arc<AtomicU64>,
     /// Style sheet URLs this tab's network served, keyed by the origin of the
@@ -523,6 +258,34 @@ impl TabNetworkHandle {
     /// `document.cookie` setter for `url` in one cookie partition.
     pub(crate) fn set_cookie(&self, value: &str, url: &Url, partition_key: Option<&str>) {
         let _stored = self.agent.set_cookie_partition(value, url, partition_key);
+    }
+
+    /// Script-visible cookies for a `CookieStore` query
+    /// (<https://cookiestore.spec.whatwg.org/#query-cookies>).
+    #[must_use]
+    pub(crate) fn cookie_store_records(
+        &self,
+        url: &Url,
+        partition_key: Option<&str>,
+    ) -> Vec<renderer::ScriptCookie> {
+        self.agent
+            .script_cookie_records_partition(url, partition_key)
+            .into_iter()
+            .map(|record| renderer::ScriptCookie::from_record(&record))
+            .collect()
+    }
+
+    /// Stores one `CookieStore` line and reports whether the jar accepted it
+    /// (<https://cookiestore.spec.whatwg.org/#set-a-cookie>).
+    pub(crate) fn cookie_store_store(
+        &self,
+        write: &net::ScriptCookieWrite,
+        url: &Url,
+        partition_key: Option<&str>,
+    ) {
+        let _stored = self
+            .agent
+            .set_script_cookie_partition(write, url, partition_key);
     }
 
     /// Spawns one navigation dial and returns its task handle. The caller
@@ -647,12 +410,20 @@ impl TabNetworkHandle {
     ) -> Result<DialOutcome, DialFailure> {
         let started = Instant::now();
         let _keepalive = KeepaliveReservation::acquire(request)?;
-        let (mode, stored, etag) = match self.cache_read(request, initiator, owner)? {
+        let deadline = Instant::now() + Self::dial_budget(request);
+        let outbound = self.build_outbound(request, initiator, deadline)?;
+        // `Vary` names headers this host adds below the renderer, so the cache
+        // compares the list that is about to be sent, not the page's
+        // (<https://www.rfc-editor.org/rfc/rfc9111#section-4.1>).
+        let sent = dial::sent_headers(&outbound);
+        let (stored, validators) = match self.cache.read(request, &sent, initiator, owner.get())? {
             CacheDecision::Hit(hit) => {
                 trace_dial_result(request, started, Ok(&hit));
                 return Ok(hit);
             }
-            CacheDecision::Miss { mode, stored, etag } => (mode, stored, etag),
+            CacheDecision::Miss {
+                stored, validators, ..
+            } => (stored, validators),
         };
         logging::trace!(
             target: "browser::net",
@@ -662,11 +433,12 @@ impl TabNetworkHandle {
         );
         let result = async {
             match self
-                .send_head(request, initiator, stored.as_ref(), etag.as_deref())
+                .send_head(request, initiator, stored.as_ref(), &validators, outbound)
                 .await?
             {
                 DialProgress::Done(outcome) => {
-                    self.remember_response(request, initiator, owner, mode, &outcome);
+                    self.cache
+                        .remember(request, &sent, initiator, owner.get(), &outcome);
                     Ok(*outcome)
                 }
                 DialProgress::Response { response, permits } => match request.delivery {
@@ -692,11 +464,12 @@ impl TabNetworkHandle {
                             }
                         };
                         let outcome = head.into_outcome(body);
-                        self.remember_response(request, initiator, owner, mode, &outcome);
+                        self.cache
+                            .remember(request, &sent, initiator, owner.get(), &outcome);
                         Ok(outcome)
                     }
                     BodyDelivery::Stream => {
-                        Ok(self.start_stream(request, initiator, owner, mode, *response, permits))
+                        Ok(self.start_stream(request, &sent, initiator, owner, *response, permits))
                     }
                 },
             }
@@ -714,23 +487,14 @@ impl TabNetworkHandle {
         &self,
         request: &DialRequest,
         initiator: &url::Origin,
-        stored: Option<&CachedResponse>,
-        etag: Option<&str>,
+        stored: Option<&DialOutcome>,
+        validators: &Validators,
+        mut outbound: Request,
     ) -> Result<DialProgress, DialFailure> {
         let deadline = Instant::now() + Self::dial_budget(request);
         let global = Self::acquire(&self.permits.global, deadline).await?;
         let tab = Self::acquire(&self.tab, deadline).await?;
-        let mut outbound = self.build_outbound(request, initiator, deadline)?;
-        if let Some(etag) = etag.and_then(net::isomorphic_encode) {
-            // A validator that cannot be written back as bytes is one the
-            // server sent outside the isomorphic range; skipping the
-            // conditional request is the only honest answer, since the stored
-            // entry still answers a 200.
-            outbound
-                .headers
-                .insert("If-None-Match", etag)
-                .map_err(|_| DialFailure::Connect)?;
-        }
+        validators.apply(&mut outbound)?;
         let blocked_redirect = watch_redirects(request, initiator, &mut outbound);
         let response = match self.agent.send(outbound).await {
             Ok(response) => response,
@@ -746,10 +510,13 @@ impl TabNetworkHandle {
         if response.status() == 304
             && let Some(stored) = stored
         {
-            return Ok(DialProgress::Done(Box::new(merge_not_modified(
-                &stored.outcome,
-                &response,
-            ))));
+            // A 304 that names no representation this dial made conditional
+            // cannot update the entry, and treating it as a response would
+            // hand the page a body the server never sent
+            // (<https://www.rfc-editor.org/rfc/rfc9111#section-4.3.4>).
+            let merged = HttpCache::merge_not_modified(stored, &response, validators)
+                .ok_or(DialFailure::Connect)?;
+            return Ok(DialProgress::Done(Box::new(merged)));
         }
         Ok(DialProgress::Response {
             response: Box::new(response),
@@ -765,27 +532,37 @@ impl TabNetworkHandle {
     fn start_stream(
         &self,
         request: &DialRequest,
+        sent: &[(String, String)],
         initiator: &url::Origin,
         owner: RendererAssignmentId,
-        mode: RequestCache,
         response: net::Response,
         permits: DialPermits,
     ) -> DialOutcome {
         let head = DialHead::read(request, &response);
+        let opaque = head.null_body();
+        let mut outcome = head.into_outcome(ResponseBody::Bytes(Vec::new()));
+        // An unsafe method's successful response invalidates what the cache
+        // holds for the URL as soon as its head arrives
+        // (<https://www.rfc-editor.org/rfc/rfc9111#section-4.4>). A `no-cors`
+        // response is opaque with a null body and still invalidates.
+        self.cache.invalidate_unsafe(request, owner.get(), &outcome);
         // A page-visible opaque response has a null body, so there is nothing
         // to stream (<https://fetch.spec.whatwg.org/#concept-filtered-response-opaque>).
-        if head.null_body() {
-            return head.into_outcome(ResponseBody::Bytes(Vec::new()));
+        if opaque {
+            return outcome;
         }
-        let mut outcome = head.into_outcome(ResponseBody::Bytes(Vec::new()));
         let (tx, rx) = tokio::sync::mpsc::channel(STREAM_CHUNK_DEPTH);
-        let store = should_store(request, &outcome, mode).then(|| PendingStore {
-            outcome: outcome.clone(),
-            cache: Arc::clone(&self.cache),
-            key: cache_key(request, initiator, owner),
-            request_headers: request.headers.clone(),
-            clock: self.clock.clone(),
-        });
+        let store = self
+            .cache
+            .may_store(request, sent, &outcome)
+            .then(|| PendingStore {
+                outcome: outcome.clone(),
+                cache: Arc::clone(&self.cache),
+                request: request.clone(),
+                sent: sent.to_vec(),
+                initiator: initiator.clone(),
+                partition: owner.get(),
+            });
         let task = spawn_stream_body(StreamJob {
             response,
             integrity: request.integrity.clone(),
@@ -876,117 +653,6 @@ impl TabNetworkHandle {
         for id in abandoned {
             abort_stream(streams.remove(&id));
         }
-    }
-
-    fn cache_read(
-        &self,
-        request: &DialRequest,
-        initiator: &url::Origin,
-        owner: RendererAssignmentId,
-    ) -> Result<CacheDecision, DialFailure> {
-        let mode = request.cache;
-        let cached = if has_page_conditional(request) {
-            None
-        } else {
-            self.cached_hit(request, initiator, owner)
-        };
-        if let Some(hit) = Self::cached_response(request, mode, cached.as_ref(), &self.clock)? {
-            return Ok(CacheDecision::Hit(hit));
-        }
-        // A default or no-cache request revalidates a stored response when it
-        // has a validator; the 304 path reuses the stored body. A page-supplied
-        // validator is the caller's own conditional request and must surface
-        // its 304
-        // (<https://fetch.spec.whatwg.org/#http-network-or-cache-fetch>).
-        let etag = matches!(mode, RequestCache::Default | RequestCache::NoCache)
-            .then(|| cached.as_ref().and_then(|entry| etag(&entry.outcome)))
-            .flatten();
-        Ok(CacheDecision::Miss {
-            mode,
-            stored: cached,
-            etag,
-        })
-    }
-
-    fn cached_integrity_ok(request: &DialRequest, entry: &CachedResponse) -> bool {
-        let Some(integrity) = request.integrity.as_deref() else {
-            return true;
-        };
-        match &entry.outcome.body {
-            ResponseBody::Bytes(body) => renderer::integrity_verifies(integrity, body),
-            ResponseBody::Undecodable | ResponseBody::Streamed(_) => false,
-        }
-    }
-
-    fn cached_hit(
-        &self,
-        request: &DialRequest,
-        initiator: &url::Origin,
-        partition: RendererAssignmentId,
-    ) -> Option<CachedResponse> {
-        if !request.policy.exposes_response() {
-            return None;
-        }
-        self.cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&cache_key(request, initiator, partition))
-            .filter(|entry| vary_matches(entry, request) && cache_usable(request, initiator, entry))
-            .cloned()
-    }
-
-    fn cached_response(
-        request: &DialRequest,
-        mode: RequestCache,
-        cached: Option<&CachedResponse>,
-        clock: &net::Clock,
-    ) -> Result<Option<DialOutcome>, DialFailure> {
-        if !request.policy.exposes_response() {
-            return Ok(None);
-        }
-        let hit = match (mode, cached) {
-            (RequestCache::OnlyIfCached, None) => return Err(DialFailure::Connect),
-            (RequestCache::OnlyIfCached, Some(cached)) => {
-                if request.url.origin() != cached.outcome.final_url.origin() {
-                    return Err(DialFailure::Connect);
-                }
-                cached
-            }
-            (RequestCache::ForceCache, Some(cached)) => cached,
-            (RequestCache::Default, Some(cached)) if fresh(cached, clock) => cached,
-            (
-                RequestCache::Default
-                | RequestCache::ForceCache
-                | RequestCache::NoStore
-                | RequestCache::Reload
-                | RequestCache::NoCache,
-                _,
-            ) => return Ok(None),
-        };
-        if !Self::cached_integrity_ok(request, hit) {
-            return Err(DialFailure::Connect);
-        }
-        Ok(Some(hit.outcome.clone()))
-    }
-
-    fn remember_response(
-        &self,
-        request: &DialRequest,
-        initiator: &url::Origin,
-        partition: RendererAssignmentId,
-        mode: RequestCache,
-        outcome: &DialOutcome,
-    ) {
-        if !should_store(request, outcome, mode) {
-            return;
-        }
-        store_response(
-            &self.cache,
-            cache_key(request, initiator, partition),
-            outcome.clone(),
-            request.headers.clone(),
-            &self.clock,
-        );
     }
 
     /// The deadline budget one page dial gets: the per-call cap, lowered by
@@ -1160,10 +826,11 @@ fn orb_filter(request: &DialRequest, outcome: DialOutcome) -> DialOutcome {
 /// The cache write a streamed body performs once its bytes are complete.
 struct PendingStore {
     outcome: DialOutcome,
-    cache: ResponseCache,
-    key: CacheKey,
-    request_headers: Vec<(String, String)>,
-    clock: net::Clock,
+    cache: Arc<HttpCache>,
+    request: DialRequest,
+    sent: Vec<(String, String)>,
+    initiator: url::Origin,
+    partition: u64,
 }
 
 /// One event from [`BodyReader`].
@@ -1262,12 +929,12 @@ fn spawn_stream_body(job: StreamJob) -> tokio::task::JoinHandle<()> {
                 BodyEvent::Done(body) => {
                     if let Some(mut store) = store {
                         store.outcome.body = ResponseBody::Bytes(body);
-                        store_response(
-                            &store.cache,
-                            store.key,
-                            store.outcome,
-                            store.request_headers,
-                            &store.clock,
+                        store.cache.remember(
+                            &store.request,
+                            &store.sent,
+                            &store.initiator,
+                            store.partition,
+                            &store.outcome,
                         );
                     }
                     let _ = tx.send(StreamMessage::End).await;
@@ -1391,7 +1058,8 @@ fn static_header(request: &mut Request, name: &str, value: &str) {
 mod tests {
     use super::*;
     use dial::referrer_authorized;
-    use std::time::{Duration, SystemTime};
+    use renderer::RequestPolicy;
+    use std::time::Duration;
 
     fn dial(policy: RequestPolicy, url: &str) -> DialRequest {
         let url = Url::parse(url).expect("dial URL");
@@ -1504,25 +1172,6 @@ mod tests {
             }),
             url,
         )
-    }
-
-    fn cached(response_type: net::cors::ResponseType) -> CachedResponse {
-        CachedResponse {
-            outcome: DialOutcome {
-                status: 200,
-                status_text: "OK".to_owned(),
-                final_url: Url::parse("http://a.test/").expect("url"),
-                content_type: None,
-                headers: Vec::new(),
-                body: ResponseBody::Bytes(Vec::new()),
-                response_type,
-                crossed_origin: false,
-                redirect_count: 0,
-                referrer: None,
-            },
-            stored_at: Instant::now(),
-            request_headers: Vec::new(),
-        }
     }
 
     /// What each policy actually puts on the wire: the CORS triple, the
@@ -1751,146 +1400,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn cache_partitions_by_document_and_initiator_origin() {
-        let request = js_fetch(renderer::CorsMode::Cors, "http://a.test/data");
-        let initiator = Url::parse("http://a.test/page").expect("page URL").origin();
-        let other_initiator = Url::parse("http://b.test/page")
-            .expect("other URL")
-            .origin();
-        let first = cache_key(&request, &initiator, RendererAssignmentId::new(1));
-        let same = cache_key(&request, &initiator, RendererAssignmentId::new(1));
-        let other_document = cache_key(&request, &initiator, RendererAssignmentId::new(2));
-        let other_origin = cache_key(&request, &other_initiator, RendererAssignmentId::new(1));
-        assert_eq!(first, same);
-        assert_ne!(first, other_document);
-        assert_ne!(first, other_origin);
-    }
-
-    #[test]
-    fn cached_cors_response_is_not_reused_as_no_cors_across_origins() {
-        let request = js_fetch(renderer::CorsMode::NoCors, "http://b.test/data");
-        let initiator = Url::parse("http://a.test/page").expect("page URL").origin();
-        assert!(!cache_usable(
-            &request,
-            &initiator,
-            &cached(net::cors::ResponseType::Cors)
-        ));
-        assert!(!cache_usable(
-            &request,
-            &initiator,
-            &cached(net::cors::ResponseType::Opaque)
-        ));
-        let same_origin = js_fetch(renderer::CorsMode::NoCors, "http://a.test/data");
-        assert!(cache_usable(
-            &same_origin,
-            &initiator,
-            &cached(net::cors::ResponseType::Basic)
-        ));
-    }
-
-    #[test]
-    fn cached_response_follows_the_request_cache_mode() {
-        let request = js_fetch(renderer::CorsMode::Cors, "http://a.test/data");
-        let mut entry = cached(net::cors::ResponseType::Basic);
-        assert_eq!(
-            TabNetworkHandle::cached_response(
-                &request,
-                RequestCache::OnlyIfCached,
-                None,
-                &net::Clock::default()
-            )
-            .expect_err("only-if-cached needs an entry"),
-            DialFailure::Connect
-        );
-        let mut cross_origin = entry.clone();
-        cross_origin.outcome.final_url = Url::parse("http://b.test/data").expect("url");
-        assert!(
-            TabNetworkHandle::cached_response(
-                &request,
-                RequestCache::OnlyIfCached,
-                Some(&cross_origin),
-                &net::Clock::default()
-            )
-            .is_err(),
-            "only-if-cached refuses a cross-origin final URL"
-        );
-        assert!(
-            TabNetworkHandle::cached_response(
-                &request,
-                RequestCache::OnlyIfCached,
-                Some(&entry),
-                &net::Clock::default()
-            )
-            .expect("hit")
-            .is_some()
-        );
-        assert!(
-            TabNetworkHandle::cached_response(
-                &request,
-                RequestCache::ForceCache,
-                Some(&entry),
-                &net::Clock::default()
-            )
-            .expect("stale hit")
-            .is_some(),
-            "force-cache uses a stale entry"
-        );
-        assert!(
-            TabNetworkHandle::cached_response(
-                &request,
-                RequestCache::ForceCache,
-                None,
-                &net::Clock::default()
-            )
-            .expect("miss")
-            .is_none()
-        );
-        assert!(
-            TabNetworkHandle::cached_response(
-                &request,
-                RequestCache::Default,
-                Some(&entry),
-                &net::Clock::default()
-            )
-            .expect("stale miss")
-            .is_none(),
-            "default does not use a stale entry"
-        );
-        entry
-            .outcome
-            .headers
-            .push(("cache-control".to_owned(), "max-age=60".to_owned()));
-        assert!(
-            TabNetworkHandle::cached_response(
-                &request,
-                RequestCache::Default,
-                Some(&entry),
-                &net::Clock::default()
-            )
-            .expect("fresh hit")
-            .is_some(),
-            "default uses a fresh entry"
-        );
-        for mode in [
-            RequestCache::NoStore,
-            RequestCache::Reload,
-            RequestCache::NoCache,
-        ] {
-            assert!(
-                TabNetworkHandle::cached_response(
-                    &request,
-                    mode,
-                    Some(&entry),
-                    &net::Clock::default()
-                )
-                .expect("miss")
-                .is_none(),
-                "{mode:?} must not answer from the cache"
-            );
-        }
-    }
-
     #[tokio::test]
     async fn a_cancelled_stream_releases_its_permit_for_the_next_dial() {
         use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -2108,143 +1617,6 @@ mod tests {
         server.abort();
     }
 
-    #[test]
-    fn an_undecodable_body_is_not_stored() {
-        let request = js_fetch(renderer::CorsMode::SameOrigin, "http://a.test/data");
-        let mut outcome = cached(net::cors::ResponseType::Basic).outcome;
-        assert!(should_store(&request, &outcome, RequestCache::Default));
-        outcome.body = ResponseBody::Undecodable;
-        assert!(
-            !should_store(&request, &outcome, RequestCache::Default),
-            "a decode failure has nothing to reuse, so a hit would replay it"
-        );
-    }
-
-    #[test]
-    fn vary_star_never_matches_and_a_named_field_must_agree() {
-        let mut request = js_fetch(renderer::CorsMode::Cors, "http://a.test/data");
-        request.headers = vec![("accept".to_owned(), "text/html".to_owned())];
-        let mut entry = cached(net::cors::ResponseType::Basic);
-        entry.request_headers = request.headers.clone();
-        assert!(
-            vary_matches(&entry, &request),
-            "a stored response without Vary matches"
-        );
-
-        entry.outcome.headers = vec![("vary".to_owned(), "*".to_owned())];
-        assert!(!vary_matches(&entry, &request));
-
-        entry.outcome.headers = vec![("Vary".to_owned(), "Accept".to_owned())];
-        assert!(vary_matches(&entry, &request));
-        request.headers = vec![("accept".to_owned(), "application/json".to_owned())];
-        assert!(
-            !vary_matches(&entry, &request),
-            "a different request header selects a different representation"
-        );
-    }
-
-    #[test]
-    fn fresh_reads_max_age_through_the_header_splitter() {
-        let clock = net::Clock::default();
-        let mut entry = cached(net::cors::ResponseType::Basic);
-        entry.outcome.headers = vec![(
-            "cache-control".to_owned(),
-            "private=\"a,b\", max-age=60".to_owned(),
-        )];
-        assert!(fresh(&entry, &clock));
-
-        entry.outcome.headers = vec![("cache-control".to_owned(), "max-age=1".to_owned())];
-        entry.stored_at = Instant::now()
-            .checked_sub(Duration::from_secs(2))
-            .expect("two seconds before now");
-        assert!(!fresh(&entry, &clock), "an expired max-age is stale");
-
-        // `age` counts whole seconds, so `max-age=0` must not stay fresh for
-        // the first second of its life
-        // (<https://www.rfc-editor.org/rfc/rfc9111#section-4.2>).
-        entry.outcome.headers = vec![("cache-control".to_owned(), "max-age=0".to_owned())];
-        entry.stored_at = Instant::now();
-        assert!(
-            !fresh(&entry, &clock),
-            "a zero lifetime is spent on arrival"
-        );
-
-        entry.outcome.headers = vec![(
-            "expires".to_owned(),
-            "Thu, 01 Jan 2099 00:00:00 GMT".to_owned(),
-        )];
-        assert!(fresh(&entry, &clock), "a future Expires is fresh");
-    }
-
-    /// The cache stamps and reads entries with the injected clock, so an
-    /// embedder's clock is the one freshness follows and a test can expire an
-    /// entry without sleeping.
-    #[test]
-    fn the_cache_reads_the_injected_clock() {
-        let manual = ManualClock::new();
-        let clock = manual.clock();
-        let request = js_fetch(renderer::CorsMode::Cors, "http://a.test/data");
-        let initiator = Url::parse("http://a.test/page").expect("page URL").origin();
-        let key = cache_key(&request, &initiator, RendererAssignmentId::new(1));
-        let mut outcome = cached(net::cors::ResponseType::Basic).outcome;
-        outcome.headers = vec![("cache-control".to_owned(), "max-age=60".to_owned())];
-        let cache = ResponseCache::default();
-        store_response(&cache, key.clone(), outcome, Vec::new(), &clock);
-        let entry = cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&key)
-            .cloned()
-            .expect("stored");
-        assert_eq!(
-            entry.stored_at,
-            clock.monotonic(),
-            "the entry is stamped with the injected clock"
-        );
-        assert!(fresh(&entry, &clock), "fresh at the stored instant");
-        manual.advance(61);
-        assert!(!fresh(&entry, &clock), "stale one second after max-age");
-    }
-
-    /// A clock the test moves by hand: a wall clock, a monotonic clock, and one
-    /// offset for both.
-    ///
-    /// The state belongs to the value, so two tests with clocks cannot race
-    /// each other the way a process-global static would.
-    struct ManualClock {
-        wall_base: SystemTime,
-        monotonic_base: Instant,
-        offset: AtomicU64,
-    }
-
-    impl ManualClock {
-        fn new() -> Arc<Self> {
-            Arc::new(Self {
-                wall_base: SystemTime::now(),
-                monotonic_base: Instant::now(),
-                offset: AtomicU64::new(0),
-            })
-        }
-
-        fn advance(&self, seconds: u64) {
-            self.offset.fetch_add(seconds, Ordering::Relaxed);
-        }
-
-        fn clock(self: &Arc<Self>) -> net::Clock {
-            net::Clock::new(Arc::clone(self))
-        }
-    }
-
-    impl net::ClockSource for ManualClock {
-        fn wall(&self) -> SystemTime {
-            self.wall_base + Duration::from_secs(self.offset.load(Ordering::Relaxed))
-        }
-
-        fn monotonic(&self) -> Instant {
-            self.monotonic_base + Duration::from_secs(self.offset.load(Ordering::Relaxed))
-        }
-    }
-
     /// A stored `ETag` holds isomorphic-decoded bytes, so writing it back must
     /// keep one byte per code point. UTF-8 would send `0xC3 0xA9` where the
     /// server sent `0xE9`, and every revalidation would answer 200.
@@ -2333,79 +1705,6 @@ mod tests {
         server.abort();
     }
 
-    #[test]
-    fn cached_body_still_needs_to_satisfy_integrity_metadata() {
-        let mut request = js_fetch(renderer::CorsMode::Cors, "http://a.test/data");
-        request.integrity = Some("sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=".to_owned());
-        assert!(TabNetworkHandle::cached_integrity_ok(
-            &request,
-            &cached(net::cors::ResponseType::Basic)
-        ));
-        request.integrity = Some("sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_owned());
-        assert!(!TabNetworkHandle::cached_integrity_ok(
-            &request,
-            &cached(net::cors::ResponseType::Basic)
-        ));
-    }
-
-    #[test]
-    fn cache_evicts_the_oldest_entry_at_the_count_limit() {
-        let mut cache = HashMap::new();
-        let initiator = Url::parse("http://a.test/page").expect("page URL").origin();
-        let keys: Vec<CacheKey> = (0..=CACHE_MAX_ENTRIES)
-            .map(|index| {
-                let mut request = js_fetch(renderer::CorsMode::Cors, "http://a.test/data");
-                request.url = Url::parse(&format!("http://a.test/{index}")).expect("URL");
-                cache_key(&request, &initiator, RendererAssignmentId::new(1))
-            })
-            .collect();
-        for (index, key) in keys.iter().enumerate() {
-            let mut entry = cached(net::cors::ResponseType::Basic);
-            entry.stored_at =
-                Instant::now() + Duration::from_secs(u64::try_from(index).expect("entry index"));
-            insert_cached(&mut cache, key.clone(), entry);
-        }
-        assert_eq!(cache.len(), CACHE_MAX_ENTRIES);
-        assert!(
-            !cache.contains_key(&keys[0]),
-            "the oldest entry is the one evicted"
-        );
-        assert!(
-            cache.contains_key(&keys[CACHE_MAX_ENTRIES]),
-            "the entry just inserted survives"
-        );
-    }
-
-    #[test]
-    fn cache_evicts_by_body_bytes_from_the_oldest_entry() {
-        let bodies = CACHE_MAX_BYTES / renderer::MAX_RESPONSE_BODY_BYTES + 1;
-        let mut cache = HashMap::new();
-        let initiator = Url::parse("http://a.test/page").expect("page URL").origin();
-        let keys: Vec<CacheKey> = (0..bodies)
-            .map(|index| {
-                let mut request = js_fetch(renderer::CorsMode::Cors, "http://a.test/data");
-                request.url = Url::parse(&format!("http://a.test/{index}")).expect("URL");
-                cache_key(&request, &initiator, RendererAssignmentId::new(1))
-            })
-            .collect();
-        for (index, key) in keys.iter().enumerate() {
-            let mut entry = cached(net::cors::ResponseType::Basic);
-            entry.outcome.body = ResponseBody::Bytes(vec![0; renderer::MAX_RESPONSE_BODY_BYTES]);
-            entry.stored_at =
-                Instant::now() + Duration::from_secs(u64::try_from(index).expect("entry index"));
-            insert_cached(&mut cache, key.clone(), entry);
-        }
-        assert_eq!(cache.len(), bodies - 1);
-        assert!(
-            !cache.contains_key(&keys[0]),
-            "the oldest body is the one evicted"
-        );
-        assert!(
-            cache.contains_key(&keys[bodies - 1]),
-            "the body just inserted stays"
-        );
-    }
-
     #[tokio::test]
     async fn exhausted_permits_fail_with_queue_full_before_the_deadline() {
         let permits = Arc::new(Semaphore::new(1));
@@ -2462,32 +1761,5 @@ mod tests {
         );
         assert!(insecure_request.headers.get("sec-fetch-mode").is_some());
         assert!(insecure_request.headers.get("accept").is_some());
-    }
-
-    /// `no-store` is a directive name, not a substring: a lookalike directive
-    /// must not keep a response out of the cache, and a real one among others
-    /// must
-    /// (<https://www.rfc-editor.org/rfc/rfc9111#section-5.2.2.5>).
-    #[test]
-    fn only_the_no_store_directive_forbids_storage() {
-        let mut outcome = cached(net::cors::ResponseType::Cors).outcome;
-        for (cache_control, forbids) in [
-            ("no-cache", false),
-            ("no-store-ish=1", false),
-            ("max-age=60", false),
-            ("no-store", true),
-            ("NO-STORE", true),
-            ("private, no-store, max-age=0", true),
-            ("no-store=1", true),
-        ] {
-            outcome.headers = vec![("Cache-Control".to_owned(), cache_control.to_owned())];
-            assert_eq!(
-                response_forbids_storage(&outcome),
-                forbids,
-                "{cache_control:?}"
-            );
-        }
-        outcome.headers = Vec::new();
-        assert!(!response_forbids_storage(&outcome), "no header at all");
     }
 }

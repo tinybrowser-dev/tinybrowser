@@ -280,6 +280,8 @@ pub(crate) struct LocalDocumentState {
     pub(crate) url: Url,
     /// The fallback base URL the creator supplied.
     pub(crate) base_url: Option<Url>,
+    /// The cookie URL an inherited document uses, captured at creation.
+    pub(crate) cookie_url: Option<Url>,
     /// The document's own referrer, unredacted.
     pub(crate) referrer: Option<Url>,
     /// The URL `"client"` referrers resolve against.
@@ -374,11 +376,14 @@ fn materialize_iframe_document(
     container: crate::dom::tree::NodeId,
     new_frames: &Rc<RefCell<Vec<CreatedFrame>>>,
 ) {
-    let (runtime, base_url, referrer_url, init_scripts, viewport) = {
+    // The about base URL is the creator's document base URL, so a parent
+    // `<base href>` reaches the child
+    // (<https://html.spec.whatwg.org/multipage/document-sequences.html#creating-browsing-contexts>).
+    let base_url = world_rc.borrow().main_base_url();
+    let (runtime, referrer_url, init_scripts, viewport) = {
         let world = world_rc.borrow();
         (
             world.runtime.clone(),
-            world.document_url.clone(),
             world.referrer_url.clone(),
             Rc::clone(&world.init_scripts),
             world.viewport_size.get(),
@@ -403,7 +408,11 @@ fn materialize_iframe_document(
         world.top_level = Some(world_rc.borrow().top_level_origin());
         world.set_parent_context(&world_rc.borrow());
     }
-    document.load_about_blank_tree(Some(&base_url), Some(origin));
+    document.load_about_blank_tree(
+        Some(&base_url),
+        &world_rc.borrow().cookie_url(),
+        Some(origin),
+    );
     // The initial blank reports its creator's URL, walked out of a `srcdoc`
     // chain the same way the referrer source is
     // (<https://html.spec.whatwg.org/multipage/browsers.html#creating-a-new-browsing-context>).
@@ -466,7 +475,7 @@ fn materialize_auxiliary_document(
     } else {
         origin
     };
-    document.load_about_blank_tree(Some(&url), Some(origin));
+    document.load_about_blank_tree(Some(&url), &world_rc.borrow().cookie_url(), Some(origin));
     if opener == crate::protocol::OpenerPolicy::NoReferrer {
         document.set_document_referrer(None);
     }
@@ -1112,11 +1121,11 @@ impl Document {
         if pending.is_empty() {
             return;
         }
-        let (runtime, base_url, referrer_url, origin, init_scripts, viewport) = {
+        let base_url = self.base_url();
+        let (runtime, referrer_url, origin, init_scripts, viewport) = {
             let world = self.world.borrow();
             (
                 world.runtime.clone(),
-                world.document_url.clone(),
                 world.referrer_url.clone(),
                 world.origin.clone(),
                 Rc::clone(&world.init_scripts),
@@ -1152,8 +1161,21 @@ impl Document {
                 world.top_level = Some(top_level.clone());
                 world.set_parent_context(&self.world.borrow());
             }
-            document.load_about_blank(Some(&base_url), Some(origin));
+            // The document a following classic script reads through
+            // `contentDocument`: the blank tree exists before that script
+            // runs, exactly as it does for a script-created iframe
+            // (<https://html.spec.whatwg.org/multipage/iframe-embed-object.html#the-iframe-element:html-element-insertion-steps>).
+            let cookie_url = self.world.borrow().cookie_url();
+            document.load_about_blank_tree(Some(&base_url), &cookie_url, Some(origin));
             document.set_document_referrer(Some(referrer_url.clone()));
+            if let Some(root) = document.document_root() {
+                document
+                    .world()
+                    .borrow()
+                    .registry()
+                    .borrow_mut()
+                    .set_frame_document(container, root);
+            }
             loaded.push(CreatedFrame::Child {
                 frame,
                 container,
@@ -1230,6 +1252,7 @@ impl Document {
         LocalDocumentState {
             url: self.url.clone(),
             base_url: world.base_url.clone(),
+            cookie_url: world.inherited_cookie_url.clone(),
             referrer: world.document_referrer.clone(),
             referrer_url: world.referrer_url.clone(),
             origin: world.origin.clone(),
@@ -1253,8 +1276,13 @@ impl Document {
         self.world.borrow_mut().install_sandbox(state.sandbox);
         if let Some(markup) = srcdoc {
             let base = state.base_url.as_ref().unwrap_or(&state.url);
+            let cookie_url = state
+                .cookie_url
+                .clone()
+                .unwrap_or_else(|| state.url.clone());
             self.load_frame_srcdoc(
                 base,
+                &cookie_url,
                 &state.referrer_url,
                 state.origin.clone(),
                 &state.policy,
@@ -1262,7 +1290,15 @@ impl Document {
             );
             return;
         }
-        self.load_about_blank(state.base_url.as_ref(), Some(state.origin.clone()));
+        let cookie_url = state
+            .cookie_url
+            .clone()
+            .unwrap_or_else(|| state.url.clone());
+        self.load_about_blank(
+            state.base_url.as_ref(),
+            &cookie_url,
+            Some(state.origin.clone()),
+        );
         self.set_document_referrer(state.referrer.clone());
         self.world.borrow_mut().policy = state.policy.clone();
     }
@@ -1492,6 +1528,7 @@ impl Document {
     fn apply_blank_url(
         &mut self,
         inherited_url: Option<&Url>,
+        cookie_url: &Url,
         inherited_origin: Option<url::Origin>,
     ) {
         let Some(base) = inherited_url else {
@@ -1500,7 +1537,12 @@ impl Document {
         let blank = about_blank();
         let origin = self.sandboxed_origin(inherited_origin);
         self.commit_document_url(blank, origin);
-        self.world.borrow_mut().base_url = Some(base.clone());
+        let mut world = self.world.borrow_mut();
+        world.base_url = Some(base.clone());
+        // The blank has no URL of its own that cookies can apply to, so it
+        // borrows the creator's cookie URL for as long as it lives
+        // (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-cookie>).
+        world.inherited_cookie_url = Some(cookie_url.clone());
     }
 
     /// Installs an `about:blank` document, with `inherited_url` as its
@@ -1519,9 +1561,10 @@ impl Document {
     pub(crate) fn load_about_blank(
         &mut self,
         inherited_url: Option<&Url>,
+        cookie_url: &Url,
         inherited_origin: Option<url::Origin>,
     ) {
-        self.apply_blank_url(inherited_url, inherited_origin);
+        self.apply_blank_url(inherited_url, cookie_url, inherited_origin);
         // A blank document's referrer is its creator's URL, unredacted by any
         // policy: the initial `about:blank` was never fetched
         // (<https://html.spec.whatwg.org/multipage/browsers.html#creating-a-new-browsing-context>).
@@ -1542,6 +1585,7 @@ impl Document {
     pub(crate) fn load_frame_srcdoc(
         &mut self,
         base: &Url,
+        cookie_url: &Url,
         referrer_url: &Url,
         origin: url::Origin,
         policy: &PolicyContainer,
@@ -1554,6 +1598,10 @@ impl Document {
         {
             let mut world = self.world.borrow_mut();
             world.base_url = Some(base.clone());
+            // A `srcdoc` document's own `about:srcdoc` URL cannot carry
+            // cookies; its cookies belong to its creator
+            // (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-cookie>).
+            world.inherited_cookie_url = Some(cookie_url.clone());
             world.referrer_url = referrer_url.clone();
             // A `srcdoc` document's referrer is its creator's URL, like the
             // initial `about:blank` it replaces
@@ -1577,9 +1625,10 @@ impl Document {
     pub(crate) fn load_about_blank_tree(
         &mut self,
         inherited_url: Option<&Url>,
+        cookie_url: &Url,
         inherited_origin: Option<url::Origin>,
     ) {
-        self.apply_blank_url(inherited_url, inherited_origin);
+        self.apply_blank_url(inherited_url, cookie_url, inherited_origin);
         // The initial blank reports its creator's URL as its referrer
         // (<https://html.spec.whatwg.org/multipage/browsers.html#creating-a-new-browsing-context>).
         self.world.borrow_mut().document_referrer = inherited_url.cloned();
@@ -1698,7 +1747,12 @@ impl Document {
         let first_document = !self.committed;
         let resolved_by_browser = std::mem::take(&mut self.name_resolved);
         self.committed = true;
+        let creation_url = url.clone();
         self.set_document_url(url, origin);
+        // A new document commits a new creation URL; a same-document history
+        // update keeps the one it had
+        // (<https://html.spec.whatwg.org/multipage/document-lifecycle.html#concept-document-creation-url>).
+        self.world.borrow_mut().creation_url = creation_url;
         if first_document || resolved_by_browser {
             return;
         }
@@ -2003,7 +2057,16 @@ impl Document {
     ///
     /// [`TabError::Script`] when the engine cannot start or the script throws.
     pub(crate) fn eval(&mut self, source: &str) -> Result<String, TabError> {
-        self.adopt_pending_frames();
+        // A frame this evaluation creates still has to be adopted, but an
+        // evaluation that runs *during* parsing must not adopt the frames the
+        // parser has not reached yet: their `src` loads would start before the
+        // parser-blocking scripts ahead of them run
+        // (<https://html.spec.whatwg.org/multipage/iframe-embed-object.html#the-iframe-element:html-element-insertion-steps>).
+        // The walk adopts those in tree order, and adopts the rest when it
+        // ends.
+        if !self.world.borrow().parser_active {
+            self.adopt_pending_frames();
+        }
         self.ensure_js()?;
         let Some(js) = self.js.as_ref() else {
             return Err(TabError::Script(ScriptFailure::HostMissing));
@@ -2165,8 +2228,9 @@ impl Document {
         self.install_response_url(head, origin);
         let mut world = self.world.borrow_mut();
         // A response document resolves against its own URL; any inherited
-        // `about:srcdoc` base stops applying.
+        // `about:srcdoc` base and cookie URL stop applying.
         world.base_url = None;
+        world.inherited_cookie_url = None;
         drop(world);
         // The realm is already new when this runs; this opens the parser and
         // the decoder for the response that will feed it.
@@ -2902,6 +2966,9 @@ impl Document {
             parsed
         };
         if !self.install_parsed(parsed) {
+            // Nothing will resume the walk, so the parser is no longer
+            // active: a later evaluation must adopt the frames it creates.
+            self.world.borrow_mut().parser_active = false;
             self.record_event(RendererEvent::ScriptFailed);
             return;
         }
@@ -3327,8 +3394,14 @@ impl Document {
                 ParseStep::Base(id) => {
                     if !base_seen {
                         base_seen = true;
-                        if let Some(href) = self.base_element_href(id) {
-                            parse_base = parse_base.join(&href).unwrap_or(parse_base);
+                        // `base-uri` refuses a base the document may not
+                        // use; the violation is queued as the parser reaches
+                        // the element
+                        // (<https://w3c.github.io/webappsec-csp/#is-base-allowed-for-document>).
+                        // The element keeps its first answer across a resumed
+                        // walk, so one base reports once.
+                        if let Some(resolved) = self.world.borrow_mut().apply_base_element(id) {
+                            parse_base = resolved;
                         }
                     }
                     continue;
@@ -3507,23 +3580,10 @@ impl Document {
     /// against the fallback base URL, or the fallback itself
     /// (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#document-base-url>).
     pub(crate) fn base_url(&self) -> Url {
-        let world = self.world.borrow();
         // An `about:srcdoc` document's own URL cannot be a base; its
         // fallback base URL is the creator document's base URL
         // (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#fallback-base-url>).
-        let document_url = world.base_url.clone().unwrap_or_else(|| self.url.clone());
-        let base_href = world
-            .with_main_document(|parsed| {
-                let base = &parsed.document.base;
-                let root = base.root_node().id;
-                let base_el = base.query_selector_in(root, "base[href]").ok().flatten()?;
-                crate::dom::tree::attr(base, base_el, "href").map(str::to_owned)
-            })
-            .flatten();
-        let Some(href) = base_href else {
-            return document_url;
-        };
-        document_url.join(&href).unwrap_or(document_url)
+        self.world.borrow().main_base_url()
     }
 
     /// The URL a document's `<base href>` elements resolve against: the
@@ -3533,13 +3593,6 @@ impl Document {
     fn fallback_base_url(&self) -> Url {
         let world = self.world.borrow();
         world.base_url.clone().unwrap_or_else(|| self.url.clone())
-    }
-
-    /// A `<base>` element's `href` value.
-    fn base_element_href(&self, id: crate::dom::tree::NodeId) -> Option<String> {
-        let world = self.world.borrow();
-        let parsed = world.document(id)?;
-        crate::dom::tree::attr(&parsed.document.base, id.node, "href").map(str::to_owned)
     }
 
     /// Resolves a parser-inserted script's `src` against the base URL in
@@ -4355,7 +4408,11 @@ impl Document {
             self.queue_csp_reports(&violations);
         }
         if blocked {
-            self.load_about_blank(Some(&about_blank()), Some(url::Origin::new_opaque()));
+            self.load_about_blank(
+                Some(&about_blank()),
+                &about_blank(),
+                Some(url::Origin::new_opaque()),
+            );
         }
         blocked
     }

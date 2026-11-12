@@ -71,6 +71,18 @@ pub(crate) fn install_messaging(ctx: &Ctx<'_>) -> Result<()> {
     )?;
     globals.set("__tbFrameName", rquickjs::prelude::Func::from(frame_name))?;
     globals.set(
+        "__tbFrameSameOrigin",
+        rquickjs::prelude::Func::from(frame_same_origin),
+    )?;
+    globals.set(
+        "__tbFrameLocation",
+        rquickjs::prelude::Func::from(frame_location),
+    )?;
+    globals.set(
+        "__tbFrameSetLocation",
+        rquickjs::prelude::Func::from(frame_set_location),
+    )?;
+    globals.set(
         "__tbSetFrameName",
         rquickjs::prelude::Func::from(set_frame_name),
     )?;
@@ -517,6 +529,22 @@ fn frame_child(ctx: Ctx<'_>, frame: f64, index: f64) -> Result<Option<f64>> {
     Ok(Some(crate::js::js_number(child.get())))
 }
 
+/// The target frame's world and whether it shares this realm's origin. `None`
+/// when the frame is unknown or has no world. Every same-origin decision the
+/// `WindowProxy` makes goes through this one predicate
+/// (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-get>).
+fn frame_world_with_origin(
+    ctx: &Ctx<'_>,
+    frame: u64,
+) -> Result<Option<(Rc<RefCell<World>>, bool)>> {
+    let current = world(ctx)?;
+    let Some(target) = current.borrow().frame_world(FrameId::new(frame)) else {
+        return Ok(None);
+    };
+    let same_origin = target.borrow().origin == current.borrow().origin;
+    Ok(Some((target, same_origin)))
+}
+
 /// Same-origin members forward through the target realm's window; a null
 /// answer means the member is blocked cross-origin
 /// (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-get>).
@@ -529,10 +557,9 @@ fn frame_global(ctx: Ctx<'_>, frame: f64) -> Result<Option<Object<'_>>> {
     if current.borrow().frame() == frame {
         return Ok(Some(ctx.globals()));
     }
-    let Some(target) = current.borrow().frame_world(frame) else {
+    let Some((target, same_origin)) = frame_world_with_origin(&ctx, frame.get())? else {
         return Ok(None);
     };
-    let same_origin = target.borrow().origin == current.borrow().origin;
     if !same_origin {
         return Ok(None);
     }
@@ -549,12 +576,10 @@ pub(crate) fn frame_document(ctx: Ctx<'_>, frame: f64) -> Result<Value<'_>> {
     let Some(frame) = protocol_id(frame) else {
         return Ok(Value::new_null(ctx));
     };
-    let current = world(&ctx)?;
-    let Some(target) = current.borrow().frame_world(FrameId::new(frame)) else {
+    let Some((target, same_origin)) = frame_world_with_origin(&ctx, frame)? else {
         return Ok(Value::new_null(ctx));
     };
     let root = target.borrow().main_document_root();
-    let same_origin = target.borrow().origin == current.borrow().origin;
     if !same_origin {
         return Err(throw_dom(
             &ctx,
@@ -623,6 +648,51 @@ fn frame_registered(ctx: Ctx<'_>, frame: f64) -> Result<bool> {
     let world = world(&ctx)?;
     let shared = world.borrow().shared();
     Ok(shared.borrow().tree.contains(FrameId::new(frame)))
+}
+
+/// A same-origin frame's world, whether or not its realm has started. `None`
+/// for a cross-origin, missing, or unknown frame
+/// (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-get>).
+fn same_origin_frame(ctx: &Ctx<'_>, frame: f64) -> Result<Option<Rc<RefCell<World>>>> {
+    let Some(frame) = protocol_id(frame) else {
+        return Ok(None);
+    };
+    Ok(frame_world_with_origin(ctx, frame)?
+        .and_then(|(target, same_origin)| if same_origin { Some(target) } else { None }))
+}
+
+/// Whether a not-yet-materialized frame is same-origin: an `iframe` whose
+/// document exists but whose `QuickJS` realm cannot start until the inserting
+/// script returns. The `WindowProxy` uses it to answer the target window's
+/// globals and `location` instead of returning `undefined`
+/// (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-get>).
+fn frame_same_origin(ctx: Ctx<'_>, frame: f64) -> Result<bool> {
+    Ok(same_origin_frame(&ctx, frame)?.is_some())
+}
+
+/// The target window's `Location` for a frame whose realm has not started,
+/// built in the caller's realm but bound to the target frame's world
+/// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#the-location-interface>).
+fn frame_location(ctx: Ctx<'_>, frame: f64) -> Result<Option<Object<'_>>> {
+    let Some(target) = same_origin_frame(&ctx, frame)? else {
+        return Ok(None);
+    };
+    Ok(Some(super::window::build_location(&ctx, &target)?))
+}
+
+/// The `Window.location` setter for a frame whose realm has not started: it
+/// parses the URL against the entry settings object and queues the target's
+/// navigation, throwing the same `SyntaxError` as the installed accessor
+/// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-href>).
+fn frame_set_location(ctx: Ctx<'_>, frame: f64, value: Value<'_>) -> Result<()> {
+    let Some(target) = same_origin_frame(&ctx, frame)? else {
+        return Err(throw_dom(
+            &ctx,
+            "SecurityError",
+            "Blocked a frame from accessing a cross-origin frame.",
+        ));
+    };
+    super::window::set_location_href(&target, value)
 }
 
 /// Event handler property names whose values live in the world, so a wrapper

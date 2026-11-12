@@ -1926,13 +1926,22 @@ pub(super) fn register_inserted_iframes(ctx: &Ctx<'_>, inserted: &[NodeId]) -> R
         }
     }
     for step in steps {
-        if let InsertionStep::Iframe(id) = step {
-            World::materialize_iframe(&world(ctx)?, id);
-            // The initial `load` is an element task, not part of the
-            // insertion steps: the engine fires it after the child frame's
-            // realm exists, so `contentWindow.location` is readable in the
-            // handler
-            // (<https://html.spec.whatwg.org/multipage/iframe-embed-object.html#the-iframe-element:html-element-insertion-steps>).
+        match step {
+            InsertionStep::Iframe(id) => {
+                World::materialize_iframe(&world(ctx)?, id);
+                // The initial `load` is an element task, not part of the
+                // insertion steps: the engine fires it after the child frame's
+                // realm exists, so `contentWindow.location` is readable in the
+                // handler
+                // (<https://html.spec.whatwg.org/multipage/iframe-embed-object.html#the-iframe-element:html-element-insertion-steps>).
+            }
+            // Markup inserted through the parser's own paths runs the base
+            // check in the parse walk; script-created markup runs it here
+            // (<https://w3c.github.io/webappsec-csp/#is-base-allowed-for-document>).
+            InsertionStep::Base(id) => {
+                world(ctx)?.borrow_mut().apply_base_element(id);
+            }
+            InsertionStep::Script(_) | InsertionStep::Meta(_) => {}
         }
     }
     Ok(())

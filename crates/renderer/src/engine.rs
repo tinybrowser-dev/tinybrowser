@@ -2522,6 +2522,7 @@ impl Engine {
         let inherited = self.frames.get(&parent).map(|document| {
             (
                 document.inherited_url(),
+                document.world().borrow().cookie_url(),
                 document.referrer_url(),
                 document.world().borrow().origin.clone(),
             )
@@ -2538,11 +2539,13 @@ impl Engine {
             return;
         };
         match inherited {
-            Some((url, referrer, origin)) => {
-                document.load_about_blank(Some(&url), Some(origin));
+            Some((url, cookie_url, referrer, origin)) => {
+                document.load_about_blank(Some(&url), &cookie_url, Some(origin));
                 document.set_document_referrer(Some(referrer));
             }
-            None => document.load_about_blank(Some(&about_blank()), None),
+            None => {
+                document.load_about_blank(Some(&about_blank()), &about_blank(), None);
+            }
         }
         self.inherit_policy(child, parent);
     }
@@ -2761,7 +2764,7 @@ impl Engine {
             }
             _ => {
                 if let Some(document) = self.frames.get_mut(&child) {
-                    document.load_about_blank(None, None);
+                    document.load_about_blank(None, &about_blank(), None);
                 }
                 self.inherit_policy(child, initiator);
             }
@@ -2818,6 +2821,7 @@ impl Engine {
             let world = world.borrow();
             (
                 document.base_url(),
+                world.cookie_url(),
                 world.referrer_url.clone(),
                 world.origin.clone(),
                 world.policy.clone(),
@@ -2826,11 +2830,12 @@ impl Engine {
         let Some(document) = self.frames.get_mut(&child) else {
             return;
         };
-        if let Some((base, referrer_url, origin, policy)) = inherited {
-            document.load_frame_srcdoc(&base, &referrer_url, origin, &policy, markup);
+        if let Some((base, cookie_url, referrer_url, origin, policy)) = inherited {
+            document.load_frame_srcdoc(&base, &cookie_url, &referrer_url, origin, &policy, markup);
         } else {
             let blank = about_blank();
             document.load_frame_srcdoc(
+                &blank,
                 &blank,
                 &blank,
                 url::Origin::new_opaque(),
@@ -2854,7 +2859,7 @@ impl Engine {
         let referrer = self.local_frame_referrer(parent, navigation, url);
         let Some((content_type, body)) = decode_data_url(url.as_str()) else {
             if let Some(document) = self.frames.get_mut(&child) {
-                document.load_about_blank(None, None);
+                document.load_about_blank(None, &about_blank(), None);
                 document.set_document_referrer(referrer);
             }
             self.inherit_policy(child, parent);

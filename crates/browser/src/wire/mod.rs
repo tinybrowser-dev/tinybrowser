@@ -350,6 +350,22 @@ pub enum NetworkCall {
         /// cookie is stored under.
         partition_key: Option<String>,
     },
+    /// `cookieStore.getAll()` query.
+    CookieStoreGet {
+        /// Document URL.
+        url: String,
+        /// The site of the top-level document.
+        partition_key: Option<String>,
+    },
+    /// `cookieStore.set()`/`delete()` storage step.
+    CookieStoreSet {
+        /// The typed cookie the operation built.
+        write: net::ScriptCookieWrite,
+        /// Document URL.
+        url: String,
+        /// The site of the top-level document.
+        partition_key: Option<String>,
+    },
 }
 
 /// Web Storage operation requested by a renderer.
@@ -535,6 +551,8 @@ pub enum ServiceReply {
     StreamChunk(Result<Option<Vec<u8>>, DialFailure>),
     /// Cookie getter result.
     Cookie(String),
+    /// Script-visible cookies, in the jar's retrieval order.
+    CookieStore(Vec<renderer::ScriptCookie>),
     /// Local storage getter result.
     StorageValue(Option<String>),
     /// Local storage key list, in iteration order.
@@ -564,10 +582,14 @@ impl ServiceReply {
             ServiceCall::Network(NetworkCall::CookieGet { .. }) => {
                 ServiceReply::Cookie(String::new())
             }
+            ServiceCall::Network(NetworkCall::CookieStoreGet { .. }) => {
+                ServiceReply::CookieStore(Vec::new())
+            }
             ServiceCall::Network(
                 NetworkCall::CancelDial { .. }
                 | NetworkCall::CancelStream { .. }
-                | NetworkCall::CookieSet { .. },
+                | NetworkCall::CookieSet { .. }
+                | NetworkCall::CookieStoreSet { .. },
             )
             | ServiceCall::Messaging(MessagingCall::BroadcastPost { .. })
             | ServiceCall::BrowsingContext(

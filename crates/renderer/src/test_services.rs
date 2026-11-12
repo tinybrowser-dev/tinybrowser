@@ -30,6 +30,22 @@ impl NetworkHost for NullServices {
     }
 
     fn set_cookie(&self, _value: &str, _url: &Url, _partition_key: Option<&str>) {}
+
+    fn cookie_store_records(
+        &self,
+        _url: &Url,
+        _partition_key: Option<&str>,
+    ) -> Vec<crate::protocol::ScriptCookie> {
+        Vec::new()
+    }
+
+    fn cookie_store_store(
+        &self,
+        _write: &net::ScriptCookieWrite,
+        _url: &Url,
+        _partition_key: Option<&str>,
+    ) {
+    }
 }
 
 impl StorageHost for NullServices {

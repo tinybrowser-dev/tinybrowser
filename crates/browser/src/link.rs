@@ -732,10 +732,6 @@ async fn route_service_call(
             let Some(url) = assignment.site.authorize_url(&url) else {
                 return Err(RendererViolation);
             };
-            // The partition key only narrows the cookie set to a partition of
-            // this same host's cookies: a renderer that names another
-            // top-level site reads data it already owns, never another
-            // origin's, so the renderer may supply it.
             let reply = ServiceReply::Cookie(
                 assignment
                     .network
@@ -743,6 +739,10 @@ async fn route_service_call(
             );
             send_reply(&context.responder, id, reply).await?;
         }
+        // Every cookie arm authorizes the URL and passes the partition key the
+        // renderer named. The key only narrows the same host's cookie set to
+        // one partition, so a renderer that names another top-level site reads
+        // data it already owns, never another origin's.
         ServiceCall::Network(NetworkCall::CookieSet {
             value,
             url,
@@ -754,6 +754,28 @@ async fn route_service_call(
             assignment
                 .network
                 .set_cookie(&value, &url, partition_key.as_deref());
+            send_reply(&context.responder, id, ServiceReply::Unit).await?;
+        }
+        ServiceCall::Network(NetworkCall::CookieStoreGet { url, partition_key }) => {
+            let Some(url) = assignment.site.authorize_url(&url) else {
+                return Err(RendererViolation);
+            };
+            let records = assignment
+                .network
+                .cookie_store_records(&url, partition_key.as_deref());
+            send_reply(&context.responder, id, ServiceReply::CookieStore(records)).await?;
+        }
+        ServiceCall::Network(NetworkCall::CookieStoreSet {
+            write,
+            url,
+            partition_key,
+        }) => {
+            let Some(url) = assignment.site.authorize_url(&url) else {
+                return Err(RendererViolation);
+            };
+            assignment
+                .network
+                .cookie_store_store(&write, &url, partition_key.as_deref());
             send_reply(&context.responder, id, ServiceReply::Unit).await?;
         }
         ServiceCall::Messaging(MessagingCall::BroadcastPost {

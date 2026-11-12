@@ -1701,25 +1701,42 @@ pub(crate) fn compile_handler_function<'js>(
     // One params argument plus the body: `new Function("event", body)`.
     // The constructor parses the params list itself, so no identifier
     // validation is needed here (every caller passes literals regardless).
-    constructor.construct((params.join(","), body.to_owned()))
+    //
+    // The flag tells the string-compilation hook this body is an event
+    // handler, not page script calling `eval` or `Function`: CSP's inline
+    // check owns the handler, and `'unsafe-eval'` is not required for an
+    // `onclick` attribute
+    // (<https://w3c.github.io/webappsec-csp/#can-compile-strings>).
+    let world = bindings::world(ctx)?;
+    world.borrow().compiling_handler.set(true);
+    let compiled = constructor.construct((params.join(","), body.to_owned()));
+    world.borrow().compiling_handler.set(false);
+    compiled
 }
 
 /// Whether an event handler content attribute may run
 /// (<https://w3c.github.io/webappsec-csp/#should-block-inline>). The event
 /// targets the element that carries the attribute.
-fn handler_attribute_allowed<'js>(
+pub(crate) fn handler_attribute_allowed<'js>(
     ctx: &Ctx<'js>,
     target: &Value<'js>,
     source: &str,
-) -> Result<bool> {
+) -> bool {
     let Some(id) = bindings::host_node_id(ctx, target) else {
-        return Ok(true);
+        return true;
+    };
+    // The inline check reads the element's own Document's policy list, while
+    // the violation is reported on the current settings object's global
+    // (<https://w3c.github.io/webappsec-csp/#should-block-inline>).
+    let Some(owner) = bindings::owning_world(ctx, id) else {
+        return true;
     };
     let violations = {
-        let world = bindings::world(ctx)?;
-        let world = world.borrow();
+        let world = owner.borrow();
+        let document_url = url::Url::parse(&world.document_url_of(id))
+            .unwrap_or_else(|_| world.document_url.clone());
         world.policy.csp.check_inline(
-            &world.document_url,
+            &document_url,
             &crate::csp::InlineScript {
                 source,
                 nonce: "",
@@ -1730,9 +1747,14 @@ fn handler_attribute_allowed<'js>(
         )
     };
     if !violations.is_empty() {
-        bindings::fire_csp_violations(ctx, id, &violations)?;
+        // Reporting is a task, so a listener attached later in the same script
+        // still sees the event
+        // (<https://w3c.github.io/webappsec-csp/#report-violation>).
+        owner
+            .borrow_mut()
+            .queue_csp_violations(id, violations.clone());
     }
-    Ok(!crate::csp::blocks(&violations))
+    !crate::csp::blocks(&violations)
 }
 
 /// Calls a target's `on<type>` handler attribute, if one is assigned
@@ -1785,7 +1807,7 @@ fn call_handler_attribute<'js>(
     if handler.as_function().is_none()
         && let Some(source) = handler_attribute_source(ctx, object, &name)?
     {
-        if !handler_attribute_allowed(ctx, object.as_value(), &source)? {
+        if !handler_attribute_allowed(ctx, object.as_value(), &source) {
             object.set(name.as_str(), Value::new_null(ctx.clone()))?;
             return Ok(());
         }

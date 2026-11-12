@@ -621,6 +621,7 @@ pub(crate) enum InsertionStep {
     Iframe(NodeId),
     Script(NodeId),
     Meta(NodeId),
+    Base(NodeId),
 }
 
 /// The insertion steps an inserted subtree owes, in tree order: iframe
@@ -636,6 +637,8 @@ pub(crate) fn collect_html_insertion_steps(
         out.push(InsertionStep::Iframe(id));
     } else if is_html_element(base, id.node, "meta") {
         out.push(InsertionStep::Meta(id));
+    } else if is_html_element(base, id.node, "base") {
+        out.push(InsertionStep::Base(id));
     }
     let children: Vec<BlitzId> = base
         .get_node(id.node)

@@ -8,6 +8,10 @@
 //! (<https://fetch.spec.whatwg.org/#concept-request>,
 //! <https://fetch.spec.whatwg.org/#concept-response>).
 
+pub mod cache;
+
+pub use cache::{CacheDecision, HttpCache, Validators};
+
 use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasher;
 use std::time::Instant;
@@ -237,6 +241,10 @@ pub fn outbound_request<S: BuildHasher>(
             .insert(name, encoded)
             .map_err(|_| DialFailure::Connect)?;
     }
+    // The request's cache mode names request headers HTTP-network-or-cache
+    // fetch appends itself, and a page header of the same name wins
+    // (<https://fetch.spec.whatwg.org/#http-network-or-cache-fetch>).
+    cache_mode_headers(request, &mut outbound);
     let destination = match kind {
         DialKind::JsFetch => "empty",
         DialKind::ClassicScript | DialKind::ModuleScript => "script",
@@ -325,9 +333,68 @@ pub fn referrer_authorized<S: BuildHasher>(
     loaded.contains(&stripped)
 }
 
+/// Appends the request headers Fetch's HTTP-network-or-cache fetch derives
+/// from the cache mode, leaving a header the page already sent untouched
+/// (<https://fetch.spec.whatwg.org/#http-network-or-cache-fetch>).
+fn cache_mode_headers(request: &DialRequest, outbound: &mut Request) {
+    let add = |outbound: &mut Request, name: &str, value: &str| {
+        if net::combined_header_in(&request.headers, name).is_none() {
+            static_header(outbound, name, value);
+        }
+    };
+    match request.cache {
+        // A `no-cache` request asks every cache on the path to validate.
+        renderer::RequestCache::NoCache => add(outbound, "Cache-Control", "max-age=0"),
+        // A `no-store` or `reload` request asks them to bypass storage.
+        renderer::RequestCache::NoStore | renderer::RequestCache::Reload => {
+            add(outbound, "Pragma", "no-cache");
+            add(outbound, "Cache-Control", "no-cache");
+        }
+        renderer::RequestCache::Default
+        | renderer::RequestCache::ForceCache
+        | renderer::RequestCache::OnlyIfCached => {}
+    }
+}
+
 /// Sets a request header this process chose, not the page. The value is a
 /// static HTTP token, so a rejected one is a programming error, and the panic
 /// names the header that has none.
+/// Whether `outcome`'s body satisfies the request's integrity metadata
+/// (<https://fetch.spec.whatwg.org/#concept-main-fetch>).
+///
+/// An opaque response is never verified: its body is not readable, so a
+/// request that named metadata cannot be shown the bytes the metadata would
+/// cover.
+#[must_use]
+pub fn integrity_ok(request: &DialRequest, outcome: &DialOutcome) -> bool {
+    let Some(integrity) = request.integrity.as_deref() else {
+        return true;
+    };
+    match &outcome.body {
+        ResponseBody::Bytes(body) => {
+            !outcome.response_type.is_opaque() && renderer::integrity_verifies(integrity, body)
+        }
+        ResponseBody::Undecodable | ResponseBody::Streamed(_) => false,
+    }
+}
+
+/// The header list one outbound request will put on the wire, decoded the way
+/// a response's `Vary` comparison reads it
+/// (<https://www.rfc-editor.org/rfc/rfc9111#section-4.1>).
+///
+/// The HTTP cache compares against this list, not the page's own: `Cookie`,
+/// `Accept`, `User-Agent`, and the fetch-metadata headers are added while the
+/// request is built, and a `Vary` naming one of them must see the value that
+/// was actually sent.
+#[must_use]
+pub fn sent_headers(request: &Request) -> Vec<(String, String)> {
+    request
+        .headers
+        .iter()
+        .map(|(name, value)| (name.to_owned(), isomorphic_decode(value)))
+        .collect()
+}
+
 fn static_header(request: &mut Request, name: &str, value: &str) {
     request
         .headers

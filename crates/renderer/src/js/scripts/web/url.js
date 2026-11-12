@@ -44,13 +44,12 @@ globalThis.URL = class URL {
   }
   get href() { return __tbUrlState(this).href; }
   set href(value) {
-    // A value that fails to parse leaves the URL unchanged; it does not
-    // throw (<https://url.spec.whatwg.org/#dom-url-href>).
+    // A value that fails to parse throws a TypeError and leaves the URL
+    // unchanged (<https://url.spec.whatwg.org/#dom-url-href>).
     const parsed = host.__tbParseUrl(host.__tbUSVString(value));
-    if (parsed !== null && parsed !== undefined) {
-      __tbUrlState(this).href = parsed;
-      __tbRefreshUrlParams(this);
-    }
+    if (parsed == null) throw new TypeError('Invalid URL');
+    __tbUrlState(this).href = parsed;
+    __tbRefreshUrlParams(this);
   }
   toString() { return __tbUrlState(this).href; }
   toJSON() { return __tbUrlState(this).href; }

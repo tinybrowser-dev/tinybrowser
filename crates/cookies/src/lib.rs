@@ -151,10 +151,38 @@ impl CookieJar {
     /// a `SameSite` cookie set from a cross-site context all mean "keep the
     /// existing state".
     pub fn store(&mut self, set_cookie: &str, op: CookieOp<'_>) -> bool {
-        self.evict_expired(op.now);
         let Some(parsed) = parse_set_cookie(set_cookie) else {
             return false;
         };
+        self.store_parsed(parsed, op)
+    }
+
+    /// Stores one cookie a `CookieStore` operation already validated and whose
+    /// attributes are typed, not a `Set-Cookie` line. The Cookie Store API's
+    /// step 20 appends the `Path` value verbatim, which a line cannot carry
+    /// when the value holds U+003B (;): the line parser would read it as the
+    /// start of the next attribute
+    /// (<https://cookiestore.spec.whatwg.org/#set-a-cookie>).
+    pub fn store_script(&mut self, write: &ScriptCookieWrite, op: CookieOp<'_>) -> bool {
+        self.store_parsed(
+            ParsedSetCookie {
+                name: write.name.clone(),
+                value: write.value.clone(),
+                max_age: write.max_age,
+                expires: write.expires_millis.map(unix_millis),
+                domain: write.domain.clone(),
+                path: Some(write.path.clone()),
+                secure: true,
+                http_only: false,
+                same_site: Some(write.same_site.into()),
+                partitioned: write.partitioned,
+            },
+            op,
+        )
+    }
+
+    fn store_parsed(&mut self, parsed: ParsedSetCookie, op: CookieOp<'_>) -> bool {
+        self.evict_expired(op.now);
         let trustworthy = secure_context::is_potentially_trustworthy(op.url);
         let Some(stored) = receive_cookie(parsed, &op, &self.cookies, trustworthy) else {
             return false;
@@ -223,6 +251,11 @@ impl CookieJar {
     /// Cookies that would be sent for `op`, including session and `HttpOnly`
     /// cookies. This is the `WebDriver` view of the jar
     /// (<https://w3c.github.io/webdriver/#get-all-cookies>).
+    ///
+    /// The order is the retrieval model's: longest path first, then oldest
+    /// first, which is what `CookieStore.get()` returns as its first item
+    /// (<https://cookiestore.spec.whatwg.org/#query-cookies>,
+    /// <https://httpwg.org/http-extensions/draft-ietf-httpbis-rfc6265bis.html#section-5.4>).
     pub fn records_for(&mut self, op: CookieOp<'_>) -> Vec<CookieRecord> {
         self.evict_expired(op.now);
         let Some(host) = canonicalize_host(op.url) else {
@@ -230,11 +263,19 @@ impl CookieJar {
         };
         let path = op.url.path();
         let trustworthy = secure_context::is_potentially_trustworthy(op.url);
-        self.cookies
+        let mut matched: Vec<&StoredCookie> = self
+            .cookies
             .iter()
             .filter(|cookie| cookie.matches(&host, path, &op, trustworthy))
-            .map(StoredCookie::record)
-            .collect()
+            .collect();
+        matched.sort_by(|left, right| {
+            right
+                .path
+                .len()
+                .cmp(&left.path.len())
+                .then_with(|| left.created.cmp(&right.created))
+        });
+        matched.into_iter().map(StoredCookie::record).collect()
     }
 
     /// Drops every cookie, session or persistent
@@ -420,8 +461,81 @@ pub struct CookieRecord {
     pub partition_key: Option<String>,
 }
 
+impl CookieRecord {
+    /// The storage slot this cookie occupies: its domain, path, partition
+    /// key, and host-only flag. A `CookieStore` change event compares two
+    /// snapshots slot by slot, because a cookie with the same name can live in
+    /// several slots at once
+    /// (<https://cookiestore.spec.whatwg.org/#observable-changes>).
+    #[must_use]
+    pub fn slot(&self) -> String {
+        format!(
+            "{}\u{1f}{}\u{1f}{}\u{1f}{}",
+            u8::from(self.host_only),
+            self.domain,
+            self.path,
+            self.partition_key.as_deref().unwrap_or("-"),
+        )
+    }
+
+    /// Everything about the cookie a change event observes: its value and its
+    /// stored attributes, but not its slot (which [`Self::slot`] owns) or its
+    /// last access time (which every read updates). Two values that compare
+    /// unequal mean the cookie changed
+    /// (<https://cookiestore.spec.whatwg.org/#observable-changes>).
+    #[must_use]
+    pub fn state(&self) -> String {
+        let same_site = match self.same_site {
+            CookieSameSite::Strict => "strict",
+            CookieSameSite::Lax => "lax",
+            CookieSameSite::None => "none",
+            CookieSameSite::Default => "default",
+        };
+        let millis = |time: SystemTime| {
+            time.duration_since(SystemTime::UNIX_EPOCH)
+                .map_or(0, |elapsed| elapsed.as_millis())
+        };
+        format!(
+            "{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}",
+            self.value,
+            u8::from(self.secure),
+            u8::from(self.http_only),
+            same_site,
+            self.expiry.map_or(0, millis),
+            millis(self.created),
+        )
+    }
+}
+
+/// One cookie a `CookieStore` operation asks the jar to store, with every
+/// attribute already validated by the API's algorithm
+/// (<https://cookiestore.spec.whatwg.org/#set-a-cookie>).
+///
+/// Typed rather than a `Set-Cookie` line: the API's `path` is stored verbatim,
+/// and a line would split a `path` holding U+003B (;) into extra attributes.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ScriptCookieWrite {
+    /// Cookie name.
+    pub name: String,
+    /// Cookie value.
+    pub value: String,
+    /// `Expires` as Unix milliseconds; `None` when absent.
+    pub expires_millis: Option<i64>,
+    /// `Max-Age` in seconds; `None` when absent.
+    pub max_age: Option<i64>,
+    /// The `Domain` attribute, already lowercased by the API; `None` means
+    /// host-only.
+    pub domain: Option<String>,
+    /// The `Path` attribute, always present because the API defaults it.
+    pub path: String,
+    /// The `SameSite` attribute, always present because the API defaults it.
+    pub same_site: CookieSameSite,
+    /// Whether the `Partitioned` attribute is present.
+    pub partitioned: bool,
+}
+
 /// `SameSite` value stored with a cookie.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CookieSameSite {
     /// `SameSite=Strict`.
     Strict,
@@ -994,7 +1108,27 @@ fn registrable_domain(host: &str) -> String {
         .map_or_else(|| host.to_owned(), str::to_owned)
 }
 
-fn is_public_suffix(domain: &str) -> bool {
+/// A Unix millisecond timestamp as a `SystemTime`. Every `i64` millisecond
+/// value fits every platform's `SystemTime`, whose range is at least the
+/// `i64`-second range that 9.2e15 seconds needs.
+fn unix_millis(millis: i64) -> SystemTime {
+    let magnitude = Duration::from_millis(millis.unsigned_abs());
+    if millis < 0 {
+        UNIX_EPOCH
+            .checked_sub(magnitude)
+            .expect("i64 milliseconds fit in SystemTime")
+    } else {
+        UNIX_EPOCH
+            .checked_add(magnitude)
+            .expect("i64 milliseconds fit in SystemTime")
+    }
+}
+
+/// Whether `domain` is exactly a public suffix, which no `Domain` attribute
+/// may name and no site may span
+/// (<https://httpwg.org/http-extensions/draft-ietf-httpbis-rfc6265bis.html#section-5.1.3>).
+#[must_use]
+pub fn is_public_suffix(domain: &str) -> bool {
     let d = domain.trim_matches('.');
     !d.is_empty()
         && suffix_list()
@@ -1327,6 +1461,76 @@ mod tests {
             partition_key: Some(top_site),
             ..http(url, now)
         }
+    }
+
+    /// A read bumps `last_access`, which is not observable, while a value
+    /// change keeps the slot and changes the state. This is what the change
+    /// event's diff compares.
+    #[test]
+    fn a_change_state_ignores_access_time_but_sees_the_value() {
+        let site = url("https://example.com/");
+        let mut jar = CookieJar::default();
+        assert!(jar.store("a=1; Path=/; Secure", http(&site, at(NOW))));
+        let first = jar
+            .records_for(http(&site, at(NOW + 10)))
+            .into_iter()
+            .next()
+            .expect("cookie stored");
+        // A request that carries the cookie bumps `last_access`; the change
+        // state must not notice.
+        assert_eq!(jar.cookie_string(http(&site, at(NOW + 20))), "a=1");
+        let later = jar
+            .records_for(http(&site, at(NOW + 20)))
+            .into_iter()
+            .next()
+            .expect("cookie still stored");
+        assert_ne!(first.last_access, later.last_access);
+        assert_eq!(first.state(), later.state());
+        assert_eq!(first.slot(), later.slot());
+
+        assert!(jar.store("a=2; Path=/; Secure", http(&site, at(NOW))));
+        let changed = jar
+            .records_for(http(&site, at(NOW)))
+            .into_iter()
+            .next()
+            .expect("cookie replaced");
+        assert_eq!(changed.slot(), first.slot());
+        assert_ne!(changed.state(), first.state());
+    }
+
+    /// A host-only cookie and a `Domain` cookie with the same name and path
+    /// live in different slots, so a change event reports both.
+    #[test]
+    fn a_change_slot_separates_host_only_and_domain_cookies() {
+        let site = url("https://example.com/");
+        let mut jar = CookieJar::default();
+        assert!(jar.store("a=host; Path=/; Secure", http(&site, at(NOW))));
+        assert!(jar.store(
+            "a=domain; Path=/; Secure; Domain=example.com",
+            http(&site, at(NOW))
+        ));
+        let records = jar.records_for(http(&site, at(NOW)));
+        assert_eq!(records.len(), 2);
+        assert_ne!(records[0].slot(), records[1].slot());
+    }
+
+    /// `CookieStore.get()` returns the first record, which RFC 6265's
+    /// retrieval model orders longest path first
+    /// (<https://cookiestore.spec.whatwg.org/#query-cookies>).
+    #[test]
+    fn records_follow_the_retrieval_order() {
+        let root = url("https://example.com/");
+        let mut jar = CookieJar::default();
+        assert!(jar.store("x=root; Path=/; Secure", http(&root, at(NOW))));
+        assert!(jar.store("x=deep; Path=/dir; Secure", http(&root, at(NOW + 1))));
+        let records = jar.records_for(http(&url("https://example.com/dir/page"), at(NOW + 2)));
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record.value.as_str())
+                .collect::<Vec<_>>(),
+            ["deep", "root"]
+        );
     }
 
     #[test]

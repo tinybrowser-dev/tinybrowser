@@ -56,6 +56,67 @@ const __tbFramePending = frame => {
   }
   return pending;
 };
+// The members a same-origin frame whose realm has not started presents from the
+// inserting realm. Only callable interfaces (constructors and functions with a
+// prototype) and the intrinsic namespace objects qualify: everything else a
+// window exposes is target state (`history`, `navigator`, `localStorage`,
+// `customElements`, `frameElement`, …), and borrowing the caller's copy would
+// answer for the wrong window
+// (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-get>).
+const __tbFrameForwardedNamespaces = {
+  __proto__: null,
+  Math: true, JSON: true, Reflect: true, Atomics: true, Intl: true,
+  console: true,
+};
+// The ECMAScript intrinsics have no `Symbol.toStringTag` on their prototypes,
+// so they need naming; every Web IDL interface this engine installs sets one.
+const __tbFrameIntrinsics = {
+  __proto__: null,
+  Object: true, Function: true, Array: true, String: true, Number: true,
+  Boolean: true, Symbol: true, BigInt: true, Date: true, RegExp: true,
+  Error: true, TypeError: true, RangeError: true, SyntaxError: true,
+  ReferenceError: true, EvalError: true, URIError: true, AggregateError: true,
+  Promise: true, Map: true, Set: true, WeakMap: true, WeakSet: true,
+  WeakRef: true, FinalizationRegistry: true, Proxy: true,
+  ArrayBuffer: true, SharedArrayBuffer: true, DataView: true,
+  Int8Array: true, Uint8Array: true, Uint8ClampedArray: true, Int16Array: true,
+  Uint16Array: true, Int32Array: true, Uint32Array: true, Float32Array: true,
+  Float64Array: true, BigInt64Array: true, BigUint64Array: true,
+};
+const __tbFrameOwnMembers = {
+  __proto__: null,
+  location: true, name: true, document: true, parent: true, top: true,
+  window: true, self: true, frames: true, length: true, close: true,
+  closed: true, postMessage: true, opener: true,
+  addEventListener: true, removeEventListener: true, dispatchEvent: true,
+};
+const __tbFrameForwarded = (property, value) => {
+  if (typeof property !== 'string' || __tbFrameOwnMembers[property] === true) return false;
+  if (typeof value !== 'function' || value.prototype === undefined) {
+    return __tbFrameForwardedNamespaces[property] === true;
+  }
+  if (__tbFrameIntrinsics[property] === true) return true;
+  // An interface's prototype carries its `Symbol.toStringTag`; a function the
+  // page declared does not, and the target window (whose realm has not run
+  // any script) would not expose it
+  // (<https://webidl.spec.whatwg.org/#es-interfaces>).
+  return value.prototype[__tbSymbolToStringTag] !== undefined;
+};
+// A same-origin child whose realm has not started gets its own `Navigator`
+// instance, so per-document state such as the beacon keepalive quota belongs to
+// the child rather than to the inserting document
+// (<https://html.spec.whatwg.org/multipage/system-state.html#the-navigator-object>).
+const __tbNavigatorBrand = host.slots('webidl.Navigator');
+const __tbFrameNavigators = new __tbPrivateMap();
+const __tbSymbolToStringTag = Symbol.toStringTag;
+const __tbFrameNavigator = frame => {
+  const existing = __tbFrameNavigators.get(frame);
+  if (existing !== undefined) return existing;
+  const navigator = __tbObjectCreate(globalThis.Navigator.prototype);
+  __tbNavigatorBrand.set(navigator, { __proto__: null, Uint8Array: __tbUint8Array });
+  __tbFrameNavigators.set(frame, navigator);
+  return navigator;
+};
 host.__tbFlushFrameSets = function(frame) {
   const pending = __tbFramePendingSets[frame];
   if (pending === undefined) return false;
@@ -1015,6 +1076,10 @@ const __tbFrameProxy = frame => {
   if (frame === __tbFrameId) return globalThis;
   if (__tbFrameProxies[frame] !== undefined) return __tbFrameProxies[frame];
   let proxy;
+  // The `Location` stand-in for a same-origin child whose realm has not
+  // started: one object per proxy, so `contentWindow.location` keeps its
+  // identity across reads.
+  let pendingLocation;
   const crossOrigin = () => {
     throw new globalThis.DOMException('Blocked a frame from accessing a cross-origin frame.', 'SecurityError');
   };
@@ -1083,14 +1148,35 @@ const __tbFrameProxy = frame => {
           // about:blank and an `iframe` inserted in a running script. Its
           // wrapper belongs to this realm until the target realm starts.
           if (property === 'document') return host.__tbFrameDocument(frame);
-          // Loading same-origin (realm pending) and navigated-away
-          // cross-origin both yield `undefined` here; conflation is
-          // intentional for the polling pattern (`child.document` becomes
-          // defined at realm init), not a spec gate.
           const pending = __tbFramePendingSets[frame];
           if (pending !== undefined && __tbApply(__tbHasOwnProperty, pending, [property])) {
             return pending[property];
           }
+          // A same-origin child's realm cannot start until this script
+          // returns, but its window still exposes the `Location` and the
+          // callable globals (constructors in particular) that a page reads
+          // through `contentWindow` in the same task
+          // (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-get>).
+          if (host.__tbFrameSameOrigin(frame)) {
+            if (property === 'name') return host.__tbFrameName(frame);
+            if (property === 'navigator') return __tbFrameNavigator(frame);
+            if (property === 'location') {
+              if (pendingLocation === undefined) {
+                pendingLocation = host.__tbFrameLocation(frame);
+                if (pendingLocation !== null && pendingLocation !== undefined) {
+                  __tbDefineProperty(pendingLocation, 'toString', {
+                    value: function() { return String(this.href); },
+                    writable: true, enumerable: false, configurable: true,
+                  });
+                }
+              }
+              return pendingLocation;
+            }
+            const value = globalThis[property];
+            if (__tbFrameForwarded(property, value)) return value;
+          }
+          // A realm that has not started yet cannot answer its own members;
+          // the loading, navigated-away, and cross-origin cases all land here.
           return undefined;
         }
         crossOrigin();
@@ -1133,6 +1219,15 @@ const __tbFrameProxy = frame => {
       const sameOrigin = host.__tbFrameGlobal(frame);
       if (sameOrigin == null) {
         if (host.__tbFrameRegistered(frame)) {
+          // Assigning `location` on a pending same-origin window runs the
+          // target window's setter, so an unparsable URL throws before the
+          // child realm exists; storing it as a pending write would delay the
+          // throw past the assignment
+          // (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-href>).
+          if (property === 'location' && host.__tbFrameSameOrigin(frame)) {
+            host.__tbFrameSetLocation(frame, value);
+            return true;
+          }
           __tbFramePending(frame)[property] = value;
           return true;
         }
@@ -1171,7 +1266,10 @@ const __tbFrameProxy = frame => {
         }
       }
       const pending = __tbFramePendingSets[frame];
-      return pending !== undefined && property in pending;
+      if (pending !== undefined && property in pending) return true;
+      if (!host.__tbFrameSameOrigin(frame)) return false;
+      if (property === 'location' || property === 'name' || property === 'document') return true;
+      return __tbFrameForwarded(property, globalThis[property]);
     },
     getPrototypeOf() {
       // The spec forwards to the target; cross-origin callers cannot reach
@@ -1521,6 +1619,15 @@ Object.defineProperty(globalThis, 'name', {
 
   globalThis.open = function(url, target, features) {
     if (arguments.length < 1 || url === undefined || url === null) url = '';
+    // Convert once, so a stateful `toString` cannot give the validity check and
+    // the engine's own parse different strings. An empty URL names no document;
+    // every other one must parse, and a parse failure throws before any context
+    // is chosen
+    // (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps>).
+    const href = host.__tbUSVString(url);
+    if (href !== '' && host.__tbResolveUrl(href, undefined) == null) {
+      throw new globalThis.DOMException('Invalid URL', 'SyntaxError');
+    }
     // The engine runs the window open steps: it encodes the URL, tokenizes the
     // features, applies the blob-URL opener rule, and picks the context. The
     // shim only turns the selected context into a `WindowProxy`
@@ -1531,7 +1638,7 @@ Object.defineProperty(globalThis, 'name', {
     // enough.
     const name = target === undefined || target === null ? '' : String(target);
     const featureString = features === undefined || features === null ? '' : String(features);
-    const answer = host.__tbOpen(String(url), name, featureString);
+    const answer = host.__tbOpen(href, name, featureString);
     if (answer === null || answer === undefined) return null;
     let proxy;
     switch (answer.kind) {
