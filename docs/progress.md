@@ -1044,3 +1044,30 @@ processed, so `header-link.sub.html`'s `rel=icon` and `rel=stylesheet` requests
 never happen; `sec-fetch-storage-access` is never sent (this engine has no
 Storage Access API); `img srcset` never finishes loading, which times out
 `element-picture`; and the service-worker files need a service worker.
+
+`sendBeacon()`'s `Origin` header was the next `beacon` gap. "Append a request
+`Origin` header" always names the origin for a `cors`-tainted request and for
+`GET`/`HEAD`, but for any other request the value can be `null`, and which
+referrer policies do that is the policy's own decision: `no-referrer` always,
+`same-origin` across an origin boundary, and the three downgrade-aware policies
+when an `https` origin reaches a non-`https` URL
+(`https://fetch.spec.whatwg.org/#append-a-request-origin-header`). The client
+kept a hop's serialized origin and never consulted the policy, so
+`beacon/headers/header-origin-same-origin.html` — whose document sets
+`<meta name=referrer content=same-origin>` and posts cross-origin — saw
+`Origin: http://web-platform.test:8000` where every engine sends `null`. The hop
+now carries the request's referrer policy, and a redirect's
+`Referrer-Policy` field updates it for the remaining hops.
+
+Evidence: `beacon/headers/header-origin-same-origin.html` goes from 2 of 4 to
+**4 of 4**, and the `beacon` directory from 76 to **78 of 85** at `--jobs 1` to
+3 with no subtest lost (three `--jobs 1` and four `--jobs 3` runs agree).
+`referrer-policy` is 8020 subtests before and after, and `fetch/api` (2254),
+`xhr` (949), and `cookies` (336) are subtest-identical. The two `beacon-basic`
+subtests that differ under a multi-file `--jobs 4+` batch run are a harness
+flake: `beacon-basic.https.window.html` is 25 of 25 in five isolated runs and in
+every `--jobs 3` run, and a six-beacon concurrency probe records each request's
+own `Content-Type` consistently, so it is load, not header mix-up. Still open in
+`beacon`: `headers/header-content-type-and-body.html` needs
+`performance.getEntriesByName()` (Resource Timing), and `idlharness` reports
+"Unexpected global object" for the `Navigator` interface.

@@ -499,7 +499,7 @@ impl Agent {
         headers: &mut HeaderMap,
         budget: HopBudget,
     ) -> Result<(), NetError> {
-        let serialized_origin = hop.serialized_origin(settings);
+        let serialized_origin = hop.append_origin(settings, wire);
         let origin_header =
             HeaderValue::from_str(&serialized_origin).map_err(|_| NetError::RejectedRequest)?;
         // Case 2 of main fetch sends same-origin, still-`basic` requests
@@ -577,6 +577,7 @@ impl Agent {
             previous_url: None,
             origin_tainted: false,
             crossed_origin: false,
+            referrer_policy: request.referrer_policy,
         };
         // Defaults every browser request carries. They live here, not in the
         // renderer, so XHR and subresources get the same values and page
@@ -670,6 +671,7 @@ impl Agent {
             };
             if let Some(policy) = redirect_policy {
                 referrer_policy = policy;
+                hop.referrer_policy = policy;
             }
             if followed == self.max_redirects {
                 return Err(NetError::RedirectLimit);
@@ -1208,6 +1210,12 @@ struct Hop {
     /// stays opaque
     /// (<https://fetch.spec.whatwg.org/#concept-request-response-tainting>).
     crossed_origin: bool,
+    /// The request's referrer policy, which decides whether a non-CORS request
+    /// with a body reports its origin or `null`
+    /// (<https://fetch.spec.whatwg.org/#append-a-request-origin-header>). A
+    /// redirect's `Referrer-Policy` field updates it for the remaining hops
+    /// (<https://w3c.github.io/webappsec-referrer-policy/#set-requests-referrer-policy-on-redirect>).
+    referrer_policy: ReferrerPolicy,
 }
 
 impl Hop {
@@ -1221,6 +1229,42 @@ impl Hop {
         } else {
             Cow::Owned(settings.origin.ascii_serialization())
         }
+    }
+
+    /// The value "append a request `Origin` header" writes for this hop
+    /// (<https://fetch.spec.whatwg.org/#append-a-request-origin-header>).
+    ///
+    /// A `cors`-tainted hop, and any `GET` or `HEAD`, always names the origin.
+    /// Every other request can be reported as `null`, and which policies do
+    /// that is the referrer policy's decision: `no-referrer` always,
+    /// `same-origin` across an origin boundary, and the three downgrade-aware
+    /// policies when an `https` origin reaches a non-`https` URL.
+    fn append_origin<'a>(
+        &self,
+        settings: &'a crate::cors::CorsSettings,
+        url: &Url,
+    ) -> Cow<'a, str> {
+        let origin = self.serialized_origin(settings);
+        if origin == "null"
+            || self.response_type == crate::cors::ResponseType::Cors
+            || matches!(self.method.as_str(), "GET" | "HEAD")
+        {
+            return origin;
+        }
+        let null = match self.referrer_policy {
+            ReferrerPolicy::NoReferrer => true,
+            ReferrerPolicy::NoReferrerWhenDowngrade
+            | ReferrerPolicy::StrictOrigin
+            | ReferrerPolicy::StrictOriginWhenCrossOrigin => {
+                crate::origin_url(&settings.origin).is_some_and(|origin| origin.scheme() == "https")
+                    && url.scheme() != "https"
+            }
+            ReferrerPolicy::SameOrigin => settings.origin != url.origin(),
+            ReferrerPolicy::Origin
+            | ReferrerPolicy::OriginWhenCrossOrigin
+            | ReferrerPolicy::UnsafeUrl => false,
+        };
+        if null { Cow::Borrowed("null") } else { origin }
     }
 }
 
@@ -1735,7 +1779,10 @@ impl Response {
 
 #[cfg(test)]
 mod redirect_policy_tests {
-    use super::{FetchSite, HeaderMap, Hop, Method, Url, apply_redirect_policy, write_fetch_site};
+    use super::{
+        FetchSite, HeaderMap, Hop, Method, ReferrerPolicy, Url, apply_redirect_policy,
+        write_fetch_site,
+    };
     use crate::cors::ResponseType;
 
     fn url(value: &str) -> Url {
@@ -1755,6 +1802,60 @@ mod redirect_policy_tests {
             previous_url: None,
             origin_tainted: false,
             crossed_origin: false,
+            referrer_policy: ReferrerPolicy::default(),
+        }
+    }
+
+    /// One hop of a cross-origin `POST` whose request carries `policy` as its
+    /// referrer policy, for the `Origin` append rule
+    /// (<https://fetch.spec.whatwg.org/#append-a-request-origin-header>).
+    fn posting_hop(policy: ReferrerPolicy) -> (Hop, crate::cors::CorsSettings) {
+        let origin = Url::parse("http://a.test/page").expect("origin").origin();
+        let hop = Hop {
+            method: Method::POST,
+            headers: HeaderMap::new(),
+            body: None,
+            response_type: ResponseType::Basic,
+            previous_url: None,
+            origin_tainted: false,
+            crossed_origin: false,
+            referrer_policy: policy,
+        };
+        let settings = crate::cors::CorsSettings {
+            mode: crate::cors::RequestMode::NoCors,
+            credentials: crate::cors::CredentialsMode::Include,
+            redirect: crate::cors::RedirectMode::Follow,
+            origin,
+        };
+        (hop, settings)
+    }
+
+    /// A non-CORS `POST` reports `null` where the request's referrer policy
+    /// hides the origin, and the serialized origin everywhere else
+    /// (<https://fetch.spec.whatwg.org/#append-a-request-origin-header>).
+    #[test]
+    fn a_non_cors_post_origin_follows_the_referrer_policy() {
+        let cross = url("http://www1.test/resource");
+        let same = url("http://a.test/resource");
+        let cases = [
+            (ReferrerPolicy::SameOrigin, &cross, "null"),
+            (ReferrerPolicy::SameOrigin, &same, "http://a.test"),
+            (ReferrerPolicy::NoReferrer, &same, "null"),
+            (ReferrerPolicy::Origin, &cross, "http://a.test"),
+            (
+                ReferrerPolicy::StrictOriginWhenCrossOrigin,
+                &cross,
+                "http://a.test",
+            ),
+            (ReferrerPolicy::UnsafeUrl, &cross, "http://a.test"),
+        ];
+        for (policy, target, expected) in cases {
+            let (hop, settings) = posting_hop(policy);
+            assert_eq!(
+                hop.append_origin(&settings, target),
+                expected,
+                "policy {policy:?} to {target}"
+            );
         }
     }
 
