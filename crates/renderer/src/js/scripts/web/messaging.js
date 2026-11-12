@@ -1155,7 +1155,12 @@ const __tbFrameProxy = frame => {
       }
       const sameOrigin = host.__tbFrameGlobal(frame);
       if (sameOrigin == null) {
-        if (host.__tbFrameRegistered(frame)) {
+        // A frame whose navigable was destroyed keeps the Window a script
+        // already referenced until the engine drops it at the end of the
+        // turn, so a same-origin read in the removing task still answers
+        // instead of throwing; the destroy steps remove the tree entry first
+        // (<https://html.spec.whatwg.org/multipage/document-sequences.html#destroy-a-child-navigable>).
+        if (host.__tbFrameRegistered(frame) || host.__tbFrameSameOrigin(frame)) {
           // A document exists before its realm does: `window.open`'s initial
           // about:blank and an `iframe` inserted in a running script. Its
           // wrapper belongs to this realm until the target realm starts.

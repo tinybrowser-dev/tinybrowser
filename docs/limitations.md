@@ -241,7 +241,7 @@ The spec's `delete(name)` step passes `partitioned` as true, but WPT
 (unpartitioned) and expects this delete to remove it, and Chrome and Firefox
 remove it. This implementation passes false.
 
-The `cookiestore` slice passes **39 of 48 files and 230 of 244 subtests**
+The `cookiestore` slice passes **40 of 48 files and 231 of 244 subtests**
 (from 0 of 48 files). The remaining files fail for infrastructure the engine
 does not have:
 
@@ -249,8 +249,6 @@ does not have:
   `cookieStore_subscriptions_empty`, `serviceworker_cookieStore_cross_origin`,
   and `serviceworker_cookieStore_subscriptions_reset` need service workers
   (12 subtests); `idlharness` needs the WebIDL2 script.
-- `cookieStore_in_detached_frame` reads `contentWindow` of a removed iframe,
-  which the engine reports as a cross-origin access (1 subtest).
 
 A same-origin child whose realm has not started yet answers `cookieStore`
 from the creator's realm. An initial `about:blank` inherits the creator's
@@ -258,6 +256,14 @@ cookie URL, so both objects read and write the same cookies; the stand-in
 differs only in the creation URL used to validate a `url` option, which the
 Cookie Store tests in this slice do not pass. Once the child's realm starts,
 `contentWindow.cookieStore` is the child's own object.
+
+A frame removed from the tree keeps that Window readable through an already
+held `WindowProxy` until the engine adopts the removal at the end of the
+turn; the destroy steps remove the tree entry first, so the proxy falls back
+to the frame's still-live world instead of throwing a cross-origin error.
+The spec keeps the Window alive as long as script references it, which would
+need the discarded realm retained past the turn; this engine drops it, so a
+read from a later task throws again.
 
 `cookieStore_delete_domain` passes its two subtests and the file reports
 `OK`: the harness reporter drops a duplicate remote result. A child frame's

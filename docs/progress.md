@@ -648,3 +648,16 @@ to validate a `url` option differs). `cookiestore/` is **39 of 48 files and
 (65 subtests each), and
 `html/semantics/embedded-content/the-iframe-element` (109 subtests) are
 unchanged with no subtest going from pass to fail.
+
+`cookieStore_in_detached_frame` passes. The test holds a removed iframe's
+`contentWindow` and reads `.cookieStore` in the same task. The destroy steps
+remove the tree entry synchronously, and the proxy treated every
+unregistered frame as cross-origin, so the read threw. While the frame's
+world is still alive (the engine drops it at the end of the turn), a
+same-origin proxy now answers from that world instead. `cookiestore/` is
+**40 of 48 files and 231 of 244 subtests** with 40 perfect files; only the
+12 service-worker subtests and `idlharness` remain. `cookies` stays 336/415.
+`html/browsers/the-windowproxy-exotic-object`, `html/browsers/windows`
+(65 subtests), and
+`html/semantics/embedded-content/the-iframe-element` (109 subtests) are
+unchanged with no subtest going from pass to fail.

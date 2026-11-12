@@ -48,9 +48,8 @@ Sources:
   24.8%. WPT 34.8%; `fetch/api` 71.8%.
 - **cookies** — `document.cookie` read 78.7%, write 68.3%,
   `SameSite=None` 38.6%, no `SameSite` 31.7%, partitioned 30.7%,
-  `CookieStore` 11.9%. WPT 32.6%; `cookiestore` 39/48 files and
-  230/244 subtests. What remains is service workers and a discarded
-  frame's `contentWindow` global.
+  `CookieStore` 11.9%. WPT 32.6%; `cookiestore` 40/48 files and
+  231/244 subtests. What remains is service workers.
 - **storage** — `localStorage`/`sessionStorage` read 80.0%, write
   75.8%. WPT `webstorage` 81.5%.
 - **csp** — any CSP 68.9%, HTTP-delivered 50.0%, `unsafe-eval` 54.2%,
@@ -91,9 +90,8 @@ Ordered by reach × current gap:
    71.0% against 44.1% for css; `css/cssom-view` 17.1%, `css/cssom`
    29.5%.
 2. **cookies** — read on 78.7% of pages against 32.6% WPT. SameSite and
-   partitioned cookies are in; `CookieStore` (11.9%) is 39/48 files. The
-   rest needs service workers and a discarded frame's `contentWindow`
-   global.
+   partitioned cookies are in; `CookieStore` (11.9%) is 40/48 files. The
+   rest needs service workers.
 3. **csp** — 68.9% reach against 26.6%. A response-header path with a
    small surface.
 4. **fetch** — 72.7% reach against 34.8%. The Body/Headers/stream
