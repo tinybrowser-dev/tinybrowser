@@ -1260,9 +1260,22 @@ impl JsNode {
             }]
         };
         let iframes = replace_all_journaled(&mut parsed, self.handle.get().0, added);
+        let is_script = crate::dom::tree::is_html_element(
+            &parsed.document.base,
+            self.handle.get().0.node,
+            "script",
+        );
         drop(parsed);
         world.destroy_child_navigables(&iframes);
         drop(world);
+        // The script children changed steps prepare a connected script element
+        // again. An empty inline script returns from "prepare the script
+        // element" before the already-started flag is set, so setting its body
+        // later still runs it
+        // (<https://html.spec.whatwg.org/multipage/scripting.html#script-processing-model>).
+        if is_script {
+            prepare_classic_script(ctx, self.handle.get().0)?;
+        }
         schedule_mutation_delivery(ctx)
     }
 

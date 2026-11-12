@@ -266,6 +266,15 @@ impl<'js> document_generated::Document<'js> for JsNode {
         self.write(ctx, text)
     }
 
+    // https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-document-writeln
+    fn writeln(&self, ctx: Ctx<'js>, arg_0: Vec<rquickjs::String<'js>>) -> Result<()> {
+        let mut text = Vec::with_capacity(arg_0.len());
+        for part in arg_0 {
+            text.push(WebIdlString(part.to_string()?));
+        }
+        self.writeln(ctx, text)
+    }
+
     // https://dom.spec.whatwg.org/#dom-document-getelementsbyclassname
     fn get_elements_by_class_name(
         &self,
@@ -962,6 +971,18 @@ impl JsNode {
         // Every argument stringifies and concatenates in order
         // (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-document-write>).
         let html: String = text.iter().map(|part| part.0.as_str()).collect();
+        world_for_node(&ctx, self.handle.get().0)?
+            .borrow_mut()
+            .queue_write(html)
+            .map_err(|()| Exception::throw_range(&ctx, "document stream budget exceeded"))
+    }
+
+    // https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-document-writeln
+    pub(super) fn writeln(&self, ctx: Ctx<'_>, text: Vec<WebIdlString>) -> Result<()> {
+        // `writeln` writes the concatenation followed by a newline
+        // (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-document-writeln>).
+        let mut html: String = text.iter().map(|part| part.0.as_str()).collect();
+        html.push('\n');
         world_for_node(&ctx, self.handle.get().0)?
             .borrow_mut()
             .queue_write(html)

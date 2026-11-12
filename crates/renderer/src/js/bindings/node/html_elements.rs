@@ -218,6 +218,30 @@ impl<'js> html_script_element_generated::HTMLScriptElement<'js> for JsNode {
     fn set_cross_origin(&self, ctx: &Ctx<'js>, value: Option<rquickjs::String<'js>>) -> Result<()> {
         set_cross_origin(ctx, self.handle.get().0, value)
     }
+
+    // https://html.spec.whatwg.org/multipage/scripting.html#dom-script-text
+    fn get_text(&self, ctx: &Ctx<'js>) -> Result<rquickjs::String<'js>> {
+        // `text` is the element's child text content: the text node children
+        // only, not the text inside a descendant element the way `textContent`
+        // answers (<https://html.spec.whatwg.org/multipage/scripting.html#dom-script-text>).
+        let world_rc = world(ctx)?;
+        let parsed = world_rc.borrow();
+        let text = match parsed.document(self.handle.get().0) {
+            Some(parsed) => crate::dom::text::child_text_content(
+                &parsed.document.base,
+                self.handle.get().0.node,
+            ),
+            None => String::new(),
+        };
+        rquickjs::String::from_str(ctx.clone(), &text)
+    }
+
+    // https://html.spec.whatwg.org/multipage/scripting.html#dom-script-text
+    fn set_text(&self, ctx: &Ctx<'js>, value: rquickjs::String<'js>) -> Result<()> {
+        // Setting replaces all children with one text node
+        // (<https://html.spec.whatwg.org/multipage/scripting.html#dom-script-text>).
+        self.set_text_content(ctx, Some(value))
+    }
 }
 
 impl<'js> html_object_element_generated::HTMLObjectElement<'js> for JsNode {

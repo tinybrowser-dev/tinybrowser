@@ -350,6 +350,16 @@ CSP3, and a policy naming it still needs `'unsafe-eval'`); and
 sandboxed child's `postMessage` to the parent's handler, which the
 converted WebKit test expected to lose a parse-order race.
 
+`HTMLScriptElement.text` returns the child text content (the text node
+children only) and its setter replaces every child with one text node;
+`document.writeln` appends U+000A. A child-list change on a connected script
+element runs the children-changed steps, which re-run "prepare the script
+element", so an empty script that did not start at insertion executes when
+its body arrives later
+(<https://html.spec.whatwg.org/multipage/scripting.html#script-processing-model>).
+`async`, `blocking`, `fetchPriority`, and `HTMLScriptElement.supports` are
+still absent because the generated contract has no lowering for them.
+
 Associated stylesheets expose `cssRules`, per-interface rule objects, and
 declaration accessors. Still open: constructable `insertRule` /
 `deleteRule` throw `NotSupportedError`, and a cross-origin `<link>` is

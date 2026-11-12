@@ -206,6 +206,9 @@ fn generate_bindings() -> Contracts {
 }
 
 fn binding_sources(directory: &Path, extension: &str, sources: &mut Vec<(String, String)>) {
+    // The generated contracts depend on each implementation's method names,
+    // so a nested edit must rerun the build script. `rerun-if-changed` on a
+    // directory tracks the directory entry only, not files below it.
     println!("cargo:rerun-if-changed={}", directory.display());
     let mut paths: Vec<_> = fs::read_dir(directory)
         .expect("read binding input directory")
@@ -216,6 +219,7 @@ fn binding_sources(directory: &Path, extension: &str, sources: &mut Vec<(String,
         if path.is_dir() {
             binding_sources(&path, extension, sources);
         } else if path.extension().is_some_and(|item| item == extension) {
+            println!("cargo:rerun-if-changed={}", path.display());
             sources.push((
                 path.display().to_string(),
                 fs::read_to_string(&path).expect("read binding input"),

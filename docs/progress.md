@@ -694,3 +694,32 @@ No regression in the checked slices: `dom/nodes`, `dom/ranges`,
 `Event-dispatch-click.html` times out in some batch runs on both trees; two
 `form-double-submit` subtests flip between pass and fail across runs on a
 single build.
+
+CSP `script-src` gained three files and four subtests with no file lost.
+`HTMLScriptElement.text` is now the child text content (text node children
+only; `textContent` is the descendant text), and its setter replaces all
+children with one text node, which makes `html/semantics/scripting-1`'s
+`script-text.html` perfect at 6 of 6. `document.writeln` exists and appends
+U+000A, so `script-src-1_2_1.html` is 2 of 2 instead of an uncaught
+`TypeError`. A connected script element's child-list change now runs the
+children-changed steps and re-prepares it: an empty inline script returns
+from prepare before the already-started flag is set, so setting its body
+later still executes it
+(<https://html.spec.whatwg.org/multipage/scripting.html#script-processing-model>).
+That fixes `scripthash-unicode-normalization.sub.html` (2 of 2) and
+`hash-always-converted-to-utf-8/utf-8-lone-surrogate.html` (1 of 1), whose
+scripts are appended empty and populated afterwards.
+
+The binding generator now reruns when a nested implementation file changes;
+`rerun-if-changed` on a directory tracks the directory entry only, so a new
+trait method was invisible to it before. Evidence: `content-security-policy/script-src`
+goes from 125 of 203 subtests and 78 OK files to 129 of 203 and 81 OK, with
+no subtest lost; `html/semantics/scripting-1` (538 files) gains
+`script-text.html`'s six subtests and loses nothing. `dom/events`,
+`domparsing`, `dom/nodes`, `dom/ranges`, `dom/traversal`, `html/dom`,
+`webmessaging`, `html/semantics/forms`, `cookiestore` (247/260), and
+`cookies` (336/415) are unchanged. `html/semantics/scripting-1`'s
+`106-import.html` / `106-module-import.html` flake in the 538-file batch
+(they pass 3 of 3 in their own directory) because they race a trickling
+stylesheet. `document.write` during parsing is still dropped; the remaining
+`strict-dynamic` parser-inserted files depend on it.
