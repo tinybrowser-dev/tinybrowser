@@ -814,13 +814,31 @@ fn frame_set_location(ctx: Ctx<'_>, frame: f64, value: Value<'_>) -> Result<()> 
 /// (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-idl-attributes>).
 pub(crate) const HANDLER_ATTRIBUTES: &[&str] = &[
     "onabort",
+    // CSS Animations and Transitions: the unprefixed handlers sit beside the
+    // `webkit`-prefixed legacy aliases, which stay separate properties
+    // (<https://drafts.csswg.org/css-animations-1/#extensions-to-the-globaleventhandlers-mixin>,
+    // <https://drafts.csswg.org/css-transitions-1/#extensions-to-the-globaleventhandlers-mixin>).
+    "onanimationcancel",
+    "onanimationend",
+    "onanimationiteration",
+    "onanimationstart",
+    "onauxclick",
+    "onbeforeinput",
+    "onbeforematch",
+    "onbeforetoggle",
     "onblur",
     "oncancel",
+    "oncanplay",
+    "oncanplaythrough",
     "onchange",
     "onclick",
     "onclose",
+    "oncommand",
+    "oncontextlost",
     "oncontextmenu",
+    "oncontextrestored",
     "oncopy",
+    "oncuechange",
     "oncut",
     "ondblclick",
     "ondrag",
@@ -830,8 +848,12 @@ pub(crate) const HANDLER_ATTRIBUTES: &[&str] = &[
     "ondragover",
     "ondragstart",
     "ondrop",
+    "ondurationchange",
+    "onemptied",
+    "onended",
     "onerror",
     "onfocus",
+    "onformdata",
     "oninput",
     "oninvalid",
     "onkeydown",
@@ -841,8 +863,6 @@ pub(crate) const HANDLER_ATTRIBUTES: &[&str] = &[
     "onloadeddata",
     "onloadedmetadata",
     "onloadstart",
-    "onmessage",
-    "onmessageerror",
     "onmousedown",
     "onmouseenter",
     "onmouseleave",
@@ -854,19 +874,55 @@ pub(crate) const HANDLER_ATTRIBUTES: &[&str] = &[
     "onpause",
     "onplay",
     "onplaying",
+    // Pointer Events extends GlobalEventHandlers
+    // (<https://w3c.github.io/pointerevents/#extensions-to-the-globaleventhandlers-mixin>).
+    "onpointercancel",
+    "onpointerdown",
+    "onpointerenter",
+    "onpointerleave",
+    "onpointermove",
+    "onpointerout",
+    "onpointerover",
+    "onpointerrawupdate",
+    "onpointerup",
+    "ongotpointercapture",
+    "onlostpointercapture",
     "onprogress",
     "onratechange",
-    "onreadystatechange",
     "onreset",
     "onresize",
     "onscroll",
+    "onscrollend",
+    "onsecuritypolicyviolation",
     "onseeked",
     "onseeking",
     "onselect",
+    "onselectionchange",
+    "onselectstart",
+    "onslotchange",
+    "onsnapchanged",
+    "onsnapchanging",
+    "onstalled",
     "onsubmit",
     "onsuspend",
     "ontimeupdate",
     "ontoggle",
+    // Touch Events extends GlobalEventHandlers
+    // (<https://w3c.github.io/touch-events/#extensions-to-the-globaleventhandlers-mixin>).
+    "ontouchcancel",
+    "ontouchend",
+    "ontouchmove",
+    "ontouchstart",
+    "ontransitioncancel",
+    "ontransitionend",
+    "ontransitionrun",
+    "ontransitionstart",
+    "onvolumechange",
+    "onwaiting",
+    "onwebkitanimationend",
+    "onwebkitanimationiteration",
+    "onwebkitanimationstart",
+    "onwebkittransitionend",
     "onwheel",
 ];
 
@@ -880,10 +936,14 @@ pub(crate) const WINDOW_HANDLER_NAMES: &[&str] = &[
     "onbeforeunload",
     "onhashchange",
     "onlanguagechange",
+    "onmessage",
+    "onmessageerror",
     "onoffline",
     "ononline",
     "onpagehide",
+    "onpagereveal",
     "onpageshow",
+    "onpageswap",
     "onpopstate",
     "onrejectionhandled",
     "onstorage",
@@ -891,12 +951,22 @@ pub(crate) const WINDOW_HANDLER_NAMES: &[&str] = &[
     "onunload",
 ];
 
-/// The "Window-reflecting body element event handler set": handlers a `body`
-/// or `frameset` element mirrors from its `Window`, replacing the generic
-/// element handler of the same name
-/// (<https://html.spec.whatwg.org/multipage/webappapis.html#window-reflecting-body-element-event-handler-set>).
-const BODY_WINDOW_HANDLERS: &[&str] = &[
-    "onblur", "onerror", "onfocus", "onload", "onresize", "onscroll",
+/// Event handler attributes `Document` declares itself, outside
+/// `GlobalEventHandlers` and `WindowEventHandlers`. They are installed on
+/// `Document.prototype` only, so an element has no such property
+/// (<https://html.spec.whatwg.org/multipage/dom.html#the-document-object>,
+/// <https://w3c.github.io/page-lifecycle/#sec-api>,
+/// <https://fullscreen.spec.whatwg.org/#api>,
+/// <https://w3c.github.io/pointerlock/#extensions-to-the-document-interface>).
+pub(crate) const DOCUMENT_HANDLER_NAMES: &[&str] = &[
+    "onfullscreenchange",
+    "onfullscreenerror",
+    "onfreeze",
+    "onpointerlockchange",
+    "onpointerlockerror",
+    "onreadystatechange",
+    "onresume",
+    "onvisibilitychange",
 ];
 
 pub(crate) fn get_node_handler<'js>(
@@ -905,9 +975,6 @@ pub(crate) fn get_node_handler<'js>(
     name: String,
 ) -> Result<Value<'js>> {
     let id = handler_target(&ctx, &node)?;
-    if let Some(world) = mirrored_window_handler(&ctx, id, &name) {
-        return get_handler_in(&world, None, &name, &ctx);
-    }
     get_handler(&ctx, Some(id), &name)
 }
 
@@ -918,25 +985,51 @@ pub(crate) fn set_node_handler<'js>(
     value: Value<'js>,
 ) -> Result<()> {
     let id = handler_target(&ctx, &node)?;
-    if let Some(world) = mirrored_window_handler(&ctx, id, &name) {
-        set_handler_in(&world, None, &name, value, &ctx);
-        return Ok(());
-    }
     set_handler(&ctx, Some(id), &name, value)
 }
 
-/// The world whose `Window` holds `name` for `id`, when `id` is a `body` or
-/// `frameset` element reflecting that handler.
-fn mirrored_window_handler(ctx: &Ctx<'_>, id: NodeId, name: &str) -> Option<Rc<RefCell<World>>> {
-    if !BODY_WINDOW_HANDLERS.contains(&name) {
-        return None;
+/// The stored value of a handler a `body` or `frameset` element mirrors from
+/// its document's window.
+///
+/// The `HTMLBodyElement`/`HTMLFrameSetElement` prototypes route every
+/// `WindowEventHandlers` attribute and the six `GlobalEventHandlers` in the
+/// window-reflecting set here, so the element has no slot of its own. A
+/// document with no browsing context answers null, and a set is ignored
+/// (<https://html.spec.whatwg.org/multipage/webappapis.html#window-reflecting-body-element-event-handler-set>,
+/// <https://html.spec.whatwg.org/multipage/webappapis.html#the-event-handler-processing-algorithm>).
+pub(crate) fn get_window_reflecting_handler<'js>(
+    ctx: Ctx<'js>,
+    node: Value<'js>,
+    name: String,
+) -> Result<Value<'js>> {
+    let id = handler_target(&ctx, &node)?;
+    match super::owning_world(&ctx, id) {
+        // Only the realm's active document has a window to forward to. A
+        // document created by `DOMParser` or `new Document()` belongs to the
+        // realm for wrapper bookkeeping but has no browsing context, so its
+        // body reads null.
+        Some(world) if world.borrow().main_document_id() == Some(id.document_id()) => {
+            get_handler_in(&world, None, &name, &ctx)
+        }
+        _ => Ok(Value::new_null(ctx.clone())),
     }
-    let world = world_for_node(ctx, id).ok()?;
-    let reflected = world.borrow().document(id).is_some_and(|parsed| {
-        crate::dom::tree::is_html_element(&parsed.document.base, id.node, "body")
-            || crate::dom::tree::is_html_element(&parsed.document.base, id.node, "frameset")
-    });
-    reflected.then_some(world)
+}
+
+/// Stores a handler a `body` or `frameset` element mirrors from its window; a
+/// document with no browsing context ignores the write.
+pub(crate) fn set_window_reflecting_handler<'js>(
+    ctx: Ctx<'js>,
+    node: Value<'js>,
+    name: String,
+    value: Value<'js>,
+) -> Result<()> {
+    let id = handler_target(&ctx, &node)?;
+    if let Some(world) = super::owning_world(&ctx, id)
+        && world.borrow().main_document_id() == Some(id.document_id())
+    {
+        set_handler_in(&world, None, &name, value, &ctx);
+    }
+    Ok(())
 }
 
 pub(crate) fn get_window_handler(ctx: Ctx<'_>, name: String) -> Result<Value<'_>> {
@@ -999,10 +1092,17 @@ fn set_handler_in<'js>(
     value: Value<'js>,
     ctx: &Ctx<'js>,
 ) {
-    let saved = if value.is_null() || value.is_undefined() {
-        None
-    } else {
+    // An event handler IDL attribute converts through a callback type marked
+    // `[LegacyTreatNonObjectAsNull]`: any value that is not an object clears
+    // the handler instead of being stored or throwing. Without this, assigning
+    // a string leaves a non-callable value in the slot and a later read
+    // returns it
+    // (<https://webidl.spec.whatwg.org/#LegacyTreatNonObjectAsNull>,
+    // <https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-idl-attributes>).
+    let saved = if value.is_object() {
         Some(Persistent::save(ctx, value))
+    } else {
+        None
     };
     world
         .borrow_mut()

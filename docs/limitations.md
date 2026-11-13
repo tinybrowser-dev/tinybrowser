@@ -213,6 +213,19 @@ surface.
 
 ## DOM events
 
+`AnimationEvent` and `TransitionEvent` are constructible and every animation
+and transition handler attribute exists, but the engine has no animation
+engine: CSS `animation` and `transition` never start a timeline, so it never
+fires `animationstart`, `animationend`, `animationiteration`,
+`transitionrun`, `transitionstart` or `transitionend`. WPT's
+`dom/events/webkit-*-event.html` files therefore pass their property and
+`dispatchEvent` subtests and time out on every subtest that triggers an
+animation. The legacy prefixed-event rewrite (a trusted `webkitAnimationEnd`
+is delivered as `animationend` when an unprefixed listener exists) is not
+implemented for the same reason; it is only observable on an engine-fired,
+trusted event.
+
+
 A node can be adopted into another document while its own native method is
 still on the stack: an event listener that moves the dispatching target.
 Adoption retargets the wrapper the page already holds, so the node identity

@@ -1587,7 +1587,11 @@ Object.defineProperty(globalThis, 'name', {
       set(value) { host.__tbSetWindowHandler(name, value); },
       enumerable: true, configurable: true,
     });
-    for (const proto of [globalThis.HTMLElement.prototype, globalThis.SVGElement.prototype]) {
+    // `Document includes GlobalEventHandlers`, so the same accessors land on
+    // `Document.prototype`, with the handler stored against the document node
+    // (<https://html.spec.whatwg.org/multipage/dom.html#documents>,
+    // <https://html.spec.whatwg.org/multipage/webappapis.html#event-handlers>).
+    for (const proto of [globalThis.Document.prototype, globalThis.HTMLElement.prototype, globalThis.SVGElement.prototype]) {
       Object.defineProperty(proto, name, {
         get() { return host.__tbGetNodeHandler(this, name); },
         set(value) { host.__tbSetNodeHandler(this, name, value); },
@@ -1603,6 +1607,33 @@ Object.defineProperty(globalThis, 'name', {
       set(value) { host.__tbSetWindowHandler(name, value); },
       enumerable: true, configurable: true,
     });
+  }
+  // `Document` declares a few handlers of its own, which no element shares
+  // (<https://html.spec.whatwg.org/multipage/dom.html#the-document-object>).
+  for (const name of host.__tb_documentHandlerNames || []) {
+    Object.defineProperty(globalThis.Document.prototype, name, {
+      get() { return host.__tbGetNodeHandler(this, name); },
+      set(value) { host.__tbSetNodeHandler(this, name, value); },
+      enumerable: true, configurable: true,
+    });
+  }
+  // A `body` or `frameset` element forwards every `WindowEventHandlers`
+  // attribute, plus the six `GlobalEventHandlers` in the window-reflecting
+  // set, to its document's window instead of keeping a slot of its own
+  // (<https://html.spec.whatwg.org/multipage/webappapis.html#window-reflecting-body-element-event-handler-set>,
+  // <https://html.spec.whatwg.org/multipage/dom.html#body-element-event-handlers>).
+  const windowReflecting = [
+    ...(host.__tb_windowHandlerNames || []),
+    'onblur', 'onerror', 'onfocus', 'onload', 'onresize', 'onscroll',
+  ];
+  for (const proto of [globalThis.HTMLBodyElement.prototype, globalThis.HTMLFrameSetElement.prototype]) {
+    for (const name of windowReflecting) {
+      Object.defineProperty(proto, name, {
+        get() { return host.__tbGetWindowReflectingHandler(this, name); },
+        set(value) { host.__tbSetWindowReflectingHandler(this, name, value); },
+        enumerable: true, configurable: true,
+      });
+    }
   }
 })();
 

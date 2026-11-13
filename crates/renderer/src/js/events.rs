@@ -1830,6 +1830,23 @@ pub(crate) fn handler_attribute_allowed<'js>(
     !crate::csp::blocks(&violations)
 }
 
+/// The handler property name for an event type.
+///
+/// The four legacy `webkit`-prefixed animation and transition event types keep
+/// their camelCase spelling in `addEventListener`, while their handler
+/// attributes are all lowercase, so deriving the property name is not just
+/// `on` plus the type
+/// (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handlers-on-elements,-document-objects,-and-window-objects>).
+fn handler_attribute_name(typ: &str) -> String {
+    match typ {
+        "webkitAnimationEnd" => "onwebkitanimationend".to_owned(),
+        "webkitAnimationIteration" => "onwebkitanimationiteration".to_owned(),
+        "webkitAnimationStart" => "onwebkitanimationstart".to_owned(),
+        "webkitTransitionEnd" => "onwebkittransitionend".to_owned(),
+        _ => format!("on{typ}"),
+    }
+}
+
 /// Calls a target's `on<type>` handler attribute, if one is assigned
 /// (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handlers>).
 ///
@@ -1850,7 +1867,7 @@ fn call_handler_attribute<'js>(
     if bindings::world(ctx)?.borrow().sandbox.scripts_disabled() {
         return Ok(());
     }
-    let name = format!("on{typ}");
+    let name = handler_attribute_name(typ);
     // A document window's handler lives in a registration slot behind an
     // accessor, and a global function declaration named `onload` replaces that
     // accessor with a plain data property on the global object. Chrome keeps

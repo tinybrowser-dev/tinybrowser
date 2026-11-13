@@ -131,7 +131,7 @@ const __tbKeyboardEventData = host.slots('tinybrowser.keyboardevent.data');
 const __tbFreshKeyboardEvent = () => ({
   key: '', code: '', location: 0,
   ctrlKey: false, shiftKey: false, altKey: false, metaKey: false,
-  repeat: false, isComposing: false, keyCode: 0, charCode: 0,
+  repeat: false, isComposing: false, keyCode: 0, charCode: 0, which: 0,
 });
 globalThis.KeyboardEvent = class KeyboardEvent extends UIEvent {
   constructor(type, init) {
@@ -150,6 +150,11 @@ globalThis.KeyboardEvent = class KeyboardEvent extends UIEvent {
         repeat: !!init.repeat, isComposing: !!init.isComposing,
         keyCode: init.keyCode === undefined ? (key.length === 1 ? key.charCodeAt(0) : 0) : init.keyCode,
         charCode: init.charCode || 0,
+        // `which` is a legacy member the init dictionary carries, so a page
+        // can construct one directly; the getter falls back to `keyCode`
+        // (<https://w3c.github.io/uievents/#dom-keyboardeventinit-which>,
+        // <https://w3c.github.io/uievents/#dom-keyboardevent-which>).
+        which: init.which === undefined ? 0 : init.which,
     });
     return event;
   }
@@ -164,6 +169,13 @@ globalThis.KeyboardEvent = class KeyboardEvent extends UIEvent {
   get isComposing() { return __tbEventEntry(this, __tbKeyboardEventData, __tbFreshKeyboardEvent).isComposing; }
   get keyCode() { return __tbEventEntry(this, __tbKeyboardEventData, __tbFreshKeyboardEvent).keyCode; }
   get charCode() { return __tbEventEntry(this, __tbKeyboardEventData, __tbFreshKeyboardEvent).charCode; }
+  // The legacy alias reports an explicitly constructed value first, then
+  // `keyCode`, then `charCode` for a keypress event
+  // (<https://w3c.github.io/uievents/#dom-keyboardevent-which>).
+  get which() {
+    const stored = __tbEventEntry(this, __tbKeyboardEventData, __tbFreshKeyboardEvent);
+    return stored.which || stored.keyCode || stored.charCode;
+  }
   getModifierState(key) {
     return { Alt: !!this.altKey, Control: !!this.ctrlKey, Meta: !!this.metaKey, Shift: !!this.shiftKey }[__tbStringCtor(key)] || false;
   }
@@ -314,6 +326,26 @@ __tbExposeEvent('DragEvent', __tbMouseEventConstructor, host.slots('tinybrowser.
   () => ({ dataTransfer: null }),
   init => ({ dataTransfer: init.dataTransfer || null }),
   ['dataTransfer']);
+// CSS Animations and Transitions own the event interfaces whose handlers the
+// legacy `webkit` names alias
+// (<https://drafts.csswg.org/css-animations-1/#interface-animationevent>,
+// <https://drafts.csswg.org/css-transitions-1/#interface-transitionevent>).
+__tbExposeEvent('AnimationEvent', __tbEventConstructor, host.slots('tinybrowser.animationevent.data'),
+  () => ({ animationName: '', elapsedTime: 0, pseudoElement: '' }),
+  init => ({
+    animationName: __tbEventString(init.animationName),
+    elapsedTime: init.elapsedTime === undefined ? 0 : __tbNumberCtor(init.elapsedTime),
+    pseudoElement: __tbEventString(init.pseudoElement),
+  }),
+  ['animationName', 'elapsedTime', 'pseudoElement']);
+__tbExposeEvent('TransitionEvent', __tbEventConstructor, host.slots('tinybrowser.transitionevent.data'),
+  () => ({ propertyName: '', elapsedTime: 0, pseudoElement: '' }),
+  init => ({
+    propertyName: __tbEventString(init.propertyName),
+    elapsedTime: init.elapsedTime === undefined ? 0 : __tbNumberCtor(init.elapsedTime),
+    pseudoElement: __tbEventString(init.pseudoElement),
+  }),
+  ['propertyName', 'elapsedTime', 'pseudoElement']);
 
 // Touch Events extends GlobalEventHandlers with these handlers. createEvent's
 // touch rows run only when the document exposes one

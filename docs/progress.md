@@ -1167,3 +1167,52 @@ failures are the known multi-file load flake. `html/semantics/forms` loses the
 same `form-double-submit*` subtests the committed tree loses in three isolated
 runs, and `html/semantics/scripting-1` gains 24 while its one lost
 `execution-timing/105.html` subtest passes in three isolated runs.
+
+`dom/events` was 28% because the event interfaces a page touches on every
+keypress and animation were only partly exposed. The handler list was a hand
+picked subset of `GlobalEventHandlers`: `onanimationend`,
+`ontransitionend`, `onpointerdown`, `onscrollend`,
+`onsecuritypolicyviolation`, `onslotchange` and thirty others read
+`undefined`, and `KeyboardEvent.which`, `AnimationEvent` and `TransitionEvent`
+did not exist. The list now comes from the interface mixins the IDL declares,
+including the partials (CSS Animations, CSS Transitions, Pointer Events, Touch
+Events, Selection, Scroll Snap), and `WindowEventHandlers` gained the four
+names it was missing.
+
+Three conversion rules came with it. An event handler IDL attribute converts
+through a callback type marked `[LegacyTreatNonObjectAsNull]`, so assigning a
+string clears the slot instead of storing a non-callable value; the tests
+assert `element.onclick = ""` reads back null
+(`https://webidl.spec.whatwg.org/#LegacyTreatNonObjectAsNull`). The four legacy
+`webkit` animation and transition event types keep their camelCase spelling
+for `addEventListener` but map to all-lowercase handler properties, so a
+dispatched `webkitAnimationEnd` reaches `onwebkitanimationend` and not
+`onwebkitAnimationEnd`. A `body` or `frameset` element forwards every
+`WindowEventHandlers` attribute, plus the six `GlobalEventHandlers` in the
+window-reflecting set, to its document's window; a body whose document has no
+browsing context (one made by `DOMParser` or `new Document()`) reads null and
+ignores writes (`https://html.spec.whatwg.org/multipage/webappapis.html#window-reflecting-body-element-event-handler-set`).
+
+`AnimationEvent` and `TransitionEvent` now exist with the spec members
+(`animationName`, `propertyName`, `elapsedTime`, `pseudoElement`), and
+`KeyboardEvent.which` reports an explicitly constructed value, then `keyCode`,
+then `charCode`
+(`https://drafts.csswg.org/css-animations-1/#interface-animationevent`,
+`https://drafts.csswg.org/css-transitions-1/#interface-transitionevent`,
+`https://w3c.github.io/uievents/#dom-keyboardevent-which`).
+
+Evidence, subtest diffs against saved baselines of the committed tree with no
+subtest lost: `dom/events` goes from 426 to **488 of 582**, and
+`html/webappapis` from 1413 to **1885 of 2254**. The four `webkit-*-event`
+files pass their property and dispatch subtests; what still times out is every
+subtest that waits for an engine-fired animation event, because the engine has
+no animation engine (`docs/limitations.md`). `html/webappapis` gains the
+`onpointerdown`/`onscrollend`/`onslotchange` handler reflection and the
+windowless-body forwarding subtests. `webmessaging`, `html/browsers`,
+`dom/nodes`, `domparsing`, `workers`, `css/selectors`, `css/cssom`,
+`css/cssom-view`, `fetch/api`, `xhr`, `cookies`, `cookiestore` and
+`referrer-policy` are subtest-identical. `html/dom` loses three render-blocking
+subtests against an older saved report but the committed tree scores the same
+9 of 38 on those files in two isolated runs, so the loss predates this slice.
+`cargo fmt --check`, `tools/check clippy`, and the renderer (172), wpt-harness
+(48), cookies (26), browser (69+4), net (52) and dial (29+3) unit tests pass.

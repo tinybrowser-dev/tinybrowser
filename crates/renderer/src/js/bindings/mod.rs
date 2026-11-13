@@ -922,6 +922,8 @@ fn install_document(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
     crate::js::bridge::object(ctx)?.set("__tb_handlerNames", HANDLER_ATTRIBUTES.to_vec())?;
     crate::js::bridge::object(ctx)?
         .set("__tb_windowHandlerNames", WINDOW_HANDLER_NAMES.to_vec())?;
+    crate::js::bridge::object(ctx)?
+        .set("__tb_documentHandlerNames", DOCUMENT_HANDLER_NAMES.to_vec())?;
     crate::js::bridge::object(ctx)?.set(
         "__tbGetNodeHandler",
         rquickjs::prelude::Func::from(get_node_handler),
@@ -929,6 +931,14 @@ fn install_document(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
     crate::js::bridge::object(ctx)?.set(
         "__tbSetNodeHandler",
         rquickjs::prelude::Func::from(set_node_handler),
+    )?;
+    crate::js::bridge::object(ctx)?.set(
+        "__tbGetWindowReflectingHandler",
+        rquickjs::prelude::Func::from(get_window_reflecting_handler),
+    )?;
+    crate::js::bridge::object(ctx)?.set(
+        "__tbSetWindowReflectingHandler",
+        rquickjs::prelude::Func::from(set_window_reflecting_handler),
     )?;
     crate::js::bridge::object(ctx)?.set(
         "__tbGetWindowHandler",
@@ -2950,6 +2960,63 @@ mod realm_tests {
         realm.fire_dom_content_loaded().expect("DOMContentLoaded");
         realm.fire_ready_state_change().expect("readystatechange 2");
         realm.fire_load().expect("load");
+        drop(realm);
+        drop(shared);
+    }
+
+    /// Handler IDL attributes convert through their callback types: a
+    /// non-object assignment clears the slot, the legacy `webkit` animation
+    /// and transition types keep their own lowercase properties, and
+    /// `KeyboardEvent` carries the legacy `which` member
+    /// (<https://webidl.spec.whatwg.org/#LegacyTreatNonObjectAsNull>,
+    /// <https://w3c.github.io/uievents/#dom-keyboardevent-which>).
+    #[test]
+    fn event_handler_attributes_follow_their_conversions() {
+        let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
+        let shared = SharedJsRuntime::default();
+        let stop = Arc::new(Stop::new());
+        let documents = Rc::new(RefCell::new(crate::documents::DocumentStore::default()));
+        let registry = Rc::new(RefCell::new(crate::js::RealmRegistry::default()));
+        let world = world_with_document(
+            &shared,
+            &services,
+            &documents,
+            &registry,
+            "https://a.test/",
+            "<!doctype html><p></p>",
+        );
+        let realm = JsRealm::new(&shared.handle(), world, stop).expect("realm");
+        let result = realm
+            .eval(
+                r#"
+                const div = document.createElement('div');
+                const fresh = div.onanimationend === null && div.onwebkitanimationend === null;
+                div.onclick = "a string clears the handler";
+                const cleared = div.onclick === null;
+                const fired = [];
+                div.onanimationend = () => fired.push('plain');
+                div.onwebkitanimationend = () => fired.push('prefixed');
+                div.dispatchEvent(new AnimationEvent('webkitAnimationEnd'));
+                [
+                  fresh,
+                  cleared,
+                  div.onanimationend !== null,
+                  div.onwebkitanimationend !== null,
+                  div.onanimationend !== div.onwebkitanimationend,
+                  fired.join('+'),
+                  new KeyboardEvent('x', { which: 7 }).which,
+                  typeof AnimationEvent === 'function',
+                  typeof TransitionEvent === 'function',
+                  'onmessage' in window && !('onmessage' in div),
+                  'onreadystatechange' in document,
+                ].join(',');
+                "#,
+            )
+            .expect("eval");
+        assert_eq!(
+            result,
+            "true,true,true,true,true,prefixed,7,true,true,true,true"
+        );
         drop(realm);
         drop(shared);
     }
