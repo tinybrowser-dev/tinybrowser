@@ -1785,3 +1785,21 @@ which contradicts the published ARIA 1.3 algorithm and the stable
 tentative test and the stable test describe the same DOM state with different
 expected answers, so the conflict is recorded in `docs/limitations.md` and the
 published behaviour wins until the ARIA change ships.
+
+`navigator.registerProtocolHandler()` and `unregisterProtocolHandler()` now
+exist and run the spec's normalize protocol handler parameters algorithm
+(`crates/renderer/src/js/scripts/web/navigator.js`). The scheme is
+ASCII-lowercased (so the Kelvin sign does not become an ASCII `k`), only a
+safelisted scheme or `web+` plus one or more ASCII lowercase letters is
+accepted, the URL must contain `%s`, and the encoding-parsed result must be an
+HTTP(S) same-origin URL. The error order is the spec's: an invalid scheme is a
+`SecurityError` before the URL is inspected, a missing `%s` or unparseable URL
+is a `SyntaxError`, and a cross-origin or non-HTTP(S) URL is a
+`SecurityError`.
+
+Evidence: `html/webappapis` 1885 to **2130 subtests**, no lost subtests.
+`protocol.https.html` 0 to 244 of 244, and `historical.https.window.html`
+gains the one historical-IDL subtest that looks for the method.
+
+Handler invocation is not implemented: a navigation to a registered scheme
+does not reach the handler yet, which `docs/limitations.md` records.

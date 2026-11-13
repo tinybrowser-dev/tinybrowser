@@ -73,6 +73,50 @@
   const userActivation = Object.create(UserActivation.prototype);
   userActivationKey.set(userActivation, Object.freeze({}));
 
+  // https://html.spec.whatwg.org/multipage/system-state.html#safelisted-scheme
+  const protocolHandlerSafelist = new Set([
+    'bitcoin', 'ftp', 'ftps', 'geo', 'im', 'irc', 'ircs', 'magnet', 'mailto',
+    'matrix', 'mms', 'news', 'nntp', 'openpgp4fpr', 'sftp', 'sip', 'sms',
+    'smsto', 'ssh', 'tel', 'urn', 'webcal', 'wtai', 'xmpp',
+  ]);
+  // The spec says ASCII lowercase, not `toLowerCase`: the Kelvin sign and
+  // other non-ASCII characters must not become an ASCII letter
+  // (<https://infra.spec.whatwg.org/#ascii-lowercase>).
+  const asciiLowercase = value => {
+    let result = '';
+    for (let index = 0; index < value.length; index++) {
+      const code = value.charCodeAt(index);
+      result += code >= 0x41 && code <= 0x5a ? String.fromCharCode(code + 0x20) : value[index];
+    }
+    return result;
+  };
+  // https://html.spec.whatwg.org/multipage/system-state.html#normalize-protocol-handler-parameters
+  const normalizeProtocolHandler = (scheme, url) => {
+    const normalizedScheme = asciiLowercase(scheme);
+    if (!protocolHandlerSafelist.has(normalizedScheme)
+        && !/^web\+[a-z]+$/.test(normalizedScheme)) {
+      throw new DOMException('The scheme is not allowed.', 'SecurityError');
+    }
+    if (url.indexOf('%s') === -1) {
+      throw new DOMException('The URL does not contain a %s placeholder.', 'SyntaxError');
+    }
+    // Encoding-parsing the URL relative to the entry settings object; a
+    // placeholder in the host or port makes the parse fail
+    // (<https://html.spec.whatwg.org/multipage/system-state.html#normalize-protocol-handler-parameters>).
+    const resolved = host.__tbResolveUrl(url, undefined);
+    if (resolved == null) {
+      throw new DOMException('The URL is invalid.', 'SyntaxError');
+    }
+    const record = new URL(resolved);
+    if ((record.protocol !== 'http:' && record.protocol !== 'https:')
+        || record.origin !== host.__tbOrigin()) {
+      throw new DOMException('The URL must be same-origin.', 'SecurityError');
+    }
+    return { key: normalizedScheme + ' ' + resolved, scheme: normalizedScheme, url: resolved };
+  };
+  // The user agent's registered handlers for this realm.
+  const protocolHandlers = new Map();
+
   // `Navigator` includes seven NavigatorID/Language/etc. mixins, so the
   // generator resolves `userAgentData` from `Navigator includes NavigatorUA`
   // and applies its `[SecureContext]` exposure per member.
@@ -101,6 +145,16 @@
     get userAgentData() {
       return userAgentData;
     }
+    // https://html.spec.whatwg.org/multipage/system-state.html#dom-navigator-registerprotocolhandler
+    registerProtocolHandler(scheme, url) {
+      const handler = normalizeProtocolHandler(scheme, url);
+      protocolHandlers.set(handler.key, handler);
+    }
+    // https://html.spec.whatwg.org/multipage/system-state.html#dom-navigator-unregisterprotocolhandler
+    unregisterProtocolHandler(scheme, url) {
+      const handler = normalizeProtocolHandler(scheme, url);
+      protocolHandlers.delete(handler.key);
+    }
   }, [
     'adAuctionComponents', 'attribution', 'audioSession', 'bluetooth',
     'canShare', 'clearAppBadge', 'clipboard', 'connection', 'contacts',
@@ -113,10 +167,10 @@
     'mediaCapabilities', 'mediaDevices', 'mediaSession', 'mimeTypes', 'ml',
     'oscpu', 'pdfViewerEnabled', 'permissions', 'plugins', 'preferences',
     'presentation', 'queryHandwritingRecognizer',
-    'registerProtocolHandler', 'requestMediaKeySystemAccess',
+    'requestMediaKeySystemAccess',
     'requestMIDIAccess', 'scheduling', 'sendBeacon', 'serial',
     'serviceWorker', 'setAppBadge', 'share', 'storage', 'storageBuckets',
-    'taintEnabled', 'unregisterProtocolHandler', 'usb', 'vibrate',
+    'taintEnabled', 'usb', 'vibrate',
     'virtualKeyboard', 'wakeLock', 'windowControlsOverlay', 'xr',
   ]);
 

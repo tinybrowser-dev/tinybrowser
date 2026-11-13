@@ -344,6 +344,27 @@ handles the first fragment box of a non-atomic inline. Remaining gaps:
   `element.scrollParent()` and no shipping browser implements either shape, so
   the API is deferred until the surface settles (`docs/priorities.md`).
 
+
+## Custom scheme handlers
+
+`navigator.registerProtocolHandler()` and `unregisterProtocolHandler()` run the
+spec's normalize protocol handler parameters algorithm: ASCII-lowercase the
+scheme, accept only a safelisted scheme or `web+` followed by one or more ASCII
+lowercase letters, require a `%s` placeholder, encoding-parse the URL relative
+to the document, and require an HTTP(S) same-origin URL
+(<https://html.spec.whatwg.org/multipage/system-state.html#normalize-protocol-handler-parameters>).
+Accepted registrations live in a per-realm map; there is no user-consent
+prompt, which the spec allows ("user agents could also silently collect the
+information", step 2).
+
+The engine does not yet route a navigation to a registered scheme through its
+handler. Invoking a handler replaces the first `%s` with the percent-encoded
+input URL and navigates to the result
+(<https://html.spec.whatwg.org/multipage/system-state.html#invoke-a-protocol-handler>),
+which needs navigation interception for non-HTTP schemes. A page can register
+and unregister handlers, and the argument checks match a browser, but a
+registered handler has no observable effect on navigation yet.
+
 ## Missing surfaces
 
 Dedicated workers run on their own OS thread with their own `QuickJS`
