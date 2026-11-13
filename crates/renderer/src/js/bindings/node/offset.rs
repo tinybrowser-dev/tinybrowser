@@ -204,9 +204,10 @@ fn empty_inline_rect(
         });
     }
     let rect = sibling_offset(base, node.id, false)?;
-    // The build disables `writing-mode`, so this is horizontal-tb today; the
-    // side is still chosen from the computed writing mode for when the
-    // feature lands (`docs/limitations.md`).
+    // The side the caret leaves from depends on the writing mode and
+    // direction: the block end is the right side in vertical-lr, the left side
+    // in vertical-rl, and the inline end is the left edge under RTL
+    // (<https://drafts.csswg.org/css-writing-modes-4/#logical-to-physical>).
     let writing_mode = node.primary_styles()?.writing_mode;
     let (x, y) = if writing_mode.swaps_axes() {
         (rect.x, rect.y + rect.height)

@@ -1552,3 +1552,32 @@ sticky positioning has no layout offset, and `html/browsers`'
 `open-features-tokenization-noopener.html` errored with "script failed" in the
 battery run; a rerun of the file at the same build errors the same way, and the
 file is in the known `window.open` tokenization flake family.
+
+Vertical `writing-mode` now lays out. Blitz's support was off in two places: the
+style crate gates the property behind the `layout.css.writing-mode.enabled`
+Servo pref, and `blitz-dom` gates its per-box writing-mode layout behind the
+`writing-mode` Cargo feature. The fork's `init_stylo_prefs` already set the
+prefs when the feature is on, so the change is one line in
+`crates/renderer/Cargo.toml`; the property now parses, computes
+(`getComputedStyle`, `CSS.supports`, the inline style), and drives layout in
+each box's writing-mode frame.
+
+Evidence: `css/cssom-view` 1070 to **1475 of 1758** in an isolated run (**1465**
+in the 21-suite battery, whose smooth-scroll cases lose subtests to the harness
+budget). The battery against the offset run has no other lost subtests and no
+dropped files; the flagged rows are the known flakes
+(`scroll-behavior-subframe-window.html` times out under `--jobs 8` but runs
+14 of 28 isolated, the same as the three earlier runs;
+`broadcastchannel.window.html`'s bfcache probe oscillates between PASS, FAIL,
+TIMEOUT, and SKIP across the pre-slice runs, and reported SKIP here).
+`scrollWidthHeight-negative-margin-002.html` goes 200 to **600 of 600** (it
+runs its margin matrix in every writing mode), `scrollLeftTop.html` gains its
+three vertical cases (3 to 6), and `offsetTopLeft-trailing-space-inline.html`
+goes 1 to **3 of 3**, because the empty-inline fallback's writing-mode side is
+now observable. A probe confirms `vertical-lr` computes and a 100x200 box
+reports `clientWidth` 100 and `clientHeight` 200.
+
+The `scrollIntoView-*-writing-mode.html` family stays at 0 of 9: its boxes are
+now vertical, but `scrollIntoView` still scrolls only the viewport, not the
+nested scroll container the tests set up (`docs/limitations.md`). That is the
+scrolling gap, not a writing-mode one.

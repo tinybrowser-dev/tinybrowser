@@ -155,13 +155,13 @@ handles the first fragment box of a non-atomic inline. Remaining gaps:
   before those tests can distinguish the rules. `offsetParent`'s "different
   effective zoom" clause is unimplemented for the same reason; Chrome does not
   fire it either (probed), so no test covers it.
-- `writing-mode` is disabled in this build: the style crate gates it behind the
-  Servo pref `layout.css.writing-mode.enabled` and `blitz-dom`'s `writing-mode`
-  feature (layout in each box's writing-mode frame) is off, so
-  `CSS.supports("writing-mode", "vertical-lr")` is false, the computed value is
-  absent, and layout is horizontal-tb only. `offsetTopLeft-trailing-space-inline.html`
-  passes 1 of 3 because its vertical cases lay out as horizontal, and the
-  written-mode correction for an empty inline has no rendered effect to check.
+- Vertical writing modes are laid out: `blitz-dom`'s `writing-mode` feature is
+  on, and its `init_stylo_prefs` sets the style crate's
+  `layout.css.writing-mode.enabled` and `...sideways.enabled` prefs, so the
+  property parses, computes, and drives layout in each box's writing-mode frame.
+  `scrollIntoView` still scrolls only the viewport (see `## Scrolling`), so the
+  `scrollIntoView-*-writing-mode.html` family stays red even though the boxes
+  are laid out vertically.
 - An empty non-atomic inline has no fragment box: Blitz records fragments only
   for glyphs and atomic inline boxes. `offsetLeft`/`offsetTop` therefore
   approximate its position from the next boxed sibling's first fragment, or
