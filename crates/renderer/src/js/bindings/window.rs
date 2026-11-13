@@ -90,13 +90,24 @@ impl Component {
     /// URL changed, so assigning the value the document already has does not
     /// reload it
     /// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#the-location-interface>).
-    fn replace(self, url: &mut url::Url, value: &str) -> bool {
+    fn replace(self, url: &mut url::Url, value: &str) -> std::result::Result<bool, ()> {
         let before = url.as_str().to_owned();
         match self {
             Self::Pathname => url::quirks::set_pathname(url, value),
             Self::Search => url::quirks::set_search(url, value),
             Self::Protocol => {
-                let _ = url::quirks::set_protocol(url, value);
+                // Basic URL parse `value` followed by ":" with the scheme
+                // start state override. A failure is a SyntaxError; a scheme
+                // change the parser refuses (special to non-special, or file
+                // with credentials) terminates without navigating
+                // (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-protocol>).
+                let Some(scheme) = protocol_scheme(value) else {
+                    return Err(());
+                };
+                let _ = url.set_scheme(&scheme);
+                if !matches!(url.scheme(), "http" | "https") {
+                    return Ok(false);
+                }
             }
             Self::Host => {
                 let _ = url::quirks::set_host(url, value);
@@ -119,14 +130,51 @@ impl Component {
                 let previous = url.fragment().unwrap_or_default().to_owned();
                 url.set_fragment(Some(input));
                 if url.fragment().unwrap_or_default() == previous {
-                    return false;
+                    return Ok(false);
                 }
             }
             // `href` names a whole URL; `origin` is read-only.
-            Self::Href | Self::Origin => return false,
+            Self::Href | Self::Origin => return Ok(false),
         }
-        url.as_str() != before
+        Ok(url.as_str() != before)
     }
+}
+
+/// The scheme `location.protocol = value` names.
+///
+/// The setter parses `value` followed by ":" with the scheme start state as a
+/// state override. With an override the basic URL parser does not trim leading
+/// or trailing C0 controls or spaces, but it still removes ASCII tab and
+/// newline; the scheme is one ASCII alpha followed by ASCII alphanumerics,
+/// "+", "-", or ".". `None` is the parser's failure, which the setter reports
+/// as a `SyntaxError`
+/// (<https://url.spec.whatwg.org/#scheme-start-state>,
+/// <https://url.spec.whatwg.org/#scheme-state>).
+fn protocol_scheme(value: &str) -> Option<String> {
+    let mut scheme = String::with_capacity(value.len());
+    for c in value.chars() {
+        if matches!(c, '\t' | '\n' | '\r') {
+            continue;
+        }
+        if c == ':' {
+            break;
+        }
+        scheme.push(c);
+    }
+    let mut chars = scheme.chars();
+    let first = chars.next()?;
+    if !first.is_ascii_alphabetic() {
+        return None;
+    }
+    let mut normalized = String::with_capacity(scheme.len());
+    normalized.push(first.to_ascii_lowercase());
+    for c in chars {
+        if !(c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.')) {
+            return None;
+        }
+        normalized.push(c.to_ascii_lowercase());
+    }
+    Some(normalized)
 }
 
 /// Queues a navigation of `owner`'s frame to `spec`, which is what assigning
@@ -193,7 +241,10 @@ fn set_component(owner: &Rc<RefCell<World>>, component: Component, value: Value<
         return Ok(());
     }
     let mut url = owner.borrow().document_url.clone();
-    if component.replace(&mut url, &value) {
+    let changed = component
+        .replace(&mut url, &value)
+        .map_err(|()| super::throw_dom(&ctx, "SyntaxError", "invalid scheme"))?;
+    if changed {
         if only_fragment_changed(owner, &url) {
             navigate_to_fragment(&ctx, &caller, owner, &url);
         } else {
@@ -486,4 +537,30 @@ pub(crate) fn fire_csp_violations(
         events::fire_security_policy_violation(ctx, EventTargetKey::Node(target), violation)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::protocol_scheme;
+
+    /// `Location.protocol`'s scheme parse is the scheme start state with a
+    /// state override: ASCII tab and newline are removed, other leading and
+    /// trailing C0 controls and spaces are kept (and fail), and the scheme is
+    /// one ASCII alpha followed by ASCII alphanumerics, `+`, `-`, or `.`
+    /// (<https://url.spec.whatwg.org/#scheme-start-state>).
+    #[test]
+    fn protocol_scheme_follows_the_scheme_start_state() {
+        assert_eq!(protocol_scheme("https").as_deref(), Some("https"));
+        assert_eq!(protocol_scheme("HTTPS").as_deref(), Some("https"));
+        assert_eq!(protocol_scheme("http+x").as_deref(), Some("http+x"));
+        assert_eq!(protocol_scheme("x:foo").as_deref(), Some("x"));
+        assert_eq!(protocol_scheme("\tx").as_deref(), Some("x"));
+        assert_eq!(protocol_scheme("x\t").as_deref(), Some("x"));
+        assert_eq!(protocol_scheme(" x"), None);
+        assert_eq!(protocol_scheme("\0x"), None);
+        assert_eq!(protocol_scheme("x\0"), None);
+        assert_eq!(protocol_scheme("x y"), None);
+        assert_eq!(protocol_scheme(":"), None);
+        assert_eq!(protocol_scheme(""), None);
+    }
 }

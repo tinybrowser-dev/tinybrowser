@@ -1840,3 +1840,20 @@ and the two `ttwf-cssom-doc-ext-*` load-count/tree-order files also improve.
 The nine remaining `@import` subtests need `CSSImportRule.styleSheet`; the
 imported rules live outside the owner sheet's rule-list address space, which
 `docs/limitations.md` records.
+
+`location.protocol` now runs the spec's setter algorithm instead of passing the
+value straight to `url::quirks::set_protocol`. The setter parses `value`
+followed by `:` with the scheme start state as a state override
+(`crates/renderer/src/js/bindings/window.rs`): ASCII tab and newline are
+removed, other leading and trailing C0 controls and spaces are not, and a
+scheme is one ASCII alpha followed by ASCII alphanumerics, `+`, `-`, or `.`.
+A parse failure throws `SyntaxError`; a change the URL parser refuses
+(special to non-special, or `file` with credentials) terminates without
+navigating, and a non-HTTP(S) result terminates without navigating. The unit
+test `protocol_scheme_follows_the_scheme_start_state` names the mutations.
+
+Evidence: `html/browsers` 679 to **721 subtests**, no lost subtests.
+`location-protocol-setter.html` 0 to 48 of 48 and
+`location-protocol-setter-non-broken.html` 0 to 10; the weird-scheme file
+stays at 5 of 5. `open-features-tokenization-*` report "script failed" on the
+unmodified checkout too, so they are not caused by this change.
