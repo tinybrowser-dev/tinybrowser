@@ -2086,3 +2086,13 @@ subtest needs `Element.assignedSlot`, a missing shadow-slotting surface).
 `Element-setAttribute.html`, `Element-removeAttribute.html`,
 `Element-hasAttribute.html` and `attributes.html` stay green, and
 `document.forms.html` stays 6/6.
+`ParentNode.moveBefore` now invalidates selectors that depend on the child
+lists at both ends of the move (`third_party/blitz` `5ea1ff869`).
+`Mutator::move_node` spliced the lists and marked damage but skipped the
+child-list restyle invalidation that an insertion or removal runs, so
+`:empty`, `:first-child`, `:nth-child`, sibling combinators, and `:has(>)`
+stayed stale on the old and new parents, and a same-parent move left the
+moved node with its old style data.
+
+Evidence: `dom/nodes` 14521 to **14538** subtests, no lost subtests.
+`moveBefore-child-list-selector-invalidation.html` 0/9 to 9/9.
