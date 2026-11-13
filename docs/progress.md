@@ -1228,16 +1228,21 @@ removed frame still ran, a listener that removed the frame did not stop the
 rest of the list, and abort listeners on an `AbortSignal` from the removed
 frame still ran.
 
-Invoke now asks whether the path item's world is a document realm with a
-browsing context before setting the phase and again before each listener, so a
-listener that removes the frame skips the remainder, and handler attributes run
-under the same check. The dispatch itself still happens: `event.target` is
-set, `dispatchEvent()` still returns true, `defaultPrevented` stays false, and
-`currentTarget`/`eventPhase` end at null/NONE. A worker global is not a
-`Window`, so worker events are unaffected.
+Invoke now asks whether the path item's target global is a document realm with
+a browsing context before setting the phase and again before each listener, so
+a listener that removes the frame skips the remainder, and handler attributes
+run under the same check. The target global is re-derived per listener: a node
+follows its current node document, so a listener that adopts the target into a
+removed `iframe`'s document stops the remaining listeners, while the same
+adoption into a live document does not. The engine's "fully active" proxy is
+frame liveness, which is what removing an `iframe` changes. The dispatch itself
+still happens: `event.target` is set, `dispatchEvent()` still returns true,
+`defaultPrevented` stays false, and `currentTarget`/`eventPhase` end at
+null/NONE. A worker global is not a `Window`, so worker events are unaffected.
 
 Evidence: `dom/events/event-listener-not-fully-active-target.html` goes from
-4 of 16 to **16 of 16**, and `dom/events` from 426 to **474 of 582**.
+4 of 16 to **16 of 16**, `event-listener-not-fully-active-adopted-node.html`
+from 4 of 5 to **5 of 5**, and `dom/events` from 426 to **475 of 582**.
 `html/webappapis` is 1886 of 2254; `webmessaging` (189), `html/dom` (63975),
 `html/browsers` (676), `dom/nodes` (14344), `domparsing` (543), `workers`
 (974), `css/selectors` (4528), `css/cssom` (3212), `css/cssom-view` (763),

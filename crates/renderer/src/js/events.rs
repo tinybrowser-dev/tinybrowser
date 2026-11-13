@@ -1223,7 +1223,7 @@ fn dispatch<'js>(
             // Handler attributes are listeners too, so a target whose global
             // lost its browsing context runs none of them
             // (<https://dom.spec.whatwg.org/#concept-event-listener-inner-invoke>).
-            if !target_is_fully_active(&item.reference.world) {
+            if !target_is_fully_active(ctx, &item.reference) {
                 continue;
             }
             outcome = call_handler_attribute(ctx, Some(&item.target), &typ, &event_value);
@@ -1403,18 +1403,48 @@ fn build_path<'js>(
     }
 }
 
+/// The world whose global object is an event target's relevant global object
+/// right now.
+///
+/// The inner invoke algorithm re-reads `targetGlobal` from the current
+/// `event.currentTarget` for every listener, so a node adopted into another
+/// document partway through a dispatch changes which document decides whether
+/// its remaining listeners run. A node key therefore follows the node's
+/// current document; a `Window`, `Attr`, or standalone `EventTarget` belongs to
+/// the realm that created it
+/// (<https://dom.spec.whatwg.org/#concept-event-listener-inner-invoke>).
+fn target_global_world(ctx: &Ctx<'_>, reference: &EventTargetRef) -> Option<Rc<RefCell<World>>> {
+    match reference.key {
+        EventTargetKey::Node(id) => {
+            let id = bindings::realm_registry(ctx)
+                .ok()?
+                .borrow_mut()
+                .live_node_id(id);
+            bindings::owning_world(ctx, id)
+        }
+        EventTargetKey::Window
+        | EventTargetKey::Attribute { .. }
+        | EventTargetKey::Standalone(_) => Some(Rc::clone(&reference.world)),
+    }
+}
+
 /// Whether an event target's relevant global object can still receive
 /// listeners.
 ///
-/// The inner invoke algorithm skips a listener when the target's global object
-/// is a `Window` whose associated `Document` is not fully active. A realm whose
-/// frame left the tree is no longer fully active, which is what happens when
-/// an `iframe` is removed; a worker global is not a `Window`, so its events
+/// The inner invoke algorithm skips a listener when that global object is a
+/// `Window` whose associated `Document` is not fully active. The engine's
+/// proxy for "fully active" is the realm's frame still being in the browsing
+/// context tree: removing an `iframe` is what makes its document inactive in
+/// practice, and the richer definition (`is_main_document` plus an active
+/// document) is not modelled. A worker global is not a `Window`, so its events
 /// keep running
 /// (<https://dom.spec.whatwg.org/#concept-event-listener-inner-invoke>).
-fn target_is_fully_active(world: &Rc<RefCell<World>>) -> bool {
+fn target_is_fully_active(ctx: &Ctx<'_>, reference: &EventTargetRef) -> bool {
+    let Some(world) = target_global_world(ctx, reference) else {
+        return false;
+    };
     let world = world.borrow();
-    !matches!(world.kind, crate::js::world::GlobalKind::Document) || world.has_browsing_context()
+    world.kind != GlobalKind::Document || world.has_browsing_context()
 }
 
 /// [Invoke](https://dom.spec.whatwg.org/#concept-event-listener-invoke) the
@@ -1426,7 +1456,7 @@ fn invoke<'js>(
     phase: u16,
     capturing: bool,
 ) -> Result<()> {
-    if !target_is_fully_active(&item.reference.world) {
+    if !target_is_fully_active(ctx, &item.reference) {
         return Ok(());
     }
     {
@@ -1445,11 +1475,12 @@ fn invoke<'js>(
         .listener_snapshot(item.reference.key);
     let event_value = Class::into_value(event.clone());
     for listener in listeners {
-        // A listener that removes the target's frame skips the rest of the
-        // list, so the check is repeated rather than hoisted
+        // The check is per listener, not per path item: a listener can remove
+        // the target's frame or adopt the node into an inactive document, and
+        // the remaining listeners are skipped one by one
         // (<https://dom.spec.whatwg.org/#concept-event-listener-inner-invoke>).
-        if !target_is_fully_active(&item.reference.world) {
-            break;
+        if !target_is_fully_active(ctx, &item.reference) {
+            continue;
         }
         if listener.removed.get() {
             continue;
