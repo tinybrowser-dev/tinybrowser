@@ -498,6 +498,19 @@
     element.tagName === 'TEXTAREA' ||
     (isInput(element) && SELECTION_TYPES.has(element.type));
 
+  // `select()` applies to every state that renders text and to the date-like
+  // states, but not to the states the selection attributes reject; a state
+  // with no selectable text makes the call a no-op rather than an exception
+  // (<https://html.spec.whatwg.org/multipage/input.html#do-not-apply>,
+  // <https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#dom-textarea/input-select>).
+  const SELECTABLE_TYPES = new Set([
+    ...SELECTION_TYPES, 'email', 'date', 'month', 'week', 'time',
+    'datetime-local', 'number',
+  ]);
+  const selectApplies = element =>
+    element.tagName === 'TEXTAREA' ||
+    (isInput(element) && SELECTABLE_TYPES.has(element.type));
+
   // "Set the selection range" algorithm
   // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#set-the-selection-range>).
   // The host owns the stored selection, its clamping, and the `select` task a
@@ -528,10 +541,11 @@
     },
     select: {
       value: function() {
-        // A control with no selectable text is a no-op
+        // A control with no selectable text is a no-op, not an
+        // `InvalidStateError`
         // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#dom-textarea/input-select>).
-        if (!selectionApplies(this)) return;
-        applySelection(this, 0, this.value.length, 'none');
+        if (!selectApplies(this)) return;
+        applySelection(this, 0, this.value.length);
       },
       writable: true, enumerable: true, configurable: true,
     },
@@ -566,12 +580,15 @@
         this.value =
           this.value.slice(0, rangeStart) + replacement + this.value.slice(rangeEnd);
         const newEnd = rangeStart + replacement.length;
+        // Every mode ends with "set the selection range with selection start
+        // and selection end", with no direction, which resets it to "none"
+        // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#dom-textarea/input-setrangetext>).
         if (mode === 'select') {
-          applySelection(this, rangeStart, newEnd, this.selectionDirection);
+          applySelection(this, rangeStart, newEnd);
         } else if (mode === 'start') {
-          applySelection(this, rangeStart, rangeStart, this.selectionDirection);
+          applySelection(this, rangeStart, rangeStart);
         } else if (mode === 'end') {
-          applySelection(this, newEnd, newEnd, this.selectionDirection);
+          applySelection(this, newEnd, newEnd);
         } else {
           // "preserve": shift the old selection by the replacement's delta.
           const delta = replacement.length - (rangeEnd - rangeStart);
@@ -581,7 +598,7 @@
           else if (nextStart > rangeStart) nextStart = rangeStart;
           if (nextEnd > rangeEnd) nextEnd += delta;
           else if (nextEnd > rangeStart) nextEnd = newEnd;
-          applySelection(this, nextStart, nextEnd, this.selectionDirection);
+          applySelection(this, nextStart, nextEnd);
         }
       },
       writable: true, enumerable: true, configurable: true,

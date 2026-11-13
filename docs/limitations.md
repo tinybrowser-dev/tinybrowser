@@ -221,6 +221,7 @@ in non-dirty textarea should make selection{Start,End} 0". And per-element
 scroll offsets do not exist yet (Blitz exposes only the viewport scroll), so
 `selection.html` fails its `scrollLeft` preservation subtest for an `input`.
 
+## DOM events
 
 `AnimationEvent` and `TransitionEvent` are constructible and every animation
 and transition handler attribute exists, but the engine has no animation

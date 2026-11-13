@@ -1973,9 +1973,7 @@ impl Document {
         self.tasks.push_back(Task::WorkerLoadFailed(worker));
     }
 
-    /// Queues the `select` event of a changed text selection as an element
-    /// task
-    /// (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#set-the-selection-range>).
+    /// Queues the `select` task of a changed text selection.
     pub(crate) fn push_selection_changed(&mut self, id: crate::dom::tree::NodeId) {
         self.tasks.push_back(Task::SelectionChanged(id));
     }

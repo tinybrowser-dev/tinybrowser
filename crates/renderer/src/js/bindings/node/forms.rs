@@ -713,7 +713,7 @@ impl JsNode {
         value: WebIdlUnsignedLong,
     ) -> Result<()> {
         let id = self.handle.get().0;
-        self.require_selection(&ctx, "selectionStart")?;
+        require_selection(&ctx, self.handle.get().0, "selectionStart")?;
         let (_, end, direction) = world(&ctx)?.borrow().selection_of(id);
         // `end` is raised to the given start before the range is set
         // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#dom-textarea/input-selectionstart>).
@@ -723,35 +723,16 @@ impl JsNode {
     // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#dom-textarea/input-selectionend
     pub(super) fn set_selection_end(&self, ctx: Ctx<'_>, value: WebIdlUnsignedLong) -> Result<()> {
         let id = self.handle.get().0;
-        self.require_selection(&ctx, "selectionEnd")?;
+        require_selection(&ctx, self.handle.get().0, "selectionEnd")?;
         let (start, _, direction) = world(&ctx)?.borrow().selection_of(id);
         set_selection_range(&ctx, id, start, value.0, direction)
     }
 
     pub(super) fn set_selection_direction(&self, ctx: Ctx<'_>, value: WebIdlString) -> Result<()> {
         let id = self.handle.get().0;
-        self.require_selection(&ctx, "selectionDirection")?;
+        require_selection(&ctx, self.handle.get().0, "selectionDirection")?;
         let (start, end, _) = world(&ctx)?.borrow().selection_of(id);
         set_selection_range(&ctx, id, start, end, direction_code(&value.0))
-    }
-
-    /// Rejects a selection write on a control the text selection APIs do not
-    /// apply to
-    /// (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#dom-textarea/input-selectionstart>).
-    fn require_selection(&self, ctx: &Ctx<'_>, name: &str) -> Result<()> {
-        let world = world(ctx)?;
-        let world = world.borrow();
-        let Some(parsed) = world.document(self.handle.get().0) else {
-            return Ok(());
-        };
-        if crate::dom::forms::selection_applies(&parsed.document.base, self.handle.get().0.node) {
-            return Ok(());
-        }
-        Err(throw_dom(
-            ctx,
-            "InvalidStateError",
-            &format!("{name} does not apply to this control"),
-        ))
     }
 
     // https://html.spec.whatwg.org/multipage/forms.html#dom-form-reset
@@ -1291,8 +1272,26 @@ pub(super) fn selection_direction_of(ctx: &rquickjs::Ctx<'_>, id: NodeId) -> rqu
     Ok(world.selection_of(id).2)
 }
 
-/// The `SelectionMode` direction name for the stored code
-/// (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#selection-direction>).
+/// Rejects a selection operation on a control the text selection APIs do not
+/// apply to. A document that is already gone reads as "not applicable", which
+/// makes the caller's operation a no-op instead of a page-visible failure
+/// (<https://html.spec.whatwg.org/multipage/input.html#do-not-apply>).
+fn require_selection(ctx: &Ctx<'_>, id: NodeId, name: &str) -> Result<()> {
+    let world_rc = world(ctx)?;
+    let world = world_rc.borrow();
+    let Some(parsed) = world.document(id) else {
+        return Ok(());
+    };
+    if crate::dom::forms::selection_applies(&parsed.document.base, id.node) {
+        return Ok(());
+    }
+    Err(throw_dom(
+        ctx,
+        "InvalidStateError",
+        &format!("{name} does not apply to this control"),
+    ))
+}
+
 /// "Set the selection range"
 /// (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#set-the-selection-range>).
 ///
@@ -1324,7 +1323,17 @@ fn set_selection_range(
         (start, end)
     };
     let previous = world_rc.borrow().selection_of(node);
-    if previous == (start, end, direction) {
+    // The selection is clamped whenever the relevant value changes, so an
+    // offset stored before the value shrank no longer names a different
+    // selection
+    // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#set-the-selection-range>).
+    let clamped = (previous.0.min(length), previous.1.min(length), previous.2);
+    if clamped == (start, end, direction) {
+        if clamped != previous {
+            world_rc
+                .borrow_mut()
+                .set_selection(node, clamped.0, clamped.1, clamped.2);
+        }
         return Ok(());
     }
     let mut world = world_rc.borrow_mut();
@@ -1346,20 +1355,10 @@ pub(crate) fn set_selection_range_host<'js>(
     direction: Option<String>,
 ) -> Result<()> {
     let id = handler_target(&ctx, &node)?;
-    let applies = {
-        let world = world(&ctx)?;
-        let world = world.borrow();
-        world.document(id).is_some_and(|parsed| {
-            crate::dom::forms::selection_applies(&parsed.document.base, id.node)
-        })
-    };
-    if !applies {
-        return Err(throw_dom(
-            &ctx,
-            "InvalidStateError",
-            "the text selection APIs do not apply to this control",
-        ));
-    }
+    // No applicability check here: `select()` also applies to the states the
+    // selection attributes reject, and the shim enforces the throwing cases
+    // for `setSelectionRange()` and `setRangeText()`
+    // (<https://html.spec.whatwg.org/multipage/input.html#do-not-apply>).
     set_selection_range(
         &ctx,
         id,
@@ -1369,6 +1368,8 @@ pub(crate) fn set_selection_range_host<'js>(
     )
 }
 
+/// The `SelectionMode` direction name for the stored code
+/// (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#selection-direction>).
 pub(super) fn direction_name(direction: u8) -> &'static str {
     match direction {
         1 => "forward",
