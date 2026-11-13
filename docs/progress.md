@@ -1747,3 +1747,18 @@ The remaining failures are layout gaps, recorded in `docs/limitations.md` and
 (`notify.html`), there is no scrollbar gutter, CSS `zoom` and SVG boxes are
 approximate, and the resize loop's depth-limited delivery order and
 `window.onerror` lifecycle are not modelled.
+
+`customElements.define()` now runs the definition algorithm's checks. The name
+validation accepts only a lowercase hyphenated name outside the reserved SVG
+set (`annotation-xml`, `color-profile`, `font-face*`, `missing-glyph`), and the
+constructor is read in order: `prototype`, the five reaction callbacks
+(including `connectedMoveCallback`, which this engine supports),
+`observedAttributes` when `attributeChangedCallback` exists, `disabledFeatures`,
+`formAssociated`, and the four form-associated callbacks when it converts
+true. `observedAttributes` and `disabledFeatures` go through Web IDL
+`sequence<DOMString>` conversion, so a non-iterable value or an iterator that
+throws surfaces its own error (`crates/renderer/src/js/scripts/web/custom_elements.js`).
+
+Evidence: `custom-elements` 2355 to **2383 subtests**, no lost subtests.
+`CustomElementRegistry.html` 32 to 44 of 46, `registries/define.html` 56 to 64
+of 70.

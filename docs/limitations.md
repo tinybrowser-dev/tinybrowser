@@ -222,6 +222,35 @@ What remains:
   realm rather than reported at the realm that created the callback
   (`callback-cross-realm-report-exception.html`).
 
+## Custom elements
+
+`customElements.define()` validates the name (including the reserved SVG
+names) and reads the constructor and prototype in the spec's order:
+`prototype`, the five reaction callbacks, `observedAttributes` when
+`attributeChangedCallback` is present, `disabledFeatures`, `formAssociated`,
+and the four form-associated callbacks when it is true. Exceptions from a
+getter or from sequence conversion propagate, and `moveBefore` keeps
+`connectedMoveCallback` alive.
+
+What remains:
+
+- Customized built-in elements (`{ extends }`) throw `NotSupportedError`;
+  `builtin-coverage.html` and the `reactions/customized-builtins/*` files
+  cannot pass until `is=` construction and its interface mapping exist.
+- `new MyElement()` outside an upgrade throws `Illegal constructor`: the
+  HTMLElement constructor does not turn a registered definition's constructor
+  into a new element, so `CustomElementRegistry.html`'s instantiation case
+  fails.
+- Connection reactions do not follow a shadow host into its shadow tree, and
+  the document/adoption variants (template, XHR, cloned, iframe, new document)
+  do not produce their callbacks (`connected-callbacks.html`,
+  `disconnected-callbacks.html`, `adopted-callback.html`).
+- `ElementInternals` is a partial surface: form value, validation, and ARIA
+  reflection are incomplete (`form-associated/*`,
+  `ElementInternals-accessibility*.html`).
+- Scoped registries are not implemented (`registries/*`).
+
+
 ## Element offset metrics
 
 `offsetParent`, `offsetLeft`, `offsetTop`, `offsetWidth`, and `offsetHeight`

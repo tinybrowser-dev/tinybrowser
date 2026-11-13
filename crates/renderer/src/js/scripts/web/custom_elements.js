@@ -26,6 +26,11 @@
   const arrayFrom = Array.from;
   const observe = MutationObserver.prototype.observe;
   const callbackNames = ['connectedCallback', 'disconnectedCallback', 'connectedMoveCallback', 'adoptedCallback', 'attributeChangedCallback'];
+  const formCallbackNames = ['formAssociatedCallback', 'formResetCallback', 'formDisabledCallback', 'formStateRestoreCallback'];
+  // Reserved names that would collide with the SVG/HTML interfaces
+  // (<https://html.spec.whatwg.org/multipage/custom-elements.html#valid-custom-element-name>).
+  const reservedNames = ['annotation-xml', 'color-profile', 'font-face', 'font-face-src',
+    'font-face-uri', 'font-face-format', 'font-face-name', 'missing-glyph'];
   const getAttribute = Element.prototype.getAttribute;
   const getAttributeNS = Element.prototype.getAttributeNS;
   const hasAttribute = Element.prototype.hasAttribute;
@@ -121,8 +126,35 @@
   function validName(name) {
     // Pinned primitives: a page overriding `String.prototype` or
     // `RegExp.prototype` before `define()` runs must not change validation.
-    return typeof name === 'string' && __tbApply(__tbStringIncludes, name, ['-']) &&
-      name === __tbApply(__tbStringToLowerCase, name, []) && __tbApply(__tbRegExpTest, /^[a-z][.0-9_a-z\-]*$/, [name]);
+    if (typeof name !== 'string' || !__tbApply(__tbStringIncludes, name, ['-'])
+        || name !== __tbApply(__tbStringToLowerCase, name, [])
+        || !__tbApply(__tbRegExpTest, /^[a-z][.0-9_a-z\-]*$/, [name])) {
+      return false;
+    }
+    for (let index = 0; index < reservedNames.length; index++) {
+      if (reservedNames[index] === name) return false;
+    }
+    return true;
+  }
+
+  // Web IDL `sequence<DOMString>` conversion: the value must be iterable (no
+  // implicit array-like), and each item converts with `ToString`
+  // (<https://webidl.spec.whatwg.org/#es-sequence>).
+  function toSequence(value) {
+    if (value === undefined) return [];
+    if (value === null || (typeof value !== 'object' && typeof value !== 'function')) {
+      throw new TypeError('value is not iterable');
+    }
+    const iterator = value[Symbol.iterator];
+    if (typeof iterator !== 'function') throw new TypeError('value is not iterable');
+    const iteratorObject = nativeApply(iterator, value, []);
+    const result = [];
+    for (;;) {
+      const step = iteratorObject.next();
+      if (step.done) break;
+      result.push(String(step.value));
+    }
+    return result;
   }
 
   function invoke(element, name, args) {
@@ -215,8 +247,22 @@
             callbacks[key] = callback;
           }
           if (callbacks.attributeChangedCallback !== undefined) {
-            const attributes = constructor.observedAttributes;
-            if (attributes !== undefined) observed = arrayFrom(attributes, value => __tbStringCtor(value));
+            observed = toSequence(constructor.observedAttributes);
+          }
+          // Read in the order the define algorithm does: observedAttributes,
+          // disabledFeatures, formAssociated, then the four form callbacks when
+          // the element is form-associated (`CustomElementRegistry.html`).
+          toSequence(constructor.disabledFeatures);
+          const formAssociated = Boolean(constructor.formAssociated);
+          if (formAssociated) {
+            for (let index = 0; index < formCallbackNames.length; ++index) {
+              const key = formCallbackNames[index];
+              const callback = prototype[key];
+              if (callback !== undefined && typeof callback !== 'function') {
+                throw new TypeError('custom element callback must be callable');
+              }
+              callbacks[key] = callback;
+            }
           }
         } finally {
           definitionRunning = false;
