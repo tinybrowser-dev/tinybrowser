@@ -57,6 +57,21 @@ declaration block and reports `""` for those longhands, so
 serialization" fails once the element is asked for a `font-variant-*` value
 (`docs/upstream.md`).
 
+## CSS legacy page and alignment properties
+
+`page-break-before`, `page-break-after`, `page-break-inside`, `orphans`,
+`widows`, `alignment-baseline`, and the deprecated `outline-color: invert`
+keyword are not in the style crate's property tables. A declaration naming one
+is a parse error, so `element.style.setProperty("orphans", "2")` leaves the
+block empty and the read serializes as `""`; a browser without the property
+would do the same. The previous inline-style shim echoed the attribute text and
+reported these values, which hid the gap. With the declaration block as the
+source of truth, 24 subtests of `css/cssom/serialize-values.html` read `""`
+where the reference browser reads the value. The modern
+`break-before`/`break-after`/`break-inside` longhands are supported and
+`CSS.supports("orphans", "2")` correctly answers false. Accepted engine gap:
+teach the style crate those properties or leave them out (`docs/upstream.md`).
+
 ## Missing surfaces
 
 Dedicated workers run on their own OS thread with their own `QuickJS`

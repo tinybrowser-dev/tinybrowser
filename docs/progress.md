@@ -1359,3 +1359,13 @@ against Chromium 157.
 A rule's declaration block (`cssRules[i].style`) still has no property IDL
 attributes, and `for...in` over a declaration block enumerates only its
 indexed entries (`docs/limitations.md`).
+
+The 24 `css/cssom/serialize-values.html` subtests that the inline-style rewrite
+lost are settled as an accepted engine gap. The style crate has no
+`page-break-*`, `orphans`, `widows`, `alignment-baseline`, or
+`outline-color: invert` property, so a declaration naming one is a parse error
+and the block serializes the empty string. The pre-`715bfd17` shim passed those
+subtests by echoing the attribute text, which hid the gap rather than modelling
+it; a browser that lacked the properties would report `""` too. Recorded in
+`docs/limitations.md`; teaching the style crate the properties belongs
+upstream.
