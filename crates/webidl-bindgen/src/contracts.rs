@@ -1880,16 +1880,18 @@ fn lower_reflected_enumerated_attribute(
     entry: &crate::ReflectedEnum,
     implemented: &BTreeMap<String, Method>,
 ) -> Result<(model::Attribute, TokenStream), Error> {
-    let is_dom_string = matches!(
-        &member.type_.type_,
-        Type::Single(SingleType::NonAny(NonAnyType::DOMString(item))) if item.q_mark.is_none()
-    );
-    if !is_dom_string {
-        return Err(Error(format!(
-            "{}: a reflected enumerated attribute must be DOMString",
-            member.identifier.0
-        )));
-    }
+    // A nullable `DOMString?` reports the spec's "no state" as `null`; a plain
+    // `DOMString` reports it as the empty string. Both are enumerated
+    // reflection shapes.
+    let nullable = match &member.type_.type_ {
+        Type::Single(SingleType::NonAny(NonAnyType::DOMString(item))) => item.q_mark.is_some(),
+        _ => {
+            return Err(Error(format!(
+                "{}: a reflected enumerated attribute must be DOMString",
+                member.identifier.0
+            )));
+        }
+    };
     validate_attribute_attributes(member.attributes.as_ref())?;
     validate_argument_attributes(member.type_.attributes.as_ref())?;
     let getter_name = format!("get_{}", snake_case(member.identifier.0));
@@ -1941,7 +1943,11 @@ fn lower_reflected_enumerated_attribute(
         exposure,
         name: member.identifier.0.into(),
         rust: getter,
-        return_type: ReturnType::String,
+        return_type: if nullable {
+            ReturnType::NullableString
+        } else {
+            ReturnType::String
+        },
         mapping: GetterMapping::ReflectEnumerated {
             content: entry.content.clone(),
             type_path,

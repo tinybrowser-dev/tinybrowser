@@ -807,6 +807,52 @@ fn optional_default(path: Option<&syn::Path>) -> TokenStream {
     }
 }
 
+/// A reflected-enumerated getter: map the content attribute through the
+/// keyword type and the two defaults.
+///
+/// A nullable `DOMString?` member reports the spec's "no state" as `null`; a
+/// plain `DOMString` reports it as the empty string
+/// (<https://w3c.github.io/aria/#enumerated-attribute-values-html>).
+fn reflected_enumerated_getter(
+    getter: &Attribute,
+    content: &str,
+    type_path: &syn::Path,
+    missing: &TokenStream,
+    invalid: &TokenStream,
+) -> TokenStream {
+    if matches!(getter.return_type, ReturnType::NullableString) {
+        quote! {
+            host::ret_nullable(
+                host::reflect_enumerated_attribute_nullable::<#type_path>(
+                    &ctx,
+                    receiver.node_id(),
+                    #content,
+                    crate::js::bindings::enumerated::Defaults {
+                        missing: #missing,
+                        invalid: #invalid,
+                    },
+                )?,
+                &ctx,
+            )
+        }
+    } else {
+        quote! {
+            host::ret(
+                host::reflect_enumerated_attribute::<#type_path>(
+                    &ctx,
+                    receiver.node_id(),
+                    #content,
+                    crate::js::bindings::enumerated::Defaults {
+                        missing: #missing,
+                        invalid: #invalid,
+                    },
+                )?,
+                &ctx,
+            )
+        }
+    }
+}
+
 fn getter_dispatch(getter: &Attribute, interface: &Interface) -> TokenStream {
     let method = &getter.rust;
     // Operation dispatch always hands over an owned `Ctx`; attributes borrow it.
@@ -843,24 +889,13 @@ fn getter_dispatch(getter: &Attribute, interface: &Interface) -> TokenStream {
             type_path,
             missing,
             invalid,
-        } => {
-            let missing = optional_default(missing.as_ref());
-            let invalid = optional_default(invalid.as_ref());
-            quote! {
-                host::ret(
-                    host::reflect_enumerated_attribute::<#type_path>(
-                        &ctx,
-                        receiver.node_id(),
-                        #content,
-                        crate::js::bindings::enumerated::Defaults {
-                            missing: #missing,
-                            invalid: #invalid,
-                        },
-                    )?,
-                    &ctx,
-                )
-            }
-        }
+        } => reflected_enumerated_getter(
+            getter,
+            content,
+            type_path,
+            &optional_default(missing.as_ref()),
+            &optional_default(invalid.as_ref()),
+        ),
         GetterMapping::Method => match getter.return_type {
             ReturnType::String
             | ReturnType::Boolean
@@ -1000,6 +1035,10 @@ fn reflect_setter(attribute: &Attribute, content: &str) -> TokenStream {
         ReturnType::String => {
             quote! { host::string_argument(params, 0, None)? }
         }
+        // A nullable reflected string removes the content attribute on null.
+        ReturnType::NullableString => {
+            quote! { host::nullable_string_argument(params, 0)? }
+        }
         // https://webidl.spec.whatwg.org/#es-USVString
         ReturnType::UsvString => {
             quote! { host::usv_string_argument(params, 0)? }
@@ -1021,6 +1060,9 @@ fn reflect_setter(attribute: &Attribute, content: &str) -> TokenStream {
     let write = match attribute.return_type {
         ReturnType::String | ReturnType::UsvString => quote! {
             host::reflect_set_string(&ctx, receiver.node_id(), #content, &value)?;
+        },
+        ReturnType::NullableString => quote! {
+            host::reflect_set_nullable_string(&ctx, receiver.node_id(), #content, value)?;
         },
         ReturnType::Boolean => quote! {
             host::reflect_set_bool(&ctx, receiver.node_id(), #content, value)?;

@@ -743,16 +743,6 @@ impl<'js> aria_mixin_generated::ARIAMixin<'js> for JsNode {
         aria_set(ctx, self.handle.get().0, "role", value)
     }
 
-    // https://w3c.github.io/aria/#aria-atomic
-    fn get_aria_atomic(&self, ctx: &Ctx<'js>) -> Result<Option<rquickjs::String<'js>>> {
-        aria_get(ctx, self.handle.get().0, "aria-atomic")
-    }
-
-    // https://w3c.github.io/aria/#aria-atomic
-    fn set_aria_atomic(&self, ctx: &Ctx<'js>, value: Option<rquickjs::String<'js>>) -> Result<()> {
-        aria_set(ctx, self.handle.get().0, "aria-atomic", value)
-    }
-
     // https://w3c.github.io/aria/#aria-autocomplete
     fn get_aria_auto_complete(&self, ctx: &Ctx<'js>) -> Result<Option<rquickjs::String<'js>>> {
         aria_get(ctx, self.handle.get().0, "aria-autocomplete")
@@ -811,16 +801,6 @@ impl<'js> aria_mixin_generated::ARIAMixin<'js> for JsNode {
     // https://w3c.github.io/aria/#aria-busy
     fn set_aria_busy(&self, ctx: &Ctx<'js>, value: Option<rquickjs::String<'js>>) -> Result<()> {
         aria_set(ctx, self.handle.get().0, "aria-busy", value)
-    }
-
-    // https://w3c.github.io/aria/#aria-checked
-    fn get_aria_checked(&self, ctx: &Ctx<'js>) -> Result<Option<rquickjs::String<'js>>> {
-        aria_get(ctx, self.handle.get().0, "aria-checked")
-    }
-
-    // https://w3c.github.io/aria/#aria-checked
-    fn set_aria_checked(&self, ctx: &Ctx<'js>, value: Option<rquickjs::String<'js>>) -> Result<()> {
-        aria_set(ctx, self.handle.get().0, "aria-checked", value)
     }
 
     // https://w3c.github.io/aria/#aria-colcount
@@ -915,34 +895,6 @@ impl<'js> aria_mixin_generated::ARIAMixin<'js> for JsNode {
         value: Option<rquickjs::String<'js>>,
     ) -> Result<()> {
         aria_set(ctx, self.handle.get().0, "aria-disabled", value)
-    }
-
-    // https://w3c.github.io/aria/#aria-expanded
-    fn get_aria_expanded(&self, ctx: &Ctx<'js>) -> Result<Option<rquickjs::String<'js>>> {
-        aria_get(ctx, self.handle.get().0, "aria-expanded")
-    }
-
-    // https://w3c.github.io/aria/#aria-expanded
-    fn set_aria_expanded(
-        &self,
-        ctx: &Ctx<'js>,
-        value: Option<rquickjs::String<'js>>,
-    ) -> Result<()> {
-        aria_set(ctx, self.handle.get().0, "aria-expanded", value)
-    }
-
-    // https://w3c.github.io/aria/#aria-haspopup
-    fn get_aria_has_popup(&self, ctx: &Ctx<'js>) -> Result<Option<rquickjs::String<'js>>> {
-        aria_get(ctx, self.handle.get().0, "aria-haspopup")
-    }
-
-    // https://w3c.github.io/aria/#aria-haspopup
-    fn set_aria_has_popup(
-        &self,
-        ctx: &Ctx<'js>,
-        value: Option<rquickjs::String<'js>>,
-    ) -> Result<()> {
-        aria_set(ctx, self.handle.get().0, "aria-haspopup", value)
     }
 
     // https://w3c.github.io/aria/#aria-hidden
@@ -1047,20 +999,6 @@ impl<'js> aria_mixin_generated::ARIAMixin<'js> for JsNode {
         aria_set(ctx, self.handle.get().0, "aria-multiselectable", value)
     }
 
-    // https://w3c.github.io/aria/#aria-orientation
-    fn get_aria_orientation(&self, ctx: &Ctx<'js>) -> Result<Option<rquickjs::String<'js>>> {
-        aria_get(ctx, self.handle.get().0, "aria-orientation")
-    }
-
-    // https://w3c.github.io/aria/#aria-orientation
-    fn set_aria_orientation(
-        &self,
-        ctx: &Ctx<'js>,
-        value: Option<rquickjs::String<'js>>,
-    ) -> Result<()> {
-        aria_set(ctx, self.handle.get().0, "aria-orientation", value)
-    }
-
     // https://w3c.github.io/aria/#aria-placeholder
     fn get_aria_placeholder(&self, ctx: &Ctx<'js>) -> Result<Option<rquickjs::String<'js>>> {
         aria_get(ctx, self.handle.get().0, "aria-placeholder")
@@ -1087,16 +1025,6 @@ impl<'js> aria_mixin_generated::ARIAMixin<'js> for JsNode {
         value: Option<rquickjs::String<'js>>,
     ) -> Result<()> {
         aria_set(ctx, self.handle.get().0, "aria-posinset", value)
-    }
-
-    // https://w3c.github.io/aria/#aria-pressed
-    fn get_aria_pressed(&self, ctx: &Ctx<'js>) -> Result<Option<rquickjs::String<'js>>> {
-        aria_get(ctx, self.handle.get().0, "aria-pressed")
-    }
-
-    // https://w3c.github.io/aria/#aria-pressed
-    fn set_aria_pressed(&self, ctx: &Ctx<'js>, value: Option<rquickjs::String<'js>>) -> Result<()> {
-        aria_set(ctx, self.handle.get().0, "aria-pressed", value)
     }
 
     // https://w3c.github.io/aria/#aria-readonly
@@ -1209,20 +1137,6 @@ impl<'js> aria_mixin_generated::ARIAMixin<'js> for JsNode {
         value: Option<rquickjs::String<'js>>,
     ) -> Result<()> {
         aria_set(ctx, self.handle.get().0, "aria-rowspan", value)
-    }
-
-    // https://w3c.github.io/aria/#aria-selected
-    fn get_aria_selected(&self, ctx: &Ctx<'js>) -> Result<Option<rquickjs::String<'js>>> {
-        aria_get(ctx, self.handle.get().0, "aria-selected")
-    }
-
-    // https://w3c.github.io/aria/#aria-selected
-    fn set_aria_selected(
-        &self,
-        ctx: &Ctx<'js>,
-        value: Option<rquickjs::String<'js>>,
-    ) -> Result<()> {
-        aria_set(ctx, self.handle.get().0, "aria-selected", value)
     }
 
     // https://w3c.github.io/aria/#aria-setsize

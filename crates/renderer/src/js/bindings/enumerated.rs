@@ -40,6 +40,10 @@ impl<T> Defaults<T> {
 /// Enumerated reflection: the canonical keyword, the missing-value default
 /// when the attribute is absent, or the invalid-value default when it names no
 /// keyword.
+///
+/// A state with no keyword reports the empty string, which is the HTML rule
+/// for a `DOMString` IDL attribute
+/// (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#limited-to-only-known-values>).
 pub(crate) fn reflect_enumerated<T: Enumerated>(
     raw: Option<&str>,
     defaults: Defaults<T>,
@@ -50,6 +54,19 @@ pub(crate) fn reflect_enumerated<T: Enumerated>(
     T::parse(raw)
         .or(defaults.invalid)
         .map_or("", |value| value.keyword())
+}
+
+/// Enumerated reflection for a nullable `DOMString?` IDL attribute: a state
+/// with no keyword is `null` rather than the empty string
+/// (<https://w3c.github.io/aria/#enumerated-attribute-values-html>).
+pub(crate) fn reflect_enumerated_nullable<T: Enumerated>(
+    raw: Option<&str>,
+    defaults: Defaults<T>,
+) -> Option<&'static str> {
+    let Some(raw) = raw else {
+        return defaults.missing.map(Enumerated::keyword);
+    };
+    T::parse(raw).or(defaults.invalid).map(Enumerated::keyword)
 }
 
 enumerated! {
@@ -247,9 +264,59 @@ enumerated! {
     }
 }
 
+// ── ARIA enumerated attributes ───────────────────────────────────────────
+//
+// ARIA 1.3 reflects an enumerated `aria-*` attribute as a nullable string with
+// a missing-value default and an invalid-value default, either of which may be
+// the Undefined state (null)
+// (<https://w3c.github.io/aria/#enumerated-attribute-values-html>). Each
+// keyword set is one type; the two defaults are per attribute and live in
+// `reflected-enumerated.txt`.
+
+enumerated! {
+    /// The boolean-like `true`/`false` value of an ARIA state.
+    pub(crate) AriaTrueFalse {
+        True => "true",
+        False => "false",
+    }
+}
+
+enumerated! {
+    /// The tristate `true`/`false`/`mixed` value of `aria-checked` and
+    /// `aria-pressed`.
+    pub(crate) AriaTristate {
+        True => "true",
+        False => "false",
+        Mixed => "mixed",
+    }
+}
+
+enumerated! {
+    /// The `aria-haspopup` value.
+    pub(crate) AriaHasPopup {
+        True => "true",
+        False => "false",
+        Menu => "menu",
+        Dialog => "dialog",
+        Listbox => "listbox",
+        Tree => "tree",
+        Grid => "grid",
+    }
+}
+
+enumerated! {
+    /// The `aria-orientation` value.
+    pub(crate) AriaOrientation {
+        Horizontal => "horizontal",
+        Vertical => "vertical",
+    }
+}
+
 #[cfg(test)]
 mod reflection_tests {
-    use super::{Defaults, TrackKind, reflect_enumerated};
+    use super::{
+        AriaTrueFalse, Defaults, TrackKind, reflect_enumerated, reflect_enumerated_nullable,
+    };
 
     /// The four answers a getter can give, from the spec's missing-value and
     /// invalid-value defaults
@@ -284,6 +351,39 @@ mod reflection_tests {
             reflect_enumerated::<TrackKind>(Some("bogus"), Defaults::NONE),
             "",
             "no invalid-value default reads the empty string"
+        );
+    }
+
+    /// A nullable enumerated getter reports the Undefined state as `null`, and
+    /// still maps a present value through the keyword set and the
+    /// invalid-value default
+    /// (<https://w3c.github.io/aria/#enumerated-attribute-values-html>).
+    #[test]
+    fn nullable_reflection_reports_the_undefined_state_as_null() {
+        let atomic = Defaults {
+            missing: None,
+            invalid: Some(AriaTrueFalse::False),
+        };
+        assert_eq!(
+            reflect_enumerated_nullable::<AriaTrueFalse>(None, atomic),
+            None,
+            "a removed `aria-atomic` is the Undefined state"
+        );
+        assert_eq!(
+            reflect_enumerated_nullable::<AriaTrueFalse>(Some("TRUE"), atomic),
+            Some("true"),
+            "a keyword matches ASCII case-insensitively and reads canonically"
+        );
+        assert_eq!(
+            reflect_enumerated_nullable::<AriaTrueFalse>(Some("bogus"), atomic),
+            Some("false"),
+            "an invalid value reads the invalid-value default"
+        );
+        let pressed = Defaults::<AriaTrueFalse>::NONE;
+        assert_eq!(
+            reflect_enumerated_nullable::<AriaTrueFalse>(Some("bogus"), pressed),
+            None,
+            "no invalid-value default is the Undefined state"
         );
     }
 }

@@ -1762,3 +1762,26 @@ throws surfaces its own error (`crates/renderer/src/js/scripts/web/custom_elemen
 Evidence: `custom-elements` 2355 to **2383 subtests**, no lost subtests.
 `CustomElementRegistry.html` 32 to 44 of 46, `registries/define.html` 56 to 64
 of 70.
+
+Seven enumerated ARIA state attributes now reflect their keyword sets:
+`aria-atomic`, `aria-checked`, `aria-expanded`, `aria-haspopup`,
+`aria-orientation`, `aria-pressed`, and `aria-selected`
+(`crates/renderer/src/js/bindings/reflected-enumerated.txt`). The generator's
+reflected-enumerated path learned the nullable shape: a `DOMString?` member
+reports the Undefined state as `null` and its setter removes the content
+attribute on `null`, while a plain `DOMString` keeps the empty-string answer.
+The getter maps the content value through the keyword set, returns the
+canonical keyword for an ASCII case-insensitive match, and the invalid-value
+default otherwise (`false` for `aria-atomic` and `aria-haspopup`).
+
+Evidence: `html/dom` 63984 to **64380 subtests**, no lost subtests.
+`aria-attribute-reflection-enumerated.tentative.html` 601 to 997 of 1761;
+`aria-attribute-reflection.html` stays at 41 of 41.
+
+The other thirteen enumerated ARIA attributes keep transparent reflection:
+their proposed missing-value default is a keyword (`false`, `none`, `off`),
+which contradicts the published ARIA 1.3 algorithm and the stable
+`aria-attribute-reflection.html` (a removed attribute reads `null`). The
+tentative test and the stable test describe the same DOM state with different
+expected answers, so the conflict is recorded in `docs/limitations.md` and the
+published behaviour wins until the ARIA change ships.

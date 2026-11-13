@@ -251,6 +251,34 @@ What remains:
 - Scoped registries are not implemented (`registries/*`).
 
 
+
+## ARIA reflection
+
+Seven enumerated ARIA state attributes use the reflected-enumerated table:
+`aria-atomic`, `aria-checked`, `aria-expanded`, `aria-haspopup`,
+`aria-orientation`, `aria-pressed`, and `aria-selected`
+(`crates/renderer/src/js/bindings/reflected-enumerated.txt`). Their getters map
+the content value through its keyword set, apply the invalid-value default
+when the value names no keyword (`false` for `aria-atomic` and
+`aria-haspopup`), and report the Undefined state as `null` because the IDL
+member is `DOMString?`
+(<https://w3c.github.io/aria/#enumerated-attribute-values-html>).
+
+The other thirteen enumerated ARIA attributes (`aria-autocomplete`,
+`aria-busy`, `aria-current`, `aria-disabled`, `aria-hidden`, `aria-invalid`,
+`aria-live`, `aria-modal`, `aria-multiline`, `aria-multiselectable`,
+`aria-readonly`, `aria-required`, `aria-sort`) keep transparent nullable-string
+reflection. Their proposed missing-value default is a keyword (`false`,
+`none`, `off`), and that conflicts with the published ARIA 1.3 algorithm:
+`aria-attribute-reflection.html` (and the published text) require a removed
+attribute to read `null`, while
+`aria-attribute-reflection-enumerated.tentative.html` (tracking
+<https://github.com/w3c/aria/pull/2484>) requires a never-set attribute to
+read its missing-value default. Both tests describe the same DOM state, so no
+implementation can satisfy both; the stable test follows the published spec and
+stays green until the ARIA change ships. The tentative test's failing subtests
+are therefore the two per attribute that read a removed attribute.
+
 ## Element offset metrics
 
 `offsetParent`, `offsetLeft`, `offsetTop`, `offsetWidth`, and `offsetHeight`

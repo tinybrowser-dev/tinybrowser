@@ -9,6 +9,9 @@
 # defaults, so those three facts live here instead of in a hand-written getter
 # in `node/*.rs`.
 #
+# The IDL member's own nullability picks the JS shape of the "no state"
+# answer: `DOMString` reads `""`, `DOMString?` reads `null`.
+#
 # Reasoning for the defaults, from the specs:
 # - `dir`, `enterKeyHint`, `inputMode`, `referrerPolicy`, `scope`, `as`: the
 #   missing and invalid states both report the empty string.
@@ -43,3 +46,20 @@ HTMLTrackElement kind TrackKind kind Subtitles Metadata
 HTMLTableCellElement scope TableScope scope - -
 HTMLMediaElement preload Preload preload Auto Auto
 HTMLMediaElement loading Loading loading Eager Eager
+
+# ARIA 1.3 enumerated state attributes whose missing-value default is the
+# Undefined state (<https://w3c.github.io/aria/#enumerated-attribute-values-html>).
+# A nullable `DOMString?` getter reports the Undefined state as null, so these
+# keep the published ARIA algorithm's `null` for a removed attribute and agree
+# with `aria-attribute-reflection.html`.
+#
+# `aria-atomic` and `aria-haspopup` have a *missing*-value default of False,
+# but their *invalid*-value default is also False, and the published spec
+# reports a removed attribute as null, so `-` is their missing default.
+ARIAMixin ariaAtomic AriaTrueFalse aria-atomic - False
+ARIAMixin ariaChecked AriaTristate aria-checked - -
+ARIAMixin ariaExpanded AriaTrueFalse aria-expanded - -
+ARIAMixin ariaHasPopup AriaHasPopup aria-haspopup - False
+ARIAMixin ariaOrientation AriaOrientation aria-orientation - -
+ARIAMixin ariaPressed AriaTristate aria-pressed - -
+ARIAMixin ariaSelected AriaTrueFalse aria-selected - -
