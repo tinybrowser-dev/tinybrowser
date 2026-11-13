@@ -127,6 +127,11 @@ enum Task {
     /// violation was reported still sees it
     /// (<https://w3c.github.io/webappsec-csp/#report-violation>).
     CspViolation(Vec<crate::csp::Violation>),
+    /// One queued `select` dispatch for a text control whose selection
+    /// changed. The spec queues an element task on the user interaction task
+    /// source, so the event never fires inside the assignment
+    /// (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#set-the-selection-range>).
+    SelectionChanged(crate::dom::tree::NodeId),
 }
 
 /// Why a realm is being replaced.
@@ -1966,6 +1971,13 @@ impl Document {
     /// `Worker` object.
     pub(crate) fn push_worker_load_failed(&mut self, worker: crate::worker::WorkerId) {
         self.tasks.push_back(Task::WorkerLoadFailed(worker));
+    }
+
+    /// Queues the `select` event of a changed text selection as an element
+    /// task
+    /// (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#set-the-selection-range>).
+    pub(crate) fn push_selection_changed(&mut self, id: crate::dom::tree::NodeId) {
+        self.tasks.push_back(Task::SelectionChanged(id));
     }
 
     /// Queues `securitypolicyviolation` events a worker's policy raised,

@@ -468,6 +468,13 @@ pub(crate) fn fire_node_error(ctx: &Ctx<'_>, id: NodeId) -> Result<()> {
     events::fire_trusted(ctx, EventTargetKey::Node(id), "error", false, false)
 }
 
+/// Fires the asynchronous `select` event of a text control whose selection
+/// changed. The event bubbles and is not cancelable
+/// (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#set-the-selection-range>).
+pub(crate) fn fire_selection_changed(ctx: &Ctx<'_>, id: NodeId) -> Result<()> {
+    events::fire_trusted(ctx, EventTargetKey::Node(id), "select", true, false)
+}
+
 /// Dispatches one trusted `securitypolicyviolation` event per blocked policy
 /// at `target` (<https://w3c.github.io/webappsec-csp/#report-violation>).
 pub(crate) fn fire_csp_violations(

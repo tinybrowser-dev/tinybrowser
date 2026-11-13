@@ -1152,6 +1152,20 @@ impl JsRealm {
         })
     }
 
+    /// Fires the queued `select` event of a changed text selection
+    /// (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#set-the-selection-range>).
+    pub(crate) fn fire_selection_changed(
+        &self,
+        id: crate::dom::tree::NodeId,
+    ) -> Result<(), JsError> {
+        self.with_budget(None, MicrotaskCheckpoint::Perform, || {
+            self.context.with(|ctx| {
+                bindings::fire_selection_changed(&ctx, id)?;
+                Ok(())
+            })
+        })
+    }
+
     /// Dispatches one trusted `securitypolicyviolation` event per violation.
     pub(crate) fn fire_csp_violations(
         &self,

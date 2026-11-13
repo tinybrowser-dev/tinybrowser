@@ -500,15 +500,15 @@
 
   // "Set the selection range" algorithm
   // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#set-the-selection-range>).
-  // `direction` is optional; a missing or unknown value means "none".
+  // The host owns the stored selection, its clamping, and the `select` task a
+  // change queues, so the shim only converts the arguments. `direction` is
+  // optional; a missing or unknown value means "none".
   const applySelection = (element, start, end, direction) => {
-    const length = element.value.length;
-    let rangeStart = Math.min(toUnsignedLong(start), length);
-    let rangeEnd = Math.min(toUnsignedLong(end), length);
-    if (rangeEnd <= rangeStart) rangeStart = rangeEnd;
-    element.selectionStart = rangeStart;
-    element.selectionEnd = rangeEnd;
-    element.selectionDirection = direction === undefined ? 'none' : DIRECTION(direction);
+    host.__tbSetSelectionRange(
+      element,
+      toUnsignedLong(start),
+      toUnsignedLong(end),
+      direction === undefined ? undefined : DIRECTION(direction));
   };
 
   const requireSelection = element => {

@@ -298,6 +298,10 @@ impl Document {
                 self.adopt_js_work();
             }
             Task::CspViolation(violations) => self.deliver_csp_violations(&violations),
+            Task::SelectionChanged(node) => {
+                self.fire_js(|js| js.fire_selection_changed(node));
+                self.adopt_js_work();
+            }
         }
     }
 
@@ -400,6 +404,7 @@ impl Document {
                 // (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#traverse-the-history-by-a-delta>).
                 self.frame_traversals.push(delta);
             }
+            RealmRequest::SelectionChanged(node) => self.push_selection_changed(node),
             RealmRequest::CspViolation(Some(target), violations) => {
                 self.fire_csp_violations(target, &violations);
             }

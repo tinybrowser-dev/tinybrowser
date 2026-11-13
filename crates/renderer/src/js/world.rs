@@ -1550,6 +1550,11 @@ pub(crate) enum RealmRequest {
     /// realm's own turn
     /// (<https://cookiestore.spec.whatwg.org/#process-cookie-changes>).
     CookieChanges,
+    /// A text control's selection changed extent or direction. The spec queues
+    /// an element task to fire `select`, so the event never runs inside the
+    /// assignment that changed the selection
+    /// (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#set-the-selection-range>).
+    SelectionChanged(NodeId),
     /// One policy's violations, queued because the check ran where no event
     /// can be dispatched directly. `Some` names the node the event belongs
     /// to; `None` means the realm has no document — a worker — and the
@@ -3258,6 +3263,14 @@ impl World {
         self.outbox
             .borrow_mut()
             .push_back(RealmRequest::DeclarativeRefresh(value));
+    }
+
+    /// Queues the `select` event of a selection change as an element task
+    /// (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#set-the-selection-range>).
+    pub(crate) fn queue_selection_changed(&mut self, id: NodeId) {
+        self.outbox
+            .borrow_mut()
+            .push_back(RealmRequest::SelectionChanged(id));
     }
 
     /// Queues violations for targets the caller cannot dispatch into (the

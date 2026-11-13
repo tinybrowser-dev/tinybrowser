@@ -1250,3 +1250,38 @@ from 4 of 5 to **5 of 5**, and `dom/events` from 426 to **475 of 582**.
 `referrer-policy` (8020) lose no subtest. `cargo fmt --check`,
 `tools/check clippy`, and the renderer (172), wpt-harness (48), cookies (26),
 browser (69+4), net (52) and dial (29+3) unit tests pass.
+
+`html/semantics/forms` had the text selection APIs but never fired their
+`select` event. The setters stored a selection silently, so
+`textfieldselection/selection-start-end.html` timed out waiting for a
+`select` after `selectionStart` changed, and
+`textfieldselection/select-event.html` never got past its first subtest:
+`select()` changed the selection but dispatched nothing, a promise test waited
+forever, and the harness reported all 270 subtests as a timeout.
+
+The "set the selection range" algorithm is now one host operation
+(`https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#set-the-selection-range`).
+It clamps both edges to the relevant value, collapses `end` at or before
+`start` to a caret at `end`, normalizes an unknown direction to `none`, and
+queues the `select` event only when the extent or direction actually changed,
+which is why a second `select()` on an already selected control fires nothing.
+The event is queued through the realm outbox as a document task, so it runs
+after the assignment returns; `isTrusted` is true, `bubbles` is true, and
+`cancelable` is false. The JavaScript shim's `select()`, `setSelectionRange()`
+and `setRangeText()` all call the same host operation, so a call cannot fire
+one event per property write.
+
+Evidence, subtest diffs against saved baselines of the committed tree with no
+subtest lost: `html/semantics/forms` goes from 4198 to **4512 of 4768**.
+`textfieldselection/select-event.html` goes from 0 to **270 of 270**,
+`textfieldselection/textfieldselection-setRangeText.html` from 65 to
+**88 of 88**, `textfieldselection/selection-start-end.html` from 27 to
+**45 of 45**, and `textfieldselection/textfieldselection-setSelectionRange.html`
+stays 49 of 49. `dom/events`, `html/webappapis`, `webmessaging`, `html/dom`,
+`html/browsers`, `dom/nodes`, `domparsing`, `workers`, `css/selectors`,
+`css/cssom`, `css/cssom-view`, `fetch/api`, `xhr`, `cookies`, `cookiestore` and
+`referrer-policy` lose no subtest; `xhr/formdata/constructor-submitter.html`
+times out in an isolated run of the committed tree too, so its drop from a
+batch run is the existing hang. `cargo fmt --check`, `tools/check clippy`, and
+the renderer (172), wpt-harness (48), cookies (26), browser (69+4), net (52)
+and dial (29+3) unit tests pass.

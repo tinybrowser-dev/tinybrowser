@@ -211,7 +211,16 @@ step 3 of the append algorithm does not exempt that case, and Chrome and
 Firefox fail the same two subtests. WPT `fetch/api/cors/` covers the
 surface.
 
-## DOM events
+## Text selection
+
+The `select` event is queued correctly, but two selection behaviours still
+differ from a browser. A non-dirty `textarea` whose child text changes keeps
+its stored selection instead of resetting it, so
+`textfieldselection/selection-start-end-extra.html` fails "Removing child nodes
+in non-dirty textarea should make selection{Start,End} 0". And per-element
+scroll offsets do not exist yet (Blitz exposes only the viewport scroll), so
+`selection.html` fails its `scrollLeft` preservation subtest for an `input`.
+
 
 `AnimationEvent` and `TransitionEvent` are constructible and every animation
 and transition handler attribute exists, but the engine has no animation

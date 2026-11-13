@@ -1583,6 +1583,10 @@ impl Worker {
             | RealmRequest::HistoryTraverse { .. }
             | RealmRequest::FragmentNavigation { .. }
             | RealmRequest::CookieChanges
+            // A worker global has no text control, so no selection can change
+            // there; a request cannot arise
+            // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#textFieldSelection>).
+            | RealmRequest::SelectionChanged(_)
             | RealmRequest::WorkerBlocked(_, _)
             | RealmRequest::DeclarativeRefresh(_)
             | RealmRequest::HtmlWrite(_)
