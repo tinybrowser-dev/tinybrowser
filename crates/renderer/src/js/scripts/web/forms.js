@@ -1808,24 +1808,8 @@
     return collectionOf(matches, RadioNodeListInterface.prototype, true);
   };
 
-  // `document.forms`: every form in tree order, with named access by `name` or
-  // `id` (<https://html.spec.whatwg.org/multipage/obsolete.html#dom-document-forms>).
-  const formsCache = host.slots();
-  Object.defineProperty(globalThis.Document.prototype, 'forms', {
-    get() {
-      let forms = formsCache.get(this);
-      if (forms === undefined) {
-        forms = collectionOf(
-          () => Array.from(this.querySelectorAll('form')),
-          HTMLCollectionInterface.prototype,
-          false,
-        );
-        formsCache.set(this, forms);
-      }
-      return forms;
-    },
-    configurable: true,
-  });
+  // `document.forms` is a generated `[SameObject] HTMLCollection` member
+  // (<https://html.spec.whatwg.org/multipage/obsolete.html#dom-document-forms>).
 
   const elementsCache = host.slots();
   Object.defineProperties(globalThis.HTMLFormElement.prototype, {

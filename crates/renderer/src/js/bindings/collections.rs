@@ -44,6 +44,12 @@ pub(crate) enum CollectionKind {
     /// `Document.links`: HTML `a`/`area` descendants with an `href`
     /// (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-links>).
     HtmlLinks,
+    /// `Document.images`: HTML `img` descendants of the document element
+    /// (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-images>).
+    HtmlImages,
+    /// `Document.forms`: HTML `form` descendants of the document element
+    /// (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-forms>).
+    HtmlForms,
     /// `table.tBodies`: HTML `tbody` children of the table
     /// (<https://html.spec.whatwg.org/multipage/tables.html#dom-table-tbodies>).
     TableBodies,
@@ -94,6 +100,8 @@ impl CollectionQuery {
             | CollectionKind::WindowNamed(_)
             | CollectionKind::HtmlScripts
             | CollectionKind::HtmlLinks
+            | CollectionKind::HtmlImages
+            | CollectionKind::HtmlForms
             | CollectionKind::TableBodies
             | CollectionKind::TableRows
             | CollectionKind::TableSectionRows
@@ -169,6 +177,12 @@ fn query_ids(ctx: &Ctx<'_>, scope: NodeId, kind: &CollectionKind) -> Result<Vec<
         CollectionKind::WindowNamed(name) => collect_window_named(base, document, scope.node, name),
         CollectionKind::HtmlScripts => collect_html_scripts(&parsed.document, document, scope.node),
         CollectionKind::HtmlLinks => collect_html_links(&parsed.document, document, scope.node),
+        CollectionKind::HtmlImages => {
+            collect_html_descendants(&parsed.document, document, scope.node, "img")
+        }
+        CollectionKind::HtmlForms => {
+            collect_html_descendants(&parsed.document, document, scope.node, "form")
+        }
         CollectionKind::TableBodies => table_bodies(base, document, scope.node),
         CollectionKind::TableRows => table_rows(base, document, scope.node),
         CollectionKind::TableSectionRows => table_section_rows(base, document, scope.node),
@@ -224,6 +238,34 @@ fn collect_html_links(
         let is_link = crate::dom::tree::is_html_element(&doc.base, id, "a")
             || crate::dom::tree::is_html_element(&doc.base, id, "area");
         if is_link && crate::dom::tree::attr(&doc.base, id, "href").is_some() {
+            order.push(NodeId { document, node: id });
+        }
+        if let Some(node) = doc.base.get_node(id) {
+            stack.extend(node.children.iter().rev().copied());
+        }
+    }
+    order
+}
+
+/// HTML elements with local name `local` below `scope`, in tree order.
+///
+/// `Document.images` and `Document.forms` are `HTMLCollection`s rooted at the
+/// `Document` node whose filters match `img` and `form` elements
+/// (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-images>,
+/// <https://html.spec.whatwg.org/multipage/dom.html#dom-document-forms>).
+fn collect_html_descendants(
+    doc: &crate::documents::BlitzDocument,
+    document: u32,
+    scope: BlitzId,
+    local: &str,
+) -> Vec<NodeId> {
+    let mut order = Vec::new();
+    let mut stack: Vec<BlitzId> = doc
+        .base
+        .get_node(scope)
+        .map_or_default(|node| node.children.iter().rev().copied().collect());
+    while let Some(id) = stack.pop() {
+        if crate::dom::tree::is_html_element(&doc.base, id, local) {
             order.push(NodeId { document, node: id });
         }
         if let Some(node) = doc.base.get_node(id) {
@@ -750,6 +792,8 @@ impl<'js> node_list_generated::NodeList<'js> for JsNodeList {
             | CollectionKind::WindowNamed(_)
             | CollectionKind::HtmlScripts
             | CollectionKind::HtmlLinks
+            | CollectionKind::HtmlImages
+            | CollectionKind::HtmlForms
             | CollectionKind::TableBodies
             | CollectionKind::TableRows
             | CollectionKind::TableSectionRows

@@ -500,6 +500,16 @@ impl<'js> document_generated::Document<'js> for JsNode {
     fn get_links(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
         self.get_links(ctx)
     }
+
+    // https://html.spec.whatwg.org/multipage/dom.html#dom-document-images
+    fn get_images(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
+        self.get_images(ctx)
+    }
+
+    // https://html.spec.whatwg.org/multipage/dom.html#dom-document-forms
+    fn get_forms(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
+        self.get_forms(ctx)
+    }
 }
 
 impl<'js> document_fragment_generated::DocumentFragment<'js> for JsNode {
@@ -2367,6 +2377,39 @@ impl JsNode {
         world_rc.borrow_mut().intern_same_object(
             self.handle.get().0,
             SameObject::Links,
+            Persistent::save(ctx, weak),
+        );
+        Ok(value)
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/dom.html#dom-document-images>
+    pub(super) fn get_images<'js>(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
+        self.same_object_collection(ctx, SameObject::Images, CollectionKind::HtmlImages)
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/dom.html#dom-document-forms>
+    pub(super) fn get_forms<'js>(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
+        self.same_object_collection(ctx, SameObject::Forms, CollectionKind::HtmlForms)
+    }
+
+    /// A document's `[SameObject]` live `HTMLCollection` member.
+    fn same_object_collection<'js>(
+        &self,
+        ctx: &Ctx<'js>,
+        slot: SameObject,
+        kind: CollectionKind,
+    ) -> Result<Value<'js>> {
+        let world_rc = world(ctx)?;
+        if let Some(saved) = world_rc.borrow().same_object(self.handle.get().0, slot)
+            && let Some(value) = deref_weak(ctx, saved)?
+        {
+            return Ok(value);
+        }
+        let value = live_collection(ctx, self.handle.get().0, kind, Some("HTMLCollection"))?;
+        let weak = make_weak(ctx, value.clone())?;
+        world_rc.borrow_mut().intern_same_object(
+            self.handle.get().0,
+            slot,
             Persistent::save(ctx, weak),
         );
         Ok(value)

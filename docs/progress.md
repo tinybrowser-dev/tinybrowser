@@ -2049,3 +2049,13 @@ no lost subtests. `Element-matches-disabled-pseudo-class.html` 1/11 to 11/11,
 `has-with-pseudo-class.html` 17/41 to 29/41. All four `option-disabled-*`
 files in `html/semantics/forms/the-select-element/customizable-select` and
 `disabled-nested-legend.html` pass.
+`Document.images` and `Document.forms` are generated `[SameObject]`
+`HTMLCollection` members backed by the live-collection machinery
+(`crates/renderer/src/js/bindings/collections.rs`,
+`crates/renderer/src/js/bindings/node/document.rs`). `document.images` did not
+exist at all, and `document.forms` was a JavaScript shim whose proxy exposed
+`length` in `getOwnPropertyNames` and matched an empty name.
+
+Evidence: `html/dom` 64402 to **64417** subtests, no lost subtests.
+`document.images.html` 0/11 to 11/11 and `document.forms.html` 2/6 to 6/6;
+`document.links.html` and `document.scripts.html` stay green.
