@@ -439,6 +439,34 @@ Rust (its prototype chain is `Window.prototype` → `EventTarget.prototype` →
 realm's own data on the global. Until then the property shape is the
 documented gap, not a fake interface object.
 
+
+## Unsafe HTML setters
+
+`Element.setHTMLUnsafe()` and `ShadowRoot.setHTMLUnsafe()` parse a fragment in
+the target's context and replace its children, and with `runScripts: true`
+they run the fragment's scripts in tree order after the tree is updated
+(`crates/renderer/src/js/bindings/node/element.rs`). `innerHTML` shares the
+parse and insertion path and never runs scripts.
+
+Four things the spec's algorithm asks for are absent:
+
+- Declarative shadow roots. The parser has no `allowDeclarativeShadowRoots`
+  mode, so a `<template shadowrootmode=open>` stays a template and the shadow
+  tree is never attached. `setHTMLUnsafe.html`'s two `with shadowdom` subtests
+  and the two `script inside declarative shadow DOM` subtests depend on it.
+- The `Sanitizer` API. `SetHTMLUnsafeOptions.sanitizer` is not read, so a
+  sanitizer that removes scripts does not stop `runScripts`. A page that
+  passes a sanitizer expecting output filtering gets none.
+- `setHTML()`, the safe variant, does not exist yet, because its default
+  sanitizer configuration cannot be provided without the `Sanitizer` API.
+- A script element created by `Document.parseHTMLUnsafe()` is not marked
+  already started, so appending it into a document runs it. The spec parses
+  into an inert document whose scripts never execute.
+
+`setHTMLUnsafe()` on an XML document parses as HTML: the spec's fragment
+parsing dispatches on the document type, and the engine has one HTML fragment
+path.
+
 ## Missing surfaces
 
 Dedicated workers run on their own OS thread with their own `QuickJS`

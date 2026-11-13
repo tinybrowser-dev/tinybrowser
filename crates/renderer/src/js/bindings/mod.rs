@@ -1004,6 +1004,10 @@ fn install_host_functions(ctx: &Ctx<'_>) -> Result<()> {
         rquickjs::prelude::Func::from(resolved_style),
     )?;
     node::scrolling::install(ctx)?;
+    crate::js::bridge::object(ctx)?.set(
+        "__tbSetHTMLUnsafe",
+        rquickjs::prelude::Func::from(node::element::set_html_unsafe_host),
+    )?;
     parsing::install_xhr_parse(ctx)?;
     parsing::install_document_parse(ctx)?;
     cssom_host::install(ctx)?;

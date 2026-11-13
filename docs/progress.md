@@ -1879,3 +1879,28 @@ Evidence: `html/browsers` 679 to **885 subtests**, no lost subtests.
 SVG/MathML hyperlink origins, another frame's `WindowProxy`, and opaque-origin
 identity across messages from one sandboxed document are recorded in
 `docs/limitations.md`.
+
+`Element.setHTMLUnsafe()` and `ShadowRoot.setHTMLUnsafe()` now exist. They
+parse the markup as a fragment in the target's context, replace its children
+(or a template's contents), and with `runScripts: true` run the fragment's
+scripts in tree order (`crates/renderer/src/js/bindings/node/element.rs`).
+Scripts run before the custom element reactions the method's `[CEReactions]`
+flushes, which is the order `setHTMLUnsafe-runScripts.html` asserts. `innerHTML`
+shares the parse and insertion path through `replace_with_markup` and still
+never runs scripts, so an inline or external script inserted with `innerHTML`
+stays inert.
+
+The interface operations install in JS
+(`crates/renderer/src/js/scripts/web/dom.js`) because their
+`(TrustedHTML or DOMString)` argument and `SetHTMLUnsafeOptions` dictionary are
+unions the WebIDL generator does not lower. The host owns the receiver check
+and the tree work, so a forged object or a non-element receiver throws.
+
+Evidence: `html/webappapis` 2506 to **2529 subtests**, no lost subtests.
+`setHTMLUnsafe-runScripts.html` 0 to 19 of 28, `setHTMLUnsafe.html` 0 to 3 of
+5, and `Element-setHTMLUnsafe-04.html` 0 to 1 of 1. `domparsing` stays at 543
+and `html/dom` at 64390, both with no lost subtests.
+
+Declarative shadow roots, the `Sanitizer` API, `setHTML()`, already-started
+scripts from `parseHTMLUnsafe()`, and XML documents are recorded in
+`docs/limitations.md`.

@@ -223,3 +223,37 @@ globalThis.Image = function Image(width, height) {
 globalThis.Document.parseHTMLUnsafe = function parseHTMLUnsafe(html) {
   return host.__tbParseHTMLDocument(html);
 };
+
+// `setHTMLUnsafe` is a partial-interface operation on `Element` and
+// `ShadowRoot` whose `(TrustedHTML or DOMString)` argument and
+// `SetHTMLUnsafeOptions` dictionary are unions the WebIDL generator does not
+// lower yet, so it installs here. The host owns the receiver check and the
+// insertion; this only runs the conversions
+// (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-element-sethtmlunsafe>).
+{
+  const setHTMLUnsafe = function setHTMLUnsafe(html, options) {
+    const markup = __tbIDLString(html);
+    // A dictionary argument accepts `undefined` and `null` as the empty
+    // dictionary; anything else that is not an object is a TypeError
+    // (<https://webidl.spec.whatwg.org/#es-dictionary>).
+    let runScripts = false;
+    if (options !== undefined && options !== null) {
+      if (typeof options !== 'object' && typeof options !== 'function') {
+        throw new TypeError('setHTMLUnsafe options must be an object');
+      }
+      // `runScripts` defaults to false and converts as a boolean; a sanitizer
+      // is not supported yet, so it is not read (docs/limitations.md)
+      // (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#sethtmlunsafeoptions>).
+      runScripts = options.runScripts === undefined ? false : Boolean(options.runScripts);
+    }
+    return host.__tbSetHTMLUnsafe(this, markup, runScripts);
+  };
+  for (const prototype of [globalThis.Element.prototype, globalThis.ShadowRoot.prototype]) {
+    Object.defineProperty(prototype, 'setHTMLUnsafe', {
+      value: setHTMLUnsafe,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+  }
+}

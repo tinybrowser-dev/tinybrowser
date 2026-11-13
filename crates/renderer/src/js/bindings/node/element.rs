@@ -53,6 +53,153 @@ include!(concat!(env!("OUT_DIR"), "/ElementCSSInlineStyle.rs"));
 include!(concat!(env!("OUT_DIR"), "/ElementContentEditable.rs"));
 include!(concat!(env!("OUT_DIR"), "/HTMLHyperlinkElementUtils.rs"));
 
+/// Run the scripts in newly inserted markup, in tree order, which is
+/// `setHTMLUnsafe(runScripts: true)`: "scripts contained in html will be
+/// executed immediately after the node tree is updated"
+/// (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-element-sethtmlunsafe>).
+/// A script that is not connected to the document, such as one inside template
+/// contents, is skipped by "prepare the script element"
+/// (<https://html.spec.whatwg.org/multipage/scripting.html#prepare-the-script-element>).
+fn run_inserted_scripts(ctx: &Ctx<'_>, roots: &[NodeId]) -> Result<()> {
+    let mut scripts = Vec::new();
+    for root in roots {
+        collect_scripts(ctx, *root, &mut scripts)?;
+    }
+    for script in scripts {
+        super::document::prepare_classic_script(ctx, script)?;
+    }
+    Ok(())
+}
+
+fn collect_scripts(ctx: &Ctx<'_>, id: NodeId, out: &mut Vec<NodeId>) -> Result<()> {
+    let children: Vec<BlitzId> = {
+        let world = world_for_node(ctx, id)?;
+        let world = world.borrow();
+        let Some(parsed) = world.document(id) else {
+            return Ok(());
+        };
+        let base = &parsed.document.base;
+        if crate::dom::tree::is_html_element(base, id.node, "script") {
+            out.push(id);
+        }
+        base.get_node(id.node)
+            .map_or_default(|node| node.children.iter().copied().collect())
+    };
+    for child in children {
+        collect_scripts(
+            ctx,
+            NodeId {
+                document: id.document,
+                node: child,
+            },
+            out,
+        )?;
+    }
+    Ok(())
+}
+
+/// Replace `target`'s children (or its template contents, or a shadow root's
+/// children) with parsed `markup`.
+///
+/// `innerHTML` and `setHTMLUnsafe` share this: both parse a fragment in the
+/// target's context and replace its children, and only `setHTMLUnsafe` runs the
+/// scripts afterwards
+/// (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#fragment-parsing-algorithm-steps>).
+pub(super) fn replace_with_markup(
+    ctx: &Ctx<'_>,
+    target: NodeId,
+    markup: &str,
+    run_scripts: bool,
+) -> Result<()> {
+    // Adoption by copy leaves a stale handle behind; parse into the live
+    // container (https://dom.spec.whatwg.org/#concept-node-adopt).
+    let element = super::super::realm_registry(ctx)?
+        .borrow_mut()
+        .live_node_id(target);
+    // A shadow root's fragment parsing context is its host
+    // (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-shadowroot-innerhtml>).
+    let context = super::document::inner_html_fragment_context(ctx, element)?;
+
+    let snapshots = {
+        let (base_url, font_ctx) = fragment_base_url(ctx, element);
+        parse_html_fragment_snapshots(markup, &context, &base_url, font_ctx)
+    };
+
+    let container = element;
+    // A template's markup lands in its template contents, not its (empty)
+    // children
+    // (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-element-innerhtml>).
+    let container = world_for_node(ctx, container)?
+        .borrow()
+        .document(container)
+        .map_or(container, |parsed| {
+            template_contents_target(&parsed.document, container)
+        });
+    let owner = world_for_node(ctx, container)?;
+    let world = owner.borrow();
+    let Some(mut parsed) = world.document_mut(container) else {
+        return Err(Exception::throw_type(ctx, "no document"));
+    };
+    let replacement = materialize_children(&mut parsed.document, container.document, &snapshots)
+        .map_err(|err| throw_dom_error(ctx, err))?;
+    let added = fragment_children(&parsed.document, replacement);
+    let iframes = replace_all_journaled(&mut parsed, container, added.clone());
+    let controls = crate::dom::forms::descendant_controls(
+        &parsed.document.base,
+        container.document,
+        container.node,
+    );
+    drop(parsed);
+    world.destroy_child_navigables(&iframes);
+    drop(world);
+    fixup_controls_on_insert(ctx, container.document, &controls)?;
+    register_inserted_iframes(ctx, &added)?;
+    // Scripts run as part of the insertion, before the custom element
+    // reactions `[CEReactions]` flushes when the method returns
+    // (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-element-sethtmlunsafe>).
+    if run_scripts {
+        run_inserted_scripts(ctx, &added)?;
+    }
+    upgrade_parsed_tree(ctx, container)?;
+    schedule_mutation_delivery(ctx)
+}
+
+/// The host side of `setHTMLUnsafe` for an `Element` or `ShadowRoot`. The
+/// interface operation itself installs in JS because its `(TrustedHTML or
+/// DOMString)` argument and `SetHTMLUnsafeOptions` dictionary are unions the
+/// binding generator does not lower yet; the receiver and target rules stay
+/// here, where the tree state lives
+/// (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-element-sethtmlunsafe>).
+pub(crate) fn set_html_unsafe_host<'js>(
+    ctx: Ctx<'js>,
+    value: Value<'js>,
+    html: String,
+    run_scripts: bool,
+) -> Result<()> {
+    let Some(id) = host_node_id(&ctx, &value) else {
+        return Err(Exception::throw_type(
+            &ctx,
+            "setHTMLUnsafe requires an element or shadow root",
+        ));
+    };
+    let target = super::super::realm_registry(&ctx)?
+        .borrow_mut()
+        .live_node_id(id);
+    let is_target = with_node_data(&ctx, target, |data| {
+        matches!(
+            data,
+            Some(NodeData::Element(_) | NodeData::ShadowRoot { .. })
+        )
+    })?;
+    if !is_target {
+        return Err(Exception::throw_type(
+            &ctx,
+            "setHTMLUnsafe requires an element or shadow root",
+        ));
+    }
+    replace_with_markup(&ctx, target, &html, run_scripts)
+}
+
 impl<'js> element_generated::Element<'js> for JsNode {
     // https://dom.spec.whatwg.org/#dom-element-getelementsbytagname
     fn get_elements_by_tag_name(
@@ -2082,52 +2229,11 @@ impl JsNode {
 
     // https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-element-innerhtml
     pub(super) fn set_inner_html(&self, ctx: &Ctx<'_>, value: LegacyNullString) -> Result<()> {
-        // Adoption by copy leaves a stale handle behind; parse into the live
-        // container (https://dom.spec.whatwg.org/#concept-node-adopt).
-        let element = super::super::realm_registry(ctx)?
-            .borrow_mut()
-            .live_node_id(self.handle.get().0);
-        // A shadow root's fragment parsing context is its host
-        // (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-shadowroot-innerhtml>).
-        let context = super::document::inner_html_fragment_context(ctx, element)?;
+        self.replace_with_markup(ctx, &value.0, false)
+    }
 
-        let snapshots = {
-            let (base_url, font_ctx) = fragment_base_url(ctx, element);
-            parse_html_fragment_snapshots(&value.0, &context, &base_url, font_ctx)
-        };
-
-        let container = element;
-        // innerHTML on a template replaces its template contents, not its
-        // (empty) children
-        // (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-element-innerhtml>).
-        let container = world_for_node(ctx, container)?
-            .borrow()
-            .document(container)
-            .map_or(container, |parsed| {
-                template_contents_target(&parsed.document, container)
-            });
-        let owner = world_for_node(ctx, container)?;
-        let world = owner.borrow();
-        let Some(mut parsed) = world.document_mut(container) else {
-            return Err(Exception::throw_type(ctx, "no document"));
-        };
-        let replacement =
-            materialize_children(&mut parsed.document, container.document, &snapshots)
-                .map_err(|err| throw_dom_error(ctx, err))?;
-        let added = fragment_children(&parsed.document, replacement);
-        let iframes = replace_all_journaled(&mut parsed, container, added.clone());
-        let controls = crate::dom::forms::descendant_controls(
-            &parsed.document.base,
-            container.document,
-            container.node,
-        );
-        drop(parsed);
-        world.destroy_child_navigables(&iframes);
-        drop(world);
-        fixup_controls_on_insert(ctx, container.document, &controls)?;
-        register_inserted_iframes(ctx, &added)?;
-        upgrade_parsed_tree(ctx, container)?;
-        schedule_mutation_delivery(ctx)
+    fn replace_with_markup(&self, ctx: &Ctx<'_>, markup: &str, run_scripts: bool) -> Result<()> {
+        replace_with_markup(ctx, self.handle.get().0, markup, run_scripts)
     }
 
     // https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-element-insertadjacenthtml
