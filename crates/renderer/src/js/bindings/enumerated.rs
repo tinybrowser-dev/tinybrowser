@@ -312,6 +312,62 @@ enumerated! {
     }
 }
 
+enumerated! {
+    /// The `aria-autocomplete` value
+    /// (<https://w3c.github.io/aria/#aria-autocomplete>).
+    pub(crate) AriaAutoComplete {
+        Inline => "inline",
+        List => "list",
+        Both => "both",
+        None => "none",
+    }
+}
+
+enumerated! {
+    /// The `aria-current` value, which includes the `true`/`false` states
+    /// alongside the token values
+    /// (<https://w3c.github.io/aria/#aria-current>).
+    pub(crate) AriaCurrent {
+        Page => "page",
+        Step => "step",
+        Location => "location",
+        Date => "date",
+        Time => "time",
+        True => "true",
+        False => "false",
+    }
+}
+
+enumerated! {
+    /// The `aria-invalid` value
+    /// (<https://w3c.github.io/aria/#aria-invalid>).
+    pub(crate) AriaInvalid {
+        True => "true",
+        False => "false",
+        Spelling => "spelling",
+        Grammar => "grammar",
+    }
+}
+
+enumerated! {
+    /// The `aria-live` value.
+    pub(crate) AriaLive {
+        Polite => "polite",
+        Assertive => "assertive",
+        Off => "off",
+    }
+}
+
+enumerated! {
+    /// The `aria-sort` value.
+    pub(crate) AriaSort {
+        Ascending => "ascending",
+        Descending => "descending",
+        Other => "other",
+        None => "none",
+    }
+}
+
 #[cfg(test)]
 mod reflection_tests {
     use super::{

@@ -47,19 +47,31 @@ HTMLTableCellElement scope TableScope scope - -
 HTMLMediaElement preload Preload preload Auto Auto
 HTMLMediaElement loading Loading loading Eager Eager
 
-# ARIA 1.3 enumerated state attributes whose missing-value default is the
-# Undefined state (<https://w3c.github.io/aria/#enumerated-attribute-values-html>).
-# A nullable `DOMString?` getter reports the Undefined state as null, so these
-# keep the published ARIA algorithm's `null` for a removed attribute and agree
-# with `aria-attribute-reflection.html`.
+# ARIA 1.3 enumerated state attributes. The keyword set is the type's, and
+# the two defaults come from the ARIA enumerated attribute table
+# (<https://w3c.github.io/aria/#enumerated-attribute-values-html>); `-` is the
+# Undefined state, which a nullable `DOMString?` getter reports as null.
 #
 # `aria-atomic` and `aria-haspopup` have a *missing*-value default of False,
 # but their *invalid*-value default is also False, and the published spec
 # reports a removed attribute as null, so `-` is their missing default.
 ARIAMixin ariaAtomic AriaTrueFalse aria-atomic - False
+ARIAMixin ariaAutoComplete AriaAutoComplete aria-autocomplete None None
+ARIAMixin ariaBusy AriaTrueFalse aria-busy False False
 ARIAMixin ariaChecked AriaTristate aria-checked - -
+ARIAMixin ariaCurrent AriaCurrent aria-current False True
+ARIAMixin ariaDisabled AriaTrueFalse aria-disabled False False
 ARIAMixin ariaExpanded AriaTrueFalse aria-expanded - -
 ARIAMixin ariaHasPopup AriaHasPopup aria-haspopup - False
+ARIAMixin ariaHidden AriaTrueFalse aria-hidden False False
+ARIAMixin ariaInvalid AriaInvalid aria-invalid False True
+ARIAMixin ariaLive AriaLive aria-live Off Off
+ARIAMixin ariaModal AriaTrueFalse aria-modal False False
+ARIAMixin ariaMultiLine AriaTrueFalse aria-multiline False False
+ARIAMixin ariaMultiSelectable AriaTrueFalse aria-multiselectable False False
 ARIAMixin ariaOrientation AriaOrientation aria-orientation - -
 ARIAMixin ariaPressed AriaTristate aria-pressed - -
+ARIAMixin ariaReadOnly AriaTrueFalse aria-readonly False False
+ARIAMixin ariaRequired AriaTrueFalse aria-required False False
 ARIAMixin ariaSelected AriaTrueFalse aria-selected - -
+ARIAMixin ariaSort AriaSort aria-sort None None

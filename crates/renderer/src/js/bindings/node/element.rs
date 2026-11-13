@@ -1265,20 +1265,6 @@ impl<'js> aria_mixin_generated::ARIAMixin<'js> for JsNode {
         aria_set(ctx, self.handle.get().0, "role", value)
     }
 
-    // https://w3c.github.io/aria/#aria-autocomplete
-    fn get_aria_auto_complete(&self, ctx: &Ctx<'js>) -> Result<Option<rquickjs::String<'js>>> {
-        aria_get(ctx, self.handle.get().0, "aria-autocomplete")
-    }
-
-    // https://w3c.github.io/aria/#aria-autocomplete
-    fn set_aria_auto_complete(
-        &self,
-        ctx: &Ctx<'js>,
-        value: Option<rquickjs::String<'js>>,
-    ) -> Result<()> {
-        aria_set(ctx, self.handle.get().0, "aria-autocomplete", value)
-    }
-
     // https://w3c.github.io/aria/#aria-braillelabel
     fn get_aria_braille_label(&self, ctx: &Ctx<'js>) -> Result<Option<rquickjs::String<'js>>> {
         aria_get(ctx, self.handle.get().0, "aria-braillelabel")
@@ -1313,16 +1299,6 @@ impl<'js> aria_mixin_generated::ARIAMixin<'js> for JsNode {
             "aria-brailleroledescription",
             value,
         )
-    }
-
-    // https://w3c.github.io/aria/#aria-busy
-    fn get_aria_busy(&self, ctx: &Ctx<'js>) -> Result<Option<rquickjs::String<'js>>> {
-        aria_get(ctx, self.handle.get().0, "aria-busy")
-    }
-
-    // https://w3c.github.io/aria/#aria-busy
-    fn set_aria_busy(&self, ctx: &Ctx<'js>, value: Option<rquickjs::String<'js>>) -> Result<()> {
-        aria_set(ctx, self.handle.get().0, "aria-busy", value)
     }
 
     // https://w3c.github.io/aria/#aria-colcount
@@ -1381,16 +1357,6 @@ impl<'js> aria_mixin_generated::ARIAMixin<'js> for JsNode {
         aria_set(ctx, self.handle.get().0, "aria-colspan", value)
     }
 
-    // https://w3c.github.io/aria/#aria-current
-    fn get_aria_current(&self, ctx: &Ctx<'js>) -> Result<Option<rquickjs::String<'js>>> {
-        aria_get(ctx, self.handle.get().0, "aria-current")
-    }
-
-    // https://w3c.github.io/aria/#aria-current
-    fn set_aria_current(&self, ctx: &Ctx<'js>, value: Option<rquickjs::String<'js>>) -> Result<()> {
-        aria_set(ctx, self.handle.get().0, "aria-current", value)
-    }
-
     // https://w3c.github.io/aria/#aria-description
     fn get_aria_description(&self, ctx: &Ctx<'js>) -> Result<Option<rquickjs::String<'js>>> {
         aria_get(ctx, self.handle.get().0, "aria-description")
@@ -1403,40 +1369,6 @@ impl<'js> aria_mixin_generated::ARIAMixin<'js> for JsNode {
         value: Option<rquickjs::String<'js>>,
     ) -> Result<()> {
         aria_set(ctx, self.handle.get().0, "aria-description", value)
-    }
-
-    // https://w3c.github.io/aria/#aria-disabled
-    fn get_aria_disabled(&self, ctx: &Ctx<'js>) -> Result<Option<rquickjs::String<'js>>> {
-        aria_get(ctx, self.handle.get().0, "aria-disabled")
-    }
-
-    // https://w3c.github.io/aria/#aria-disabled
-    fn set_aria_disabled(
-        &self,
-        ctx: &Ctx<'js>,
-        value: Option<rquickjs::String<'js>>,
-    ) -> Result<()> {
-        aria_set(ctx, self.handle.get().0, "aria-disabled", value)
-    }
-
-    // https://w3c.github.io/aria/#aria-hidden
-    fn get_aria_hidden(&self, ctx: &Ctx<'js>) -> Result<Option<rquickjs::String<'js>>> {
-        aria_get(ctx, self.handle.get().0, "aria-hidden")
-    }
-
-    // https://w3c.github.io/aria/#aria-hidden
-    fn set_aria_hidden(&self, ctx: &Ctx<'js>, value: Option<rquickjs::String<'js>>) -> Result<()> {
-        aria_set(ctx, self.handle.get().0, "aria-hidden", value)
-    }
-
-    // https://w3c.github.io/aria/#aria-invalid
-    fn get_aria_invalid(&self, ctx: &Ctx<'js>) -> Result<Option<rquickjs::String<'js>>> {
-        aria_get(ctx, self.handle.get().0, "aria-invalid")
-    }
-
-    // https://w3c.github.io/aria/#aria-invalid
-    fn set_aria_invalid(&self, ctx: &Ctx<'js>, value: Option<rquickjs::String<'js>>) -> Result<()> {
-        aria_set(ctx, self.handle.get().0, "aria-invalid", value)
     }
 
     // https://w3c.github.io/aria/#aria-keyshortcuts
@@ -1473,54 +1405,6 @@ impl<'js> aria_mixin_generated::ARIAMixin<'js> for JsNode {
         aria_set(ctx, self.handle.get().0, "aria-level", value)
     }
 
-    // https://w3c.github.io/aria/#aria-live
-    fn get_aria_live(&self, ctx: &Ctx<'js>) -> Result<Option<rquickjs::String<'js>>> {
-        aria_get(ctx, self.handle.get().0, "aria-live")
-    }
-
-    // https://w3c.github.io/aria/#aria-live
-    fn set_aria_live(&self, ctx: &Ctx<'js>, value: Option<rquickjs::String<'js>>) -> Result<()> {
-        aria_set(ctx, self.handle.get().0, "aria-live", value)
-    }
-
-    // https://w3c.github.io/aria/#aria-modal
-    fn get_aria_modal(&self, ctx: &Ctx<'js>) -> Result<Option<rquickjs::String<'js>>> {
-        aria_get(ctx, self.handle.get().0, "aria-modal")
-    }
-
-    // https://w3c.github.io/aria/#aria-modal
-    fn set_aria_modal(&self, ctx: &Ctx<'js>, value: Option<rquickjs::String<'js>>) -> Result<()> {
-        aria_set(ctx, self.handle.get().0, "aria-modal", value)
-    }
-
-    // https://w3c.github.io/aria/#aria-multiline
-    fn get_aria_multi_line(&self, ctx: &Ctx<'js>) -> Result<Option<rquickjs::String<'js>>> {
-        aria_get(ctx, self.handle.get().0, "aria-multiline")
-    }
-
-    // https://w3c.github.io/aria/#aria-multiline
-    fn set_aria_multi_line(
-        &self,
-        ctx: &Ctx<'js>,
-        value: Option<rquickjs::String<'js>>,
-    ) -> Result<()> {
-        aria_set(ctx, self.handle.get().0, "aria-multiline", value)
-    }
-
-    // https://w3c.github.io/aria/#aria-multiselectable
-    fn get_aria_multi_selectable(&self, ctx: &Ctx<'js>) -> Result<Option<rquickjs::String<'js>>> {
-        aria_get(ctx, self.handle.get().0, "aria-multiselectable")
-    }
-
-    // https://w3c.github.io/aria/#aria-multiselectable
-    fn set_aria_multi_selectable(
-        &self,
-        ctx: &Ctx<'js>,
-        value: Option<rquickjs::String<'js>>,
-    ) -> Result<()> {
-        aria_set(ctx, self.handle.get().0, "aria-multiselectable", value)
-    }
-
     // https://w3c.github.io/aria/#aria-placeholder
     fn get_aria_placeholder(&self, ctx: &Ctx<'js>) -> Result<Option<rquickjs::String<'js>>> {
         aria_get(ctx, self.handle.get().0, "aria-placeholder")
@@ -1549,20 +1433,6 @@ impl<'js> aria_mixin_generated::ARIAMixin<'js> for JsNode {
         aria_set(ctx, self.handle.get().0, "aria-posinset", value)
     }
 
-    // https://w3c.github.io/aria/#aria-readonly
-    fn get_aria_read_only(&self, ctx: &Ctx<'js>) -> Result<Option<rquickjs::String<'js>>> {
-        aria_get(ctx, self.handle.get().0, "aria-readonly")
-    }
-
-    // https://w3c.github.io/aria/#aria-readonly
-    fn set_aria_read_only(
-        &self,
-        ctx: &Ctx<'js>,
-        value: Option<rquickjs::String<'js>>,
-    ) -> Result<()> {
-        aria_set(ctx, self.handle.get().0, "aria-readonly", value)
-    }
-
     // https://w3c.github.io/aria/#aria-relevant
     fn get_aria_relevant(&self, ctx: &Ctx<'js>) -> Result<Option<rquickjs::String<'js>>> {
         aria_get(ctx, self.handle.get().0, "aria-relevant")
@@ -1575,20 +1445,6 @@ impl<'js> aria_mixin_generated::ARIAMixin<'js> for JsNode {
         value: Option<rquickjs::String<'js>>,
     ) -> Result<()> {
         aria_set(ctx, self.handle.get().0, "aria-relevant", value)
-    }
-
-    // https://w3c.github.io/aria/#aria-required
-    fn get_aria_required(&self, ctx: &Ctx<'js>) -> Result<Option<rquickjs::String<'js>>> {
-        aria_get(ctx, self.handle.get().0, "aria-required")
-    }
-
-    // https://w3c.github.io/aria/#aria-required
-    fn set_aria_required(
-        &self,
-        ctx: &Ctx<'js>,
-        value: Option<rquickjs::String<'js>>,
-    ) -> Result<()> {
-        aria_set(ctx, self.handle.get().0, "aria-required", value)
     }
 
     // https://w3c.github.io/aria/#aria-roledescription
@@ -1673,16 +1529,6 @@ impl<'js> aria_mixin_generated::ARIAMixin<'js> for JsNode {
         value: Option<rquickjs::String<'js>>,
     ) -> Result<()> {
         aria_set(ctx, self.handle.get().0, "aria-setsize", value)
-    }
-
-    // https://w3c.github.io/aria/#aria-sort
-    fn get_aria_sort(&self, ctx: &Ctx<'js>) -> Result<Option<rquickjs::String<'js>>> {
-        aria_get(ctx, self.handle.get().0, "aria-sort")
-    }
-
-    // https://w3c.github.io/aria/#aria-sort
-    fn set_aria_sort(&self, ctx: &Ctx<'js>, value: Option<rquickjs::String<'js>>) -> Result<()> {
-        aria_set(ctx, self.handle.get().0, "aria-sort", value)
     }
 
     // https://w3c.github.io/aria/#aria-valuemax

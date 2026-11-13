@@ -2116,3 +2116,25 @@ registration.
 
 Evidence: `dom/nodes` 14538 to **14550** subtests, no lost subtests.
 `MutationObserver-transient-registered-observers.window.html` 5/15 to 15/15.
+The ARIA enumerated state attributes now reflect through the shared
+enumerated-attribute table instead of returning the raw `aria-*` value
+(`crates/renderer/src/js/bindings/reflected-enumerated.txt`,
+`crates/renderer/src/js/bindings/enumerated.rs`). `aria-autocomplete`,
+`aria-current`, `aria-invalid`, `aria-live`, and `aria-sort` gained keyword
+types, and all twenty state attributes (`aria-atomic` through `aria-sort`)
+carry their ARIA missing-value and invalid-value defaults. The hand-written
+`aria_get`/`aria_set` getters and setters for the thirteen attributes the table
+now owns were removed, because the generated pair is the only definition.
+
+A nullable enumerated setter that receives null removes the content attribute
+and records an explicit-null state on the document
+(`SideTables::enumerated_nulls`); the getter reads that back as null instead
+of the attribute's missing-value default, and any direct content-attribute
+write clears it. That is what `aria-attribute-reflection.html` asserts for
+`element.ariaBusy = null` while the tentative enumerated table still expects
+a never-written attribute to read its missing default.
+
+Evidence: `html/dom` 64417 to **65181** subtests, no lost subtests.
+`aria-attribute-reflection-enumerated.tentative.html` 997/1761 to 1761/1761,
+`aria-attribute-reflection.html` 41/41 and
+`aria-attribute-reflection.tentative.html` 3/3.

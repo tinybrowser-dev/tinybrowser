@@ -1061,6 +1061,15 @@ fn reflect_setter(attribute: &Attribute, content: &str) -> TokenStream {
         ReturnType::String | ReturnType::UsvString => quote! {
             host::reflect_set_string(&ctx, receiver.node_id(), #content, &value)?;
         },
+        // A nullable enumerable remembers an explicit null, which the getter
+        // must not replace with the attribute's missing-value default.
+        ReturnType::NullableString
+            if matches!(attribute.mapping, GetterMapping::ReflectEnumerated { .. }) =>
+        {
+            quote! {
+                host::reflect_set_enumerated_nullable(&ctx, receiver.node_id(), #content, value)?;
+            }
+        }
         ReturnType::NullableString => quote! {
             host::reflect_set_nullable_string(&ctx, receiver.node_id(), #content, value)?;
         },

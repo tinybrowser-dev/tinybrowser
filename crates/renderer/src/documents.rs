@@ -52,6 +52,12 @@ pub struct SideTables {
     /// The fragment's node document is not the host
     /// (<https://html.spec.whatwg.org/multipage/scripting.html#template-contents>).
     template_owners: HashMap<blitz_traits::node_id::NodeId, (u32, blitz_traits::node_id::NodeId)>,
+    /// `(element, content attribute)` pairs whose nullable enumerated IDL
+    /// attribute was set to null. ARIA's reflection reads that back as null
+    /// even when the attribute's missing-value default is a keyword
+    /// (<https://w3c.github.io/aria/#enumerated-attribute-values-html>); any
+    /// content-attribute change clears the entry.
+    enumerated_nulls: HashSet<(blitz_traits::node_id::NodeId, String)>,
     /// The `(document id, node)` of the template element whose contents this
     /// inert document holds. The contents fragment's `host` cannot name an
     /// element in another document, so this is the back link
@@ -100,6 +106,22 @@ impl BlitzDocument {
     /// Enables or disables observer recording for this document.
     pub(crate) fn set_recording(&mut self, recording: bool) {
         self.side.recording = recording;
+    }
+
+    /// Marks `(element, name)` as an IDL-null `DOMString?` enumerated value.
+    pub(crate) fn mark_enumerated_null(&mut self, id: blitz_traits::node_id::NodeId, name: &str) {
+        self.side.enumerated_nulls.insert((id, name.to_owned()));
+    }
+
+    /// Clears the IDL-null state after a content-attribute change.
+    pub(crate) fn clear_enumerated_null(&mut self, id: blitz_traits::node_id::NodeId, name: &str) {
+        self.side.enumerated_nulls.remove(&(id, name.to_owned()));
+    }
+
+    /// Whether the last write to the nullable enumerated IDL attribute was
+    /// null (with no content-attribute change since).
+    pub(crate) fn is_enumerated_null(&self, id: blitz_traits::node_id::NodeId, name: &str) -> bool {
+        self.side.enumerated_nulls.contains(&(id, name.to_owned()))
     }
 
     /// Whether `id` is a `DocumentFragment`: a fragment node or a shadow

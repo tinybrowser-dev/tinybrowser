@@ -279,10 +279,48 @@ pub(crate) fn reflect_enumerated_attribute_nullable<
     name: &str,
     defaults: crate::js::bindings::enumerated::Defaults<T>,
 ) -> Result<Option<rquickjs::String<'js>>> {
-    let raw = reflected_attribute_value(ctx, element, name);
+    let world = super::world(ctx)?;
+    let raw = world.borrow().document(element).and_then(|parsed| {
+        crate::dom::tree::attr(&parsed.document.base, element.node, name).map(str::to_owned)
+    });
+    if raw.is_none() {
+        // Setting the IDL attribute to null reads back as null even when the
+        // attribute's missing-value default is a keyword, until a content
+        // attribute write replaces that state
+        // (<https://w3c.github.io/aria/#enumerated-attribute-values-html>).
+        let nulled = world
+            .borrow()
+            .document(element)
+            .is_some_and(|parsed| parsed.document.is_enumerated_null(element.node, name));
+        if nulled {
+            return Ok(None);
+        }
+    }
     match crate::js::bindings::enumerated::reflect_enumerated_nullable(raw.as_deref(), defaults) {
         Some(value) => Ok(Some(rquickjs::String::from_str(ctx.clone(), value)?)),
         None => Ok(None),
+    }
+}
+
+/// Write a nullable enumerated `DOMString?` attribute: null removes the
+/// content attribute and marks the property as explicitly null, so the getter
+/// does not fall back to the attribute's missing-value default
+/// (<https://w3c.github.io/aria/#enumerated-attribute-values-html>).
+pub(crate) fn reflect_set_enumerated_nullable(
+    ctx: &Ctx<'_>,
+    element: NodeId,
+    name: &str,
+    value: Option<rquickjs::String<'_>>,
+) -> Result<()> {
+    if let Some(value) = value {
+        reflect_set_string(ctx, element, name, &value)
+    } else {
+        super::remove_attribute_sync(ctx, element, "", name, false)?;
+        let world = super::world_for_node(ctx, element)?;
+        if let Some(mut parsed) = world.borrow().document_mut(element) {
+            parsed.document.mark_enumerated_null(element.node, name);
+        }
+        Ok(())
     }
 }
 
@@ -305,21 +343,6 @@ pub(crate) fn reflect_set_string(
 ) -> Result<()> {
     let value = value.to_string()?;
     super::set_attribute_sync(ctx, element, name, &value)
-}
-
-/// Write a nullable reflected `DOMString?` attribute: `None` removes the
-/// content attribute, as the ARIA enumerated setters do
-/// (<https://w3c.github.io/aria/#enumerated-attribute-values-html>).
-pub(crate) fn reflect_set_nullable_string(
-    ctx: &Ctx<'_>,
-    element: NodeId,
-    name: &str,
-    value: Option<rquickjs::String<'_>>,
-) -> Result<()> {
-    match value {
-        Some(value) => reflect_set_string(ctx, element, name, &value),
-        None => super::remove_attribute_sync(ctx, element, "", name, false),
-    }
 }
 
 /// Write a reflected `boolean` attribute: present with the empty string

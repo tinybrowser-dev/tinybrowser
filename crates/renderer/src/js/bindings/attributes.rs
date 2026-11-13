@@ -2125,6 +2125,9 @@ pub(crate) fn remove_attribute_sync(
                 local,
                 crate::dom_string::DomString::default(),
             );
+            // A direct content-attribute write replaces the IDL-null state
+            // (<https://w3c.github.io/aria/#enumerated-attribute-values-html>).
+            parsed.document.clear_enumerated_null(element.node, local);
             parsed
                 .document
                 .base
@@ -2275,6 +2278,9 @@ pub(crate) fn set_attribute_sync(
         local,
         crate::dom_string::DomString::from(value),
     );
+    // A direct content-attribute write replaces the IDL-null state
+    // (<https://w3c.github.io/aria/#enumerated-attribute-values-html>).
+    parsed.document.clear_enumerated_null(element.node, local);
     parsed.document.record(JournalEntry::Attributes {
         target: element,
         // attributeName is the attribute's local name.
