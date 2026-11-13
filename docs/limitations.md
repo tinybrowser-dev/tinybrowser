@@ -154,6 +154,41 @@ The `scroll`/`scrollTo`/`scrollBy`/`scrollIntoView` methods return
 draft returns `Promise<ScrollResult>` with an `interrupted` member, so tests
 written against that draft fail regardless of scrolling behavior.
 
+## Visibility observation
+
+`IntersectionObserver` runs a per-frame update in
+`crates/renderer/src/js/scripts/web/observers.js`: it computes the target's
+border box, clips it by ancestor scrollports and the root intersection
+rectangle, and reports `isIntersecting`, `intersectionRatio`, and the three
+rects. The implicit root is the viewport; an element root uses its padding area
+when it is a scroll container and its border box otherwise, and a `Document`
+root uses that document's viewport. `rootMargin`, thresholds, `unobserve`,
+`disconnect`, `takeRecords`, and the `Element or Document` root type follow the
+algorithm (<https://w3c.github.io/IntersectionObserver/#update-intersection-observations-algo>).
+
+What remains:
+
+- `scroll-margin` is not part of the clip rect: the property is a
+  `engine = "gecko"` longhand in the pinned Stylo and does not parse, so every
+  `scroll-margin-*` file reports the unadjusted scrollport
+  (`docs/upstream.md`). The same gap removes `scroll-margin` from
+  `scrollIntoView`.
+- The v2 occlusion tests (`v2/*-occlusion*`, `v2/text-shadow`,
+  `v2/box-shadow`) need paint-order occlusion, which this engine does not
+  model. `isVisible` is `checkVisibility()`, so opacity and
+  `content-visibility` are not part of it (`content-visibility` is missing from
+  this Stylo build).
+- Cross-origin and nested-iframe targets are measured in their own realm's
+  viewport; the parent frame's offset is not folded in
+  (`cross-origin-*`, `same-origin-grand-child-iframe`, `target-in-different-window`).
+- Lazy-loaded images are not deferred by an observer
+  (`img-lazy-loading-not-blocked-by-img-outside-viewport`), CSS animations do
+  not run (`animating`, `clip-path-animation`, `transform-animation`), and
+  `clip-path` clips by its bounding box rather than its shape.
+- A `display: none` target still reports an edge-adjacent zero rect as
+  intersecting (`display-none.html`), because the update has no rendered-box
+  gate.
+
 ## Element offset metrics
 
 `offsetParent`, `offsetLeft`, `offsetTop`, `offsetWidth`, and `offsetHeight`

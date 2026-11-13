@@ -1691,3 +1691,30 @@ a plain `Event` and copied the two members onto it. Evidence:
 `css/cssom-view` 1610 to **1616 of 1758**, no lost subtests;
 `MediaQueryListEvent.html` 0 to 6 of 6, which also covers the event an
 `addListener` callback and an `onchange` handler receive.
+
+`IntersectionObserver` now reports real intersections. The shim was a stub:
+every observation claimed `isIntersecting: true`, `intersectionRatio: 1`, the
+target's full rect for both rects, and `rootBounds: null`, so any page that
+used the result to defer work saw every target as visible.
+
+The update now runs per animation frame
+(`crates/renderer/src/js/scripts/web/observers.js`). It computes the target's
+border box, clips it by each ancestor's content clip (per axis, so
+`overflow-x: visible` with `overflow-y: clip` leaves the horizontal axis
+unclipped), intersects it with the root intersection rectangle, and derives
+`isIntersecting` and `intersectionRatio` with the spec's edge-adjacent rule.
+The implicit root is the viewport, an element root uses its padding area when
+it is a scroll container and its border box otherwise, and a `Document` root
+uses that document's viewport. `rootMargin` parses one to four lengths or
+percentages (percentages against the corresponding root axis), thresholds are
+validated, sorted, and deduplicated, and `IntersectionObserverEntry` is a real
+prototype with the rects, `isVisible`, `target`, and `time`.
+
+Evidence: the `intersection-observer` suite goes from **115 to 185 of 232**
+subtests, with no lost subtests. `multiple-thresholds` 1 to 10,
+`observer-exceptions` 0 to 9, `containing-block` 1 to 5, `multiple-targets`
+2 to 5, `observer-attributes` 6 to 8, and the root-margin, zero-size,
+document-root, and `isIntersecting`-change files each gain. The one v2
+occlusion case the stub passed by accident
+(`position-absolute-overflow-visible-and-not-visible`) is restored by the
+per-axis clip.
