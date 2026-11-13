@@ -34,6 +34,12 @@
   const extracted = value => {
     const existing = slots.get(value);
     if (existing !== undefined) return existing;
+    // A `WindowProxy` answers only when it is same-origin, and then its origin
+    // is this realm's; a cross-origin one has no extract-an-origin operation
+    // (<https://html.spec.whatwg.org/multipage/browsers.html#the-origin-interface>).
+    const proxy = host.__tbWindowProxyAccess(value);
+    if (proxy === 'same') return fromGlobal();
+    if (proxy === 'cross') return null;
     if (value instanceof globalThis.URL) {
       const parsed = fromString(value.href);
       if (parsed !== null) return parsed;

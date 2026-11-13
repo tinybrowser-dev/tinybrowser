@@ -47,6 +47,20 @@ pub(crate) fn install_messaging(ctx: &Ctx<'_>) -> Result<()> {
     globals.set("__tbPortDetach", rquickjs::prelude::Func::from(port_detach))?;
     globals.set("__tbPortAdopt", rquickjs::prelude::Func::from(port_adopt))?;
     globals.set("__tbPortPeer", rquickjs::prelude::Func::from(port_peer))?;
+    install_frame_functions(&globals)?;
+    globals.set(
+        "__tbRegisterSharedBuffer",
+        rquickjs::prelude::Func::from(register_shared_buffer),
+    )?;
+    globals.set(
+        "__tbCreateSharedBuffer",
+        rquickjs::prelude::Func::from(create_shared_buffer),
+    )?;
+    Ok(())
+}
+
+/// The `WindowProxy` and frame-tree host functions the messaging shim reads.
+fn install_frame_functions(globals: &Object<'_>) -> Result<()> {
     globals.set(
         "__tbFrameParent",
         rquickjs::prelude::Func::from(frame_parent),
@@ -116,12 +130,8 @@ pub(crate) fn install_messaging(ctx: &Ctx<'_>) -> Result<()> {
         rquickjs::prelude::Func::from(frame_dispatch_event),
     )?;
     globals.set(
-        "__tbRegisterSharedBuffer",
-        rquickjs::prelude::Func::from(register_shared_buffer),
-    )?;
-    globals.set(
-        "__tbCreateSharedBuffer",
-        rquickjs::prelude::Func::from(create_shared_buffer),
+        "__tbFrameElement",
+        rquickjs::prelude::Func::from(frame_element),
     )?;
     Ok(())
 }
@@ -705,6 +715,47 @@ pub(crate) fn frame_document(ctx: Ctx<'_>, frame: f64) -> Result<Value<'_>> {
         Some(root) => wrap_node(&ctx, root),
         None => Ok(Value::new_null(ctx)),
     }
+}
+
+/// Whether `frame`'s document is same-origin with the caller's; a frame whose
+/// realm has not started answers from its navigable
+/// (<https://html.spec.whatwg.org/multipage/browsers.html#same-origin>).
+fn same_origin_with(ctx: &Ctx<'_>, frame: FrameId) -> Result<bool> {
+    match frame_world_with_origin(ctx, frame.get())? {
+        Some((_, same_origin)) => Ok(same_origin),
+        None => frame_same_origin(ctx.clone(), crate::js::js_number(frame.get())),
+    }
+}
+
+/// `window.frameElement` for the calling frame: the navigable container in the
+/// parent document, null when the frame has none (a top-level context or an
+/// auxiliary one), and a `SecurityError` when the parent document is
+/// cross-origin
+/// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-frameelement>).
+fn frame_element(ctx: Ctx<'_>) -> Result<Value<'_>> {
+    let world = world(&ctx)?;
+    let frame = world.borrow().frame();
+    let shared = world.borrow().shared();
+    let (container, parent) = {
+        let shared = shared.borrow();
+        (shared.tree.container(frame), shared.tree.parent(frame))
+    };
+    let Some(container) = container else {
+        return Ok(Value::new_null(ctx));
+    };
+    // The container lives in the parent document, which supplies the origin
+    // the check compares against
+    // (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-frameelement>).
+    if let Some(parent) = parent
+        && !super::messaging::same_origin_with(&ctx, parent)?
+    {
+        return Err(throw_dom(
+            &ctx,
+            "SecurityError",
+            "Blocked a frame from accessing a cross-origin frame.",
+        ));
+    }
+    wrap_node(&ctx, container)
 }
 
 /// The browsing context name of `frame` for `window.name`

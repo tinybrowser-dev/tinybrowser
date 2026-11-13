@@ -1926,3 +1926,28 @@ Evidence: `html/webappapis` 2529 to **2555 subtests**, no lost subtests.
 `Document-parseHTMLUnsafe-url.html`, `...-url-base.html`,
 `...-url-pushstate.html`, and `...-url-base-pushstate.html` 0 to 6 of 6 each,
 and `...-url-moretests.html` 0 to 2 of 4.
+
+The window's own members now exist
+(`crates/renderer/src/js/scripts/web/window.js`): `BarProp` and the six
+`locationbar`/`menubar`/`personalbar`/`scrollbars`/`statusbar`/`toolbar`
+replaceable attributes, `devicePixelRatio`, `screenX`, `screenY`, `status`,
+`closed`, `frameElement`, and the prompt/print/move/resize/stop/blur/focus
+operations. `frameElement` resolves the container element through a new host
+call and throws for a cross-origin parent; there is no window manager, so the
+geometry answers the viewport and the prompts behave as dismissed ones.
+
+`Origin.from(WindowProxy)` also gained its cross-origin rule: a same-origin
+proxy extracts this realm's origin, and a cross-origin or sandboxed one throws
+`TypeError`, because a `WindowProxy` is not a platform object in the caller's
+realm.
+
+Evidence: `html/browsers` 885 to **921 subtests**, no lost subtests
+(`origin-from-window.window.html` 5 to 7, `frameElement.sub.html` 0 to 1,
+`noopener-noreferrer-BarProp.window.html` 0 to 1).
+`webmessaging` stays at 189 and `html/dom` at 64390, both with no lost
+subtests.
+
+Throwing `SecurityError` for cross-origin member reads is implemented and
+reverted: it lifts `window-security.https.html` from 12 to 121 of 124 but
+regresses the `document.domain` tests, which the engine cannot support yet.
+`docs/limitations.md` records what closing it needs.

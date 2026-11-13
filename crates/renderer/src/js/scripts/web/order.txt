@@ -29,6 +29,9 @@ canvas_filter.js
 css_color_api.js
 geometry.js
 workers.js
+# `window.js` installs the window's own members; it reads nothing from the
+# later shims.
+window.js
 # `cookies.js` reads `URL`, `EventTarget`, and `DOMException`, which the
 # earlier shims install.
 cookies.js

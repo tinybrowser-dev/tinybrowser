@@ -477,6 +477,35 @@ Four things the spec's algorithm asks for are absent:
 parsing dispatches on the document type, and the engine has one HTML fragment
 path.
 
+
+## Window surface
+
+The window's own members that no generated interface provides are installed by
+`crates/renderer/src/js/scripts/web/window.js`: `BarProp` with the six
+`[Replaceable]` bar attributes, `devicePixelRatio`, `screenX`, `screenY`,
+`status`, `closed`, `frameElement`, and the `alert`, `confirm`, `prompt`,
+`print`, `moveBy`, `moveTo`, `resizeBy`, `resizeTo`, `stop`, `blur`, and
+`focus` operations. There is no window manager, so the geometry and bar
+attributes report the viewport and `visible: true`, prompts do nothing,
+`confirm` answers false, and `prompt` answers null.
+
+Three members are absent: `window.external` (a legacy interface no current
+specification defines), `onmousewheel` (a legacy alias of `onwheel`), and
+`getSelection` (the `Selection` interface is not implemented).
+
+Cross-origin window member access answers `undefined` instead of throwing
+`SecurityError`. The spec throws for every property outside the cross-origin
+list, and implementing that was tried: it raises
+`window-security.https.html` from 12 to 121 of 124, but it regresses
+`windowproxy-prototype-setting-same-origin-domain.sub.html` and
+`location-prototype-setting-cross-origin-domain.sub.html`, whose subtests read
+`frames[0].TypeError` and `frames[0].location` after setting `document.domain`.
+`document.domain` is unimplemented and is the feature those tests exercise, so
+closing this needs same-origin-domain origin comparison (an origin type that
+carries an optional domain) and a cross-origin `Location` object with a null,
+immutable prototype. Reverted until that lands; the throw is otherwise
+correct.
+
 ## Missing surfaces
 
 Dedicated workers run on their own OS thread with their own `QuickJS`

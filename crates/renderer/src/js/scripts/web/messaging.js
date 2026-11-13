@@ -68,6 +68,24 @@ host.__tbOriginOfMessageEvent = event => {
   return entry.origin;
 };
 
+// `Origin.from(WindowProxy)` extracts the proxy's origin only when it is
+// same-origin: a `WindowProxy` is not a platform object in the caller's realm,
+// so a cross-origin one has no reachable extract-an-origin operation
+// (<https://html.spec.whatwg.org/multipage/browsers.html#the-origin-interface>).
+// `undefined` means the value is not a `WindowProxy`.
+host.__tbWindowProxyAccess = value => {
+  if (value === null || (typeof value !== 'object' && typeof value !== 'function')) {
+    return undefined;
+  }
+  // The global object of this realm is not a proxy; `Origin.from(globalThis)`
+  // reads its own origin
+  // (<https://html.spec.whatwg.org/multipage/browsers.html#the-origin-interface>).
+  if (value === globalThis) return undefined;
+  const entry = __tbWindowData.get(value);
+  if (entry === undefined) return undefined;
+  return host.__tbFrameSameOrigin(entry.frame) ? 'same' : 'cross';
+};
+
 // The members a same-origin frame whose realm has not started presents from the
 // inserting realm. Only callable interfaces (constructors and functions with a
 // prototype) and the intrinsic namespace objects qualify: everything else a
@@ -1204,6 +1222,10 @@ const __tbFrameProxy = frame => {
         // turn, so a same-origin read in the removing task still answers
         // instead of throwing; the destroy steps remove the tree entry first
         // (<https://html.spec.whatwg.org/multipage/document-sequences.html#destroy-a-child-navigable>).
+        // A cross-origin member read answers `undefined` rather than throwing
+        // `SecurityError`; that gap is recorded in `docs/limitations.md`
+        // because closing it needs `document.domain` and a cross-origin
+        // `Location`.
         if (host.__tbFrameRegistered(frame) || host.__tbFrameSameOrigin(frame)) {
           // A document exists before its realm does: `window.open`'s initial
           // about:blank and an `iframe` inserted in a running script. Its
