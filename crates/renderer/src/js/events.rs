@@ -1220,6 +1220,12 @@ fn dispatch<'js>(
                     break;
                 }
             }
+            // Handler attributes are listeners too, so a target whose global
+            // lost its browsing context runs none of them
+            // (<https://dom.spec.whatwg.org/#concept-event-listener-inner-invoke>).
+            if !target_is_fully_active(&item.reference.world) {
+                continue;
+            }
             outcome = call_handler_attribute(ctx, Some(&item.target), &typ, &event_value);
             if outcome.is_err() {
                 break;
@@ -1397,6 +1403,20 @@ fn build_path<'js>(
     }
 }
 
+/// Whether an event target's relevant global object can still receive
+/// listeners.
+///
+/// The inner invoke algorithm skips a listener when the target's global object
+/// is a `Window` whose associated `Document` is not fully active. A realm whose
+/// frame left the tree is no longer fully active, which is what happens when
+/// an `iframe` is removed; a worker global is not a `Window`, so its events
+/// keep running
+/// (<https://dom.spec.whatwg.org/#concept-event-listener-inner-invoke>).
+fn target_is_fully_active(world: &Rc<RefCell<World>>) -> bool {
+    let world = world.borrow();
+    !matches!(world.kind, crate::js::world::GlobalKind::Document) || world.has_browsing_context()
+}
+
 /// [Invoke](https://dom.spec.whatwg.org/#concept-event-listener-invoke) the
 /// listeners of one path item.
 fn invoke<'js>(
@@ -1406,6 +1426,9 @@ fn invoke<'js>(
     phase: u16,
     capturing: bool,
 ) -> Result<()> {
+    if !target_is_fully_active(&item.reference.world) {
+        return Ok(());
+    }
     {
         let class = event.borrow();
         if class.state().stop_propagation {
@@ -1422,6 +1445,12 @@ fn invoke<'js>(
         .listener_snapshot(item.reference.key);
     let event_value = Class::into_value(event.clone());
     for listener in listeners {
+        // A listener that removes the target's frame skips the rest of the
+        // list, so the check is repeated rather than hoisted
+        // (<https://dom.spec.whatwg.org/#concept-event-listener-inner-invoke>).
+        if !target_is_fully_active(&item.reference.world) {
+            break;
+        }
         if listener.removed.get() {
             continue;
         }

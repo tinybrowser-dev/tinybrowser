@@ -1216,3 +1216,32 @@ subtests against an older saved report but the committed tree scores the same
 9 of 38 on those files in two isolated runs, so the loss predates this slice.
 `cargo fmt --check`, `tools/check clippy`, and the renderer (172), wpt-harness
 (48), cookies (26), browser (69+4), net (52) and dial (29+3) unit tests pass.
+
+`dom/events` also missed the DOM rule that ties listener invocation to the
+target's global object. An `EventTarget` created in an `iframe` kept running
+its listeners after the `iframe` was removed: removing the frame removes its
+browsing context, so the document is no longer fully active, and inner invoke
+must skip the listener
+(`https://dom.spec.whatwg.org/#concept-event-listener-inner-invoke`). The
+engine dispatched the event exactly as before, so a listener added inside a
+removed frame still ran, a listener that removed the frame did not stop the
+rest of the list, and abort listeners on an `AbortSignal` from the removed
+frame still ran.
+
+Invoke now asks whether the path item's world is a document realm with a
+browsing context before setting the phase and again before each listener, so a
+listener that removes the frame skips the remainder, and handler attributes run
+under the same check. The dispatch itself still happens: `event.target` is
+set, `dispatchEvent()` still returns true, `defaultPrevented` stays false, and
+`currentTarget`/`eventPhase` end at null/NONE. A worker global is not a
+`Window`, so worker events are unaffected.
+
+Evidence: `dom/events/event-listener-not-fully-active-target.html` goes from
+4 of 16 to **16 of 16**, and `dom/events` from 426 to **474 of 582**.
+`html/webappapis` is 1886 of 2254; `webmessaging` (189), `html/dom` (63975),
+`html/browsers` (676), `dom/nodes` (14344), `domparsing` (543), `workers`
+(974), `css/selectors` (4528), `css/cssom` (3212), `css/cssom-view` (763),
+`fetch/api` (2254), `xhr` (949), `cookies` (336), `cookiestore` (247) and
+`referrer-policy` (8020) lose no subtest. `cargo fmt --check`,
+`tools/check clippy`, and the renderer (172), wpt-harness (48), cookies (26),
+browser (69+4), net (52) and dial (29+3) unit tests pass.
