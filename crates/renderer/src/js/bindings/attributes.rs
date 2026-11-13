@@ -1528,26 +1528,26 @@ pub(crate) fn touch_attr(
     schedule_mutation_delivery(ctx)
 }
 
-/// Event handler attribute names that the `<body>` element forwards to the
-/// window ([WindowEventHandlers](https://html.spec.whatwg.org/multipage/webappapis.html#windoweventhandlers)).
-const WINDOW_HANDLER_ATTRIBUTES: &[&str] = &[
-    "onafterprint",
-    "onbeforeprint",
-    "onbeforeunload",
-    "onhashchange",
-    "onlanguagechange",
-    "onmessage",
-    "onmessageerror",
-    "onoffline",
-    "ononline",
-    "onpagehide",
-    "onpageshow",
-    "onpopstate",
-    "onrejectionhandled",
-    "onstorage",
-    "onunhandledrejection",
-    "onunload",
-];
+/// Stores one compiled handler either on the element itself or, for a
+/// `body`/`frameset` window-reflecting name, on the document's window.
+fn store_handler_attribute<'js>(
+    ctx: &Ctx<'js>,
+    object: &Object<'js>,
+    forwarded: bool,
+    name: &str,
+    value: Value<'js>,
+) -> Result<()> {
+    if forwarded {
+        super::set_window_reflecting_handler(
+            ctx.clone(),
+            object.as_value().clone(),
+            name.to_owned(),
+            value,
+        )
+    } else {
+        object.set(name, value)
+    }
+}
 
 /// Compiles or clears one element's event handler content attribute.
 fn compile_handler_attribute(ctx: &Ctx<'_>, element: NodeId, typ: &str) -> Result<()> {
@@ -1558,15 +1558,21 @@ fn compile_handler_attribute(ctx: &Ctx<'_>, element: NodeId, typ: &str) -> Resul
     let Some(object) = wrap_node(ctx, element)?.as_object().cloned() else {
         return Ok(());
     };
-    // A `body` element's window event handler attributes register on the
-    // window itself
+    // A `body` or `frameset` element's window event handler attributes set the
+    // window's handler: the element has no slot of its own for them, so no own
+    // property may shadow the prototype accessor
     // (<https://html.spec.whatwg.org/multipage/dom.html#body-element-event-handlers>).
-    let is_body = world_for_node(ctx, element).is_ok_and(|owner| {
-        owner.borrow().document(element).is_some_and(|parsed| {
-            crate::dom::tree::is_html_element(&parsed.document.base, element.node, "body")
-        })
-    });
-    let forwarded = WINDOW_HANDLER_ATTRIBUTES.contains(&name.as_str()) && is_body;
+    let forwarded = super::is_window_reflecting_handler(&name)
+        && world_for_node(ctx, element).is_ok_and(|owner| {
+            owner.borrow().document(element).is_some_and(|parsed| {
+                crate::dom::tree::is_html_element(&parsed.document.base, element.node, "body")
+                    || crate::dom::tree::is_html_element(
+                        &parsed.document.base,
+                        element.node,
+                        "frameset",
+                    )
+            })
+        });
     match body {
         Some(body) if !body.trim().is_empty() => {
             // The `onerror` handler takes the spec's five arguments, not the
@@ -1592,40 +1598,35 @@ fn compile_handler_attribute(ctx: &Ctx<'_>, element: NodeId, typ: &str) -> Resul
                 &body,
                 position,
             ) {
-                object.set(name.as_str(), Value::new_null(ctx.clone()))?;
-                if forwarded {
-                    ctx.globals()
-                        .set(name.as_str(), Value::new_null(ctx.clone()))?;
-                }
+                store_handler_attribute(
+                    ctx,
+                    &object,
+                    forwarded,
+                    &name,
+                    Value::new_null(ctx.clone()),
+                )?;
                 return Ok(());
             }
             match crate::js::events::compile_handler_function(ctx, params, &body) {
                 Ok(compiled) => {
-                    object.set(name.as_str(), compiled.clone())?;
-                    if forwarded {
-                        ctx.globals().set(name.as_str(), compiled)?;
-                    }
+                    store_handler_attribute(ctx, &object, forwarded, &name, compiled.into_value())?;
                 }
                 Err(error) => {
                     // A malformed handler reports the error and clears the
                     // slot; setting the attribute must not throw
                     // (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes>).
                     report_exception(ctx, &error);
-                    object.set(name.as_str(), Value::new_null(ctx.clone()))?;
-                    if forwarded {
-                        ctx.globals()
-                            .set(name.as_str(), Value::new_null(ctx.clone()))?;
-                    }
+                    store_handler_attribute(
+                        ctx,
+                        &object,
+                        forwarded,
+                        &name,
+                        Value::new_null(ctx.clone()),
+                    )?;
                 }
             }
         }
-        _ => {
-            object.set(name.as_str(), Value::new_null(ctx.clone()))?;
-            if forwarded {
-                ctx.globals()
-                    .set(name.as_str(), Value::new_null(ctx.clone()))?;
-            }
-        }
+        _ => store_handler_attribute(ctx, &object, forwarded, &name, Value::new_null(ctx.clone()))?,
     }
     Ok(())
 }

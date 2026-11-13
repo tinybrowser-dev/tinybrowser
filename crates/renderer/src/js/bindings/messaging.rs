@@ -926,9 +926,8 @@ pub(crate) const HANDLER_ATTRIBUTES: &[&str] = &[
     "onwheel",
 ];
 
-/// `WindowEventHandlers` names that are not also element handlers. They are
-/// properties of the window only, so a `div` with one of these attribute
-/// names has no handler
+/// `WindowEventHandlers` names. A `div` has no such handler; `body` and
+/// `frameset` expose them by forwarding to their document's window
 /// (<https://html.spec.whatwg.org/multipage/webappapis.html#windoweventhandlers>).
 pub(crate) const WINDOW_HANDLER_NAMES: &[&str] = &[
     "onafterprint",
@@ -950,6 +949,19 @@ pub(crate) const WINDOW_HANDLER_NAMES: &[&str] = &[
     "onunhandledrejection",
     "onunload",
 ];
+
+/// The six `GlobalEventHandlers` names a `body` or `frameset` element replaces
+/// with its window's handler, in addition to every `WindowEventHandlers` name
+/// (<https://html.spec.whatwg.org/multipage/webappapis.html#window-reflecting-body-element-event-handler-set>).
+pub(crate) const BODY_WINDOW_HANDLERS: &[&str] = &[
+    "onblur", "onerror", "onfocus", "onload", "onresize", "onscroll",
+];
+
+/// Whether a `body` or `frameset` element forwards `name` to its document's
+/// window instead of keeping a slot of its own.
+pub(crate) fn is_window_reflecting_handler(name: &str) -> bool {
+    BODY_WINDOW_HANDLERS.contains(&name) || WINDOW_HANDLER_NAMES.contains(&name)
+}
 
 /// Event handler attributes `Document` declares itself, outside
 /// `GlobalEventHandlers` and `WindowEventHandlers`. They are installed on
@@ -996,7 +1008,7 @@ pub(crate) fn set_node_handler<'js>(
 /// window-reflecting set here, so the element has no slot of its own. A
 /// document with no browsing context answers null, and a set is ignored
 /// (<https://html.spec.whatwg.org/multipage/webappapis.html#window-reflecting-body-element-event-handler-set>,
-/// <https://html.spec.whatwg.org/multipage/webappapis.html#the-event-handler-processing-algorithm>).
+/// <https://html.spec.whatwg.org/multipage/dom.html#body-element-event-handlers>).
 pub(crate) fn get_window_reflecting_handler<'js>(
     ctx: Ctx<'js>,
     node: Value<'js>,
@@ -1070,7 +1082,8 @@ fn get_handler_in<'js>(
 }
 
 /// Stores the handler property `name` on the window (`None` target) or on
-/// `target`; `null` and `undefined` clear it.
+/// `target`. A non-object clears it, including `null` and `undefined`
+/// (<https://webidl.spec.whatwg.org/#LegacyTreatNonObjectAsNull>).
 fn set_handler<'js>(
     ctx: &Ctx<'js>,
     target: Option<NodeId>,

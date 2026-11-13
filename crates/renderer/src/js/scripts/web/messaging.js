@@ -1581,20 +1581,44 @@ Object.defineProperty(globalThis, 'name', {
 (function() {
   const names = host.__tb_handlerNames;
   if (names === undefined) return;
+  // `Document`, `HTMLElement`, `SVGElement` and `MathMLElement` all include
+  // `GlobalEventHandlers`, so the same accessors land on each prototype
+  // (<https://html.spec.whatwg.org/multipage/dom.html#documents>,
+  // <https://html.spec.whatwg.org/multipage/webappapis.html#event-handlers>,
+  // <https://w3c.github.io/mathml-core/#dom-mathmlelement>).
+  const elementProtos = [
+    globalThis.Document.prototype,
+    globalThis.HTMLElement.prototype,
+    globalThis.SVGElement.prototype,
+  ];
+  if (globalThis.MathMLElement) elementProtos.push(globalThis.MathMLElement.prototype);
   for (const name of names) {
+    // `onpointerrawupdate` is `[SecureContext]`, so an insecure origin must
+    // not expose it
+    // (<https://w3c.github.io/pointerevents/#extensions-to-the-globaleventhandlers-mixin>).
+    if (name === 'onpointerrawupdate' && !globalThis.isSecureContext) continue;
+    // `onmouseenter` and `onmouseleave` are `[LegacyLenientThis]`: a wrong
+    // `this` reads undefined and ignores writes
+    // (<https://webidl.spec.whatwg.org/#LegacyLenientThis>).
+    const lenient = name === 'onmouseenter' || name === 'onmouseleave';
     Object.defineProperty(globalThis, name, {
-      get() { return host.__tbGetWindowHandler(name); },
-      set(value) { host.__tbSetWindowHandler(name, value); },
+      get() { return lenient && this !== globalThis ? undefined : host.__tbGetWindowHandler(name); },
+      set(value) {
+        if (lenient && this !== globalThis) return;
+        host.__tbSetWindowHandler(name, value);
+      },
       enumerable: true, configurable: true,
     });
-    // `Document includes GlobalEventHandlers`, so the same accessors land on
-    // `Document.prototype`, with the handler stored against the document node
-    // (<https://html.spec.whatwg.org/multipage/dom.html#documents>,
-    // <https://html.spec.whatwg.org/multipage/webappapis.html#event-handlers>).
-    for (const proto of [globalThis.Document.prototype, globalThis.HTMLElement.prototype, globalThis.SVGElement.prototype]) {
+    for (const proto of elementProtos) {
       Object.defineProperty(proto, name, {
-        get() { return host.__tbGetNodeHandler(this, name); },
-        set(value) { host.__tbSetNodeHandler(this, name, value); },
+        get() {
+          if (lenient && !(this instanceof Node)) return undefined;
+          return host.__tbGetNodeHandler(this, name);
+        },
+        set(value) {
+          if (lenient && !(this instanceof Node)) return;
+          host.__tbSetNodeHandler(this, name, value);
+        },
         enumerable: true, configurable: true,
       });
     }
@@ -1611,9 +1635,18 @@ Object.defineProperty(globalThis, 'name', {
   // `Document` declares a few handlers of its own, which no element shares
   // (<https://html.spec.whatwg.org/multipage/dom.html#the-document-object>).
   for (const name of host.__tb_documentHandlerNames || []) {
+    // `onreadystatechange` is `[LegacyLenientThis]`
+    // (<https://html.spec.whatwg.org/multipage/dom.html#the-document-object>).
+    const lenient = name === 'onreadystatechange';
     Object.defineProperty(globalThis.Document.prototype, name, {
-      get() { return host.__tbGetNodeHandler(this, name); },
-      set(value) { host.__tbSetNodeHandler(this, name, value); },
+      get() {
+        if (lenient && !(this instanceof Document)) return undefined;
+        return host.__tbGetNodeHandler(this, name);
+      },
+      set(value) {
+        if (lenient && !(this instanceof Document)) return;
+        host.__tbSetNodeHandler(this, name, value);
+      },
       enumerable: true, configurable: true,
     });
   }
@@ -1624,7 +1657,7 @@ Object.defineProperty(globalThis, 'name', {
   // <https://html.spec.whatwg.org/multipage/dom.html#body-element-event-handlers>).
   const windowReflecting = [
     ...(host.__tb_windowHandlerNames || []),
-    'onblur', 'onerror', 'onfocus', 'onload', 'onresize', 'onscroll',
+    ...(host.__tb_bodyWindowHandlers || []),
   ];
   for (const proto of [globalThis.HTMLBodyElement.prototype, globalThis.HTMLFrameSetElement.prototype]) {
     for (const name of windowReflecting) {

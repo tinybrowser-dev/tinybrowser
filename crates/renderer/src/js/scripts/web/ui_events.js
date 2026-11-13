@@ -5,7 +5,12 @@
 // spec's properties.
 
 const __tbUIEventData = host.slots('tinybrowser.uievent.data');
-const __tbFreshUIEvent = () => ({ view: null, detail: 0 });
+const __tbFreshUIEvent = () => ({ view: null, detail: 0, which: 0 });
+// `unsigned long` converts with ToUint32: a string is coerced, a negative or
+// fractional number wraps, and NaN is zero
+// (<https://webidl.spec.whatwg.org/#es-unsigned-long>).
+const __tbToUnsignedLong = value =>
+  value === undefined ? 0 : (__tbNumberCtor(value) >>> 0);
 const __tbUIEventConstructor = globalThis.UIEvent = class UIEvent extends Event {
   constructor(type, init) {
     if (arguments.length < 1) {
@@ -13,11 +18,18 @@ const __tbUIEventConstructor = globalThis.UIEvent = class UIEvent extends Event 
     }
     init = init || {};
     const event = __tbConstruct(__tbEventConstructor, [type, init], new.target);
-    __tbUIEventData.set(event, { view: init.view || null, detail: init.detail || 0 });
+    __tbUIEventData.set(event, {
+      view: init.view || null,
+      detail: init.detail || 0,
+      // `which` is a legacy `UIEvent` attribute the init dictionary carries
+      // (<https://w3c.github.io/uievents/#dom-uievent-which>).
+      which: __tbToUnsignedLong(init.which),
+    });
     return event;
   }
   get view() { return __tbEventEntry(this, __tbUIEventData, __tbFreshUIEvent).view; }
   get detail() { return __tbEventEntry(this, __tbUIEventData, __tbFreshUIEvent).detail; }
+  get which() { return __tbEventEntry(this, __tbUIEventData, __tbFreshUIEvent).which; }
 };
 Object.defineProperty(globalThis.UIEvent.prototype, Symbol.toStringTag, { value: 'UIEvent', writable: false, enumerable: false, configurable: true });
 
@@ -131,7 +143,7 @@ const __tbKeyboardEventData = host.slots('tinybrowser.keyboardevent.data');
 const __tbFreshKeyboardEvent = () => ({
   key: '', code: '', location: 0,
   ctrlKey: false, shiftKey: false, altKey: false, metaKey: false,
-  repeat: false, isComposing: false, keyCode: 0, charCode: 0, which: 0,
+  repeat: false, isComposing: false, keyCode: 0, charCode: 0,
 });
 globalThis.KeyboardEvent = class KeyboardEvent extends UIEvent {
   constructor(type, init) {
@@ -150,11 +162,6 @@ globalThis.KeyboardEvent = class KeyboardEvent extends UIEvent {
         repeat: !!init.repeat, isComposing: !!init.isComposing,
         keyCode: init.keyCode === undefined ? (key.length === 1 ? key.charCodeAt(0) : 0) : init.keyCode,
         charCode: init.charCode || 0,
-        // `which` is a legacy member the init dictionary carries, so a page
-        // can construct one directly; the getter falls back to `keyCode`
-        // (<https://w3c.github.io/uievents/#dom-keyboardeventinit-which>,
-        // <https://w3c.github.io/uievents/#dom-keyboardevent-which>).
-        which: init.which === undefined ? 0 : init.which,
     });
     return event;
   }
@@ -169,13 +176,6 @@ globalThis.KeyboardEvent = class KeyboardEvent extends UIEvent {
   get isComposing() { return __tbEventEntry(this, __tbKeyboardEventData, __tbFreshKeyboardEvent).isComposing; }
   get keyCode() { return __tbEventEntry(this, __tbKeyboardEventData, __tbFreshKeyboardEvent).keyCode; }
   get charCode() { return __tbEventEntry(this, __tbKeyboardEventData, __tbFreshKeyboardEvent).charCode; }
-  // The legacy alias reports an explicitly constructed value first, then
-  // `keyCode`, then `charCode` for a keypress event
-  // (<https://w3c.github.io/uievents/#dom-keyboardevent-which>).
-  get which() {
-    const stored = __tbEventEntry(this, __tbKeyboardEventData, __tbFreshKeyboardEvent);
-    return stored.which || stored.keyCode || stored.charCode;
-  }
   getModifierState(key) {
     return { Alt: !!this.altKey, Control: !!this.ctrlKey, Meta: !!this.metaKey, Shift: !!this.shiftKey }[__tbStringCtor(key)] || false;
   }

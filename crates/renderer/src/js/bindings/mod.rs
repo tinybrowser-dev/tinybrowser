@@ -924,6 +924,8 @@ fn install_document(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
         .set("__tb_windowHandlerNames", WINDOW_HANDLER_NAMES.to_vec())?;
     crate::js::bridge::object(ctx)?
         .set("__tb_documentHandlerNames", DOCUMENT_HANDLER_NAMES.to_vec())?;
+    crate::js::bridge::object(ctx)?
+        .set("__tb_bodyWindowHandlers", BODY_WINDOW_HANDLERS.to_vec())?;
     crate::js::bridge::object(ctx)?.set(
         "__tbGetNodeHandler",
         rquickjs::prelude::Func::from(get_node_handler),
@@ -2986,36 +2988,58 @@ mod realm_tests {
             "<!doctype html><p></p>",
         );
         let realm = JsRealm::new(&shared.handle(), world, stop).expect("realm");
-        let result = realm
-            .eval(
-                r#"
-                const div = document.createElement('div');
-                const fresh = div.onanimationend === null && div.onwebkitanimationend === null;
-                div.onclick = "a string clears the handler";
-                const cleared = div.onclick === null;
-                const fired = [];
-                div.onanimationend = () => fired.push('plain');
-                div.onwebkitanimationend = () => fired.push('prefixed');
-                div.dispatchEvent(new AnimationEvent('webkitAnimationEnd'));
-                [
-                  fresh,
-                  cleared,
-                  div.onanimationend !== null,
-                  div.onwebkitanimationend !== null,
-                  div.onanimationend !== div.onwebkitanimationend,
-                  fired.join('+'),
-                  new KeyboardEvent('x', { which: 7 }).which,
-                  typeof AnimationEvent === 'function',
-                  typeof TransitionEvent === 'function',
-                  'onmessage' in window && !('onmessage' in div),
-                  'onreadystatechange' in document,
-                ].join(',');
-                "#,
-            )
-            .expect("eval");
+        let eval = |source: &str| realm.eval(source).expect("eval");
+        eval("window.div = document.createElement('div')");
         assert_eq!(
-            result,
-            "true,true,true,true,true,prefixed,7,true,true,true,true"
+            eval("div.onanimationend === null && div.onwebkitanimationend === null"),
+            "true",
+            "a fresh element's handlers read null"
+        );
+        eval("div.onclick = 'a string clears the handler'");
+        assert_eq!(
+            eval("div.onclick === null"),
+            "true",
+            "a non-object assignment clears the handler"
+        );
+        eval("div.onanimationend = () => fired.push('plain'); window.fired = []");
+        eval("div.onwebkitanimationend = () => fired.push('prefixed')");
+        assert_eq!(
+            eval(
+                "div.onanimationend !== null && div.onwebkitanimationend !== null && div.onanimationend !== div.onwebkitanimationend"
+            ),
+            "true",
+            "the unprefixed and prefixed handlers are separate slots"
+        );
+        eval("div.dispatchEvent(new AnimationEvent('webkitAnimationEnd'))");
+        assert_eq!(
+            eval("fired.join('+')"),
+            "prefixed",
+            "a prefixed event reaches only the prefixed handler"
+        );
+        assert_eq!(
+            eval("new KeyboardEvent('x', { which: 7 }).which"),
+            "7",
+            "KeyboardEvent inherits the UIEvent which member"
+        );
+        assert_eq!(
+            eval("new UIEvent('x', { which: '9' }).which"),
+            "9",
+            "which converts through unsigned long"
+        );
+        assert_eq!(
+            eval("typeof AnimationEvent === 'function' && typeof TransitionEvent === 'function'"),
+            "true",
+            "the animation and transition event interfaces exist"
+        );
+        assert_eq!(
+            eval("'onmessage' in window && !('onmessage' in div)"),
+            "true",
+            "WindowEventHandlers stays off elements"
+        );
+        assert_eq!(
+            eval("'onreadystatechange' in document"),
+            "true",
+            "Document declares its own handlers"
         );
         drop(realm);
         drop(shared);
