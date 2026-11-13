@@ -1718,3 +1718,32 @@ document-root, and `isIntersecting`-change files each gain. The one v2
 occlusion case the stub passed by accident
 (`position-absolute-overflow-visible-and-not-visible`) is restored by the
 per-axis clip.
+
+`ResizeObserver` now exists. It was missing entirely (`ResizeObserver is not
+defined`), so a component that sized itself from its own box never received an
+observation.
+
+The shim measures the content box, border box, and device-pixel content box
+once per frame and delivers only the boxes whose size changed, plus the initial
+observation (`crates/renderer/src/js/scripts/web/observers.js`). An entry
+carries `contentRect` (the content box relative to the padding box, so its
+`x`/`y` are the padding offsets), the logical `contentBoxSize` and
+`borderBoxSize`, and `target`. Observed boxes are content-box by default, a
+second `observe()` with a different box replaces the first, and callbacks that
+resize are measured again in the same frame up to five passes before the
+loop-error event is dispatched. The frame loop stops after 20 idle frames so a
+reftest settles.
+
+Evidence: `resize-observer` goes from **5 to 50 subtests** and 14 to 33
+passing files, with no lost subtests. `observe-001` through `observe-015` pass
+(content, border, and device-pixel boxes, padding, box sizing, overriding),
+plus `observe-017`, `observe-019`, `ordering`, `scrollbars-2`,
+`calculate-depth-for-node`, `observer-in-cross-origin-frame`, and
+`multiple-observers-with-mutation-crash`; `notify.html` passes 14 of 15.
+
+The remaining failures are layout gaps, recorded in `docs/limitations.md` and
+`docs/upstream.md`: Blitz keeps a block's size when its `display` becomes
+`inline` (so no notification is due), layout rounds fractional sizes
+(`notify.html`), there is no scrollbar gutter, CSS `zoom` and SVG boxes are
+approximate, and the resize loop's depth-limited delivery order and
+`window.onerror` lifecycle are not modelled.

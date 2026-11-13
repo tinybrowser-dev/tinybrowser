@@ -452,3 +452,321 @@
     value: IntersectionObserver, writable: true, configurable: true,
   });
 }
+
+// Resize observation: content, border, and device-pixel box sizes, delivered
+// after layout
+// <https://drafts.csswg.org/resize-observer/#resize-observer-interface>.
+{
+  const observers = host.slots('ResizeObserver');
+  const entrySlots = host.slots('ResizeObserverEntry');
+  const sizeSlots = host.slots('ResizeObserverSize');
+  // Captured at realm init so a page-patched builtin cannot retarget the
+  // observer's bookkeeping after it exists.
+  const requestFrame = globalThis.requestAnimationFrame;
+  const computedStyle = globalThis.getComputedStyle;
+  const ErrorEventCtor = globalThis.ErrorEvent;
+  const dispatchEvent = globalThis.EventTarget.prototype.dispatchEvent;
+  const create = Object.create;
+  const freeze = __tbFreeze;
+  const define = __tbDefineProperty;
+  const apply = __tbApply;
+  const PrivateSet = __tbPrivateSet;
+  const parseFloatValue = globalThis.parseFloat;
+  const min = Math.min;
+  const max = Math.max;
+  const floor = Math.floor;
+
+  const live = PrivateSet();
+  let frameHandle = null;
+  // Consecutive frames without a size change. The loop stops after this many
+  // so an observed target does not keep the page's task queue busy forever
+  // (a reftest never settles otherwise); `observe()` and a delivery restart
+  // it.
+  const IDLE_FRAMES = 20;
+  let idleFrames = 0;
+  // A resize callback that resizes again is notified in the same frame up to
+  // this many passes; what is left then is reported as a loop error
+  // (<https://drafts.csswg.org/resize-observer/#calculate-depth-for-node>).
+  const MAX_DEPTH = 5;
+
+  const lengthPx = value => {
+    const number = parseFloatValue(value);
+    return number === number ? number : 0;
+  };
+  const isVertical = style =>
+    style.writingMode === 'vertical-rl' || style.writingMode === 'vertical-lr'
+    || style.writingMode === 'sideways-rl' || style.writingMode === 'sideways-lr';
+  // The three observable boxes of an element. `contentRect` is the content box
+  // relative to the padding box, which is what its `x`/`y` offsets report
+  // (<https://drafts.csswg.org/resize-observer/#resize-observer-entry-interface>).
+  const measure = element => {
+    const rect = element.getBoundingClientRect();
+    const style = computedStyle(element);
+    const borderWidth = rect.right - rect.left;
+    const borderHeight = rect.bottom - rect.top;
+    const left = lengthPx(style.paddingLeft);
+    const top = lengthPx(style.paddingTop);
+    const contentWidth = max(0, borderWidth
+      - lengthPx(style.borderLeftWidth) - lengthPx(style.borderRightWidth)
+      - lengthPx(style.paddingLeft) - lengthPx(style.paddingRight));
+    const contentHeight = max(0, borderHeight
+      - lengthPx(style.borderTopWidth) - lengthPx(style.borderBottomWidth)
+      - lengthPx(style.paddingTop) - lengthPx(style.paddingBottom));
+    const vertical = isVertical(style);
+    return {
+      borderWidth,
+      borderHeight,
+      contentWidth,
+      contentHeight,
+      contentLeft: left,
+      contentTop: top,
+      vertical,
+    };
+  };
+  const boxSize = (measured, box) => {
+    if (box === 'border-box') {
+      return {
+        inline: measured.vertical ? measured.borderHeight : measured.borderWidth,
+        block: measured.vertical ? measured.borderWidth : measured.borderHeight,
+      };
+    }
+    if (box === 'device-pixel-content-box') {
+      const ratio = globalThis.devicePixelRatio || 1;
+      return {
+        inline: floor((measured.vertical ? measured.contentHeight : measured.contentWidth) * ratio),
+        block: floor((measured.vertical ? measured.contentWidth : measured.contentHeight) * ratio),
+      };
+    }
+    return {
+      inline: measured.vertical ? measured.contentHeight : measured.contentWidth,
+      block: measured.vertical ? measured.contentWidth : measured.contentHeight,
+    };
+  };
+
+  const rectPrototype = {
+    toJSON() {
+      return {
+        x: this.x, y: this.y, width: this.width, height: this.height,
+        top: this.top, right: this.right, bottom: this.bottom, left: this.left,
+      };
+    },
+  };
+  const makeRect = (x, y, width, height) => {
+    const value = create(rectPrototype);
+    value.x = x;
+    value.y = y;
+    value.width = width;
+    value.height = height;
+    value.left = x;
+    value.top = y;
+    value.right = x + width;
+    value.bottom = y + height;
+    return value;
+  };
+
+  function ResizeObserverSize() {
+    throw new TypeError('Illegal constructor');
+  }
+  const sizePrototype = {
+    get inlineSize() { return sizeSlots.get(this).inlineSize; },
+    get blockSize() { return sizeSlots.get(this).blockSize; },
+  };
+  ResizeObserverSize.prototype = sizePrototype;
+  define(sizePrototype, Symbol.toStringTag, {
+    value: 'ResizeObserverSize', writable: false, enumerable: false, configurable: true,
+  });
+  define(globalThis, 'ResizeObserverSize', {
+    value: ResizeObserverSize, writable: true, configurable: true,
+  });
+  const makeSize = (inline, block) => {
+    const value = create(sizePrototype);
+    sizeSlots.set(value, { inlineSize: inline, blockSize: block });
+    return value;
+  };
+
+  function ResizeObserverEntry() {
+    throw new TypeError('Illegal constructor');
+  }
+  const entryPrototype = {
+    get target() { return entrySlots.get(this).target; },
+    get contentRect() { return entrySlots.get(this).contentRect; },
+    get contentBoxSize() { return entrySlots.get(this).contentBoxSize; },
+    get borderBoxSize() { return entrySlots.get(this).borderBoxSize; },
+    get devicePixelContentBoxSize() { return entrySlots.get(this).devicePixelContentBoxSize; },
+  };
+  ResizeObserverEntry.prototype = entryPrototype;
+  define(entryPrototype, Symbol.toStringTag, {
+    value: 'ResizeObserverEntry', writable: false, enumerable: false, configurable: true,
+  });
+  define(globalThis, 'ResizeObserverEntry', {
+    value: ResizeObserverEntry, writable: true, configurable: true,
+  });
+  const makeEntry = (target, measured) => {
+    const content = boxSize(measured, 'content-box');
+    const border = boxSize(measured, 'border-box');
+    const device = boxSize(measured, 'device-pixel-content-box');
+    const value = create(entryPrototype);
+    entrySlots.set(value, {
+      target,
+      contentRect: makeRect(measured.contentLeft, measured.contentTop,
+                            measured.contentWidth, measured.contentHeight),
+      contentBoxSize: freeze([makeSize(content.inline, content.block)]),
+      borderBoxSize: freeze([makeSize(border.inline, border.block)]),
+      devicePixelContentBoxSize: freeze([makeSize(device.inline, device.block)]),
+    });
+    return value;
+  };
+
+  const brand = observer => {
+    const data = observers.get(observer);
+    if (!data) throw new TypeError('Illegal invocation');
+    return data;
+  };
+  const isElement = value => value !== null && typeof value === 'object'
+    && value.nodeType === 1;
+
+  // Deliver every size change that exists at this instant. Returns whether a
+  // callback ran, so the caller can repeat after callback-driven layout
+  // changes.
+  const deliverOnce = () => {
+    let delivered = false;
+    for (const observer of live.values()) {
+      const data = observers.get(observer);
+      if (!data || data.registrations.length === 0) continue;
+      const entries = [];
+      for (const registration of data.registrations) {
+        const measured = measure(registration.target);
+        const size = boxSize(measured, registration.box);
+        if (registration.delivered
+            && size.inline === registration.inline
+            && size.block === registration.block) {
+          continue;
+        }
+        registration.delivered = true;
+        registration.inline = size.inline;
+        registration.block = size.block;
+        entries.push(makeEntry(registration.target, measured));
+      }
+      if (entries.length === 0) continue;
+      delivered = true;
+      try {
+        apply(data.callback, observer, [entries, observer]);
+      } catch (error) {
+        // Report the exception as an uncaught error instead of breaking the
+        // observation loop
+        // (<https://html.spec.whatwg.org/multipage/webappapis.html#report-the-exception>).
+        globalThis.setTimeout(() => { throw error; }, 0);
+      }
+    }
+    return delivered;
+  };
+  const hasPending = () => {
+    for (const observer of live.values()) {
+      const data = observers.get(observer);
+      if (!data) continue;
+      for (const registration of data.registrations) {
+        if (!registration.delivered) return true;
+        const size = boxSize(measure(registration.target), registration.box);
+        if (size.inline !== registration.inline || size.block !== registration.block) {
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+  const tick = () => {
+    frameHandle = null;
+    let any = false;
+    for (let depth = 0; depth < MAX_DEPTH; depth++) {
+      if (!deliverOnce()) break;
+      any = true;
+    }
+    idleFrames = any ? 0 : idleFrames + 1;
+    if (any && hasPending()) {
+      // Undelivered notifications after the depth limit
+      // (<https://drafts.csswg.org/resize-observer/#deliver-resize-loop-error>).
+      if (typeof ErrorEventCtor === 'function') {
+        const event = new ErrorEventCtor('error', {
+          message: 'ResizeObserver loop completed with undelivered notifications.',
+        });
+        apply(dispatchEvent, globalThis, [event]);
+      }
+    }
+    if (idleFrames < IDLE_FRAMES) {
+      for (const observer of live.values()) {
+        const data = observers.get(observer);
+        if (data && data.registrations.length > 0) {
+          frameHandle = requestFrame(tick);
+          return;
+        }
+      }
+    }
+  };
+  const ensureFrame = () => {
+    if (frameHandle === null) frameHandle = requestFrame(tick);
+  };
+
+  function ResizeObserver(callback) {
+    if (!(this instanceof ResizeObserver)) throw new TypeError('Illegal constructor');
+    if (typeof callback !== 'function') throw new TypeError('callback must be callable');
+    observers.set(this, { callback, registrations: [] });
+    live.add(this);
+  }
+  const prototype = ResizeObserver.prototype;
+  define(prototype, 'observe', {
+    value(target, options) {
+      const data = brand(this);
+      if (!isElement(target)) throw new TypeError('target must be an Element');
+      let box = 'content-box';
+      if (options !== undefined && options !== null) {
+        const init = Object(options);
+        if (init.box !== undefined) box = String(init.box);
+      }
+      if (box !== 'content-box' && box !== 'border-box'
+          && box !== 'device-pixel-content-box') {
+        throw new TypeError('box must be "content-box", "border-box", or "device-pixel-content-box"');
+      }
+      for (const registration of data.registrations) {
+        if (registration.target === target) {
+          // A second `observe()` with a different box replaces the first
+          // (`observe-015.html`).
+          registration.box = box;
+          return;
+        }
+      }
+      data.registrations.push({
+        target, box, delivered: false, inline: 0, block: 0,
+      });
+      idleFrames = 0;
+      ensureFrame();
+    },
+    writable: true, enumerable: true, configurable: true,
+  });
+  define(prototype, 'unobserve', {
+    value(target) {
+      const data = brand(this);
+      for (let index = 0; index < data.registrations.length; index++) {
+        if (data.registrations[index].target === target) {
+          data.registrations.splice(index, 1);
+          return;
+        }
+      }
+    },
+    writable: true, enumerable: true, configurable: true,
+  });
+  define(prototype, 'disconnect', {
+    value() {
+      brand(this).registrations.length = 0;
+    },
+    writable: true, enumerable: true, configurable: true,
+  });
+  define(prototype, 'constructor', {
+    value: ResizeObserver, writable: true, configurable: true,
+  });
+  define(prototype, Symbol.toStringTag, {
+    value: 'ResizeObserver', writable: false, enumerable: false, configurable: true,
+  });
+  define(globalThis, 'ResizeObserver', {
+    value: ResizeObserver, writable: true, configurable: true,
+  });
+}

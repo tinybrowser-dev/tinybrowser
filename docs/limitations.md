@@ -189,6 +189,39 @@ What remains:
   intersecting (`display-none.html`), because the update has no rendered-box
   gate.
 
+## Resize observation
+
+`ResizeObserver` lives in `crates/renderer/src/js/scripts/web/observers.js`.
+It measures the content, border, and device-pixel boxes per frame and delivers
+only boxes whose size changed, including the initial observation, with
+`contentRect` relative to the padding box and logical `inlineSize`/`blockSize`
+for vertical writing modes. Callback-driven resizes are measured again in the
+same frame up to five passes, and undelivered work after that dispatches the
+`ResizeObserver loop completed with undelivered notifications.` error.
+
+What remains:
+
+- The loop stops after 20 idle frames so a reftest can settle. A size change
+  that arrives later than that window, and that is not preceded by a new
+  `observe()`, is missed; browsers run the observation at every rendering
+  opportunity.
+- The depth-limited delivery order of the resize loop is not modelled, so
+  `eventloop.html` reports an extra entry per iteration, and the loop error is
+  not raised in `change-layout-in-error.html`.
+- An inline element keeps its block size in Blitz's layout, so changing
+  `display` to `inline` produces no notification (`observe-016.html`); the
+  browser reports a 0x0 box.
+- `devicePixelContentBoxSize` uses a device-pixel ratio of 1 and the layout's
+  box size, so the `zoom` files disagree about which members are scaled
+  (`zoom.html`, `observe-020.html`).
+- No scrollbar gutter exists in layout, so `scrollbars.html` cannot subtract
+  one, and SVG boxes are measured from their CSS box only
+  (`svg.html`, `svg-with-css-box-*`).
+- A fragment-triggered notification (`fragments.html`) needs fragment-aware
+  content-box sizing, and a callback exception is rethrown in the observer's
+  realm rather than reported at the realm that created the callback
+  (`callback-cross-realm-report-exception.html`).
+
 ## Element offset metrics
 
 `offsetParent`, `offsetLeft`, `offsetTop`, `offsetWidth`, and `offsetHeight`
