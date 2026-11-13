@@ -136,6 +136,64 @@ The `scroll`/`scrollTo`/`scrollBy`/`scrollIntoView` methods return
 draft returns `Promise<ScrollResult>` with an `interrupted` member, so tests
 written against that draft fail regardless of scrolling behavior.
 
+## Element offset metrics
+
+`offsetParent`, `offsetLeft`, `offsetTop`, `offsetWidth`, and `offsetHeight`
+follow the CSSOM View algorithms and share Blitz's offset rectangle, which
+handles the first fragment box of a non-atomic inline. Remaining gaps:
+
+- Table layout ignores captions ("Probably a table caption: ignore" in
+  `third_party/blitz/packages/blitz-dom/src/layout/table.rs`), so a table's
+  `offsetWidth`/`offsetHeight` exclude the caption and a cell's `offsetTop` does
+  not account for it. `offsetTopLeft-table-caption.html` fails and
+  `table-offset-props.html` passes 5 of 13. Caption layout belongs upstream
+  (`docs/upstream.md`).
+- CSS `zoom` is parsed but never applied to layout, so offsets and sizes are
+  unscaled; `offsetTop-offsetLeft-with-zoom.html` cannot pass. The `zoom`
+  property is not in the current CSSOM View algorithms, which apply `unscaled`
+  coordinates to `offsetTop`/`offsetLeft`, so the property needs layout support
+  before those tests can distinguish the rules. `offsetParent`'s "different
+  effective zoom" clause is unimplemented for the same reason; Chrome does not
+  fire it either (probed), so no test covers it.
+- `writing-mode` is disabled in this build: the style crate gates it behind the
+  Servo pref `layout.css.writing-mode.enabled` and `blitz-dom`'s `writing-mode`
+  feature (layout in each box's writing-mode frame) is off, so
+  `CSS.supports("writing-mode", "vertical-lr")` is false, the computed value is
+  absent, and layout is horizontal-tb only. `offsetTopLeft-trailing-space-inline.html`
+  passes 1 of 3 because its vertical cases lay out as horizontal, and the
+  written-mode correction for an empty inline has no rendered effect to check.
+- An empty non-atomic inline has no fragment box: Blitz records fragments only
+  for glyphs and atomic inline boxes. `offsetLeft`/`offsetTop` therefore
+  approximate its position from the next boxed sibling's first fragment, or
+  from the previous sibling's end along the inline axis. The approximation
+  picks the sibling's border-box top rather than the line-box top, so it is off
+  when an atomic inline is baseline-aligned in a taller line
+  (`offsetTop-offsetLeft-nested-offsetParents.html` reads 17 where the line top
+  is 10), and it is wrong across a line break.
+- `offsetParent`'s walk is shadow-including, not the flat tree, for the reason
+  recorded under `## CSS content-visibility`. The spec's "closed-shadow-hidden
+  and fixed" early return cannot be evaluated either: the walk crosses a closed
+  shadow root to its host, where the hidden relationship is not observable, and
+  shadow-tree content has no computed styles. Blitz's own
+  `Node::offset_top_left` also stops only at positioned, `body`, `td`, and `th`
+  ancestors, so it does not see a `transform`/`filter`/`contain` fixed-position
+  containing block or a `table`; inside such an ancestor the offset rectangle
+  and `offsetParent` can disagree (`docs/upstream.md`).
+- `position: sticky` has no offset in layout, so a stuck box's `offsetLeft`
+  reports its unstuck position. `position-sticky-right.html` and
+  `position-sticky-bottom.html` compare that value against the containing block
+  and now fail the assertions that previously passed only because `offsetLeft`
+  was always 0 (`docs/upstream.md`).
+- `display: ruby-text` is a Gecko-only `DisplayInside` variant in the pinned
+  Stylo, so the declaration is dropped and the previous `display` stays.
+  `align-content-block-display-coverage.html`'s unsupported-value case reads
+  that stale display through `offsetTop` and fails; the other seven cases pass
+  now that `offsetTop` reports the aligned position.
+- `scrollParent` is not implemented. The current CSSOM View draft declares
+  `readonly attribute Element? scrollParent`, but the pinned WPT tests call
+  `element.scrollParent()` and no shipping browser implements either shape, so
+  the API is deferred until the surface settles (`docs/priorities.md`).
+
 ## Missing surfaces
 
 Dedicated workers run on their own OS thread with their own `QuickJS`

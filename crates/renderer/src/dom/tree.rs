@@ -64,6 +64,22 @@ pub(crate) fn shadow_including_parent(
     }
 }
 
+/// `start` and its ancestors, crossing a shadow root to its host
+/// (<https://dom.spec.whatwg.org/#concept-shadow-including-parent>).
+///
+/// CSSOM View's visibility and `offsetParent` algorithms walk the flat tree.
+/// Blitz has no slot assignment, so a slotted element's slot is missing from
+/// this chain; the shadow-including chain is the closest walk the engine can
+/// express (`docs/limitations.md`).
+pub(crate) fn shadow_including_ancestors(
+    base: &blitz_dom::BaseDocument,
+    start: Option<BlitzNodeId>,
+) -> impl Iterator<Item = &blitz_dom::Node> + '_ {
+    std::iter::successors(start.and_then(|id| base.get_node(id)), |node| {
+        shadow_including_parent(base, node.id).and_then(|parent| base.get_node(parent))
+    })
+}
+
 /// The shadow-including root of `id`
 /// (<https://dom.spec.whatwg.org/#concept-shadow-including-root>).
 pub(crate) fn shadow_including_root(

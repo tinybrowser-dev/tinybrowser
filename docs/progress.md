@@ -1484,3 +1484,71 @@ WebIDL dictionary: a dictionary with more than three plain `bool` fields gets a
 reasoned `#[expect]`, and `dictionary_field_is_bool` is shared with the field
 emitter so the count cannot drift from the type. The dictionary contract test
 now asserts the attribute on a four-bool dictionary.
+
+The CSSOM View element metrics are implemented: `HTMLElement.offsetParent`,
+`offsetLeft`, and `offsetTop`, and `offsetWidth`/`offsetHeight` now share one
+offset rectangle (`crates/renderer/src/js/bindings/node/element.rs`).
+`offsetParent` walks the shadow-including ancestors for the nearest containing
+block, the body rule, a static `td`/`th`/`table`, and the fixed-position
+containing-block rule; `offsetLeft`/`offsetTop` read Blitz's
+`BaseDocument::offset_rect`, which measures from the offset parent's padding
+edge and handles the first fragment box of a non-atomic inline. `offsetWidth`
+and `offsetHeight` no longer read the layout size directly, so an inline
+element with several line boxes reports its first fragment's union rather than
+zero.
+
+Evidence: `css/cssom-view` 1012 to **1070 of 1758** against the checkVisibility
+run, with **0 lost subtests** and no dropped files. `offsetTopLeft-border-box`
+gains all 28, `offsetTopLeftInScrollableParent` 8, `offsetParent-body-and-html`
+6, `table-offset-props` 4 (1 to 5), `detached-element-geometry.window` 3,
+`subpixel-sizes-and-offsets.tentative` 3 (6 to 9), `offsetParent-fixed` 2,
+`offsetTopLeft-trailing-space-inline` 1, `offsetParent-block-in-inline` 1, and
+`offsetParent_element_test` 1 of its 2.
+
+Three rules came from the spec and the tests disagreeing with the renderer.
+Every `body` element answers null for `offsetParent` and 0 for
+`offsetLeft`/`offsetTop`, not only `document.body`: `offsetParent-body-and-html.html`
+requires it and Chrome agrees (probed with nested bodies), so the body rule
+tests the element's tag, not document identity. `transform-style: preserve-3d`
+establishes a containing block for all descendants even though the layout
+crate's predicate omits it, so the offset walk adds the rule locally and
+records that Taffy's hoisting does not, which leaves layout and `offsetParent`
+disagreeing inside such an ancestor (`docs/upstream.md`). `scrollParent` stays
+unimplemented: the draft declares an attribute and the pinned tests call a
+method, and no browser ships either, so there is nothing to match yet.
+
+Review folded into the slice. The box rule (`display: none` on the element or an
+ancestor, `display: contents`) is one predicate shared with `checkVisibility`,
+so a descendant of `display: none` answers 0 and null for the offset metrics
+instead of reporting a box, matching Chrome (probed). The algorithms moved to
+`js/bindings/node/offset.rs`, beside `scrolling.rs`, and
+`shadow_including_ancestors` moved next to `shadow_including_parent` in
+`dom/tree.rs`; the file also reuses `dom/tree.rs`'s `is_html_tag` instead of
+carrying its own tag tests. `offsetLeft`/`offsetTop` run one layout pass
+instead of two, and the empty-inline fallback sits beside the sibling scan it
+uses. The fixed-position containing-block branch now applies only to a
+`position: fixed` element whose containing block is an ancestor, as the spec's
+wording ("the element is in a fixed position containing block") reads and as
+Chrome answers for a static element inside a transform (probed); Chrome does
+not apply it to a fixed element with a nearer positioned ancestor, and that
+deviation is recorded in `docs/upstream.md`. A `display: contents` ancestor and
+a non-atomic inline ancestor no longer count as containing blocks, matching
+Chrome and the layout crate's `inline_containing_block_claims` (transforms and
+containment do not apply to non-atomic inlines). Blitz's `offset_rect` now
+reports a non-atomic inline's first fragment as the origin and the union of its
+fragments as the size, so a multi-line inline's `offsetLeft`/`offsetTop` match
+Chrome's first-line answer while `offsetWidth`/`offsetHeight` still span every
+line; the fork change is recorded in `docs/upstream.md`.
+
+The remaining gaps are recorded in `docs/limitations.md`: table captions are
+not laid out, CSS `zoom` is not applied, `writing-mode` is disabled by its
+Servo pref and the off `blitz-dom` feature, the empty-inline position is a
+sibling guess, and the fork's `offset_top_left` fixed-position-containing-block
+table does not match `offsetParent`. Three suites that read offset geometry
+changed as a side effect of reporting real values: `css/css-align` gains
+subtests that assert `content.offsetTop` (and loses the `display: ruby-text`
+probe, a Gecko-only display), `css/css-position`'s sticky tests now expose that
+sticky positioning has no layout offset, and `html/browsers`'
+`open-features-tokenization-noopener.html` errored with "script failed" in the
+battery run; a rerun of the file at the same build errors the same way, and the
+file is in the known `window.open` tokenization flake family.

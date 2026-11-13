@@ -13,6 +13,7 @@ use super::super::{
     wrap_node,
 };
 use super::forms::fixup_controls_on_insert;
+use super::offset::{cssom_round, has_associated_box};
 use crate::dom::adoption::materialize_children;
 use std::collections::HashSet;
 
@@ -28,7 +29,8 @@ use crate::dom::insertion::{
 };
 use crate::dom::serialization;
 use crate::dom::tree::{
-    BlitzId, NodeId, element_node_name, html_namespace, qualified_name, sibling,
+    BlitzId, NodeId, element_node_name, html_namespace, qualified_name, shadow_including_ancestors,
+    sibling,
 };
 use crate::dom_string::DomString;
 
@@ -600,14 +602,29 @@ impl<'js> html_element_generated::HTMLElement<'js> for JsNode {
         blur_node(&ctx, self.handle.get().0)
     }
 
+    // https://drafts.csswg.org/cssom-view/#dom-htmlelement-offsetparent
+    fn get_offset_parent(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
+        super::offset::offset_parent(ctx, self.handle.get().0)
+    }
+
+    // https://drafts.csswg.org/cssom-view/#dom-htmlelement-offsetleft
+    fn get_offset_left(&self, ctx: &Ctx<'js>) -> Result<i32> {
+        Ok(super::offset::offset_left(ctx, self.handle.get().0))
+    }
+
+    // https://drafts.csswg.org/cssom-view/#dom-htmlelement-offsettop
+    fn get_offset_top(&self, ctx: &Ctx<'js>) -> Result<i32> {
+        Ok(super::offset::offset_top(ctx, self.handle.get().0))
+    }
+
     // https://drafts.csswg.org/cssom-view/#dom-htmlelement-offsetwidth
     fn get_offset_width(&self, ctx: &Ctx<'js>) -> Result<i32> {
-        self.offset_width(ctx)
+        Ok(super::offset::offset_width(ctx, self.handle.get().0))
     }
 
     // https://drafts.csswg.org/cssom-view/#dom-htmlelement-offsetheight
     fn get_offset_height(&self, ctx: &Ctx<'js>) -> Result<i32> {
-        self.offset_height(ctx)
+        Ok(super::offset::offset_height(ctx, self.handle.get().0))
     }
 
     // https://html.spec.whatwg.org/multipage/dom.html#the-innertext-idl-attribute
@@ -1349,18 +1366,7 @@ impl JsNode {
         let Some(node) = base.get_node(id.node) else {
             return false;
         };
-        // `display: none` and `display: contents` remove this element's box;
-        // an ancestor's `display: none` removes every descendant's.
-        if !node.has_boxes()
-            || shadow_including_ancestors(base, node.parent).any(|ancestor| {
-                ancestor.primary_styles().is_some_and(|styles| {
-                    matches!(
-                        styles.clone_display().inside(),
-                        style::values::specified::box_::DisplayInside::None
-                    )
-                })
-            })
-        {
+        if !has_associated_box(base, node) {
             return false;
         }
 
@@ -1498,58 +1504,36 @@ impl JsNode {
     pub(super) fn client_width(&self, ctx: &Ctx<'_>) -> Result<i32> {
         if self.is_document_element(ctx)? {
             let (width, _) = world(ctx)?.borrow().viewport_size.get();
-            #[expect(
-                clippy::cast_precision_loss,
-                reason = "viewport sides are at most 4096, exactly representable"
-            )]
-            return Ok(cssom_round(width as f32));
+            return Ok(cssom_round(f64::from(width)));
         }
-        Ok(cssom_round(
+        Ok(cssom_round(f64::from(
             self.layout_metric(ctx, blitz_dom::Node::client_width)?,
-        ))
+        )))
     }
 
     // https://drafts.csswg.org/cssom-view/#dom-element-clientheight
     pub(super) fn client_height(&self, ctx: &Ctx<'_>) -> Result<i32> {
         if self.is_document_element(ctx)? {
             let (_, height) = world(ctx)?.borrow().viewport_size.get();
-            #[expect(
-                clippy::cast_precision_loss,
-                reason = "viewport sides are at most 4096, exactly representable"
-            )]
-            return Ok(cssom_round(height as f32));
+            return Ok(cssom_round(f64::from(height)));
         }
-        Ok(cssom_round(
+        Ok(cssom_round(f64::from(
             self.layout_metric(ctx, blitz_dom::Node::client_height)?,
-        ))
+        )))
     }
 
     // https://drafts.csswg.org/cssom-view/#dom-element-scrollwidth
     pub(super) fn scroll_width(&self, ctx: &Ctx<'_>) -> Result<i32> {
-        Ok(cssom_round(
+        Ok(cssom_round(f64::from(
             self.layout_metric(ctx, blitz_dom::Node::scroll_width)?,
-        ))
+        )))
     }
 
     // https://drafts.csswg.org/cssom-view/#dom-element-scrollheight
     pub(super) fn scroll_height(&self, ctx: &Ctx<'_>) -> Result<i32> {
-        Ok(cssom_round(
+        Ok(cssom_round(f64::from(
             self.layout_metric(ctx, blitz_dom::Node::scroll_height)?,
-        ))
-    }
-
-    // https://drafts.csswg.org/cssom-view/#dom-element-offsetwidth
-    pub(super) fn offset_width(&self, ctx: &Ctx<'_>) -> Result<i32> {
-        Ok(cssom_round(self.layout_metric(ctx, |node| {
-            node.final_layout().size.width
-        })?))
-    }
-
-    // https://drafts.csswg.org/cssom-view/#dom-element-offsetheight
-    pub(super) fn offset_height(&self, ctx: &Ctx<'_>) -> Result<i32> {
-        Ok(cssom_round(self.layout_metric(ctx, |node| {
-            node.final_layout().size.height
-        })?))
+        )))
     }
 
     pub(super) fn get_attribute<'js>(
@@ -2568,23 +2552,6 @@ pub(super) fn content_attr(ctx: &Ctx<'_>, id: NodeId, name: &str) -> Option<Stri
     })
 }
 
-/// `start` and its ancestors, crossing a shadow root to its host
-/// (<https://dom.spec.whatwg.org/#concept-shadow-including-parent>).
-///
-/// CSSOM View's visibility checks walk the flat tree. Blitz has no slot
-/// assignment, so a slotted element's slot is missing from this chain; the
-/// shadow-including chain is the closest walk the engine can express
-/// (`docs/limitations.md`).
-fn shadow_including_ancestors(
-    base: &blitz_dom::BaseDocument,
-    start: Option<BlitzId>,
-) -> impl Iterator<Item = &blitz_dom::Node> + '_ {
-    std::iter::successors(start.and_then(|id| base.get_node(id)), |node| {
-        crate::dom::tree::shadow_including_parent(base, node.id)
-            .and_then(|parent| base.get_node(parent))
-    })
-}
-
 /// Whether `data` is an element node, for
 /// [`document_first_child`](super::document::document_first_child) searches.
 pub(super) fn is_element_data(data: &NodeData) -> bool {
@@ -2872,14 +2839,6 @@ pub(super) fn set_cross_origin(
 /// Rounds a CSSOM View extent to the nearest integer, with non-finite values
 /// reading as zero
 /// (<https://drafts.csswg.org/cssom-view/#extension-to-the-element-interface>).
-pub(super) fn cssom_round(value: f32) -> i32 {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "float-to-int casts saturate and map NaN to zero"
-    )]
-    return value.round() as i32;
-}
-
 /// Current viewport offset for `id`'s document.
 /// <https://drafts.csswg.org/cssom-view/#scrolling-viewport>
 pub(super) fn viewport_offset(ctx: &Ctx<'_>, id: NodeId) -> Result<(f64, f64)> {
