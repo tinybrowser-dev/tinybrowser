@@ -351,6 +351,21 @@ Known gaps this engine fails honestly (no fork patch yet):
   invalidation maps record the exact elements whose style depends on the
   change, and this engine has none, so those arguments need that machinery
   rather than an ancestor flag. Open.
+- `blitz-dom` matches `:lang()`, `:root`, and `:empty` by the Selectors 4
+  rules: `:lang()` reads the nearest `lang`/`xml:lang` ancestor value and does
+  basic language-range filtering; `:root` matches only the document element,
+  so the top of a detached or shadow tree no longer matches; and `:empty`
+  ignores comments, processing instructions, and zero-length text. The
+  matcher's `match_non_ts_pseudo_class` had `Lang(_) => false`, so every
+  `:lang()` failed even after the DOM-side hooks were implemented. Fixed in
+  fork.
+- `blitz-dom` decides attribute-name case sensitivity from the document mode
+  rather than assuming HTML: `ElementData` carries whether its node document is
+  an HTML document, `DocumentMutator::create_element` stamps it from the
+  document node, and `HtmlDocument::from_xml` sets the document's mode to XML
+  before parsing. Without it, `[title]` matched `TITLE` in XHTML, and the
+  naive "walk to the document through the parent chain" version broke detached
+  elements, which have no document ancestor. Fixed in fork.
 - An `iframe` removal runs the child document's unload steps (`pagehide` then
   `unload`) before destroying its navigable. HTML says the removing steps
   "destroy a child navigable" and that this "happens without any unload events

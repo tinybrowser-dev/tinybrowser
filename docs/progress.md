@@ -1973,3 +1973,24 @@ Evidence: `domparsing` 543 to **687 subtests**, no lost subtests;
 subtests. The remaining 228 failures in `positional-methods.html` are the safe
 variants (`appendHTML` and friends) and the `Sanitizer` subtests, which
 `docs/limitations.md` records.
+Selector matching gained `:lang()`, `:root`, and `:empty`, and attribute names
+now follow the document's mode. All four are fork fixes in
+`third_party/blitz/packages/blitz-dom/src/stylo.rs`:
+
+- `:lang()` reads the nearest `lang`/`xml:lang` ancestor value and applies
+  basic language-range filtering. The matcher had `Lang(_) => false`, so
+  every `:lang()` failed even with the hooks that read the attribute.
+- `:root` matches the document element only. The old check treated the top of
+  any detached tree as a root, so `:root` matched detached and fragment
+  subtrees.
+- `:empty` ignores comments, processing instructions, and zero-length text.
+- Attribute-name case sensitivity reads the document mode. `ElementData`
+  carries it, `DocumentMutator::create_element` stamps it from the document
+  node, and `HtmlDocument::from_xml` sets XML mode before parsing, so XHTML
+  matches case-sensitively while a detached element created by an HTML
+  document stays case-insensitive.
+
+Evidence: `dom/nodes` 14395 to **14510 subtests**, `css/selectors` 4689 to
+**4723**, `html/dom` 64390 to **64402**, and `css/css-cascade` stays at 236;
+no lost subtests in any of them. `dom/nodes/ParentNode-querySelector-All.html`
+and `ParentNode-querySelector-All-xht.xht` are both 1975/1975.
