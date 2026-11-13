@@ -9,6 +9,9 @@ xhr.js
 url.js
 dom.js
 cssom.js
+# `svg.js` installs SVGAnimatedString and the SVG/MathML href, which read the
+# element bindings and the attribute API.
+svg.js
 navigator.js
 origin.js
 tree_walker.js

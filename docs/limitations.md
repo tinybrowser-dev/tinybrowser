@@ -405,10 +405,18 @@ ASCII serialization; an opaque origin compares by identity, and the realm's own
 opaque origin is one identity across `Origin.from(globalThis)` calls. Same-site
 uses the cookie rules' scheme + registrable-domain comparison.
 
-`Origin.from()` on an SVG or MathML `<a>` returns `TypeError`: the extraction
-reads the element's `href`, and those elements use `SVGAnimatedString`
-(`href.baseVal`) and `xlink:href`, neither of which the engine exposes yet.
-The HTML `<a>`/`<area>` cases pass.
+`Origin.from()` on an SVG or MathML `<a>` reads the element's `href`, falling
+back to SVG's legacy `xlink:href`
+(`crates/renderer/src/js/scripts/web/origin.js`). SVG's `href` is an
+`SVGAnimatedString` and MathML's is a plain string
+(`crates/renderer/src/js/scripts/web/svg.js`).
+
+One shape deviation: the engine builds one `SVGElement` prototype for every SVG
+element and one `MathMLElement` prototype for every MathML element, so `href`
+sits on those prototypes and answers only for the elements that include
+`SVGURIReference` or `HyperlinkElementUtils`. It is therefore `undefined` on,
+say, `SVG <rect>` instead of being absent from it. Per-interface prototypes
+would be needed to match the spec's shape exactly.
 
 `Origin.from(Window)` works for the current global and for a data-URL iframe's
 own `Origin.from(globalThis)`, but not for another frame's `WindowProxy`: the

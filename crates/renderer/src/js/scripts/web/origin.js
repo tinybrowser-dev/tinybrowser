@@ -9,6 +9,8 @@
 {
   const slots = host.slots('Origin');
   const HTML_NS = 'http://www.w3.org/1999/xhtml';
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  const MATHML_NS = 'http://www.w3.org/1998/Math/MathML';
 
   const brand = value => {
     const slot = slots.get(value);
@@ -49,6 +51,21 @@
     // (<https://html.spec.whatwg.org/multipage/links.html#hyperlinkelementutils>).
     if (value.nodeType === 1 && value.namespaceURI === HTML_NS
         && (value.localName === 'a' || value.localName === 'area')) {
+      const parsed = fromString(value.href);
+      if (parsed !== null) return parsed;
+    }
+    // SVG's `<a>` extracts from `href`, falling back to the legacy
+    // `xlink:href` attribute; MathML's `<a>` reflects `href` as a string
+    // (<https://svgwg.org/svg2-draft/linking.html#InterfaceSVGURIReference>,
+    // <https://w3c.github.io/mathml-core/#the-mathml-anchor-element>).
+    if (value.nodeType === 1 && value.localName === 'a'
+        && value.namespaceURI === SVG_NS) {
+      const href = value.getAttribute('href');
+      const parsed = fromString(href === null ? value.getAttribute('xlink:href') : href);
+      if (parsed !== null) return parsed;
+    }
+    if (value.nodeType === 1 && value.localName === 'a'
+        && value.namespaceURI === MATHML_NS) {
       const parsed = fromString(value.href);
       if (parsed !== null) return parsed;
     }

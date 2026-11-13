@@ -2006,3 +2006,21 @@ Evidence: `css/selectors` 4723 to **4761 subtests** and `css/cssom` 3305 to
 **3309**, no lost subtests. `html/dom` stays at 64402 and `css/cssom-view` at
 1616. `focus-visible-017-2.html` 1 to 38 of 38 and `focus-visible-017.html` 1
 to 2.
+SVG and MathML hyperlinks now expose `href`
+(`crates/renderer/src/js/scripts/web/svg.js`, with the extraction in
+`crates/renderer/src/js/scripts/web/origin.js`). SVG's `href` is an
+`[SameObject] SVGAnimatedString` whose `baseVal` reflects the attribute and
+whose `animVal` equals it (no animation support); MathML's `<a>` reflects
+`href` as a string. The engine has one `SVGElement` and one `MathMLElement`
+prototype, so the members live there and answer only for the local names that
+include `SVGURIReference`/`HyperlinkElementUtils`;
+`docs/limitations.md` records that shape deviation.
+
+Without a `href` on those elements, `Origin.from()` threw `TypeError` for
+every SVG and MathML anchor.
+
+Evidence: `html/browsers` 921 to **995 subtests**, with one apparent loss,
+`broadcastchannel.window.html`, that reruns as SKIP (bfcache unsupported) on
+this build and at HEAD, so it is the known flake and not a regression.
+`origin-from-hyperlinkelementutils.window.html` 54 to 129 of 129.
+`html/dom` stays at 64402 with no lost subtests.
