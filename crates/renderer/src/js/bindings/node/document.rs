@@ -68,6 +68,11 @@ impl<'js> document_generated::Document<'js> for JsNode {
         self.body(ctx)
     }
 
+    // https://drafts.csswg.org/cssom-view/#dom-document-scrollingelement
+    fn get_scrolling_element(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
+        self.scrolling_element(ctx)
+    }
+
     // https://html.spec.whatwg.org/multipage/dom.html#dom-document-body
     fn set_body(&self, ctx: &Ctx<'js>, value: Value<'js>) -> Result<()> {
         self.set_body(ctx, value)
@@ -1152,6 +1157,16 @@ impl JsNode {
         document_value(ctx, self.handle.get().0, |parsed| {
             document_first_child(parsed, |data| matches!(data, NodeData::Element(_)))
         })
+    }
+
+    // https://drafts.csswg.org/cssom-view/#dom-document-scrollingelement
+    pub(super) fn scrolling_element<'js>(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
+        let world = world(ctx)?;
+        let world = world.borrow();
+        let found = world
+            .document_mut(self.handle.get().0)
+            .and_then(|mut parsed| super::scrolling::scrolling_element(&mut parsed));
+        child_value(ctx, found)
     }
 
     // https://dom.spec.whatwg.org/#dom-document-doctype

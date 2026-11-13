@@ -13,6 +13,7 @@ pub(super) mod element;
 pub(super) mod forms;
 pub(super) mod html_elements;
 pub(super) mod media;
+pub(super) mod scrolling;
 
 pub(super) use core::{compare_node_position, insert_converted_node};
 pub(super) use document::{

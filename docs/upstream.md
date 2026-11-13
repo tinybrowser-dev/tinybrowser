@@ -160,6 +160,18 @@ Known gaps this engine fails honestly (no fork patch yet):
 
 ## Open issues
 
+- Blitz does not model CSS overflow propagation to the viewport. When the root
+  element's computed overflow is `visible`, the body element's `overflow`
+  applies to the viewport, so a body with `overflow: hidden` (a common page
+  pattern) still gives the document a scrollable area. Blitz computes the
+  viewport's scroll range from the root element alone, so programmatic document
+  scrolling clamps to zero. The fix belongs in
+  `packages/blitz-dom/src/scrolling.rs` (`scroll_state`'s viewport branch); the
+  renderer records the gap in `docs/limitations.md`. A trial fix that added the
+  body's scrollable area to the viewport range was correct for top-level pages
+  but turned 16 vacuous subframe passes into timeouts, because it made smooth
+  scrolls in frames actually animate, so it was reverted rather than landed
+  half-supported.
 - A system-font keyword in `font` expands the `font-variant-*` longhands at
   their initial value. Stylo's `font` shorthand parser
   (`style/properties/shorthands.rs`, the `SystemFont` branch of `parse_value`)

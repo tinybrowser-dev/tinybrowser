@@ -17,6 +17,122 @@
     get: () => __tbViewportSize()[1], configurable: true,
   });
 
+  // ── viewport scrolling ───────────────────────────────────────────────
+  // `scrollX`/`scrollY` and their `page*Offset` aliases report the viewport's
+  // scroll offset, which in quirks mode is the body element's
+  // (<https://drafts.csswg.org/cssom-view/#dom-window-scrollx>).
+  const __tbViewportScroll = () => host.__tb_viewport_scroll();
+  Object.defineProperty(globalThis, 'scrollX', {
+    get: () => __tbViewportScroll()[0], configurable: true,
+  });
+  Object.defineProperty(globalThis, 'pageXOffset', {
+    get: () => __tbViewportScroll()[0], configurable: true,
+  });
+  Object.defineProperty(globalThis, 'scrollY', {
+    get: () => __tbViewportScroll()[1], configurable: true,
+  });
+  Object.defineProperty(globalThis, 'pageYOffset', {
+    get: () => __tbViewportScroll()[1], configurable: true,
+  });
+
+  // An IDL `ScrollBehavior`; an unknown spelling is a conversion failure
+  // (<https://drafts.csswg.org/cssom-view/#enumdef-scrollbehavior>).
+  const __tbScrollBehavior = value => {
+    if (value === undefined) return 'auto';
+    const behavior = __tbToDOMString(value);
+    if (behavior !== 'auto' && behavior !== 'instant' && behavior !== 'smooth') {
+      throw new TypeError(`'${behavior}' is not a valid value for enumeration ScrollBehavior.`);
+    }
+    return behavior;
+  };
+
+  // Convert one argument as `ScrollToOptions`. A non-object is a conversion
+  // failure, which the scroll methods report by rejecting their promise
+  // (<https://webidl.spec.whatwg.org/#es-dictionary>).
+  const __tbScrollOptions = value => {
+    if (value === undefined || value === null) return { behavior: 'auto' };
+    if (typeof value !== 'object' && typeof value !== 'function') {
+      throw new TypeError('ScrollToOptions must be an object');
+    }
+    const options = { behavior: __tbScrollBehavior(value.behavior) };
+    if (value.left !== undefined) options.left = Number(value.left);
+    if (value.top !== undefined) options.top = Number(value.top);
+    return options;
+  };
+
+  // The shared body of `scroll`/`scrollTo`/`scrollBy` for both the element and
+  // the window: an overload set of one optional dictionary and one
+  // `(unrestricted double, unrestricted double)` pair
+  // (<https://drafts.csswg.org/cssom-view/#dom-element-scroll>).
+  const __tbScroll = (target, receiver, args, relative) => {
+    try {
+      let x;
+      let y;
+      let behavior;
+      if (args.length >= 2) {
+        // Overload resolution distinguishes the pair by its Number values, so
+        // a non-number first argument matches nothing and throws.
+        if (typeof args[0] !== 'number' || typeof args[1] !== 'number') {
+          throw new TypeError('scroll requires a ScrollToOptions dictionary or two numbers');
+        }
+        x = args[0];
+        y = args[1];
+        behavior = 'auto';
+      } else {
+        const options = __tbScrollOptions(args[0]);
+        behavior = options.behavior;
+        x = options.left;
+        y = options.top;
+      }
+      // `scrollBy` adds each member that was given to the current position; an
+      // absent member leaves its axis where it is. `scroll` treats an absent
+      // member the same way, by resolving it to the current position.
+      if (relative) {
+        x = target.current(receiver, false) + (x === undefined ? 0 : x);
+        y = target.current(receiver, true) + (y === undefined ? 0 : y);
+      } else {
+        if (x === undefined) x = target.current(receiver, false);
+        if (y === undefined) y = target.current(receiver, true);
+      }
+      target.scrollTo(receiver, x, y, behavior);
+      return Promise.resolve(undefined);
+    } catch (error) {
+      // A promise-returning operation rejects on a conversion failure instead
+      // of throwing (<https://webidl.spec.whatwg.org/#es-operations>).
+      return Promise.reject(error);
+    }
+  };
+
+  const __tbWindowScrollTarget = {
+    current: (_receiver, vertical) => __tbViewportScroll()[vertical ? 1 : 0],
+    scrollTo: (_receiver, x, y, behavior) => host.__tb_scroll_viewport(x, y, behavior),
+  };
+
+  const __tbDefineScrollMethods = (object, target) => {
+    for (const name of ['scroll', 'scrollTo']) {
+      Object.defineProperty(object, name, {
+        value: { [name](...args) { return __tbScroll(target, this, args, false); } }[name],
+        writable: true, enumerable: true, configurable: true,
+      });
+    }
+    Object.defineProperty(object, 'scrollBy', {
+      value: {
+        scrollBy(...args) { return __tbScroll(target, this, args, true); },
+      }.scrollBy,
+      writable: true, enumerable: true, configurable: true,
+    });
+  };
+
+  __tbDefineScrollMethods(globalThis, __tbWindowScrollTarget);
+  // Declare the element operations here rather than through the IDL contract:
+  // the binder emits one implementation per operation name, and these have
+  // two overloads that the shared `__tbScroll` dispatches
+  // (<https://drafts.csswg.org/cssom-view/#extension-to-the-element-interface>).
+  __tbDefineScrollMethods(globalThis.Element.prototype, {
+    current: (element, vertical) => host.__tb_element_scroll_position(element, vertical),
+    scrollTo: (element, x, y, behavior) => host.__tb_scroll_element(element, x, y, behavior),
+  });
+
 // Constructable stylesheet surface used by component libraries, plus the
 // associated CSS style sheet for `<style>` and `<link rel=stylesheet>`.
 // https://drafts.csswg.org/cssom/#the-cssstylesheet-interface

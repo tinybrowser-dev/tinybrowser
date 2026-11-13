@@ -1369,3 +1369,37 @@ subtests by echoing the attribute text, which hid the gap rather than modelling
 it; a browser that lacked the properties would report `""` too. Recorded in
 `docs/limitations.md`; teaching the style crate the properties belongs
 upstream.
+
+`css/cssom-view` scrolling is wired to Blitz's scroll engine. The renderer now
+answers `Document.scrollingElement` with the CSSOM View algorithm: in quirks
+mode the body element is the answer unless the body is potentially scrollable
+(its own overflow and its parent's overflow each create a scrolling box), and
+otherwise the root element is (`crates/renderer/src/js/bindings/node/
+scrolling.rs`). `Element.scrollTop`/`scrollLeft` read and write the element's
+own scroll offset through `Node::scroll_offset`/`BaseDocument::scroll_to`
+instead of pretending only the viewport scrolls, while the root element and the
+quirks-mode body still address the viewport. `Element.scroll`/`scrollTo`/
+`scrollBy` and their `Window` counterparts are shims over the same host calls;
+the two IDL overloads share one dispatcher because the binder emits exactly one
+implementation per operation name. The window gained live `scrollX`, `scrollY`,
+`pageXOffset`, and `pageYOffset`. `scrollIntoView` now maps its
+`ScrollIntoViewOptions` (or a boolean) onto Blitz's block/inline alignment
+instead of ignoring the argument, so `scrollIntoView({block: "center"})` and
+`scrollIntoView(false)` differ.
+
+Evidence, subtest diffs against the commit before the slice, 239 gained and one
+lost: `css/cssom-view` 767 to **1006 of 1758**. `scrollingElement.html` 0 to
+**8 of 8**; `scrollintoview.html` 0 to **40 of 40**; `element-scroll-
+arguments.html` 0 to **12 of 12**; `elementScroll.html` 0 to **8 of 8**;
+`elementScroll-002.html` 0 to **4 of 4**; `dom-element-scroll.html` 0 to
+**4 of 4**; `scroll-behavior-element.html` 0 to **13 of 39** (the instant and
+auto cases); `scrolling-quirks-vs-nonquirks.html` 8 to **16 of 30**;
+`scroll-behavior-main-frame-root.html` and `-window.html` each gain one subtest.
+The single lost subtest is `scrolling-quirks-vs-nonquirks.html`'s
+"scrollLeft/scrollTop on the root element in non-quirks mode": the previous
+setter stored the requested offset without clamping, so it returned 70 on a
+viewport Blitz considers unscrollable (a subframe laid out at the tab's 800px
+width, and a body whose `overflow: hidden` does not propagate to the viewport);
+the spec clamps instead. Both causes are recorded in `docs/limitations.md` and
+`docs/upstream.md` rather than asserted by a special case.
+

@@ -72,6 +72,36 @@ where the reference browser reads the value. The modern
 `CSS.supports("orphans", "2")` correctly answers false. Accepted engine gap:
 teach the style crate those properties or leave them out (`docs/upstream.md`).
 
+## Scrolling
+
+`document.scrollingElement`, the element and viewport scroll positions, and
+`scroll`/`scrollTo`/`scrollBy`/`scrollIntoView` route through Blitz's scroll
+engine. The engine's model has four gaps:
+
+- The viewport's scrollable range is the root element's own scrollable
+  overflow. A body element with `overflow: hidden`, `scroll`, or `auto` does not
+  contribute its scrolling area when the root element's overflow is `visible`,
+  although CSS overflow propagates the body's overflow to the viewport
+  (<https://drafts.csswg.org/css-overflow-3/#overflow-propagation>). A page that
+  hides body overflow and then scrolls the document clamps to zero.
+- A child frame's viewport is the tab viewport, not the iframe box: Blitz does
+  not couple iframe layout to the child, so `window.innerWidth`, media queries,
+  and scroll positions inside an iframe use the tab size
+  (`crates/renderer/src/engine.rs`). Tests that size an iframe to 300px and
+  scroll it assume Blink's coupling and cannot pass yet.
+- `scroll-behavior: smooth` starts Blitz's animation, but the in-process WPT
+  harness does not drive the renderer's frame loop to completion, so a test that
+  waits for the animation end times out. Instant and auto scrolling work.
+- `scrollIntoView` scrolls the viewport only. Blitz's `scroll_into_view`
+  computes the element's position and aligns it against the viewport, so a
+  target inside a nested scroll container does not scroll that container, and
+  `scroll-margin`/`scroll-padding` are not applied.
+
+The `scroll`/`scrollTo`/`scrollBy`/`scrollIntoView` methods return
+`Promise<undefined>`, which is what the pinned IDL says. The current CSSOM View
+draft returns `Promise<ScrollResult>` with an `interrupted` member, so tests
+written against that draft fail regardless of scrolling behavior.
+
 ## Missing surfaces
 
 Dedicated workers run on their own OS thread with their own `QuickJS`

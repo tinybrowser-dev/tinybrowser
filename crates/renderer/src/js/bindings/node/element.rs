@@ -189,9 +189,27 @@ impl<'js> element_generated::Element<'js> for JsNode {
     fn scroll_into_view(
         &self,
         ctx: Ctx<'js>,
-        _arg_0: element_generated::BooleanOrScrollIntoViewOptions,
+        arg_0: element_generated::BooleanOrScrollIntoViewOptions,
     ) -> Result<()> {
-        self.scroll_into_view(ctx)
+        let (behavior, block, inline) = match arg_0 {
+            // `false` asks for the end edge; every other boolean is the
+            // default start edge. The inline axis always defaults to nearest
+            // (<https://drafts.csswg.org/cssom-view/#dom-element-scrollintoview>).
+            element_generated::BooleanOrScrollIntoViewOptions::Boolean(false) => (
+                element_generated::ScrollBehavior::Auto,
+                element_generated::ScrollLogicalPosition::End,
+                element_generated::ScrollLogicalPosition::Nearest,
+            ),
+            element_generated::BooleanOrScrollIntoViewOptions::Boolean(true) => (
+                element_generated::ScrollBehavior::Auto,
+                element_generated::ScrollLogicalPosition::Start,
+                element_generated::ScrollLogicalPosition::Nearest,
+            ),
+            element_generated::BooleanOrScrollIntoViewOptions::ScrollIntoViewOptions(options) => {
+                (options.behavior, options.block, options.inline)
+            }
+        };
+        self.scroll_into_view(ctx, behavior.into(), block.into(), inline.into())
     }
 
     // https://drafts.csswg.org/cssom-view/#dom-element-scrollleft
@@ -1289,109 +1307,101 @@ impl JsNode {
         Ok(array.into_value())
     }
 
-    /// Scrolls the viewport so this element's border box is visible.
-    /// <https://drafts.csswg.org/cssom-view/#dom-element-scrollintoview>
-    pub(super) fn scroll_into_view(&self, ctx: Ctx<'_>) -> Result<()> {
-        let Some((left, top, width, _height)) = element_box_ctx(&ctx, self.handle.get().0)? else {
-            return Ok(());
-        };
+    /// Scrolls this element's boxes into view with the requested alignment
+    /// (<https://drafts.csswg.org/cssom-view/#dom-element-scrollintoview>).
+    ///
+    /// Blitz owns the scroll engine: it aligns the border box against the
+    /// viewport using the block and inline positions and applies the requested
+    /// behavior. Per-element scroll containers do not participate yet
+    /// (`docs/limitations.md`).
+    pub(super) fn scroll_into_view(
+        &self,
+        ctx: Ctx<'_>,
+        behavior: blitz_dom::ScrollBehavior,
+        block: blitz_dom::ScrollLogicalPosition,
+        inline: blitz_dom::ScrollLogicalPosition,
+    ) -> Result<()> {
         let world = world_for_node(&ctx, self.handle.get().0)?;
         let world = world.borrow();
         let Some(mut parsed) = world.document_mut(self.handle.get().0) else {
             return Ok(());
         };
-        // Known gap: per-element scroll containers have no Blitz offset API,
-        // so scrolling moves the viewport, as if the document element
-        // scrolled.
-        // https://drafts.csswg.org/cssom-view/#dom-element-scrollintoview
-        let scroll = parsed.document.base.viewport_scroll();
-        let viewport_width = f64::from(parsed.document.base.viewport().window_size.0);
-        let next_x = if left < scroll.x {
-            left
-        } else if left + width > scroll.x + viewport_width {
-            left + width - viewport_width
-        } else {
-            scroll.x
-        };
-        let next_y = top;
-        parsed.document.base.set_viewport_scroll(blitz_dom::Point {
-            x: next_x.max(0.0),
-            y: next_y.max(0.0),
-        });
+        let id = self.handle.get().0;
+        parsed.document.base.resolve(0.0);
+        // A boxless element has nothing to bring into view
+        // (<https://drafts.csswg.org/cssom-view/#dom-element-scrollintoview>).
+        if !parsed
+            .document
+            .base
+            .get_node(id.node)
+            .is_some_and(blitz_dom::Node::has_boxes)
+        {
+            return Ok(());
+        }
+        parsed
+            .document
+            .base
+            .scroll_into_view(id.node, behavior, block, inline);
         Ok(())
     }
 
     // https://drafts.csswg.org/cssom-view/#dom-element-scrollleft
-    //
-    // Known gap: Blitz exposes only the viewport scroll offset, not
-    // per-element scroll boxes, so only the document element scrolls and
-    // every other element reads zero.
     pub(super) fn scroll_left(&self, ctx: &Ctx<'_>) -> Result<f64> {
-        let world = world(ctx)?;
-        let world = world.borrow();
-        let Some(parsed) = world.document(self.handle.get().0) else {
-            return Ok(0.0);
-        };
-        if document_first_child(&parsed, |data| matches!(data, NodeData::Element(_)))
-            == Some(self.handle.get().0)
-        {
-            Ok(parsed.document.base.viewport_scroll().x)
-        } else {
-            Ok(0.0)
-        }
+        self.scroll_axis(ctx, false)
     }
 
     pub(super) fn set_scroll_left(&self, ctx: &Ctx<'_>, value: f64) -> Result<()> {
-        let world = world(ctx)?;
-        let world = world.borrow();
-        let Some(mut parsed) = world.document_mut(self.handle.get().0) else {
-            return Ok(());
-        };
-        let is_root = document_first_child(&parsed, |data| matches!(data, NodeData::Element(_)))
-            == Some(self.handle.get().0);
-        if !is_root {
-            return Ok(());
-        }
-        let viewport = parsed.document.base.viewport_scroll();
-        parsed.document.base.set_viewport_scroll(blitz_dom::Point {
-            x: value,
-            y: viewport.y,
-        });
-        Ok(())
+        self.set_scroll_axis(ctx, value, false)
     }
 
     // https://drafts.csswg.org/cssom-view/#dom-element-scrolltop
     pub(super) fn scroll_top(&self, ctx: &Ctx<'_>) -> Result<f64> {
-        let world = world(ctx)?;
-        let world = world.borrow();
-        let Some(parsed) = world.document(self.handle.get().0) else {
-            return Ok(0.0);
-        };
-        if document_first_child(&parsed, |data| matches!(data, NodeData::Element(_)))
-            == Some(self.handle.get().0)
-        {
-            Ok(parsed.document.base.viewport_scroll().y)
-        } else {
-            Ok(0.0)
-        }
+        self.scroll_axis(ctx, true)
     }
 
     pub(super) fn set_scroll_top(&self, ctx: &Ctx<'_>, value: f64) -> Result<()> {
+        self.set_scroll_axis(ctx, value, true)
+    }
+
+    /// One axis of `scrollTop`/`scrollLeft`, including the quirks-mode body
+    /// and root-element rules
+    /// (<https://drafts.csswg.org/cssom-view/#dom-element-scrolltop>).
+    fn scroll_axis(&self, ctx: &Ctx<'_>, vertical: bool) -> Result<f64> {
         let world = world(ctx)?;
         let world = world.borrow();
-        let Some(mut parsed) = world.document_mut(self.handle.get().0) else {
-            return Ok(());
+        let id = self.handle.get().0;
+        // An element whose document is not the active document reports zero.
+        if world.main_document_id() != Some(id.document) {
+            return Ok(0.0);
+        }
+        let Some(mut parsed) = world.document_mut(id) else {
+            return Ok(0.0);
         };
-        let is_root = document_first_child(&parsed, |data| matches!(data, NodeData::Element(_)))
-            == Some(self.handle.get().0);
-        if !is_root {
+        parsed.document.base.resolve(0.0);
+        Ok(super::scrolling::scroll_position(&parsed, id, vertical))
+    }
+
+    /// The `scrollTop`/`scrollLeft` setter: non-finite values become zero, and
+    /// the other axis keeps its current position
+    /// (<https://drafts.csswg.org/cssom-view/#dom-element-scrolltop>).
+    fn set_scroll_axis(&self, ctx: &Ctx<'_>, value: f64, vertical: bool) -> Result<()> {
+        let world = world(ctx)?;
+        let world = world.borrow();
+        let id = self.handle.get().0;
+        if world.main_document_id() != Some(id.document) {
             return Ok(());
         }
-        let viewport = parsed.document.base.viewport_scroll();
-        parsed.document.base.set_viewport_scroll(blitz_dom::Point {
-            x: viewport.x,
-            y: value,
-        });
+        let Some(mut parsed) = world.document_mut(id) else {
+            return Ok(());
+        };
+        parsed.document.base.resolve(0.0);
+        let current = super::scrolling::scroll_position(&parsed, id, !vertical);
+        let (x, y) = if vertical {
+            (current, value)
+        } else {
+            (value, current)
+        };
+        super::scrolling::scroll_to(&mut parsed, id, x, y, blitz_dom::ScrollBehavior::Auto);
         Ok(())
     }
 
@@ -3011,5 +3021,26 @@ impl JsNode {
         world.destroy_child_navigables(&iframes);
         drop(world);
         schedule_mutation_delivery(ctx)
+    }
+}
+
+impl From<element_generated::ScrollBehavior> for blitz_dom::ScrollBehavior {
+    fn from(value: element_generated::ScrollBehavior) -> Self {
+        match value {
+            element_generated::ScrollBehavior::Auto => Self::Auto,
+            element_generated::ScrollBehavior::Instant => Self::Instant,
+            element_generated::ScrollBehavior::Smooth => Self::Smooth,
+        }
+    }
+}
+
+impl From<element_generated::ScrollLogicalPosition> for blitz_dom::ScrollLogicalPosition {
+    fn from(value: element_generated::ScrollLogicalPosition) -> Self {
+        match value {
+            element_generated::ScrollLogicalPosition::Start => Self::Start,
+            element_generated::ScrollLogicalPosition::Center => Self::Center,
+            element_generated::ScrollLogicalPosition::End => Self::End,
+            element_generated::ScrollLogicalPosition::Nearest => Self::Nearest,
+        }
     }
 }
