@@ -1444,3 +1444,43 @@ parent realm. `css/cssom-view` stays at **1002 of 1758** against 767 before the
 slice, with the same single loss (`scrolling-quirks-vs-nonquirks.html`, whose
 scroll assertions depend on the frame-viewport and overflow-propagation gaps in
 `docs/limitations.md`).
+
+`Element.checkVisibility()` now answers the CSSOM View algorithm
+(`crates/renderer/src/js/bindings/node/element.rs`). It returns false for an
+element without a box (`display: none`, `display: contents`, a detached
+element, or a document without a browsing context), walks the ancestors for a
+`display: none` ancestor, and then applies the option gates:
+`opacityProperty`/`checkOpacity` fail when the element or an ancestor has
+computed `opacity: 0`, and `visibilityProperty`/`checkVisibilityCSS` fail when
+the element is known to be invisible. The two option names in each pair are the
+spec's aliases. `visibility` is inherited, so the element's own computed value
+already reflects an ancestor unless a descendant re-declares
+`visibility: visible`.
+
+Evidence: `css/cssom-view/checkVisibility.html` 0 to **10 of 15**. The five
+remaining failures all need `content-visibility`, which the pinned Servo style
+crate does not generate (`engine = "gecko"`), so a hidden ancestor and a
+skipped `content-visibility: auto` subtree cannot be detected; the gap is
+recorded in `docs/limitations.md` and `docs/upstream.md`. The passing ten cover
+`visibility: hidden`, `display: none` on the element and on a shadow host,
+`display: contents`, `opacity: 0` on the element and on a shadow host, and the
+aliased option names.
+
+Review folded into the slice. The ancestor walk now uses the shared
+`dom/tree.rs` `shadow_including_parent`, so a shadow-tree descendant sees a
+`display: none` or `opacity: 0` host (a probe verified both against Chrome's
+answers; without the host link both reported visible). The walk is
+shadow-including rather than the flat tree, because Blitz has no slot
+assignment; that and the unstyled shadow-scoped cascade are recorded in
+`docs/limitations.md`. The check now requires the element's document to be the
+active document of the realm that owns it (`active_world`, moved next to
+`owning_world` for the scrolling and visibility callers), so a `DOMParser`
+element reports false instead of inheriting a box from the parser's layout.
+One walk now serves both the `display: none` and `opacity` gates, the option
+locals are named for the request rather than the check, and the visibility gate
+fails only when a computed value says invisible (an unstyled node is not
+evidence). The binder learns the `clippy::struct_excessive_bools` shape of a
+WebIDL dictionary: a dictionary with more than three plain `bool` fields gets a
+reasoned `#[expect]`, and `dictionary_field_is_bool` is shared with the field
+emitter so the count cannot drift from the type. The dictionary contract test
+now asserts the attribute on a four-bool dictionary.

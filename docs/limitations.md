@@ -72,6 +72,39 @@ where the reference browser reads the value. The modern
 `CSS.supports("orphans", "2")` correctly answers false. Accepted engine gap:
 teach the style crate those properties or leave them out (`docs/upstream.md`).
 
+## CSS content-visibility
+
+`content-visibility` is not in the style crate's property tables: the Servo
+backend generates it only for the Gecko engine (`engine = "gecko"` in
+`longhands.toml`), so a declaration is a parse error. As a consequence:
+
+- `CSS.supports("content-visibility", "hidden")` is false and
+  `getComputedStyle(el).contentVisibility` is undefined.
+- Blitz lays out and paints content that `content-visibility: hidden` or a
+  skipped `content-visibility: auto` subtree would skip; `contain-intrinsic-size`
+  has no effect either.
+- `Element.checkVisibility()` cannot run its unconditional "an ancestor has
+  `content-visibility: hidden`" step, or honour the `contentVisibilityAuto`
+  option, so an element the reference browser hides reports visible. Five of
+  `css/cssom-view/checkVisibility.html`'s fifteen subtests fail for this
+  reason. The other ten pass: the associated-box check (including
+  `display: none` on the element and on ancestors, and `display: contents`),
+  `visibility` on the element, and `opacity` on the element and on ancestors.
+
+`checkVisibility`'s ancestor walk is shadow-including, not the flat tree. Blitz
+has no slot assignment, so a slotted element's slot is not in its chain, and
+shadow-tree content has no computed styles (the shadow-scoped cascade is
+absent), so a `display: none` ancestor inside a shadow tree is not detected. A
+`display: none` or `opacity: 0` host is detected, because a shadow root's node
+records its host. An element in a document without a browsing context
+(`DOMParser`, `createHTMLDocument`) reports false, and so does an element in
+unattached content such as a template's content fragment: the renderer requires
+the element's document to be the active document of its realm, and a node
+outside the document tree has no box.
+
+Teaching the Servo style backend the property belongs upstream
+(`docs/upstream.md`).
+
 ## Scrolling
 
 `document.scrollingElement`, the element and viewport scroll positions, and

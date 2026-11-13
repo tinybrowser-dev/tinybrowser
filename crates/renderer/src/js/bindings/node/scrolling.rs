@@ -7,9 +7,6 @@
 //! call to the viewport, and gate every call on the node's document being the
 //! active one (<https://drafts.csswg.org/cssom-view/#scrolling>).
 
-use std::cell::RefCell;
-use std::rc::Rc;
-
 use blitz_dom::{Node, NodeData};
 use markup5ever::interface::QuirksMode;
 use rquickjs::{Ctx, Result, Value};
@@ -18,9 +15,8 @@ use stylo_taffy::CopyStyleGetters;
 
 use crate::Parsed;
 use crate::dom::tree::{NodeId, html_namespace};
-use crate::js::world::World;
 
-use super::super::{host_node_id, owning_world, world};
+use super::super::{active_world, host_node_id, world};
 use super::document::document_first_child;
 
 /// Whether an axis with this computed overflow has a scrolling box.
@@ -211,20 +207,6 @@ fn scroll_to(
     // asserts that (`scroll(50, 60)` leaves scrollLeft at 50). Follow the
     // browser.
     parsed.document.base.scroll_to(target.node, x, y, behavior);
-}
-
-/// The world that owns `id`'s document, when that document is the active
-/// document of that world.
-///
-/// The scroll getters and setters do nothing in a document without a browsing
-/// context, such as a `DOMParser` result
-/// (<https://drafts.csswg.org/cssom-view/#dom-element-scrolltop>).
-fn active_world(ctx: &Ctx<'_>, id: NodeId) -> Option<Rc<RefCell<World>>> {
-    let world = owning_world(ctx, id)?;
-    if world.borrow().main_document_id() != Some(id.document) {
-        return None;
-    }
-    Some(world)
 }
 
 /// An element's current scroll position on one axis, for the shim's overloaded

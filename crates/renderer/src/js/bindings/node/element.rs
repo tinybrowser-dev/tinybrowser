@@ -3,9 +3,9 @@
 
 use super::super::{
     AttrArgument, CollectionKind, JsNamedNodeMap, JsTokenList, LegacyNullString, NodeContext,
-    NodeOrString, OptString, WebIdlString, after_attribute_change, attached_attr_id, attr_owner,
-    attr_state, attr_wrapper, attribute_local_name, attribute_value, blur_node, deref_weak,
-    document_is_html_content, dom_string, element_box_ctx, element_click,
+    NodeOrString, OptString, WebIdlString, active_world, after_attribute_change, attached_attr_id,
+    attr_owner, attr_state, attr_wrapper, attribute_local_name, attribute_value, blur_node,
+    deref_weak, document_is_html_content, dom_string, element_box_ctx, element_click,
     fixup_focus_after_removal, focus_node, host, host_node_id, is_focusable, js_string_to_utf8,
     live_collection, make_weak, rect_object, remove_attribute_sync, schedule_mutation_delivery,
     set_attribute_node, set_attribute_sync, string_value, throw_dom, throw_dom_error, touch_attr,
@@ -17,6 +17,8 @@ use crate::dom::adoption::materialize_children;
 use std::collections::HashSet;
 
 use blitz_dom::NodeData;
+use style::computed_values::visibility::T as Visibility;
+use stylo_taffy::CopyStyleGetters;
 
 use rquickjs::{Array, Class, Ctx, Exception, Function, Persistent, Result, Value};
 
@@ -183,6 +185,15 @@ impl<'js> element_generated::Element<'js> for JsNode {
     // https://drafts.csswg.org/cssom-view/#dom-element-getclientrects
     fn get_client_rects(&self, ctx: Ctx<'js>) -> Result<Value<'js>> {
         self.get_client_rects(ctx)
+    }
+
+    // https://drafts.csswg.org/cssom-view/#dom-element-checkvisibility
+    fn check_visibility(
+        &self,
+        ctx: Ctx<'js>,
+        arg_0: element_generated::CheckVisibilityOptions,
+    ) -> Result<bool> {
+        Ok(self.check_visibility(ctx, arg_0))
     }
 
     // https://drafts.csswg.org/cssom-view/#dom-element-scrollintoview
@@ -1307,6 +1318,72 @@ impl JsNode {
             )?;
         }
         Ok(array.into_value())
+    }
+
+    /// Whether this element is potentially visible, following the optional
+    /// checks (<https://drafts.csswg.org/cssom-view/#dom-element-checkvisibility>).
+    ///
+    /// `visibility` is inherited, so this element's computed value already
+    /// includes an ancestor's unless a descendant re-declares `visible`;
+    /// `opacity` is not inherited, so its gate walks the element and every
+    /// ancestor. `content-visibility` is not in the Servo style crate's
+    /// property tables (`engine = "gecko"` in `longhands.toml`), so a hidden or
+    /// auto ancestor cannot be detected (`docs/upstream.md`).
+    pub(super) fn check_visibility(
+        &self,
+        ctx: Ctx<'_>,
+        options: element_generated::CheckVisibilityOptions,
+    ) -> bool {
+        let id = self.handle.get().0;
+        // An element whose document has no browsing context has no boxes, and
+        // neither has one whose document has been replaced.
+        let Some(world) = active_world(&ctx, id) else {
+            return false;
+        };
+        let world = world.borrow();
+        let Some(mut parsed) = world.document_mut(id) else {
+            return false;
+        };
+        let base = &mut parsed.document.base;
+        base.resolve(0.0);
+        let Some(node) = base.get_node(id.node) else {
+            return false;
+        };
+        // `display: none` and `display: contents` remove this element's box;
+        // an ancestor's `display: none` removes every descendant's.
+        if !node.has_boxes()
+            || shadow_including_ancestors(base, node.parent).any(|ancestor| {
+                ancestor.primary_styles().is_some_and(|styles| {
+                    matches!(
+                        styles.clone_display().inside(),
+                        style::values::specified::box_::DisplayInside::None
+                    )
+                })
+            })
+        {
+            return false;
+        }
+
+        // Each option name in the IDL is an alias of its partner
+        // (<https://drafts.csswg.org/cssom-view/#dictdef-checkvisibilityoptions>).
+        let opacity_requested = options.opacity_property || options.check_opacity;
+        let visibility_requested = options.visibility_property || options.check_visibility_css;
+        if visibility_requested
+            && node
+                .primary_styles()
+                .is_some_and(|styles| styles.clone_visibility() != Visibility::Visible)
+        {
+            return false;
+        }
+        if opacity_requested
+            && shadow_including_ancestors(base, Some(id.node)).any(|node| {
+                node.primary_styles()
+                    .is_some_and(|styles| styles.clone_opacity() == 0.0)
+            })
+        {
+            return false;
+        }
+        true
     }
 
     /// Scrolls this element's boxes into view with the requested alignment
@@ -2488,6 +2565,23 @@ pub(super) fn content_attr(ctx: &Ctx<'_>, id: NodeId, name: &str) -> Option<Stri
     let borrowed = owner.borrow();
     borrowed.document(id).and_then(|parsed| {
         crate::dom::tree::attr(&parsed.document.base, id.node, name).map(str::to_owned)
+    })
+}
+
+/// `start` and its ancestors, crossing a shadow root to its host
+/// (<https://dom.spec.whatwg.org/#concept-shadow-including-parent>).
+///
+/// CSSOM View's visibility checks walk the flat tree. Blitz has no slot
+/// assignment, so a slotted element's slot is missing from this chain; the
+/// shadow-including chain is the closest walk the engine can express
+/// (`docs/limitations.md`).
+fn shadow_including_ancestors(
+    base: &blitz_dom::BaseDocument,
+    start: Option<BlitzId>,
+) -> impl Iterator<Item = &blitz_dom::Node> + '_ {
+    std::iter::successors(start.and_then(|id| base.get_node(id)), |node| {
+        crate::dom::tree::shadow_including_parent(base, node.id)
+            .and_then(|parent| base.get_node(parent))
     })
 }
 

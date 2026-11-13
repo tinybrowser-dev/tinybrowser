@@ -1487,11 +1487,29 @@ fn dictionary(dictionary: &Dictionary) -> TokenStream {
     };
     let fields = dictionary.fields.iter().map(dictionary_field);
     let conversions = dictionary.fields.iter().map(dictionary_conversion);
+    // A dictionary with more than three booleans trips
+    // `clippy::struct_excessive_bools`, which does not know the members come
+    // from IDL. The members stay individual fields: a bitmask would obscure
+    // that mapping.
+    let bool_fields = dictionary
+        .fields
+        .iter()
+        .filter(|field| dictionary_field_is_bool(field))
+        .count();
+    let excessive_bools = (bool_fields > 3).then(|| {
+        quote! {
+            #[expect(
+                clippy::struct_excessive_bools,
+                reason = "a WebIDL dictionary carries its members individually; a bitmask would obscure the IDL mapping"
+            )]
+        }
+    });
     quote! {
         // https://webidl.spec.whatwg.org/#es-dictionary
         // A dictionary carries every IDL member; the algorithm that receives it
         // may consume a subset, so unconsumed fields are not dead code.
         #[allow(dead_code, reason = "generated from IDL; algorithms may read a subset")]
+        #excessive_bools
         pub(crate) struct #name {
             #(#fields),*
         }
@@ -1511,16 +1529,28 @@ fn dictionary(dictionary: &Dictionary) -> TokenStream {
     }
 }
 
+/// Whether a dictionary member's generated struct field is a plain `bool`.
+///
+/// An optional boolean with no default is `Option<bool>`, which
+/// `clippy::struct_excessive_bools` does not count; the expectation the
+/// dictionary emitter derives counts the same fields clippy does.
+fn dictionary_field_is_bool(field: &DictionaryField) -> bool {
+    matches!(
+        &field.type_,
+        DictionaryFieldType::Boolean {
+            default: Some(_),
+            ..
+        } | DictionaryFieldType::Boolean { required: true, .. }
+    )
+}
+
 /// One dictionary field's struct member type.
 fn dictionary_field(field: &DictionaryField) -> TokenStream {
     let rust = &field.rust;
+    if dictionary_field_is_bool(field) {
+        return quote! { pub(crate) #rust: bool };
+    }
     match &field.type_ {
-        DictionaryFieldType::Boolean {
-            default: Some(_), ..
-        }
-        | DictionaryFieldType::Boolean { required: true, .. } => {
-            quote! { pub(crate) #rust: bool }
-        }
         DictionaryFieldType::Boolean { .. } => {
             quote! { pub(crate) #rust: Option<bool> }
         }

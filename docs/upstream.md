@@ -245,7 +245,7 @@ Known gaps this engine fails honestly (no fork patch yet):
   measurement: one chunk in one process reached 12 GB at file 2762 on a
   16 GB runner.
 - Character data, titles, and attributes keep lone surrogates in a tinybrowser side table (`exact_text`, `exact_attrs`). The layout tree still stores lossy UTF-8, so style matching never sees a U+FFFD stand-in. Fixed on our side, not in the fork's storage.
-- `blitz-dom` hosts shadow roots (`NodeData::ShadowRoot`, `ElementData::shadow_root`, blitz@ca29873). `attachShadow` returns the root, closed mode makes `shadowRoot` null, and style walks the shadow host without panicking. `ShadowRootInit` members other than `mode` (`delegatesFocus`, `clonable`, `serializable`, `slotAssignment`) are not stored. Shadow-scoped cascade data is still absent, so a `<style>` inside a shadow tree does not apply, and box construction still walks light-DOM children. Composed events do not cross a shadow root: the path stops there and `event.target` is not retargeted to the host. `getComposedRanges` stays a no-op. Partially fixed in fork.
+- `blitz-dom` hosts shadow roots (`NodeData::ShadowRoot`, `ElementData::shadow_root`, blitz@ca29873). `attachShadow` returns the root, closed mode makes `shadowRoot` null, and style walks the shadow host without panicking. `ShadowRootInit` members other than `mode` (`delegatesFocus`, `clonable`, `serializable`, `slotAssignment`) are not stored. Shadow-scoped cascade data is still absent, so a `<style>` inside a shadow tree does not apply, and box construction still walks light-DOM children. There is no slot assignment, so the flat tree cannot be walked: a shadow root's node records its host (`Node::shadow_including_parent` in `dom/tree.rs` reaches it), but a slotted element's slot is not in any chain. `Node::has_boxes()` answers for the node alone — in the document, and not `display: none`/`display: contents` — so CSSOM View's box checks still walk the ancestors themselves (`js/bindings/node/element.rs`). Composed events do not cross a shadow root: the path stops there and `event.target` is not retargeted to the host. `getComposedRanges` stays a no-op. Partially fixed in fork.
 - Reading `HTMLTemplateElement.content` copies the template contents into an inert document. `content.ownerDocument` is that document. Nested templates that have not been read stay same-document fragments inside it. Fixed on our side (fragment plumbing remains blitz@ffec5987/96443edf).
 - XML namespace prefix synthesis on serialization is skipped (stored qualified names used as-is). Open, not fixed in fork. Entity half is fixed: internal general entities covered by blitz@c3581533 and html5ever@37c1cb0/ae2057f.
 - `ElementData.form_state` stores the value, checkedness, selectedness, and indeterminate slots with the spec's dirty flags (blitz@5ab7b943c/9470daff5/f7519a948). The slots are authoritative: a content attribute updates one only while its flag is clear, the IDL setters and user interaction set the flag, and the type-change and reset algorithms clear it. `:checked` follows the checkedness slot in the Checkbox and Radio Button states and the selectedness slot on options; `:indeterminate` reads its flag. Fixed in fork. Value sanitization still runs in the renderer (`dom/input.rs`) because the input type states and their microsyntax tables do, so a parser path that creates a control calls back into the renderer; one state boundary remains. `select` events still have no producer.
@@ -297,6 +297,15 @@ Known gaps this engine fails honestly (no fork patch yet):
   subtests now report the empty string a browser without those properties
   would. The modern `break-before`/`break-after`/`break-inside` longhands are
   supported. Open upstream, not worked around.
+- The `style` crate generates `content-visibility` only for the Gecko engine
+  (`engine = "gecko"` in `style/properties/longhands.toml`), so the Servo
+  backend treats the property as unknown: `CSS.supports` answers false, the
+  computed value is absent, and no element can be detected as skipping its
+  contents. tinybrowser therefore cannot implement `Element.checkVisibility()`'s
+  unconditional "an ancestor has `content-visibility: hidden`" step or its
+  `contentVisibilityAuto` option (five `css/cssom-view/checkVisibility.html`
+  subtests stay red), and Blitz lays out and paints content the property would
+  skip. Open upstream, not worked around; recorded in `docs/limitations.md`.
 - `blitz-dom` exposes the inline `style` declaration block (blitz@2ee9c1d3d):
   CSSOM serialization, declaration names in specified order, per-property
   value and priority, `cssText` replacement, and `setProperty` with an

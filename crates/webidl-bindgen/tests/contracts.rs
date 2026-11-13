@@ -266,7 +266,11 @@ fn callbacks_dictionaries_and_sequences_lower_with_receiver() {
                 sequence<DOMString> attributeFilter;
                 boolean attributes;
             };
-            partial dictionary MutationObserverInit { boolean childList = false; };
+            partial dictionary MutationObserverInit {
+                boolean childList = false;
+                boolean subtree = false;
+                boolean useCapture = false;
+            };
             [Exposed=Window] interface MutationObserver {
                 constructor(MutationCallback callback);
                 undefined observe(Node target, optional MutationObserverInit options = {});
@@ -303,7 +307,35 @@ fn callbacks_dictionaries_and_sequences_lower_with_receiver() {
             .iter()
             .map(|field| field.ident.as_ref().expect("named field").to_string())
             .collect::<Vec<_>>(),
-        ["a", "z", "attribute_filter", "attributes", "child_list"]
+        [
+            "a",
+            "z",
+            "attribute_filter",
+            "attributes",
+            "child_list",
+            "subtree",
+            "use_capture"
+        ]
+    );
+    // Four plain `bool` fields trip `clippy::struct_excessive_bools`; the
+    // generated dictionary states once that the members come from IDL.
+    let expectation = dictionary
+        .attrs
+        .iter()
+        .find(|attribute| {
+            attribute
+                .to_token_stream()
+                .to_string()
+                .contains("struct_excessive_bools")
+        })
+        .expect("a four-bool dictionary expects the clippy lint");
+    assert!(
+        expectation
+            .meta
+            .to_token_stream()
+            .to_string()
+            .contains("reason"),
+        "the expectation must carry a reason"
     );
     let source = bindings[0].rust.replace(' ', "");
     for fragment in [

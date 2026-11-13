@@ -1719,6 +1719,21 @@ pub(crate) fn owning_world(ctx: &Ctx<'_>, id: NodeId) -> Option<Rc<RefCell<World
     realm_registry(ctx).ok()?.borrow().owner_world(id)
 }
 
+/// The world that owns `id`'s document, when that document is the active
+/// document of that world.
+///
+/// An element in a document without a browsing context — a `DOMParser` result
+/// or a `createHTMLDocument` result — has no boxes, so the CSSOM View
+/// scrolling and visibility algorithms treat it as absent
+/// (<https://drafts.csswg.org/cssom-view/#dom-element-scrolltop>).
+pub(crate) fn active_world(ctx: &Ctx<'_>, id: NodeId) -> Option<Rc<RefCell<World>>> {
+    let world = owning_world(ctx, id)?;
+    if world.borrow().main_document_id() != Some(id.document) {
+        return None;
+    }
+    Some(world)
+}
+
 pub(super) fn node_is_shadow_root(ctx: &Ctx<'_>, id: NodeId) -> Result<bool> {
     with_node_data(ctx, id, |data| {
         matches!(data, Some(NodeData::ShadowRoot { .. }))
