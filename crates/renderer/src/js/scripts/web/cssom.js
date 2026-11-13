@@ -562,6 +562,12 @@
       this.cssRules = [];
       this.__tbRules = [];
     }
+    // `rules` is the legacy alias of `cssRules`, and both read the same live
+    // list
+    // (<https://drafts.csswg.org/cssom/#dom-cssstylesheet-rules>).
+    get rules() {
+      return this.cssRules;
+    }
     // The StyleSheet interface properties. An associated sheet reads its
     // owner `<style>`/`<link>`; a constructable sheet has no owner and no URL
     // (<https://drafts.csswg.org/cssom/#the-stylesheet-interface>).

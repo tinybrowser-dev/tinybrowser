@@ -163,6 +163,19 @@ Known gaps this engine fails honestly (no fork patch yet):
 
 ## Open issues
 
+- `@scope` is gated behind `layout.css.at-scope.enabled`, which
+  `stylo_static_prefs` defaults off. Turning it on
+  (`style_config::set_pref!` in `init_stylo_prefs`) parses the at-rule and
+  gains 174 subtests in `css/css-cascade`, but the style crate cannot resolve
+  an implicit scope root: `StylesheetInDocument::implicit_scope_root` returns
+  `None` for `DocumentStyleSheet`, and the servo `Stylesheet::from_str`
+  signature has no owner-node parameter, so `@scope { … }` scopes to the
+  document element instead of the parent of the owning `<style>`. That makes
+  the rule apply to the scope root itself, which
+  `scope-implicit.html`'s "implicitly added `:scope` descendant combinator"
+  subtest catches. Over-applying author CSS is worse than not applying it, so
+  the pref stays off until the style crate carries the owner node; the gap is
+  recorded here rather than patched by rewriting parsed rules in `blitz-dom`.
 - CSSOM View's `Element.scroll()` step for the root element delegates to
   `window.scroll()` with `scrollX` as the first argument, which discards the
   x the caller passed. Chrome applies both coordinates, and

@@ -366,6 +366,16 @@ and unregister handlers, and the argument checks match a browser, but a
 registered handler has no observable effect on navigation yet.
 
 
+## Scoped styles
+
+`@scope` rules do not parse: the style crate gates the at-rule behind
+`layout.css.at-scope.enabled`, which defaults off, and enabling it makes an
+implicit `@scope { … }` scope to the document element instead of the parent of
+the owning `<style>`, so the rule applies to the scope root. The style crate's
+stylesheet type carries no owner node to fix that with. The 262 `@scope`
+subtests in `css/css-cascade` mostly fail, and the pref stays off;
+`docs/upstream.md` records the reason.
+
 ## Imported CSS style sheets
 
 `StyleSheet` on an associated sheet reports `type`, `href`, `ownerNode`,

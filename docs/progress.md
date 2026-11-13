@@ -1904,3 +1904,14 @@ and `html/dom` at 64390, both with no lost subtests.
 Declarative shadow roots, the `Sanitizer` API, `setHTML()`, already-started
 scripts from `parseHTMLUnsafe()`, and XML documents are recorded in
 `docs/limitations.md`.
+
+`CSSStyleSheet.rules` is the legacy alias of `cssRules` and now reads the same
+live list (`crates/renderer/src/js/scripts/web/cssom.js`). Test harnesses reach
+for `style.sheet.rules`, so its absence failed every `@scope` parsing subtest
+before the stylesheet was even inspected. `@scope` itself still does not parse,
+which `docs/limitations.md` and `docs/upstream.md` record.
+
+Evidence: `css/css-cascade` 208 to **236 subtests**, no lost subtests.
+`at-scope-parsing.html` 0 to 28 of 43; the other 15 need the `@scope` at-rule,
+which the pinned style crate gates behind a pref that cannot resolve an
+implicit scope root correctly.
