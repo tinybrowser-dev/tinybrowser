@@ -316,10 +316,14 @@ pub(crate) fn schedule_mutation_delivery(ctx: &Ctx<'_>) -> Result<()> {
     };
     {
         let mut registry = runtime.registry.borrow_mut();
-        registry
+        let (_, observed) = registry
             .observers
             .drain(&mut runtime.documents.borrow_mut());
-        if !registry.observers.needs_notification() {
+        if !registry.observers.needs_notification() && !observed {
+            return Ok(());
+        }
+        // A microtask is already pending for this turn.
+        if registry.observers.scheduled {
             return Ok(());
         }
         registry.observers.scheduled = true;

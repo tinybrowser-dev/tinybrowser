@@ -2096,3 +2096,23 @@ moved node with its old style data.
 
 Evidence: `dom/nodes` 14521 to **14538** subtests, no lost subtests.
 `moveBefore-child-list-selector-invalidation.html` 0/9 to 9/9.
+`MutationObserver` now keeps a removed subtree observed until mutation
+observers are notified (`crates/renderer/src/js/observers.rs`,
+`crates/renderer/src/js/world.rs`). `drain` copies every `subtree: true`
+registration whose target is an ancestor of a child-list removal onto the
+removed node as a transient registration, including from other transients, so
+a subtree removed from a removed subtree stays observed. Transient
+registrations are matched like their source (rooted at the removed node), are
+dropped when `observe` re-registers the source target, cleared by
+`disconnect`, and retired by the notify microtask for every observer, whether
+or not a record was queued for it.
+
+The notify microtask is now also queued for an unobserved mutation that lands
+inside an observed region, because the microtask is what retires those
+transients. A mutation outside every observed region cannot queue a record or
+create a transient, so it does not start one; without that bound, building an
+unrelated detached tree would start a notification that retires a live
+registration.
+
+Evidence: `dom/nodes` 14538 to **14550** subtests, no lost subtests.
+`MutationObserver-transient-registered-observers.window.html` 5/15 to 15/15.

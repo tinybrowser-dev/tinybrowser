@@ -1019,6 +1019,12 @@ pub(crate) struct ObserverState {
     /// while the observer is registered; cleared by `disconnect`.
     pub object: Option<Persistent<Object<'static>>>,
     pub observations: Vec<Observation>,
+    /// Transient registered observers: registrations copied onto a node that
+    /// was removed from an observed subtree, so mutations inside the removed
+    /// subtree stay observed until mutation observers are notified. `order`
+    /// is the source registration's order, which is what `observe` drops
+    /// (<https://dom.spec.whatwg.org/#mutation-observers>).
+    pub transient: Vec<Observation>,
     pub queue: Vec<RecordData>,
 }
 
@@ -3925,7 +3931,10 @@ pub(super) fn match_observation(
     let mut first_registration = None;
     let mut want_attribute_old_value = false;
     let mut want_character_data_old_value = false;
-    for observation in &observer.observations {
+    // A transient registration observes the same way as its source, but is
+    // rooted at a node that has left the observed tree, so the ancestor walk
+    // starts from the removed node instead of the original target.
+    for observation in observer.observations.iter().chain(&observer.transient) {
         // `Attr` targets never match: journal records target elements and
         // `Attr` nodes are ancestors of nothing, so observing one registers
         // successfully but legitimately never fires.
@@ -4026,6 +4035,39 @@ fn record(
             ..RecordData::new("characterData", Handle(*target))
         },
     }
+}
+
+/// Whether `entry`'s target is at or below one of `observer`'s registration
+/// roots, regardless of whether the options care about this mutation type.
+///
+/// A mutation outside every observed region can never queue a record nor
+/// become the source of a transient registration, so it does not need a
+/// notify microtask. This is what keeps an unrelated detached tree from
+/// starting one.
+pub(super) fn observes_region(
+    base: &blitz_dom::BaseDocument,
+    document: u32,
+    observer: &ObserverState,
+    entry: &JournalEntry,
+) -> bool {
+    let target = match entry {
+        JournalEntry::ChildList { target, .. }
+        | JournalEntry::Attributes { target, .. }
+        | JournalEntry::CharacterData { target, .. } => *target,
+    };
+    if target.document != document {
+        return false;
+    }
+    observer
+        .observations
+        .iter()
+        .chain(&observer.transient)
+        .any(|observation| {
+            observation.target.tree().is_some_and(|root| {
+                root.document == document
+                    && ancestor_distance(base, root.node, target.node).is_some()
+            })
+        })
 }
 
 fn ancestor_distance(

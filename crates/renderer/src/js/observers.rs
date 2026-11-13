@@ -4,12 +4,13 @@ use std::collections::BTreeMap;
 
 use rquickjs::{Function, Object, Persistent};
 
-use crate::documents::DocumentStore;
+use crate::documents::{DocumentStore, JournalEntry};
+use crate::dom::tree::NodeId;
 use crate::protocol::FrameId;
 
 use super::world::{
     NodeReference, Observation, ObserverOptions, ObserverState, ReadyObserver, RecordData,
-    match_observation,
+    match_observation, observes_region,
 };
 
 /// One pending-observer set and notification flag for one window agent
@@ -38,6 +39,7 @@ impl MutationObservers {
                 callback,
                 object: None,
                 observations: Vec::new(),
+                transient: Vec::new(),
                 queue: Vec::new(),
             },
         );
@@ -60,7 +62,14 @@ impl MutationObservers {
                 .iter_mut()
                 .find(|item| item.target == target)
             {
+                let order = existing.order;
                 existing.options = options;
+                // Re-registering a target re-opens the subtree: transient
+                // registrations copied from the old registration stop
+                // (<https://dom.spec.whatwg.org/#dom-mutationobserver-observe>).
+                observer
+                    .transient
+                    .retain(|transient| transient.order != order);
             } else {
                 self.next_registration += 1;
                 observer.observations.push(Observation {
@@ -82,6 +91,7 @@ impl MutationObservers {
         if let Some(observer) = self.observers.get_mut(&id) {
             observer.queue.clear();
             observer.observations.clear();
+            observer.transient.clear();
             observer.object = None;
         }
         self.refresh_recording(documents);
@@ -120,7 +130,13 @@ impl MutationObservers {
     }
 
     // https://dom.spec.whatwg.org/#queue-a-mutation-record
-    pub(crate) fn drain(&mut self, documents: &mut DocumentStore) {
+    ///
+    /// Returns how many journal entries were queued and whether any of them
+    /// landed in an observed region. An unobserved mutation needs no notify
+    /// microtask of its own, but one inside an observed region does, so the
+    /// microtask that retires transient registrations still runs when no
+    /// record was queued.
+    pub(crate) fn drain(&mut self, documents: &mut DocumentStore) -> (usize, bool) {
         let mut mutations = Vec::new();
         for parsed in documents.values_mut() {
             let id = parsed.id;
@@ -131,6 +147,8 @@ impl MutationObservers {
             );
         }
         mutations.sort_unstable_by_key(|(position, _, _)| *position);
+        let queued = mutations.len();
+        let mut observed = false;
         for (_, document, entry) in mutations {
             if let Some(parsed) = documents.get(document) {
                 let mut interested: Vec<_> = self
@@ -141,6 +159,11 @@ impl MutationObservers {
                             .map(|(depth, order, record)| (depth, order, id, record))
                     })
                     .collect();
+                if interested.is_empty() && !observed {
+                    observed = self.observers.values().any(|observer| {
+                        observes_region(&parsed.document.base, document, observer, &entry)
+                    });
+                }
                 // DOM inserts interested observers in ancestor/registration
                 // order (#queue-a-mutation-record). Chromium instead sorts
                 // notification by creation priority; retain the spec order.
@@ -153,6 +176,77 @@ impl MutationObservers {
                         self.pending.push(id);
                     }
                 }
+                self.register_transients(&parsed.document.base, document, &entry);
+            }
+        }
+        (queued, observed)
+    }
+
+    /// Copies a `subtree: true` registration onto each node the entry removed
+    /// (<https://dom.spec.whatwg.org/#mutation-observers>).
+    ///
+    /// The removed node's own parent link is already cleared when the entry is
+    /// read, so its inclusive ancestors at removal time are the entry's target
+    /// and that target's ancestors. A transient registration can itself be the
+    /// source of another, which is how a subtree removed from a removed subtree
+    /// stays observed.
+    fn register_transients(
+        &mut self,
+        base: &blitz_dom::BaseDocument,
+        document: u32,
+        entry: &JournalEntry,
+    ) {
+        let JournalEntry::ChildList {
+            target, removed, ..
+        } = entry
+        else {
+            return;
+        };
+        if removed.is_empty() {
+            return;
+        }
+        let mut ancestors = Vec::new();
+        let mut current = Some(target.node);
+        while let Some(id) = current {
+            ancestors.push(id);
+            current = base.get_node(id).and_then(|node| node.parent);
+        }
+        let mut sources: Vec<(u64, ObserverOptions, u64)> = Vec::new();
+        for (&id, observer) in &self.observers {
+            for observation in observer.observations.iter().chain(&observer.transient) {
+                if !observation.options.subtree {
+                    continue;
+                }
+                let Some(root) = observation.target.tree() else {
+                    continue;
+                };
+                if root.document != document || !ancestors.contains(&root.node) {
+                    continue;
+                }
+                sources.push((id, observation.options.clone(), observation.order));
+            }
+        }
+        for (id, options, order) in sources {
+            let Some(observer) = self.observers.get_mut(&id) else {
+                continue;
+            };
+            for removed_id in removed {
+                let root = NodeReference::Tree(NodeId {
+                    document: removed_id.document,
+                    node: removed_id.node,
+                });
+                if observer
+                    .transient
+                    .iter()
+                    .any(|existing| existing.target == root && existing.order == order)
+                {
+                    continue;
+                }
+                observer.transient.push(Observation {
+                    target: root,
+                    options: options.clone(),
+                    order,
+                });
             }
         }
     }
@@ -165,6 +259,12 @@ impl MutationObservers {
     pub(crate) fn begin_notification(&mut self, documents: &mut DocumentStore) -> Vec<u64> {
         self.drain(documents);
         self.scheduled = false;
+        // Transient registrations live only until the notification, whether or
+        // not a record was queued for the observer that owns them
+        // (<https://dom.spec.whatwg.org/#notify-mutation-observers>).
+        for observer in self.observers.values_mut() {
+            observer.transient.clear();
+        }
         std::mem::take(&mut self.pending)
     }
 
