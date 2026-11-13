@@ -60,10 +60,14 @@ host.__tbMakeStyle = element => {
   // The IDL attribute for a CSS property: camel case becomes dashed, except
   // `cssFloat`, the one property whose IDL name is not `float`
   // (<https://drafts.csswg.org/cssom/#dom-cssstyleproperties-cssfloat>).
+  // A vendor-prefixed property also has an IDL name without the leading dash,
+  // so `-webkit-animation` is reachable as `webkitAnimation`
+  // (<https://drafts.csswg.org/cssom/#css-property-to-idl-attribute>).
   const idlProperty = name => {
     if (name === 'cssFloat') return 'float';
     if (name === 'cssText' || name === 'length' || name === 'parentRule') return null;
-    return name.replace(/[A-Z]/g, letter => '-' + letter.toLowerCase());
+    const dashed = name.replace(/[A-Z]/g, letter => '-' + letter.toLowerCase());
+    return dashed.startsWith('webkit-') ? `-${dashed}` : dashed;
   };
   const declaration = {
     get cssText() { return serialized(); },
@@ -127,8 +131,12 @@ host.__tbMakeStyle = element => {
       // The indexed getter yields a property name, and `undefined` past the
       // last declaration (<https://drafts.csswg.org/cssom/#the-cssstyledeclaration-interface>).
       if (indexProperty(property)) return names()[Number(property)];
+      // Only a supported property has an IDL attribute; an unknown name is
+      // absent rather than an empty value
+      // (<https://drafts.csswg.org/cssom/#css-property-to-idl-attribute>).
       const idl = idlProperty(property);
-      return idl === null ? undefined : target.getPropertyValue(idl);
+      if (idl === null || !host.__tb_style_property_supported(idl)) return undefined;
+      return target.getPropertyValue(idl);
     },
     set(target, property, value, receiver) {
       if (typeof property !== 'string' || own(property)) {
@@ -144,8 +152,11 @@ host.__tbMakeStyle = element => {
       // The indexed getter is present up to `length - 1`
       // (<https://drafts.csswg.org/cssom/#the-cssstyledeclaration-interface>).
       if (indexProperty(property)) return Number(property) < names().length;
+      // `in` asks whether the UA supports the property, not whether the block
+      // currently sets it; an unset property still has its IDL attribute
+      // (<https://drafts.csswg.org/cssom/#css-property-to-idl-attribute>).
       const idl = idlProperty(property);
-      return idl !== null && target.getPropertyValue(idl) !== '';
+      return idl !== null && host.__tb_style_property_supported(idl);
     },
     ownKeys(target) {
       const indices = names().map((_name, index) => String(index));

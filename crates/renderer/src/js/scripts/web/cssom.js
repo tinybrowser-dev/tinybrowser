@@ -459,8 +459,11 @@
     enumerable: true,
     configurable: true,
   });
+  // Namespace members are writable and configurable, and the namespace
+  // object is ordinary rather than frozen
+  // (<https://webidl.spec.whatwg.org/#namespace-object>).
   Object.defineProperty(globalThis, 'CSS', {
-    value: Object.freeze({
+    value: {
       // https://drafts.csswg.org/cssom/#dom-css-escape
       escape(value) {
         if (arguments.length < 1) throw new TypeError('CSS.escape requires 1 argument');
@@ -498,20 +501,22 @@
       // bare declaration
       // (<https://drafts.csswg.org/css-conditional-3/#the-css-namespace>).
       // Two overloads share one function, so its `length` is the shortest
-      // required argument list: 1
-      // (<https://webidl.spec.whatwg.org/#overload-set>).
+      // required argument list: 1. Both arguments are `CSSOMString`, whose
+      // conversion throws on a symbol
+      // (<https://webidl.spec.whatwg.org/#overload-set>,
+      // <https://webidl.spec.whatwg.org/#es-DOMString>).
       supports(property, ...rest) {
         if (arguments.length < 1) {
           throw new TypeError("Failed to execute 'supports' on 'CSS': 1 argument required, but only 0 present.");
         }
         if (rest.length === 0) {
-          return host.__tbCSSSupportsCondition(__tbStringCtor(property));
+          return host.__tb_css_supports_condition(__tbToDOMString(property));
         }
-        return host.__tbCSSSupportsDeclaration(
-          __tbStringCtor(property), __tbStringCtor(rest[0]));
+        return host.__tb_css_supports_declaration(
+          __tbToDOMString(property), __tbToDOMString(rest[0]));
       },
-    }),
-    writable: true, configurable: true,
+    },
+    writable: true, configurable: true, enumerable: false,
   });
   // A computed style always resolves: an unset property reports its initial
   // value, not the empty string

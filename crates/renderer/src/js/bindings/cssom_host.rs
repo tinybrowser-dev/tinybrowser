@@ -1,4 +1,6 @@
-//! Host calls that expose a document's parsed stylesheets as CSSOM rule lists.
+//! Host calls behind the CSSOM bindings: a document's parsed stylesheets as
+//! rule lists, its inline declaration block, and the `CSS` namespace's
+//! parsers.
 //!
 //! The style engine already keeps a `CSSRuleList` per `<style>` and
 //! `<link rel=stylesheet>` owner
@@ -17,12 +19,22 @@ use crate::dom::tree::NodeId;
 pub(super) fn install(ctx: &Ctx<'_>) -> Result<()> {
     let bridge = crate::js::bridge::object(ctx)?;
     bridge.set(
-        "__tbCSSSupportsDeclaration",
-        rquickjs::prelude::Func::from(css_supports_declaration),
+        "__tb_css_supports_declaration",
+        rquickjs::prelude::Func::from(|property: String, value: String| {
+            crate::css::supports::supports_declaration(&property, &value)
+        }),
     )?;
     bridge.set(
-        "__tbCSSSupportsCondition",
-        rquickjs::prelude::Func::from(css_supports_condition),
+        "__tb_css_supports_condition",
+        rquickjs::prelude::Func::from(|text: String| {
+            crate::css::supports::supports_condition(&text)
+        }),
+    )?;
+    bridge.set(
+        "__tb_style_property_supported",
+        rquickjs::prelude::Func::from(|name: String| {
+            crate::css::supports::property_supported(&name)
+        }),
     )?;
     bridge.set(
         "__tb_sheet_owner_nodes",
@@ -638,68 +650,4 @@ fn sheet_delete_rule<'js>(
         .base
         .cssom_delete_rule(sheet, &path, index)
         .map_err(|err| cssom_throw(&ctx, err))
-}
-
-/// `CSS.supports(property, value)`: whether the style engine accepts the
-/// declaration
-/// (<https://drafts.csswg.org/css-conditional-3/#dom-css-supports>).
-///
-/// A custom property accepts any token stream except the empty string, which
-/// the style crate would otherwise accept as an empty declaration value; a
-/// known property parses its value with the same grammar the cascade uses. The
-/// property name is a single ident, so surrounding whitespace makes it invalid
-/// while the value's outer whitespace is skipped by the value parser.
-pub(crate) fn css_supports_declaration(property: String, value: String) -> bool {
-    let Ok(property) = style::properties::PropertyId::parse_enabled_for_all_content(&property)
-    else {
-        return false;
-    };
-    // "supports() must return false for invalid custom property values"
-    // (<https://drafts.csswg.org/css-conditional-3/#changes>) and a browser
-    // answers false for the empty string while accepting whitespace.
-    if matches!(property, style::properties::PropertyId::Custom(_)) && value.is_empty() {
-        return false;
-    }
-    let url_data = style::stylesheets::UrlExtraData(style::servo_arc::Arc::new(net::about_blank()));
-    let mut source = style::properties::SourcePropertyDeclaration::default();
-    style::properties::parse_one_declaration_into(
-        &mut source,
-        property,
-        &value,
-        style::stylesheets::Origin::Author,
-        &url_data,
-        None,
-        style_traits::ParsingMode::DEFAULT,
-        style::context::QuirksMode::NoQuirks,
-        style::stylesheets::CssRuleType::Style,
-    )
-    .is_ok()
-}
-
-/// `CSS.supports(conditionText)`: parse and evaluate a supports condition with
-/// the style engine's grammar, including a bare declaration
-/// (<https://drafts.csswg.org/css-conditional-3/#dom-css-supports>).
-pub(crate) fn css_supports_condition(text: String) -> bool {
-    let url_data = style::stylesheets::UrlExtraData(style::servo_arc::Arc::new(net::about_blank()));
-    let mut context = style::parser::ParserContext::new(
-        style::stylesheets::Origin::Author,
-        &url_data,
-        Some(style::stylesheets::CssRuleType::Style),
-        style_traits::ParsingMode::DEFAULT,
-        style::context::QuirksMode::NoQuirks,
-        std::borrow::Cow::Owned(style::stylesheets::Namespaces::default()),
-        None,
-        None,
-        style::custom_properties::AttrTaint::default(),
-    );
-    let mut parser = style::values::Parser::new(&text);
-    let Ok(condition) =
-        style::stylesheets::supports_rule::parse_condition_or_declaration(&mut parser)
-    else {
-        return false;
-    };
-    if !parser.is_exhausted() {
-        return false;
-    }
-    condition.eval(&mut context)
 }

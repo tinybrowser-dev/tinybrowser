@@ -15,14 +15,10 @@
 //! local-MINDE mapping.
 
 use style::color::{AbsoluteColor, ColorSpace};
-use style::context::QuirksMode;
 use style::device::Device;
-use style::parser::ParserContext;
-use style::servo_arc::Arc as ServoArc;
-use style::stylesheets::{CssRuleType, Origin, UrlExtraData};
 use style::values::Parser;
 use style::values::specified::Color as SpecifiedColor;
-use style_traits::{ParsingMode, ToCss};
+use style_traits::ToCss;
 
 /// A parsed color: the computed absolute value, the straight sRGB bytes for
 /// painting, and the exact CSS serialization when the syntax has no
@@ -47,18 +43,8 @@ fn parse_absolute(
     device: Option<&Device>,
     current: &AbsoluteColor,
 ) -> Option<AbsoluteColor> {
-    let url_data = UrlExtraData(ServoArc::new(net::about_blank()));
-    let context = ParserContext::new(
-        Origin::Author,
-        &url_data,
-        Some(CssRuleType::Style),
-        ParsingMode::DEFAULT,
-        QuirksMode::NoQuirks,
-        std::borrow::Cow::Owned(style::stylesheets::Namespaces::default()),
-        None,
-        None,
-        style::custom_properties::AttrTaint::default(),
-    );
+    let url_data = crate::css::url_data();
+    let context = crate::css::parser_context(&url_data);
     let mut parser = Parser::new(input);
     let computed = SpecifiedColor::parse_and_compute(&context, &mut parser, device).ok()?;
     Some(computed.resolve_to_absolute(current))

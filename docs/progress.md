@@ -1324,3 +1324,35 @@ initial")` was false and `test_serialization_set` skipped every assertion. The
 block stores the system font's `font-variant-*` longhands at `normal`, where a
 browser keeps the `font` shorthand and reports `""`
 (`docs/limitations.md`, `docs/upstream.md`).
+
+Review of the `CSS.supports()` slice found that the CSSOM's declaration block
+disagreed with it. `'color' in element.style` asked whether the block *currently
+sets* the property, so an empty declaration block answered `false` for every
+supported property, while `CSS.supports("color", "red")` answered `true`. CSSOM
+gives a `CSSStyleDeclaration` an IDL attribute for each property the UA
+supports, set or not
+(<https://drafts.csswg.org/cssom/#css-property-to-idl-attribute>), so `in`, the
+IDL getter, and `CSS.supports()` now all ask the style engine the same question
+through `css::supports::property_supported`. An unsupported name reads
+`undefined` from the getter and is absent from `in`, as in a browser, instead
+of reading the empty string. The legacy vendor form resolves too:
+`style.webkitAnimation` is `-webkit-animation`, the one prefix whose IDL name
+keeps a lowercase first letter.
+
+The rest of the review is correctness without WPT coverage. The one-argument
+`CSS.supports()` now runs both spec steps: parse the text as a
+`<supports-condition>`, then wrap it in parentheses and parse that, which is
+how a bare declaration is accepted and how a browser answers `true` for
+`CSS.supports("color: red) or (color: blue")`. Arguments use the existing
+`__tbToDOMString`, so a symbol throws instead of stringifying. The parsing
+itself moved to `crates/renderer/src/css/supports.rs`, the concept owner for
+values shared with canvas and form controls, and `css::url_data` /
+`css::parser_context` replaced the second and third copies of the standalone
+parse context (`css/color.rs` was the first). The `CSS` namespace is an
+ordinary object with writable, configurable members rather than a frozen one.
+
+Evidence, subtest diff against the previous commit's build with no subtest
+lost: `css/css-conditional` goes from 837 to **1647 of 1851**, and
+`js/CSS-supports-CSSStyleDeclaration.html` from 685 to **1495 of 1495**. The
+other suites are unchanged; the parsing-side fixes above have no WPT coverage,
+and each answer was checked against Chromium 157.
