@@ -10,6 +10,7 @@ url.js
 dom.js
 cssom.js
 navigator.js
+origin.js
 tree_walker.js
 custom_elements.js
 observers.js

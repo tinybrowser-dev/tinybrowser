@@ -1857,3 +1857,25 @@ Evidence: `html/browsers` 679 to **721 subtests**, no lost subtests.
 `location-protocol-setter-non-broken.html` 0 to 10; the weird-scheme file
 stays at 5 of 5. `open-features-tokenization-*` report "script failed" on the
 unmodified checkout too, so they are not caused by this change.
+
+The `Origin` interface is implemented
+(`crates/renderer/src/js/scripts/web/origin.js`): `new Origin()` creates an
+opaque origin, and `Origin.from()` extracts one from an absolute URL string, a
+`URL`, an `Origin`, the current global, a dispatched `MessageEvent`, and an
+HTML `<a>`/`<area>`. Tuple origins compare by ASCII serialization and opaque
+origins by identity, with one opaque identity per realm; `isSameSite()` uses
+the cookie rules' scheme + registrable-domain comparison through `net`.
+`Origin.from(string)` and `Origin.from(URL)` run the URL parser in the host
+(`crates/renderer/src/js/bindings/origin.rs`), so blob-URL delegation and the
+opaque-vs-tuple split match the URL Standard.
+
+Evidence: `html/browsers` 679 to **885 subtests**, no lost subtests.
+`origin-from-origin.any.html` 25 of 25, `origin-from-string.any.html` 27,
+`origin-from-url.any.html` 27, `origin-from.any.html` 9,
+`origin-from-messageevent.window.html` 6, `origin-from-window.window.html` 5 of
+7, `origin-from-hyperlinkelementutils.window.html` 54 of 129 (the HTML
+`<a>`/`<area>` cases), and `origin-from-worker.window.html` 2 of 2.
+
+SVG/MathML hyperlink origins, another frame's `WindowProxy`, and opaque-origin
+identity across messages from one sandboxed document are recorded in
+`docs/limitations.md`.

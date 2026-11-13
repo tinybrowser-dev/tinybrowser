@@ -56,6 +56,18 @@ const __tbFramePending = frame => {
 // (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-get>,
 // <https://dom.spec.whatwg.org/#interface-eventtarget>).
 const __tbFramePendingCalls = Object.create(null);
+// `Origin.from(MessageEvent)` extracts the sender's origin, which only an
+// event the user agent dispatched carries; a constructed event has no source
+// and therefore no real origin
+// (<https://html.spec.whatwg.org/multipage/browsers.html#the-origin-interface>).
+// `undefined` means the value is not a `MessageEvent`.
+host.__tbOriginOfMessageEvent = event => {
+  const entry = __tbMessageEventData.get(event);
+  if (entry === undefined) return undefined;
+  if (entry.source === null) return null;
+  return entry.origin;
+};
+
 // The members a same-origin frame whose realm has not started presents from the
 // inserting realm. Only callable interfaces (constructors and functions with a
 // prototype) and the intrinsic namespace objects qualify: everything else a

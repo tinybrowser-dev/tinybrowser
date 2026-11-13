@@ -383,6 +383,35 @@ handle for the import) in `third_party/blitz`; until then the property reports
 the spec's "no associated sheet" state and
 `css/cssom/StyleSheet-properties.html`'s nine `@import` subtests fail.
 
+
+## Origin API
+
+`new Origin()`, `Origin.from()` for an absolute URL string, a `URL`, an
+`Origin`, the current global, a dispatched `MessageEvent`, and an HTML `<a>` or
+`<area>`, plus `opaque`, `isSameOrigin()`, and `isSameSite()`, are implemented
+(`crates/renderer/src/js/scripts/web/origin.js`,
+`crates/renderer/src/js/bindings/origin.rs`). A tuple origin compares by its
+ASCII serialization; an opaque origin compares by identity, and the realm's own
+opaque origin is one identity across `Origin.from(globalThis)` calls. Same-site
+uses the cookie rules' scheme + registrable-domain comparison.
+
+`Origin.from()` on an SVG or MathML `<a>` returns `TypeError`: the extraction
+reads the element's `href`, and those elements use `SVGAnimatedString`
+(`href.baseVal`) and `xlink:href`, neither of which the engine exposes yet.
+The HTML `<a>`/`<area>` cases pass.
+
+`Origin.from(Window)` works for the current global and for a data-URL iframe's
+own `Origin.from(globalThis)`, but not for another frame's `WindowProxy`: the
+proxy carries a frame id, not an origin, and there is no public extract hook
+for it. `origin-from-window.window.html` therefore passes five of seven
+subtests.
+
+Opaque origins from sandboxed-frame messages compare by event, not by the
+sender's document: each message's opaque origin is a new token, so two messages
+from one sandboxed document do not compare same-origin. The third
+`origin-from-messageevent-opaque.window.html` case also reloads a frame through
+`navigation.reload()`, which the engine does not navigate.
+
 ## Missing surfaces
 
 Dedicated workers run on their own OS thread with their own `QuickJS`

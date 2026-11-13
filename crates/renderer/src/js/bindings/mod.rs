@@ -21,6 +21,7 @@ mod inner_text;
 mod messaging;
 mod mutation;
 mod node;
+mod origin;
 /// Runs an inline classic script in the realm that owns its document; a
 /// document without a realm yet queues it through
 /// [`World::queue_deferred_script`](crate::js::world::World::queue_deferred_script).
@@ -1006,6 +1007,7 @@ fn install_host_functions(ctx: &Ctx<'_>) -> Result<()> {
     parsing::install_xhr_parse(ctx)?;
     parsing::install_document_parse(ctx)?;
     cssom_host::install(ctx)?;
+    origin::install(ctx)?;
     Ok(())
 }
 
