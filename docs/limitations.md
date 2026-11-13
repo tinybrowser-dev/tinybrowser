@@ -95,7 +95,8 @@ engine. The engine's model has four gaps:
 - `scrollIntoView` scrolls the viewport only. Blitz's `scroll_into_view`
   computes the element's position and aligns it against the viewport, so a
   target inside a nested scroll container does not scroll that container, and
-  `scroll-margin`/`scroll-padding` are not applied.
+  `scroll-margin`/`scroll-padding` are not applied, and the `container`
+  member is parsed but has no effect.
 
 The `scroll`/`scrollTo`/`scrollBy`/`scrollIntoView` methods return
 `Promise<undefined>`, which is what the pinned IDL says. The current CSSOM View

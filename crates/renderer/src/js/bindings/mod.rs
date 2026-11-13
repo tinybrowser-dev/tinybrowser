@@ -1002,22 +1002,7 @@ fn install_host_functions(ctx: &Ctx<'_>) -> Result<()> {
         "__tb_resolved_style",
         rquickjs::prelude::Func::from(resolved_style),
     )?;
-    crate::js::bridge::object(ctx)?.set(
-        "__tb_viewport_scroll",
-        rquickjs::prelude::Func::from(viewport_scroll_offset),
-    )?;
-    crate::js::bridge::object(ctx)?.set(
-        "__tb_scroll_viewport",
-        rquickjs::prelude::Func::from(scroll_viewport),
-    )?;
-    crate::js::bridge::object(ctx)?.set(
-        "__tb_element_scroll_position",
-        rquickjs::prelude::Func::from(element_scroll_position),
-    )?;
-    crate::js::bridge::object(ctx)?.set(
-        "__tb_scroll_element",
-        rquickjs::prelude::Func::from(scroll_element),
-    )?;
+    node::scrolling::install(ctx)?;
     parsing::install_xhr_parse(ctx)?;
     parsing::install_document_parse(ctx)?;
     cssom_host::install(ctx)?;
@@ -1063,81 +1048,6 @@ fn viewport_size(ctx: Ctx<'_>) -> Vec<f64> {
             world.borrow().viewport_size.get()
         });
     vec![f64::from(width), f64::from(height)]
-}
-
-/// The viewport's scroll offset `(x, y)`, for `window.scrollX`/`scrollY` and
-/// `pageXOffset`/`pageYOffset`
-/// (<https://drafts.csswg.org/cssom-view/#dom-window-scrollx>).
-fn viewport_scroll_offset(ctx: Ctx<'_>) -> Vec<f64> {
-    let Ok(world) = world(&ctx) else {
-        return vec![0.0, 0.0];
-    };
-    let world = world.borrow();
-    let Some(document) = world.main_document_id() else {
-        return vec![0.0, 0.0];
-    };
-    let Some(mut parsed) = world.document_mut_by_id(document) else {
-        return vec![0.0, 0.0];
-    };
-    parsed.document.base.resolve(0.0);
-    let scroll = parsed.document.base.viewport_scroll();
-    vec![scroll.x, scroll.y]
-}
-
-/// `window.scroll()`/`scrollTo()`: scroll the viewport to `(x, y)`
-/// (<https://drafts.csswg.org/cssom-view/#dom-window-scroll>).
-fn scroll_viewport(ctx: Ctx<'_>, x: f64, y: f64, behavior: String) {
-    let Ok(world) = world(&ctx) else {
-        return;
-    };
-    let world = world.borrow();
-    let Some(document) = world.main_document_id() else {
-        return;
-    };
-    let Some(mut parsed) = world.document_mut_by_id(document) else {
-        return;
-    };
-    let behavior = node::scrolling::scroll_behavior(&behavior);
-    parsed.document.base.resolve(0.0);
-    let Some(root) = node::scrolling::root_element(&parsed) else {
-        return;
-    };
-    parsed.document.base.scroll_to(root.node, x, y, behavior);
-}
-
-/// `Element.scrollTop`/`scrollLeft` for the shim's overloaded
-/// `scroll()`/`scrollTo()` family
-/// (<https://drafts.csswg.org/cssom-view/#dom-element-scrolltop>).
-fn element_scroll_position<'js>(ctx: Ctx<'js>, element: Value<'js>, vertical: bool) -> f64 {
-    let Some(id) = host_node_id(&ctx, &element) else {
-        return 0.0;
-    };
-    let Ok(world) = world(&ctx) else {
-        return 0.0;
-    };
-    let world = world.borrow();
-    let Some(mut parsed) = world.document_mut(id) else {
-        return 0.0;
-    };
-    parsed.document.base.resolve(0.0);
-    node::scrolling::scroll_position(&parsed, id, vertical)
-}
-
-/// `Element.scroll()`/`scrollTo()`: scroll an element to `(x, y)`
-/// (<https://drafts.csswg.org/cssom-view/#dom-element-scroll>).
-fn scroll_element<'js>(ctx: Ctx<'js>, element: Value<'js>, x: f64, y: f64, behavior: String) {
-    let Some(id) = host_node_id(&ctx, &element) else {
-        return;
-    };
-    let Ok(world) = world(&ctx) else {
-        return;
-    };
-    let world = world.borrow();
-    let Some(mut parsed) = world.document_mut(id) else {
-        return;
-    };
-    let behavior = node::scrolling::scroll_behavior(&behavior);
-    node::scrolling::scroll_to(&mut parsed, id, x, y, behavior);
 }
 
 /// The identity every page in this process reports: `navigator.userAgent` and

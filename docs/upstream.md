@@ -160,6 +160,13 @@ Known gaps this engine fails honestly (no fork patch yet):
 
 ## Open issues
 
+- CSSOM View's `Element.scroll()` step for the root element delegates to
+  `window.scroll()` with `scrollX` as the first argument, which discards the
+  x the caller passed. Chrome applies both coordinates, and
+  `css/cssom-view/scrolling-quirks-vs-nonquirks.html` asserts that
+  (`documentElement.scroll(50, 60)` leaves `scrollLeft` at 50). tinybrowser
+  follows the browser; the divergence is stated at the routing site in
+  `crates/renderer/src/js/bindings/node/scrolling.rs`.
 - Blitz does not model CSS overflow propagation to the viewport. When the root
   element's computed overflow is `visible`, the body element's `overflow`
   applies to the viewport, so a body with `overflow: hidden` (a common page

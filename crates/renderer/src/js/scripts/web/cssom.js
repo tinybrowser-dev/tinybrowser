@@ -2,38 +2,36 @@
   // emulation changes are visible without re-installing globals
   // (<https://drafts.csswg.org/cssom-view/#dom-window-innerwidth>).
   const __tbViewportSize = () => host.__tb_viewport_size();
-  Object.defineProperty(globalThis, 'innerWidth', {
-    get: () => __tbViewportSize()[0], configurable: true,
-  });
-  Object.defineProperty(globalThis, 'innerHeight', {
-    get: () => __tbViewportSize()[1], configurable: true,
-  });
+  // A `[Replaceable]` attribute is enumerable, and assigning it replaces the
+  // accessor with an own data property
+  // (<https://webidl.spec.whatwg.org/#dfn-replaceable>).
+  const __tbReplaceable = (name, get) => {
+    Object.defineProperty(globalThis, name, {
+      get,
+      set(value) {
+        Object.defineProperty(globalThis, name, {
+          value, writable: true, enumerable: true, configurable: true,
+        });
+      },
+      enumerable: true, configurable: true,
+    });
+  };
+  __tbReplaceable('innerWidth', () => __tbViewportSize()[0]);
+  __tbReplaceable('innerHeight', () => __tbViewportSize()[1]);
   // No browser chrome exists, so the outer window equals the inner viewport
   // (<https://drafts.csswg.org/cssom-view/#dom-window-outerwidth>).
-  Object.defineProperty(globalThis, 'outerWidth', {
-    get: () => __tbViewportSize()[0], configurable: true,
-  });
-  Object.defineProperty(globalThis, 'outerHeight', {
-    get: () => __tbViewportSize()[1], configurable: true,
-  });
+  __tbReplaceable('outerWidth', () => __tbViewportSize()[0]);
+  __tbReplaceable('outerHeight', () => __tbViewportSize()[1]);
 
   // ── viewport scrolling ───────────────────────────────────────────────
   // `scrollX`/`scrollY` and their `page*Offset` aliases report the viewport's
   // scroll offset, which in quirks mode is the body element's
   // (<https://drafts.csswg.org/cssom-view/#dom-window-scrollx>).
   const __tbViewportScroll = () => host.__tb_viewport_scroll();
-  Object.defineProperty(globalThis, 'scrollX', {
-    get: () => __tbViewportScroll()[0], configurable: true,
-  });
-  Object.defineProperty(globalThis, 'pageXOffset', {
-    get: () => __tbViewportScroll()[0], configurable: true,
-  });
-  Object.defineProperty(globalThis, 'scrollY', {
-    get: () => __tbViewportScroll()[1], configurable: true,
-  });
-  Object.defineProperty(globalThis, 'pageYOffset', {
-    get: () => __tbViewportScroll()[1], configurable: true,
-  });
+  __tbReplaceable('scrollX', () => __tbViewportScroll()[0]);
+  __tbReplaceable('pageXOffset', () => __tbViewportScroll()[0]);
+  __tbReplaceable('scrollY', () => __tbViewportScroll()[1]);
+  __tbReplaceable('pageYOffset', () => __tbViewportScroll()[1]);
 
   // An IDL `ScrollBehavior`; an unknown spelling is a conversion failure
   // (<https://drafts.csswg.org/cssom-view/#enumdef-scrollbehavior>).
@@ -46,6 +44,18 @@
     return behavior;
   };
 
+  // `unrestricted double` conversion: ToNumber, and "normalize non-finite
+  // values" replaces NaN and the infinities with zero
+  // (<https://webidl.spec.whatwg.org/#es-unrestricted-double>,
+  // <https://drafts.csswg.org/cssom-view/#normalize-non-finite-values>).
+  const __tbUnrestrictedDouble = value => {
+    if (typeof value === 'bigint') {
+      throw new TypeError('Cannot convert a BigInt value to a number');
+    }
+    const number = Number(value);
+    return Number.isFinite(number) ? number : 0;
+  };
+
   // Convert one argument as `ScrollToOptions`. A non-object is a conversion
   // failure, which the scroll methods report by rejecting their promise
   // (<https://webidl.spec.whatwg.org/#es-dictionary>).
@@ -55,8 +65,8 @@
       throw new TypeError('ScrollToOptions must be an object');
     }
     const options = { behavior: __tbScrollBehavior(value.behavior) };
-    if (value.left !== undefined) options.left = Number(value.left);
-    if (value.top !== undefined) options.top = Number(value.top);
+    if (value.left !== undefined) options.left = __tbUnrestrictedDouble(value.left);
+    if (value.top !== undefined) options.top = __tbUnrestrictedDouble(value.top);
     return options;
   };
 
@@ -64,19 +74,21 @@
   // the window: an overload set of one optional dictionary and one
   // `(unrestricted double, unrestricted double)` pair
   // (<https://drafts.csswg.org/cssom-view/#dom-element-scroll>).
-  const __tbScroll = (target, receiver, args, relative) => {
+  const __tbScroll = (target, receiver, args, relative, receiverCheck) => {
     try {
+      // The receiver check comes first, and a failure rejects like every other
+      // error in a promise-returning operation
+      // (<https://webidl.spec.whatwg.org/#es-operations>).
+      if (!receiverCheck(receiver)) throw new TypeError('Illegal invocation');
       let x;
       let y;
       let behavior;
       if (args.length >= 2) {
-        // Overload resolution distinguishes the pair by its Number values, so
-        // a non-number first argument matches nothing and throws.
-        if (typeof args[0] !== 'number' || typeof args[1] !== 'number') {
-          throw new TypeError('scroll requires a ScrollToOptions dictionary or two numbers');
-        }
-        x = args[0];
-        y = args[1];
+        // The two-argument overload is chosen by argument count, then each
+        // argument converts as `unrestricted double`, so a numeric string or
+        // `null` is accepted and a BigInt rejects.
+        x = __tbUnrestrictedDouble(args[0]);
+        y = __tbUnrestrictedDouble(args[1]);
         behavior = 'auto';
       } else {
         const options = __tbScrollOptions(args[0]);
@@ -108,22 +120,33 @@
     scrollTo: (_receiver, x, y, behavior) => host.__tb_scroll_viewport(x, y, behavior),
   };
 
-  const __tbDefineScrollMethods = (object, target) => {
+  // The Web IDL receiver check happens before argument conversion, so a
+  // misused method throws instead of returning a rejected promise
+  // (<https://webidl.spec.whatwg.org/#es-operations>).
+  const __tbDefineScrollMethods = (object, target, receiverCheck) => {
+    const method = (name, relative) => ({
+      [name](...args) {
+        return __tbScroll(target, this, args, relative, receiverCheck);
+      },
+    })[name];
     for (const name of ['scroll', 'scrollTo']) {
       Object.defineProperty(object, name, {
-        value: { [name](...args) { return __tbScroll(target, this, args, false); } }[name],
+        value: method(name, false),
         writable: true, enumerable: true, configurable: true,
       });
     }
     Object.defineProperty(object, 'scrollBy', {
-      value: {
-        scrollBy(...args) { return __tbScroll(target, this, args, true); },
-      }.scrollBy,
+      value: method('scrollBy', true),
       writable: true, enumerable: true, configurable: true,
     });
   };
 
-  __tbDefineScrollMethods(globalThis, __tbWindowScrollTarget);
+  // Another frame's `contentWindow` is a proxy whose `window` points at
+  // itself, so accept it as a Window too; its members forward to the target
+  // realm (<https://html.spec.whatwg.org/multipage/window-object.html#the-windowproxy-exotic-object>).
+  __tbDefineScrollMethods(
+    globalThis, __tbWindowScrollTarget,
+    receiver => receiver === globalThis || (receiver !== null && receiver.window === receiver));
   // Declare the element operations here rather than through the IDL contract:
   // the binder emits one implementation per operation name, and these have
   // two overloads that the shared `__tbScroll` dispatches
@@ -131,7 +154,7 @@
   __tbDefineScrollMethods(globalThis.Element.prototype, {
     current: (element, vertical) => host.__tb_element_scroll_position(element, vertical),
     scrollTo: (element, x, y, behavior) => host.__tb_scroll_element(element, x, y, behavior),
-  });
+  }, receiver => globalThis.Element.prototype.isPrototypeOf(receiver));
 
 // Constructable stylesheet surface used by component libraries, plus the
 // associated CSS style sheet for `<style>` and `<link rel=stylesheet>`.

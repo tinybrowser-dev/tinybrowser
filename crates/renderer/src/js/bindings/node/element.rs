@@ -36,8 +36,8 @@ use crate::js::world::{NodeReference, SameObject};
 use super::JsNode;
 use super::core::{adopt_node, insert_tree_node, insertion_tree_nodes, upgrade_parsed_tree};
 use super::document::{
-    document_first_child, fragment_base_url, html_fragment_context, parse_html_fragment_snapshots,
-    place_adjacent_rest, register_inserted_iframes,
+    fragment_base_url, html_fragment_context, parse_html_fragment_snapshots, place_adjacent_rest,
+    register_inserted_iframes,
 };
 
 include!(concat!(env!("OUT_DIR"), "/Element.rs"));
@@ -214,22 +214,24 @@ impl<'js> element_generated::Element<'js> for JsNode {
 
     // https://drafts.csswg.org/cssom-view/#dom-element-scrollleft
     fn get_scroll_left(&self, ctx: &Ctx<'js>) -> Result<f64> {
-        self.scroll_left(ctx)
+        Ok(self.scroll_left(ctx))
     }
 
     // https://drafts.csswg.org/#dom-element-scrollleft
     fn set_scroll_left(&self, ctx: &Ctx<'js>, value: f64) -> Result<()> {
-        self.set_scroll_left(ctx, value)
+        self.set_scroll_left(ctx, value);
+        Ok(())
     }
 
     // https://drafts.csswg.org/cssom-view/#dom-element-scrolltop
     fn get_scroll_top(&self, ctx: &Ctx<'js>) -> Result<f64> {
-        self.scroll_top(ctx)
+        Ok(self.scroll_top(ctx))
     }
 
     // https://drafts.csswg.org/#dom-element-scrolltop
     fn set_scroll_top(&self, ctx: &Ctx<'js>, value: f64) -> Result<()> {
-        self.set_scroll_top(ctx, value)
+        self.set_scroll_top(ctx, value);
+        Ok(())
     }
 
     // https://drafts.csswg.org/cssom-view/#dom-element-clientwidth
@@ -1346,63 +1348,42 @@ impl JsNode {
     }
 
     // https://drafts.csswg.org/cssom-view/#dom-element-scrollleft
-    pub(super) fn scroll_left(&self, ctx: &Ctx<'_>) -> Result<f64> {
+    pub(super) fn scroll_left(&self, ctx: &Ctx<'_>) -> f64 {
         self.scroll_axis(ctx, false)
     }
 
-    pub(super) fn set_scroll_left(&self, ctx: &Ctx<'_>, value: f64) -> Result<()> {
-        self.set_scroll_axis(ctx, value, false)
+    pub(super) fn set_scroll_left(&self, ctx: &Ctx<'_>, value: f64) {
+        self.set_scroll_axis(ctx, value, false);
     }
 
     // https://drafts.csswg.org/cssom-view/#dom-element-scrolltop
-    pub(super) fn scroll_top(&self, ctx: &Ctx<'_>) -> Result<f64> {
+    pub(super) fn scroll_top(&self, ctx: &Ctx<'_>) -> f64 {
         self.scroll_axis(ctx, true)
     }
 
-    pub(super) fn set_scroll_top(&self, ctx: &Ctx<'_>, value: f64) -> Result<()> {
-        self.set_scroll_axis(ctx, value, true)
+    pub(super) fn set_scroll_top(&self, ctx: &Ctx<'_>, value: f64) {
+        self.set_scroll_axis(ctx, value, true);
     }
 
     /// One axis of `scrollTop`/`scrollLeft`, including the quirks-mode body
     /// and root-element rules
     /// (<https://drafts.csswg.org/cssom-view/#dom-element-scrolltop>).
-    fn scroll_axis(&self, ctx: &Ctx<'_>, vertical: bool) -> Result<f64> {
-        let world = world(ctx)?;
-        let world = world.borrow();
-        let id = self.handle.get().0;
-        // An element whose document is not the active document reports zero.
-        if world.main_document_id() != Some(id.document) {
-            return Ok(0.0);
-        }
-        let Some(mut parsed) = world.document_mut(id) else {
-            return Ok(0.0);
-        };
-        parsed.document.base.resolve(0.0);
-        Ok(super::scrolling::scroll_position(&parsed, id, vertical))
+    fn scroll_axis(&self, ctx: &Ctx<'_>, vertical: bool) -> f64 {
+        super::scrolling::element_scroll_position(ctx, self.handle.get().0, vertical)
     }
 
     /// The `scrollTop`/`scrollLeft` setter: non-finite values become zero, and
     /// the other axis keeps its current position
     /// (<https://drafts.csswg.org/cssom-view/#dom-element-scrolltop>).
-    fn set_scroll_axis(&self, ctx: &Ctx<'_>, value: f64, vertical: bool) -> Result<()> {
-        let world = world(ctx)?;
-        let world = world.borrow();
+    fn set_scroll_axis(&self, ctx: &Ctx<'_>, value: f64, vertical: bool) {
         let id = self.handle.get().0;
-        if world.main_document_id() != Some(id.document) {
-            return Ok(());
-        }
-        let Some(mut parsed) = world.document_mut(id) else {
-            return Ok(());
-        };
-        parsed.document.base.resolve(0.0);
-        let current = super::scrolling::scroll_position(&parsed, id, !vertical);
+        let current = super::scrolling::element_scroll_position(ctx, id, !vertical);
         let (x, y) = if vertical {
             (current, value)
         } else {
             (value, current)
         };
-        super::scrolling::scroll_to(&mut parsed, id, x, y, blitz_dom::ScrollBehavior::Auto);
-        Ok(())
+        super::scrolling::element_scroll(ctx, id, x, y, blitz_dom::ScrollBehavior::Auto);
     }
 
     /// Runs `read` over this wrapper's Blitz layout node after flushing
@@ -1433,10 +1414,7 @@ impl JsNode {
         let Some(parsed) = world.document(self.handle.get().0) else {
             return Ok(false);
         };
-        Ok(
-            document_first_child(&parsed, |data| matches!(data, NodeData::Element(_)))
-                == Some(self.handle.get().0),
-        )
+        Ok(super::scrolling::root_element(&parsed) == Some(self.handle.get().0))
     }
 
     // https://drafts.csswg.org/cssom-view/#dom-element-clientwidth
@@ -2513,7 +2491,8 @@ pub(super) fn content_attr(ctx: &Ctx<'_>, id: NodeId, name: &str) -> Option<Stri
     })
 }
 
-/// Whether `data` is an element node, for [`document_first_child`] searches.
+/// Whether `data` is an element node, for
+/// [`document_first_child`](super::document::document_first_child) searches.
 pub(super) fn is_element_data(data: &NodeData) -> bool {
     matches!(data, NodeData::Element(_))
 }

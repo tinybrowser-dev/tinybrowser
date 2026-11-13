@@ -1403,3 +1403,44 @@ width, and a body whose `overflow: hidden` does not propagate to the viewport);
 the spec clamps instead. Both causes are recorded in `docs/limitations.md` and
 `docs/upstream.md` rather than asserted by a special case.
 
+
+The scrolling slice's review found four conversion and routing mistakes and
+three structural ones, all folded in. The two-argument `scroll(x, y)` overloads
+now convert each argument with ToNumber (a numeric string and `null` work, a
+BigInt rejects), because Web IDL picks the overload by argument count and then
+converts as `unrestricted double`; the shim had required `typeof number`.
+`scrollBy` normalizes non-finite values before adding them to the current
+position, so `scrollBy({top: NaN})` no longer jumps to zero. A receiver check
+now rejects a misused method (`Element.prototype.scroll.call({})`,
+`window.scroll.call(element)`) and, because these methods return promises, it
+rejects instead of throwing; a cross-frame `contentWindow` proxy is accepted
+through its self-referential `window`. The `[Replaceable]` viewport attributes
+(`innerWidth`, `innerHeight`, `outerWidth`, `outerHeight`, `scrollX`,
+`scrollY`, `pageXOffset`, `pageYOffset`) are enumerable and assigning one
+replaces it with an own data property, as Web IDL requires.
+
+The structural findings: the four host functions moved from the already large
+`bindings/mod.rs` into `node/scrolling.rs`, where the algorithms live; the
+element and window paths now share one active-document check that follows the
+node's owning realm (so a same-origin iframe's `documentElement.scrollTop`
+works when read from the parent, and a `DOMParser` document reports zero); and
+the `clip`-on-the-parent-counts-as-`hidden` override now applies only to
+`scrollingElement`, because the scroll getters and setters use the
+`potentially scrollable` definition as written. `JsNode::is_document_element`
+reuses the shared root-element helper.
+
+Two spec readings changed. `Element.scroll()` on the root element is specified
+to call `window.scroll(scrollX, y)`, discarding x, but Chrome applies both
+coordinates and `scrolling-quirks-vs-nonquirks.html` asserts the browser
+behavior, so tinybrowser follows the browser and records the disagreement in
+`docs/upstream.md`. The `container` member of `ScrollIntoViewOptions` is parsed
+and ignored, which the scrolling limitation now says.
+
+A probe page confirms each fix: numeric-string and `null` arguments scroll,
+BigInt and both brand failures reject with `TypeError`, `scrollBy({top: NaN})`
+does nothing, `scrollBy({left: 10})` moves one axis, `scrollX` is enumerable
+and replaceable, and a same-origin iframe's document is scrollable from the
+parent realm. `css/cssom-view` stays at **1002 of 1758** against 767 before the
+slice, with the same single loss (`scrolling-quirks-vs-nonquirks.html`, whose
+scroll assertions depend on the frame-viewport and overflow-propagation gaps in
+`docs/limitations.md`).
