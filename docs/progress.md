@@ -1603,3 +1603,50 @@ goes 9 to **12 of 15** (the three `clientLeft`/`clientTop` rounding cases),
 cases. What still fails is the `input`/`textarea` inline-padding rule from
 csswg-drafts#13502 and the left-hand scrollbar side, both recorded in
 `docs/limitations.md`.
+
+`scrollIntoView` now scrolls the scrolling boxes that can actually move the
+target. Blitz's `scroll_into_view` aligned the target against the viewport, so
+a target inside a nested scroller left that scroller alone, and it read its
+block and inline arguments as vertical and horizontal. It now walks the
+target's containing block chain innermost to outermost, scrolls each ancestor
+that establishes a scrolling box, then the viewport, and maps each logical
+position through that box's writing mode
+(`third_party/blitz/packages/blitz-dom/src/scrolling.rs`).
+
+Evidence: `css/cssom-view` 1501 to **1578 of 1758**. The nine
+`scrollIntoView-*-writing-mode` files were all 0 of 9; seven now pass fully
+(every mode except `sideways-lr`), `scroll-behavior-element` gains 4 (15 to
+19), `scrollIntoView-container` 4, `scrollIntoView-fixed` 2, and
+`scrollintoview-containingblock-chain`,
+`scrollIntoView-scrolling-box-with-large-border`,
+`scrollIntoView-nearest-oversized-element`,
+`scrollIntoView-horizontal-partially-visible`, and
+`scrollIntoView-align-scrollport-covering-child` 1 each, with
+`scrollintoview.html` still 40 of 40.
+
+The containing block chain, not every DOM ancestor, is the walk: a scroller
+outside an absolutely positioned box's containing block does not move the box
+(`scrollintoview-containingblock-chain.html`). Two boxes are skipped because
+they cannot move the target: a `body` whose overflow propagates to the viewport
+has no scrolling box of its own, and a `position: fixed` box hoisted to the
+viewport stops the chain. Without the first, `scrollintoview.html`'s padded
+body scrolled twice (40 of 40 fell to 32 of 40 while the walk was being
+written); without the second, `scrollIntoView-fixed.html` scrolled the window
+under a fixed box. The `container` option's `"nearest"` stops after the nearest
+scroller, which is `ScrollIntoViewContainer` in the scroll engine.
+
+Two failures are layout, not scrolling, and are recorded in
+`docs/upstream.md`. `sideways-lr` places floats along the block axis instead
+of the inline axis (probed against Chrome with the test's own markup), so the
+two `sideways-lr` files keep their layout-dependent expectations; the scroll
+mapping itself treats them like the other vertical modes. `position: sticky`
+has no layout offset, so `scrollIntoView-stuck.tentative.html` reads the stuck
+input at its static position and scrolls the container back to the top. That
+is the one lost subtest against the previous run, and it is the documented
+sticky gap rather than the scroll walk; its sibling
+`position-sticky-right.html`/`-bottom.html` already moved for the same reason.
+`scroll-margin`/`scroll-padding` are unavailable rather than unimplemented:
+both are `engine = "gecko"` longhands in the pinned Stylo, so this build does
+not generate them (probed: `CSS.supports` is false for both). The iframe cases
+of `scrollIntoView-fixed` and `scrollIntoView-container` need the child-frame
+viewport coupling recorded in `docs/limitations.md`.

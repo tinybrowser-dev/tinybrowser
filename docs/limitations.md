@@ -125,11 +125,28 @@ engine. The engine's model has four gaps:
 - `scroll-behavior: smooth` starts Blitz's animation, but the in-process WPT
   harness does not drive the renderer's frame loop to completion, so a test that
   waits for the animation end times out. Instant and auto scrolling work.
-- `scrollIntoView` scrolls the viewport only. Blitz's `scroll_into_view`
-  computes the element's position and aligns it against the viewport, so a
-  target inside a nested scroll container does not scroll that container, and
-  `scroll-margin`/`scroll-padding` are not applied, and the `container`
-  member is parsed but has no effect.
+- `scrollIntoView` scrolls every scrolling box in the target's containing
+  block chain, innermost to outermost, then the viewport. The block and inline
+  positions are mapped through each box's writing mode, and the `container`
+  option's `"nearest"` stops after the nearest scroller.
+  `scroll-margin`/`scroll-padding` are not applied because neither property
+  exists in this build: both are `engine = "gecko"` longhands in the pinned
+  Stylo's property tables, which the Servo build does not generate (the same
+  reason `content-visibility` is missing). `CSS.supports("scroll-margin-top",
+  "4px")` and `CSS.supports("scroll-padding-top", "4px")` are both false, so
+  `scrollIntoView-scrollMargin.html`, `scrollIntoView-scrollPadding.html`, and
+  `scrollIntoView-scrolling-container.html` cannot pass until the property
+  tables include them.
+- `sideways-lr` float placement is wrong in layout: floats on one line stack
+  along the block axis instead of the inline axis, so a row's boxes drift in the
+  block direction and the target lands at the wrong position. The two
+  `scrollIntoView-sideways-lr-*` files compute their expectations from layout
+  and stay red for that reason; the scroll algorithm itself maps `sideways-lr`
+  like the other vertical modes (`docs/upstream.md`).
+- `position: sticky` has no layout offset, so `scrollIntoView` reads a stuck
+  element's unstuck position. `scrollIntoView-stuck.tentative.html` scrolls its
+  container back to the top because the sticky input is recorded at its static
+  position; the gap is the same one recorded under `## Element offset metrics`.
 
 The `scroll`/`scrollTo`/`scrollBy`/`scrollIntoView` methods return
 `Promise<undefined>`, which is what the pinned IDL says. The current CSSOM View

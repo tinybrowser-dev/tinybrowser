@@ -204,7 +204,7 @@ impl<'js> element_generated::Element<'js> for JsNode {
         ctx: Ctx<'js>,
         arg_0: element_generated::BooleanOrScrollIntoViewOptions,
     ) -> Result<()> {
-        let (behavior, block, inline) = match arg_0 {
+        let (behavior, block, inline, container) = match arg_0 {
             // `false` asks for the end edge; every other boolean is the
             // default start edge. The inline axis always defaults to nearest
             // (<https://drafts.csswg.org/cssom-view/#dom-element-scrollintoview>).
@@ -212,17 +212,28 @@ impl<'js> element_generated::Element<'js> for JsNode {
                 element_generated::ScrollBehavior::Auto,
                 element_generated::ScrollLogicalPosition::End,
                 element_generated::ScrollLogicalPosition::Nearest,
+                element_generated::ScrollIntoViewContainer::All,
             ),
             element_generated::BooleanOrScrollIntoViewOptions::Boolean(true) => (
                 element_generated::ScrollBehavior::Auto,
                 element_generated::ScrollLogicalPosition::Start,
                 element_generated::ScrollLogicalPosition::Nearest,
+                element_generated::ScrollIntoViewContainer::All,
             ),
-            element_generated::BooleanOrScrollIntoViewOptions::ScrollIntoViewOptions(options) => {
-                (options.behavior, options.block, options.inline)
-            }
+            element_generated::BooleanOrScrollIntoViewOptions::ScrollIntoViewOptions(options) => (
+                options.behavior,
+                options.block,
+                options.inline,
+                options.container,
+            ),
         };
-        self.scroll_into_view(ctx, behavior.into(), block.into(), inline.into())
+        self.scroll_into_view(
+            ctx,
+            behavior.into(),
+            block.into(),
+            inline.into(),
+            container.into(),
+        )
     }
 
     // https://drafts.csswg.org/cssom-view/#dom-element-scrollleft
@@ -1405,16 +1416,16 @@ impl JsNode {
     /// Scrolls this element's boxes into view with the requested alignment
     /// (<https://drafts.csswg.org/cssom-view/#dom-element-scrollintoview>).
     ///
-    /// Blitz owns the scroll engine: it aligns the border box against the
-    /// viewport using the block and inline positions and applies the requested
-    /// behavior. Per-element scroll containers do not participate yet
-    /// (`docs/limitations.md`).
+    /// Blitz owns the scroll engine: it scrolls every ancestor scrolling box
+    /// in the containing block chain, then the viewport, and applies the
+    /// requested behavior and `container` limit.
     pub(super) fn scroll_into_view(
         &self,
         ctx: Ctx<'_>,
         behavior: blitz_dom::ScrollBehavior,
         block: blitz_dom::ScrollLogicalPosition,
         inline: blitz_dom::ScrollLogicalPosition,
+        container: blitz_dom::ScrollIntoViewContainer,
     ) -> Result<()> {
         let world = world_for_node(&ctx, self.handle.get().0)?;
         let world = world.borrow();
@@ -1436,7 +1447,7 @@ impl JsNode {
         parsed
             .document
             .base
-            .scroll_into_view(id.node, behavior, block, inline);
+            .scroll_into_view(id.node, behavior, block, inline, container);
         Ok(())
     }
 
@@ -3100,6 +3111,15 @@ impl From<element_generated::ScrollBehavior> for blitz_dom::ScrollBehavior {
             element_generated::ScrollBehavior::Auto => Self::Auto,
             element_generated::ScrollBehavior::Instant => Self::Instant,
             element_generated::ScrollBehavior::Smooth => Self::Smooth,
+        }
+    }
+}
+
+impl From<element_generated::ScrollIntoViewContainer> for blitz_dom::ScrollIntoViewContainer {
+    fn from(value: element_generated::ScrollIntoViewContainer) -> Self {
+        match value {
+            element_generated::ScrollIntoViewContainer::All => Self::All,
+            element_generated::ScrollIntoViewContainer::Nearest => Self::Nearest,
         }
     }
 }
