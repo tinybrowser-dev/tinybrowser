@@ -493,7 +493,23 @@
         }
         return result;
       },
-      supports() { return false; },
+      // `supports(property, value)` tests one declaration; the single
+      // argument form parses and evaluates a supports condition, including a
+      // bare declaration
+      // (<https://drafts.csswg.org/css-conditional-3/#the-css-namespace>).
+      // Two overloads share one function, so its `length` is the shortest
+      // required argument list: 1
+      // (<https://webidl.spec.whatwg.org/#overload-set>).
+      supports(property, ...rest) {
+        if (arguments.length < 1) {
+          throw new TypeError("Failed to execute 'supports' on 'CSS': 1 argument required, but only 0 present.");
+        }
+        if (rest.length === 0) {
+          return host.__tbCSSSupportsCondition(__tbStringCtor(property));
+        }
+        return host.__tbCSSSupportsDeclaration(
+          __tbStringCtor(property), __tbStringCtor(rest[0]));
+      },
     }),
     writable: true, configurable: true,
   });

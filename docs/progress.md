@@ -1285,3 +1285,42 @@ times out in an isolated run of the committed tree too, so its drop from a
 batch run is the existing hang. `cargo fmt --check`, `tools/check clippy`, and
 the renderer (172), wpt-harness (48), cookies (26), browser (69+4), net (52)
 and dial (29+3) unit tests pass.
+
+`CSS.supports()` existed only as a stub that returned `false`, so every test
+that gates an assertion on it skipped silently. Both forms now parse through
+the style crate: the two-argument form parses the property with
+`PropertyId::parse_enabled_for_all_content` and the value with
+`parse_one_declaration_into`, and the one-argument form parses and evaluates a
+supports condition with `parse_condition_or_declaration` plus `eval`
+(<https://drafts.csswg.org/css-conditional-3/#dom-css-supports>). A custom
+property accepts any non-empty token stream because the same declaration
+parser does; the empty string is rejected explicitly, because the declaration
+parser treats it as a valid empty value and the spec's change log requires
+`false` for it (Chromium answers `false` for `CSS.supports("--x", "")` and
+`true` for `" "`). A property name with surrounding whitespace is invalid
+because the name is one ident, while the value parser skips its own outer
+whitespace. Those answers, and `--x: red` as a name, match Chromium. The two
+overloads share one shim function, so Web IDL's shortest-argument rule gives
+`CSS.supports.length` 1.
+
+Evidence, subtest diffs against baselines of the committed tree, none lost:
+`css/cssom/CSS-supports.html` goes from 2 to **11 of 11**, `css/selectors` from
+4528 to **4689 of 5784** (the `parse-*` files, one per non-type selector,
+including `parse-is-where.html` 26, `parse-has.html` 23 and `parse-not.html`
+19), `css/cssom` from 3212 to **3220** passing subtests, `css/css-variables`
+from 419 to **437**, `css/css-cascade` from 195 to **208**, `css/css-align`
+from 2682 to
+**3236 of 5311** and `css/css-position` from 237 to **882 of 1501**. The
+`css/selectors` gains are all in files the suite could not evaluate before.
+`focus-visible-017-2.html`, `-017` and `-020` now pass the
+`CSS.supports("selector(:focus-visible)")` validity subtest that
+`parsing-testcommon.js` runs and fail only on the UA focus ring that is still
+missing.
+
+One test lost a pass because the assertion loop it was skipping now runs:
+`css/cssom/font-variant-shorthand-serialization.html` "font: menu serialization"
+is 6 of 7. It passed before only because `CSS.supports("font-variant-ligatures:
+initial")` was false and `test_serialization_set` skipped every assertion. The
+block stores the system font's `font-variant-*` longhands at `normal`, where a
+browser keeps the `font` shorthand and reports `""`
+(`docs/limitations.md`, `docs/upstream.md`).

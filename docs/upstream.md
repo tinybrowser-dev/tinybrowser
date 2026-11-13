@@ -160,6 +160,22 @@ Known gaps this engine fails honestly (no fork patch yet):
 
 ## Open issues
 
+- A system-font keyword in `font` expands the `font-variant-*` longhands at
+  their initial value. Stylo's `font` shorthand parser
+  (`style/properties/shorthands.rs`, the `SystemFont` branch of `parse_value`)
+  returns `font_variant_ligatures:
+  font_variant_ligatures::get_initial_specified_value()` and the same for
+  alternates, east-asian, emoji, numeric and position, so Blitz's
+  expanded-longhand declaration block holds `font-variant-ligatures: normal`.
+  A browser keeps the shorthand and reports `""` for those longhands:
+  Chromium on `style.fontVariant = "normal"; style.font = "menu"` answers
+  `""` from `style.fontVariantLigatures` and serializes the attribute as
+  `font: menu;`, which is what
+  `css/cssom/font-variant-shorthand-serialization.html` asserts. The local
+  fixes are a special case for system fonts or keeping shorthands in the
+  declaration block; the second is the real change, so this stays upstream
+  until the CSSOM stores shorthands.
+
 - An aborted engine process is contained when the panic is inside a dependency.
   The two the in-process harness used to reach are now fixed at their call
   sites, with the reasons recorded above:

@@ -36,6 +36,16 @@ spaces, but clips out-of-gamut colors per channel instead of running OKLCH
 local-MINDE gamut mapping. Wide-gamut colors far outside sRGB can differ from
 a browser that implements the mapping algorithm.
 
+## CSS system fonts
+
+`style.font = "menu"` expands the system-font shorthand into every longhand,
+including `font-variant-*: normal`, because that is what the style crate's
+`font` parser produces. A browser keeps the `font` shorthand in its
+declaration block and reports `""` for those longhands, so
+`css/cssom/font-variant-shorthand-serialization.html`'s "font: menu
+serialization" fails once the element is asked for a `font-variant-*` value
+(`docs/upstream.md`).
+
 ## Missing surfaces
 
 Dedicated workers run on their own OS thread with their own `QuickJS`
