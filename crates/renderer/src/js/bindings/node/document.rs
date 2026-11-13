@@ -1040,9 +1040,11 @@ impl JsNode {
         elements_by_tag(&ctx, self.handle.get().0, &name.0)
     }
 
+    // https://html.spec.whatwg.org/multipage/dom.html#the-body-element-2
     pub(super) fn body<'js>(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
         document_value(ctx, self.handle.get().0, |parsed| {
-            document_first(parsed, "body")
+            let root = document_first_child(parsed, |data| matches!(data, NodeData::Element(_)))?;
+            body_child(parsed, root)
         })
     }
 
@@ -1873,17 +1875,12 @@ pub(in crate::js::bindings) fn fragment_context_name(spec: &str) -> QualName {
 
 /// The current `body`/`frameset` child of the document element owning
 /// `root`, if any.
-pub(super) fn current_body_child(
-    ctx: &Ctx<'_>,
-    world_rc: &Rc<RefCell<World>>,
-    root: NodeId,
-) -> Result<Option<NodeId>> {
-    let world = world_rc.borrow();
-    let Some(parsed) = world.document(root) else {
-        return Err(Exception::throw_type(ctx, "stale node"));
-    };
+/// The first `body` or `frameset` child of `root` in the HTML namespace, which
+/// is what `document.body` returns and what `document.body`'s setter replaces
+/// (<https://html.spec.whatwg.org/multipage/dom.html#the-body-element-2>).
+pub(super) fn body_child(parsed: &crate::Parsed, root: NodeId) -> Option<NodeId> {
     let base = &parsed.document.base;
-    Ok(base.get_node(root.node).and_then(|candidate| {
+    base.get_node(root.node).and_then(|candidate| {
         candidate.children.iter().find_map(|child| {
             let node = base.get_node(*child)?;
             match &node.data {
@@ -1897,7 +1894,19 @@ pub(super) fn current_body_child(
                 _ => None,
             }
         })
-    }))
+    })
+}
+
+pub(super) fn current_body_child(
+    ctx: &Ctx<'_>,
+    world_rc: &Rc<RefCell<World>>,
+    root: NodeId,
+) -> Result<Option<NodeId>> {
+    let world = world_rc.borrow();
+    let Some(parsed) = world.document(root) else {
+        return Err(Exception::throw_type(ctx, "stale node"));
+    };
+    Ok(body_child(&parsed, root))
 }
 
 /// The first node matching `selector` under `parsed`'s document root.

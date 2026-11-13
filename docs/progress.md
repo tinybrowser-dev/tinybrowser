@@ -1803,3 +1803,21 @@ gains the one historical-IDL subtest that looks for the method.
 
 Handler invocation is not implemented: a navigation to a registered scheme
 does not reach the handler yet, which `docs/limitations.md` records.
+
+`document.body` found the first `body` element anywhere in the document
+instead of the first `body` or `frameset` child of the document element
+(<https://html.spec.whatwg.org/multipage/dom.html#the-body-element-2>). A
+frameset document therefore read `null`, and the three event-handler
+reflection files that pass `document.body` to their shared helper threw
+"cannot read property 'onblur' of null" before asserting anything.
+
+The getter now shares the setter's `body_child` lookup: the first HTML
+`body` or `frameset` child of the root element. A document with a `frameset`
+reports it as `document.body`, and the setter keeps replacing that element.
+
+Evidence: `html/webappapis` 1885 to **2506 subtests**, no lost subtests:
+`event-handler-attributes-frameset-window.html` 0 to 140 of 140,
+`event-handler-attributes-window-frameset.html` and
+`event-handler-attributes-frameset-alt.html` 0 to 118 of 118 each.
+`dom/nodes` 14344 to 14395 and `html/dom` 63984 to 64390, both with no lost
+subtests.
