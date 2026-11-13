@@ -43,6 +43,14 @@ pub(super) fn install(ctx: &Ctx<'_>) -> Result<()> {
         rquickjs::prelude::Func::from(sheet_origin_state),
     )?;
     bridge.set(
+        "__tb_sheet_disabled",
+        rquickjs::prelude::Func::from(sheet_disabled),
+    )?;
+    bridge.set(
+        "__tb_set_sheet_disabled",
+        rquickjs::prelude::Func::from(set_sheet_disabled),
+    )?;
+    bridge.set(
         "__tb_sheet_rule_count",
         rquickjs::prelude::Func::from(sheet_rule_count),
     )?;
@@ -222,6 +230,58 @@ fn sheet_origin_state<'js>(ctx: Ctx<'js>, element: Value<'js>, id: f64) -> f64 {
 
 fn with_path(path: &str) -> Option<Vec<usize>> {
     rule_path(path)
+}
+
+/// Whether the stylesheet associated with `element` is disabled
+/// (<https://drafts.csswg.org/cssom/#dom-stylesheet-disabled>). A constructable
+/// sheet never reaches this call.
+fn sheet_disabled<'js>(ctx: Ctx<'js>, element: Value<'js>, id: f64) -> bool {
+    let Ok(world) = world(&ctx) else {
+        return false;
+    };
+    let Some(node) = host_node_id(&ctx, &element) else {
+        return false;
+    };
+    let Some(sheet) = sheet_id(id) else {
+        return false;
+    };
+    let world = world.borrow();
+    let Some(parsed) = world.document(node) else {
+        return false;
+    };
+    // A sheet object outlives its element's association; a stale id belongs to
+    // a sheet that was already removed, which reads as enabled
+    // (<https://drafts.csswg.org/cssom/#remove-a-css-style-sheet>).
+    if parsed.document.base.node_cssom_sheet_id(node.node) != Some(sheet) {
+        return false;
+    }
+    parsed.document.base.stylesheet_disabled(node.node)
+}
+
+/// Set the disabled flag of the stylesheet associated with `element`. A
+/// disabled sheet keeps its owner but stops applying its rules
+/// (<https://drafts.csswg.org/cssom/#dom-stylesheet-disabled>).
+fn set_sheet_disabled<'js>(ctx: Ctx<'js>, element: Value<'js>, id: f64, disabled: bool) -> bool {
+    let Ok(world) = world(&ctx) else {
+        return false;
+    };
+    let Some(node) = host_node_id(&ctx, &element) else {
+        return false;
+    };
+    let Some(sheet) = sheet_id(id) else {
+        return false;
+    };
+    let world = world.borrow_mut();
+    let Some(mut parsed) = world.document_mut(node) else {
+        return false;
+    };
+    if parsed.document.base.node_cssom_sheet_id(node.node) != Some(sheet) {
+        return false;
+    }
+    parsed
+        .document
+        .base
+        .set_stylesheet_disabled(node.node, disabled)
 }
 
 fn sheet_rule_count<'js>(ctx: Ctx<'js>, element: Value<'js>, id: f64, path: String) -> f64 {

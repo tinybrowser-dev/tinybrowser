@@ -365,6 +365,24 @@ which needs navigation interception for non-HTTP schemes. A page can register
 and unregister handlers, and the argument checks match a browser, but a
 registered handler has no observable effect on navigation yet.
 
+
+## Imported CSS style sheets
+
+`StyleSheet` on an associated sheet reports `type`, `href`, `ownerNode`,
+`parentStyleSheet`, `ownerRule`, `title`, `media`, and `disabled`
+(`crates/renderer/src/js/scripts/web/cssom.js`). `disabled` is wired to the
+engine's `set_stylesheet_disabled`, so a disabled sheet keeps its owner and
+stops applying. `media` is a live `MediaList` over the owner's `media`
+attribute, and `CSSRuleList`/`MediaList` are interface objects.
+
+`CSSImportRule.styleSheet` returns null. An imported sheet's rules live in the
+`ImportSheet` inside the import rule, outside the owner sheet's rule-list
+address space, and the CSSOM bridge addresses rules by owner sheet id and path.
+Exposing the imported sheet needs a second address space (or a rule-list
+handle for the import) in `third_party/blitz`; until then the property reports
+the spec's "no associated sheet" state and
+`css/cssom/StyleSheet-properties.html`'s nine `@import` subtests fail.
+
 ## Missing surfaces
 
 Dedicated workers run on their own OS thread with their own `QuickJS`

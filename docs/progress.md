@@ -1821,3 +1821,22 @@ Evidence: `html/webappapis` 1885 to **2506 subtests**, no lost subtests:
 `event-handler-attributes-frameset-alt.html` 0 to 118 of 118 each.
 `dom/nodes` 14344 to 14395 and `html/dom` 63984 to 64390, both with no lost
 subtests.
+
+The CSSOM `StyleSheet` interface is now on `CSSStyleSheet`
+(`crates/renderer/src/js/scripts/web/cssom.js`): `type`, `href`, `ownerNode`,
+`parentStyleSheet`, `ownerRule`, `title`, `media`, and `disabled`, with
+`disabled` wired to the engine's `set_stylesheet_disabled` so the sheet stops
+applying while keeping its owner. `ownerNode` is null once the owner element is
+removed, `href` is the resolved `<link>` URL and null for inline `<style>`, and
+`media` is a live `MediaList` over the owner's `media` attribute. `CSSRuleList`
+and `MediaList` are interface objects, so `sheet.cssRules` and `sheet.media`
+are their instances.
+
+Evidence: `css/cssom` 3266 to **3307 subtests**, no lost subtests.
+`StyleSheet-properties.html` 1 to 26 of 35; `style-sheet-interfaces-001.html`
+2 to 4, `MediaList2.xhtml` 0 to 4, `HTMLLinkElement-disabled-003.html` 0 to 1,
+and the two `ttwf-cssom-doc-ext-*` load-count/tree-order files also improve.
+
+The nine remaining `@import` subtests need `CSSImportRule.styleSheet`; the
+imported rules live outside the owner sheet's rule-list address space, which
+`docs/limitations.md` records.

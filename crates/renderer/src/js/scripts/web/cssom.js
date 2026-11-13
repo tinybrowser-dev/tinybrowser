@@ -229,6 +229,12 @@
   CSSFontFaceRule.prototype = Object.create(CSSRule.prototype);
   CSSKeyframesRule.prototype = Object.create(CSSRule.prototype);
   CSSKeyframeRule.prototype = Object.create(CSSRule.prototype);
+  // `CSSRuleList` is an interface object with no constructor; a live list is
+  // its instance (<https://drafts.csswg.org/cssom/#the-cssrulelist-interface>).
+  function CSSRuleList() { __tbIllegal(); }
+  Object.defineProperty(globalThis, 'CSSRuleList', {
+    value: CSSRuleList, writable: true, configurable: true,
+  });
   // Each interface owns its `constructor`, so `rule.constructor.name` names
   // the rule's real interface instead of inheriting `CSSRule`
   // (<https://webidl.spec.whatwg.org/#interface-object>).
@@ -240,6 +246,15 @@
       value: ctor, writable: true, configurable: true,
     });
   }
+  // An imported stylesheet lives in its own rule-list address space; the
+  // engine does not expose it yet, so the property reports the spec's
+  // "no associated sheet" state (null) and the import's rules are reached
+  // through the importing sheet only
+  // (<https://drafts.csswg.org/cssom/#dom-cssimportrule-stylesheet>).
+  __tbDefineProperty(CSSImportRule.prototype, 'styleSheet', {
+    get() { return null; },
+    enumerable: true, configurable: true,
+  });
   const __tbRulePrototype = {
     CSSStyleRule, CSSGroupingRule, CSSConditionRule, CSSMediaRule, CSSSupportsRule,
     CSSImportRule, CSSFontFaceRule, CSSKeyframesRule, CSSKeyframeRule, CSSRule,
@@ -431,6 +446,7 @@
     list[Symbol.iterator] = function* () {
       for (let index = 0; index < this.length; index++) yield this.item(index);
     };
+    Object.setPrototypeOf(list, CSSRuleList.prototype);
     return new Proxy(list, {
       get(target, property, receiver) {
         if (__tbCanonicalIndex(property)) {
@@ -470,10 +486,131 @@
       if (entry.path[listPath.length] > index) entry.path[listPath.length] -= 1;
     }
   }
+  // `MediaList` behind `StyleSheet.media`. An associated sheet's list reads
+  // and writes its owner element's `media` content attribute; a constructable
+  // sheet keeps its own text
+  // (<https://drafts.csswg.org/cssom/#the-medialist-interface>).
+  const __tbMediaListSlots = host.slots('MediaList');
+  function MediaList() { __tbIllegal(); }
+  Object.defineProperty(globalThis, 'MediaList', {
+    value: MediaList, writable: true, configurable: true,
+  });
+  __tbDefineProperty(MediaList.prototype, 'mediaText', {
+    get() {
+      const slot = __tbMediaListSlots.get(this);
+      if (!slot) throw new TypeError('Illegal invocation');
+      return slot.get();
+    },
+    set(value) {
+      const slot = __tbMediaListSlots.get(this);
+      if (!slot) throw new TypeError('Illegal invocation');
+      slot.set(String(value));
+    },
+    enumerable: true, configurable: true,
+  });
+  __tbDefineProperty(MediaList.prototype, 'length', {
+    get() {
+      const slot = __tbMediaListSlots.get(this);
+      if (!slot) throw new TypeError('Illegal invocation');
+      const text = slot.get();
+      let count = 0;
+      for (const part of __tbSplitMedia(text, ',')) {
+        if (part.trim() !== '') count += 1;
+      }
+      return count;
+    },
+    enumerable: true, configurable: true,
+  });
+  __tbDefineProperty(MediaList.prototype, 'item', {
+    value: function item(index) {
+      if (arguments.length < 1) throw new TypeError('item requires 1 argument');
+      const slot = __tbMediaListSlots.get(this);
+      if (!slot) throw new TypeError('Illegal invocation');
+      const trimmed = [];
+      for (const part of __tbSplitMedia(slot.get(), ',')) {
+        if (part.trim() !== '') trimmed.push(part.trim());
+      }
+      return trimmed[index >>> 0] === undefined ? null : trimmed[index >>> 0];
+    },
+    writable: true, enumerable: true, configurable: true,
+  });
+  __tbDefineProperty(MediaList.prototype, Symbol.toStringTag, {
+    value: 'MediaList', writable: false, enumerable: false, configurable: true,
+  });
+  function __tbSheetMediaList(sheet) {
+    const slot = { text: '', get: null, set: null };
+    const owner = sheet.__tbOwner;
+    if (owner === undefined) {
+      slot.get = () => slot.text;
+      slot.set = value => { slot.text = value; };
+    } else {
+      // The owner's `media` attribute is the live source, so a script that
+      // changes it is visible through the list
+      // (<https://drafts.csswg.org/cssom/#dom-medialist-mediatext>).
+      slot.get = () => owner.getAttribute('media') ?? '';
+      slot.set = value => {
+        if (value === '') owner.removeAttribute('media');
+        else owner.setAttribute('media', value);
+      };
+    }
+    const list = Object.create(MediaList.prototype);
+    __tbMediaListSlots.set(list, slot);
+    return list;
+  }
   class CSSStyleSheet {
     constructor() {
       this.cssRules = [];
       this.__tbRules = [];
+    }
+    // The StyleSheet interface properties. An associated sheet reads its
+    // owner `<style>`/`<link>`; a constructable sheet has no owner and no URL
+    // (<https://drafts.csswg.org/cssom/#the-stylesheet-interface>).
+    get type() {
+      return 'text/css';
+    }
+    get href() {
+      const owner = this.__tbOwner;
+      if (owner === undefined) return null;
+      // Only a `<link rel=stylesheet>` sheet has a URL; an inline `<style>`'s
+      // sheet has none
+      // (<https://drafts.csswg.org/cssom/#dom-stylesheet-href>).
+      if (owner.localName !== 'link') return null;
+      return owner.href;
+    }
+    get ownerNode() {
+      const owner = this.__tbOwner;
+      if (owner === undefined) return null;
+      // Removing the element removes its sheet; the sheet object stays
+      // readable but loses its owner
+      // (<https://drafts.csswg.org/cssom/#remove-a-css-style-sheet>).
+      return host.__tb_node_sheet_id(owner) === this.__tbId ? owner : null;
+    }
+    get parentStyleSheet() {
+      return null;
+    }
+    get ownerRule() {
+      return null;
+    }
+    get title() {
+      const owner = this.__tbOwner;
+      if (owner === undefined) return null;
+      return owner.getAttribute('title');
+    }
+    get disabled() {
+      if (this.__tbOwner === undefined) return this.__tbDisabled === true;
+      return host.__tb_sheet_disabled(this.__tbOwner, this.__tbId);
+    }
+    set disabled(value) {
+      const disabled = Boolean(value);
+      if (this.__tbOwner === undefined) {
+        this.__tbDisabled = disabled;
+        return;
+      }
+      host.__tb_set_sheet_disabled(this.__tbOwner, this.__tbId, disabled);
+    }
+    get media() {
+      if (this.__tbMedia === undefined) this.__tbMedia = __tbSheetMediaList(this);
+      return this.__tbMedia;
     }
     replaceSync(text) {
       if (this.__tbId !== undefined) {
