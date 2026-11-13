@@ -351,6 +351,11 @@ Known gaps this engine fails honestly (no fork patch yet):
   invalidation maps record the exact elements whose style depends on the
   change, and this engine has none, so those arguments need that machinery
   rather than an ancestor flag. Open.
+- `blitz-dom` paints the default focus ring with `outline-style: auto`:
+  the UA sheet's `:focus-visible` rule asks for `auto`, and the paint path
+  draws `auto` as a solid ring instead of skipping it. Browsers report `auto`
+  for their focus ring, and `css/selectors/focus-visible-017*.html` asserts
+  it. Fixed in fork.
 - `blitz-dom` matches `:lang()`, `:root`, and `:empty` by the Selectors 4
   rules: `:lang()` reads the nearest `lang`/`xml:lang` ancestor value and does
   basic language-range filtering; `:root` matches only the document element,

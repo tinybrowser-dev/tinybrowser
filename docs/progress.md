@@ -1994,3 +1994,15 @@ Evidence: `dom/nodes` 14395 to **14510 subtests**, `css/selectors` 4689 to
 **4723**, `html/dom` 64390 to **64402**, and `css/css-cascade` stays at 236;
 no lost subtests in any of them. `dom/nodes/ParentNode-querySelector-All.html`
 and `ParentNode-querySelector-All-xht.xht` are both 1975/1975.
+
+The UA stylesheet's default focus ring is `outline-style: auto` again, and the
+paint backend draws `auto` as a solid ring instead of skipping it
+(`third_party/blitz/packages/blitz-dom/assets/default.css`,
+`blitz-paint/src/render/border.rs`). `focus-visible-017-2.html` focuses every
+`[tabindex]` element in turn and asserts `outline-style: auto`; the sheet said
+`solid`, so every one of its 37 focus subtests failed.
+
+Evidence: `css/selectors` 4723 to **4761 subtests** and `css/cssom` 3305 to
+**3309**, no lost subtests. `html/dom` stays at 64402 and `css/cssom-view` at
+1616. `focus-visible-017-2.html` 1 to 38 of 38 and `focus-visible-017.html` 1
+to 2.
