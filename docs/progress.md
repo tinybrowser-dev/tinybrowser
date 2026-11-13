@@ -1915,3 +1915,14 @@ Evidence: `css/css-cascade` 208 to **236 subtests**, no lost subtests.
 `at-scope-parsing.html` 0 to 28 of 43; the other 15 need the `@scope` at-rule,
 which the pinned style crate gates behind a pref that cannot resolve an
 implicit scope root correctly.
+
+`Document.parseHTMLUnsafe()` gave the parsed document the caller's URL.
+The spec gives the new document a content type and the caller's origin but no
+URL, so its URL, `documentURI`, and `baseURI` stay the initial `about:blank`
+(`crates/renderer/src/js/bindings/parsing.rs`). Five URL test files failed
+their first assertion on every case before this.
+
+Evidence: `html/webappapis` 2529 to **2555 subtests**, no lost subtests.
+`Document-parseHTMLUnsafe-url.html`, `...-url-base.html`,
+`...-url-pushstate.html`, and `...-url-base-pushstate.html` 0 to 6 of 6 each,
+and `...-url-moretests.html` 0 to 2 of 4.

@@ -338,13 +338,14 @@ pub(super) fn install_document_parse(ctx: &Ctx<'_>) -> Result<()> {
     Ok(())
 }
 
-/// `Document.parseHTMLUnsafe`'s parse: a new document with the caller's URL
-/// and no scripting
-/// (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-document-parsehtmlunsafe>).
+/// `Document.parseHTMLUnsafe`'s parse: a new document with no scripting, whose
+/// URL is the initial `about:blank` and whose origin is the caller's
+/// (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-parsehtmlunsafe>).
+/// The spec gives the new document a content type and an origin but no URL, so
+/// the URL stays the initial `about:blank` rather than the caller's.
 fn parse_html_document<'js>(ctx: Ctx<'js>, source: Value<'js>) -> Result<Value<'js>> {
     let source = source.get::<rquickjs::String>()?;
-    let url = world(&ctx)?.borrow().document_url.as_str().to_owned();
-    parse_string_document(&ctx, &source, "text/html", &url)
+    parse_string_document(&ctx, &source, "text/html", "about:blank")
 }
 
 /// Parses an XHR response body as `content_type` and stamps the document
