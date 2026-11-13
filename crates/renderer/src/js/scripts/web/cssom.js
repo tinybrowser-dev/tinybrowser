@@ -949,6 +949,32 @@
     },
     enumerable: true, configurable: true,
   });
+  // `MediaQueryListEvent` carries the query text and its result
+  // (<https://drafts.csswg.org/cssom-view/#mediaquerylistevent>). It extends
+  // the captured `Event`, so a page-replaced global cannot change the shape of
+  // a change event.
+  const __tbMediaEventSlots = host.slots('MediaQueryListEvent');
+  function __tbMediaEventBrand(event) {
+    const slot = __tbMediaEventSlots.get(event);
+    if (!slot) throw new TypeError('Illegal invocation');
+    return slot;
+  }
+  globalThis.MediaQueryListEvent = class MediaQueryListEvent extends __tbEvent {
+    constructor(type, init) {
+      const eventInit = init === undefined ? {} : Object(init);
+      super(String(type), eventInit);
+      __tbMediaEventSlots.set(this, {
+        media: eventInit.media === undefined ? '' : String(eventInit.media),
+        matches: eventInit.matches === undefined ? false : Boolean(eventInit.matches),
+      });
+    }
+    get media() { return __tbMediaEventBrand(this).media; }
+    get matches() { return __tbMediaEventBrand(this).matches; }
+  };
+  __tbDefineProperty(globalThis.MediaQueryListEvent.prototype, Symbol.toStringTag, {
+    value: 'MediaQueryListEvent', writable: false, enumerable: false, configurable: true,
+  });
+  const __tbMediaQueryListEvent = globalThis.MediaQueryListEvent;
   function __tbReportMediaChanges() {
     for (const list of __tbMediaLists) {
       const slot = __tbMediaSlots.get(list);
@@ -956,9 +982,10 @@
       const matches = __tbMediaQueryList(slot.media);
       if (matches === slot.matches) continue;
       slot.matches = matches;
-      const event = new __tbEvent('change');
-      Object.defineProperty(event, 'media', { value: slot.media });
-      Object.defineProperty(event, 'matches', { value: matches });
+      const event = new __tbMediaQueryListEvent('change', {
+        media: slot.media,
+        matches,
+      });
       __tbApply(__tbDispatchEvent, list, [event]);
     }
   }

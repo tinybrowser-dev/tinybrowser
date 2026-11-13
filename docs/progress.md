@@ -1682,3 +1682,12 @@ refusal is on the element's own used overflow only; CSSOM's parent-overflow
 condition in "potentially scrollable" answers the `scrollingElement` and
 quirks-body questions and must not gate `scroll()` on an ordinary scroller
 inside a `body`, or every scroller in `scrollLeftTop.html` freezes.
+
+`MediaQueryList` change events are now `MediaQueryListEvent`s. The shim
+constructs the interface from the captured `Event`, stores `media` and
+`matches` in a host slot, and dispatches it from `report_media_changes`
+(`crates/renderer/src/js/scripts/web/cssom.js`); before this, the shim created
+a plain `Event` and copied the two members onto it. Evidence:
+`css/cssom-view` 1610 to **1616 of 1758**, no lost subtests;
+`MediaQueryListEvent.html` 0 to 6 of 6, which also covers the event an
+`addListener` callback and an `onchange` handler receive.
