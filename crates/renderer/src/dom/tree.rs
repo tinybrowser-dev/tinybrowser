@@ -157,20 +157,12 @@ fn attr_find(
 }
 
 /// The value of the attribute named `name` on `id`, when it is an element.
-pub(crate) fn attr<'a>(
-    base: &'a blitz_dom::BaseDocument,
-    id: BlitzNodeId,
-    name: &str,
-) -> Option<&'a str> {
-    let local = markup5ever::LocalName::from(name);
-    attr_find(base, id, |qualified| qualified.local == local)
-}
-
-/// The value of the first attribute with the given local name in no
-/// namespace. HTML attributes and their reflected IDL properties never match
-/// a same-named attribute in another namespace
+///
+/// An attribute named by its local name is the no-namespace attribute: a
+/// namespaced attribute (such as `xlink:href`) is a different attribute and
+/// never stands in for it, for HTML behavior or for a reflected IDL property
 /// (<https://dom.spec.whatwg.org/#concept-element-attributes-get-by-name>).
-pub(crate) fn attr_no_namespace<'a>(
+pub(crate) fn attr<'a>(
     base: &'a blitz_dom::BaseDocument,
     id: BlitzNodeId,
     name: &str,

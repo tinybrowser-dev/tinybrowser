@@ -225,7 +225,7 @@
   function reflectType(keywords, fallback) {
     return {
       get: function() {
-        const value = this.getAttribute('type');
+        const value = this.getAttributeNS(null, 'type');
         if (value === null) return fallback;
         const lowered = __tbAsciiLower(value);
         return keywords.has(lowered) ? lowered : fallback;
@@ -243,7 +243,7 @@
   ]);
   Object.defineProperty(table.HTMLInputElement, 'type', {
     get: function() {
-      const value = this.getAttribute('type');
+      const value = this.getAttributeNS(null, 'type');
       if (value === null) return 'text';
       const lowered = __tbAsciiLower(value);
       return INPUT_TYPE_KEYWORDS.has(lowered) ? lowered : 'text';

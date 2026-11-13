@@ -657,7 +657,7 @@ pub(crate) fn option_effective_selected(parsed: &mut Parsed, option: BlitzId) ->
 /// An `option`'s value: its `value` attribute, else its text
 /// (<https://html.spec.whatwg.org/multipage/form-elements.html#dom-option-value>).
 pub(crate) fn option_value(base: &BaseDocument, option: BlitzId) -> String {
-    crate::dom::tree::attr_no_namespace(base, option, "value")
+    crate::dom::tree::attr(base, option, "value")
         .map_or_else(|| option_text(base, option), str::to_owned)
 }
 

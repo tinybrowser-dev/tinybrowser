@@ -856,6 +856,17 @@ impl<'js> element_generated::Element<'js> for JsNode {
         self.set_id(ctx, WebIdlString(js_string_to_utf8(&value)?))
     }
 
+    // https://dom.spec.whatwg.org/#dom-element-slot
+    fn get_slot(&self, ctx: &Ctx<'js>) -> Result<rquickjs::String<'js>> {
+        let slot = self.slot(ctx)?;
+        rquickjs::String::from_str(ctx.clone(), &slot)
+    }
+
+    // https://dom.spec.whatwg.org/#dom-element-slot
+    fn set_slot(&self, ctx: &Ctx<'js>, value: rquickjs::String<'js>) -> Result<()> {
+        self.set_slot(ctx, WebIdlString(js_string_to_utf8(&value)?))
+    }
+
     // https://dom.spec.whatwg.org/#dom-element-classname
     fn get_class_name(&self, ctx: &Ctx<'js>) -> Result<rquickjs::String<'js>> {
         let name = self.class_name(ctx)?;
@@ -2056,6 +2067,14 @@ impl JsNode {
 
     pub(super) fn set_id(&self, ctx: &Ctx<'_>, value: WebIdlString) -> Result<()> {
         self.set_attribute(ctx.clone(), WebIdlString("id".into()), value)
+    }
+
+    pub(super) fn slot(&self, ctx: &Ctx<'_>) -> Result<String> {
+        attribute_value(ctx, self.handle.get().0, "slot")
+    }
+
+    pub(super) fn set_slot(&self, ctx: &Ctx<'_>, value: WebIdlString) -> Result<()> {
+        self.set_attribute(ctx.clone(), WebIdlString("slot".into()), value)
     }
 
     // https://dom.spec.whatwg.org/#dom-element-tagname

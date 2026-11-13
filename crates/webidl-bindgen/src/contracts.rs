@@ -1957,6 +1957,7 @@ fn lower_reflected_enumerated_attribute(
         setter,
         legacy_null_to_empty: false,
         reactions: has_no_args(member.attributes.as_ref(), "CEReactions"),
+        unscopable: has_no_args(member.attributes.as_ref(), "Unscopable"),
     };
     Ok((attribute, quote! {}))
 }
@@ -2103,6 +2104,7 @@ fn lower_method_attribute(
         setter,
         legacy_null_to_empty,
         reactions,
+        unscopable: has_no_args(member.attributes.as_ref(), "Unscopable"),
     };
     Ok(Some((attribute, signature)))
 }
@@ -2361,6 +2363,7 @@ fn lower_reflect_setter_attribute(
         }),
         legacy_null_to_empty,
         reactions: has_no_args(member.attributes.as_ref(), "CEReactions"),
+        unscopable: has_no_args(member.attributes.as_ref(), "Unscopable"),
     };
     Ok(Some((attribute, signature)))
 }
@@ -2553,6 +2556,7 @@ fn lower_reflect_attribute(
         setter,
         legacy_null_to_empty,
         reactions: has_no_args(member.attributes.as_ref(), "CEReactions"),
+        unscopable: has_no_args(member.attributes.as_ref(), "Unscopable"),
     };
     Ok(Some((attribute, quote! {})))
 }
@@ -2622,6 +2626,7 @@ fn lower_reflect_url_attribute(
         setter,
         legacy_null_to_empty: false,
         reactions: has_no_args(member.attributes.as_ref(), "CEReactions"),
+        unscopable: has_no_args(member.attributes.as_ref(), "Unscopable"),
     };
     Ok(Some((attribute, quote! {})))
 }
@@ -3213,6 +3218,7 @@ fn validate_attribute_attributes(
                             | "ReflectSetter"
                             | "ReflectURL"
                             | "SecureContext"
+                            | "Unscopable"
                     ) => {}
                 // Numeric reflection parameters: hand-written getters encode
                 // the spec algorithm, so the normal method path documents

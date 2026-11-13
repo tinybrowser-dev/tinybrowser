@@ -2059,3 +2059,30 @@ exist at all, and `document.forms` was a JavaScript shim whose proxy exposed
 Evidence: `html/dom` 64402 to **64417** subtests, no lost subtests.
 `document.images.html` 0/11 to 11/11 and `document.forms.html` 2/6 to 6/6;
 `document.links.html` and `document.scripts.html` stay green.
+Namespaced attributes no longer stand in for the no-namespace attribute with
+the same local name (`third_party/blitz` `3ab9c29a3`). The mutator's HTML
+behavior branches keyed on the local name alone, so
+`setAttributeNS(ns, "style", ...)` replaced the inline style, a namespaced
+`disabled` disabled the control, a namespaced `href` made a link, and
+`ElementData::attr`/`has_attr` answered a no-namespace lookup with the
+namespaced value. `attr`/`has_attr` now match only the null namespace, the
+mutator returns after storing a namespaced attribute, and the renderer's
+`dom::tree::attr` follows the same rule.
+
+`Element.slot` is now implemented as a reflected `DOMString`, and the WebIDL
+generator supports `[Unscopable]` on attributes (the name joins the
+prototype's `@@unscopables` object), which the DOM IDL marks on `slot`. The
+input `type` reflection reads the content attribute through
+`getAttributeNS(null, "type")`, because `getAttribute` is the qualified-name
+lookup and may name a namespaced attribute.
+
+Evidence: `html/dom` stays at **64417** and `html/browsers` at 995 to 1000,
+both with no lost subtests. `dom/nodes` stays at 14520 plus the
+namespaced-attribute gain, with no lost subtests; `Node-childNodes.html` (6/6)
+and `Node-cloneNode-XMLDocument.html` (1/1) produced no subtests in the batch
+run and pass in isolation again, so that was the harness flake.
+`namespaced-attribute-mutations.html` 15/24 to **23/24** (the remaining
+subtest needs `Element.assignedSlot`, a missing shadow-slotting surface).
+`Element-setAttribute.html`, `Element-removeAttribute.html`,
+`Element-hasAttribute.html` and `attributes.html` stay green, and
+`document.forms.html` stays 6/6.

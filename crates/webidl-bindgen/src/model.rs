@@ -187,6 +187,9 @@ pub(crate) struct Attribute {
     pub(crate) setter: Option<Setter>,
     pub(crate) legacy_null_to_empty: bool,
     pub(crate) reactions: bool,
+    /// `[Unscopable]`: the attribute is listed in `@@unscopables`
+    /// (<https://webidl.spec.whatwg.org/#es-attributes>).
+    pub(crate) unscopable: bool,
 }
 
 pub(crate) enum Setter {

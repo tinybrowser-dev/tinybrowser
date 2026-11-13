@@ -1073,11 +1073,10 @@ impl JsNode {
             .document(self.handle.get().0)
             .map_or_else(String::new, |parsed| {
                 let base = &parsed.document.base;
-                crate::dom::tree::attr_no_namespace(base, self.handle.get().0.node, "label")
-                    .map_or_else(
-                        || crate::dom::forms::option_text(base, self.handle.get().0.node),
-                        str::to_owned,
-                    )
+                crate::dom::tree::attr(base, self.handle.get().0.node, "label").map_or_else(
+                    || crate::dom::forms::option_text(base, self.handle.get().0.node),
+                    str::to_owned,
+                )
             }))
     }
 

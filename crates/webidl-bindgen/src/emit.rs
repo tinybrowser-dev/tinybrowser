@@ -1833,6 +1833,13 @@ fn unscopables(interface: &Interface) -> TokenStream {
         .iter()
         .filter(|operation| operation.unscopable)
         .map(|operation| operation.name.as_str())
+        .chain(
+            interface
+                .attributes
+                .iter()
+                .filter(|attribute| attribute.unscopable)
+                .map(|attribute| attribute.name.as_str()),
+        )
         .collect();
     quote! {
         const UNSCOPABLES: &[&str] = &[#(#names),*];
