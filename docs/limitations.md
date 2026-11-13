@@ -412,6 +412,33 @@ from one sandboxed document do not compare same-origin. The third
 `origin-from-messageevent-opaque.window.html` case also reloads a frame through
 `navigation.reload()`, which the engine does not navigate.
 
+## Window interface object
+
+The global object is the `Window` instance, but it is not built that way: it
+starts as the realm's own global prototype and the engine installs `window`,
+`document`, the event-handler properties, and the CSSOM/session members on it
+directly. There is no `Window` interface object, so
+`html/browsers/the-window-object/window-properties.https.html` fails its
+`Window method:` and `Window accessor:` groups with `ReferenceError: Window is
+not defined` and fails the `EventTarget method:` group because the global's own
+`addEventListener` is a host function rather than the interface prototype's.
+
+Rewiring the prototype after the shims loaded — defining `Window` with
+`Window.prototype` chaining to `EventTarget.prototype` and calling
+`Object.setPrototypeOf(globalThis, Window.prototype)` at the end of the script
+order — was tried and rejected. It raised that file from 36 to 125 passing
+subtests but lost hundreds elsewhere, because several shims and the messaging
+proxy treat "own property of the global" as the signal for a window member:
+`css/selectors` 4689 to 2334, `css/css-cascade` 210 to 130,
+`referrer-policy` 8020 to 7962, `css/cssom-view` 1594 to 1630 with 38 lost,
+`html/browsers` 679 to 947 with 37 lost, and smaller losses in
+`css/cssom`, `css/css-variables`, `dom/nodes`, and `css/css-conditional`. The
+repair is structural, not a shim: build the global as a `Window` instance in
+Rust (its prototype chain is `Window.prototype` → `EventTarget.prototype` →
+`Object.prototype`), install the members on `Window.prototype`, and keep the
+realm's own data on the global. Until then the property shape is the
+documented gap, not a fake interface object.
+
 ## Missing surfaces
 
 Dedicated workers run on their own OS thread with their own `QuickJS`
