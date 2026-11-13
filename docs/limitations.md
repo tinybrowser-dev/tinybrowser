@@ -189,6 +189,13 @@ handles the first fragment box of a non-atomic inline. Remaining gaps:
   `align-content-block-display-coverage.html`'s unsupported-value case reads
   that stale display through `offsetTop` and fails; the other seven cases pass
   now that `offsetTop` reports the aligned position.
+- `clientLeft`/`clientTop` are the used border widths; Blitz renders
+  scrollbars on the right and bottom only, so a scrollbar between the left
+  padding edge and the left border edge (RTL, or a vertical writing mode) is
+  never part of the value. `client-scroll-props-input.html` also expects an
+  `input`'s inline padding to be included after the leading border
+  (<https://github.com/w3c/csswg-drafts/issues/13502>), a draft change the
+  engine does not model yet.
 - `scrollParent` is not implemented. The current CSSOM View draft declares
   `readonly attribute Element? scrollParent`, but the pinned WPT tests call
   `element.scrollParent()` and no shipping browser implements either shape, so

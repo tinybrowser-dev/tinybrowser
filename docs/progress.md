@@ -1581,3 +1581,25 @@ The `scrollIntoView-*-writing-mode.html` family stays at 0 of 9: its boxes are
 now vertical, but `scrollIntoView` still scrolls only the viewport, not the
 nested scroll container the tests set up (`docs/limitations.md`). That is the
 scrolling gap, not a writing-mode one.
+
+`window.screen` and the remaining client metrics are implemented. The screen
+follows the CSSOM View model: there is no physical display or browser chrome,
+so the web-exposed screen and its available area are the viewport, and the
+color depth is 24-bit (`crates/renderer/src/js/scripts/web/cssom.js`). The
+`Screen` interface is installed with a throwing constructor, enumerable
+prototype getters, and a `[SameObject, Replaceable]` `screen` attribute.
+`Element.clientLeft`/`clientTop` return the used border on each axis, and zero
+for an element without a box or a non-atomic inline
+(`crates/renderer/src/js/bindings/node/element.rs`).
+
+Evidence: `css/cssom-view` 1475 to **1501 of 1758** with no lost subtests, and
+216 to **218 files** passing. The five screen files all pass fully
+(`cssom-view-window-screen-interface` 6, the width and height range files 3
+each, both immutability files 1 each), `subpixel-sizes-and-offsets.tentative`
+goes 9 to **12 of 15** (the three `clientLeft`/`clientTop` rounding cases),
+`table-client-props` 1 to **4 of 15** and `table-scroll-props` 1 to **4 of 13**
+(their `clientLeft` cases; the rest await caption layout), and
+`detached-element-geometry.window` and `outer-svg` gain their client-edge
+cases. What still fails is the `input`/`textarea` inline-padding rule from
+csswg-drafts#13502 and the left-hand scrollbar side, both recorded in
+`docs/limitations.md`.

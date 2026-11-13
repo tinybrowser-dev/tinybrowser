@@ -23,6 +23,44 @@
   __tbReplaceable('outerWidth', () => __tbViewportSize()[0]);
   __tbReplaceable('outerHeight', () => __tbViewportSize()[1]);
 
+  // ── screen ───────────────────────────────────────────────────────────
+  // There is no physical display or browser chrome, so the web-exposed screen
+  // is the viewport and the available area equals it
+  // (<https://drafts.csswg.org/cssom-view/#the-screen-interface>).
+  const __tbScreen = (() => {
+    function Screen() {
+      throw new TypeError('Illegal constructor');
+    }
+    Screen.prototype = Object.create(Object.prototype, {
+      constructor: { value: Screen, writable: true, configurable: true },
+    });
+    __tbDefineProperty(Screen.prototype, Symbol.toStringTag, {
+      value: 'Screen', writable: false, enumerable: false, configurable: true,
+    });
+    const size = () => __tbViewportSize();
+    for (const [name, get] of [
+      ['availWidth', () => size()[0]],
+      ['availHeight', () => size()[1]],
+      ['width', () => size()[0]],
+      ['height', () => size()[1]],
+      // 24-bit sRGB is the headless compositor's color depth.
+      ['colorDepth', () => 24],
+      ['pixelDepth', () => 24],
+    ]) {
+      __tbDefineProperty(Screen.prototype, name, {
+        get, enumerable: true, configurable: true,
+      });
+    }
+    __tbDefineProperty(globalThis, 'Screen', {
+      value: Screen, writable: true, configurable: true,
+    });
+    return Object.create(Screen.prototype);
+  })();
+  // `screen` is `[SameObject, Replaceable]`: the getter returns one object, and
+  // assigning replaces the accessor with an own property
+  // (<https://webidl.spec.whatwg.org/#dfn-replaceable>).
+  __tbReplaceable('screen', () => __tbScreen);
+
   // ── viewport scrolling ───────────────────────────────────────────────
   // `scrollX`/`scrollY` and their `page*Offset` aliases report the viewport's
   // scroll offset, which in quirks mode is the body element's

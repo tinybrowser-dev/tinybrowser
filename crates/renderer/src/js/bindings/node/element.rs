@@ -257,6 +257,16 @@ impl<'js> element_generated::Element<'js> for JsNode {
         self.client_height(ctx)
     }
 
+    // https://drafts.csswg.org/cssom-view/#dom-element-clientleft
+    fn get_client_left(&self, ctx: &Ctx<'js>) -> Result<i32> {
+        self.client_left(ctx)
+    }
+
+    // https://drafts.csswg.org/cssom-view/#dom-element-clienttop
+    fn get_client_top(&self, ctx: &Ctx<'js>) -> Result<i32> {
+        self.client_top(ctx)
+    }
+
     // https://drafts.csswg.org/cssom-view/#dom-element-scrollwidth
     fn get_scroll_width(&self, ctx: &Ctx<'js>) -> Result<i32> {
         self.scroll_width(ctx)
@@ -1522,6 +1532,20 @@ impl JsNode {
         )))
     }
 
+    // https://drafts.csswg.org/cssom-view/#dom-element-clientleft
+    pub(super) fn client_left(&self, ctx: &Ctx<'_>) -> Result<i32> {
+        Ok(cssom_round(f64::from(
+            self.layout_metric(ctx, |node| client_border(node, false))?,
+        )))
+    }
+
+    // https://drafts.csswg.org/cssom-view/#dom-element-clienttop
+    pub(super) fn client_top(&self, ctx: &Ctx<'_>) -> Result<i32> {
+        Ok(cssom_round(f64::from(
+            self.layout_metric(ctx, |node| client_border(node, true))?,
+        )))
+    }
+
     // https://drafts.csswg.org/cssom-view/#dom-element-scrollwidth
     pub(super) fn scroll_width(&self, ctx: &Ctx<'_>) -> Result<i32> {
         Ok(cssom_round(f64::from(
@@ -2550,6 +2574,20 @@ pub(super) fn content_attr(ctx: &Ctx<'_>, id: NodeId, name: &str) -> Option<Stri
     borrowed.document(id).and_then(|parsed| {
         crate::dom::tree::attr(&parsed.document.base, id.node, name).map(str::to_owned)
     })
+}
+
+/// The border width `clientLeft`/`clientTop` report on one axis
+/// (<https://drafts.csswg.org/cssom-view/#dom-element-clientleft>).
+///
+/// An element without a box, and a non-atomic inline, report zero. Blitz
+/// renders scrollbars on the right and bottom only, so the "scrollbar between
+/// the left padding edge and the left border edge" is always zero here.
+fn client_border(node: &blitz_dom::Node, vertical: bool) -> f32 {
+    if !node.has_boxes() || node.is_non_atomic_inline() {
+        return 0.0;
+    }
+    let border = node.final_layout().border;
+    if vertical { border.top } else { border.left }
 }
 
 /// Whether `data` is an element node, for
