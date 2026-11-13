@@ -109,7 +109,7 @@ Teaching the Servo style backend the property belongs upstream
 
 `document.scrollingElement`, the element and viewport scroll positions, and
 `scroll`/`scrollTo`/`scrollBy`/`scrollIntoView` route through Blitz's scroll
-engine. The engine's model has four gaps:
+engine. The engine's model has these gaps:
 
 - The viewport's scrollable range is the root element's own scrollable
   overflow. A body element with `overflow: hidden`, `scroll`, or `auto` does not
@@ -117,11 +117,12 @@ engine. The engine's model has four gaps:
   although CSS overflow propagates the body's overflow to the viewport
   (<https://drafts.csswg.org/css-overflow-3/#overflow-propagation>). A page that
   hides body overflow and then scrolls the document clamps to zero.
-- A child frame's viewport is the tab viewport, not the iframe box: Blitz does
-  not couple iframe layout to the child, so `window.innerWidth`, media queries,
-  and scroll positions inside an iframe use the tab size
-  (`crates/renderer/src/engine.rs`). Tests that size an iframe to 300px and
-  scroll it assume Blink's coupling and cannot pass yet.
+- A child frame's viewport is its iframe's content box, forwarded by
+  `Engine::sync_child_frame_viewports` after the parent lays out
+  (`crates/renderer/src/engine.rs`). Blitz itself does not couple the two, so
+  the engine re-lays out the child when the box size changes. The iframe's
+  `width`/`height` attributes and CSS size reach the child; scrollbar gutters
+  and `scrolling="no"` still do not reduce it.
 - `scroll-behavior: smooth` starts Blitz's animation, but the in-process WPT
   harness does not drive the renderer's frame loop to completion, so a test that
   waits for the animation end times out. Instant and auto scrolling work.

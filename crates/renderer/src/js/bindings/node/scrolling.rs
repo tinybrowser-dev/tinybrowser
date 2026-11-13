@@ -37,6 +37,35 @@ fn overflow(node: &Node, vertical: bool) -> Option<Overflow> {
     })
 }
 
+/// Whether an element's `overflow` is applied to the viewport instead of to a
+/// scrolling box of its own
+/// (<https://drafts.csswg.org/css-overflow-3/#overflow-propagation>).
+///
+/// The root element's overflow always belongs to the viewport. When the root is
+/// an HTML `html` element whose own overflow is `visible` on both axes, the
+/// first `body` child's overflow propagates instead, and that `body` has no
+/// scrolling box.
+fn overflow_propagates_to_viewport(parsed: &Parsed, element: NodeId) -> bool {
+    parsed
+        .document
+        .base
+        .overflow_propagates_to_viewport(element.node)
+}
+
+/// The used overflow of an element on one axis, with a propagated body's value
+/// replaced by `visible`.
+///
+/// The element a value propagates from gets a used overflow of `visible`
+/// (<https://drafts.csswg.org/css-overflow-3/#overflow-propagation>), so it
+/// has no scrolling box even though its computed value is `hidden`, `scroll`,
+/// or `auto`.
+fn used_overflow(parsed: &Parsed, element: NodeId, vertical: bool) -> Option<Overflow> {
+    if overflow_propagates_to_viewport(parsed, element) {
+        return Some(Overflow::Visible);
+    }
+    overflow(parsed.document.base.get_node(element.node)?, vertical)
+}
+
 /// The document's root element: its first element child
 /// (<https://dom.spec.whatwg.org/#document-element>).
 pub(crate) fn root_element(parsed: &Parsed) -> Option<NodeId> {
@@ -91,7 +120,7 @@ fn potentially_scrollable_in(
     if !node.has_boxes() {
         return false;
     }
-    if !overflow(node, vertical).is_some_and(scrollable_overflow) {
+    if !used_overflow(parsed, element, vertical).is_some_and(scrollable_overflow) {
         return false;
     }
     let Some(parent) = node.parent.and_then(|parent| base.get_node(parent)) else {
@@ -161,7 +190,9 @@ fn scroll_position(parsed: &Parsed, element: NodeId, vertical: bool) -> f64 {
     };
     // A boxless element, or one without a scrolling box on this axis, stays
     // at the start.
-    if !node.has_boxes() || !overflow(node, vertical).is_some_and(scrollable_overflow) {
+    if !node.has_boxes()
+        || !used_overflow(parsed, element, vertical).is_some_and(scrollable_overflow)
+    {
         return 0.0;
     }
     let offset = node.scroll_offset();
@@ -201,6 +232,18 @@ fn scroll_to(
     let Some(target) = target else {
         return;
     };
+    // An element without a scrolling box on either axis has nothing to move; a
+    // propagated body has a used overflow of `visible`. This is the element's
+    // own box only: CSSOM's parent-overflow rule in "potentially scrollable"
+    // belongs to the `scrollingElement` and quirks-body questions, and applying
+    // it here would freeze every scroller inside a `body` with visible
+    // overflow (`scrollLeftTop.html`).
+    if Some(target) != root
+        && !used_overflow(parsed, target, false).is_some_and(scrollable_overflow)
+        && !used_overflow(parsed, target, true).is_some_and(scrollable_overflow)
+    {
+        return;
+    }
     // CSSOM View's `Element.scroll()` step for the root element delegates to
     // `window.scroll(scrollX, y)`, which would discard x, but Chrome applies
     // both coordinates and `css/cssom-view/scrolling-quirks-vs-nonquirks.html`

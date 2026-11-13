@@ -937,15 +937,15 @@
   Object.defineProperty(MediaQueryList.prototype, 'removeListener', {
     value: __tbMediaRemoveListener, writable: true, enumerable: true, configurable: true,
   });
+  // The dispatcher already calls a target's `on<type>` property after the
+  // listener list (`crates/renderer/src/js/events.rs`), so the slot is the only
+  // registration: adding the handler as a listener too would fire it twice
+  // (`MediaQueryList-extends-EventTarget.html`, "onchange removes listener").
+  // A non-callable value becomes null, as event handler IDL attributes do.
   Object.defineProperty(MediaQueryList.prototype, 'onchange', {
     get() { return __tbMediaBrand(this).onchange; },
     set(value) {
-      const slot = __tbMediaBrand(this);
-      if (value != null && typeof value !== 'function') throw new TypeError('not a function');
-      const next = typeof value === 'function' ? value : null;
-      if (slot.onchange) __tbApply(__tbRemoveEventListener, this, ['change', slot.onchange]);
-      slot.onchange = next;
-      if (next) __tbApply(__tbAddEventListener, this, ['change', next]);
+      __tbMediaBrand(this).onchange = typeof value === 'function' ? value : null;
     },
     enumerable: true, configurable: true,
   });

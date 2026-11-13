@@ -1647,6 +1647,38 @@ sticky gap rather than the scroll walk; its sibling
 `position-sticky-right.html`/`-bottom.html` already moved for the same reason.
 `scroll-margin`/`scroll-padding` are unavailable rather than unimplemented:
 both are `engine = "gecko"` longhands in the pinned Stylo, so this build does
-not generate them (probed: `CSS.supports` is false for both). The iframe cases
-of `scrollIntoView-fixed` and `scrollIntoView-container` need the child-frame
-viewport coupling recorded in `docs/limitations.md`.
+not generate them (probed: `CSS.supports` is false for both).
+
+A child frame now lays out at its iframe's content box.
+`Engine::sync_child_frame_viewports` reads the container's laid-out content box
+after the parent resolves and calls the child document's `set_viewport` when
+the size differs (`crates/renderer/src/engine.rs`). Before this, every child
+frame used the tab viewport: `window.innerWidth`, media queries, and scroll
+ranges inside an iframe were the tab's, so a test that sizes an iframe to
+300px and scrolls it could not match.
+
+Evidence: `css/cssom-view` 1578 to **1610 of 1758**, no lost subtests.
+`MediaQueryList-addListener-removeListener` 1 to 8 of 8,
+`MediaQueryList-extends-EventTarget-interop` 1 to 8,
+`MediaQueryList-extends-EventTarget` 1 to 7,
+`MediaQueryList-addListener-handleEvent` 0 to 3,
+`MediaQueryList-change-event-matches-value` 0 to 1, `matchMedia` 6 to 7,
+`matchMedia-display-none-iframe` 1 to 2, `scrollIntoView-iframes` 1 to 3,
+`scrollIntoView-container` 4 to 5 (the iframe subtest now passes), and
+`scrolling-quirks-vs-nonquirks` 16 to 19 (the non-quirks root and body
+geometry now uses the 300x500 iframe box instead of the tab's 800x600).
+
+The `MediaQueryList` shim also stopped registering `onchange` as an event
+listener: the dispatcher already calls a target's `on<type>` property after the
+listener list, so a handler assigned through the attribute fired twice
+(`MediaQueryList-extends-EventTarget.html`, "onchange removes listener"). The
+slot is now the only registration, and a non-callable value becomes null as
+event handler IDL attributes do.
+
+The CSSOM View shims had to stop routing a scroll through a `body` whose
+overflow propagates to the viewport: `scroll_position` reads that body's used
+overflow as `visible` and returns zero, and `scroll_to` refuses to move it. The
+refusal is on the element's own used overflow only; CSSOM's parent-overflow
+condition in "potentially scrollable" answers the `scrollingElement` and
+quirks-body questions and must not gate `scroll()` on an ordinary scroller
+inside a `body`, or every scroller in `scrollLeftTop.html` freezes.

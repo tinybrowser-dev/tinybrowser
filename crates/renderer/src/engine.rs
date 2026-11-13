@@ -897,6 +897,76 @@ impl Engine {
         }
     }
 
+    /// Applies each child frame's iframe content-box size to its document's
+    /// viewport, so the nested browsing context lays out and evaluates media
+    /// queries at the box that embeds it
+    /// (<https://drafts.csswg.org/cssom-view/#dom-window-innerwidth>,
+    /// <https://html.spec.whatwg.org/multipage/iframe-embed-object.html#the-iframe-element>).
+    ///
+    /// Blitz does not couple iframe layout to the child document, so the engine
+    /// forwards the container's content box whenever it changes.
+    fn sync_child_frame_viewports(&mut self) {
+        let pairs: Vec<(FrameId, FrameId, crate::dom::tree::NodeId)> = {
+            let shared = self.runtime.shared.borrow();
+            self.frames
+                .keys()
+                .flat_map(|parent| {
+                    shared.tree.children(*parent).iter().filter_map(|child| {
+                        shared
+                            .tree
+                            .container(*child)
+                            .map(|container| (*parent, *child, container))
+                    })
+                })
+                .collect()
+        };
+        for (parent, child, container) in pairs {
+            let Some(size) = self.frame_container_size(parent, container) else {
+                continue;
+            };
+            let Some(document) = self.frames.get_mut(&child) else {
+                continue;
+            };
+            if document.viewport_size != size {
+                document.set_viewport(size.0, size.1);
+            }
+        }
+    }
+
+    /// The content-box size of `container` in `parent`'s active document.
+    fn frame_container_size(
+        &mut self,
+        parent: FrameId,
+        container: crate::dom::tree::NodeId,
+    ) -> Option<(u32, u32)> {
+        let document = self.frames.get(&parent)?;
+        let world = document.world();
+        let world = world.borrow();
+        let mut parsed = world.document_mut(container)?;
+        crate::render::resolve_until_settled(&mut parsed.document.base);
+        let node = parsed.document.base.get_node(container.node)?;
+        let layout = node.final_layout();
+        let width = layout.size.width
+            - layout.border.left
+            - layout.border.right
+            - layout.padding.left
+            - layout.padding.right;
+        let height = layout.size.height
+            - layout.border.top
+            - layout.border.bottom
+            - layout.padding.top
+            - layout.padding.bottom;
+        #[expect(
+            clippy::cast_sign_loss,
+            clippy::cast_possible_truncation,
+            reason = "a laid-out iframe box is a small non-negative length"
+        )]
+        Some((
+            width.max(0.0).round() as u32,
+            height.max(0.0).round() as u32,
+        ))
+    }
+
     /// Starts a child or auxiliary frame's history with the document it was
     /// created on. The browser adds the matching joint entry
     /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#session-history-entry>).
@@ -2131,6 +2201,7 @@ impl Engine {
         loop {
             let workers = self.adopt_worker_requests();
             let adopted = self.adopt_pending_frames();
+            self.sync_child_frame_viewports();
             let standalone = self.joint_history.is_some();
             let removed = self.runtime.shared.borrow_mut().take_removed_frames();
             for (frame, container) in &removed {
