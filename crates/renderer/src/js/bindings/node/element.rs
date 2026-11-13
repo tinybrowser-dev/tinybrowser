@@ -34,8 +34,9 @@ use crate::dom::tree::{
 };
 use crate::dom_string::DomString;
 
+use crate::Parsed;
 use crate::documents::JournalEntry;
-use crate::js::world::{NodeReference, SameObject};
+use crate::js::world::{NodeReference, SameObject, World};
 
 use super::JsNode;
 use super::core::{adopt_node, insert_tree_node, insertion_tree_nodes, upgrade_parsed_tree};
@@ -198,6 +199,369 @@ pub(crate) fn set_html_unsafe_host<'js>(
         ));
     }
     replace_with_markup(&ctx, target, &html, run_scripts)
+}
+
+/// Where a `*HTMLUnsafe` insertion method puts the parsed fragment
+/// (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-element-appendhtmlunsafe>).
+#[derive(Clone, Copy)]
+pub(crate) enum InsertPosition {
+    /// `appendHTMLUnsafe`
+    Append,
+    /// `prependHTMLUnsafe`
+    Prepend,
+    /// `beforeHTMLUnsafe`
+    Before,
+    /// `afterHTMLUnsafe`
+    After,
+    /// `replaceWithHTMLUnsafe`
+    ReplaceWith,
+}
+
+impl InsertPosition {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "append" => Some(Self::Append),
+            "prepend" => Some(Self::Prepend),
+            "before" => Some(Self::Before),
+            "after" => Some(Self::After),
+            "replaceWith" => Some(Self::ReplaceWith),
+            _ => None,
+        }
+    }
+
+    /// The receiver kinds the method is exposed on: `ParentNode`'s mixin for
+    /// the container positions, `ChildNode`'s for the sibling positions
+    /// (<https://dom.spec.whatwg.org/#interface-parentnode>,
+    /// <https://dom.spec.whatwg.org/#interface-childnode>).
+    fn accepts(self, data: &NodeData) -> bool {
+        match self {
+            Self::Append | Self::Prepend => {
+                matches!(data, NodeData::Element(_) | NodeData::ShadowRoot { .. })
+            }
+            Self::Before | Self::After | Self::ReplaceWith => matches!(
+                data,
+                NodeData::Element(_)
+                    | NodeData::Text(_)
+                    | NodeData::CDataSection { .. }
+                    | NodeData::Comment { .. }
+                    | NodeData::ProcessingInstruction { .. }
+            ),
+        }
+    }
+}
+
+/// The resolved insertion point of an `*HTMLUnsafe` method.
+struct InsertionPoint {
+    /// The node whose children receive the fragment.
+    container: NodeId,
+    /// The node to insert before; `None` appends.
+    reference: Option<NodeId>,
+    /// The fragment parsing context element's local name.
+    context: String,
+    /// The node whose subtree's custom elements upgrade after insertion.
+    upgrade_root: NodeId,
+    /// The node the insertion replaces (`replaceWithHTMLUnsafe`).
+    replaced: Option<NodeId>,
+}
+
+/// Resolves where `position` on `target` inserts, applying the spec's "target
+/// for HTML insertion" and "parent for HTML insertion" rules
+/// (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#target-for-html-insertion>,
+/// <https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#parent-for-html-insertion>).
+fn insertion_point(
+    ctx: &Ctx<'_>,
+    target: NodeId,
+    position: InsertPosition,
+) -> Result<Option<InsertionPoint>> {
+    let owner = world_for_node(ctx, target)?;
+    let owner = owner.borrow();
+    let Some(parsed) = owner.document(target) else {
+        return Err(Exception::throw_type(ctx, "no document"));
+    };
+    let Some(node) = parsed.document.base.get_node(target.node) else {
+        return Err(Exception::throw_type(ctx, "stale node"));
+    };
+    if !position.accepts(&node.data) {
+        return Err(Exception::throw_type(
+            ctx,
+            "the method requires an element or character data",
+        ));
+    }
+    match position {
+        InsertPosition::Append | InsertPosition::Prepend => {
+            container_point(ctx, &owner, &parsed, target, position).map(Some)
+        }
+        InsertPosition::Before | InsertPosition::After | InsertPosition::ReplaceWith => {
+            child_point(ctx, &owner, &parsed, target, position)
+        }
+    }
+}
+
+/// The `appendHTMLUnsafe`/`prependHTMLUnsafe` insertion point
+/// (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#target-for-html-insertion>).
+fn container_point(
+    ctx: &Ctx<'_>,
+    world: &World,
+    parsed: &Parsed,
+    target: NodeId,
+    position: InsertPosition,
+) -> Result<InsertionPoint> {
+    let base = &parsed.document.base;
+    let Some(node) = base.get_node(target.node) else {
+        return Err(Exception::throw_type(ctx, "stale node"));
+    };
+    let context = match &node.data {
+        NodeData::Element(element) => html_fragment_context(&element.name),
+        NodeData::ShadowRoot { host, .. } => {
+            let host = base
+                .get_node(*host)
+                .and_then(|host| host.data.downcast_element())
+                .ok_or_else(|| Exception::throw_type(ctx, "shadow root has no host"))?;
+            html_fragment_context(&host.name)
+        }
+        // `InsertPosition::accepts` rejected every other kind
+        _ => unreachable!(),
+    };
+    // `target for HTML insertion` unwraps a template to its contents, while
+    // the fragment still parses in the template element itself
+    // (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#target-for-html-insertion>).
+    let container = match node.data {
+        NodeData::Element(_) => template_contents_target(&parsed.document, target),
+        _ => target,
+    };
+    // The container may live in the template's inert document, so its children
+    // come from that document's tree, not `target`'s
+    let container_base = world
+        .document(container)
+        .ok_or_else(|| Exception::throw_type(ctx, "no document"))?;
+    let reference = if matches!(position, InsertPosition::Prepend) {
+        container_base
+            .document
+            .base
+            .get_node(container.node)
+            .and_then(|node| node.children.first().copied())
+            .map(|node| NodeId {
+                document: container.document,
+                node,
+            })
+    } else {
+        None
+    };
+    Ok(InsertionPoint {
+        container,
+        reference,
+        context,
+        upgrade_root: container,
+        replaced: None,
+    })
+}
+
+/// The `beforeHTMLUnsafe`/`afterHTMLUnsafe`/`replaceWithHTMLUnsafe` insertion
+/// point; `None` when the receiver has no parent
+/// (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#parent-for-html-insertion>).
+fn child_point(
+    ctx: &Ctx<'_>,
+    world: &World,
+    parsed: &Parsed,
+    target: NodeId,
+    position: InsertPosition,
+) -> Result<Option<InsertionPoint>> {
+    let base = &parsed.document.base;
+    let Some(node) = base.get_node(target.node) else {
+        return Err(Exception::throw_type(ctx, "stale node"));
+    };
+    let Some(parent) = node.parent.map(|node| NodeId {
+        document: target.document,
+        node,
+    }) else {
+        return Ok(None);
+    };
+    let Some(parent_node) = base.get_node(parent.node) else {
+        return Err(Exception::throw_type(ctx, "stale node"));
+    };
+    let context = parent_context(ctx, world, parsed, &parent_node.data)?;
+    // The fragment goes in where the receiver was. `replace`'s reference child
+    // is the receiver's next sibling: the receiver is removed first, so it
+    // cannot be the anchor
+    // (<https://dom.spec.whatwg.org/#concept-node-replace>).
+    let reference = match position {
+        InsertPosition::Before => Some(target),
+        _ => sibling(base, target.node, true).map(|node| NodeId {
+            document: target.document,
+            node,
+        }),
+    };
+    let replaced = if matches!(position, InsertPosition::ReplaceWith) {
+        Some(target)
+    } else {
+        None
+    };
+    Ok(Some(InsertionPoint {
+        container: parent,
+        reference,
+        context,
+        upgrade_root: parent,
+        replaced,
+    }))
+}
+
+/// The fragment parsing context of a child insertion: the parent element, the
+/// host of a `DocumentFragment` or shadow root, and a throw for anything else
+/// (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#parent-for-html-insertion>).
+fn parent_context(
+    ctx: &Ctx<'_>,
+    world: &World,
+    parsed: &Parsed,
+    data: &NodeData,
+) -> Result<String> {
+    let base = &parsed.document.base;
+    match data {
+        NodeData::Element(element) => {
+            // A child of the root `html` element has no HTML insertion parent;
+            // the method throws instead of building a tree the document
+            // content model rejects
+            // (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#filter-and-pre-insert-html>).
+            if element.name.ns == html_namespace()
+                && element.name.local == markup5ever::local_name!("html")
+            {
+                return Err(throw_dom(
+                    ctx,
+                    "HierarchyRequestError",
+                    "the parent is an html element",
+                ));
+            }
+            Ok(html_fragment_context(&element.name))
+        }
+        NodeData::Fragment { host: Some(host) } | NodeData::ShadowRoot { host, .. } => {
+            let host = base
+                .get_node(*host)
+                .and_then(|node| node.data.downcast_element())
+                .ok_or_else(|| Exception::throw_type(ctx, "fragment has no host"))?;
+            Ok(html_fragment_context(&host.name))
+        }
+        // Template contents live in their own inert document, where the
+        // fragment cannot name its host element; the side table carries the
+        // back link
+        // (<https://html.spec.whatwg.org/multipage/scripting.html#template-contents>).
+        NodeData::Fragment { host: None } => {
+            let (document, host) = parsed
+                .document
+                .template_host()
+                .ok_or_else(|| no_html_parent(ctx))?;
+            let host_document = world
+                .document(NodeId {
+                    document,
+                    node: host,
+                })
+                .ok_or_else(|| no_html_parent(ctx))?;
+            let host = host_document
+                .document
+                .base
+                .get_node(host)
+                .and_then(|node| node.data.downcast_element())
+                .ok_or_else(|| Exception::throw_type(ctx, "fragment has no host"))?;
+            Ok(html_fragment_context(&host.name))
+        }
+        _ => Err(no_html_parent(ctx)),
+    }
+}
+
+fn no_html_parent(ctx: &Ctx<'_>) -> rquickjs::Error {
+    throw_dom(
+        ctx,
+        "HierarchyRequestError",
+        "the parent cannot receive HTML",
+    )
+}
+
+/// The host side of the `*HTMLUnsafe` partial-update insertion methods. They
+/// install in JS for the same reason `setHTMLUnsafe` does: their
+/// `(TrustedHTML or DOMString)` argument and options dictionary are unions the
+/// binding generator does not lower yet
+/// (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#html-insertion-methods>).
+pub(crate) fn insert_html_unsafe_host<'js>(
+    ctx: Ctx<'js>,
+    value: Value<'js>,
+    html: String,
+    position: String,
+    run_scripts: bool,
+) -> Result<()> {
+    let Some(id) = host_node_id(&ctx, &value) else {
+        return Err(Exception::throw_type(
+            &ctx,
+            "the method requires a Node receiver",
+        ));
+    };
+    let Some(position) = InsertPosition::parse(&position) else {
+        return Err(Exception::throw_type(&ctx, "invalid insertion position"));
+    };
+    let target = super::super::realm_registry(&ctx)?
+        .borrow_mut()
+        .live_node_id(id);
+    let Some(point) = insertion_point(&ctx, target, position)? else {
+        return Ok(());
+    };
+    insert_html_unsafe(&ctx, target, &html, point, run_scripts)
+}
+
+/// Parses `markup` in the point's context, places the fragment, and runs the
+/// fixups the insertion requires.
+fn insert_html_unsafe(
+    ctx: &Ctx<'_>,
+    target: NodeId,
+    markup: &str,
+    point: InsertionPoint,
+    run_scripts: bool,
+) -> Result<()> {
+    let snapshots = {
+        let (base_url, font_ctx) = fragment_base_url(ctx, target);
+        parse_html_fragment_snapshots(markup, &point.context, &base_url, font_ctx)
+    };
+    let owner = world_for_node(ctx, point.container)?;
+    let world = owner.borrow();
+    let Some(mut parsed) = world.document_mut(point.container) else {
+        return Err(Exception::throw_type(ctx, "no document"));
+    };
+    let replacement =
+        materialize_children(&mut parsed.document, point.container.document, &snapshots)
+            .map_err(|err| throw_dom_error(ctx, err))?;
+    let added = fragment_children(&parsed.document, replacement);
+    // A replaced subtree's child navigables die with it
+    // (<https://html.spec.whatwg.org/multipage/document-sequences.html#destroy-a-child-navigable>).
+    let mut iframes = Vec::new();
+    // `replace` removes the old node, then inserts the fragment where it was
+    // (<https://dom.spec.whatwg.org/#concept-node-replace>).
+    let reference = match point.replaced {
+        Some(replaced) => {
+            iframes = iframe_containers_in_subtrees(&parsed, &[replaced]);
+            let reference = point.reference;
+            unlink_journaled(&mut parsed, replaced);
+            reference
+        }
+        None => point.reference,
+    };
+    for child in &added {
+        place_journaled(&mut parsed, point.container, *child, reference);
+    }
+    let controls: Vec<_> = added
+        .iter()
+        .flat_map(|root| {
+            crate::dom::forms::descendant_controls(&parsed.document.base, root.document, root.node)
+        })
+        .collect();
+    drop(parsed);
+    world.destroy_child_navigables(&iframes);
+    drop(world);
+    fixup_controls_on_insert(ctx, point.container.document, &controls)?;
+    register_inserted_iframes(ctx, &added)?;
+    // Scripts run as part of the insertion, before the custom element
+    // reactions the method's `[CEReactions]` flushes when it returns
+    // (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-element-appendhtmlunsafe>).
+    if run_scripts {
+        run_inserted_scripts(ctx, &added)?;
+    }
+    upgrade_parsed_tree(ctx, point.upgrade_root)?;
+    schedule_mutation_delivery(ctx)
 }
 
 impl<'js> element_generated::Element<'js> for JsNode {

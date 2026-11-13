@@ -458,24 +458,36 @@ they run the fragment's scripts in tree order after the tree is updated
 (`crates/renderer/src/js/bindings/node/element.rs`). `innerHTML` shares the
 parse and insertion path and never runs scripts.
 
-Four things the spec's algorithm asks for are absent:
+The partial-update insertion methods also exist:
+`appendHTMLUnsafe`/`prependHTMLUnsafe` on `Element` and `ShadowRoot`, and
+`beforeHTMLUnsafe`/`afterHTMLUnsafe`/`replaceWithHTMLUnsafe` on `Element` and
+`CharacterData`. They follow the spec's "target for HTML insertion" (a
+template unwraps to its contents) and "parent for HTML insertion" (a
+`template` element, a `Document`, or a `DocumentFragment` without a host
+throws `HierarchyRequestError`). Template contents live in their own inert
+document, so `BlitzDocument::template_host` carries the host back link that the
+fragment node cannot.
+
+Five things the spec's algorithms ask for are absent:
 
 - Declarative shadow roots. The parser has no `allowDeclarativeShadowRoots`
   mode, so a `<template shadowrootmode=open>` stays a template and the shadow
   tree is never attached. `setHTMLUnsafe.html`'s two `with shadowdom` subtests
   and the two `script inside declarative shadow DOM` subtests depend on it.
 - The `Sanitizer` API. `SetHTMLUnsafeOptions.sanitizer` is not read, so a
-  sanitizer that removes scripts does not stop `runScripts`. A page that
-  passes a sanitizer expecting output filtering gets none.
-- `setHTML()`, the safe variant, does not exist yet, because its default
-  sanitizer configuration cannot be provided without the `Sanitizer` API.
+  sanitizer that removes scripts does not stop `runScripts`, and
+  `positional-methods.html`'s sanitizer subtests see the element it was asked
+  to remove.
+- The safe variants (`setHTML()`, `appendHTML()`, `prependHTML()`,
+  `beforeHTML()`, `afterHTML()`, `replaceWithHTML()`) do not exist yet,
+  because their default sanitizer configuration cannot be provided without the
+  `Sanitizer` API. Half of `positional-methods.html` calls them.
 - A script element created by `Document.parseHTMLUnsafe()` is not marked
   already started, so appending it into a document runs it. The spec parses
   into an inert document whose scripts never execute.
-
-`setHTMLUnsafe()` on an XML document parses as HTML: the spec's fragment
-parsing dispatches on the document type, and the engine has one HTML fragment
-path.
+- `setHTMLUnsafe()` and the insertion methods on an XML document parse as
+  HTML: the spec's fragment parsing dispatches on the document type, and the
+  engine has one HTML fragment path.
 
 
 ## Window surface

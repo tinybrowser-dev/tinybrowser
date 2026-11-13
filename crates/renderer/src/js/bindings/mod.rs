@@ -1008,6 +1008,10 @@ fn install_host_functions(ctx: &Ctx<'_>) -> Result<()> {
         "__tbSetHTMLUnsafe",
         rquickjs::prelude::Func::from(node::element::set_html_unsafe_host),
     )?;
+    crate::js::bridge::object(ctx)?.set(
+        "__tbInsertHTMLUnsafe",
+        rquickjs::prelude::Func::from(node::element::insert_html_unsafe_host),
+    )?;
     parsing::install_xhr_parse(ctx)?;
     parsing::install_document_parse(ctx)?;
     cssom_host::install(ctx)?;

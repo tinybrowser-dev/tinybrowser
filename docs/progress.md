@@ -1951,3 +1951,25 @@ Throwing `SecurityError` for cross-origin member reads is implemented and
 reverted: it lifts `window-security.https.html` from 12 to 121 of 124 but
 regresses the `document.domain` tests, which the engine cannot support yet.
 `docs/limitations.md` records what closing it needs.
+The partial-update insertion methods now exist:
+`appendHTMLUnsafe`/`prependHTMLUnsafe` on `Element` and `ShadowRoot`, and
+`beforeHTMLUnsafe`/`afterHTMLUnsafe`/`replaceWithHTMLUnsafe` on `Element` and
+`CharacterData` (`crates/renderer/src/js/bindings/node/element.rs`, installed
+in `crates/renderer/src/js/scripts/web/dom.js`). They resolve the spec's
+"target for HTML insertion" (a template unwraps to its contents) and "parent
+for HTML insertion" (a `template` element, a `Document`, or a
+`DocumentFragment` without a host throws `HierarchyRequestError`), parse in the
+resolved context, place the fragment, and with `runScripts: true` run its
+scripts before the `[CEReactions]` flush.
+
+Template contents live in their own inert document, where the contents
+fragment cannot name its host element, so `BlitzDocument` gained a
+`template_host` back link. Without it, `beforeHTMLUnsafe` on a
+`template.content` child saw a host-less `DocumentFragment` and threw.
+
+Evidence: `domparsing` 543 to **687 subtests**, no lost subtests;
+`positional-methods.html` 6 to 150 of 378. `html/dom` stays at 64390,
+`html/webappapis` 2555 to 2557, and `dom/nodes` at 14395, all with no lost
+subtests. The remaining 228 failures in `positional-methods.html` are the safe
+variants (`appendHTML` and friends) and the `Sanitizer` subtests, which
+`docs/limitations.md` records.

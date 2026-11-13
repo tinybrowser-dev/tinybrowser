@@ -614,6 +614,14 @@ impl<'js> html_template_element_generated::HTMLTemplateElement<'js> for JsNode {
                 mutator.remove_node(child);
             }
         }
+        // The inert document's contents need their host, which lives in the
+        // template's own document
+        // (<https://html.spec.whatwg.org/multipage/scripting.html#template-contents>).
+        if let Some(mut inert) = owner.borrow_mut().document_mut(fragment) {
+            inert
+                .document
+                .set_template_host(self.handle.get().0.document, self.handle.get().0.node);
+        }
         wrap_node(ctx, fragment)
     }
 }

@@ -52,6 +52,11 @@ pub struct SideTables {
     /// The fragment's node document is not the host
     /// (<https://html.spec.whatwg.org/multipage/scripting.html#template-contents>).
     template_owners: HashMap<blitz_traits::node_id::NodeId, (u32, blitz_traits::node_id::NodeId)>,
+    /// The `(document id, node)` of the template element whose contents this
+    /// inert document holds. The contents fragment's `host` cannot name an
+    /// element in another document, so this is the back link
+    /// (<https://html.spec.whatwg.org/multipage/scripting.html#template-contents>).
+    template_host: Option<(u32, blitz_traits::node_id::NodeId)>,
 }
 
 impl BlitzDocument {
@@ -238,6 +243,21 @@ impl BlitzDocument {
         template: blitz_traits::node_id::NodeId,
     ) -> Option<(u32, blitz_traits::node_id::NodeId)> {
         self.side.template_owners.get(&template).copied()
+    }
+
+    /// Records the template element whose contents this inert document holds.
+    pub(crate) fn set_template_host(
+        &mut self,
+        document: u32,
+        template: blitz_traits::node_id::NodeId,
+    ) {
+        self.side.template_host = Some((document, template));
+    }
+
+    /// The `(document id, node)` of the template element whose contents this
+    /// inert document holds.
+    pub(crate) fn template_host(&self) -> Option<(u32, blitz_traits::node_id::NodeId)> {
+        self.side.template_host
     }
 
     /// The `CharacterData` of `id` as UTF-16 code units

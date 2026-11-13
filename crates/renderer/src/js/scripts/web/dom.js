@@ -257,3 +257,54 @@ globalThis.Document.parseHTMLUnsafe = function parseHTMLUnsafe(html) {
     });
   }
 }
+
+// The partial-update insertion methods are `ParentNode`'s
+// `appendHTMLUnsafe`/`prependHTMLUnsafe` and `ChildNode`'s
+// `beforeHTMLUnsafe`/`afterHTMLUnsafe`/`replaceWithHTMLUnsafe`. Their
+// `(TrustedHTML or DOMString)` argument and `SetHTMLUnsafeOptions` dictionary
+// are unions the WebIDL generator does not lower yet, so they install here;
+// the host owns the receiver and parent rules and the tree work
+// (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#html-insertion-methods>).
+{
+  const define = (prototype, name, position) => {
+    Object.defineProperty(prototype, name, {
+      value: function(html, options) {
+        const markup = __tbIDLString(html);
+        // A dictionary argument accepts `undefined` and `null` as the empty
+        // dictionary; anything else that is not an object is a TypeError
+        // (<https://webidl.spec.whatwg.org/#es-dictionary>).
+        let runScripts = false;
+        if (options !== undefined && options !== null) {
+          if (typeof options !== 'object' && typeof options !== 'function') {
+            throw new TypeError(name + ' options must be an object');
+          }
+          // `runScripts` defaults to false and converts as a boolean; a
+          // sanitizer is not supported yet, so it is not read
+          // (docs/limitations.md)
+          // (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#sethtmlunsafeoptions>).
+          runScripts = options.runScripts === undefined ? false : Boolean(options.runScripts);
+        }
+        return host.__tbInsertHTMLUnsafe(this, markup, position, runScripts);
+      },
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+  };
+
+  // `ParentNode`'s methods are on `Element` and `ShadowRoot`; `ChildNode`'s
+  // are on `Element` and `CharacterData`
+  // (<https://dom.spec.whatwg.org/#interface-parentnode>,
+  // <https://dom.spec.whatwg.org/#interface-childnode>).
+  const parents = [globalThis.Element.prototype, globalThis.ShadowRoot.prototype];
+  for (const prototype of parents) {
+    define(prototype, 'appendHTMLUnsafe', 'append');
+    define(prototype, 'prependHTMLUnsafe', 'prepend');
+  }
+  const children = parents.concat([globalThis.CharacterData.prototype]);
+  for (const prototype of children) {
+    define(prototype, 'beforeHTMLUnsafe', 'before');
+    define(prototype, 'afterHTMLUnsafe', 'after');
+    define(prototype, 'replaceWithHTMLUnsafe', 'replaceWith');
+  }
+}
