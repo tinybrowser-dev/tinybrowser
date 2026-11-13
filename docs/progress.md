@@ -2024,3 +2024,28 @@ Evidence: `html/browsers` 921 to **995 subtests**, with one apparent loss,
 this build and at HEAD, so it is the known flake and not a regression.
 `origin-from-hyperlinkelementutils.window.html` 54 to 129 of 129.
 `html/dom` stays at 64402 with no lost subtests.
+`:disabled` and `:enabled` now match the HTML disabled model
+(`third_party/blitz` `5387dd187`). The state bits used to follow only the
+element's own `disabled` attribute and only for button/input/select/textarea,
+so a control inside a disabled fieldset, an `optgroup` or `option` under a
+disabled `select`, and a disabled `fieldset`/`optgroup`/`option` never matched.
+`BaseDocument::actually_disabled` implements the spec's "actually disabled"
+set: the fieldset rule with each fieldset's first-legend exemption, the
+`concept-option-disabled` ancestor walk that stops at `select`/`hr`/`datalist`/
+`option` and at a second `optgroup`, and inherited disabledness from a
+disabled `select` (`docs/upstream.md` records the fork reason).
+
+The bits resync for an inserted or removed subtree, on a `disabled` write, and
+on a disabled fieldset's child-list change, because a new first `legend`
+re-enables its contents. A write on fieldset/select/optgroup hints
+`RESTYLE_DESCENDANTS`, since descendants' own bits moved without an attribute
+change of their own. `inside_first_legend` now matches the legend itself, not
+just its descendants.
+
+Evidence: `dom/nodes` 14510 to **14520** and `css/selectors` 4761 to **4777**
+subtests, no lost subtests. `html/dom` stays at 64402 and `css/cssom` at 3309,
+no lost subtests. `Element-matches-disabled-pseudo-class.html` 1/11 to 11/11,
+`option-disabled-when-ancestor-changes.html` 0/4 to 4/4, and
+`has-with-pseudo-class.html` 17/41 to 29/41. All four `option-disabled-*`
+files in `html/semantics/forms/the-select-element/customizable-select` and
+`disabled-nested-legend.html` pass.
