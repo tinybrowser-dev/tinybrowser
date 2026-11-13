@@ -1325,34 +1325,37 @@ block stores the system font's `font-variant-*` longhands at `normal`, where a
 browser keeps the `font` shorthand and reports `""`
 (`docs/limitations.md`, `docs/upstream.md`).
 
-Review of the `CSS.supports()` slice found that the CSSOM's declaration block
-disagreed with it. `'color' in element.style` asked whether the block *currently
-sets* the property, so an empty declaration block answered `false` for every
-supported property, while `CSS.supports("color", "red")` answered `true`. CSSOM
-gives a `CSSStyleDeclaration` an IDL attribute for each property the UA
-supports, set or not
+The CSSOM's declaration block disagreed with `CSS.supports()`: `'color' in
+element.style` asked whether the block *currently sets* the property, so an
+empty block answered false for every supported property. CSSOM gives a
+`CSSStyleDeclaration` an IDL attribute for each supported property, set or not
 (<https://drafts.csswg.org/cssom/#css-property-to-idl-attribute>), so `in`, the
-IDL getter, and `CSS.supports()` now all ask the style engine the same question
-through `css::supports::property_supported`. An unsupported name reads
-`undefined` from the getter and is absent from `in`, as in a browser, instead
-of reading the empty string. The legacy vendor form resolves too:
-`style.webkitAnimation` is `-webkit-animation`, the one prefix whose IDL name
-keeps a lowercase first letter.
+IDL getter, and `CSS.supports()` now ask one host predicate,
+`css::supports::property_supported`. An unknown name reads `undefined`, as in a
+browser, and `style.webkitAnimation` resolves to `-webkit-animation`, the
+webkit-cased IDL name that drops the leading dash.
 
-The rest of the review is correctness without WPT coverage. The one-argument
-`CSS.supports()` now runs both spec steps: parse the text as a
-`<supports-condition>`, then wrap it in parentheses and parse that, which is
-how a bare declaration is accepted and how a browser answers `true` for
-`CSS.supports("color: red) or (color: blue")`. Arguments use the existing
-`__tbToDOMString`, so a symbol throws instead of stringifying. The parsing
-itself moved to `crates/renderer/src/css/supports.rs`, the concept owner for
-values shared with canvas and form controls, and `css::url_data` /
+The parsing moved to `crates/renderer/src/css/supports.rs`, the concept owner
+for CSS values shared with canvas and form controls, and `css::url_data` /
 `css::parser_context` replaced the second and third copies of the standalone
-parse context (`css/color.rs` was the first). The `CSS` namespace is an
-ordinary object with writable, configurable members rather than a frozen one.
+parse context (`css/color.rs` was the first). The one-argument
+`CSS.supports()` now runs both spec steps: the text as a
+`<supports-condition>`, then the text in parentheses, which is how a bare
+declaration is accepted and how a browser answers true for
+`CSS.supports("color: red) or (color: blue")`. Arguments convert through
+`__tbToDOMString`, so a symbol throws, and the `CSS` namespace is an ordinary
+object with writable, configurable members and a `Symbol.toStringTag` of
+`"CSS"`.
 
-Evidence, subtest diff against the previous commit's build with no subtest
-lost: `css/css-conditional` goes from 837 to **1647 of 1851**, and
-`js/CSS-supports-CSSStyleDeclaration.html` from 685 to **1495 of 1495**. The
-other suites are unchanged; the parsing-side fixes above have no WPT coverage,
-and each answer was checked against Chromium 157.
+Evidence, subtest diffs against the previous commit's build with no subtest
+lost: `css/css-conditional` 837 to **1647 of 1851**, with
+`js/CSS-supports-CSSStyleDeclaration.html` 685 to **1495 of 1495**;
+`css/css-align` 3236 to **3422 of 5311**; `css/css-position` 882 to
+**945 of 1501**; `css/cssom` 3220 to **3226**; `css/cssom-view` 763 to
+**767**. Every other suite is subtest-identical. The parsing fixes (wrap,
+symbol, namespace attributes) have no WPT coverage; each answer was checked
+against Chromium 157.
+
+A rule's declaration block (`cssRules[i].style`) still has no property IDL
+attributes, and `for...in` over a declaration block enumerates only its
+indexed entries (`docs/limitations.md`).

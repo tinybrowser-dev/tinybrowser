@@ -36,8 +36,20 @@ host.__tbMakeDataset = element => new Proxy(Object.create(null), {
 // read and write goes through the style engine's parsed block, so values
 // serialize the way CSSOM requires instead of echoing the attribute text, and
 // shorthands expand to the longhands the indexed getter reports.
+const __tbSupportedProperties = new Map();
 host.__tbMakeStyle = element => {
   const names = () => host.__tb_inline_style_property_names(element) || [];
+  // The supported-property set cannot change once the realm starts, so one
+  // answer per name is enough
+  // (<https://drafts.csswg.org/cssom/#css-property-to-idl-attribute>).
+  const supported = name => {
+    let answer = __tbSupportedProperties.get(name);
+    if (answer === undefined) {
+      answer = host.__tb_style_property_supported(name);
+      __tbSupportedProperties.set(name, answer);
+    }
+    return answer;
+  };
   const serialized = () => host.__tb_inline_style_css_text(element) ?? '';
   // "Update style attribute for the CSS declaration block": the attribute's
   // value becomes the serialized block
@@ -60,8 +72,10 @@ host.__tbMakeStyle = element => {
   // The IDL attribute for a CSS property: camel case becomes dashed, except
   // `cssFloat`, the one property whose IDL name is not `float`
   // (<https://drafts.csswg.org/cssom/#dom-cssstyleproperties-cssfloat>).
-  // A vendor-prefixed property also has an IDL name without the leading dash,
-  // so `-webkit-animation` is reachable as `webkitAnimation`
+  // A `-webkit-` property also has a webkit-cased IDL name whose leading dash
+  // is dropped, so `-webkit-animation` is `webkitAnimation`. Browsers also
+  // accept the dashed spelling without the leading dash; that is wider than
+  // the spec's IDL names, and follows the browsers
   // (<https://drafts.csswg.org/cssom/#css-property-to-idl-attribute>).
   const idlProperty = name => {
     if (name === 'cssFloat') return 'float';
@@ -135,7 +149,7 @@ host.__tbMakeStyle = element => {
       // absent rather than an empty value
       // (<https://drafts.csswg.org/cssom/#css-property-to-idl-attribute>).
       const idl = idlProperty(property);
-      if (idl === null || !host.__tb_style_property_supported(idl)) return undefined;
+      if (idl === null || !supported(idl)) return undefined;
       return target.getPropertyValue(idl);
     },
     set(target, property, value, receiver) {
@@ -156,7 +170,7 @@ host.__tbMakeStyle = element => {
       // currently sets it; an unset property still has its IDL attribute
       // (<https://drafts.csswg.org/cssom/#css-property-to-idl-attribute>).
       const idl = idlProperty(property);
-      return idl !== null && host.__tb_style_property_supported(idl);
+      return idl !== null && supported(idl);
     },
     ownKeys(target) {
       const indices = names().map((_name, index) => String(index));

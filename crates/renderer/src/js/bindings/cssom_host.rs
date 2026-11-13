@@ -20,21 +20,15 @@ pub(super) fn install(ctx: &Ctx<'_>) -> Result<()> {
     let bridge = crate::js::bridge::object(ctx)?;
     bridge.set(
         "__tb_css_supports_declaration",
-        rquickjs::prelude::Func::from(|property: String, value: String| {
-            crate::css::supports::supports_declaration(&property, &value)
-        }),
+        rquickjs::prelude::Func::from(css_supports_declaration),
     )?;
     bridge.set(
         "__tb_css_supports_condition",
-        rquickjs::prelude::Func::from(|text: String| {
-            crate::css::supports::supports_condition(&text)
-        }),
+        rquickjs::prelude::Func::from(css_supports_condition),
     )?;
     bridge.set(
         "__tb_style_property_supported",
-        rquickjs::prelude::Func::from(|name: String| {
-            crate::css::supports::property_supported(&name)
-        }),
+        rquickjs::prelude::Func::from(style_property_supported),
     )?;
     bridge.set(
         "__tb_sheet_owner_nodes",
@@ -650,4 +644,22 @@ fn sheet_delete_rule<'js>(
         .base
         .cssom_delete_rule(sheet, &path, index)
         .map_err(|err| cssom_throw(&ctx, err))
+}
+
+/// `CSS.supports(property, value)`
+/// (<https://drafts.csswg.org/css-conditional-3/#dom-css-supports>).
+fn css_supports_declaration(property: String, value: String) -> bool {
+    crate::css::supports::supports_declaration(&property, &value)
+}
+
+/// `CSS.supports(conditionText)`
+/// (<https://drafts.csswg.org/css-conditional-3/#dom-css-supports>).
+fn css_supports_condition(text: String) -> bool {
+    crate::css::supports::supports_condition(&text)
+}
+
+/// Whether a declaration block exposes an IDL attribute for this property
+/// (<https://drafts.csswg.org/cssom/#css-property-to-idl-attribute>).
+fn style_property_supported(name: String) -> bool {
+    crate::css::supports::property_supported(&name)
 }

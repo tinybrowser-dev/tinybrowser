@@ -36,6 +36,17 @@ spaces, but clips out-of-gamut colors per channel instead of running OKLCH
 local-MINDE gamut mapping. Wide-gamut colors far outside sRGB can differ from
 a browser that implements the mapping algorithm.
 
+## CSS declaration blocks
+
+The property IDL attributes exist on `element.style` and, through it, on the
+object `getComputedStyle()` returns. A rule's declaration block
+(`document.styleSheets[0].cssRules[0].style`) builds only the methods and the
+indexed getter, so `rules[0].style.color` is `undefined` and assigning it adds
+a JavaScript property instead of a declaration. `in` and the IDL getter are
+`Proxy` traps rather than prototype accessors, so `for...in` over an inline
+declaration enumerates only its indices, where a browser also enumerates every
+supported property name.
+
 ## CSS system fonts
 
 `style.font = "menu"` expands the system-font shorthand into every longhand,

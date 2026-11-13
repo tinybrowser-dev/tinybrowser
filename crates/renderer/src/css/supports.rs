@@ -29,11 +29,12 @@ pub(crate) fn property_supported(name: &str) -> bool {
 /// `CSS.supports(property, value)`
 /// (<https://drafts.csswg.org/css-conditional-3/#dom-css-supports>).
 ///
-/// A custom property takes any token stream except the empty string. The style
-/// crate accepts that as an empty declaration value, but the spec's change log
-/// requires `false` for it, and a browser answers `false` for `""` while `" "`
-/// is `true`. The property name is looked up exactly, so surrounding whitespace
-/// makes it invalid; the value keeps its own outer whitespace rules.
+/// A custom property's grammar needs a token, so the empty value is not
+/// supported; the style crate would otherwise accept `--x:` as an empty
+/// declaration value, and a browser answers `false` for `""` while `" "` is
+/// `true` (<https://drafts.csswg.org/css-variables-1/#defining-variables>).
+/// The property name is looked up exactly, so surrounding whitespace makes it
+/// invalid; the value keeps its own outer whitespace rules.
 pub(crate) fn supports_declaration(property: &str, value: &str) -> bool {
     let Ok(id) = PropertyId::parse_enabled_for_all_content(property) else {
         return false;
@@ -63,24 +64,19 @@ pub(crate) fn supports_declaration(property: &str, value: &str) -> bool {
 /// parentheses. Wrapping is what accepts a bare declaration: `color: red` is
 /// not a `<supports-condition>`, but `(color: red)` is a `<supports-decl>`.
 pub(crate) fn supports_condition(text: &str) -> bool {
-    if parse_condition(text) == Some(true) {
-        return true;
-    }
-    parse_condition(&format!("({text})")) == Some(true)
+    parse_condition(text) || parse_condition(&format!("({text})"))
 }
 
-/// One `<supports-condition>` parse and evaluation.
-///
-/// `None` means the text is not a supports condition; `Some(false)` means it
-/// parsed and evaluated to false.
-fn parse_condition(text: &str) -> Option<bool> {
+/// One `<supports-condition>` parse and evaluation. Text that is not a
+/// supports condition evaluates to false, which is also what the grammar says
+/// for a `<general-enclosed>` it does not recognise.
+fn parse_condition(text: &str) -> bool {
     let url_data = url_data();
     let mut context = parser_context(&url_data);
     let mut parser = Parser::new(text);
-    let condition =
-        style::stylesheets::supports_rule::SupportsCondition::parse(&mut parser).ok()?;
-    if !parser.is_exhausted() {
-        return None;
-    }
-    Some(condition.eval(&mut context))
+    let Ok(condition) = style::stylesheets::supports_rule::SupportsCondition::parse(&mut parser)
+    else {
+        return false;
+    };
+    parser.is_exhausted() && condition.eval(&mut context)
 }

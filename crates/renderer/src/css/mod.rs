@@ -20,8 +20,11 @@ pub(crate) fn url_data() -> UrlExtraData {
     UrlExtraData(style::servo_arc::Arc::new(net::about_blank()))
 }
 
-/// The parse context a standalone CSS value or declaration uses: author
-/// origin, style-rule grammar, no error reporter, and no namespaces.
+/// The parse context a standalone CSS value uses: author origin, style-rule
+/// grammar, no error reporter, and no namespaces.
+///
+/// A declaration parser does not take one: `parse_one_declaration_into` takes
+/// these settings as separate arguments, so `supports` repeats them there.
 pub(crate) fn parser_context(url_data: &UrlExtraData) -> ParserContext<'_> {
     ParserContext::new(
         Origin::Author,

@@ -462,60 +462,65 @@
   // Namespace members are writable and configurable, and the namespace
   // object is ordinary rather than frozen
   // (<https://webidl.spec.whatwg.org/#namespace-object>).
-  Object.defineProperty(globalThis, 'CSS', {
-    value: {
-      // https://drafts.csswg.org/cssom/#dom-css-escape
-      escape(value) {
-        if (arguments.length < 1) throw new TypeError('CSS.escape requires 1 argument');
-        const string = String(value);
-        let result = '';
-        for (let index = 0; index < string.length; index++) {
-          const code = string.charCodeAt(index);
-          if (code === 0) {
-            result += '\uFFFD';
-            continue;
-          }
-          if (
-            (code >= 1 && code <= 0x1F) || code === 0x7F ||
-            (index === 0 && code >= 0x30 && code <= 0x39) ||
-            (index === 1 && code >= 0x30 && code <= 0x39 && string.charCodeAt(0) === 0x2D)
-          ) {
-            result += `\\${code.toString(16)} `;
-            continue;
-          }
-          if (
-            code >= 0x80 || code === 0x2D || code === 0x5F ||
-            (code >= 0x30 && code <= 0x39) ||
-            (code >= 0x41 && code <= 0x5A) ||
-            (code >= 0x61 && code <= 0x7A)
-          ) {
-            result += string[index];
-            continue;
-          }
-          result += `\\${string[index]}`;
+  const css = {
+    // https://drafts.csswg.org/cssom/#dom-css-escape
+    escape(value) {
+      if (arguments.length < 1) throw new TypeError('CSS.escape requires 1 argument');
+      const string = String(value);
+      let result = '';
+      for (let index = 0; index < string.length; index++) {
+        const code = string.charCodeAt(index);
+        if (code === 0) {
+          result += '\uFFFD';
+          continue;
         }
-        return result;
-      },
-      // `supports(property, value)` tests one declaration; the single
-      // argument form parses and evaluates a supports condition, including a
-      // bare declaration
-      // (<https://drafts.csswg.org/css-conditional-3/#the-css-namespace>).
-      // Two overloads share one function, so its `length` is the shortest
-      // required argument list: 1. Both arguments are `CSSOMString`, whose
-      // conversion throws on a symbol
-      // (<https://webidl.spec.whatwg.org/#overload-set>,
-      // <https://webidl.spec.whatwg.org/#es-DOMString>).
-      supports(property, ...rest) {
-        if (arguments.length < 1) {
-          throw new TypeError("Failed to execute 'supports' on 'CSS': 1 argument required, but only 0 present.");
+        if (
+          (code >= 1 && code <= 0x1F) || code === 0x7F ||
+          (index === 0 && code >= 0x30 && code <= 0x39) ||
+          (index === 1 && code >= 0x30 && code <= 0x39 && string.charCodeAt(0) === 0x2D)
+        ) {
+          result += `\\${code.toString(16)} `;
+          continue;
         }
-        if (rest.length === 0) {
-          return host.__tb_css_supports_condition(__tbToDOMString(property));
+        if (
+          code >= 0x80 || code === 0x2D || code === 0x5F ||
+          (code >= 0x30 && code <= 0x39) ||
+          (code >= 0x41 && code <= 0x5A) ||
+          (code >= 0x61 && code <= 0x7A)
+        ) {
+          result += string[index];
+          continue;
         }
-        return host.__tb_css_supports_declaration(
-          __tbToDOMString(property), __tbToDOMString(rest[0]));
-      },
+        result += `\\${string[index]}`;
+      }
+      return result;
     },
+    // `supports(property, value)` tests one declaration; the single
+    // argument form parses and evaluates a supports condition, including a
+    // bare declaration
+    // (<https://drafts.csswg.org/css-conditional-3/#the-css-namespace>).
+    // Two overloads share one function, so its `length` is the shortest
+    // required argument list: 1. Both arguments are `CSSOMString`, whose
+    // conversion throws on a symbol
+    // (<https://webidl.spec.whatwg.org/#overload-set>,
+    // <https://webidl.spec.whatwg.org/#es-DOMString>).
+    supports(property, ...rest) {
+      if (arguments.length < 1) {
+        throw new TypeError("Failed to execute 'supports' on 'CSS': 1 argument required, but only 0 present.");
+      }
+      if (rest.length === 0) {
+        return host.__tb_css_supports_condition(__tbToDOMString(property));
+      }
+      return host.__tb_css_supports_declaration(
+        __tbToDOMString(property), __tbToDOMString(rest[0]));
+    },
+  };
+  // A namespace object's class string is its identifier, and its members are
+  // writable and configurable
+  // (<https://webidl.spec.whatwg.org/#namespace-object>).
+  __tbDefineProperty(css, Symbol.toStringTag, { value: 'CSS', configurable: true });
+  Object.defineProperty(globalThis, 'CSS', {
+    value: css,
     writable: true, configurable: true, enumerable: false,
   });
   // A computed style always resolves: an unset property reports its initial
