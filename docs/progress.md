@@ -2273,3 +2273,33 @@ Evidence: `html/dom` 65339 to **65341** subtests, no lost subtests.
 `nameditem-no-shadowing.tentative.html` 6/8 to 8/8. `dom/nodes` stays at
 14550 and `html/browsers` at 1000 (plus a known-flaky
 `broadcastchannel.window.html` pass), with no lost subtests.
+`window.event` is now the spec's per-realm current event
+(`crates/renderer/src/js/events.rs`). It is a `[Replaceable]` accessor
+installed by `scripts/web/window.js`; the value lives on the `World`
+(`World::current_event`), not on the global object, so assigning
+`window.event` replaces the accessor with an own data property and dispatch
+keeps writing only the realm slot. The inner invoke algorithm sets the
+current event around each listener individually, using the callback's own
+realm rather than the dispatching one, and restores it before the next
+listener — including the handler attribute path, and including the exception
+report, which runs in the callback's realm while its event is still current.
+An invocation target whose tree root is a shadow root leaves the previous
+current event in place, so `window.event` stays undefined inside a shadow
+tree, as the legacy attribute requires.
+
+The event path now follows the spec's get-the-parent for a composed event: a
+shadow root continues at its host, while a non-composed event still stops at
+the shadow root. Nodes beyond the host are outside the shadow tree, so their
+listeners see the current event again. `assignedSlot` is still not followed
+because Blitz has no slot assignment; that gap is recorded in
+`docs/limitations.md`.
+
+Evidence: `dom/events` 479 to **486** subtests, no lost subtests.
+`event-global.html` 6/8 to 8/8, `event-global-extra.window.html` 4/6 to 6/6,
+`event-global-replaceable.html` 1/2 to 2/2,
+`event-global-is-still-set-when-reporting-exception-onerror.html` 0/1 to 1/1,
+and `Event-dispatch-listener-order.window.html` 0/1 to 1/1. The timeout count
+is unchanged (17) and the only remaining `event-global*` failure is the
+`Performance` target, which has no `addEventListener` in this engine.
+`html/dom` stays at 65341, `dom/nodes` at 14550, `html/browsers` at 1000, and
+`css/selectors` at 4777, with no lost subtests.

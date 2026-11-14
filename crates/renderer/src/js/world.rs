@@ -1429,6 +1429,13 @@ pub(crate) struct World {
     /// by a Rust closure outlives the context teardown and trips `QuickJS`'s
     /// live-object assertion. A `Persistent` dies with the realm instead.
     pub(crate) location_object: Option<Persistent<Object<'static>>>,
+    /// The realm window's current event, which `window.event` returns while a
+    /// listener of this realm runs
+    /// (<https://dom.spec.whatwg.org/#concept-event-listener-inner-invoke>).
+    /// `None` is the initial undefined. It lives on the world, not the global
+    /// object, because `window.event` is `[Replaceable]`: a page that assigns
+    /// it must shadow the accessor rather than change what dispatch stores.
+    pub(crate) current_event: Option<Persistent<Value<'static>>>,
     /// Containers whose insertion steps already fired `load` (src-less
     /// iframes). A later container navigation clears the entry when it
     /// starts, so that navigation's own `load` still fires; `finish_frame_load`
@@ -1969,6 +1976,7 @@ impl World {
             brands: HashMap::new(),
             bridge: None,
             location_object: None,
+            current_event: None,
             insertion_load_fired: HashSet::new(),
             pristine_number: None,
             pristine_boolean: None,
@@ -3711,11 +3719,23 @@ impl World {
             .is_some_and(|parsed| parsed.document.base.root_node().id == id.node)
     }
 
+    /// The host of shadow root `id`, when `id` is a shadow root
+    /// (<https://dom.spec.whatwg.org/#concept-shadow-root>).
+    pub(crate) fn shadow_root_host(&self, id: NodeId) -> Option<NodeId> {
+        self.document(id).and_then(|parsed| {
+            crate::dom::tree::shadow_root_host(&parsed.document.base, id.node).map(|host| NodeId {
+                document: id.document,
+                node: host,
+            })
+        })
+    }
+
     pub(crate) fn clear_listeners(&mut self) {
         self.events.clear_realm();
         self.state.implementations.clear();
         self.brands.clear();
         self.clear_observers();
+        self.current_event = None;
         // `set_input_files` roots the page's `File` objects so a form upload
         // keeps them alive. Left in place, those roots keep the realm's
         // context alive, the context keeps the globals (and their `Rc<World>`
@@ -3747,6 +3767,7 @@ impl World {
         self.deliver_mutations_fn = None;
         self.bridge = None;
         self.location_object = None;
+        self.current_event = None;
     }
 
     /// The cached `[SameObject]` member for `(id, member)`, when this

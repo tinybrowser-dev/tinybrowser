@@ -19,6 +19,7 @@ use rquickjs::{
 use super::bindings;
 use super::bindings::JsNode;
 use super::world::{EventTargetKey, GlobalKind, Listener, World};
+use crate::dom::tree::NodeId;
 
 include!(concat!(env!("OUT_DIR"), "/Event.rs"));
 include!(concat!(env!("OUT_DIR"), "/EventTarget.rs"));
@@ -493,6 +494,13 @@ pub(crate) fn install_event_target_bridge(ctx: &Ctx<'_>) -> Result<()> {
         "__tbDispatchTargetTrusted",
         rquickjs::prelude::Func::from(dispatch_trusted_bridge),
     )?;
+    // `window.event` reads the realm's current event, which the inner invoke
+    // algorithm updates around each listener
+    // (<https://dom.spec.whatwg.org/#concept-event-listener-inner-invoke>).
+    super::bridge::object(ctx)?.set(
+        "__tbCurrentEvent",
+        rquickjs::prelude::Func::from(current_event),
+    )?;
     // Forge-proof event brand check for the script getters: prototype-chain
     // walks (`instanceof`) pass for `Object.create(MouseEvent.prototype)`,
     // but only genuine events (native or constructed through the shared
@@ -502,6 +510,18 @@ pub(crate) fn install_event_target_bridge(ctx: &Ctx<'_>) -> Result<()> {
         rquickjs::prelude::Func::from(is_event_bridge),
     )?;
     Ok(())
+}
+
+/// The `window.event` getter: this realm's current event, or undefined while
+/// no listener of this realm runs
+/// (<https://dom.spec.whatwg.org/#window-current-event>).
+fn current_event(ctx: Ctx<'_>) -> Result<Value<'_>> {
+    let world = bindings::world(&ctx)?;
+    let saved = world.borrow().current_event.clone();
+    match saved {
+        Some(saved) => Ok(saved.restore(&ctx)?),
+        None => Ok(Value::new_undefined(ctx)),
+    }
 }
 
 fn is_event_bridge<'js>(ctx: Ctx<'js>, value: Value<'js>) -> bool {
@@ -1145,7 +1165,8 @@ fn dispatch<'js>(
     event: &Class<'js, JsEvent>,
     window: Option<&Rc<RefCell<World>>>,
 ) -> Result<bool> {
-    let path = build_path(ctx, target, window)?;
+    let composed = event.borrow().state().composed;
+    let path = build_path(ctx, target, window, composed)?;
     {
         let class = event.borrow();
         let mut state = class.state_mut();
@@ -1164,10 +1185,6 @@ fn dispatch<'js>(
     }
     let bubbles = event.borrow().state().bubbles;
     let typ = event.borrow().state().typ.clone();
-    let window = current_event_window(ctx, &path)?;
-    // https://html.spec.whatwg.org/multipage/webappapis.html#set-the-current-event
-    let previous: Value<'js> = window.get("event")?;
-    window.set("event", Class::into_value(event.clone()))?;
     // A click event runs the element's legacy-pre-activation behavior before
     // its listeners and completes or rolls it back after dispatch. `click()`
     // owns that sequence itself, so it marks the dispatch to skip this path
@@ -1226,7 +1243,13 @@ fn dispatch<'js>(
             if !target_is_fully_active(ctx, &item.reference) {
                 continue;
             }
-            outcome = call_handler_attribute(ctx, Some(&item.target), &typ, &event_value);
+            outcome = call_handler_attribute(
+                ctx,
+                Some(&item.target),
+                &typ,
+                &event_value,
+                item.invocation_target_in_shadow_tree,
+            );
             if outcome.is_err() {
                 break;
             }
@@ -1248,7 +1271,6 @@ fn dispatch<'js>(
         state.stop_immediate = false;
         state.canceled
     };
-    let restored = window.set("event", previous);
     let outcome = result.and(handler);
     // A click event runs the activation behavior of a label ancestor after
     // dispatch, including for events the page dispatched itself
@@ -1266,24 +1288,9 @@ fn dispatch<'js>(
     {
         super::bindings::focus::run_label_activation(ctx, node)?;
     }
-    // The current event restores even when dispatch threw; the dispatch
-    // error wins over a restore error, so a failed invocation cannot leak a
-    // stale current event into the next dispatch.
-    match (outcome, restored) {
-        (Ok(()), Ok(())) => Ok(!canceled),
-        (Err(error), _) | (Ok(()), Err(error)) => Err(error),
-    }
-}
-
-/// The `Window` whose [current event](https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-window-event)
-/// this dispatch updates: the target's realm window, else the caller's.
-fn current_event_window<'js>(ctx: &Ctx<'js>, path: &[PathItem<'js>]) -> Result<Object<'js>> {
-    if let Some(item) = path.first()
-        && let Some(window) = item.reference.world.borrow().window_object()
-    {
-        return window.restore(ctx);
-    }
-    Ok(ctx.globals())
+    // The per-listener current event already restored itself even when a
+    // listener threw, so dispatch only has to surface the first error.
+    outcome.map(|()| !canceled)
 }
 
 fn run_invocations<'js>(
@@ -1320,6 +1327,20 @@ fn run_invocations<'js>(
 struct PathItem<'js> {
     reference: EventTargetRef,
     target: Value<'js>,
+    /// Whether the invocation target's root is a shadow root, which suppresses
+    /// the legacy `window.event` for this item's listeners
+    /// (<https://dom.spec.whatwg.org/#concept-event-path-append>).
+    invocation_target_in_shadow_tree: bool,
+}
+
+/// Whether `id`'s tree root is a shadow root
+/// (<https://dom.spec.whatwg.org/#concept-tree-root>).
+fn is_in_shadow_tree(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>, id: NodeId) -> Result<bool> {
+    let mut root = id;
+    while let Some(parent) = world.borrow().node_parent(root) {
+        root = parent;
+    }
+    bindings::node_is_shadow_root(ctx, root)
 }
 
 /// Builds the event path: the target, its ancestors, and the window
@@ -1328,6 +1349,7 @@ fn build_path<'js>(
     ctx: &Ctx<'js>,
     target: EventTargetKey,
     window: Option<&Rc<RefCell<World>>>,
+    composed: bool,
 ) -> Result<Vec<PathItem<'js>>> {
     match target {
         EventTargetKey::Window => {
@@ -1340,6 +1362,7 @@ fn build_path<'js>(
             Ok(vec![PathItem {
                 reference,
                 target: value,
+                invocation_target_in_shadow_tree: false,
             }])
         }
         EventTargetKey::Attribute { .. } | EventTargetKey::Standalone(_) => {
@@ -1360,10 +1383,12 @@ fn build_path<'js>(
             Ok(vec![PathItem {
                 reference,
                 target: value,
+                invocation_target_in_shadow_tree: false,
             }])
         }
         EventTargetKey::Node(id) => {
             let world = bindings::world_for_node(ctx, id)?;
+            let mut invocation_target_in_shadow_tree = is_in_shadow_tree(ctx, &world, id)?;
             let mut path = Vec::new();
             let mut cursor = Some(id);
             let mut reached_document = false;
@@ -1376,13 +1401,26 @@ fn build_path<'js>(
                 path.push(PathItem {
                     reference,
                     target: value,
+                    invocation_target_in_shadow_tree,
                 });
                 let parent = world.borrow().node_parent(node);
                 if let Some(parent) = parent {
                     cursor = Some(parent);
                 } else {
                     reached_document = world.borrow().node_is_document(node);
-                    cursor = None;
+                    // A composed event continues past a shadow root at its
+                    // host; the host and its ancestors are outside the shadow
+                    // tree, so they report the legacy current event
+                    // (<https://dom.spec.whatwg.org/#get-the-parent>).
+                    cursor = if composed && invocation_target_in_shadow_tree {
+                        let host = world.borrow().shadow_root_host(node);
+                        if host.is_some() {
+                            invocation_target_in_shadow_tree = false;
+                        }
+                        host
+                    } else {
+                        None
+                    };
                 }
             }
             if reached_document {
@@ -1396,6 +1434,7 @@ fn build_path<'js>(
                 path.push(PathItem {
                     reference,
                     target: value,
+                    invocation_target_in_shadow_tree: false,
                 });
             }
             Ok(path)
@@ -1514,9 +1553,12 @@ fn invoke<'js>(
         }
         if let Some(callback) = &listener.callback {
             let value: Value<'js> = callback.clone().restore(ctx)?;
-            if let Err(error) = call_listener(ctx, &value, &item.target, &event_value) {
-                report_exception(ctx, &error);
-            }
+            call_with_current_event(
+                &value,
+                &event_value,
+                item.invocation_target_in_shadow_tree,
+                || call_listener(ctx, &value, &item.target, &event_value),
+            );
         }
         event.borrow().state_mut().in_passive = false;
         if event.borrow().state().stop_immediate {
@@ -1524,6 +1566,54 @@ fn invoke<'js>(
         }
     }
     Ok(())
+}
+
+/// Runs one listener call with the listener's realm current event set to
+/// `event`, and restores the previous value after reporting any exception in
+/// that same realm
+/// (<https://dom.spec.whatwg.org/#concept-event-listener-inner-invoke> steps
+/// 8–13).
+///
+/// `listenerGlobal` is the callback's own realm, not the dispatching one: a
+/// listener from another frame updates that frame's `window.event`, and a
+/// thrown exception is reported there. A listener whose invocation target sits
+/// in a shadow tree keeps the previous current event, because the legacy
+/// attribute is intentionally inaccurate there.
+fn call_with_current_event<'js>(
+    callback: &Value<'js>,
+    event: &Value<'js>,
+    invocation_target_in_shadow_tree: bool,
+    call: impl FnOnce() -> Result<()>,
+) {
+    let realm = listener_realm(callback);
+    let Some(world) = bindings::try_world(&realm) else {
+        if let Err(error) = call() {
+            report_exception(&realm, &error);
+        }
+        return;
+    };
+    let previous = world.borrow().current_event.clone();
+    if !invocation_target_in_shadow_tree {
+        world.borrow_mut().current_event = Some(Persistent::save(&realm, event.clone()));
+    }
+    let outcome = call();
+    // The report runs before the restore, so the listener's own realm still
+    // sees the event as its current event while `onerror` handles the throw.
+    if let Err(error) = outcome {
+        report_exception(&realm, &error);
+    }
+    world.borrow_mut().current_event = previous;
+}
+
+/// The realm a listener callback belongs to, which decides whose
+/// `window.event` dispatch updates. A function carries its own realm through
+/// `QuickJS`; a value that crossed a realm boundary keeps only the caller's
+/// context, which is the fallback for callback objects.
+fn listener_realm<'js>(callback: &Value<'js>) -> Ctx<'js> {
+    callback
+        .as_function()
+        .and_then(|function| function.realm().ok())
+        .unwrap_or_else(|| callback.ctx().clone())
 }
 
 /// The Web IDL "call a user object's operation" step for an event listener:
@@ -1917,6 +2007,7 @@ fn call_handler_attribute<'js>(
     target: Option<&Value<'js>>,
     typ: &str,
     event: &Value<'js>,
+    invocation_target_in_shadow_tree: bool,
 ) -> Result<()> {
     let Some(object) = target.and_then(|target| target.as_object()) else {
         return Ok(());
@@ -2000,14 +2091,18 @@ fn call_handler_attribute<'js>(
                 .and_then(|window| window.restore(ctx).ok())
                 .is_some_and(|window| window.as_value() == object.as_value())
         };
-        let result = if typ == "error" && is_window {
-            call_error_handler(ctx, function, object, event)
-        } else {
-            function.call::<_, ()>((This(object.clone()), event.clone()))
-        };
-        if let Err(error) = result {
-            report_exception(ctx, &error);
-        }
+        call_with_current_event(
+            function.as_value(),
+            event,
+            invocation_target_in_shadow_tree,
+            || {
+                if typ == "error" && is_window {
+                    call_error_handler(ctx, function, object, event)
+                } else {
+                    function.call::<_, ()>((This(object.clone()), event.clone()))
+                }
+            },
+        );
     }
     Ok(())
 }

@@ -972,8 +972,6 @@ fn install_document(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
     install_location(ctx, &globals, world)?;
     globals.set("window", globals.clone())?;
     globals.set("self", globals.clone())?;
-    // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-window-event
-    globals.set("event", Value::new_undefined(ctx.clone()))?;
     // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-frames
     globals.set("frames", globals.clone())?;
     globals.set("opener", Value::new_null(ctx.clone()))?;

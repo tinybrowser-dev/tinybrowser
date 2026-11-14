@@ -58,7 +58,16 @@ pub(crate) fn shadow_including_parent(
     if let Some(parent) = node.parent {
         return Some(parent);
     }
-    match &node.data {
+    shadow_root_host(base, id)
+}
+
+/// The host of shadow root `id`, when `id` is a shadow root
+/// (<https://dom.spec.whatwg.org/#concept-shadow-root>).
+pub(crate) fn shadow_root_host(
+    base: &blitz_dom::BaseDocument,
+    id: BlitzNodeId,
+) -> Option<BlitzNodeId> {
+    match &base.get_node(id)?.data {
         blitz_dom::NodeData::ShadowRoot { host, .. } => Some(*host),
         _ => None,
     }

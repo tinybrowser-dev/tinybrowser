@@ -87,6 +87,12 @@
   // a cross-origin parent
   // (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-frameelement>).
   replaceable('frameElement', () => host.__tbFrameElement());
+  // The realm window's current event, which dispatch fills while one of this
+  // realm's listeners runs. `[Replaceable]` means an assignment installs an
+  // own property, so `window.event = 1` hides this accessor from then on and
+  // dispatch keeps writing only the world's slot
+  // (<https://dom.spec.whatwg.org/#concept-event-listener-inner-invoke>).
+  replaceable('event', () => host.__tbCurrentEvent());
 
   // ── operations ───────────────────────────────────────────────────────
   // User prompts are not implemented: the engine has no UI to ask. `alert` and

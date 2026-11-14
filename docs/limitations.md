@@ -746,12 +746,15 @@ always — this engine keeps no back/forward cache — and an `iframe` removal r
 the child's unload steps even though HTML's removing steps say no unload events
 fire; that deliberate divergence is in `docs/upstream.md`.
 
-Still open in `dom/events`: `window.event` inside a shadow tree and for a
-listener installed from another global (`event-global-extra.window.html`, two
-subtests), and `Event-dispatch-single-activation-behavior.html` exceeds the
-harness budget. `Event-dispatch-click.html` is flaky under the in-process
-harness: it passes its 33 subtests in some batch runs and hits the per-file
-budget in others, on both the old and the new tree.
+Still open in `dom/events`: `FocusEvent`/`MouseEvent` `relatedTarget` is not
+retargeted across a shadow boundary and dispatch does not reset `target` and
+`relatedTarget` afterwards, so `relatedTarget.window.html` and
+`shadow-relatedTarget.html` fail; the event path follows parent nodes and
+crosses a shadow root to its host for a composed event, but it does not follow
+`assignedSlot` because Blitz has no slot assignment. `Event-dispatch-single-activation-behavior.html`
+exceeds the harness budget. `Event-dispatch-click.html` is flaky under the
+in-process harness: it passes its 33 subtests in some batch runs and hits the
+per-file budget in others, on both the old and the new tree.
 
 ## Cookie Store
 
