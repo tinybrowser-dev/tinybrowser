@@ -315,13 +315,50 @@
       value: ctor, writable: true, configurable: true,
     });
   }
-  // An imported stylesheet lives in its own rule-list address space; the
-  // engine does not expose it yet, so the property reports the spec's
-  // "no associated sheet" state (null) and the import's rules are reached
-  // through the importing sheet only
+  // The sheet an `@import` rule loaded. The engine answers a CSSOM sheet record
+  // for the imported sheet, which has no owner element: host calls address the
+  // document through the importing sheet's owner, while `ownerNode` stays null
   // (<https://drafts.csswg.org/cssom/#dom-cssimportrule-stylesheet>).
+  const __tbImportedSheet = entry => {
+    const id = host.__tb_sheet_import_sheet(
+      entry.sheet.__tbOwner, entry.sheet.__tbId, __tbRulePath(entry.path),
+    );
+    if (!(id >= 1)) return null;
+    const sheet = new CSSStyleSheet();
+    sheet.__tbId = id;
+    // Host calls need an element to reach the document; the imported sheet is
+    // not owned by one, so `ownerNode` reports null while the importing
+    // sheet's owner is only an address
+    sheet.__tbOwner = entry.sheet.__tbOwner;
+    sheet.__tbOwnerless = true;
+    sheet.__tbParent = entry.sheet;
+    sheet.__tbOwnerRule = entry.rule;
+    sheet.__tbOwnerRuleEntry = entry;
+    const info = entry.read();
+    sheet.__tbHref = info && info.href ? info.href : null;
+    // `CSSImportRule.media` and the imported sheet's `media` are the same
+    // object (<https://drafts.csswg.org/cssom/#dom-cssimportrule-media>).
+    sheet.__tbMedia = entry.rule.media;
+    delete sheet.cssRules;
+    __tbDefineProperty(sheet, 'cssRules', {
+      get() {
+        if (sheet.__tbList === undefined) sheet.__tbList = __tbLiveRuleList(sheet, null, null);
+        return sheet.__tbList;
+      },
+      enumerable: true, configurable: true,
+    });
+    return sheet;
+  };
   __tbDefineProperty(CSSImportRule.prototype, 'styleSheet', {
-    get() { return null; },
+    get() {
+      const entry = __tbRuleState(this);
+      if (entry.detached) return null;
+      // An import that has not loaded yet answers null, and is retried next
+      // time rather than cached
+      // (<https://drafts.csswg.org/cssom/#dom-cssimportrule-stylesheet>).
+      if (entry.importedSheet == null) entry.importedSheet = __tbImportedSheet(entry) ?? undefined;
+      return entry.importedSheet ?? null;
+    },
     enumerable: true, configurable: true,
   });
   // CSSRule's own attributes are accessors on the interface prototype
@@ -986,6 +1023,9 @@
       return 'text/css';
     }
     get href() {
+      // An imported sheet's URL is the one its `@import` rule names
+      // (<https://drafts.csswg.org/cssom/#dom-stylesheet-href>).
+      if (this.__tbHref !== undefined) return this.__tbHref;
       const owner = this.__tbOwner;
       if (owner === undefined) return null;
       // Only a `<link rel=stylesheet>` sheet has a URL; an inline `<style>`'s
@@ -997,27 +1037,47 @@
     get ownerNode() {
       const owner = this.__tbOwner;
       if (owner === undefined) return null;
+      // A sheet reached through `@import` has no owner node; its host address
+      // is only used to locate the document
+      // (<https://drafts.csswg.org/cssom/#dom-stylesheet-ownernode>).
+      if (this.__tbOwnerless === true) return null;
       // Removing the element removes its sheet; the sheet object stays
       // readable but loses its owner
       // (<https://drafts.csswg.org/cssom/#remove-a-css-style-sheet>).
       return host.__tb_node_sheet_id(owner) === this.__tbId ? owner : null;
     }
     get parentStyleSheet() {
-      return null;
+      // An imported sheet's parent is the sheet whose `@import` rule loaded
+      // it; deleting that rule unlinks the child
+      // (<https://drafts.csswg.org/cssom/#dom-stylesheet-parentstylesheet>).
+      if (this.__tbOwnerRuleEntry !== undefined && this.__tbOwnerRuleEntry.detached) return null;
+      return this.__tbParent ?? null;
     }
     get ownerRule() {
-      return null;
+      // An imported sheet is owned by its `CSSImportRule`, not an element, and
+      // deleting the rule releases it
+      // (<https://drafts.csswg.org/cssom/#dom-stylesheet-ownerrule>).
+      if (this.__tbOwnerRuleEntry !== undefined && this.__tbOwnerRuleEntry.detached) return null;
+      return this.__tbOwnerRule ?? null;
     }
     get title() {
+      // An imported sheet has no title of its own
+      // (<https://drafts.csswg.org/cssom/#dom-stylesheet-title>).
+      if (this.__tbOwnerless === true) return null;
       const owner = this.__tbOwner;
       if (owner === undefined) return null;
       return owner.getAttribute('title');
     }
     get disabled() {
+      // `disabled` applies to an owner sheet; an imported sheet is never
+      // disabled and assigning to the attribute does nothing
+      // (<https://drafts.csswg.org/cssom/#dom-stylesheet-disabled>).
+      if (this.__tbOwnerRule !== undefined) return false;
       if (this.__tbOwner === undefined) return this.__tbDisabled === true;
       return host.__tb_sheet_disabled(this.__tbOwner, this.__tbId);
     }
     set disabled(value) {
+      if (this.__tbOwnerRule !== undefined) return;
       const disabled = Boolean(value);
       if (this.__tbOwner === undefined) {
         this.__tbDisabled = disabled;

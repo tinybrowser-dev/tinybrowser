@@ -2641,3 +2641,29 @@ stays at 1616, `resize-observer` at 50, `css/selectors` at 4791,
 `html/semantics/forms` 4521 to **4522**, with no lost subtests. `cargo fmt
 --check` (both trees), `tools/check clippy`, and the renderer (175),
 webidl-bindgen (42), and wpt-harness (30) test binaries pass.
+`CSSImportRule.styleSheet` now answers the imported sheet. The engine opens a
+CSSOM sheet record for the sheet an `@import` rule loaded (a record with no
+owner node), and the renderer wraps it as a `CSSStyleSheet` whose
+`ownerNode` is null, `parentStyleSheet` is the importing sheet, `ownerRule` is
+the `CSSImportRule`, `href` is the resolved import URL, and `media` is the same
+`MediaList` object as `CSSImportRule.media`
+(<https://drafts.csswg.org/cssom/#dom-cssimportrule-stylesheet>,
+<https://drafts.csswg.org/cssom/#dom-stylesheet-parentstylesheet>). Deleting the
+import rule unlinks the child's `parentStyleSheet`/`ownerRule`, and its
+`cssRules` is a live list addressed by the imported sheet's id, so nested
+imports work. The engine change is `third_party/blitz` commit `8c65aba97`,
+recorded in `docs/upstream.md`.
+
+Evidence: `css/cssom` 3607 to **3624** subtests, no lost subtests.
+`StyleSheet-properties.html` 26/35 to 35/35,
+`CSSImportRule-media-identity.html` 0/1 to 1/1, `cssimportrule-parent.html`
+0/1 to 1/1, `cssimportrule-sheet-identity.html` 0/1 to 1/1, `cssimportrule.html`
+9/11 to 10/11, `style-sheet-interfaces-001.html` 4/5 to 5/5, and
+`CSSStyleSheet-constructable-replace-on-regular-sheet.html` 0/3 to 3/3.
+`css/cssom-view` stays at 1616, `resize-observer` at 50, `css/selectors` at
+4791, `intersection-observer` at 185, and `html/dom` at 65341, with no lost
+subtests. `html/semantics/forms` loses one `form-double-submit.html` subtest
+that fails 3/3 in isolation both with this change and at the parent commit, so
+it is the pre-existing flake. `cargo fmt --check` (both trees), `tools/check
+clippy`, and the renderer (175), webidl-bindgen (42), and wpt-harness (30) test
+binaries pass.

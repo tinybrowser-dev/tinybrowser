@@ -432,13 +432,23 @@ engine's `set_stylesheet_disabled`, so a disabled sheet keeps its owner and
 stops applying. `media` is a live `MediaList` over the owner's `media`
 attribute, and `CSSRuleList`/`MediaList` are interface objects.
 
-`CSSImportRule.styleSheet` returns null. An imported sheet's rules live in the
-`ImportSheet` inside the import rule, outside the owner sheet's rule-list
-address space, and the CSSOM bridge addresses rules by owner sheet id and path.
-Exposing the imported sheet needs a second address space (or a rule-list
-handle for the import) in `third_party/blitz`; until then the property reports
-the spec's "no associated sheet" state and
-`css/cssom/StyleSheet-properties.html`'s nine `@import` subtests fail.
+`CSSImportRule.styleSheet` answers the imported sheet: the engine opens a CSSOM
+sheet record for it with no owner node, and the renderer wraps it with the
+importing sheet as `parentStyleSheet` and the rule as `ownerRule`. Its `media`
+is the same `MediaList` object as `CSSImportRule.media`, and its `cssRules` is
+its own live list addressed by the imported sheet's id, so nested imports and
+`insertRule` work on it
+(`crates/renderer/src/js/scripts/web/cssom.js`,
+`crates/renderer/src/js/bindings/cssom_host.rs`,
+`third_party/blitz/packages/blitz-dom/src/cssom.rs`).
+
+A pending import has no sheet object yet: stylo's `ImportSheet::Pending` is
+replaced by the loaded sheet only when the fetch lands, so `styleSheet` reads
+null until then (and reports null for a refused import forever). Browsers
+create the imported sheet synchronously and fill it in place, which would need
+the engine to parse into an existing sheet rather than swap it in
+(`css/cssom/CSSImportRule-insertRule-styleSheet-parentStyleSheet.html` reads
+`styleSheet` in the same task as `insertRule`).
 
 
 ## Origin API

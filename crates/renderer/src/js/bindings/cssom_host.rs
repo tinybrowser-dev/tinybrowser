@@ -135,6 +135,10 @@ fn install_sheet_functions(bridge: &Object<'_>) -> Result<()> {
         rquickjs::prelude::Func::from(sheet_find_keyframe),
     )?;
     bridge.set(
+        "__tb_sheet_import_sheet",
+        rquickjs::prelude::Func::from(sheet_import_sheet),
+    )?;
+    bridge.set(
         "__tb_sheet_insert_rule",
         rquickjs::prelude::Func::from(sheet_insert_rule),
     )?;
@@ -730,6 +734,41 @@ fn sheet_find_keyframe<'js>(
         Some(index) => i32::try_from(index).unwrap_or(-1),
         None => -1,
     }
+}
+
+/// The CSSOM sheet id of the sheet an `@import` rule imports, or -1 when the
+/// rule is not an import or the sheet has not loaded
+/// (<https://drafts.csswg.org/cssom/#dom-cssimportrule-stylesheet>).
+fn sheet_import_sheet<'js>(ctx: Ctx<'js>, element: Value<'js>, id: f64, path: String) -> f64 {
+    let Ok(world) = world(&ctx) else {
+        return -1.0;
+    };
+    let Some(node) = host_node_id(&ctx, &element) else {
+        return -1.0;
+    };
+    let Some(sheet) = sheet_id(id) else {
+        return -1.0;
+    };
+    let Some(path) = with_path(&path) else {
+        return -1.0;
+    };
+    let world = world.borrow();
+    let Some(mut parsed) = world.document_mut(node) else {
+        return -1.0;
+    };
+    parsed
+        .document
+        .base
+        .cssom_import_sheet(sheet, &path)
+        .map_or(-1.0, |id| {
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "sheet ids stay inside the exact integer range of f64"
+            )]
+            {
+                id as f64
+            }
+        })
 }
 
 /// The element's inline declaration block, serialized
