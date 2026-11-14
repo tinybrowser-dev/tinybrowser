@@ -2182,3 +2182,24 @@ non-iterable throws `TypeError`.
 Evidence: `html/dom` 65204 to **65229** subtests, no lost subtests.
 `aria-element-reflection.html` 13/27 to 27/27 and
 `aria-element-reflection-disconnected.html` 1/2 to 2/2.
+`document.body` is now exposed only while the root element is an HTML `html`
+element (`crates/renderer/src/js/bindings/node/document.rs`). The getter
+returned the first `body`/`frameset` child of whatever the document element
+was, so a document created with a non-HTML `html` root, or with `body` or
+`frameset` as the root, exposed a body the spec hides
+(<https://html.spec.whatwg.org/multipage/dom.html#the-body-element>). The
+setter is unchanged: it still replaces the first body/frameset child of the
+document element even when the root is not an HTML `html` element.
+
+Evidence: `html/dom` 65229 to **65234** subtests, no lost subtests.
+`Document.body.html` 21/26 to 26/26.
+
+`document.embeds` and `document.plugins` now exist as the same
+`[SameObject]` live `HTMLCollection` of the document's HTML `embed`
+elements (`crates/renderer/src/js/bindings/collections.rs`). Both names share
+one `SameObject` slot, so `document.embeds === document.plugins` holds and
+repeated reads return the same object
+(<https://html.spec.whatwg.org/multipage/dom.html#dom-document-embeds>).
+
+Evidence: `html/dom` 65234 to **65239** subtests, no lost subtests.
+`document.embeds-document.plugins-01.html` 0/5 to 5/5.

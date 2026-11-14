@@ -68,6 +68,16 @@ impl<'js> document_generated::Document<'js> for JsNode {
         self.body(ctx)
     }
 
+    // https://html.spec.whatwg.org/multipage/dom.html#dom-document-embeds
+    fn get_embeds(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
+        self.get_embeds(ctx)
+    }
+
+    // https://html.spec.whatwg.org/multipage/dom.html#dom-document-plugins
+    fn get_plugins(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
+        self.get_plugins(ctx)
+    }
+
     // https://drafts.csswg.org/cssom-view/#dom-document-scrollingelement
     fn get_scrolling_element(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
         self.scrolling_element(ctx)
@@ -1062,7 +1072,18 @@ impl JsNode {
     pub(super) fn body<'js>(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
         document_value(ctx, self.handle.get().0, |parsed| {
             let root = document_first_child(parsed, |data| matches!(data, NodeData::Element(_)))?;
-            body_child(parsed, root)
+            // The body element is only exposed while the root element is an
+            // HTML `html` element
+            // (<https://html.spec.whatwg.org/multipage/dom.html#the-body-element>).
+            let html_root = parsed
+                .document
+                .base
+                .get_node(root.node)
+                .and_then(|node| node.data.downcast_element())
+                .is_some_and(|element| {
+                    element.name.ns == html_namespace() && element.name.local.as_str() == "html"
+                });
+            html_root.then(|| body_child(parsed, root)).flatten()
         })
     }
 
@@ -2390,6 +2411,17 @@ impl JsNode {
     /// <https://html.spec.whatwg.org/multipage/dom.html#dom-document-forms>
     pub(super) fn get_forms<'js>(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
         self.same_object_collection(ctx, SameObject::Forms, CollectionKind::HtmlForms)
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/dom.html#dom-document-embeds>
+    pub(super) fn get_embeds<'js>(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
+        self.same_object_collection(ctx, SameObject::Embeds, CollectionKind::HtmlEmbeds)
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/dom.html#dom-document-plugins>
+    pub(super) fn get_plugins<'js>(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
+        // `plugins` is the same collection as `embeds`.
+        self.get_embeds(ctx)
     }
 
     /// A document's `[SameObject]` live `HTMLCollection` member.
