@@ -2667,3 +2667,33 @@ that fails 3/3 in isolation both with this change and at the parent commit, so
 it is the pre-existing flake. `cargo fmt --check` (both trees), `tools/check
 clippy`, and the renderer (175), webidl-bindgen (42), and wpt-harness (30) test
 binaries pass.
+`new CSSStyleSheet(options)` now builds a real sheet. The constructor accepts
+`baseURL` (an invalid one throws `NotAllowedError`, a relative one resolves
+against the document), `media`, and `disabled`; the engine parses the CSS into
+an ownerless stylesheet record the CSSOM can address, so `cssRules`,
+`insertRule`, `deleteRule`, `replaceSync`/`replace`, `style.cssText`, `media`,
+and `disabled` all work without an element owner. `replace` re-parses in place
+under the same CSSOM id, keeps the media list and disabled flag, and detaches
+every rule object already handed out. A constructable sheet never loads an
+`@import`: `replaceSync` drops one and `insertRule` throws `SyntaxError`. The
+engine change is `third_party/blitz` commit `90800c660`, recorded in
+`docs/upstream.md`
+(<https://drafts.csswg.org/cssom/#dom-cssstylesheet-cssstylesheet>,
+<https://wicg.github.io/construct-stylesheets/>).
+
+Evidence: `css/cssom` 3624 to **3651** subtests, no lost subtests.
+`cssstyledeclaration-all-shorthand.html` 21/27 to 27/27,
+`CSSStyleSheet-replace-parse-errors.html` 2/8 to 8/8,
+`CSSStyleSheet-replace-detach-old-rules.html` 0/4 to 4/4,
+`CSSStyleSheet-constructable-baseURL.html` 2/3 to 3/3,
+`CSSStyleSheet-constructable-disallow-import.tentative.html` 0/4 to 1/4,
+`CSSStyleSheet-constructable-replace-thenable.html` 0/1 to 1/1,
+`CSSStyleSheet-constructable.html` 1/13 to 3/13,
+`CSSKeyframesRule-appendRule-multiple.html` 0/2 to 2/2,
+`medialist-mutation-after-owner-gc.html` 0/9 to 3/9, and
+`style-sheet-interfaces-001.html` 5/6 to 6/6. `css/cssom-view` stays at 1616,
+`resize-observer` at 50, `css/selectors` at 4791, `intersection-observer` at
+185, and `html/dom` at 65341, with no lost subtests; `html/semantics/forms`
+4522 to **4523**. `cargo fmt --check` (both trees), `tools/check clippy`, and
+the renderer (175), webidl-bindgen (42), and wpt-harness (30) test binaries
+pass.

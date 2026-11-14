@@ -146,6 +146,37 @@ fn install_sheet_functions(bridge: &Object<'_>) -> Result<()> {
         "__tb_sheet_delete_rule",
         rquickjs::prelude::Func::from(sheet_delete_rule),
     )?;
+    install_constructable_sheet_functions(bridge)
+}
+
+/// The constructable-sheet operations: `CSSStyleSheet` construction,
+/// `replaceSync`, and the sheet-level `media`/`disabled` accessors
+/// (<https://drafts.csswg.org/cssom/#the-cssstylesheet-interface>).
+fn install_constructable_sheet_functions(bridge: &Object<'_>) -> Result<()> {
+    bridge.set(
+        "__tb_create_sheet",
+        rquickjs::prelude::Func::from(create_sheet),
+    )?;
+    bridge.set(
+        "__tb_replace_sheet",
+        rquickjs::prelude::Func::from(replace_sheet),
+    )?;
+    bridge.set(
+        "__tb_sheet_media_text",
+        rquickjs::prelude::Func::from(sheet_media_text),
+    )?;
+    bridge.set(
+        "__tb_set_sheet_media_text",
+        rquickjs::prelude::Func::from(set_sheet_media_text),
+    )?;
+    bridge.set(
+        "__tb_cssom_sheet_disabled",
+        rquickjs::prelude::Func::from(cssom_sheet_disabled),
+    )?;
+    bridge.set(
+        "__tb_set_cssom_sheet_disabled",
+        rquickjs::prelude::Func::from(set_cssom_sheet_disabled),
+    )?;
     Ok(())
 }
 
@@ -450,9 +481,9 @@ fn sheet_style_set_css_text<'js>(
     let Some(node) = host_node_id(&ctx, &element) else {
         return Ok(());
     };
-    if sheet_id(id).is_none() {
+    let Some(sheet) = sheet_id(id) else {
         return Ok(());
-    }
+    };
     let Some(path) = with_path(&path) else {
         return Ok(());
     };
@@ -460,14 +491,15 @@ fn sheet_style_set_css_text<'js>(
     let Some(mut parsed) = world.document_mut(node) else {
         return Ok(());
     };
-    // The engine's setter resolves the sheet from the owner node and reports a
-    // font-face descriptor block as unsupported; the JS side answers those
-    // through `setProperty` instead
+    // The sheet id addresses the rule list directly, so a constructable sheet
+    // (which no element owns) can replace a rule's declarations too. The
+    // engine reports a font-face descriptor block as unsupported; the JS side
+    // answers those through `setProperty` instead
     // (<https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-csstext>).
     let _ = parsed
         .document
         .base
-        .stylesheet_rule_style_set_css_text(node.node, &path, &text);
+        .cssom_rule_style_set_css_text(sheet, &path, &text);
     Ok(())
 }
 
@@ -734,6 +766,180 @@ fn sheet_find_keyframe<'js>(
         Some(index) => i32::try_from(index).unwrap_or(-1),
         None => -1,
     }
+}
+
+/// Creates a constructable sheet and answers its CSSOM sheet id, or -1 when
+/// the document is gone or `base_url` does not parse
+/// (<https://drafts.csswg.org/cssom/#dom-cssstylesheet-cssstylesheet>).
+fn create_sheet<'js>(
+    ctx: Ctx<'js>,
+    address: Value<'js>,
+    css: String,
+    media: String,
+    base_url: Option<String>,
+    disabled: bool,
+) -> f64 {
+    let Ok(world) = world(&ctx) else {
+        return -1.0;
+    };
+    let Some(node) = host_node_id(&ctx, &address) else {
+        return -1.0;
+    };
+    let base_url = match base_url {
+        Some(url) => match url::Url::parse(&url) {
+            Ok(url) => Some(url),
+            Err(_) => return -1.0,
+        },
+        None => None,
+    };
+    let world = world.borrow_mut();
+    let Some(mut parsed) = world.document_mut(node) else {
+        return -1.0;
+    };
+    let id = parsed
+        .document
+        .base
+        .create_constructable_sheet(&css, &media, base_url.as_ref());
+    if disabled {
+        parsed.document.base.set_cssom_sheet_disabled(id, true);
+    }
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "sheet ids stay inside the exact integer range of f64"
+    )]
+    {
+        id as f64
+    }
+}
+
+/// Replaces the rules of constructable sheet `id` (`CSSStyleSheet.replaceSync`)
+/// (<https://drafts.csswg.org/cssom/#dom-cssstylesheet-replacesync>).
+fn replace_sheet<'js>(
+    ctx: Ctx<'js>,
+    address: Value<'js>,
+    id: f64,
+    css: String,
+    base_url: Option<String>,
+) -> bool {
+    let Ok(world) = world(&ctx) else {
+        return false;
+    };
+    let Some(node) = host_node_id(&ctx, &address) else {
+        return false;
+    };
+    let Some(sheet) = sheet_id(id) else {
+        return false;
+    };
+    let base_url = match base_url {
+        Some(url) => match url::Url::parse(&url) {
+            Ok(url) => Some(url),
+            Err(_) => return false,
+        },
+        None => None,
+    };
+    let world = world.borrow_mut();
+    let Some(mut parsed) = world.document_mut(node) else {
+        return false;
+    };
+    parsed
+        .document
+        .base
+        .cssom_replace_sheet(sheet, &css, base_url.as_ref())
+}
+
+/// The media query list text of CSSOM sheet `id`
+/// (<https://drafts.csswg.org/cssom/#dom-stylesheet-media>).
+fn sheet_media_text<'js>(ctx: Ctx<'js>, address: Value<'js>, id: f64) -> String {
+    let Ok(world) = world(&ctx) else {
+        return String::new();
+    };
+    let Some(node) = host_node_id(&ctx, &address) else {
+        return String::new();
+    };
+    let Some(sheet) = sheet_id(id) else {
+        return String::new();
+    };
+    let world = world.borrow();
+    let Some(parsed) = world.document(node) else {
+        return String::new();
+    };
+    parsed
+        .document
+        .base
+        .cssom_sheet_media_text(sheet)
+        .unwrap_or_default()
+}
+
+/// Replaces the media query list of CSSOM sheet `id`
+/// (<https://drafts.csswg.org/cssom/#dom-medialist-mediatext>).
+fn set_sheet_media_text<'js>(ctx: Ctx<'js>, address: Value<'js>, id: f64, text: String) -> bool {
+    let Ok(world) = world(&ctx) else {
+        return false;
+    };
+    let Some(node) = host_node_id(&ctx, &address) else {
+        return false;
+    };
+    let Some(sheet) = sheet_id(id) else {
+        return false;
+    };
+    let world = world.borrow_mut();
+    let Some(mut parsed) = world.document_mut(node) else {
+        return false;
+    };
+    parsed
+        .document
+        .base
+        .set_cssom_sheet_media_text(sheet, &text)
+}
+
+/// Whether CSSOM sheet `id` is disabled
+/// (<https://drafts.csswg.org/cssom/#dom-stylesheet-disabled>).
+fn cssom_sheet_disabled<'js>(ctx: Ctx<'js>, address: Value<'js>, id: f64) -> bool {
+    let Ok(world) = world(&ctx) else {
+        return false;
+    };
+    let Some(node) = host_node_id(&ctx, &address) else {
+        return false;
+    };
+    let Some(sheet) = sheet_id(id) else {
+        return false;
+    };
+    let world = world.borrow();
+    let Some(parsed) = world.document(node) else {
+        return false;
+    };
+    parsed
+        .document
+        .base
+        .cssom_sheet_disabled(sheet)
+        .unwrap_or(false)
+}
+
+/// Sets the disabled flag of CSSOM sheet `id`
+/// (<https://drafts.csswg.org/cssom/#dom-stylesheet-disabled>).
+fn set_cssom_sheet_disabled<'js>(
+    ctx: Ctx<'js>,
+    address: Value<'js>,
+    id: f64,
+    disabled: bool,
+) -> bool {
+    let Ok(world) = world(&ctx) else {
+        return false;
+    };
+    let Some(node) = host_node_id(&ctx, &address) else {
+        return false;
+    };
+    let Some(sheet) = sheet_id(id) else {
+        return false;
+    };
+    let world = world.borrow_mut();
+    let Some(mut parsed) = world.document_mut(node) else {
+        return false;
+    };
+    parsed
+        .document
+        .base
+        .set_cssom_sheet_disabled(sheet, disabled)
 }
 
 /// The CSSOM sheet id of the sheet an `@import` rule imports, or -1 when the

@@ -206,6 +206,12 @@
   const __tbDomException = globalThis.DOMException;
   const __tbCharCodeAt = String.prototype.charCodeAt;
   const __tbSheetsById = new Map();
+  // The node a host call addresses the document through. An associated sheet
+  // uses its owner element; a sheet the `CSSStyleSheet` constructor built, or
+  // one reached through `@import`, has no owner and keeps the document wrapper
+  // as its address
+  // (<https://drafts.csswg.org/cssom/#dom-cssstylesheet-cssstylesheet>).
+  const __tbSheetAddress = sheet => sheet.__tbAddress ?? sheet.__tbOwner;
   const __tbRulePath = path => __tbArray.join(path, ',');
   function __tbIllegal() {
     throw new TypeError('Illegal constructor');
@@ -321,16 +327,16 @@
   // (<https://drafts.csswg.org/cssom/#dom-cssimportrule-stylesheet>).
   const __tbImportedSheet = entry => {
     const id = host.__tb_sheet_import_sheet(
-      entry.sheet.__tbOwner, entry.sheet.__tbId, __tbRulePath(entry.path),
+      __tbSheetAddress(entry.sheet), entry.sheet.__tbId, __tbRulePath(entry.path),
     );
     if (!(id >= 1)) return null;
-    const sheet = new CSSStyleSheet();
+    const sheet = Object.create(CSSStyleSheet.prototype);
+    sheet.__tbRules = [];
     sheet.__tbId = id;
-    // Host calls need an element to reach the document; the imported sheet is
-    // not owned by one, so `ownerNode` reports null while the importing
-    // sheet's owner is only an address
-    sheet.__tbOwner = entry.sheet.__tbOwner;
-    sheet.__tbOwnerless = true;
+    // Host calls need a node to reach the document; the imported sheet is not
+    // owned by one, so `ownerNode` reports null while the importing sheet's
+    // owner is only an address
+    sheet.__tbAddress = __tbSheetAddress(entry.sheet);
     sheet.__tbParent = entry.sheet;
     sheet.__tbOwnerRule = entry.rule;
     sheet.__tbOwnerRuleEntry = entry;
@@ -339,14 +345,6 @@
     // `CSSImportRule.media` and the imported sheet's `media` are the same
     // object (<https://drafts.csswg.org/cssom/#dom-cssimportrule-media>).
     sheet.__tbMedia = entry.rule.media;
-    delete sheet.cssRules;
-    __tbDefineProperty(sheet, 'cssRules', {
-      get() {
-        if (sheet.__tbList === undefined) sheet.__tbList = __tbLiveRuleList(sheet, null, null);
-        return sheet.__tbList;
-      },
-      enumerable: true, configurable: true,
-    });
     return sheet;
   };
   __tbDefineProperty(CSSImportRule.prototype, 'styleSheet', {
@@ -433,7 +431,7 @@
       const entry = __tbRuleState(this);
       if (entry.detached) return;
       host.__tb_sheet_rule_set_name(
-        entry.sheet.__tbOwner, entry.sheet.__tbId, __tbRulePath(entry.path), String(value),
+        __tbSheetAddress(entry.sheet), entry.sheet.__tbId, __tbRulePath(entry.path), String(value),
       );
     },
     enumerable: true, configurable: true,
@@ -450,7 +448,7 @@
       const entry = __tbRuleState(this);
       if (entry.detached) return;
       host.__tb_sheet_rule_set_key_text(
-        entry.sheet.__tbOwner, entry.sheet.__tbId, __tbRulePath(entry.path), String(value),
+        __tbSheetAddress(entry.sheet), entry.sheet.__tbId, __tbRulePath(entry.path), String(value),
       );
     },
     enumerable: true, configurable: true,
@@ -468,7 +466,7 @@
         const entry = __tbRuleState(this);
         if (entry.detached) return;
         host.__tb_sheet_rule_set_selector_text(
-          entry.sheet.__tbOwner, entry.sheet.__tbId, __tbRulePath(entry.path), String(value),
+          __tbSheetAddress(entry.sheet), entry.sheet.__tbId, __tbRulePath(entry.path), String(value),
         );
       },
       enumerable: true, configurable: true,
@@ -509,7 +507,7 @@
             set: value => {
               if (entry.detached) return;
               host.__tb_sheet_rule_set_media(
-                entry.sheet.__tbOwner, entry.sheet.__tbId, __tbRulePath(entry.path), value,
+                __tbSheetAddress(entry.sheet), entry.sheet.__tbId, __tbRulePath(entry.path), value,
               );
             },
           };
@@ -581,7 +579,7 @@
     const entry = __tbRuleState(this);
     if (entry.detached) return null;
     const index = host.__tb_sheet_find_keyframe(
-      entry.sheet.__tbOwner, entry.sheet.__tbId, __tbRulePath(entry.path), String(select),
+      __tbSheetAddress(entry.sheet), entry.sheet.__tbId, __tbRulePath(entry.path), String(select),
     );
     return index < 0 ? null : this.cssRules[index];
   };
@@ -590,7 +588,7 @@
     const entry = __tbRuleState(this);
     if (entry.detached) return;
     const index = host.__tb_sheet_find_keyframe(
-      entry.sheet.__tbOwner, entry.sheet.__tbId, __tbRulePath(entry.path), String(select),
+      __tbSheetAddress(entry.sheet), entry.sheet.__tbId, __tbRulePath(entry.path), String(select),
     );
     if (index >= 0) __tbDelete(entry.sheet, entry.path, index, 1);
   };
@@ -666,7 +664,7 @@
     return true;
   }
   function __tbRequireClean(sheet) {
-    const state = host.__tb_sheet_origin_state(sheet.__tbOwner, sheet.__tbId);
+    const state = host.__tb_sheet_origin_state(__tbSheetAddress(sheet), sheet.__tbId);
     if (state === 0) throw new __tbDomException('cross-origin stylesheet', 'SecurityError');
     if (state < 0) throw new __tbDomException('stylesheet is gone', 'InvalidStateError');
   }
@@ -688,7 +686,7 @@
     __tbDefineProperty(style, 'cssText', {
       get() {
         if (entry.detached) return '';
-        return host.__tb_sheet_style_css_text(sheet.__tbOwner, sheet.__tbId, pathKey());
+        return host.__tb_sheet_style_css_text(__tbSheetAddress(sheet), sheet.__tbId, pathKey());
       },
       // The setter parses the value as a declaration block and replaces the
       // block whole, keeping the properties that parse
@@ -696,7 +694,7 @@
       set(value) {
         if (entry.detached) return;
         host.__tb_sheet_style_set_css_text(
-          sheet.__tbOwner, sheet.__tbId, pathKey(), value == null ? '' : String(value),
+          __tbSheetAddress(sheet), sheet.__tbId, pathKey(), value == null ? '' : String(value),
         );
       },
       enumerable: true, configurable: true,
@@ -704,25 +702,25 @@
     __tbDefineProperty(style, 'length', {
       get() {
         if (entry.detached) return 0;
-        const names = host.__tb_sheet_style_names(sheet.__tbOwner, sheet.__tbId, pathKey());
+        const names = host.__tb_sheet_style_names(__tbSheetAddress(sheet), sheet.__tbId, pathKey());
         return names ? names.length : 0;
       },
       enumerable: true, configurable: true,
     });
     style.getPropertyValue = function(name) {
       if (entry.detached) return '';
-      const found = host.__tb_sheet_style_get_property(sheet.__tbOwner, sheet.__tbId, pathKey(), String(name));
+      const found = host.__tb_sheet_style_get_property(__tbSheetAddress(sheet), sheet.__tbId, pathKey(), String(name));
       return found ? found.value : '';
     };
     style.getPropertyPriority = function(name) {
       if (entry.detached) return '';
-      const found = host.__tb_sheet_style_get_property(sheet.__tbOwner, sheet.__tbId, pathKey(), String(name));
+      const found = host.__tb_sheet_style_get_property(__tbSheetAddress(sheet), sheet.__tbId, pathKey(), String(name));
       return found && found.important ? 'important' : '';
     };
     style.setProperty = function(name, value, priority) {
       if (entry.detached) return;
       host.__tb_sheet_style_set_property(
-        sheet.__tbOwner, sheet.__tbId, pathKey(), String(name),
+        __tbSheetAddress(sheet), sheet.__tbId, pathKey(), String(name),
         value == null ? '' : String(value), String(priority) === 'important',
       );
     };
@@ -734,14 +732,14 @@
       const property = String(name);
       const previous = style.getPropertyValue(property);
       host.__tb_sheet_style_set_property(
-        sheet.__tbOwner, sheet.__tbId, pathKey(), property, '', false,
+        __tbSheetAddress(sheet), sheet.__tbId, pathKey(), property, '', false,
       );
       return previous;
     };
     style.item = function(index) {
       if (arguments.length < 1) throw new TypeError('item requires 1 argument');
       if (entry.detached) return '';
-      const names = host.__tb_sheet_style_names(sheet.__tbOwner, sheet.__tbId, pathKey()) || [];
+      const names = host.__tb_sheet_style_names(__tbSheetAddress(sheet), sheet.__tbId, pathKey()) || [];
       index = index >>> 0;
       return index < names.length ? names[index] : '';
     };
@@ -794,7 +792,7 @@
     const rule = Object.create(CSSRule.prototype);
     entry.read = () => {
       if (entry.detached) return null;
-      return host.__tb_sheet_rule_info(sheet.__tbOwner, sheet.__tbId, __tbRulePath(entry.path));
+      return host.__tb_sheet_rule_info(__tbSheetAddress(sheet), sheet.__tbId, __tbRulePath(entry.path));
     };
     const info = entry.read() || { interface: 'CSSRule', type: 0, cssText: '', hasChildRules: false, hasStyle: false };
     entry.info = info;
@@ -834,7 +832,7 @@
       get length() {
         if (parentEntry && parentEntry.detached) return 0;
         __tbRequireClean(sheet);
-        const count = host.__tb_sheet_rule_count(sheet.__tbOwner, sheet.__tbId, __tbRulePath(listPath()));
+        const count = host.__tb_sheet_rule_count(__tbSheetAddress(sheet), sheet.__tbId, __tbRulePath(listPath()));
         return count < 0 ? 0 : count;
       },
       item(index) {
@@ -866,7 +864,7 @@
     if (arity < 1) throw new TypeError('insertRule requires 1 argument');
     __tbRequireClean(sheet);
     index = arity < 2 ? 0 : (index >>> 0);
-    const inserted = host.__tb_sheet_insert_rule(sheet.__tbOwner, sheet.__tbId, __tbRulePath(listPath), String(text), index);
+    const inserted = host.__tb_sheet_insert_rule(__tbSheetAddress(sheet), sheet.__tbId, __tbRulePath(listPath), String(text), index);
     for (const entry of sheet.__tbRules) {
       if (entry.detached || !__tbUnder(entry, listPath)) continue;
       if (entry.path[listPath.length] >= index) entry.path[listPath.length] += 1;
@@ -880,11 +878,11 @@
     for (const entry of sheet.__tbRules) {
       if (entry.detached || !__tbUnder(entry, listPath)) continue;
       if (entry.path[listPath.length] !== index) continue;
-      const info = host.__tb_sheet_rule_info(sheet.__tbOwner, sheet.__tbId, __tbRulePath(entry.path));
+      const info = host.__tb_sheet_rule_info(__tbSheetAddress(sheet), sheet.__tbId, __tbRulePath(entry.path));
       entry.frozenText = info ? info.cssText : '';
       entry.detached = true;
     }
-    host.__tb_sheet_delete_rule(sheet.__tbOwner, sheet.__tbId, __tbRulePath(listPath), index);
+    host.__tb_sheet_delete_rule(__tbSheetAddress(sheet), sheet.__tbId, __tbRulePath(listPath), index);
     for (const entry of sheet.__tbRules) {
       if (entry.detached || !__tbUnder(entry, listPath)) continue;
       if (entry.path[listPath.length] > index) entry.path[listPath.length] -= 1;
@@ -988,7 +986,15 @@
   function __tbSheetMediaList(sheet) {
     const slot = { text: '', get: null, set: null };
     const owner = sheet.__tbOwner;
-    if (owner === undefined) {
+    if (sheet.__tbConstructable === true) {
+      // A constructable sheet owns its media query list, which the engine
+      // parsed from the constructor's `media` member; the cascade consults it
+      // when the sheet is adopted
+      // (<https://drafts.csswg.org/cssom/#dom-stylesheet-media>).
+      const address = __tbSheetAddress(sheet);
+      slot.get = () => host.__tb_sheet_media_text(address, sheet.__tbId);
+      slot.set = value => { host.__tb_set_sheet_media_text(address, sheet.__tbId, value); };
+    } else if (owner === undefined) {
       slot.get = () => slot.text;
       slot.set = value => { slot.text = value; };
     } else {
@@ -1006,15 +1012,49 @@
     return list;
   }
   class CSSStyleSheet {
-    constructor() {
-      this.cssRules = [];
+    constructor(options) {
+      // `CSSStyleSheetInit`'s members: `baseURL` resolves relative references
+      // and an invalid one is a `NotAllowedError`, `media` seeds the media
+      // query list, and `disabled` seeds the disabled flag. `title` and
+      // `alternate` are ignored
+      // (<https://drafts.csswg.org/cssom/#dom-cssstylesheet-cssstylesheet>).
+      const init = options === undefined || options === null ? {} : Object(options);
+      let baseURL = null;
+      if (init.baseURL !== undefined) {
+        try {
+          baseURL = new URL(String(init.baseURL), document.baseURI).href;
+        } catch (error) {
+          throw new __tbDomException('baseURL is not a valid URL', 'NotAllowedError');
+        }
+      }
+      const media = init.media === undefined ? '' : String(init.media);
       this.__tbRules = [];
+      const id = host.__tb_create_sheet(
+        document, '', media, baseURL, Boolean(init.disabled),
+      );
+      if (!(id >= 1)) {
+        throw new __tbDomException('cannot create stylesheet', 'InvalidStateError');
+      }
+      this.__tbId = id;
+      this.__tbBaseURL = baseURL;
+      // A constructable sheet has no owner node; host calls address the
+      // document that created it
+      // (<https://drafts.csswg.org/cssom/#dom-cssstylesheet-cssstylesheet>).
+      this.__tbAddress = document;
+      this.__tbConstructable = true;
     }
     // `rules` is the legacy alias of `cssRules`, and both read the same live
     // list
     // (<https://drafts.csswg.org/cssom/#dom-cssstylesheet-rules>).
     get rules() {
       return this.cssRules;
+    }
+    get cssRules() {
+      // One list object for the sheet's lifetime: a `replace` swaps the rules
+      // behind it rather than replacing the list
+      // (<https://drafts.csswg.org/cssom/#dom-cssstylesheet-cssrules>).
+      if (this.__tbList === undefined) this.__tbList = __tbLiveRuleList(this, null, null);
+      return this.__tbList;
     }
     // The StyleSheet interface properties. An associated sheet reads its
     // owner `<style>`/`<link>`; a constructable sheet has no owner and no URL
@@ -1037,10 +1077,6 @@
     get ownerNode() {
       const owner = this.__tbOwner;
       if (owner === undefined) return null;
-      // A sheet reached through `@import` has no owner node; its host address
-      // is only used to locate the document
-      // (<https://drafts.csswg.org/cssom/#dom-stylesheet-ownernode>).
-      if (this.__tbOwnerless === true) return null;
       // Removing the element removes its sheet; the sheet object stays
       // readable but loses its owner
       // (<https://drafts.csswg.org/cssom/#remove-a-css-style-sheet>).
@@ -1061,9 +1097,8 @@
       return this.__tbOwnerRule ?? null;
     }
     get title() {
-      // An imported sheet has no title of its own
+      // An imported or constructable sheet has no title of its own
       // (<https://drafts.csswg.org/cssom/#dom-stylesheet-title>).
-      if (this.__tbOwnerless === true) return null;
       const owner = this.__tbOwner;
       if (owner === undefined) return null;
       return owner.getAttribute('title');
@@ -1073,12 +1108,19 @@
       // disabled and assigning to the attribute does nothing
       // (<https://drafts.csswg.org/cssom/#dom-stylesheet-disabled>).
       if (this.__tbOwnerRule !== undefined) return false;
+      if (this.__tbConstructable === true) {
+        return host.__tb_cssom_sheet_disabled(__tbSheetAddress(this), this.__tbId);
+      }
       if (this.__tbOwner === undefined) return this.__tbDisabled === true;
       return host.__tb_sheet_disabled(this.__tbOwner, this.__tbId);
     }
     set disabled(value) {
       if (this.__tbOwnerRule !== undefined) return;
       const disabled = Boolean(value);
+      if (this.__tbConstructable === true) {
+        host.__tb_set_cssom_sheet_disabled(__tbSheetAddress(this), this.__tbId, disabled);
+        return;
+      }
       if (this.__tbOwner === undefined) {
         this.__tbDisabled = disabled;
         return;
@@ -1093,11 +1135,29 @@
     // text (<https://drafts.csswg.org/cssom/#dom-stylesheet-media>).
     set media(value) { this.media.mediaText = value; }
     replaceSync(text) {
-      if (this.__tbId !== undefined) {
+      // Only a sheet the constructor built has a rule list a script may
+      // replace; an associated sheet keeps its parsed sheet
+      // (<https://drafts.csswg.org/cssom/#dom-cssstylesheet-replacesync>).
+      if (this.__tbConstructable !== true) {
         throw new __tbDomException('associated sheet is not constructable', 'NotAllowedError');
       }
-      const cssText = String(text);
-      this.cssRules = cssText ? [{ cssText }] : [];
+      const replaced = host.__tb_replace_sheet(
+        __tbSheetAddress(this), this.__tbId, String(text), this.__tbBaseURL ?? null,
+      );
+      if (!replaced) {
+        throw new __tbDomException('cannot replace stylesheet', 'InvalidStateError');
+      }
+      // `replace` detaches every rule object already handed out, so a stale
+      // rule's `parentStyleSheet` and `parentRule` become null
+      // (<https://drafts.csswg.org/cssom/#dom-cssstylesheet-replacesync>).
+      for (const entry of this.__tbRules) {
+        if (entry.detached) continue;
+        const info = host.__tb_sheet_rule_info(
+          __tbSheetAddress(this), this.__tbId, __tbRulePath(entry.path),
+        );
+        entry.frozenText = info ? info.cssText : '';
+        entry.detached = true;
+      }
     }
     replace(text) {
       try {
@@ -1108,15 +1168,9 @@
       }
     }
     insertRule(rule, index) {
-      if (this.__tbId === undefined) {
-        throw new __tbDomException('constructable sheet has no parsed rule list', 'NotSupportedError');
-      }
       return __tbInsert(this, [], rule, index, arguments.length);
     }
     deleteRule(index) {
-      if (this.__tbId === undefined) {
-        throw new __tbDomException('constructable sheet has no parsed rule list', 'NotSupportedError');
-      }
       __tbDelete(this, [], index, arguments.length);
     }
     // Legacy members: `addRule` builds `<selector> { <block> }` and inserts
@@ -1163,21 +1217,10 @@
     if (!(id >= 1)) return null;
     let sheet = __tbSheetsById.get(id);
     if (sheet !== undefined) return sheet;
-    sheet = new CSSStyleSheet();
+    sheet = Object.create(CSSStyleSheet.prototype);
+    sheet.__tbRules = [];
     sheet.__tbId = id;
     sheet.__tbOwner = element;
-    // The constructor's own array is the constructable-sheet list. An
-    // associated sheet's `cssRules` is the engine's list instead
-    // (<https://drafts.csswg.org/cssom/#dom-cssstylesheet-cssrules>).
-    delete sheet.cssRules;
-    __tbDefineProperty(sheet, 'cssRules', {
-      get() {
-        if (sheet.__tbList === undefined) sheet.__tbList = __tbLiveRuleList(sheet, null, null);
-        return sheet.__tbList;
-      },
-      enumerable: true,
-      configurable: true,
-    });
     __tbSheetsById.set(id, sheet);
     return sheet;
   }
