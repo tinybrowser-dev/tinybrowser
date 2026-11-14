@@ -2258,3 +2258,18 @@ has no `HTMLDocument` interface object (that file goes 5/8 to 6/8);
 `-tree-order` 0/1 to 1/1, and `-tree-transitions` 0/2 to 2/2.
 `dom/nodes` stays at 14550, `html/browsers` at 1000, and `css/selectors` at
 4777 subtests, with no lost subtests.
+HTML documents now expose the `HTMLDocument` interface object, so
+`document.constructor` and `Object.getPrototypeOf(document)` match what engines
+report (`crates/renderer/src/js/scripts/brands.js`,
+`crates/renderer/src/js/bindings/mod.rs`). `HTMLDocument` is a legacy interface
+that neither the current HTML nor DOM specification declares, but every engine
+defines it and WPT uses it. A document whose content type is `text/html` is an
+`HTMLDocument`; an XML document stays `XMLDocument`; `new Document()` and
+`DOMParser` XML results stay plain `Document`. `host::node_interface_matches`
+answers the new brand from the same parsed state, so `require_interface` and
+union conversion agree with the prototype.
+
+Evidence: `html/dom` 65339 to **65341** subtests, no lost subtests.
+`nameditem-no-shadowing.tentative.html` 6/8 to 8/8. `dom/nodes` stays at
+14550 and `html/browsers` at 1000 (plus a known-flaky
+`broadcastchannel.window.html` pass), with no lost subtests.

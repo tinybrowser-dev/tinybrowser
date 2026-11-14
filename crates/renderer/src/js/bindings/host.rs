@@ -639,6 +639,7 @@ pub(crate) trait SharedClass {
 fn node_interface_matches(
     data: Option<&blitz_dom::NodeData>,
     xml_document: bool,
+    html_document: bool,
     interface: &str,
 ) -> Option<bool> {
     use blitz_dom::NodeData;
@@ -656,6 +657,7 @@ fn node_interface_matches(
         // (<https://dom.spec.whatwg.org/#interface-eventtarget>).
         "Node" | "EventTarget" => data.is_some(),
         "Document" => matches!(data, Some(NodeData::Document(_))),
+        "HTMLDocument" => matches!(data, Some(NodeData::Document(_))) && html_document,
         "XMLDocument" => matches!(data, Some(NodeData::Document(_))) && xml_document,
         // A shadow root is a document fragment
         // (<https://dom.spec.whatwg.org/#interface-shadowroot>).
@@ -782,7 +784,12 @@ pub(crate) fn require_node_interface(ctx: &Ctx<'_>, id: NodeId, interface: &str)
         .base
         .get_node(id.node)
         .map(|node| &node.data);
-    match node_interface_matches(data, document.xml_document, interface) {
+    match node_interface_matches(
+        data,
+        document.xml_document,
+        document.content_type == "text/html",
+        interface,
+    ) {
         Some(true) => Ok(()),
         Some(false) => Err(Exception::throw_type(ctx, "incompatible receiver")),
         None => Err(Exception::throw_type(ctx, "unknown node interface")),
@@ -808,7 +815,12 @@ pub(crate) fn is_interface<'js>(ctx: &Ctx<'js>, value: &Value<'js>, interface: &
         .base
         .get_node(id.node)
         .map(|node| &node.data);
-    node_interface_matches(data, document.xml_document, interface) == Some(true)
+    node_interface_matches(
+        data,
+        document.xml_document,
+        document.content_type == "text/html",
+        interface,
+    ) == Some(true)
 }
 
 /// The receiver JS object for hand methods that keep it (observer identity

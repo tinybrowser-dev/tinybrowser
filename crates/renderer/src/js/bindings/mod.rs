@@ -1371,6 +1371,8 @@ fn instantiate_node<'js>(ctx: &Ctx<'js>, id: NodeId) -> Result<Value<'js>> {
     let brand = with_node_data(ctx, id, |data| match data {
         Some(NodeData::Document(_)) => Some(if document_is_xml_document(ctx, id) {
             "XMLDocument"
+        } else if document_is_html_content(ctx, id) {
+            "HTMLDocument"
         } else {
             "Document"
         }),
@@ -1395,7 +1397,10 @@ fn instantiate_node<'js>(ctx: &Ctx<'js>, id: NodeId) -> Result<Value<'js>> {
 fn wrap_with_brand<'js>(ctx: &Ctx<'js>, id: NodeId, brand: &str) -> Result<Value<'js>> {
     let value = JsNode {
         handle: std::cell::Cell::new(Handle(id)),
-        document: std::cell::Cell::new(brand == "Document" || brand == "XMLDocument"),
+        document: std::cell::Cell::new(matches!(
+            brand,
+            "Document" | "XMLDocument" | "HTMLDocument"
+        )),
     };
     let class = if let Some(prototype) = node_wrapper_prototype(ctx, id, brand)? {
         host::instance_proto(value, prototype)?
@@ -3332,7 +3337,7 @@ mod realm_tests {
             ctx.globals().set("__w", wrapped).expect("test global");
             let is_document: bool = super::super::eval_classic(
                 &ctx,
-                "Object.getPrototypeOf(__w) === Document.prototype",
+                "Object.getPrototypeOf(__w) === HTMLDocument.prototype && __w instanceof Document",
             )
             .expect("prototype");
             assert!(is_document, "wrapper keeps the owner realm's prototype");

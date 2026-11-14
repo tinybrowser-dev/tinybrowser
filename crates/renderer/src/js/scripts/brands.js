@@ -53,6 +53,7 @@
     Object.defineProperty(NodeInterface.prototype, name, { value, writable: false, configurable: true });
   }
   const DocumentInterface = define('Document', NodeInterface, true);
+  const HTMLDocumentInterface = define('HTMLDocument', DocumentInterface);
   const ElementInterface = define('Element', NodeInterface);
   const XMLDocumentInterface = define('XMLDocument', DocumentInterface);
   const CharacterDataInterface = define('CharacterData', NodeInterface);
@@ -72,6 +73,7 @@
   const MathMLElementInterface = define('MathMLElement', ElementInterface);
   const table = {
     Document: DocumentInterface.prototype,
+    HTMLDocument: HTMLDocumentInterface.prototype,
     XMLDocument: XMLDocumentInterface.prototype,
     Element: ElementInterface.prototype,
     CharacterData: CharacterDataInterface.prototype,

@@ -169,6 +169,18 @@ Known gaps this engine fails honestly (no fork patch yet):
 
 ## Open issues
 
+- `HTMLDocument` is not declared by the current HTML or DOM specification, but
+  every engine exposes it and WPT relies on it: `document.constructor` is
+  `HTMLDocument` and `Object.getPrototypeOf(document)` is
+  `HTMLDocument.prototype` for an HTML document, while XML documents keep
+  `XMLDocument` and `new Document()`/`DOMParser` XML results stay plain
+  `Document`. tinybrowser follows the browsers, because no spec text gives
+  those documents a constructor at all and the named-property tentative test
+  compares against `HTMLDocument.prototype`. The interface carries no members;
+  `Document.prototype` is its parent, so every `Document` member still
+  resolves. `crates/renderer/src/js/scripts/brands.js` and
+  `instantiate_node` in `crates/renderer/src/js/bindings/mod.rs` are the one
+  brand table.
 - `@scope` is gated behind `layout.css.at-scope.enabled`, which
   `stylo_static_prefs` defaults off. Turning it on
   (`style_config::set_pref!` in `init_stylo_prefs`) parses the at-rule and
