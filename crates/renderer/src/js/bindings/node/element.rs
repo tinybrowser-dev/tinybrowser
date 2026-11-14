@@ -6,11 +6,12 @@ use super::super::{
     NodeOrString, OptString, WebIdlString, active_world, after_attribute_change, attached_attr_id,
     attr_owner, attr_state, attr_wrapper, attribute_local_name, attribute_value, blur_node,
     deref_weak, document_is_html_content, dom_string, element_box_ctx, element_click,
-    fixup_focus_after_removal, focus_node, host, host_node_id, is_focusable, js_string_to_utf8,
-    live_collection, make_weak, rect_object, remove_attribute_sync, schedule_mutation_delivery,
-    set_attribute_node, set_attribute_sync, string_value, throw_dom, throw_dom_error, touch_attr,
-    valid_attribute_local_name, validate_and_extract, with_node_data, world, world_for_node,
-    wrap_node,
+    fixup_focus_after_removal, focus_node, get_element_reference, get_element_reference_list, host,
+    host_node_id, is_focusable, js_string_to_utf8, live_collection, make_weak, rect_object,
+    remove_attribute_sync, schedule_mutation_delivery, set_attribute_node, set_attribute_sync,
+    set_element_reference, set_element_reference_list, string_value, throw_dom, throw_dom_error,
+    touch_attr, valid_attribute_local_name, validate_and_extract, with_node_data, world,
+    world_for_node, wrap_node,
 };
 use super::forms::fixup_controls_on_insert;
 use super::offset::{cssom_round, has_associated_box};
@@ -1255,6 +1256,86 @@ impl<'js> math_ml_element_generated::MathMLElement<'js> for JsNode {
 /// reflection over `role` and the `aria-*` content attributes
 /// (<https://w3c.github.io/aria/#introstates>).
 impl<'js> aria_mixin_generated::ARIAMixin<'js> for JsNode {
+    // https://w3c.github.io/aria/#aria-activedescendant
+    fn get_aria_active_descendant_element(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
+        get_element_reference(ctx, self.handle.get().0, "aria-activedescendant")
+    }
+
+    // https://w3c.github.io/aria/#aria-activedescendant
+    fn set_aria_active_descendant_element(&self, ctx: &Ctx<'js>, value: Value<'js>) -> Result<()> {
+        set_element_reference(ctx, self.handle.get().0, "aria-activedescendant", value)
+    }
+
+    // https://w3c.github.io/aria/#aria-controls
+    fn get_aria_controls_elements(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
+        get_element_reference_list(ctx, self.handle.get().0, "aria-controls")
+    }
+
+    // https://w3c.github.io/aria/#aria-controls
+    fn set_aria_controls_elements(&self, ctx: &Ctx<'js>, value: Value<'js>) -> Result<()> {
+        set_element_reference_list(ctx, self.handle.get().0, "aria-controls", value)
+    }
+
+    // https://w3c.github.io/aria/#aria-describedby
+    fn get_aria_described_by_elements(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
+        get_element_reference_list(ctx, self.handle.get().0, "aria-describedby")
+    }
+
+    // https://w3c.github.io/aria/#aria-describedby
+    fn set_aria_described_by_elements(&self, ctx: &Ctx<'js>, value: Value<'js>) -> Result<()> {
+        set_element_reference_list(ctx, self.handle.get().0, "aria-describedby", value)
+    }
+
+    // https://w3c.github.io/aria/#aria-details
+    fn get_aria_details_elements(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
+        get_element_reference_list(ctx, self.handle.get().0, "aria-details")
+    }
+
+    // https://w3c.github.io/aria/#aria-details
+    fn set_aria_details_elements(&self, ctx: &Ctx<'js>, value: Value<'js>) -> Result<()> {
+        set_element_reference_list(ctx, self.handle.get().0, "aria-details", value)
+    }
+
+    // https://w3c.github.io/aria/#aria-errormessage
+    fn get_aria_error_message_elements(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
+        get_element_reference_list(ctx, self.handle.get().0, "aria-errormessage")
+    }
+
+    // https://w3c.github.io/aria/#aria-errormessage
+    fn set_aria_error_message_elements(&self, ctx: &Ctx<'js>, value: Value<'js>) -> Result<()> {
+        set_element_reference_list(ctx, self.handle.get().0, "aria-errormessage", value)
+    }
+
+    // https://w3c.github.io/aria/#aria-flowto
+    fn get_aria_flow_to_elements(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
+        get_element_reference_list(ctx, self.handle.get().0, "aria-flowto")
+    }
+
+    // https://w3c.github.io/aria/#aria-flowto
+    fn set_aria_flow_to_elements(&self, ctx: &Ctx<'js>, value: Value<'js>) -> Result<()> {
+        set_element_reference_list(ctx, self.handle.get().0, "aria-flowto", value)
+    }
+
+    // https://w3c.github.io/aria/#aria-labelledby
+    fn get_aria_labelled_by_elements(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
+        get_element_reference_list(ctx, self.handle.get().0, "aria-labelledby")
+    }
+
+    // https://w3c.github.io/aria/#aria-labelledby
+    fn set_aria_labelled_by_elements(&self, ctx: &Ctx<'js>, value: Value<'js>) -> Result<()> {
+        set_element_reference_list(ctx, self.handle.get().0, "aria-labelledby", value)
+    }
+
+    // https://w3c.github.io/aria/#aria-owns
+    fn get_aria_owns_elements(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
+        get_element_reference_list(ctx, self.handle.get().0, "aria-owns")
+    }
+
+    // https://w3c.github.io/aria/#aria-owns
+    fn set_aria_owns_elements(&self, ctx: &Ctx<'js>, value: Value<'js>) -> Result<()> {
+        set_element_reference_list(ctx, self.handle.get().0, "aria-owns", value)
+    }
+
     // https://w3c.github.io/aria/#role
     fn get_role(&self, ctx: &Ctx<'js>) -> Result<Option<rquickjs::String<'js>>> {
         aria_get(ctx, self.handle.get().0, "role")

@@ -86,7 +86,9 @@ fn retarget_adopted_subtree(ctx: &Ctx<'_>, from: NodeId, to: NodeId) -> Result<(
     // the already-detached source and materialized copy half-retargeted
     // with no rollback, while `zip` would misalign every following sibling.
     let mut stack = vec![(from, to)];
+    let mut adopted = Vec::new();
     while let Some((from, to)) = stack.pop() {
+        adopted.push((from, to));
         super::retarget_wrapper(ctx, from, to)?;
         // The cryptographic nonce slot follows the adopted node into its
         // new identity; content attributes travel with the materialized
@@ -155,6 +157,16 @@ fn retarget_adopted_subtree(ctx: &Ctx<'_>, from: NodeId, to: NodeId) -> Result<(
         let to_children = adopted_children(ctx, to)?;
         if from_children.len() == to_children.len() {
             stack.extend(from_children.into_iter().zip(to_children));
+        }
+    }
+    // Element references keep naming the same element across adoption, which
+    // means following its new tree id and filing the entry under the
+    // document that now owns the element
+    // (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes:element>).
+    if let Ok(owner) = world(ctx) {
+        let store = owner.borrow().runtime.documents.clone();
+        if let Ok(mut documents) = store.try_borrow_mut() {
+            documents.retarget_element_references(&adopted);
         }
     }
     Ok(())

@@ -58,11 +58,51 @@ pub struct SideTables {
     /// (<https://w3c.github.io/aria/#enumerated-attribute-values-html>); any
     /// content-attribute change clears the entry.
     enumerated_nulls: HashSet<(blitz_traits::node_id::NodeId, String)>,
+    /// `(element, content attribute)` pairs whose IDL element reference setter
+    /// stored an element (`Element`) or a list of elements (`Elements`). An
+    /// absent entry is the spec's null, which falls back to the content
+    /// attribute; an empty `Elements` list is an explicitly set empty list
+    /// (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes:element>).
+    element_references: HashMap<(blitz_traits::node_id::NodeId, String), ElementReference>,
     /// The `(document id, node)` of the template element whose contents this
     /// inert document holds. The contents fragment's `host` cannot name an
     /// element in another document, so this is the back link
     /// (<https://html.spec.whatwg.org/multipage/scripting.html#template-contents>).
     template_host: Option<(u32, blitz_traits::node_id::NodeId)>,
+}
+
+/// The state one reflected element reference carries
+/// (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes:element>).
+pub(crate) enum ElementReference {
+    /// An `Element?` reflection.
+    Element(NodeId),
+    /// A `FrozenArray<Element>?` reflection; empty is an explicitly set
+    /// empty list, not "never set".
+    Elements(Vec<NodeId>),
+}
+
+impl ElementReference {
+    /// Rewrites the stored nodes after a cross-document adoption, where the
+    /// same element keeps its identity but moves to a new tree id.
+    fn retargeted(self, adopted: &[(NodeId, NodeId)]) -> Self {
+        match self {
+            Self::Element(node) => Self::Element(retarget_node(node, adopted)),
+            Self::Elements(nodes) => Self::Elements(
+                nodes
+                    .into_iter()
+                    .map(|node| retarget_node(node, adopted))
+                    .collect(),
+            ),
+        }
+    }
+}
+
+/// The adopted copy of `node`, or `node` itself when it did not move.
+fn retarget_node(node: NodeId, adopted: &[(NodeId, NodeId)]) -> NodeId {
+    adopted
+        .iter()
+        .find(|(from, _)| *from == node)
+        .map_or(node, |(_, to)| *to)
 }
 
 impl BlitzDocument {
@@ -122,6 +162,71 @@ impl BlitzDocument {
     /// null (with no content-attribute change since).
     pub(crate) fn is_enumerated_null(&self, id: blitz_traits::node_id::NodeId, name: &str) -> bool {
         self.side.enumerated_nulls.contains(&(id, name.to_owned()))
+    }
+
+    /// Stores the element an IDL element reference setter received.
+    pub(crate) fn set_element_reference(
+        &mut self,
+        id: blitz_traits::node_id::NodeId,
+        name: &str,
+        element: NodeId,
+    ) {
+        self.side
+            .element_references
+            .insert((id, name.to_owned()), ElementReference::Element(element));
+    }
+
+    /// Stores the element list an IDL element reference list setter received.
+    pub(crate) fn set_element_reference_list(
+        &mut self,
+        id: blitz_traits::node_id::NodeId,
+        name: &str,
+        elements: Vec<NodeId>,
+    ) {
+        self.side
+            .element_references
+            .insert((id, name.to_owned()), ElementReference::Elements(elements));
+    }
+
+    /// The element or element list the IDL setter stored, if any.
+    pub(crate) fn element_reference(
+        &self,
+        id: blitz_traits::node_id::NodeId,
+        name: &str,
+    ) -> Option<&ElementReference> {
+        self.side.element_references.get(&(id, name.to_owned()))
+    }
+
+    /// Clears the explicitly set reference after a content-attribute change
+    /// (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes:element>).
+    pub(crate) fn clear_element_reference(
+        &mut self,
+        id: blitz_traits::node_id::NodeId,
+        name: &str,
+    ) {
+        self.side.element_references.remove(&(id, name.to_owned()));
+    }
+
+    /// Drains every element reference so the store can re-file it after an
+    /// adoption changed the element's document.
+    pub(crate) fn take_element_references(
+        &mut self,
+    ) -> Vec<((blitz_traits::node_id::NodeId, String), ElementReference)> {
+        std::mem::take(&mut self.side.element_references)
+            .into_iter()
+            .collect()
+    }
+
+    /// Files one element reference under its (possibly new) document.
+    pub(crate) fn insert_element_reference(
+        &mut self,
+        element: blitz_traits::node_id::NodeId,
+        name: String,
+        reference: ElementReference,
+    ) {
+        self.side
+            .element_references
+            .insert((element, name), reference);
     }
 
     /// Whether `id` is a `DocumentFragment`: a fragment node or a shadow
@@ -372,6 +477,38 @@ pub(crate) struct DocumentStore {
 impl DocumentStore {
     pub(crate) fn values_mut(&mut self) -> impl Iterator<Item = &mut Parsed> {
         self.documents.values_mut()
+    }
+
+    /// Re-files every element reference after a cross-document adoption, and
+    /// points it at the adopted copy of the node it stored
+    /// (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes:element>).
+    ///
+    /// A stored reference belongs to the element's document, so an element
+    /// that moves takes its entries with it; the stored node's tree id changes
+    /// even though its identity does not.
+    pub(crate) fn retarget_element_references(&mut self, adopted: &[(NodeId, NodeId)]) {
+        let mut entries = Vec::new();
+        for parsed in self.documents.values_mut() {
+            let document = parsed.id;
+            for (key, reference) in parsed.document.take_element_references() {
+                entries.push((document, key, reference));
+            }
+        }
+        for (document, (element, name), reference) in entries {
+            let element = retarget_node(
+                NodeId {
+                    document,
+                    node: element,
+                },
+                adopted,
+            );
+            let reference = reference.retargeted(adopted);
+            if let Some(parsed) = self.documents.get_mut(&element.document) {
+                parsed
+                    .document
+                    .insert_element_reference(element.node, name, reference);
+            }
+        }
     }
 
     /// Stores `parsed` and returns its document id, assigning one when the

@@ -2842,6 +2842,13 @@ pub(crate) fn native_type(
         {
             Ok(ReturnType::PromiseUndefined)
         }
+        // `FrozenArray<T>` is carried as an opaque JS value. Only attributes
+        // use it, and the engine builds and caches the frozen array itself,
+        // so there is no generated element-by-element conversion to apply
+        // (<https://webidl.spec.whatwg.org/#es-frozen-array>).
+        Type::Single(SingleType::NonAny(NonAnyType::FrozenArrayType(_))) => {
+            Ok(ReturnType::PlatformObject)
+        }
         Type::Single(SingleType::NonAny(NonAnyType::Identifier(item))) => {
             native_named(database, item.type_.0, item.q_mark.is_some(), visited)
         }

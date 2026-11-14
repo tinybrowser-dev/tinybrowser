@@ -1596,6 +1596,14 @@ pub(crate) type Outbox = Rc<RefCell<VecDeque<RealmRequest>>>;
 /// wholesale replacement and `forget_document` for one document's id-keyed
 /// maps. Every field here is dropped by one of the two, which is why the
 /// call sites no longer list fields.
+/// The contents and frozen array object one reflected element reference list
+/// last answered
+/// (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes:element>).
+pub(crate) struct ElementReferenceCache {
+    pub(crate) nodes: Vec<NodeId>,
+    pub(crate) object: Persistent<Value<'static>>,
+}
+
 #[derive(Default)]
 pub(crate) struct DocumentState {
     /// `meta` elements whose policy was already appended.
@@ -1609,6 +1617,12 @@ pub(crate) struct DocumentState {
     /// parse walk does not repeat a check that already ran for the same
     /// value (<https://html.spec.whatwg.org/multipage/semantics.html#the-base-element>).
     pub(crate) base_href_seen: HashMap<NodeId, Option<String>>,
+    /// The frozen array `document`-level element reference lists returned,
+    /// keyed by `(element, content attribute)`, with the contents it was built
+    /// from. An unchanged list answers the same object, which is the spec's
+    /// caching layer
+    /// (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes:element>).
+    pub(crate) element_reference_cache: HashMap<(NodeId, String), ElementReferenceCache>,
     /// The base URL each `base` element may freeze, or `None` when its
     /// `href` is refused or unusable.
     base_results: HashMap<NodeId, Option<Url>>,
@@ -1785,6 +1799,7 @@ impl DocumentState {
         self.blocked_bases.clear();
         self.base_href_seen.clear();
         self.base_results.clear();
+        self.element_reference_cache.clear();
         self.frame_navigations.clear();
         self.parser_inserted.clear();
         self.decoders.clear();
@@ -1812,6 +1827,8 @@ impl DocumentState {
             .retain(|node, _| node.document != document);
         self.base_results
             .retain(|node, _| node.document != document);
+        self.element_reference_cache
+            .retain(|(node, _), _| node.document != document);
         self.nonce_slots.retain(|node, _| node.document != document);
         self.creator_stacks
             .retain(|node, _| node.document != document);

@@ -2155,3 +2155,30 @@ Evidence: `html/dom` 65181 to **65204** subtests, no lost subtests.
 `-02.xhtml` 3/4 to 4/4, `-03` 1/11 to 11/11, `-04.xhtml` 0/1 to 1/1, `-07`
 4/9 to 9/9, `-09` 1/5 to 5/5, and `document.title-not-in-html-svg` 1/2 to 2/2;
 `-05`, `-06`, and `-08` stay green.
+ARIA element reflection now stores the element or element list an IDL setter
+received, instead of reflecting the `aria-*` content attribute as a string
+(`crates/renderer/src/js/bindings/element_reference.rs`,
+`crates/renderer/src/js/bindings/node/element.rs`). `ariaActiveDescendantElement`
+and the seven `FrozenArray<Element>?` list attributes (`aria-controls`,
+`aria-describedby`, `aria-details`, `aria-errormessage`, `aria-flowto`,
+`aria-labelledby`, `aria-owns`) write the empty string to the content attribute
+and keep the reference on the element. The getters apply the spec's
+attr-associated-element and attr-associated-elements algorithms: a stored node
+is visible only while it is a descendant of one of the element's
+shadow-including ancestors, and the content-attribute fallback resolves each
+IDREF in the element's own tree. The list getter caches the frozen array by
+contents, so `element.reflectedElements === element.reflectedElements` holds
+until the contents change.
+
+A direct content-attribute write clears the stored reference, which is the
+spec's attribute change step. Cross-document adoption keeps the reference
+naming the same element: adoption snapshots into a new tree id, so
+`DocumentStore::retarget_element_references` follows the adopted copy and
+re-files the entry under the document that now owns the element. The
+`FrozenArray` IDL type is carried to the native side as an opaque platform
+object, and the setter converts the argument through its `@@iterator` so a
+non-iterable throws `TypeError`.
+
+Evidence: `html/dom` 65204 to **65229** subtests, no lost subtests.
+`aria-element-reflection.html` 13/27 to 27/27 and
+`aria-element-reflection-disconnected.html` 1/2 to 2/2.
