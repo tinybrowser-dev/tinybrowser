@@ -75,6 +75,10 @@ pub(super) fn install(ctx: &Ctx<'_>) -> Result<()> {
         rquickjs::prelude::Func::from(sheet_style_set_property),
     )?;
     bridge.set(
+        "__tb_sheet_style_set_css_text",
+        rquickjs::prelude::Func::from(sheet_style_set_css_text),
+    )?;
+    bridge.set(
         "__tb_sheet_rule_set_selector_text",
         rquickjs::prelude::Func::from(sheet_rule_set_selector_text),
     )?;
@@ -397,6 +401,42 @@ fn sheet_style_css_text<'js>(ctx: Ctx<'js>, element: Value<'js>, id: f64, path: 
         .base
         .cssom_rule_style_css_text(sheet, &path)
         .unwrap_or_default()
+}
+
+/// Replaces a rule's declaration block with the declarations parsed from
+/// `text` (`CSSStyleDeclaration.cssText` setter, reached through a rule's
+/// `[PutForwards=cssText]` `style` attribute)
+/// (<https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-csstext>).
+fn sheet_style_set_css_text<'js>(
+    ctx: Ctx<'js>,
+    element: Value<'js>,
+    id: f64,
+    path: String,
+    text: String,
+) -> Result<()> {
+    let world = world(&ctx)?;
+    let Some(node) = host_node_id(&ctx, &element) else {
+        return Ok(());
+    };
+    if sheet_id(id).is_none() {
+        return Ok(());
+    }
+    let Some(path) = with_path(&path) else {
+        return Ok(());
+    };
+    let world = world.borrow();
+    let Some(mut parsed) = world.document_mut(node) else {
+        return Ok(());
+    };
+    // The engine's setter resolves the sheet from the owner node and reports a
+    // font-face descriptor block as unsupported; the JS side answers those
+    // through `setProperty` instead
+    // (<https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-csstext>).
+    let _ = parsed
+        .document
+        .base
+        .stylesheet_rule_style_set_css_text(node.node, &path, &text);
+    Ok(())
 }
 
 fn sheet_style_get_property<'js>(

@@ -2457,3 +2457,31 @@ Evidence: `css/cssom` 3337 to **3347** subtests, no lost subtests;
 `html/semantics/forms` 4522 to 4523 with no lost subtests.
 `cargo fmt --check`, `tools/check clippy`, and the renderer (175),
 webidl-bindgen (42), and wpt-harness (30) test binaries pass.
+CSS rule objects now expose their IDL attributes on the interface prototypes
+instead of as own properties, and a rule's `style` is a real
+`CSSStyleDeclaration`. WebIDL puts attributes on the interface prototype
+object, so `assert_idl_attribute` failed for every rule attribute
+(`CSSStyleRule.html`, `cssimportrule.html`), and `rule.style.margin` was
+undefined because the rule declaration had no CSS property IDL attributes.
+`rule.style` is now `[SameObject, PutForwards=cssText]`: reading it answers
+one cached declaration, assigning a string replaces that declaration's text.
+The text setter goes through the engine's existing rule cssText path
+(`stylesheet_rule_style_set_css_text`), and the declaration is wrapped in the
+same property-name proxy the inline style uses
+(`crates/renderer/src/js/scripts/web/cssom.js`, `bindings/cssom_host.rs`).
+A style rule also owns a rule list (CSS Nesting), so `cssRules` moved to
+`CSSStyleRule.prototype` as well as the grouping and keyframes prototypes.
+
+Evidence: `css/cssom` 3347 to **3370** subtests, no lost subtests.
+`CSSStyleRule.html` 4/10 to 10/10, `cssimportrule.html` 5/11 to 6/11 (what
+remains needs a `MediaList` on rule `media`, the imported `styleSheet`, the
+`@page` rule the engine does not list, and `supportsText`).
+`css/cssom-view` stays at 1616, `resize-observer` at 50,
+`intersection-observer` at 185, `css/selectors` 4777 to **4778**, and
+`html/dom` at 65341 with no lost subtests; `html/semantics/forms` shows only
+the pre-existing `form-double-submit.html` failure. `cargo fmt --check`,
+`tools/check clippy`, and the renderer (175), webidl-bindgen (42), and
+wpt-harness (30) test binaries pass. `CSSFontFeatureValuesRule.fontFamily` has
+no setter in the style engine, so it is not exposed on the prototype; a JS
+assignment keeps the old own-property behavior, recorded in
+`docs/limitations.md`.

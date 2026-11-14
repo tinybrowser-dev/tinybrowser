@@ -323,6 +323,127 @@
     get() { return null; },
     enumerable: true, configurable: true,
   });
+  // CSSRule's own attributes are accessors on the interface prototype
+  // (<https://drafts.csswg.org/cssom/#the-cssrule-interface>).
+  __tbDefineProperty(CSSRule.prototype, 'type', {
+    get() {
+      const entry = __tbRuleState(this);
+      const next = entry.read();
+      return next ? next.type : entry.info.type;
+    },
+    enumerable: true, configurable: true,
+  });
+  __tbDefineProperty(CSSRule.prototype, 'cssText', {
+    get() {
+      const entry = __tbRuleState(this);
+      return entry.detached ? entry.frozenText : (entry.read() || {}).cssText || '';
+    },
+    enumerable: true, configurable: true,
+  });
+  __tbDefineProperty(CSSRule.prototype, 'parentRule', {
+    get() { return __tbRuleState(this).parentRule; },
+    enumerable: true, configurable: true,
+  });
+  __tbDefineProperty(CSSRule.prototype, 'parentStyleSheet', {
+    get() {
+      const entry = __tbRuleState(this);
+      return entry.detached ? null : entry.sheet;
+    },
+    enumerable: true, configurable: true,
+  });
+  // One accessor per string attribute an interface exposes. The property
+  // exists even when the current snapshot omits the value, as WebIDL requires
+  // (<https://webidl.spec.whatwg.org/#idl-attributes>).
+  const __tbRuleStringAttribute = (ctor, names) => {
+    for (const name of names) {
+      __tbDefineProperty(ctor.prototype, name, {
+        get() {
+          const next = __tbRuleState(this).read();
+          const value = next ? next[name] : '';
+          return value === undefined || value === null ? '' : value;
+        },
+        enumerable: true, configurable: true,
+      });
+    }
+  };
+  __tbRuleStringAttribute(CSSConditionRule, ['conditionText']);
+  __tbRuleStringAttribute(CSSScopeRule, ['start', 'end']);
+  __tbRuleStringAttribute(CSSContainerRule, ['containerName', 'containerQuery']);
+  __tbRuleStringAttribute(CSSImportRule, ['href', 'media', 'layerName', 'supportsText']);
+  __tbRuleStringAttribute(CSSMediaRule, ['media']);
+  __tbRuleStringAttribute(CSSNamespaceRule, ['namespaceURI', 'prefix']);
+  __tbRuleStringAttribute(CSSLayerBlockRule, ['name']);
+  __tbRuleStringAttribute(CSSLayerStatementRule, ['nameList']);
+  __tbRuleStringAttribute(CSSCounterStyleRule, [
+    'name', 'system', 'symbols', 'additiveSymbols', 'negative', 'prefix',
+    'suffix', 'range', 'pad', 'fallback', 'speakAs',
+  ]);
+  __tbRuleStringAttribute(CSSPropertyRule, ['name', 'syntax', 'initialValue']);
+  __tbRuleStringAttribute(CSSFontPaletteValuesRule, ['name']);
+  __tbRuleStringAttribute(CSSMarginRule, ['name']);
+  __tbRuleStringAttribute(CSSPositionTryRule, ['name']);
+  __tbRuleStringAttribute(CSSCustomMediaRule, ['name']);
+  __tbRuleStringAttribute(CSSViewTransitionRule, ['types']);
+  __tbRuleStringAttribute(CSSKeyframeRule, ['keyText']);
+  __tbRuleStringAttribute(CSSKeyframesRule, ['name']);
+  // A valid selector list replaces the rule's selectors and re-enters the
+  // cascade; an invalid one leaves the rule unchanged without throwing
+  // (<https://drafts.csswg.org/cssom/#dom-cssstylerule-selectortext>).
+  for (const ctor of [CSSStyleRule, CSSPageRule]) {
+    __tbDefineProperty(ctor.prototype, 'selectorText', {
+      get() {
+        const next = __tbRuleState(this).read();
+        return next && next.selectorText ? next.selectorText : '';
+      },
+      set(value) {
+        const entry = __tbRuleState(this);
+        if (entry.detached) return;
+        host.__tb_sheet_rule_set_selector_text(
+          entry.sheet.__tbOwner, entry.sheet.__tbId, __tbRulePath(entry.path), String(value),
+        );
+      },
+      enumerable: true, configurable: true,
+    });
+  }
+  // `style` is `[SameObject, PutForwards=cssText]`: the getter answers one
+  // declaration object, and assignment replaces that object's text
+  // (<https://webidl.spec.whatwg.org/#dfn-put-forwards>).
+  for (const ctor of [
+    CSSStyleRule, CSSPageRule, CSSFontFaceRule, CSSKeyframeRule, CSSMarginRule,
+    CSSPositionTryRule, CSSNestedDeclarations,
+  ]) {
+    __tbDefineProperty(ctor.prototype, 'style', {
+      get() {
+        const entry = __tbRuleState(this);
+        if (entry.style === null) entry.style = __tbStyle(entry.sheet, entry);
+        return entry.style;
+      },
+      set(value) { this.style.cssText = value; },
+      enumerable: true, configurable: true,
+    });
+  }
+  const __tbRuleChildList = ctor => {
+    __tbDefineProperty(ctor.prototype, 'cssRules', {
+      get() {
+        const entry = __tbRuleState(this);
+        if (entry.list === null) entry.list = __tbLiveRuleList(entry.sheet, entry, this);
+        return entry.list;
+      },
+      enumerable: true, configurable: true,
+    });
+    ctor.prototype.insertRule = function(text, index) {
+      const entry = __tbRuleState(this);
+      return __tbInsert(entry.sheet, entry.path, text, index, arguments.length);
+    };
+    ctor.prototype.deleteRule = function(index) {
+      const entry = __tbRuleState(this);
+      __tbDelete(entry.sheet, entry.path, index, arguments.length);
+    };
+  };
+  // A style rule in a nesting context owns a rule list, and so does a
+  // keyframes rule; both answer `cssRules`, `insertRule`, and `deleteRule`
+  // (<https://drafts.csswg.org/css-nesting-1/#cssom>).
+  for (const ctor of [CSSGroupingRule, CSSStyleRule, CSSKeyframesRule]) __tbRuleChildList(ctor);
   const __tbRulePrototype = {
     CSSStyleRule, CSSGroupingRule, CSSConditionRule, CSSMediaRule, CSSSupportsRule,
     CSSImportRule, CSSFontFaceRule, CSSKeyframesRule, CSSKeyframeRule, CSSRule,
@@ -380,6 +501,15 @@
         if (entry.detached) return '';
         return host.__tb_sheet_style_css_text(sheet.__tbOwner, sheet.__tbId, pathKey());
       },
+      // The setter parses the value as a declaration block and replaces the
+      // block whole, keeping the properties that parse
+      // (<https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-csstext>).
+      set(value) {
+        if (entry.detached) return;
+        host.__tb_sheet_style_set_css_text(
+          sheet.__tbOwner, sheet.__tbId, pathKey(), value == null ? '' : String(value),
+        );
+      },
       enumerable: true, configurable: true,
     });
     __tbDefineProperty(style, 'length', {
@@ -430,84 +560,58 @@
     // object a `toString` that answers its serialization
     // (<https://drafts.csswg.org/cssom/#the-cssstyledeclaration-interface>).
     style.toString = function() { return this.cssText; };
-    return style;
+    // The CSS property IDL attributes (`margin`, `borderTopWidth`, …) sit on
+    // top of the operations, exactly as on an inline style
+    // (<https://drafts.csswg.org/cssom/#css-property-to-idl-attribute>).
+    const idlName = property => property === 'cssFloat'
+      ? 'float'
+      : property.replace(/[A-Z]/g, letter => '-' + letter.toLowerCase());
+    return new Proxy(style, {
+      get(target, property, receiver) {
+        if (typeof property !== 'string') return Reflect.get(target, property, receiver);
+        if (property in target) {
+          const value = Reflect.get(target, property, receiver);
+          return typeof value === 'function' ? value.bind(target) : value;
+        }
+        return target.getPropertyValue(idlName(property));
+      },
+      set(target, property, value) {
+        if (typeof property !== 'string' || property in target) {
+          return Reflect.set(target, property, value);
+        }
+        target.setProperty(idlName(property), value);
+        return true;
+      },
+    });
+  }
+  // Per-instance state for a rule, kept under a symbol: WebIDL puts the
+  // interface's accessors on its prototype, so the rule object itself owns no
+  // IDL attribute
+  // (<https://webidl.spec.whatwg.org/#interface-prototype-object>).
+  const __tbRuleEntry = Symbol('CSSRule entry');
+  function __tbRuleState(receiver) {
+    const entry = receiver[__tbRuleEntry];
+    if (entry === undefined) throw new TypeError('Illegal invocation');
+    return entry;
   }
   function __tbCachedRule(sheet, path, parentRule) {
     for (const entry of sheet.__tbRules) {
       if (!entry.detached && __tbSamePath(entry.path, path)) return entry.rule;
     }
-    const entry = { path: path.slice(), detached: false, frozenText: '', rule: null, list: null, style: null };
+    const entry = {
+      path: path.slice(), detached: false, frozenText: '', rule: null,
+      list: null, style: null, sheet, parentRule, info: null, read: null,
+    };
     const rule = Object.create(CSSRule.prototype);
-    const read = () => {
+    entry.read = () => {
       if (entry.detached) return null;
       return host.__tb_sheet_rule_info(sheet.__tbOwner, sheet.__tbId, __tbRulePath(entry.path));
     };
-    const info = read() || { interface: 'CSSRule', type: 0, cssText: '', hasChildRules: false, hasStyle: false };
+    const info = entry.read() || { interface: 'CSSRule', type: 0, cssText: '', hasChildRules: false, hasStyle: false };
+    entry.info = info;
     const ctor = __tbRulePrototype[info.interface] || CSSRule;
     __tbSetPrototypeOf(rule, ctor.prototype);
-    __tbDefineProperty(rule, 'type', { get() { const next = read(); return next ? next.type : info.type; }, enumerable: true, configurable: true });
-    __tbDefineProperty(rule, 'cssText', {
-      get() { return entry.detached ? entry.frozenText : (read() || {}).cssText || ''; },
-      enumerable: true, configurable: true,
-    });
-    __tbDefineProperty(rule, 'parentRule', { get() { return parentRule; }, enumerable: true, configurable: true });
-    __tbDefineProperty(rule, 'parentStyleSheet', {
-      get() { return entry.detached ? null : sheet; },
-      enumerable: true, configurable: true,
-    });
-    if (info.selectorText !== undefined) {
-      __tbDefineProperty(rule, 'selectorText', {
-        get() { const next = read(); return next && next.selectorText ? next.selectorText : ''; },
-        // A valid selector list replaces the rule's selectors and re-enters the
-        // cascade; an invalid one leaves the rule unchanged without throwing
-        // (<https://drafts.csswg.org/cssom/#dom-cssstylerule-selectortext>).
-        set(value) {
-          if (entry.detached) return;
-          host.__tb_sheet_rule_set_selector_text(
-            sheet.__tbOwner, sheet.__tbId, __tbRulePath(entry.path), String(value),
-          );
-        },
-        enumerable: true, configurable: true,
-      });
-    }
-    if (info.conditionText !== undefined) {
-      __tbDefineProperty(rule, 'conditionText', {
-        get() { const next = read(); return next && next.conditionText ? next.conditionText : ''; },
-        enumerable: true, configurable: true,
-      });
-    }
-    for (const key of ['keyText', 'name', 'href', 'media']) {
-      if (info[key] === undefined) continue;
-      const attribute = key;
-      __tbDefineProperty(rule, attribute, {
-        get() { const next = read(); return next && next[attribute] ? next[attribute] : ''; },
-        enumerable: true, configurable: true,
-      });
-    }
-    if (info.hasChildRules) {
-      __tbDefineProperty(rule, 'cssRules', {
-        get() {
-          if (entry.list === null) entry.list = __tbLiveRuleList(sheet, entry, rule);
-          return entry.list;
-        },
-        enumerable: true, configurable: true,
-      });
-      rule.insertRule = function(text, index) {
-        return __tbInsert(sheet, entry.path, text, index, arguments.length);
-      };
-      rule.deleteRule = function(index) {
-        return __tbDelete(sheet, entry.path, index, arguments.length);
-      };
-    }
-    if (info.hasStyle) {
-      __tbDefineProperty(rule, 'style', {
-        get() {
-          if (entry.style === null) entry.style = __tbStyle(sheet, entry);
-          return entry.style;
-        },
-        enumerable: true, configurable: true,
-      });
-    }
+    __tbDefineProperty(rule, __tbRuleEntry, { value: entry });
     entry.rule = rule;
     sheet.__tbRules.push(entry);
     return rule;

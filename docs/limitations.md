@@ -102,6 +102,15 @@ name or `slot` attribute would not actually match. A pseudo-element argument is
 still ignored: the declaration describes the element itself, which is why
 `getComputedStyle-pseudo.html` stays mostly red.
 
+CSS rule attributes live on the interface prototypes, but
+`CSSFontFeatureValuesRule.fontFamily` is still an own data property: the style
+engine stores a font-feature-values rule's family list behind an immutable
+`Arc`, so changing it needs the containing rule list rewritten. The property is
+therefore not installed on the prototype; a page that assigns it creates an own
+property on that one rule object, and the sheet keeps the original family.
+`CSSImportRule.styleSheet` remains null (recorded below), and a media rule's
+`media` is still a string rather than a live `MediaList`.
+
 ## CSS content-visibility
 
 `content-visibility` is not in the style crate's property tables: the Servo
