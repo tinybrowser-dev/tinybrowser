@@ -755,7 +755,10 @@ crosses a shadow root to its host for a composed event, but it does not follow
 plain object created in another realm cannot report its exception in that
 realm, because `QuickJS` stores a realm only on functions
 (`EventListener-handleEvent-cross-realm.html`, recorded in
-`docs/upstream.md`). `Event-dispatch-single-activation-behavior.html`
+`docs/upstream.md`). `Event.timeStamp` now shares `performance.now()`'s time
+origin, but the engine does not coarsen the clock to HR-Time's 5-microsecond
+resolution, so `Event-timestamp-safe-resolution.html` stays red.
+`Event-dispatch-single-activation-behavior.html`
 exceeds the harness budget. `Event-dispatch-click.html` is flaky under the
 in-process harness: it passes its 33 subtests in some batch runs and hits the
 per-file budget in others, on both the old and the new tree.

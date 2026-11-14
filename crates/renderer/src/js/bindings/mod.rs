@@ -850,6 +850,16 @@ fn install_common(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
     world
         .borrow_mut()
         .set_window(Persistent::save(ctx, globals.clone()));
+    // `Event.timeStamp` is measured from the same time origin as
+    // `performance.now()`
+    // (<https://dom.spec.whatwg.org/#dom-event-timestamp>). Sample both clocks
+    // once, so creating an event needs no extra JS call.
+    let performance_now: f64 = globals
+        .get::<_, Object>("performance")
+        .and_then(|performance| performance.get::<_, Function>("now"))
+        .and_then(|now| now.call::<_, f64>(()))
+        .unwrap_or(0.0);
+    world.borrow_mut().event_clock = (std::time::Instant::now(), performance_now);
     Class::<JsEvent>::define(&globals)?;
     crate::js::bridge::evaluate(ctx, events::install_event_ctor_js(ctx)?)?;
     crate::js::bridge::object(ctx)?.set(

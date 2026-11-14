@@ -7,8 +7,6 @@
 
 use std::cell::{Cell, Ref, RefCell, RefMut};
 use std::rc::Rc;
-use std::sync::OnceLock;
-use std::time::Instant;
 
 use rquickjs::{
     Class, Ctx, Exception, FromJs, Function, Object, Persistent, Result, Value,
@@ -33,12 +31,19 @@ pub(crate) const AT_TARGET: u16 = 2;
 /// `Event.BUBBLING_PHASE` (<https://dom.spec.whatwg.org/#dom-event-bubbling_phase>).
 pub(crate) const BUBBLING_PHASE: u16 = 3;
 
-/// `DOMHighResTimeStamp` for `Event.timeStamp`, relative to this process's
-/// first event (<https://dom.spec.whatwg.org/#dom-event-timestamp>).
-fn now_millis() -> f64 {
-    static ORIGIN: OnceLock<Instant> = OnceLock::new();
-    let origin = ORIGIN.get_or_init(Instant::now);
-    origin.elapsed().as_secs_f64() * 1000.0
+/// `DOMHighResTimeStamp` for `Event.timeStamp`, measured from the realm's
+/// `performance` time origin
+/// (<https://dom.spec.whatwg.org/#dom-event-timestamp>).
+fn stamp_event(ctx: &Ctx<'_>, event: &JsEvent) {
+    let Ok(world) = bindings::world(ctx) else {
+        return;
+    };
+    let now = {
+        let world = world.borrow();
+        let (sampled, origin) = world.event_clock;
+        origin + sampled.elapsed().as_secs_f64() * 1000.0
+    };
+    event.state_mut().time_stamp = now;
 }
 
 /// One event target together with the world that owns it
@@ -115,7 +120,7 @@ impl JsEvent {
         Self::trusted_with(typ, bubbles, cancelable, true)
     }
 
-    fn trusted_with(typ: &str, bubbles: bool, cancelable: bool, composed: bool) -> Self {
+    pub(crate) fn trusted_with(typ: &str, bubbles: bool, cancelable: bool, composed: bool) -> Self {
         Self {
             state: EventStateCell(RefCell::new(EventState {
                 typ: typ.to_owned(),
@@ -124,7 +129,6 @@ impl JsEvent {
                 composed,
                 is_trusted: true,
                 initialized: true,
-                time_stamp: now_millis(),
                 ..EventState::default()
             })),
         }
@@ -135,10 +139,7 @@ impl JsEvent {
     /// (<https://dom.spec.whatwg.org/#dom-document-createevent>).
     pub(crate) fn uninitialized() -> Self {
         Self {
-            state: EventStateCell(RefCell::new(EventState {
-                time_stamp: now_millis(),
-                ..EventState::default()
-            })),
+            state: EventStateCell(RefCell::new(EventState::default())),
         }
     }
 
@@ -175,7 +176,6 @@ impl JsEvent {
                 cancelable: init.cancelable,
                 composed: init.composed,
                 initialized: true,
-                time_stamp: now_millis(),
                 ..EventState::default()
             })),
         }
@@ -194,11 +194,13 @@ impl JsEvent {
 impl<'js> event_generated::Event<'js> for JsEvent {
     // https://dom.spec.whatwg.org/#dom-event-event
     fn constructor(
-        _ctx: &Ctx<'js>,
+        ctx: &Ctx<'js>,
         typ: rquickjs::String<'js>,
         init: event_generated::EventInit,
     ) -> Result<Self> {
-        Ok(Self::from_init(typ.to_string()?, &init))
+        let event = Self::from_init(typ.to_string()?, &init);
+        stamp_event(ctx, &event);
+        Ok(event)
     }
 
     // https://dom.spec.whatwg.org/#dom-event-type
@@ -594,7 +596,8 @@ fn register_standalone<'js>(ctx: &Ctx<'js>, id: u64, target: &Object<'js>) -> Re
 }
 
 /// An event whose prototype is this realm's, not the runtime's cached one.
-fn realm_event<'js>(ctx: &Ctx<'js>, event: JsEvent) -> Result<Class<'js, JsEvent>> {
+pub(crate) fn realm_event<'js>(ctx: &Ctx<'js>, event: JsEvent) -> Result<Class<'js, JsEvent>> {
+    stamp_event(ctx, &event);
     bindings::host::instance(ctx, event)
 }
 

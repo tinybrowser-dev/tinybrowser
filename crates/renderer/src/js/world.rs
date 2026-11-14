@@ -1436,6 +1436,10 @@ pub(crate) struct World {
     /// object, because `window.event` is `[Replaceable]`: a page that assigns
     /// it must shadow the accessor rather than change what dispatch stores.
     pub(crate) current_event: Option<Persistent<Value<'static>>>,
+    /// The realm's `performance.now()` value and the `Instant` sampled with
+    /// it. `Event.timeStamp` is measured from that time origin
+    /// (<https://dom.spec.whatwg.org/#dom-event-timestamp>).
+    pub(crate) event_clock: (Instant, f64),
     /// Containers whose insertion steps already fired `load` (src-less
     /// iframes). A later container navigation clears the entry when it
     /// starts, so that navigation's own `load` still fires; `finish_frame_load`
@@ -1977,6 +1981,7 @@ impl World {
             bridge: None,
             location_object: None,
             current_event: None,
+            event_clock: (Instant::now(), 0.0),
             insertion_load_fired: HashSet::new(),
             pristine_number: None,
             pristine_boolean: None,

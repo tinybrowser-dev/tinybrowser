@@ -344,7 +344,7 @@ pub(crate) fn element_click(ctx: &Ctx<'_>, node: NodeId) -> Result<()> {
         // restores it afterwards
         // (<https://html.spec.whatwg.org/multipage/input.html#the-input-element:legacy-pre-activation-behavior>).
         let previous = legacy_pre_activation(ctx, node)?;
-        let event = super::host::instance(ctx, events::JsEvent::uninitialized())?;
+        let event = events::realm_event(ctx, events::JsEvent::uninitialized())?;
         event.borrow().initialize("click".to_owned(), true, true);
         let not_canceled = events::dispatch_event(ctx, EventTargetKey::Node(node), &event)?;
         if not_canceled {

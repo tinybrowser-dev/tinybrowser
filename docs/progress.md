@@ -2327,3 +2327,17 @@ failures are the global's own indexed accessors shadowing a name, and
 (both recorded in `docs/limitations.md`). `dom/events` stays at 486,
 `html/dom` at 65341, `dom/nodes` at 14550, and `css/selectors` at 4777, with
 no lost subtests.
+`Event.timeStamp` is now measured from the realm's `performance.now()` time
+origin (`crates/renderer/src/js/events.rs`, `World::event_clock`). The world
+samples `performance.now()` and an `Instant` once at install; every event is
+stamped from that pair, so a constructed event's timestamp is comparable with
+`performance.now()` taken around its creation. Constructor-created events stamp
+in the `Event` constructor, user-agent and `createEvent()` events stamp in
+`realm_event`, and the timestamp is no longer tied to the process's first event.
+
+Evidence: `dom/events` 486 to **490** subtests, no lost subtests.
+`Event-timestamp-high-resolution.html` 0/4 to 4/4. The 5-microsecond
+coarsening of `Event-timestamp-safe-resolution.html` is not implemented and
+is recorded in `docs/limitations.md`. `html/dom` stays at 65341,
+`dom/nodes` at 14550, and `html/browsers` at 1009 (the one batch timeout,
+`grandparent_session_aboutsrcdoc.sub.window.html`, passes 4/4 in isolation).
