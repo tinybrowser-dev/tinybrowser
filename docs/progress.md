@@ -2728,3 +2728,28 @@ at 1616, `resize-observer` at 50, `css/selectors` at 4791,
 subtest that fails 3/3 in isolation at the parent commit too. `cargo fmt
 --check` (both trees), `tools/check clippy`, and the renderer (175),
 webidl-bindgen (42), and wpt-harness (30) test binaries pass.
+Click activation now follows DOM's dispatch rules
+(<https://dom.spec.whatwg.org/#concept-event-dispatch>). Only a `MouseEvent`
+named `click` is an activation event, ancestors are considered only when
+`event.bubbles` is true, and the one activation target picked from the event
+path runs the activation behavior: `input` submit/reset return when the control
+is disabled, a checked `label` forwards a synthetic click to its labeled control
+unless the click landed on interactive content, and `summary` toggles the
+`open` attribute of its parent `details` and queues its `toggle` event. The
+unconditional post-dispatch label call is gone, so a click on an `area` or
+`a` inside a label no longer also activates the labeled control. `submit` and
+`reset` stop propagating at an ancestor `form` during bubbling, matching all
+three engines and whatwg/html#3599; capture still traverses the whole path.
+
+Evidence: `dom/events` 638 to **663** passing subtests, no lost subtests.
+`Event-dispatch-click.html` 28/33 to 33/33 and
+`Event-dispatch-single-activation-behavior.html` 112/132 to 132/132.
+`css/cssom` stays at 3673, `css/cssom-view` at 1616, `resize-observer` at 50,
+`css/selectors` at 4791, `intersection-observer` at 185, and `html/dom` at
+65341, with no lost subtests; `html/semantics/forms` 4522 to **4524**, with
+`form-double-submit-3.html` failing 1/1 at the parent commit too. `cargo fmt
+--check` (both trees), `tools/check clippy`, and the renderer (175),
+webidl-bindgen (42), and wpt-harness (30) test binaries pass. The two browser
+integration failures (`secure_context::a_popup_inherits_its_openers_secure_context`,
+`window::a_blob_popup_compares_its_entry_with_the_top_level_origin`) reproduce
+1/1 at the parent commit.

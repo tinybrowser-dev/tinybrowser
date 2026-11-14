@@ -526,6 +526,13 @@ pub(crate) fn fire_selection_changed(ctx: &Ctx<'_>, id: NodeId) -> Result<()> {
     events::fire_trusted(ctx, EventTargetKey::Node(id), "select", true, false)
 }
 
+/// Fires the queued `toggle` event of a `details` element whose `open`
+/// attribute changed. The event bubbles and is not cancelable
+/// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-details-toggle-event-task>).
+pub(crate) fn fire_details_toggle(ctx: &Ctx<'_>, id: NodeId) -> Result<()> {
+    events::fire_trusted(ctx, EventTargetKey::Node(id), "toggle", true, false)
+}
+
 /// Dispatches one trusted `securitypolicyviolation` event per blocked policy
 /// at `target` (<https://w3c.github.io/webappsec-csp/#report-violation>).
 pub(crate) fn fire_csp_violations(

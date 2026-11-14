@@ -612,6 +612,16 @@ pub(crate) fn realm_event<'js>(ctx: &Ctx<'js>, event: JsEvent) -> Result<Class<'
     bindings::host::instance(ctx, event)
 }
 
+/// The `click` event `HTMLElement.click()` dispatches: a `MouseEvent`, which
+/// is what makes dispatch treat it as an activation event
+/// (<https://html.spec.whatwg.org/multipage/interaction.html#dom-click>).
+pub(crate) fn synthetic_click_event<'js>(ctx: &Ctx<'js>) -> Result<Class<'js, JsEvent>> {
+    let event = realm_event(ctx, JsEvent::uninitialized())?;
+    event.borrow().initialize("click".to_owned(), true, true);
+    set_exposed_event_prototype(ctx, &event, "MouseEvent")?;
+    Ok(event)
+}
+
 /// `document.createEvent(interface)`
 /// (<https://dom.spec.whatwg.org/#dom-document-createevent>).
 ///
@@ -1175,6 +1185,10 @@ pub(crate) fn fire_trusted_cancelable(
 /// (<https://dom.spec.whatwg.org/#concept-event-dispatch>).
 pub(crate) fn fire_trusted_click(ctx: &Ctx<'_>, target: EventTargetKey) -> Result<bool> {
     let event = realm_event(ctx, JsEvent::trusted("click", true, true))?;
+    // A user-agent click is a `MouseEvent` (browsers dispatch a `PointerEvent`,
+    // a `MouseEvent` subclass), which is what makes dispatch treat it as an
+    // activation event (<https://dom.spec.whatwg.org/#concept-event-dispatch>).
+    set_exposed_event_prototype(ctx, &event, "MouseEvent")?;
     dispatch(ctx, target, &event, None)
 }
 
@@ -1206,13 +1220,17 @@ fn dispatch<'js>(
     let bubbles = event.borrow().state().bubbles;
     let typ = event.borrow().state().typ.clone();
     // A click event runs the element's legacy-pre-activation behavior before
-    // its listeners and completes or rolls it back after dispatch. `click()`
-    // owns that sequence itself, so it marks the dispatch to skip this path
-    // (<https://html.spec.whatwg.org/multipage/input.html#the-input-element:legacy-pre-activation-behavior>).
-    let click_activation = if typ == "click"
-        && let EventTargetKey::Node(node) = target
-    {
-        let activation = super::bindings::focus::activation_target(ctx, node)?;
+    // its listeners and completes or rolls it back after dispatch. Only a
+    // `MouseEvent` named `click` is an activation event; the page can
+    // dispatch a plain `Event("click")`, which has no activation behavior.
+    // `click()` owns that sequence itself, so it marks the dispatch to skip
+    // this path
+    // (<https://dom.spec.whatwg.org/#concept-event-dispatch>,
+    // <https://html.spec.whatwg.org/multipage/input.html#the-input-element:legacy-pre-activation-behavior>).
+    let is_activation_event =
+        typ == "click" && is_event_of(ctx, &Class::into_value(event.clone()), "MouseEvent");
+    let click_activation = if is_activation_event && let EventTargetKey::Node(node) = target {
+        let activation = super::bindings::focus::activation_target(ctx, node, bubbles)?;
         match activation {
             Some(activation)
                 if !super::bindings::world_for_node(ctx, activation)?
@@ -1229,7 +1247,7 @@ fn dispatch<'js>(
     } else {
         None
     };
-    let result = run_invocations(ctx, event, &path, target, bubbles);
+    let result = run_invocations(ctx, event, &path, target, bubbles, &typ);
     // Handlers on elements, documents, and a document realm's window are
     // listeners, and their listener already ran with the list. Only the
     // targets this engine keeps as plain properties run here, after the
@@ -1258,21 +1276,17 @@ fn dispatch<'js>(
         state.canceled
     };
     let outcome = result.and(handler);
-    // A click event runs the activation behavior of a label ancestor after
-    // dispatch, including for events the page dispatched itself
-    // (<https://html.spec.whatwg.org/multipage/forms.html#the-label-element:activation-behavior>).
+    // The activation target runs its activation behavior after dispatch:
+    // roll back for a canceled event, otherwise complete it. A label or
+    // summary is chosen here like any other activation target, so only one
+    // element activates per click
+    // (<https://dom.spec.whatwg.org/#concept-event-dispatch>).
     if let Some((node, previous)) = click_activation {
         if canceled {
             super::bindings::focus::legacy_canceled_activation(ctx, node, &previous)?;
-        } else {
-            super::bindings::focus::complete_activation(ctx, node, &previous)?;
+        } else if let EventTargetKey::Node(event_target) = target {
+            super::bindings::focus::complete_activation(ctx, node, &previous, event_target)?;
         }
-    }
-    if typ == "click"
-        && !canceled
-        && let EventTargetKey::Node(node) = target
-    {
-        super::bindings::focus::run_label_activation(ctx, node)?;
     }
     // The per-listener current event already restored itself even when a
     // listener threw, so dispatch only has to surface the first error.
@@ -1285,6 +1299,7 @@ fn run_invocations<'js>(
     path: &[PathItem<'js>],
     target: EventTargetKey,
     bubbles: bool,
+    typ: &str,
 ) -> Result<()> {
     // Capture phase: root to target.
     for item in path.iter().rev() {
@@ -1304,9 +1319,40 @@ fn run_invocations<'js>(
         } else {
             continue;
         };
+        // A `submit` or `reset` event stops propagating at an ancestor form
+        // element during the bubble phase; the capture phase still traverses
+        // the whole path. All engines share the quirk, and the HTML Standard
+        // records it as a known deviation from the dispatch algorithm
+        // (<https://github.com/whatwg/html/issues/3599>,
+        // <https://github.com/whatwg/dom/issues/756>).
+        if phase == BUBBLING_PHASE
+            && matches!(typ, "submit" | "reset")
+            && is_html_form(&item.reference)
+        {
+            break;
+        }
         invoke(ctx, event, item, phase, false)?;
     }
     Ok(())
+}
+
+/// Whether an event path item is an HTML `form` element.
+fn is_html_form(item: &EventTargetRef) -> bool {
+    let EventTargetKey::Node(id) = item.key else {
+        return false;
+    };
+    let world = item.world.borrow();
+    let Some(parsed) = world.document(id) else {
+        return false;
+    };
+    crate::dom::tree::is_html_tag(
+        parsed
+            .document
+            .base
+            .get_node(id.node)
+            .map(|tree| &tree.data),
+        "form",
+    )
 }
 
 /// One event path item (<https://dom.spec.whatwg.org/#event-path-item>).

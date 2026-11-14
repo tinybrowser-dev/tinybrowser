@@ -132,6 +132,10 @@ enum Task {
     /// source, so the event never fires inside the assignment
     /// (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#set-the-selection-range>).
     SelectionChanged(crate::dom::tree::NodeId),
+    /// One queued `toggle` dispatch for a `details` element whose `open`
+    /// attribute changed
+    /// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-details-toggle-event-task>).
+    DetailsToggle(crate::dom::tree::NodeId),
 }
 
 /// Why a realm is being replaced.
@@ -1976,6 +1980,11 @@ impl Document {
     /// Queues the `select` task of a changed text selection.
     pub(crate) fn push_selection_changed(&mut self, id: crate::dom::tree::NodeId) {
         self.tasks.push_back(Task::SelectionChanged(id));
+    }
+
+    /// Queues the `toggle` task of a `details` element whose `open` changed.
+    pub(crate) fn push_details_toggle(&mut self, id: crate::dom::tree::NodeId) {
+        self.tasks.push_back(Task::DetailsToggle(id));
     }
 
     /// Queues `securitypolicyviolation` events a worker's policy raised,

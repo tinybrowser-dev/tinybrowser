@@ -1,5 +1,6 @@
 //! Focus, activation behavior, and the `WebDriver` bridge.
 
+use super::node::element::is_first_summary_child;
 use super::{LegacyNullString, events, host_node_id, webdriver_element, world_for_node, wrap_node};
 use enumerated::Enumerated;
 
@@ -209,10 +210,16 @@ fn indeterminate(base: &blitz_dom::BaseDocument, node: BlitzId) -> bool {
         .is_some_and(|element| element.form_state.indeterminate())
 }
 
-/// The activation target for a click: the first node in the event path with an
-/// activation behavior, starting at the event target
+/// The activation target for a click: the event target when it has an
+/// activation behavior, otherwise the first ancestor with one. Ancestors only
+/// qualify for a bubbling event: the path walk sets an ancestor activation
+/// target only when `event.bubbles` is true
 /// (<https://dom.spec.whatwg.org/#concept-event-dispatch>).
-pub(crate) fn activation_target(ctx: &Ctx<'_>, target: NodeId) -> Result<Option<NodeId>> {
+pub(crate) fn activation_target(
+    ctx: &Ctx<'_>,
+    target: NodeId,
+    bubbles: bool,
+) -> Result<Option<NodeId>> {
     let world = world_for_node(ctx, target)?;
     let world = world.borrow();
     let Some(parsed) = world.document(target) else {
@@ -226,6 +233,9 @@ pub(crate) fn activation_target(ctx: &Ctx<'_>, target: NodeId) -> Result<Option<
                 document: target.document,
                 node: current,
             }));
+        }
+        if !bubbles {
+            break;
         }
         cursor = base.get_node(current).and_then(|node| node.parent);
     }
@@ -267,6 +277,13 @@ fn has_activation(base: &blitz_dom::BaseDocument, node: BlitzId) -> bool {
         ),
         "button" | "label" => true,
         "a" | "area" => attr(base, node, "href").is_some(),
+        // Only the summary that is the summary for its parent `details` has
+        // an activation behavior
+        // (<https://html.spec.whatwg.org/multipage/interactive-elements.html#the-summary-element:activation-behavior>).
+        "summary" => base
+            .get_node(node)
+            .and_then(|tree| tree.parent)
+            .is_some_and(|parent| is_first_summary_child(base, parent, node)),
         _ => false,
     }
 }
@@ -344,11 +361,10 @@ pub(crate) fn element_click(ctx: &Ctx<'_>, node: NodeId) -> Result<()> {
         // restores it afterwards
         // (<https://html.spec.whatwg.org/multipage/input.html#the-input-element:legacy-pre-activation-behavior>).
         let previous = legacy_pre_activation(ctx, node)?;
-        let event = events::realm_event(ctx, events::JsEvent::uninitialized())?;
-        event.borrow().initialize("click".to_owned(), true, true);
+        let event = events::synthetic_click_event(ctx)?;
         let not_canceled = events::dispatch_event(ctx, EventTargetKey::Node(node), &event)?;
         if not_canceled {
-            complete_activation(ctx, node, &previous)?;
+            complete_activation(ctx, node, &previous, node)?;
         } else {
             legacy_canceled_activation(ctx, node, &previous)?;
         }
@@ -480,6 +496,7 @@ pub(crate) fn complete_activation(
     ctx: &Ctx<'_>,
     node: NodeId,
     previous: &PreActivation,
+    event_target: NodeId,
 ) -> Result<()> {
     // Checkbox and radio checkedness already moved in pre-activation. Only a
     // click that stays a checkbox or radio fires `input` and `change`; a
@@ -505,7 +522,7 @@ pub(crate) fn complete_activation(
     {
         fire_checkable_events(ctx, node)
     } else {
-        run_activation(ctx, node)
+        run_activation(ctx, node, event_target)
     }
 }
 
@@ -534,6 +551,12 @@ enum Activation {
     /// Follow an `a`/`area` hyperlink in place
     /// (<https://html.spec.whatwg.org/multipage/text-level-semantics.html#the-a-element:activation-behaviour>).
     Link,
+    /// Forward a label activation to its labeled control
+    /// (<https://html.spec.whatwg.org/multipage/forms.html#the-label-element:activation-behavior>).
+    Label,
+    /// Toggle the parent `details` of a summary
+    /// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#the-summary-element:activation-behavior>).
+    Summary,
 }
 
 /// The checkbox/radio activation behavior: toggle (checkbox) or set (radio)
@@ -646,35 +669,20 @@ fn hyperlink_referrer_policy(
 
 /// The label element's activation behavior: a click on the label or a
 /// non-interactive descendant runs synthetic click activation steps on the
-/// labeled control
+/// labeled control. A click targeted at interactive content, or a descendant
+/// of it, does nothing
 /// (<https://html.spec.whatwg.org/multipage/forms.html#the-label-element:activation-behavior>).
-pub(crate) fn run_label_activation(ctx: &Ctx<'_>, node: NodeId) -> Result<()> {
-    let label = {
-        let world = world_for_node(ctx, node)?;
+fn run_label_activation(ctx: &Ctx<'_>, label: NodeId, event_target: NodeId) -> Result<()> {
+    let world = world_for_node(ctx, label)?;
+    {
         let world = world.borrow();
-        let Some(parsed) = world.document(node) else {
+        let Some(parsed) = world.document(label) else {
             return Ok(());
         };
         let base = &parsed.document.base;
-        let mut cursor = Some(node.node);
-        let mut label = None;
-        while let Some(current) = cursor {
-            if crate::dom::tree::is_html_element(base, current, "label") {
-                label = Some(NodeId {
-                    document: node.document,
-                    node: current,
-                });
-                break;
-            }
-            cursor = base.get_node(current).and_then(|target| target.parent);
-        }
-        let Some(label) = label else {
-            return Ok(());
-        };
-        // A click on interactive content, or on a descendant of it, does not
-        // forward to the labeled control. The label itself is the target when
-        // the label was clicked, so it does not count here.
-        let mut cursor = Some(node.node);
+        // The label itself is the target when the label was clicked, so it
+        // does not count as an interactive descendant.
+        let mut cursor = Some(event_target.node);
         while let Some(current) = cursor {
             if current == label.node {
                 break;
@@ -684,8 +692,7 @@ pub(crate) fn run_label_activation(ctx: &Ctx<'_>, node: NodeId) -> Result<()> {
             }
             cursor = base.get_node(current).and_then(|target| target.parent);
         }
-        label
-    };
+    }
     // The label's `control` getter owns the `for`/descendant lookup and
     // labelable-element rules
     // (<https://html.spec.whatwg.org/multipage/forms.html#dom-label-control>).
@@ -700,13 +707,13 @@ pub(crate) fn run_label_activation(ctx: &Ctx<'_>, node: NodeId) -> Result<()> {
         // recurse (a labelable but non-interactive control such as `meter`
         // does not stop the walk above).
         let inside_control = {
-            let world = world_for_node(ctx, node)?;
+            let world = world_for_node(ctx, label)?;
             let world = world.borrow();
-            let Some(parsed) = world.document(node) else {
+            let Some(parsed) = world.document(label) else {
                 return Ok(());
             };
             let base = &parsed.document.base;
-            let mut cursor = Some(node.node);
+            let mut cursor = Some(event_target.node);
             let mut inside = false;
             while let Some(current) = cursor {
                 if current == control.node {
@@ -724,6 +731,41 @@ pub(crate) fn run_label_activation(ctx: &Ctx<'_>, node: NodeId) -> Result<()> {
             element_click(ctx, control)?;
         }
     }
+    Ok(())
+}
+
+/// The summary element's activation behavior: toggle the `open` attribute of
+/// the parent `details` and queue its `toggle` event
+/// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#the-summary-element:activation-behavior>).
+fn toggle_details(ctx: &Ctx<'_>, summary: NodeId) -> Result<()> {
+    let world = world_for_node(ctx, summary)?;
+    let details = {
+        let world = world.borrow();
+        let Some(parsed) = world.document(summary) else {
+            return Ok(());
+        };
+        let base = &parsed.document.base;
+        let Some(parent) = base.get_node(summary.node).and_then(|tree| tree.parent) else {
+            return Ok(());
+        };
+        if !is_first_summary_child(base, parent, summary.node) {
+            return Ok(());
+        }
+        NodeId {
+            document: summary.document,
+            node: parent,
+        }
+    };
+    let open = world
+        .borrow()
+        .document(details)
+        .is_some_and(|parsed| attr(&parsed.document.base, details.node, "open").is_some());
+    if open {
+        super::remove_attribute_sync(ctx, details, "", "open", false)?;
+    } else {
+        super::set_attribute_sync(ctx, details, "open", "")?;
+    }
+    world.borrow_mut().queue_details_toggle(details);
     Ok(())
 }
 
@@ -818,6 +860,12 @@ fn activation_behavior(world: &World, node: NodeId) -> Option<(Activation, Optio
         }
         // An anchor without `href` has no activation behavior.
         "a" | "area" if attr(base, node.node, "href").is_some() => Activation::Link,
+        // A label forwards a click to its labeled control unless the click
+        // landed on interactive content, which has its own activation
+        // behavior
+        // (<https://html.spec.whatwg.org/multipage/forms.html#the-label-element:activation-behavior>).
+        "label" => Activation::Label,
+        "summary" => Activation::Summary,
         _ => Activation::None,
     };
     let form = form_owner_of(base, node.document, node.node);
@@ -828,7 +876,7 @@ fn activation_behavior(world: &World, node: NodeId) -> Option<(Activation, Optio
 /// form owner with itself as submitter, a reset button resets it, and a
 /// checkbox or radio updates its checkedness
 /// (<https://html.spec.whatwg.org/multipage/form-elements.html#the-button-element:activation-behavior>).
-fn run_activation(ctx: &Ctx<'_>, node: NodeId) -> Result<()> {
+fn run_activation(ctx: &Ctx<'_>, node: NodeId, event_target: NodeId) -> Result<()> {
     let world = world_for_node(ctx, node)?;
     let Some((activation, form, consumes_activation)) = activation_behavior(&world.borrow(), node)
     else {
@@ -841,7 +889,21 @@ fn run_activation(ctx: &Ctx<'_>, node: NodeId) -> Result<()> {
         Activation::None => Ok(()),
         Activation::ToggleCheckedness => toggle_checkedness(ctx, node),
         Activation::Link => follow_link(ctx, node),
+        Activation::Label => run_label_activation(ctx, node, event_target),
+        Activation::Summary => toggle_details(ctx, node),
         Activation::Submit | Activation::Reset => {
+            // The input element's activation behavior returns when it is not
+            // mutable and its type is neither checkbox nor radio; the button
+            // element's returns when disabled
+            // (<https://html.spec.whatwg.org/multipage/input.html#the-input-element:activation-behaviour>,
+            // <https://html.spec.whatwg.org/multipage/form-elements.html#the-button-element:activation-behavior>).
+            let disabled = world
+                .borrow()
+                .document(node)
+                .is_some_and(|parsed| is_actually_disabled(&parsed.document.base, node.node));
+            if disabled {
+                return Ok(());
+            }
             let Some(form) = form else {
                 return Ok(());
             };
@@ -871,7 +933,11 @@ fn run_activation(ctx: &Ctx<'_>, node: NodeId) -> Result<()> {
                         let _ = ctx.catch();
                     }
                 }
-                Activation::None | Activation::ToggleCheckedness | Activation::Link => {}
+                Activation::None
+                | Activation::ToggleCheckedness
+                | Activation::Link
+                | Activation::Label
+                | Activation::Summary => {}
             }
             Ok(())
         }
@@ -1133,7 +1199,7 @@ fn activate_element<'js>(ctx: Ctx<'js>, element: Value<'js>) -> Result<()> {
             return Ok(());
         }
     }
-    run_activation(&ctx, node)
+    run_activation(&ctx, node, node)
 }
 
 /// Sets an input or textarea's value without invoking an author-defined

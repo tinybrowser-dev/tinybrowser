@@ -843,10 +843,15 @@ listener list. With the map they now pass that assertion and hang on
 `history.back()`: this engine does not fire `popstate` and `hashchange`
 synchronously from the traversal inside a `hashchange` listener, so the test's
 second listener never runs.
-`Event-dispatch-single-activation-behavior.html`
-exceeds the harness budget. `Event-dispatch-click.html` is flaky under the
-in-process harness: it passes its 33 subtests in some batch runs and hits the
-per-file budget in others, on both the old and the new tree.
+Click activation follows DOM's activation target selection: only a
+`MouseEvent` named `click` activates, an ancestor qualifies only for a bubbling
+event, and `summary` activates its parent `details`. A `toggle` event queued
+from that activation is a plain `Event`: `ToggleEvent` is not constructible
+here, so `oldState`/`newState` are missing, and only the summary activation
+path queues it — setting or removing the `open` attribute directly does not run
+HTML's details notification steps. The `submit`/`reset` stop at an ancestor
+form during bubbling follows the browser quirk recorded in
+<https://github.com/whatwg/html/issues/3599>.
 
 ## Cookie Store
 

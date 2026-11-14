@@ -302,6 +302,10 @@ impl Document {
                 self.fire_js(|js| js.fire_selection_changed(node));
                 self.adopt_js_work();
             }
+            Task::DetailsToggle(node) => {
+                self.fire_js(|js| js.fire_details_toggle(node));
+                self.adopt_js_work();
+            }
         }
     }
 
@@ -405,6 +409,7 @@ impl Document {
                 self.frame_traversals.push(delta);
             }
             RealmRequest::SelectionChanged(node) => self.push_selection_changed(node),
+            RealmRequest::DetailsToggle(node) => self.push_details_toggle(node),
             RealmRequest::CspViolation(Some(target), violations) => {
                 self.fire_csp_violations(target, &violations);
             }

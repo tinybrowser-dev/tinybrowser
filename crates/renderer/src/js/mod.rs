@@ -1166,6 +1166,18 @@ impl JsRealm {
         })
     }
 
+    /// Fires the queued `toggle` event of a `details` element whose `open`
+    /// attribute changed
+    /// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-details-toggle-event-task>).
+    pub(crate) fn fire_details_toggle(&self, id: crate::dom::tree::NodeId) -> Result<(), JsError> {
+        self.with_budget(None, MicrotaskCheckpoint::Perform, || {
+            self.context.with(|ctx| {
+                bindings::fire_details_toggle(&ctx, id)?;
+                Ok(())
+            })
+        })
+    }
+
     /// Dispatches one trusted `securitypolicyviolation` event per violation.
     pub(crate) fn fire_csp_violations(
         &self,

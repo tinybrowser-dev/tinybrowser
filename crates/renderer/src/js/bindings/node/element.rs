@@ -3032,7 +3032,7 @@ pub(super) fn reflect_limited_double(raw: Option<&str>, default: f64) -> f64 {
 /// Whether `node` is the first `summary` element child of a `details`
 /// parent: only that one is focusable
 /// (<https://html.spec.whatwg.org/multipage/interaction.html#focusable-area>).
-pub(super) fn is_first_summary_child(
+pub(crate) fn is_first_summary_child(
     base: &blitz_dom::BaseDocument,
     parent: BlitzId,
     node: BlitzId,
