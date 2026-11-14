@@ -1249,6 +1249,11 @@ const __tbFrameProxy = frame => {
           if (host.__tbFrameSameOrigin(frame)) {
             if (property === 'name') return host.__tbFrameName(frame);
             if (property === 'navigator') return __tbFrameNavigator(frame);
+            // `getComputedStyle` answers from the element's own document and
+            // carries no window state, so a pending same-origin child can
+            // answer it from the caller's realm
+            // (<https://drafts.csswg.org/cssom/#dom-window-getcomputedstyle>).
+            if (property === 'getComputedStyle') return globalThis.getComputedStyle;
             if (property === 'addEventListener') {
               return eventTargetMethod(property, '__tbFrameAddEventListener');
             }

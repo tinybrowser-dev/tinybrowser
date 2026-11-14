@@ -2369,6 +2369,14 @@ impl World {
         self.frame
     }
 
+    /// The `iframe` that owns this realm's frame, when it is a child
+    /// navigable. A top-level traversable and an auxiliary context have no
+    /// container
+    /// (<https://html.spec.whatwg.org/multipage/document-sequences.html#nav-container>).
+    pub(crate) fn container(&self) -> Option<NodeId> {
+        self.runtime.shared.borrow().tree.container(self.frame)
+    }
+
     /// Whether this realm's frame still has a browsing context. A `Location`
     /// object can outlive its navigable, and every setter is then a no-op
     /// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-href>).

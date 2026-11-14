@@ -978,6 +978,29 @@
   };
   Object.defineProperty(globalThis, 'getComputedStyle', {
     value: function(element) {
+      // An element with no computed style gets an empty read-only
+      // declaration: not in the flat tree, not connected, or in a document
+      // whose browsing context is not rendered
+      // (<https://drafts.csswg.org/cssom/#dom-window-getcomputedstyle>).
+      if (!element || typeof element.nodeType !== 'number'
+          || !host.__tb_has_computed_style(element)) {
+        return new Proxy({}, {
+          get(target, property) {
+            switch (property) {
+              case 'length': return 0;
+              case 'parentRule': return null;
+              case 'cssText': return '';
+              case 'getPropertyValue':
+              case 'getPropertyPriority':
+              case 'item':
+                return () => '';
+              default:
+                return typeof property === 'string' ? '' : undefined;
+            }
+          },
+          set() { return true; },
+        });
+      }
       const inline = element?.style ?? {};
       if (typeof inline.getPropertyValue !== 'function') {
         inline.getPropertyValue = function(name) { return this[name] ?? ''; };

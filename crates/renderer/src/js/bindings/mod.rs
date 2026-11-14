@@ -1017,6 +1017,10 @@ fn install_host_functions(ctx: &Ctx<'_>) -> Result<()> {
         "__tb_resolved_style",
         rquickjs::prelude::Func::from(resolved_style),
     )?;
+    crate::js::bridge::object(ctx)?.set(
+        "__tb_has_computed_style",
+        rquickjs::prelude::Func::from(has_computed_style),
+    )?;
     node::scrolling::install(ctx)?;
     crate::js::bridge::object(ctx)?.set(
         "__tbSetHTMLUnsafe",
@@ -1061,6 +1065,69 @@ fn resolved_style<'js>(
     // (<https://drafts.csswg.org/cssom/#dom-window-getcomputedstyle>).
     base.resolve(0.0);
     base.resolved_style_value(id.node, &property)
+}
+
+/// Whether `element` may have a computed style at all. CSSOM reports one only
+/// when the element is connected, in the flat tree, and its shadow-including
+/// root's browsing context is being rendered; every other element gets an
+/// empty declaration
+/// (<https://drafts.csswg.org/cssom/#dom-window-getcomputedstyle>).
+fn has_computed_style<'js>(ctx: Ctx<'js>, element: Value<'js>) -> bool {
+    let Ok(world) = world(&ctx) else {
+        return false;
+    };
+    let Some(id) = host_node_id(&ctx, &element) else {
+        return false;
+    };
+    {
+        let world = world.borrow();
+        let Some(mut parsed) = world.document_mut(id) else {
+            return false;
+        };
+        let base = &mut parsed.document.base;
+        // Reading a computed style forces a style flush, so connectedness and
+        // flat-tree membership describe the tree as the page left it
+        // (<https://drafts.csswg.org/cssom/#dom-window-getcomputedstyle>).
+        base.resolve(0.0);
+        if !crate::dom::tree::is_connected(base, id.node)
+            || !crate::dom::tree::is_in_flat_tree(base, id.node)
+        {
+            return false;
+        }
+    }
+    // The element's own document decides whether it has a browsing context;
+    // a `DOMParser` result and a `createHTMLDocument` result have none
+    // (<https://dom.spec.whatwg.org/#concept-document-bc>).
+    let Some(owner) = owning_world(&ctx, id) else {
+        return false;
+    };
+    let has_context = owner.borrow().main_document_id() == Some(id.document_id());
+    if !has_context {
+        return false;
+    }
+    // A child navigable is rendered only while its container is. The container
+    // lives in the parent frame's tree, which shares this document store
+    // (<https://html.spec.whatwg.org/multipage/rendering.html#being-rendered>).
+    let Some(container) = owner.borrow().container() else {
+        return true;
+    };
+    let world = world.borrow();
+    let Some(mut parsed) = world.document_mut(container) else {
+        return false;
+    };
+    let base = &mut parsed.document.base;
+    base.resolve(0.0);
+    base.get_node(container.node).is_some_and(|node| {
+        node.try_stylo_element_data()
+            .as_ref()
+            .and_then(|data| data.get())
+            .and_then(|data| {
+                data.styles
+                    .get_primary()
+                    .map(|styles| styles.get_box().get_display().is_none())
+            })
+            .is_some_and(|display_none| !display_none)
+    })
 }
 
 /// The active document's viewport size in CSS pixels, for the live `window`

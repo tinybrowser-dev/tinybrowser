@@ -2413,3 +2413,25 @@ Still open: the handler scope chain has no `document`/element/form-owner
 object environment, and the same-document traversal files now get past their
 first ordering assertion and hang on `history.back()` firing `popstate` and
 `hashchange` synchronously (`docs/limitations.md`).
+`getComputedStyle` now answers an empty read-only declaration for an element
+that has no computed style. CSSOM reports one only when the element is
+connected, in the flat tree, and its shadow-including root's browsing context
+is being rendered; a detached element, an unslotted light child of a shadow
+host, or the document of a `display: none` iframe gets no declaration
+(`css/cssom/getComputedStyle-detached-subtree.html`, 6/6). The check lives in
+`crates/renderer/src/js/bindings/mod.rs` (`has_computed_style`) with the
+flat-tree walk in `dom/tree.rs`; the JS wrapper returns a proxy that reports
+`length` 0 and `""` for every property. Blitz has no slot assignment, so the
+flat-tree test treats a light child as slotted when the host's shadow tree
+contains a `<slot>` element, which keeps
+`getComputedStyle-display-none-shadow-invalidation.html` green. A pending
+same-origin child window now forwards `getComputedStyle` from the caller's
+realm, because the call reads the element's own document and carries no window
+state.
+
+Evidence: `css/cssom` 3331 to **3337** subtests, no lost subtests.
+`css/cssom-view` stays at 1616, `resize-observer` at 50,
+`intersection-observer` at 185, `css/selectors` at 4777, and
+`html/semantics/forms` at 4522 against freshly captured baselines at the
+parent commit. The one form diff, `form-double-submit.html`, fails the same
+way three times at the parent commit, so it is pre-existing.

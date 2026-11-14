@@ -108,6 +108,48 @@ pub(crate) fn is_connected(base: &blitz_dom::BaseDocument, id: BlitzNodeId) -> b
     shadow_including_root(base, id) == base.root_node().id
 }
 
+/// Whether `node` is in the flat tree. Blitz has no slot assignment, so a
+/// light-tree descendant of a shadow host is in the flat tree only when the
+/// host's shadow tree has a `<slot>` it could be assigned to
+/// (<https://drafts.csswg.org/css-scoping-1/#flat-tree>).
+pub(crate) fn is_in_flat_tree(base: &blitz_dom::BaseDocument, id: BlitzNodeId) -> bool {
+    let mut current = base.get_node(id);
+    while let Some(node) = current {
+        let Some(parent) = node.parent else {
+            return true;
+        };
+        if let Some(element) = base
+            .get_node(parent)
+            .and_then(|parent| parent.data.downcast_element())
+            && let Some(root) = element.shadow_root
+            && !shadow_tree_has_slot(base, root)
+        {
+            return false;
+        }
+        current = base.get_node(parent);
+    }
+    true
+}
+
+/// Whether the shadow tree rooted at `root` contains a `<slot>` element, which
+/// stands in for slot assignment while Blitz has none
+/// (<https://html.spec.whatwg.org/multipage/scripting.html#the-slot-element>).
+fn shadow_tree_has_slot(base: &blitz_dom::BaseDocument, root: BlitzNodeId) -> bool {
+    let mut pending = vec![root];
+    while let Some(id) = pending.pop() {
+        let Some(node) = base.get_node(id) else {
+            continue;
+        };
+        if node.data.downcast_element().is_some_and(|element| {
+            element.name.ns == html_namespace() && element.name.local.as_str() == "slot"
+        }) {
+            return true;
+        }
+        pending.extend(node.children.iter().copied());
+    }
+    false
+}
+
 /// Whether `node` is an HTML `iframe` element.
 pub(crate) fn is_child_navigable_container(
     base: &blitz_dom::BaseDocument,
