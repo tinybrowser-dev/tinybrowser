@@ -2505,3 +2505,24 @@ are `CSSImportRule.styleSheet` (the imported sheet is still not exposed) and the
 4778, `html/dom` at 65341, and `html/semantics/forms` at 4522, with no lost
 subtests. `cargo fmt --check` (both trees), `tools/check clippy`, and the
 renderer (175), webidl-bindgen (42), and wpt-harness (30) test binaries pass.
+`CSSKeyframeRule.keyText` is now settable. A keyframe's selectors parse as a
+`<keyframe-selector>#` list, an invalid list throws `SyntaxError` and leaves
+the rule unchanged, and a valid one replaces the selectors, which normalizes
+`from`/`to` to `0%`/`100%`
+(`crates/renderer/src/js/scripts/web/cssom.js`,
+`crates/renderer/src/js/bindings/cssom_host.rs`). The Blitz fork's new
+`cssom_rule_set_key_text` parses with stylo's `KeyframeSelectors::parse`,
+writes through the keyframe lock, and invalidates the owning `@keyframes`
+rule (`third_party/blitz` commit `a398a93d7`, recorded in
+`docs/upstream.md`).
+
+Evidence: `css/cssom` 3394 to **3412** subtests, no lost subtests.
+`CSSKeyframeRule-keyText.html` 4/11 to 11/11 and
+`CSSKeyframeRule-keyText-edge-cases.html` 3/14 to 14/14.
+`css/cssom-view` stays at 1616, `resize-observer` at 50,
+`intersection-observer` at 185, `css/selectors` at 4778, and `html/dom` at
+65341, with no lost subtests. `html/semantics/forms` shows three
+`form-double-submit*` failures in the batch; all three fail the same way three
+times in isolation at the parent commit, so they are pre-existing.
+`cargo fmt --check` (both trees), `tools/check clippy`, and the renderer (175),
+webidl-bindgen (42), and wpt-harness (30) test binaries pass.

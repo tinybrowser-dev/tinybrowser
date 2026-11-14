@@ -383,8 +383,24 @@
   __tbRuleStringAttribute(CSSPositionTryRule, ['name']);
   __tbRuleStringAttribute(CSSCustomMediaRule, ['name']);
   __tbRuleStringAttribute(CSSViewTransitionRule, ['types']);
-  __tbRuleStringAttribute(CSSKeyframeRule, ['keyText']);
   __tbRuleStringAttribute(CSSKeyframesRule, ['name']);
+  // A keyframe's selectors are settable; an invalid list is a `SyntaxError`
+  // and leaves the rule unchanged
+  // (<https://drafts.csswg.org/css-animations-1/#dom-csskeyframerule-keytext>).
+  __tbDefineProperty(CSSKeyframeRule.prototype, 'keyText', {
+    get() {
+      const next = __tbRuleState(this).read();
+      return next && next.keyText ? next.keyText : '';
+    },
+    set(value) {
+      const entry = __tbRuleState(this);
+      if (entry.detached) return;
+      host.__tb_sheet_rule_set_key_text(
+        entry.sheet.__tbOwner, entry.sheet.__tbId, __tbRulePath(entry.path), String(value),
+      );
+    },
+    enumerable: true, configurable: true,
+  });
   // A valid selector list replaces the rule's selectors and re-enters the
   // cascade; an invalid one leaves the rule unchanged without throwing
   // (<https://drafts.csswg.org/cssom/#dom-cssstylerule-selectortext>).

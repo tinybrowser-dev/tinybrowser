@@ -86,11 +86,10 @@ A media rule's `media` and an import rule's `media` are live `MediaList`
 objects backed by the rule's query list, and `StyleSheet.media` is a live list
 too; `mediaText`, `appendMedium`, and `deleteMedium` write through the engine.
 `CSSImportRule.styleSheet` answers null because imported sheets live in their
-own address space that the snapshot does not expose. `CSSKeyframeRule.keyText`
-has no setter, `CSSFontFeatureValuesRule` has no `CSSFontFeatureValuesMap`, and
-a constructable `CSSStyleSheet` has no parsed rule list, so its `insertRule`
-and `deleteRule` throw `NotSupportedError` and `adoptedStyleSheets` does not
-feed the cascade.
+own address space that the snapshot does not expose.
+`CSSFontFeatureValuesRule` has no `CSSFontFeatureValuesMap`, and a constructable
+`CSSStyleSheet` has no parsed rule list, so its `insertRule` and `deleteRule`
+throw `NotSupportedError` and `adoptedStyleSheets` does not feed the cascade.
 
 `getComputedStyle` returns an empty declaration when an element is detached, is
 outside the flat tree, or lives in a document whose browsing context is not

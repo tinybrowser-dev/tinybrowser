@@ -123,6 +123,10 @@ fn install_sheet_functions(bridge: &Object<'_>) -> Result<()> {
         rquickjs::prelude::Func::from(sheet_rule_set_media),
     )?;
     bridge.set(
+        "__tb_sheet_rule_set_key_text",
+        rquickjs::prelude::Func::from(sheet_rule_set_key_text),
+    )?;
+    bridge.set(
         "__tb_sheet_insert_rule",
         rquickjs::prelude::Func::from(sheet_insert_rule),
     )?;
@@ -620,6 +624,37 @@ fn sheet_rule_set_media<'js>(
         .base
         .cssom_rule_set_media(sheet, &path, &text);
     Ok(())
+}
+
+/// Replaces a keyframe's selector list (`CSSKeyframeRule.keyText` setter). An
+/// unparsable list throws `SyntaxError`, and the rule keeps its old selectors
+/// (<https://drafts.csswg.org/css-animations-1/#dom-csskeyframerule-keytext>).
+fn sheet_rule_set_key_text<'js>(
+    ctx: Ctx<'js>,
+    element: Value<'js>,
+    id: f64,
+    path: String,
+    text: String,
+) -> Result<()> {
+    let world = world(&ctx)?;
+    let Some(node) = host_node_id(&ctx, &element) else {
+        return Ok(());
+    };
+    let Some(sheet) = sheet_id(id) else {
+        return Ok(());
+    };
+    let Some(path) = with_path(&path) else {
+        return Ok(());
+    };
+    let world = world.borrow();
+    let Some(mut parsed) = world.document_mut(node) else {
+        return Ok(());
+    };
+    parsed
+        .document
+        .base
+        .cssom_rule_set_key_text(sheet, &path, &text)
+        .map_err(|err| cssom_throw(&ctx, err))
 }
 
 /// The element's inline declaration block, serialized
