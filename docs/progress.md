@@ -2623,3 +2623,21 @@ subtests; the forms batch loses one `form-double-submit-3` subtest that fails
 3/3 in isolation at the parent commit, so it is pre-existing. `cargo fmt
 --check` (both trees), `tools/check clippy`, and the renderer (175),
 webidl-bindgen (42), and wpt-harness (30) test binaries pass.
+A computed style now enumerates its standard properties before the
+vendor-prefixed ones, each group in lexicographical order, which is the order
+browsers report (the plain lexicographical sort put `-webkit-…` first because
+`-` sorts before letters). Setting a declaration through the CSSOM also
+replaces the old declaration's priority: `setProperty(name, value)` without a
+priority now clears an existing `!important`, and a shorthand replaces all of
+its longhands. Both are engine fixes in `third_party/blitz` commit `4f3a4d572`,
+recorded in `docs/upstream.md`
+(<https://drafts.csswg.org/cssom/#set-a-css-declaration>).
+
+Evidence: `css/cssom` 3601 to **3607** subtests, no lost subtests.
+`getComputedStyle-property-order.html` 0/1 to 1/1 and
+`cssstyledeclaration-setter-declarations.html` 0/4 to 4/4. `css/cssom-view`
+stays at 1616, `resize-observer` at 50, `css/selectors` at 4791,
+`intersection-observer` at 185, `html/dom` at 65341, and
+`html/semantics/forms` 4521 to **4522**, with no lost subtests. `cargo fmt
+--check` (both trees), `tools/check clippy`, and the renderer (175),
+webidl-bindgen (42), and wpt-harness (30) test binaries pass.
