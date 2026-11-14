@@ -72,6 +72,26 @@ where the reference browser reads the value. The modern
 `CSS.supports("orphans", "2")` correctly answers false. Accepted engine gap:
 teach the style crate those properties or leave them out (`docs/upstream.md`).
 
+## CSSOM
+
+The CSS rule interfaces are exposed for the rule kinds the style engine reports,
+but several rules never reach `cssRules`: `@page`, `@counter-style`,
+`@container`, and `@scope` are absent from an author sheet's list, so
+`CSSPageRule`, `CSSCounterStyleRule`, `CSSContainerRule`, and `CSSScopeRule`
+objects are never produced and `CSSRule-type.html` keeps four subtests red.
+That list comes from Blitz's CSSOM snapshot (`cssom_rule_info`), not from this
+engine.
+
+A media rule's `media` and an import rule's `media` are still strings: CSSOM
+wants a live `MediaList` whose setter rewrites the rule's media text, and the
+style engine has no setter for a rule's media queries. `CSSImportRule.styleSheet`
+answers null because imported sheets live in their own address space that the
+snapshot does not expose. `CSSKeyframeRule.keyText` has no setter for the same
+reason, `CSSFontFeatureValuesRule` has no `CSSFontFeatureValuesMap`, and a
+constructable `CSSStyleSheet` has no parsed rule list, so its `insertRule` and
+`deleteRule` throw `NotSupportedError` and `adoptedStyleSheets` does not feed
+the cascade.
+
 ## CSS content-visibility
 
 `content-visibility` is not in the style crate's property tables: the Servo

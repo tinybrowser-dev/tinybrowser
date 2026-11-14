@@ -339,7 +339,7 @@ fn sheet_rule_info<'js>(
 fn rule_info_object<'js>(ctx: &Ctx<'js>, info: CssRuleInfo) -> Result<Object<'js>> {
     let object = Object::new(ctx.clone())?;
     object.set("interface", info.interface)?;
-    object.set("type", info.rule_type)?;
+    object.set("type", cssom_rule_type(info.interface, info.rule_type))?;
     object.set("cssText", info.css_text)?;
     object.set("hasChildRules", info.has_child_rules)?;
     object.set("hasStyle", info.has_style)?;
@@ -347,6 +347,32 @@ fn rule_info_object<'js>(ctx: &Ctx<'js>, info: CssRuleInfo) -> Result<Object<'js
         object.set(name, value)?;
     }
     Ok(object)
+}
+
+/// `CSSRule.type` reports the constant CSSOM defines for the rule's
+/// interface, and 0 for any rule without one. The style engine's own
+/// discriminant is larger (it numbers every rule kind, `@layer` included), so
+/// it cannot answer this
+/// (<https://drafts.csswg.org/cssom/#dom-cssrule-type>).
+fn cssom_rule_type(interface: &str, engine_type: u16) -> u16 {
+    match interface {
+        "CSSStyleRule" => 1,
+        "CSSImportRule" => 3,
+        "CSSMediaRule" => 4,
+        "CSSFontFaceRule" => 5,
+        "CSSPageRule" => 6,
+        "CSSKeyframesRule" => 7,
+        "CSSKeyframeRule" => 8,
+        "CSSNamespaceRule" => 10,
+        "CSSCounterStyleRule" => 11,
+        "CSSSupportsRule" => 12,
+        "CSSFontFeatureValuesRule" => 14,
+        // Every other rule reports 0. The engine's value is used only when
+        // it already matches a defined constant, which keeps this table from
+        // having to name rules whose interface string changes upstream
+        _ if matches!(engine_type, 1 | 3..=8 | 10..=12 | 14) => engine_type,
+        _ => 0,
+    }
 }
 
 fn sheet_style_css_text<'js>(ctx: Ctx<'js>, element: Value<'js>, id: f64, path: String) -> String {

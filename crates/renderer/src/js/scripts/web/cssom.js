@@ -219,16 +219,54 @@
   function CSSFontFaceRule() { __tbIllegal(); }
   function CSSKeyframesRule() { __tbIllegal(); }
   function CSSKeyframeRule() { __tbIllegal(); }
+  // Rule interfaces the style engine can report but that had no global. Each
+  // inherits per its own specification; the rule's `type` still comes from
+  // the engine's snapshot
+  // (<https://drafts.csswg.org/cssom/#the-cssrule-interface>,
+  // <https://drafts.csswg.org/css-page-3/#omitted>,
+  // <https://drafts.csswg.org/css-cascade-5/#layer-rule>).
+  function CSSNamespaceRule() { __tbIllegal(); }
+  function CSSPageRule() { __tbIllegal(); }
+  function CSSCounterStyleRule() { __tbIllegal(); }
+  function CSSLayerBlockRule() { __tbIllegal(); }
+  function CSSLayerStatementRule() { __tbIllegal(); }
+  function CSSContainerRule() { __tbIllegal(); }
+  function CSSScopeRule() { __tbIllegal(); }
+  function CSSCustomMediaRule() { __tbIllegal(); }
+  function CSSFontFeatureValuesRule() { __tbIllegal(); }
+  function CSSFontPaletteValuesRule() { __tbIllegal(); }
+  function CSSMarginRule() { __tbIllegal(); }
+  function CSSPropertyRule() { __tbIllegal(); }
+  function CSSStartingStyleRule() { __tbIllegal(); }
+  function CSSPositionTryRule() { __tbIllegal(); }
+  function CSSViewTransitionRule() { __tbIllegal(); }
+  function CSSNestedDeclarations() { __tbIllegal(); }
+  function CSSMozDocumentRule() { __tbIllegal(); }
+  function CSSAppearanceBaseRule() { __tbIllegal(); }
   function CSSStyleDeclaration() { __tbIllegal(); }
   CSSStyleRule.prototype = Object.create(CSSRule.prototype);
   CSSGroupingRule.prototype = Object.create(CSSRule.prototype);
   CSSConditionRule.prototype = Object.create(CSSGroupingRule.prototype);
   CSSMediaRule.prototype = Object.create(CSSConditionRule.prototype);
   CSSSupportsRule.prototype = Object.create(CSSConditionRule.prototype);
+  CSSContainerRule.prototype = Object.create(CSSConditionRule.prototype);
   CSSImportRule.prototype = Object.create(CSSRule.prototype);
   CSSFontFaceRule.prototype = Object.create(CSSRule.prototype);
   CSSKeyframesRule.prototype = Object.create(CSSRule.prototype);
   CSSKeyframeRule.prototype = Object.create(CSSRule.prototype);
+  CSSPageRule.prototype = Object.create(CSSGroupingRule.prototype);
+  CSSLayerBlockRule.prototype = Object.create(CSSGroupingRule.prototype);
+  CSSScopeRule.prototype = Object.create(CSSGroupingRule.prototype);
+  CSSStartingStyleRule.prototype = Object.create(CSSGroupingRule.prototype);
+  CSSMozDocumentRule.prototype = Object.create(CSSConditionRule.prototype);
+  for (const ctor of [
+    CSSNamespaceRule, CSSCounterStyleRule, CSSLayerStatementRule,
+    CSSCustomMediaRule, CSSFontFeatureValuesRule, CSSFontPaletteValuesRule,
+    CSSMarginRule, CSSPropertyRule, CSSPositionTryRule, CSSViewTransitionRule,
+    CSSNestedDeclarations, CSSAppearanceBaseRule,
+  ]) {
+    ctor.prototype = Object.create(CSSRule.prototype);
+  }
   // `CSSRule`'s rule-type constants. WebIDL exposes a constant on both the
   // interface object and the interface prototype object
   // (<https://webidl.spec.whatwg.org/#idl-constants>,
@@ -265,6 +303,12 @@
   for (const ctor of [
     CSSStyleRule, CSSGroupingRule, CSSConditionRule, CSSMediaRule, CSSSupportsRule,
     CSSImportRule, CSSFontFaceRule, CSSKeyframesRule, CSSKeyframeRule,
+    CSSNamespaceRule, CSSPageRule, CSSCounterStyleRule, CSSLayerBlockRule,
+    CSSLayerStatementRule, CSSContainerRule, CSSScopeRule, CSSCustomMediaRule,
+    CSSFontFeatureValuesRule, CSSFontPaletteValuesRule, CSSMarginRule,
+    CSSPropertyRule, CSSStartingStyleRule, CSSPositionTryRule,
+    CSSViewTransitionRule, CSSNestedDeclarations, CSSMozDocumentRule,
+    CSSAppearanceBaseRule,
   ]) {
     __tbDefineProperty(ctor.prototype, 'constructor', {
       value: ctor, writable: true, configurable: true,
@@ -282,6 +326,12 @@
   const __tbRulePrototype = {
     CSSStyleRule, CSSGroupingRule, CSSConditionRule, CSSMediaRule, CSSSupportsRule,
     CSSImportRule, CSSFontFaceRule, CSSKeyframesRule, CSSKeyframeRule, CSSRule,
+    CSSNamespaceRule, CSSPageRule, CSSCounterStyleRule, CSSLayerBlockRule,
+    CSSLayerStatementRule, CSSContainerRule, CSSScopeRule, CSSCustomMediaRule,
+    CSSFontFeatureValuesRule, CSSFontPaletteValuesRule, CSSMarginRule,
+    CSSPropertyRule, CSSStartingStyleRule, CSSPositionTryRule,
+    CSSViewTransitionRule, CSSNestedDeclarations, CSSMozDocumentRule,
+    CSSAppearanceBaseRule,
   };
   for (const name of Object.keys(__tbRulePrototype)) {
     __tbDefineProperty(globalThis, name, {
