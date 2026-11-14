@@ -127,6 +127,14 @@ fn install_sheet_functions(bridge: &Object<'_>) -> Result<()> {
         rquickjs::prelude::Func::from(sheet_rule_set_key_text),
     )?;
     bridge.set(
+        "__tb_sheet_rule_set_name",
+        rquickjs::prelude::Func::from(sheet_rule_set_name),
+    )?;
+    bridge.set(
+        "__tb_sheet_find_keyframe",
+        rquickjs::prelude::Func::from(sheet_find_keyframe),
+    )?;
+    bridge.set(
         "__tb_sheet_insert_rule",
         rquickjs::prelude::Func::from(sheet_insert_rule),
     )?;
@@ -655,6 +663,73 @@ fn sheet_rule_set_key_text<'js>(
         .base
         .cssom_rule_set_key_text(sheet, &path, &text)
         .map_err(|err| cssom_throw(&ctx, err))
+}
+
+/// Renames a `@keyframes` rule (`CSSKeyframesRule.name` setter). An invalid
+/// name leaves the rule unchanged
+/// (<https://drafts.csswg.org/css-animations-1/#dom-csskeyframesrule-name>).
+fn sheet_rule_set_name<'js>(
+    ctx: Ctx<'js>,
+    element: Value<'js>,
+    id: f64,
+    path: String,
+    name: String,
+) -> Result<()> {
+    let world = world(&ctx)?;
+    let Some(node) = host_node_id(&ctx, &element) else {
+        return Ok(());
+    };
+    let Some(sheet) = sheet_id(id) else {
+        return Ok(());
+    };
+    let Some(path) = with_path(&path) else {
+        return Ok(());
+    };
+    let world = world.borrow();
+    let Some(mut parsed) = world.document_mut(node) else {
+        return Ok(());
+    };
+    let _ = parsed
+        .document
+        .base
+        .cssom_rule_set_name(sheet, &path, &name);
+    Ok(())
+}
+
+/// The index of the last keyframe that matches `select`
+/// (`CSSKeyframesRule.findRule`), or -1 when nothing matches
+/// (<https://drafts.csswg.org/css-animations-1/#dom-csskeyframesrule-findrule>).
+fn sheet_find_keyframe<'js>(
+    ctx: Ctx<'js>,
+    element: Value<'js>,
+    id: f64,
+    path: String,
+    select: String,
+) -> i32 {
+    let Ok(world) = world(&ctx) else {
+        return -1;
+    };
+    let Some(node) = host_node_id(&ctx, &element) else {
+        return -1;
+    };
+    let Some(sheet) = sheet_id(id) else {
+        return -1;
+    };
+    let Some(path) = with_path(&path) else {
+        return -1;
+    };
+    let world = world.borrow();
+    let Some(parsed) = world.document(node) else {
+        return -1;
+    };
+    match parsed
+        .document
+        .base
+        .cssom_find_keyframe(sheet, &path, &select)
+    {
+        Some(index) => i32::try_from(index).unwrap_or(-1),
+        None => -1,
+    }
 }
 
 /// The element's inline declaration block, serialized

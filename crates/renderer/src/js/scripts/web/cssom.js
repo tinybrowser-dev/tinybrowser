@@ -201,6 +201,7 @@
   // Captured at realm init so a page-patched builtin cannot retarget a rule
   // path or swallow an exception.
   const __tbReflectGet = Reflect.get;
+  const __tbReflectHas = Reflect.has;
   const __tbBind = Function.prototype.bind;
   const __tbDomException = globalThis.DOMException;
   const __tbCharCodeAt = String.prototype.charCodeAt;
@@ -383,7 +384,23 @@
   __tbRuleStringAttribute(CSSPositionTryRule, ['name']);
   __tbRuleStringAttribute(CSSCustomMediaRule, ['name']);
   __tbRuleStringAttribute(CSSViewTransitionRule, ['types']);
-  __tbRuleStringAttribute(CSSKeyframesRule, ['name']);
+  // The keyframes name is settable and serialization quotes it when it is
+  // not a valid `<custom-ident>`
+  // (<https://drafts.csswg.org/css-animations-1/#dom-csskeyframesrule-name>).
+  __tbDefineProperty(CSSKeyframesRule.prototype, 'name', {
+    get() {
+      const next = __tbRuleState(this).read();
+      return next && next.name ? next.name : '';
+    },
+    set(value) {
+      const entry = __tbRuleState(this);
+      if (entry.detached) return;
+      host.__tb_sheet_rule_set_name(
+        entry.sheet.__tbOwner, entry.sheet.__tbId, __tbRulePath(entry.path), String(value),
+      );
+    },
+    enumerable: true, configurable: true,
+  });
   // A keyframe's selectors are settable; an invalid list is a `SyntaxError`
   // and leaves the rule unchanged
   // (<https://drafts.csswg.org/css-animations-1/#dom-csskeyframerule-keytext>).
@@ -489,10 +506,57 @@
       __tbDelete(entry.sheet, entry.path, index, arguments.length);
     };
   };
-  // A style rule in a nesting context owns a rule list, and so does a
-  // keyframes rule; both answer `cssRules`, `insertRule`, and `deleteRule`
+  // A style rule in a nesting context and a grouping rule both answer
+  // `cssRules`, `insertRule`, and `deleteRule` by index
   // (<https://drafts.csswg.org/css-nesting-1/#cssom>).
-  for (const ctor of [CSSGroupingRule, CSSStyleRule, CSSKeyframesRule]) __tbRuleChildList(ctor);
+  for (const ctor of [CSSGroupingRule, CSSStyleRule]) __tbRuleChildList(ctor);
+  // A keyframes rule's `cssRules` is its keyframe list, reached by index
+  // through `length` and the indexed getter, and edited by selector through
+  // `appendRule`, `deleteRule`, and `findRule`
+  // (<https://drafts.csswg.org/css-animations-1/#interface-csskeyframesrule>).
+  __tbDefineProperty(CSSKeyframesRule.prototype, 'cssRules', {
+    get() {
+      const entry = __tbRuleState(this);
+      if (entry.list === null) entry.list = __tbLiveRuleList(entry.sheet, entry, this);
+      return entry.list;
+    },
+    enumerable: true, configurable: true,
+  });
+  __tbDefineProperty(CSSKeyframesRule.prototype, 'length', {
+    get() { return this.cssRules.length; },
+    enumerable: true, configurable: true,
+  });
+  CSSKeyframesRule.prototype.appendRule = function appendRule(rule) {
+    if (arguments.length < 1) throw new TypeError('appendRule requires 1 argument');
+    const entry = __tbRuleState(this);
+    if (entry.detached) return;
+    // An invalid rule appends nothing and throws nothing (the IDL lists no
+    // exceptions)
+    // (<https://drafts.csswg.org/css-animations-1/#dom-csskeyframesrule-appendrule>).
+    try {
+      __tbInsert(entry.sheet, entry.path, String(rule), this.cssRules.length, 2);
+    } catch (error) {
+      if (!(error instanceof __tbDomException) || error.name !== 'SyntaxError') throw error;
+    }
+  };
+  CSSKeyframesRule.prototype.findRule = function findRule(select) {
+    if (arguments.length < 1) throw new TypeError('findRule requires 1 argument');
+    const entry = __tbRuleState(this);
+    if (entry.detached) return null;
+    const index = host.__tb_sheet_find_keyframe(
+      entry.sheet.__tbOwner, entry.sheet.__tbId, __tbRulePath(entry.path), String(select),
+    );
+    return index < 0 ? null : this.cssRules[index];
+  };
+  CSSKeyframesRule.prototype.deleteRule = function deleteRule(select) {
+    if (arguments.length < 1) throw new TypeError('deleteRule requires 1 argument');
+    const entry = __tbRuleState(this);
+    if (entry.detached) return;
+    const index = host.__tb_sheet_find_keyframe(
+      entry.sheet.__tbOwner, entry.sheet.__tbId, __tbRulePath(entry.path), String(select),
+    );
+    if (index >= 0) __tbDelete(entry.sheet, entry.path, index, 1);
+  };
   const __tbRulePrototype = {
     CSSStyleRule, CSSGroupingRule, CSSConditionRule, CSSMediaRule, CSSSupportsRule,
     CSSImportRule, CSSFontFaceRule, CSSKeyframesRule, CSSKeyframeRule, CSSRule,
@@ -661,10 +725,31 @@
     const ctor = __tbRulePrototype[info.interface] || CSSRule;
     __tbSetPrototypeOf(rule, ctor.prototype);
     __tbDefineProperty(rule, __tbRuleEntry, { value: entry });
-    entry.rule = rule;
+    // A keyframes rule also answers its keyframes through the indexed getter
+    // (<https://drafts.csswg.org/css-animations-1/#dom-csskeyframesrule-index>).
+    entry.rule = ctor === CSSKeyframesRule ? new Proxy(rule, __tbKeyframeIndexHandler) : rule;
     sheet.__tbRules.push(entry);
-    return rule;
+    return entry.rule;
   }
+  // The indexed getter of a keyframes rule reads its `cssRules` list; every
+  // other member is the rule object's own
+  // (<https://webidl.spec.whatwg.org/#idl-indexed-properties>).
+  const __tbKeyframeIndexHandler = {
+    get(target, property, receiver) {
+      if (__tbCanonicalIndex(property)) {
+        const entry = __tbRuleState(target);
+        const list = entry.list === null
+          ? (entry.list = __tbLiveRuleList(entry.sheet, entry, receiver))
+          : entry.list;
+        return list[property >>> 0];
+      }
+      return __tbApply(__tbReflectGet, Reflect, [target, property, receiver]);
+    },
+    has(target, property) {
+      if (__tbCanonicalIndex(property)) return (property >>> 0) < target.cssRules.length;
+      return __tbApply(__tbReflectHas, Reflect, [target, property]);
+    },
+  };
   // Live `CSSRuleList`. `item` returns the same CSSRule for as long as that
   // rule exists (<https://drafts.csswg.org/cssom/#the-cssrulelist-interface>).
   function __tbLiveRuleList(sheet, parentEntry, parentRule) {

@@ -2526,3 +2526,21 @@ Evidence: `css/cssom` 3394 to **3412** subtests, no lost subtests.
 times in isolation at the parent commit, so they are pre-existing.
 `cargo fmt --check` (both trees), `tools/check clippy`, and the renderer (175),
 webidl-bindgen (42), and wpt-harness (30) test binaries pass.
+`CSSKeyframesRule` now has its full IDL surface: `name` is settable,
+`cssRules` and `length` answer the keyframe list, the indexed getter reads it,
+and `appendRule`/`deleteRule`/`findRule` address keyframes by selector
+(`crates/renderer/src/js/scripts/web/cssom.js`,
+`crates/renderer/src/js/bindings/cssom_host.rs`). The Blitz fork reports a
+keyframes rule's raw name in the snapshot (the IDL attribute is unquoted while
+`cssText` quotes a name that is not a valid `<custom-ident>`), and it gained
+`cssom_rule_set_name` and `cssom_find_keyframe` (`third_party/blitz` commit
+`bb70a63aa`, recorded in `docs/upstream.md`). The keyframes rule object is
+wrapped in a proxy so the indexed getter (`keyframes[0]`) reads the same
+`CSSRuleList` the `cssRules` attribute exposes.
+
+Evidence: `css/cssom` 3412 to **3421** subtests, no lost subtests;
+`CSSKeyframesRule.html` 0/2 to 2/2. `css/cssom-view` stays at 1616,
+`resize-observer` at 50, `intersection-observer` at 185, `css/selectors` at
+4778, `html/dom` at 65341, and `html/semantics/forms` at 4522, with no lost
+subtests. `cargo fmt --check` (both trees), `tools/check clippy`, and the
+renderer (175), webidl-bindgen (42), and wpt-harness (30) test binaries pass.
