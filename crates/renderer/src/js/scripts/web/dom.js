@@ -207,9 +207,25 @@ host.__tbMakeStyle = element => {
   };
   const own = property => Object.prototype.hasOwnProperty.call(declaration, property);
   const indexProperty = property => /^(0|[1-9][0-9]*)$/.test(property);
+  // The declaration iterable surface lives on the CSSStyleDeclaration
+  // prototype, so an inline declaration reaches it through this proxy rather
+  // than through its own properties
+  // (<https://webidl.spec.whatwg.org/#idl-iterable>).
+  const declarationMember = property => {
+    if (property !== Symbol.iterator && property !== 'keys' && property !== 'values'
+        && property !== 'entries' && property !== 'forEach') {
+      return undefined;
+    }
+    const prototype = globalThis.CSSStyleDeclaration?.prototype;
+    return prototype === undefined ? undefined : Reflect.get(prototype, property);
+  };
   return new Proxy(declaration, {
     get(target, property, receiver) {
-      if (typeof property !== 'string') return Reflect.get(target, property, receiver);
+      if (typeof property !== 'string') {
+        const member = declarationMember(property);
+        if (member !== undefined) return member.bind(target);
+        return Reflect.get(target, property, receiver);
+      }
       if (own(property)) {
         const value = Reflect.get(target, property, receiver);
         return typeof value === 'function' ? value.bind(target) : value;
@@ -217,6 +233,8 @@ host.__tbMakeStyle = element => {
       // The indexed getter yields a property name, and `undefined` past the
       // last declaration (<https://drafts.csswg.org/cssom/#the-cssstyledeclaration-interface>).
       if (indexProperty(property)) return names()[Number(property)];
+      const member = declarationMember(property);
+      if (member !== undefined) return member.bind(target);
       // Only a supported property has an IDL attribute; an unknown name is
       // absent rather than an empty value
       // (<https://drafts.csswg.org/cssom/#css-property-to-idl-attribute>).
@@ -233,11 +251,14 @@ host.__tbMakeStyle = element => {
       return true;
     },
     has(target, property) {
-      if (typeof property !== 'string') return Reflect.has(target, property);
+      if (typeof property !== 'string') {
+        return declarationMember(property) !== undefined || Reflect.has(target, property);
+      }
       if (own(property)) return true;
       // The indexed getter is present up to `length - 1`
       // (<https://drafts.csswg.org/cssom/#the-cssstyledeclaration-interface>).
       if (indexProperty(property)) return Number(property) < names().length;
+      if (declarationMember(property) !== undefined) return true;
       // `in` asks whether the UA supports the property, not whether the block
       // currently sets it; an unset property still has its IDL attribute
       // (<https://drafts.csswg.org/cssom/#css-property-to-idl-attribute>).

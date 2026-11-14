@@ -2597,3 +2597,29 @@ stays at 1616, `resize-observer` at 50, `intersection-observer` at 185,
 4521, with no lost subtests. `cargo fmt --check` (both trees), `tools/check
 clippy`, and the renderer (175), webidl-bindgen (42), and wpt-harness (30) test
 binaries pass.
+`CSSStyleDeclaration` is now iterable. WebIDL's `iterable<CSSOMString>` gives
+every declaration object `keys`, `values`, `entries`, `forEach`, and
+`Symbol.iterator` (the same function as `values`), on the interface prototype
+(`crates/renderer/src/js/scripts/web/cssom.js`). The inline style proxy and the
+computed style proxy forward that surface and run it against their own
+`length`/`item`, so `[...element.style]`, `for (const name of block)`, and
+`[...getComputedStyle(elt)]` all enumerate declaration names
+(`crates/renderer/src/js/scripts/web/dom.js`). An iterator over the values now
+advances its index on every step (the first version did not, which made every
+page-side loop run until the harness killed the script). A computed style's
+`cssText` is also the empty string now
+(<https://drafts.csswg.org/cssom/#dom-window-getcomputedstyle>).
+
+Evidence: `css/cssom` 3594 to **3601** subtests, no lost subtests.
+`CSSStyleDeclaration-iterator.html` 0/1 to 1/1,
+`cssstyledeclaration-csstext.html` 10/11 to 11/11,
+`cssstyledeclaration-csstext-all-shorthand.html` 5/6 to 6/6,
+`getComputedStyle-basic.html` 3/4 to 4/4,
+`getComputedStyle-logical-enumeration.html` 0/1 to 1/1, and
+`serialize-all-longhands.html` 0/2 to 2/2. `css/cssom-view` stays at 1616,
+`resize-observer` at 50, `css/selectors` at 4791, `intersection-observer` at
+185, `html/dom` at 65341, and `html/semantics/forms` at 4521, with no lost
+subtests; the forms batch loses one `form-double-submit-3` subtest that fails
+3/3 in isolation at the parent commit, so it is pre-existing. `cargo fmt
+--check` (both trees), `tools/check clippy`, and the renderer (175),
+webidl-bindgen (42), and wpt-harness (30) test binaries pass.

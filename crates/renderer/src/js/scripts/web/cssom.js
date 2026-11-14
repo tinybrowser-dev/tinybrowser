@@ -575,6 +575,45 @@
       value: CSSStyleDeclaration, writable: true, configurable: true,
     });
   }
+  // Every declaration object is iterable over its property names: WebIDL's
+  // `iterable<CSSOMString>` gives `keys`, `values`, `entries`, `forEach`, and
+  // `Symbol.iterator` (the same function as `values`)
+  // (<https://webidl.spec.whatwg.org/#idl-iterable>).
+  const __tbDeclarationIterator = (style, kind) => {
+    let index = 0;
+    const iterator = {
+      next() {
+        if (index >= style.length) return { value: undefined, done: true };
+        const current = index++;
+        if (kind === 'keys') return { value: current, done: false };
+        const value = style.item(current);
+        return kind === 'entries'
+          ? { value: [current, value], done: false }
+          : { value, done: false };
+      },
+    };
+    iterator[Symbol.iterator] = function () { return iterator; };
+    return iterator;
+  };
+  for (const [name, kind] of [['keys', 'keys'], ['values', 'values'], ['entries', 'entries']]) {
+    __tbDefineProperty(CSSStyleDeclaration.prototype, name, {
+      value: function () { return __tbDeclarationIterator(this, kind); },
+      writable: true, enumerable: true, configurable: true,
+    });
+  }
+  __tbDefineProperty(CSSStyleDeclaration.prototype, 'forEach', {
+    value: function forEach(callback) {
+      const thisArg = arguments.length > 1 ? arguments[1] : undefined;
+      for (let index = 0; index < this.length; index++) {
+        __tbApply(callback, thisArg, [this.item(index), index, this]);
+      }
+    },
+    writable: true, enumerable: true, configurable: true,
+  });
+  __tbDefineProperty(CSSStyleDeclaration.prototype, Symbol.iterator, {
+    value: CSSStyleDeclaration.prototype.values,
+    writable: true, enumerable: false, configurable: true,
+  });
   function __tbSamePath(left, right) {
     if (left.length !== right.length) return false;
     for (let index = 0; index < left.length; index++) {
@@ -1357,12 +1396,23 @@
       };
       return new Proxy(inline, {
         get(target, property, receiver) {
-          if (typeof property !== 'string') return Reflect.get(target, property, receiver);
+          if (typeof property !== 'string') {
+            // The declaration iterable surface must read this declaration's
+            // own `length` and `item`, not the inline style it wraps
+            // (<https://webidl.spec.whatwg.org/#idl-iterable>).
+            const member = Reflect.get(CSSStyleDeclaration.prototype, property);
+            return typeof member === 'function' ? member.bind(receiver) : member;
+          }
           if (property === 'getPropertyValue') return read;
           if (property === 'length') return names().length;
           if (property === 'item') {
             return index => names()[index >>> 0] ?? '';
           }
+          if (property === 'values' || property === 'keys' || property === 'entries'
+              || property === 'forEach') {
+            return Reflect.get(CSSStyleDeclaration.prototype, property).bind(receiver);
+          }
+          if (property === 'cssText') return '';
           if (__tbCanonicalIndex(property)) {
             const list = names();
             const index = property >>> 0;
