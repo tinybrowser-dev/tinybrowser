@@ -23,6 +23,7 @@ mod messaging;
 mod mutation;
 mod node;
 mod origin;
+mod performance;
 /// Runs an inline classic script in the realm that owns its document; a
 /// document without a realm yet queues it through
 /// [`World::queue_deferred_script`](crate::js::world::World::queue_deferred_script).
@@ -43,6 +44,9 @@ pub(super) use messaging::*;
 pub(super) use mutation::*;
 pub(super) use node::*;
 pub(super) use parsing::*;
+pub(crate) use performance::{
+    ResourceTiming, queue_navigation_timing_entry, queue_resource_timing,
+};
 pub(super) use range::*;
 pub(crate) use webidl::selector_matching_elements;
 pub(super) use webidl::*;

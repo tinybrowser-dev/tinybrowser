@@ -382,7 +382,7 @@ globalThis.XMLHttpRequest = class XMLHttpRequest extends EventTarget {
     }, 'about:client', outcome => {
       if (outcome.body.kind === 'undecodable') __tbXhrError(this, data, 'error');
       else __tbXhrFinish(this, data, generation, outcome.status, outcome.body.bytes, outcome.url, outcome.headers, false);
-    });
+    }, 'xmlhttprequest');
     __tbXhrTimeout(this, data);
   }
   // https://xhr.spec.whatwg.org/#the-abort()-method

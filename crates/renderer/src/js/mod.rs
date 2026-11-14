@@ -1051,6 +1051,17 @@ impl JsRealm {
         })
     }
 
+    /// Queues the document's navigation entry now that `load` has run
+    /// (<https://w3c.github.io/navigation-timing/#marking-navigation-timing>).
+    pub(crate) fn fire_navigation_timing_entry(&self) -> Result<(), JsError> {
+        self.with_budget(None, MicrotaskCheckpoint::Perform, || {
+            self.context.with(|ctx| {
+                bindings::queue_navigation_timing_entry(&ctx)?;
+                Ok(())
+            })
+        })
+    }
+
     /// Rebinds the realm's `document` global to the world's active document
     /// after a same-realm navigation install.
     pub(crate) fn refresh_document(&self) -> Result<(), JsError> {
@@ -1138,6 +1149,36 @@ impl JsRealm {
         self.with_budget(None, MicrotaskCheckpoint::Perform, || {
             self.context.with(|ctx| {
                 bindings::fire_node_load(&ctx, id)?;
+                Ok(())
+            })
+        })
+    }
+
+    /// Appends one resource timing entry created by a renderer-side fetch
+    /// (<https://w3c.github.io/resource-timing/#dfn-add-a-performanceresourcetiming-entry>).
+    pub(crate) fn queue_resource_timing(
+        &self,
+        name: String,
+        initiator_type: &str,
+        start_time: f64,
+        end_time: f64,
+        response_status: u16,
+        encoded_body_size: u64,
+    ) -> Result<(), JsError> {
+        self.with_budget(None, MicrotaskCheckpoint::Perform, || {
+            self.context.with(|ctx| {
+                bindings::queue_resource_timing(
+                    &ctx,
+                    bindings::ResourceTiming {
+                        name: &name,
+                        initiator_type,
+                        start_time,
+                        end_time,
+                        response_status,
+                        encoded_body_size,
+                        decoded_body_size: encoded_body_size,
+                    },
+                )?;
                 Ok(())
             })
         })

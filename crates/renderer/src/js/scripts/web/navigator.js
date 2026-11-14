@@ -258,7 +258,7 @@
           delivery: 'buffer',
           referrerPolicy: '',
         }, 'about:client',
-        () => { quota.bytes -= Math.min(quota.bytes, bytes.length); });
+        () => { quota.bytes -= Math.min(quota.bytes, bytes.length); }, 'beacon');
       return true;
     };
     __tbDefineProperty(sendBeacon, 'length', {

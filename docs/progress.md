@@ -2753,3 +2753,52 @@ webidl-bindgen (42), and wpt-harness (30) test binaries pass. The two browser
 integration failures (`secure_context::a_popup_inherits_its_openers_secure_context`,
 `window::a_blob_popup_compares_its_entry_with_the_top_level_origin`) reproduce
 1/1 at the parent commit.
+The Performance Timeline is now a real per-realm timeline. The native
+`performance` object only offered `now`/`timeOrigin`, so `performance.js`
+replaces it with `Performance`, `PerformanceEntry`, `PerformanceMark`,
+`PerformanceMeasure`, `PerformanceResourceTiming`,
+`PerformanceNavigationTiming`, `PerformanceObserver`, and the obsolete
+`PerformanceTiming`/`PerformanceNavigation` views
+(<https://w3c.github.io/hr-time/#the-performance-interface>,
+<https://w3c.github.io/performance-timeline/>,
+<https://w3c.github.io/user-timing/>). The buffer map keeps one tuple per
+entry type with its maximum size, `availableFromTimeline` flag, and dropped
+entries count; `getEntries*` filters the timeline and sorts by `startTime`.
+`PerformanceObserver` keeps the per-global task coalescing, the
+`droppedEntriesCount` callback option, and the one-shot dropped report that a
+buffered registration owes. `measure()` converts a `PerformanceTiming`
+attribute name through the same view the page reads, so
+`navigationStart`/`responseEnd` resolve instead of throwing.
+
+The navigation entry is created with the document and queued to observers when
+`load` finishes, so an observer registered during parsing sees it without
+`buffered`; its `navigationId` is the id every later entry on that document
+carries (<https://w3c.github.io/navigation-timing/#marking-navigation-timing>).
+Resource entries come from two places: the page `fetch`/XHR/beacon helper
+records its own request in `fetch.js`, and the renderer reports Blitz
+subresources (images, stylesheets, fonts) and classic scripts through
+`bindings/performance.rs`. A dial now carries its start `Instant`, so the
+entry's start is still placed on the timeline when the realm clock was
+installed after the dial began. Resource buffer overflow keeps the secondary
+buffer, fires `resourcetimingbufferfull`, and counts dropped entries
+(<https://w3c.github.io/resource-timing/#sec-resource-timing>).
+
+Evidence: `user-timing` 13 to **579** passing subtests and
+`performance-timeline` 5 to **51**, with no lost subtests. `measure.html`
+2/38 to 37/38, `measure_navigation_timing.html` 2/17 to 17/17,
+`measures.html` 0/119 to 119/119, `po-observe.html` 0/1 to 1/1,
+`po-resource.html` 0/1 to 1/1, `droppedentriescount.any.html` 0/5 to 4/5,
+and `get-invalid-entries.html` 0/1 to 1/1. Nine user-timing files move from
+ERROR to OK and five performance-timeline files do the same;
+`navigation-id-initial-load.tentative.html` moves OK (0/1) to TIMEOUT because
+the test waits for a largest-contentful-paint entry, which this engine does
+not produce. `dom/events` stays at 665 (638 in the pre-click baseline, with
+the two EventTarget tests now passing), `css/cssom` 3674,
+`css/cssom-view` 1616, `resize-observer` 50, `css/selectors` 4791,
+`intersection-observer` 185, `html/dom` 65341, and the beacon suite 84/85,
+all with no lost subtests. `html/semantics/forms` loses 1 subtest
+(`form-double-submit.html`), which fails 1/1 at the parent commit.
+`cargo fmt --check` (both trees), `tools/check clippy`, and the renderer
+(175), webidl-bindgen (42), and wpt-harness (30) test binaries pass; the two
+browser integration failures are the environment failures that reproduce at
+the parent commit.

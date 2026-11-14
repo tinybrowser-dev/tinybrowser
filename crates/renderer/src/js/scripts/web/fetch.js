@@ -1107,10 +1107,25 @@ const __tbPageRequestBody = async body => {
   const extracted = __tbExtractBody(body);
   return { bytes: extracted.bytes === null ? new __tbUint8Array(0) : extracted.bytes, type: extracted.type };
 };
-const __tbQueuePageRequest = (url, method, body, headers, cors, referrer, callback) => {
+const __tbQueuePageRequest = (url, method, body, headers, cors, referrer, callback, initiator) => {
   const id = ++host.__tb_fetchSeq;
+  // Requests made through this helper are resources of the global's timeline.
+  // The entry is created when the response arrives, with the request's start
+  // and end recorded from the same clock
+  // (<https://w3c.github.io/resource-timing/#sec-resource-timing>).
+  const started = performance.now();
+  const queuedInitiator = initiator === undefined ? 'fetch' : initiator;
+  const reportResource = outcome => {
+    const queue = host.__tbQueueResourceTiming;
+    if (typeof queue !== 'function') return;
+    const name = outcome && outcome.url ? String(outcome.url) : String(url);
+    const status = outcome && outcome.status ? outcome.status : 0;
+    const bytes = outcome && outcome.body && outcome.body.bytes ? outcome.body.bytes.length : 0;
+    queue(name, queuedInitiator, started, performance.now(), status, bytes, bytes);
+  };
   host.__tb_fetchCbs[id] = function(outcome) {
     delete host.__tb_fetchCbs[id];
+    reportResource(outcome);
     callback(outcome);
   };
   __tbPageRequestBody(body).then(payload => {

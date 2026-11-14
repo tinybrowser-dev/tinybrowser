@@ -75,6 +75,24 @@ impl DialId {
     }
 }
 
+/// The Resource Timing start and end of one finished dial, in the realm's
+/// `performance` timebase. Both values are sampled at completion, so a realm
+/// clock installed after the dial began still places the start correctly.
+#[derive(Clone, Copy)]
+struct DialTiming {
+    start: f64,
+    end: f64,
+}
+
+impl DialTiming {
+    fn new(started: std::time::Instant, end: f64) -> Self {
+        Self {
+            start: end - started.elapsed().as_secs_f64() * 1000.0,
+            end,
+        }
+    }
+}
+
 enum Task {
     Timer(TimerId),
     /// Boxed: a completed dial carries the request and response with it, and
@@ -221,6 +239,10 @@ pub(crate) struct QueuedDial {
     /// URLs, method, body, referrer, CSP redirect gate, and CORS parameters
     /// are final.
     pub(crate) req: DialRequest,
+    /// When the request left the document, for Resource Timing's start time.
+    /// Wall-clock instants survive a change of the realm's clock origin, so
+    /// the completion can still place the start on the performance timeline.
+    pub(crate) started: std::time::Instant,
     /// Ancestor document URLs nearest-first, snapshotted when a nested frame
     /// navigation starts. The child's `frame-ancestors` policy is checked
     /// against these at commit
@@ -245,6 +267,7 @@ impl QueuedDial {
         Self {
             req: crate::protocol::DialRequest::new(policy, url, initiator),
             context,
+            started: std::time::Instant::now(),
             ancestors: Vec::new(),
             integrity: None,
         }
@@ -258,6 +281,8 @@ pub(crate) struct CompletedDial {
     /// The wire request the dial started as: the request URL tells a redirect
     /// from the original hop, and the CSP gate reports refused redirects.
     pub(crate) req: DialRequest,
+    /// When the dial started, for Resource Timing's start time.
+    pub(crate) started: std::time::Instant,
     /// Ancestor document URLs for a nested frame navigation, checked against
     /// the response's `frame-ancestors` at commit.
     pub(crate) ancestors: Vec<Url>,
@@ -1512,6 +1537,7 @@ impl Document {
         self.queue_dial(QueuedDial {
             context: DialContext::FrameLoad { embedder, sandbox },
             req,
+            started: std::time::Instant::now(),
             ancestors,
             integrity: None,
         });
@@ -3791,6 +3817,80 @@ impl Document {
         self.world.borrow().origin.clone()
     }
 
+    /// The realm's performance timeline clock, in milliseconds from its time
+    /// origin. The world samples `performance.now()` when the realm installs,
+    /// so every entry uses the same timebase as the page's `performance.now`
+    /// (<https://w3c.github.io/hr-time/#dom-performance-now>).
+    fn performance_now(&self) -> f64 {
+        let world = self.world.borrow();
+        let (sampled, origin) = world.event_clock;
+        origin + sampled.elapsed().as_secs_f64() * 1000.0
+    }
+
+    /// Appends one resource entry for a renderer-side fetch. A blocked request
+    /// never reaches the timeline, which is the caller's decision; this only
+    /// hands completed fetches to the realm
+    /// (<https://w3c.github.io/resource-timing/#dfn-add-a-performanceresourcetiming-entry>).
+    fn queue_resource_timing(
+        &mut self,
+        name: String,
+        initiator_type: &str,
+        start_time: f64,
+        end_time: f64,
+        response_status: u16,
+        encoded_body_size: u64,
+    ) {
+        self.fire_js(|js| {
+            js.queue_resource_timing(
+                name,
+                initiator_type,
+                start_time,
+                end_time,
+                response_status,
+                encoded_body_size,
+            )
+        });
+    }
+
+    /// The Resource Timing entry for a classic script response
+    /// (<https://w3c.github.io/resource-timing/#dom-performanceresourcetiming-initiatortype>).
+    fn queue_classic_script_timing(
+        &mut self,
+        outcome: &crate::protocol::DialOutcome,
+        timing: DialTiming,
+    ) {
+        let encoded = match &outcome.body {
+            crate::protocol::ResponseBody::Bytes(body) => body.len() as u64,
+            crate::protocol::ResponseBody::Undecodable
+            | crate::protocol::ResponseBody::Streamed(_) => 0,
+        };
+        self.queue_resource_timing(
+            outcome.final_url.to_string(),
+            "script",
+            timing.start,
+            timing.end,
+            outcome.status,
+            encoded,
+        );
+    }
+
+    /// The initiator type a Blitz subresource reports in Resource Timing
+    /// (<https://w3c.github.io/resource-timing/#dom-performanceresourcetiming-initiatortype>).
+    fn subresource_initiator(destination: Option<crate::csp::Destination>) -> &'static str {
+        match destination {
+            Some(crate::csp::Destination::Img) => "img",
+            Some(crate::csp::Destination::StyleSheet) => "link",
+            Some(crate::csp::Destination::Font) => "css",
+            Some(
+                crate::csp::Destination::Connect
+                | crate::csp::Destination::Script
+                | crate::csp::Destination::Frame
+                | crate::csp::Destination::Worker,
+            )
+            | None => "other",
+        }
+    }
+
     /// The document URL the `"client"` referrer branch reads. For an
     /// `iframe srcdoc` document this walks to the container document's URL,
     /// which the world already captured
@@ -3871,9 +3971,15 @@ impl Document {
             context,
             outcome,
             req,
+            started,
             ancestors,
             integrity,
         } = done;
+        // Resource Timing's end time and the start derived from the dial's
+        // wall-clock begin, so a realm clock installed after the dial began
+        // still lands the start on its timeline
+        // (<https://w3c.github.io/resource-timing/#sec-resource-timing>).
+        let timing = DialTiming::new(started, self.performance_now());
         let redirected = outcome.final_url != req.url;
         // A response `Set-Cookie` is a cookie store change like a script
         // write. The other realms process it in their own turn; this one
@@ -3922,6 +4028,12 @@ impl Document {
                 // A classic script with a non-JavaScript MIME type does not
                 // execute (<https://html.spec.whatwg.org/multipage/scripting.html#prepare-the-script-element>).
                 let mime_ok = crate::js::classic_script_mime(outcome.content_type.as_deref());
+                // A CSP-refused response never reaches the timeline; every
+                // fetch that completed does
+                // (<https://w3c.github.io/resource-timing/#resources-included-in-the-performanceresourcetiming-interface>).
+                if !blocked {
+                    self.queue_classic_script_timing(&outcome, timing);
+                }
                 if !blocked
                     && integrity_ok
                     && mime_ok
@@ -3961,7 +4073,9 @@ impl Document {
             DialContext::BlitzResource { id, .. } => {
                 let cors_clean = req.policy.cors().mode == net::cors::RequestMode::Cors;
                 if let Some(request) = self.blitz_requests.remove(&id) {
-                    self.deliver_blitz_resource(&outcome, request, redirected, cors_clean);
+                    // The request's own destination names both its CSP check
+                    // and its Resource Timing initiator type.
+                    self.deliver_blitz_resource(&outcome, request, redirected, cors_clean, timing);
                 }
             }
             // Fire-and-forget: the endpoint already stored the report, if it
@@ -4044,6 +4158,7 @@ impl Document {
         request: BlitzRequest,
         redirected: bool,
         cors_clean: bool,
+        timing: DialTiming,
     ) {
         let destination = request.destination;
         let blocked = redirected
@@ -4055,6 +4170,19 @@ impl Document {
             crate::protocol::ResponseBody::Undecodable
             | crate::protocol::ResponseBody::Streamed(_) => None,
         };
+        // A CSP-refused response never reaches the timeline; every other
+        // completed fetch does, including one the network failed
+        // (<https://w3c.github.io/resource-timing/#resources-included-in-the-performanceresourcetiming-interface>).
+        if !blocked {
+            self.queue_resource_timing(
+                outcome.final_url.to_string(),
+                Self::subresource_initiator(destination),
+                timing.start,
+                timing.end,
+                outcome.status,
+                body.map_or(0, |body| body.len() as u64),
+            );
+        }
         let succeeded = !blocked && (200..300).contains(&outcome.status) && body.is_some();
         // A `no-cors` image stays clean only while the request stays on this
         // origin; one cross-origin hop makes the response opaque for the rest
@@ -4436,6 +4564,9 @@ impl Document {
         self.arm_refresh();
         self.record_event(RendererEvent::Browser(BrowserEvent::Load));
         self.fire_js(crate::js::JsRealm::fire_load);
+        // The navigation entry becomes observable once the load event has run
+        // (<https://w3c.github.io/navigation-timing/#marking-navigation-timing>).
+        self.fire_js(crate::js::JsRealm::fire_navigation_timing_entry);
         self.adopt_js_work();
         true
     }

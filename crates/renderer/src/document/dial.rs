@@ -98,6 +98,7 @@ pub(in crate::document) fn complete(
     let QueuedDial {
         context,
         req,
+        started,
         ancestors,
         integrity,
     } = dial;
@@ -106,6 +107,7 @@ pub(in crate::document) fn complete(
         context,
         outcome,
         req,
+        started,
         ancestors,
         integrity,
     })

@@ -186,6 +186,7 @@ impl Document {
                         self.finish_dial(super::CompletedDial {
                             context: dial.context,
                             req: dial.req,
+                            started: dial.started,
                             ancestors: dial.ancestors,
                             integrity: dial.integrity,
                             outcome: crate::protocol::DialOutcome {

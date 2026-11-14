@@ -10,6 +10,9 @@ xhr.js
 url.js
 navigator.js
 messaging.js
+# `performance.js` reads `structuredClone`, `EventTarget`, and `setTimeout`, which
+# the earlier shims install.
+performance.js
 origin.js
 indexeddb.js
 crypto.js

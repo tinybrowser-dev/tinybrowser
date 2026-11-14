@@ -1098,3 +1098,27 @@ and the rest) is absent. The spec leaves same-origin proxy allocation to the
 UA but a conforming engine exposes the full Window. The popup's own document
 is correct; tests that need one of its properties attach to its target
 instead (`tests/browser/secure_context.rs`).
+
+## Performance timeline
+
+`PerformanceTiming` is the obsolete view, so every navigation phase reports
+`navigationStart`: this engine records no fetch, DNS, connect, or response
+breakdown and attributes the whole navigation to the instant the realm was
+created. `performance.navigation` always reports `TYPE_NAVIGATE` with no
+redirects, and the navigation entry's phase timings are zero with `duration`
+set from the load event. Navigation Timing has no real Navigation Timing
+Level 2 timing attributes: `domInteractive`, `domContentLoadedEventStart/End`,
+`transferSize`, `nextHopProtocol`, and `contentType` are not recorded.
+
+Resource entries exist for Blitz subresources (image, stylesheet, font),
+classic scripts, and the page `fetch`/XHR/beacon helper. A synchronous XHR, a
+`data:`/`blob:` fetch, a request the page aborts, and a redirect refused by
+CSP produce no entry; a streamed response reports zero sizes. Cross-origin
+resources are not masked by the Timing-Allow-Origin check and their transfer
+sizes are reported as if same-origin. Worker resource entries cover worker
+`fetch`/XHR only; a worker has no Blitz subresources.
+
+There is no Paint Timing, Largest Contentful Paint, Event Timing, Layout
+Instability, or Container Timing entry. `navigation-id-initial-load.tentative.html`
+waits for a largest-contentful-paint entry and therefore times out; that test
+was already failing before the timeline existed.
