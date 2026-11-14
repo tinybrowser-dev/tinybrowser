@@ -2341,3 +2341,26 @@ coarsening of `Event-timestamp-safe-resolution.html` is not implemented and
 is recorded in `docs/limitations.md`. `html/dom` stays at 65341,
 `dom/nodes` at 14550, and `html/browsers` at 1009 (the one batch timeout,
 `grandparent_session_aboutsrcdoc.sub.window.html`, passes 4/4 in isolation).
+The legacy `init*Event` operations and the checkbox/radio activation rules now
+match their specs. `UIEvent.prototype.initUIEvent`,
+`MouseEvent.prototype.initMouseEvent`, and
+`KeyboardEvent.prototype.initKeyboardEvent` do nothing while their event is
+being dispatched (the dispatch flag is read through
+`host.__tbEventDispatching`), and otherwise re-initialize the event and their
+interface's slots; `UIEvent`'s `view` member is now converted as `Window?`, so
+`new UIEvent("x", { view: 7 })` throws
+(`crates/renderer/src/js/scripts/web/ui_events.js`). The checkbox/radio input
+activation behavior returns before firing `input` and `change` when the
+control is not connected, while the checkedness still moves, so a detached
+control that is `click()`ed or has a `click` dispatched at it stays silent
+(`crates/renderer/src/js/bindings/focus.rs`).
+
+Evidence: `dom/events` 490 to **498** subtests, no lost subtests.
+`Event-init-while-dispatching.html` 2/5 to 5/5,
+`Event-subclasses-constructors.html` 48/49 to 49/49, and
+`Event-dispatch-detached-input-and-change.html` 8/12 to 12/12.
+`html/semantics/forms` 4512 to **4521** with no regression: the two
+`form-double-submit*` subtests that differ from that old baseline also fail
+at `0b584af2`, so they are pre-existing navigation-timing failures, not this
+change. `html/dom` stays at 65341, `dom/nodes` at 14550, and `html/browsers`
+at 1009, with no lost subtests.

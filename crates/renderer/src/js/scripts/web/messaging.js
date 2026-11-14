@@ -35,6 +35,12 @@ const __tbWindowData = host.slots('tinybrowser.window.data');
 const __tbPortData = host.slots('tinybrowser.messageport.data');
 const __tbFrameId = host.__tb_frameId;
 __tbWindowData.set(globalThis, { frame: __tbFrameId });
+// Whether a value is a `Window` object in this realm: the global itself, or a
+// `WindowProxy` this realm made for another frame
+// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#window>).
+const __tbIsWindow = value =>
+  value === globalThis ||
+  (value !== null && typeof value === 'object' && __tbWindowData.get(value) !== undefined);
 const __tbFrameProxies = Object.create(null);
 // Writes made through a proxy whose target realm does not exist yet: a
 // browsing context registered inside a script gets its realm at the next

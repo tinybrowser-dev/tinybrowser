@@ -503,6 +503,10 @@ pub(crate) fn install_event_target_bridge(ctx: &Ctx<'_>) -> Result<()> {
         "__tbCurrentEvent",
         rquickjs::prelude::Func::from(current_event),
     )?;
+    super::bridge::object(ctx)?.set(
+        "__tbEventDispatching",
+        rquickjs::prelude::Func::from(event_dispatching_bridge),
+    )?;
     // Forge-proof event brand check for the script getters: prototype-chain
     // walks (`instanceof`) pass for `Object.create(MouseEvent.prototype)`,
     // but only genuine events (native or constructed through the shared
@@ -524,6 +528,13 @@ fn current_event(ctx: Ctx<'_>) -> Result<Value<'_>> {
         Some(saved) => Ok(saved.restore(&ctx)?),
         None => Ok(Value::new_undefined(ctx)),
     }
+}
+
+/// Whether an event's dispatch flag is set, for the legacy `init*Event`
+/// operations, which must do nothing while dispatched
+/// (<https://w3c.github.io/uievents/#dom-uievent-inituievent>).
+fn event_dispatching_bridge<'js>(_ctx: Ctx<'js>, event: Class<'js, JsEvent>) -> bool {
+    event.borrow().state().dispatching
 }
 
 fn is_event_bridge<'js>(ctx: Ctx<'js>, value: Value<'js>) -> bool {

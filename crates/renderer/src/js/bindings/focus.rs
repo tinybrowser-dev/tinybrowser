@@ -511,6 +511,15 @@ pub(crate) fn complete_activation(
 
 /// Fires the `input` and `change` events a checkbox/radio activation produces.
 fn fire_checkable_events(ctx: &Ctx<'_>, node: NodeId) -> Result<()> {
+    // A detached control moves its checkedness but fires neither event
+    // (<https://html.spec.whatwg.org/multipage/input.html#checkbox-state-(type=checkbox):input-activation-behavior>).
+    let connected = world_for_node(ctx, node)?
+        .borrow()
+        .document(node)
+        .is_some_and(|parsed| crate::dom::tree::is_connected(&parsed.document.base, node.node));
+    if !connected {
+        return Ok(());
+    }
     events::fire_trusted_composed(ctx, EventTargetKey::Node(node), "input", true, false)?;
     events::fire_trusted(ctx, EventTargetKey::Node(node), "change", true, false)?;
     Ok(())
@@ -589,8 +598,7 @@ fn toggle_checkedness(ctx: &Ctx<'_>, node: NodeId) -> Result<()> {
         }
     };
     if changed {
-        events::fire_trusted_composed(ctx, EventTargetKey::Node(node), "input", true, false)?;
-        events::fire_trusted(ctx, EventTargetKey::Node(node), "change", true, false)?;
+        fire_checkable_events(ctx, node)?;
     }
     Ok(())
 }

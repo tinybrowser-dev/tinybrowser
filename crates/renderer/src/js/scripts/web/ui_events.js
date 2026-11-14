@@ -11,21 +11,45 @@ const __tbFreshUIEvent = () => ({ view: null, detail: 0, which: 0 });
 // (<https://webidl.spec.whatwg.org/#es-unsigned-long>).
 const __tbToUnsignedLong = value =>
   value === undefined ? 0 : (__tbNumberCtor(value) >>> 0);
+// `long` members convert with `ToNumber`, not truthiness: `"5"` is 5
+// (<https://webidl.spec.whatwg.org/#es-long>).
+const __tbToLong = value => {
+  const n = __tbNumberCtor(value);
+  return Number.isNaN(n) ? 0 : Math.trunc(n);
+};
+// `Window?` conversion: undefined becomes null, and any other value that is
+// not a Window throws (<https://webidl.spec.whatwg.org/#es-interface>).
+const __tbEventView = value => {
+  if (value === undefined) return null;
+  if (value === null || __tbIsWindow(value)) return value;
+  throw new TypeError("member view is not of type 'Window'.");
+};
 const __tbUIEventConstructor = globalThis.UIEvent = class UIEvent extends Event {
   constructor(type, init) {
     if (arguments.length < 1) {
       throw new TypeError("Failed to construct 'UIEvent': 1 argument required, but only 0 present.");
     }
     init = init || {};
+    const view = __tbEventView(init.view);
     const event = __tbConstruct(__tbEventConstructor, [type, init], new.target);
     __tbUIEventData.set(event, {
-      view: init.view || null,
+      view,
       detail: init.detail || 0,
       // `which` is a legacy `UIEvent` attribute the init dictionary carries
       // (<https://w3c.github.io/uievents/#dom-uievent-which>).
       which: __tbToUnsignedLong(init.which),
     });
     return event;
+  }
+  // https://w3c.github.io/uievents/#dom-uievent-inituievent
+  initUIEvent(type, bubbles, cancelable, view, detail) {
+    if (host.__tbEventDispatching(this)) return;
+    __tbEventConstructor.prototype.initEvent.call(this, type, bubbles, cancelable);
+    __tbUIEventData.set(this, {
+      view: __tbEventView(view),
+      detail: __tbToLong(detail),
+      which: 0,
+    });
   }
   get view() { return __tbEventEntry(this, __tbUIEventData, __tbFreshUIEvent).view; }
   get detail() { return __tbEventEntry(this, __tbUIEventData, __tbFreshUIEvent).detail; }
@@ -48,19 +72,39 @@ const __tbMouseEventConstructor = globalThis.MouseEvent = class MouseEvent exten
     const event = __tbConstruct(__tbUIEventConstructor, [type, init], new.target);
     // `long` members convert with `ToNumber`, not truthiness: `"5"` is 5
     // (<https://w3c.github.io/uievents/#dom-mouseevent-clientx>).
-    const toLong = value => { const n = __tbNumberCtor(value); return Number.isNaN(n) ? 0 : Math.trunc(n); };
-    const button = init.button === undefined ? 0 : toLong(init.button);
+    const button = init.button === undefined ? 0 : __tbToLong(init.button);
     __tbMouseEventData.set(event, {
-        screenX: init.screenX === undefined ? 0 : toLong(init.screenX),
-        screenY: init.screenY === undefined ? 0 : toLong(init.screenY),
-        clientX: init.clientX === undefined ? 0 : toLong(init.clientX),
-        clientY: init.clientY === undefined ? 0 : toLong(init.clientY),
+        screenX: init.screenX === undefined ? 0 : __tbToLong(init.screenX),
+        screenY: init.screenY === undefined ? 0 : __tbToLong(init.screenY),
+        clientX: init.clientX === undefined ? 0 : __tbToLong(init.clientX),
+        clientY: init.clientY === undefined ? 0 : __tbToLong(init.clientY),
         ctrlKey: !!init.ctrlKey, shiftKey: !!init.shiftKey,
         altKey: !!init.altKey, metaKey: !!init.metaKey,
-        button: button, buttons: init.buttons === undefined ? 0 : toLong(init.buttons),
+        button: button, buttons: init.buttons === undefined ? 0 : __tbToLong(init.buttons),
         relatedTarget: init.relatedTarget || null,
     });
     return event;
+  }
+  // https://w3c.github.io/uievents/#dom-mouseevent-initmouseevent
+  initMouseEvent(type, bubbles, cancelable, view, detail, screenX, screenY,
+      clientX, clientY, ctrlKey, altKey, shiftKey, metaKey, button,
+      relatedTarget) {
+    if (host.__tbEventDispatching(this)) return;
+    __tbEventConstructor.prototype.initEvent.call(this, type, bubbles, cancelable);
+    const buttonValue = __tbToLong(button);
+    __tbUIEventData.set(this, {
+      view: __tbEventView(view),
+      detail: __tbToLong(detail),
+      which: buttonValue,
+    });
+    __tbMouseEventData.set(this, {
+      screenX: __tbToLong(screenX), screenY: __tbToLong(screenY),
+      clientX: __tbToLong(clientX), clientY: __tbToLong(clientY),
+      ctrlKey: !!ctrlKey, shiftKey: !!shiftKey,
+      altKey: !!altKey, metaKey: !!metaKey,
+      button: buttonValue, buttons: 0,
+      relatedTarget: relatedTarget === undefined ? null : relatedTarget,
+    });
   }
   get screenX() { return __tbEventEntry(this, __tbMouseEventData, __tbFreshMouseEvent).screenX; }
   get screenY() { return __tbEventEntry(this, __tbMouseEventData, __tbFreshMouseEvent).screenY; }
@@ -164,6 +208,27 @@ globalThis.KeyboardEvent = class KeyboardEvent extends UIEvent {
         charCode: init.charCode || 0,
     });
     return event;
+  }
+  // The legacy DOM Level 3 initializer, whose arguments differ from the
+  // constructor's dictionary. It never runs while the event is dispatched
+  // (<https://www.w3.org/TR/DOM-Level-3-Events/#dom-keyboardevent-initkeyboardevent>).
+  initKeyboardEvent(type, bubbles, cancelable, view, keyIdentifier, location,
+      modifiersList, repeat, locale) {
+    if (host.__tbEventDispatching(this)) return;
+    __tbEventConstructor.prototype.initEvent.call(this, type, bubbles, cancelable);
+    const modifiers = modifiersList === undefined || modifiersList === null
+      ? '' : __tbStringCtor(modifiersList);
+    const has = name => modifiers.split(/[,\s]+/).includes(name);
+    __tbUIEventData.set(this, { view: __tbEventView(view), detail: 0, which: 0 });
+    __tbKeyboardEventData.set(this, {
+      key: keyIdentifier === undefined ? '' : __tbStringCtor(keyIdentifier),
+      code: '',
+      location: __tbToLong(location),
+      ctrlKey: has('Control'), shiftKey: has('Shift'),
+      altKey: has('Alt'), metaKey: has('Meta'),
+      repeat: !!repeat, isComposing: false,
+      keyCode: 0, charCode: 0,
+    });
   }
   get key() { return __tbEventEntry(this, __tbKeyboardEventData, __tbFreshKeyboardEvent).key; }
   get code() { return __tbEventEntry(this, __tbKeyboardEventData, __tbFreshKeyboardEvent).code; }
