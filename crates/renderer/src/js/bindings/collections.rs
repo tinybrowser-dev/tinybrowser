@@ -50,6 +50,10 @@ pub(crate) enum CollectionKind {
     /// `Document.forms`: HTML `form` descendants of the document element
     /// (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-forms>).
     HtmlForms,
+    /// `Document.embeds`/`Document.plugins`: HTML `embed` descendants of the
+    /// document element
+    /// (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-embeds>).
+    HtmlEmbeds,
     /// `table.tBodies`: HTML `tbody` children of the table
     /// (<https://html.spec.whatwg.org/multipage/tables.html#dom-table-tbodies>).
     TableBodies,
@@ -102,6 +106,7 @@ impl CollectionQuery {
             | CollectionKind::HtmlLinks
             | CollectionKind::HtmlImages
             | CollectionKind::HtmlForms
+            | CollectionKind::HtmlEmbeds
             | CollectionKind::TableBodies
             | CollectionKind::TableRows
             | CollectionKind::TableSectionRows
@@ -182,6 +187,9 @@ fn query_ids(ctx: &Ctx<'_>, scope: NodeId, kind: &CollectionKind) -> Result<Vec<
         }
         CollectionKind::HtmlForms => {
             collect_html_descendants(&parsed.document, document, scope.node, "form")
+        }
+        CollectionKind::HtmlEmbeds => {
+            collect_html_descendants(&parsed.document, document, scope.node, "embed")
         }
         CollectionKind::TableBodies => table_bodies(base, document, scope.node),
         CollectionKind::TableRows => table_rows(base, document, scope.node),
@@ -794,6 +802,7 @@ impl<'js> node_list_generated::NodeList<'js> for JsNodeList {
             | CollectionKind::HtmlLinks
             | CollectionKind::HtmlImages
             | CollectionKind::HtmlForms
+            | CollectionKind::HtmlEmbeds
             | CollectionKind::TableBodies
             | CollectionKind::TableRows
             | CollectionKind::TableSectionRows
