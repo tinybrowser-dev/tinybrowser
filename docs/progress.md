@@ -2577,3 +2577,23 @@ batch; that file is intermittent in isolation both with this change (1/3 pass)
 and at the parent commit (2/3 pass), so it is a pre-existing timing flake.
 `cargo fmt --check` (both trees), `tools/check clippy`, and the renderer (175),
 webidl-bindgen (42), and wpt-harness (30) test binaries pass.
+`getComputedStyle` now resolves the inset properties of a `position: sticky`
+box. CSSOM reports a sticky box's insets as used values, so percentages and
+`calc()` absolutize against the box's nearest scrollport rather than staying
+percentages, while `auto` stays `auto` because a sticky box's static position
+is not an inset
+(<https://drafts.csswg.org/css-position-3/#sticky-pos>). The engine resolves
+`top`/`bottom` against the scrollport height and `left`/`right` against its
+width, where the scrollport is the nearest ancestor that establishes a
+scrolling box (or the viewport when none does)
+(`third_party/blitz` commit `afe0d6d25`, recorded in `docs/upstream.md`).
+
+Evidence: `css/cssom` 3449 to **3594** subtests, no lost subtests.
+`getComputedStyle-insets-sticky.html` 180/252 to 252/252,
+`getComputedStyle-insets-sticky-container-for-abspos.html` 180/252 to 252/252,
+and `getComputedStyle-sticky-pos-percent.html` 0/1 to 1/1. `css/cssom-view`
+stays at 1616, `resize-observer` at 50, `intersection-observer` at 185,
+`css/selectors` at 4791, `html/dom` at 65341, and `html/semantics/forms` at
+4521, with no lost subtests. `cargo fmt --check` (both trees), `tools/check
+clippy`, and the renderer (175), webidl-bindgen (42), and wpt-harness (30) test
+binaries pass.
