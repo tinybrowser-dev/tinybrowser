@@ -97,9 +97,18 @@ rendered. Blitz has no slot assignment, so the flat-tree test approximates
 "assigned to a slot" with "the host's shadow tree contains a `<slot>`": a light
 child of a shadow host with no slot element is treated as unslotted, while any
 light child of a host that has one is treated as slotted even when its `slot`
-name or `slot` attribute would not actually match. A pseudo-element argument is
-still ignored: the declaration describes the element itself, which is why
-`getComputedStyle-pseudo.html` stays mostly red.
+name or `slot` attribute would not actually match.
+
+A `getComputedStyle` pseudo-element argument is parsed, but only the eager
+pseudo-elements are cascaded. `::marker`, `::backdrop`, `::placeholder`,
+`::file-selector-button`, and the functional pseudo-elements (`::highlight()`,
+`::picker()`, `::view-transition-*()`) return a declaration without their
+rules applied, because the style engine stores only the eager pseudo styles.
+The same gap shows up as a missing `::file-selector-button` style on a file
+input. A nonexistent `::before`/`::after` of a flex or grid container also
+reports the initial `display: inline` instead of the blockified value the real
+cascade would compute, because stylo drops a pseudo style that is definitely
+not generated.
 
 CSS rule attributes live on the interface prototypes, but
 `CSSFontFeatureValuesRule.fontFamily` is still an own data property: the style

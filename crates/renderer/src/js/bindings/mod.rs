@@ -1021,6 +1021,14 @@ fn install_host_functions(ctx: &Ctx<'_>) -> Result<()> {
         "__tb_has_computed_style",
         rquickjs::prelude::Func::from(has_computed_style),
     )?;
+    crate::js::bridge::object(ctx)?.set(
+        "__tb_parse_pseudo_element",
+        rquickjs::prelude::Func::from(parse_pseudo_element),
+    )?;
+    crate::js::bridge::object(ctx)?.set(
+        "__tb_computed_style_names",
+        rquickjs::prelude::Func::from(computed_style_names),
+    )?;
     node::scrolling::install(ctx)?;
     crate::js::bridge::object(ctx)?.set(
         "__tbSetHTMLUnsafe",
@@ -1046,6 +1054,7 @@ fn resolved_style<'js>(
     ctx: Ctx<'js>,
     element: Value<'js>,
     property: rquickjs::String<'js>,
+    pseudo: i32,
 ) -> String {
     let Ok(world) = world(&ctx) else {
         return String::new();
@@ -1064,7 +1073,79 @@ fn resolved_style<'js>(
     // used values
     // (<https://drafts.csswg.org/cssom/#dom-window-getcomputedstyle>).
     base.resolve(0.0);
-    base.resolved_style_value(id.node, &property)
+    match computed_pseudo_element(pseudo) {
+        Some(pseudo) => base.resolved_pseudo_style_value(id.node, pseudo, &property),
+        // A pseudo-element the engine does not cascade has no value of its own
+        None if pseudo != 0 => String::new(),
+        None => base.resolved_style_value(id.node, &property),
+    }
+}
+
+/// The pseudo-element a `getComputedStyle` pseudo code names, as the style
+/// engine's own type. Code 0 means "no pseudo-element", which is the element
+/// itself.
+fn computed_pseudo_element(code: i32) -> Option<style::selector_parser::PseudoElement> {
+    use style::selector_parser::PseudoElement;
+    match code {
+        1 => Some(PseudoElement::Before),
+        2 => Some(PseudoElement::After),
+        3 => Some(PseudoElement::Selection),
+        4 => Some(PseudoElement::FirstLine),
+        5 => Some(PseudoElement::FirstLetter),
+        _ => None,
+    }
+}
+
+/// The pseudo code for a `getComputedStyle` argument that starts with a colon.
+/// -1 means the argument is not a pseudo-element selector CSSOM can answer, so
+/// the caller returns an empty declaration; 0 means the argument is not a
+/// pseudo-element at all, so the element's own style answers; 6 means a
+/// pseudo-element CSSOM recognises but the engine does not cascade, so the
+/// declaration answers with initial values where the engine has none.
+///
+/// <https://drafts.csswg.org/selectors-4/#typedef-pseudo-element-selector>
+fn parse_pseudo_element(text: String) -> i32 {
+    use blitz_dom::ComputedPseudoElement;
+    use style::selector_parser::PseudoElement;
+    match blitz_dom::parse_computed_pseudo_element(&text) {
+        ComputedPseudoElement::Cascaded(PseudoElement::Before) => 1,
+        ComputedPseudoElement::Cascaded(PseudoElement::After) => 2,
+        ComputedPseudoElement::Cascaded(PseudoElement::Selection) => 3,
+        ComputedPseudoElement::Cascaded(PseudoElement::FirstLine) => 4,
+        ComputedPseudoElement::Cascaded(PseudoElement::FirstLetter) => 5,
+        ComputedPseudoElement::Unsupported => 6,
+        ComputedPseudoElement::Cascaded(_) | ComputedPseudoElement::Invalid => -1,
+    }
+}
+
+/// The declaration entries a computed style reports, in CSSOM's order
+/// (`CSSStyleDeclaration.length`, `item()`, and the indexed getter on a
+/// computed style)
+/// (<https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-length>).
+fn computed_style_names<'js>(
+    ctx: Ctx<'js>,
+    element: Value<'js>,
+    pseudo: i32,
+) -> Result<Array<'js>> {
+    let array = Array::new(ctx.clone())?;
+    let Ok(world) = world(&ctx) else {
+        return Ok(array);
+    };
+    let Some(id) = host_node_id(&ctx, &element) else {
+        return Ok(array);
+    };
+    let world = world.borrow();
+    let Some(parsed) = world.document(id) else {
+        return Ok(array);
+    };
+    let names = parsed
+        .document
+        .base
+        .computed_style_property_names(id.node, computed_pseudo_element(pseudo));
+    for (index, name) in names.into_iter().enumerate() {
+        array.set(index, name)?;
+    }
+    Ok(array)
 }
 
 /// Whether `element` may have a computed style at all. CSSOM reports one only

@@ -1277,31 +1277,56 @@
     'text-align': 'start',
     'white-space': 'normal',
   };
+  // A read-only declaration is the answer for an element that has no
+  // computed style and for a pseudo-element argument that names none
+  // (<https://drafts.csswg.org/cssom/#dom-window-getcomputedstyle>).
+  const __tbReadOnlyDeclaration = () => {
+    throw new __tbDomException('The declaration is read-only', 'NoModificationAllowedError');
+  };
+  const __tbEmptyComputedStyle = () => new Proxy({}, {
+    get(target, property) {
+      switch (property) {
+        case 'length': return 0;
+        case 'parentRule': return null;
+        case 'cssText': return '';
+        case 'getPropertyValue':
+        case 'getPropertyPriority':
+        case 'item':
+        case 'toString':
+          return () => '';
+        case 'setProperty':
+        case 'removeProperty':
+          return __tbReadOnlyDeclaration;
+        default:
+          return typeof property === 'string' ? '' : undefined;
+      }
+    },
+    set() { __tbReadOnlyDeclaration(); },
+    defineProperty() { __tbReadOnlyDeclaration(); },
+    deleteProperty() { __tbReadOnlyDeclaration(); },
+  });
   Object.defineProperty(globalThis, 'getComputedStyle', {
-    value: function(element) {
+    value: function(element, pseudoElt) {
+      // A pseudo-element argument is parsed as a `<pseudo-element-selector>`
+      // only when it starts with a colon. Anything else names the element
+      // itself, and one that names a pseudo-element the style engine does not
+      // cascade gets an empty declaration
+      // (<https://drafts.csswg.org/cssom/#dom-window-getcomputedstyle>).
+      let pseudo = 0;
+      if (arguments.length > 1 && pseudoElt !== undefined && pseudoElt !== null) {
+        const text = String(pseudoElt);
+        if (text !== '' && text.charCodeAt(0) === 0x3A) {
+          pseudo = host.__tb_parse_pseudo_element(text);
+          if (pseudo < 0) return __tbEmptyComputedStyle();
+        }
+      }
       // An element with no computed style gets an empty read-only
       // declaration: not in the flat tree, not connected, or in a document
       // whose browsing context is not rendered
       // (<https://drafts.csswg.org/cssom/#dom-window-getcomputedstyle>).
       if (!element || typeof element.nodeType !== 'number'
           || !host.__tb_has_computed_style(element)) {
-        return new Proxy({}, {
-          get(target, property) {
-            switch (property) {
-              case 'length': return 0;
-              case 'parentRule': return null;
-              case 'cssText': return '';
-              case 'getPropertyValue':
-              case 'getPropertyPriority':
-              case 'item':
-              case 'toString':
-                return () => '';
-              default:
-                return typeof property === 'string' ? '' : undefined;
-            }
-          },
-          set() { return true; },
-        });
+        return __tbEmptyComputedStyle();
       }
       const inline = element?.style ?? {};
       if (typeof inline.getPropertyValue !== 'function') {
@@ -1309,39 +1334,63 @@
       }
       const resolved = name => {
         if (!element || typeof element.nodeType !== 'number') return '';
-        return host.__tb_resolved_style(element, name);
+        return host.__tb_resolved_style(element, name, pseudo);
       };
+      // Every longhand the engine supports, then the element's custom
+      // properties, in the order CSSOM gives for a computed style
+      // (<https://drafts.csswg.org/cssom/#dom-window-getcomputedstyle>).
+      const names = () => host.__tb_computed_style_names(element, pseudo);
       const read = name => {
         // The resolved value comes first: it carries the cascade, `!important`
         // declarations, and layout-dependent used values. The inline
         // declaration is only a fallback for elements the engine has no style
-        // for (a detached element, or a property outside its tables).
+        // for (a property outside its tables), and it never applies to a
+        // pseudo-element.
         // https://drafts.csswg.org/cssom/#dom-window-getcomputedstyle
         const engine = resolved(name);
         if (engine !== '') return engine;
-        const value = inline.getPropertyValue(name);
-        if (value !== '') return value;
+        if (pseudo === 0) {
+          const value = inline.getPropertyValue(name);
+          if (value !== '') return value;
+        }
         return __tbInitialValues[String(name).toLowerCase()] ?? '';
       };
       return new Proxy(inline, {
         get(target, property, receiver) {
           if (typeof property !== 'string') return Reflect.get(target, property, receiver);
           if (property === 'getPropertyValue') return read;
-          if (property === 'toString') {
-            return () => String(Reflect.get(target, 'cssText') ?? '');
+          if (property === 'length') return names().length;
+          if (property === 'item') {
+            return index => names()[index >>> 0] ?? '';
           }
+          if (__tbCanonicalIndex(property)) {
+            const list = names();
+            const index = property >>> 0;
+            return index < list.length ? list[index] : undefined;
+          }
+          if (property === 'toString') return () => '';
           // A computed style carries no priority flags, so no declaration it
           // reports is `!important`
           // (<https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-getpropertypriority>).
           if (property === 'getPropertyPriority') return () => '';
+          if (property === 'setProperty' || property === 'removeProperty') {
+            return __tbReadOnlyDeclaration;
+          }
           const kebab = property.replace(/[A-Z]/g, letter => '-' + letter.toLowerCase());
           const engine = resolved(kebab);
           if (engine !== '') return engine;
+          if (pseudo !== 0) return kebab in __tbInitialValues ? __tbInitialValues[kebab] : undefined;
           const value = Reflect.get(target, property, receiver);
           if (value !== undefined && value !== null && value !== '') return value;
           if (kebab in __tbInitialValues) return __tbInitialValues[kebab];
           return value;
         },
+        // A computed style declaration is immutable: CSSOM throws
+        // `NoModificationAllowedError` for every write
+        // (<https://drafts.csswg.org/cssom/#dom-window-getcomputedstyle>).
+        set() { __tbReadOnlyDeclaration(); },
+        defineProperty() { __tbReadOnlyDeclaration(); },
+        deleteProperty() { __tbReadOnlyDeclaration(); },
       });
     },
     writable: true, configurable: true,

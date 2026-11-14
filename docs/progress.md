@@ -2544,3 +2544,36 @@ Evidence: `css/cssom` 3412 to **3421** subtests, no lost subtests;
 4778, `html/dom` at 65341, and `html/semantics/forms` at 4522, with no lost
 subtests. `cargo fmt --check` (both trees), `tools/check clippy`, and the
 renderer (175), webidl-bindgen (42), and wpt-harness (30) test binaries pass.
+`getComputedStyle` now parses its pseudo-element argument. `pseudoElt` is
+tokenized as a `<pseudo-element-selector>`: a cascaded pseudo-element
+(`::before`, `::after`, `::selection`, `::first-line`, `::first-letter`, and the
+legacy single-colon spellings) answers that pseudo-element's declaration, one
+CSSOM recognises but the engine does not cascade still answers a declaration,
+and an invalid selector (a trailing token, `::part()`, `::slotted()`, or a
+`::picker()` argument other than `select`) returns the empty declaration
+(`crates/renderer/src/js/scripts/web/cssom.js`,
+`crates/renderer/src/js/bindings/mod.rs`). A cascaded `::before`/`::after`
+resolves from its layout box when one exists and from its computed style
+otherwise, which covers pseudos of `display: contents` elements, `display: none`
+elements, and flex blockification. A computed style also reports its declaration
+names now: every supported longhand lexicographically, then the element's custom
+properties, backing `length`, `item()`, and the indexed getter. The engine work
+is in `third_party/blitz` commit `ad4193380`, recorded in `docs/upstream.md`.
+
+A computed style declaration is immutable: every write, `setProperty`, and
+`removeProperty` throws `NoModificationAllowedError` instead of reaching the
+inline style
+(<https://drafts.csswg.org/cssom/#dom-window-getcomputedstyle>).
+
+Evidence: `css/cssom` 3421 to **3449** subtests, no lost subtests.
+`getComputedStyle-pseudo.html` 2/28 to 14/28,
+`getComputedStyle-pseudo-with-argument.html` 5/22 to 17/22,
+`getComputedStyle-pseudo-picker.html` 6/9 to 7/9, and
+`cssstyledeclaration-custom-properties.html` 0/1 to 1/1. `css/cssom-view` stays
+at 1616, `resize-observer` at 50, `intersection-observer` at 185,
+`css/selectors` 4778 to **4791**, and `html/dom` at 65341, with no lost
+subtests. `html/semantics/forms` shows one `form-double-submit` failure in the
+batch; that file is intermittent in isolation both with this change (1/3 pass)
+and at the parent commit (2/3 pass), so it is a pre-existing timing flake.
+`cargo fmt --check` (both trees), `tools/check clippy`, and the renderer (175),
+webidl-bindgen (42), and wpt-harness (30) test binaries pass.
