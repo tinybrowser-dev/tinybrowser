@@ -1670,6 +1670,10 @@ impl JsNode {
             copy_nonce_subtree(&world_rc, self.handle.get().0, clone);
             clone
         };
+        // Cloning copies the attributes without their change steps, so the
+        // copy's event handler content attributes need their steps run here
+        // (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes>).
+        super::super::install_parsed_handlers(&ctx, clone)?;
         wrap_node(&ctx, clone)
     }
 

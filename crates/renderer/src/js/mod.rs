@@ -1482,6 +1482,7 @@ impl JsRealm {
                 "DeviceMotionEvent",
                 "DeviceOrientationEvent",
                 "DragEvent",
+                "ErrorEvent",
                 "FocusEvent",
                 "HashChangeEvent",
                 "KeyboardEvent",

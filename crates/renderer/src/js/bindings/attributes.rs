@@ -1,7 +1,8 @@
 //! Attribute, class, and handler-attribute objects and plumbing.
 
 use super::{
-    FromJs, OptString, WebIdlString, child_value, deref_weak, make_weak, realm_registry,
+    FromJs, HANDLER_ATTRIBUTES, OptString, WINDOW_HANDLER_NAMES, WebIdlString, child_value,
+    deref_weak, is_window_reflecting_handler, make_weak, realm_registry,
     schedule_mutation_delivery, string_value, throw_dom, with_node_data, world, world_for_node,
     wrap_node,
 };
@@ -27,7 +28,7 @@ use rquickjs::{Class, Ctx, Exception, Object, Persistent, Result, Value, class::
 use super::node::core::node_generated;
 use crate::js::events::{
     JsEvent, add_listener_parsed, dispatch_event, event_target_generated, listener_callback,
-    listener_options, remove_capture, remove_listener_parsed, report_exception,
+    listener_options, remove_capture, remove_listener_parsed,
 };
 
 /// A `DOMTokenList` bound to one attribute of an element: `Element.classList`
@@ -1528,105 +1529,143 @@ pub(crate) fn touch_attr(
     schedule_mutation_delivery(ctx)
 }
 
-/// Stores one compiled handler either on the element itself or, for a
-/// `body`/`frameset` window-reflecting name, on the document's window.
-fn store_handler_attribute<'js>(
-    ctx: &Ctx<'js>,
-    object: &Object<'js>,
-    forwarded: bool,
-    name: &str,
-    value: Value<'js>,
-) -> Result<()> {
-    if forwarded {
-        super::set_window_reflecting_handler(
-            ctx.clone(),
-            object.as_value().clone(),
-            name.to_owned(),
-            value,
-        )
-    } else {
-        object.set(name, value)
-    }
+/// Whether an attribute change replaces an existing handler value or only
+/// fills in a missing one.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HandlerUpdate {
+    /// A DOM attribute write or removal always wins.
+    Set,
+    /// An install pass for attributes the parser or markup insertion created:
+    /// a map entry that already exists (including one script cleared) stays,
+    /// so re-running the pass cannot resurrect a cleared handler.
+    IfAbsent,
 }
 
-/// Compiles or clears one element's event handler content attribute.
-fn compile_handler_attribute(ctx: &Ctx<'_>, element: NodeId, typ: &str) -> Result<()> {
-    let name = format!("on{typ}");
-    let body = world(ctx)?.borrow().document(element).and_then(|parsed| {
-        crate::dom::tree::attr(&parsed.document.base, element.node, &name).map(ToOwned::to_owned)
-    });
-    let Some(object) = wrap_node(ctx, element)?.as_object().cloned() else {
-        return Ok(());
+/// Runs the attribute change steps of one event handler content attribute:
+/// stores the raw source, or deactivates the handler on removal, and
+/// registers the handler's listener
+/// (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes>).
+fn update_handler_attribute(ctx: &Ctx<'_>, element: NodeId, name: &str, mode: HandlerUpdate) {
+    let Some(world) = world_for_node(ctx, element).ok() else {
+        return;
     };
-    // A `body` or `frameset` element's window event handler attributes set the
-    // window's handler: the element has no slot of its own for them, so no own
-    // property may shadow the prototype accessor
+    let (is_body, is_frameset) = {
+        let world = world.borrow();
+        let Some(parsed) = world.document(element) else {
+            return;
+        };
+        let base = &parsed.document.base;
+        (
+            crate::dom::tree::is_html_element(base, element.node, "body"),
+            crate::dom::tree::is_html_element(base, element.node, "frameset"),
+        )
+    };
+    // Only a name the element actually exposes is an event handler content
+    // attribute. `onreadystatechange` and `onvisibilitychange` belong to
+    // `Document`, and a `WindowEventHandlers` name exists only on `body`,
+    // `frameset`, and the window
+    // (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes>).
+    let allowed = HANDLER_ATTRIBUTES.contains(&name)
+        || ((is_body || is_frameset) && WINDOW_HANDLER_NAMES.contains(&name));
+    if !allowed {
+        return;
+    }
+    // A `body` or `frameset` element's window handlers act on its document's
+    // window. A body in a document with no browsing context has no target
     // (<https://html.spec.whatwg.org/multipage/dom.html#body-element-event-handlers>).
-    let forwarded = super::is_window_reflecting_handler(&name)
-        && world_for_node(ctx, element).is_ok_and(|owner| {
-            owner.borrow().document(element).is_some_and(|parsed| {
-                crate::dom::tree::is_html_element(&parsed.document.base, element.node, "body")
-                    || crate::dom::tree::is_html_element(
-                        &parsed.document.base,
-                        element.node,
-                        "frameset",
-                    )
-            })
-        });
-    match body {
-        Some(body) if !body.trim().is_empty() => {
-            // The `onerror` handler takes the spec's five arguments, not the
-            // usual single event argument
-            // (<https://html.spec.whatwg.org/multipage/webappapis.html#the-event-handler-processing-algorithm>).
-            let params = if name == "onerror" {
-                &["event", "source", "lineno", "colno", "error"] as &[&str]
-            } else {
-                &["event"] as &[&str]
+    let target = if (is_body || is_frameset) && is_window_reflecting_handler(name) {
+        if world.borrow().main_document_id() != Some(element.document_id()) {
+            return;
+        }
+        None
+    } else {
+        Some(element)
+    };
+    if mode == HandlerUpdate::IfAbsent && world.borrow().handler_slot(target, name).is_some() {
+        return;
+    }
+    let body = world.borrow().document(element).and_then(|parsed| {
+        crate::dom::tree::attr(&parsed.document.base, element.node, name).map(ToOwned::to_owned)
+    });
+    let Some(body) = body else {
+        if mode == HandlerUpdate::Set {
+            crate::js::events::deactivate_handler(&world, target, name);
+        }
+        return;
+    };
+    // The inline check belongs to the attribute, so it runs when the
+    // attribute is set or parsed. A blocked handler keeps its previous value
+    // (<https://w3c.github.io/webappsec-csp/#should-block-inline>).
+    let position = crate::js::error_stack_top(ctx);
+    let position = position
+        .as_ref()
+        .map(|(url, line, column)| (url.as_str(), *line, *column));
+    if !crate::js::events::handler_attribute_allowed(ctx, element, &body, position) {
+        return;
+    }
+    world
+        .borrow_mut()
+        .set_handler_value(target, name, crate::js::world::HandlerValue::Raw(body));
+    crate::js::events::activate_handler(&mut world.borrow_mut(), target, name);
+}
+
+/// Runs the event handler content attribute steps for attributes that were
+/// installed without the DOM setter: parsed markup, inserted markup, a clone,
+/// or an adopted subtree.
+///
+/// The WHATWG algorithms that copy attributes (parse a token, clone a node,
+/// adopt a node) append them without running their change steps, yet every
+/// browser compiles a handler copied that way. The engine therefore runs the
+/// steps at each copy point instead of at parse time, and WPT depends on it
+/// (`event-handler-sourcetext.html` clones a template's handler).
+/// The pass is idempotent: an entry that already exists is kept, so a handler
+/// script cleared, or a value script assigned, is not replaced by the
+/// attribute's source.
+/// (<https://dom.spec.whatwg.org/#concept-node-clone>,
+/// <https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes>).
+pub(crate) fn install_parsed_handlers(ctx: &Ctx<'_>, root: NodeId) -> Result<()> {
+    let mut found: Vec<(NodeId, String)> = Vec::new();
+    {
+        let world = world_for_node(ctx, root)?;
+        let world = world.borrow();
+        let Some(parsed) = world.document(root) else {
+            return Ok(());
+        };
+        let base = &parsed.document.base;
+        let mut pending = vec![root.node];
+        while let Some(node) = pending.pop() {
+            let Some(tree) = base.get_node(node) else {
+                continue;
             };
-            // The inline check belongs to the attribute, so it runs when the
-            // attribute is compiled. A handler blocked here leaves its slot
-            // null: setting the attribute must neither run the body nor throw
-            // (<https://w3c.github.io/webappsec-csp/#should-block-inline>).
-            // The setting script's position becomes the violation's source.
-            let position = crate::js::error_stack_top(ctx);
-            let position = position
-                .as_ref()
-                .map(|(url, line, column)| (url.as_str(), *line, *column));
-            if !crate::js::events::handler_attribute_allowed(
-                ctx,
-                object.as_value(),
-                &body,
-                position,
-            ) {
-                store_handler_attribute(
-                    ctx,
-                    &object,
-                    forwarded,
-                    &name,
-                    Value::new_null(ctx.clone()),
-                )?;
-                return Ok(());
+            pending.extend(tree.children.iter().copied());
+            // A template's children live in its contents fragment, outside
+            // the element tree
+            // (<https://html.spec.whatwg.org/multipage/scripting.html#the-template-element>).
+            if let Some(contents) = crate::dom::tree::template_contents(base, node) {
+                pending.push(contents);
             }
-            match crate::js::events::compile_handler_function(ctx, params, &body) {
-                Ok(compiled) => {
-                    store_handler_attribute(ctx, &object, forwarded, &name, compiled.into_value())?;
+            let Some(element) = tree.data.downcast_element() else {
+                continue;
+            };
+            for attribute in element.attrs.iter() {
+                if attribute.name.ns != markup5ever::ns!() {
+                    continue;
                 }
-                Err(error) => {
-                    // A malformed handler reports the error and clears the
-                    // slot; setting the attribute must not throw
-                    // (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes>).
-                    report_exception(ctx, &error);
-                    store_handler_attribute(
-                        ctx,
-                        &object,
-                        forwarded,
-                        &name,
-                        Value::new_null(ctx.clone()),
-                    )?;
+                let local = attribute.name.local.as_ref();
+                if crate::dom::tree::is_handler_attribute_name(local) {
+                    found.push((
+                        NodeId {
+                            document: root.document,
+                            node,
+                        },
+                        local.to_owned(),
+                    ));
                 }
             }
         }
-        _ => store_handler_attribute(ctx, &object, forwarded, &name, Value::new_null(ctx.clone()))?,
+    }
+    for (element, name) in found {
+        update_handler_attribute(ctx, element, &name, HandlerUpdate::IfAbsent);
     }
     Ok(())
 }
@@ -1903,13 +1942,8 @@ pub(crate) fn after_attribute_change(
     previous: Option<&str>,
 ) -> Result<()> {
     refresh_meta_pragmas(ctx, element, local);
-    if let Some(typ) = local.strip_prefix("on")
-        && !typ.is_empty()
-        && typ
-            .chars()
-            .all(|character| character.is_ascii_lowercase() || character.is_ascii_digit())
-    {
-        compile_handler_attribute(ctx, element, typ)?;
+    if crate::dom::tree::is_handler_attribute_name(local) {
+        update_handler_attribute(ctx, element, local, HandlerUpdate::Set);
     }
     if local == "type" {
         apply_input_type_change(ctx, element, previous)?;
@@ -2060,30 +2094,6 @@ fn navigate_from_attribute_change(
             .with_referrer_policy(referrer_policy),
     );
     Ok(())
-}
-
-/// The value of one event handler content attribute, when the element has it.
-pub(crate) fn handler_attribute(ctx: &Ctx<'_>, id: NodeId, name: &str) -> Result<Option<String>> {
-    let world = world(ctx)?;
-    Ok(world.borrow().document(id).and_then(|parsed| {
-        crate::dom::tree::attr(&parsed.document.base, id.node, name).map(ToOwned::to_owned)
-    }))
-}
-
-/// Whether script explicitly cleared this element's handler property, which
-/// must keep a dispatch from falling back to the content attribute.
-pub(crate) fn handler_cleared(ctx: &Ctx<'_>, id: NodeId, name: &str) -> Result<bool> {
-    let world = world_for_node(ctx, id)?;
-    Ok(world.borrow().handler_cleared(Some(id), name))
-}
-
-/// Whether script cleared the window-scoped handler property. Body `on*`
-/// content attributes forward to the window, so a cleared window flag
-/// suppresses the body attribute too
-/// (<https://html.spec.whatwg.org/multipage/dom.html#body-element-event-handlers>).
-pub(crate) fn window_handler_cleared(ctx: &Ctx<'_>, id: NodeId, name: &str) -> Result<bool> {
-    let world = world_for_node(ctx, id)?;
-    Ok(world.borrow().handler_cleared(None, name))
 }
 
 /// Removes the DOM attribute identified by `(namespace, local)` and syncs

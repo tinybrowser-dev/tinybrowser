@@ -16,7 +16,7 @@ use rquickjs::{
 
 use super::bindings;
 use super::bindings::JsNode;
-use super::world::{EventTargetKey, GlobalKind, Listener, World};
+use super::world::{EventTargetKey, GlobalKind, HandlerValue, Listener, World};
 use crate::dom::tree::NodeId;
 
 include!(concat!(env!("OUT_DIR"), "/Event.rs"));
@@ -953,6 +953,7 @@ fn add_listener_parsed_in(
             passive,
             signal: options.signal,
             removed: Cell::new(false),
+            handler_name: None,
         }),
     );
     Ok(())
@@ -1001,12 +1002,17 @@ fn remove_listener_parsed_in(
     callback: Option<&Persistent<Value<'static>>>,
     capture: bool,
 ) -> Result<()> {
+    // A null callback removes nothing
+    // (<https://dom.spec.whatwg.org/#dom-eventtarget-removeeventlistener> step 2).
+    let Some(callback) = callback else {
+        return Ok(());
+    };
     let mut world = world.borrow_mut();
     let mut removed = Vec::new();
     for existing in world.listener_snapshot(target) {
         if existing.typ == typ
             && existing.capture == capture
-            && same_callback(ctx, existing.callback.as_ref(), callback)?
+            && same_callback(ctx, existing.callback.as_ref(), Some(callback))?
         {
             existing.removed.set(true);
             removed.push(existing);
@@ -1224,51 +1230,17 @@ fn dispatch<'js>(
         None
     };
     let result = run_invocations(ctx, event, &path, target, bubbles);
-    // Handler attributes (`onreadystatechange`, `onload`, …) act as listeners;
-    // the engine runs them after the listener list until it models the
-    // handler registration slot. A stopped event never reaches them.
+    // Handlers on elements, documents, and a document realm's window are
+    // listeners, and their listener already ran with the list. Only the
+    // targets this engine keeps as plain properties run here, after the
+    // list. A stopped event never reaches them.
     let stopped = {
         let class = event.borrow();
         let state = class.state();
         state.stop_propagation || state.stop_immediate
     };
     let handler = if result.is_ok() && !stopped {
-        let event_value = Class::into_value(event.clone());
-        // Event handler content attributes are bubble-phase listeners on
-        // their element. The engine does not interleave them with the listener
-        // list yet, but they still run at every node the event reaches, so an
-        // ancestor's `onclick` can cancel the event before activation
-        // (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes>).
-        let mut outcome = Ok(());
-        for (index, item) in path.iter().enumerate() {
-            if index > 0 && !bubbles {
-                break;
-            }
-            if index > 0 {
-                let state = event.borrow();
-                let state = state.state();
-                if state.stop_propagation || state.stop_immediate {
-                    break;
-                }
-            }
-            // Handler attributes are listeners too, so a target whose global
-            // lost its browsing context runs none of them
-            // (<https://dom.spec.whatwg.org/#concept-event-listener-inner-invoke>).
-            if !target_is_fully_active(ctx, &item.reference) {
-                continue;
-            }
-            outcome = call_handler_attribute(
-                ctx,
-                Some(&item.target),
-                &typ,
-                &event_value,
-                item.invocation_target_in_shadow_tree,
-            );
-            if outcome.is_err() {
-                break;
-            }
-        }
-        outcome
+        run_plain_property_handlers(ctx, event, &path, &typ, bubbles)
     } else {
         Ok(())
     };
@@ -1565,7 +1537,13 @@ fn invoke<'js>(
         if listener.passive {
             event.borrow().state_mut().in_passive = true;
         }
-        if let Some(callback) = &listener.callback {
+        if let Some(handler_name) = &listener.handler_name {
+            // An event handler's listener has no callback: it runs the HTML
+            // event handler processing algorithm against the handler's
+            // current value
+            // (<https://html.spec.whatwg.org/multipage/webappapis.html#the-event-handler-processing-algorithm>).
+            run_handler_listener(ctx, event, item, handler_name);
+        } else if let Some(callback) = &listener.callback {
             let value: Value<'js> = callback.clone().restore(ctx)?;
             call_with_current_event(
                 &value,
@@ -1874,47 +1852,6 @@ fn resolve_target<'js>(ctx: &Ctx<'js>, reference: &EventTargetRef) -> Result<Val
     }
 }
 
-/// Compiles one event handler content attribute as a sloppy-mode function
-/// in the window's global script environment, matching classic scripts
-/// (<https://html.spec.whatwg.org/multipage/webappapis.html#getting-the-current-value-of-the-event-handler>).
-///
-/// Compiled through the pinned `Function` constructor, the way `new
-/// Function(params, body)` does: params and body stay separate inputs, so a
-/// `}` in the attribute value is a syntax error (null handler), not an
-/// escape from a string-interpolated wrapper. The constructor is captured
-/// at realm init because handlers compile on demand, after page code may
-/// have replaced the global. Like classic scripts in this engine (which
-/// enforces no CSP yet -- tracked gap, not an intentional bypass),
-/// compilation is unconditional.
-pub(crate) fn compile_handler_function<'js>(
-    ctx: &Ctx<'js>,
-    params: &[&str],
-    body: &str,
-) -> Result<Function<'js>> {
-    let bridge = super::bridge::object(ctx)?;
-    let constructor: Object = bridge.get("__tb_function")?;
-    let Some(constructor) = constructor.as_constructor() else {
-        return Err(Exception::throw_internal(
-            ctx,
-            "Function constructor is not constructible",
-        ));
-    };
-    // One params argument plus the body: `new Function("event", body)`.
-    // The constructor parses the params list itself, so no identifier
-    // validation is needed here (every caller passes literals regardless).
-    //
-    // The flag tells the string-compilation hook this body is an event
-    // handler, not page script calling `eval` or `Function`: CSP's inline
-    // check owns the handler, and `'unsafe-eval'` is not required for an
-    // `onclick` attribute
-    // (<https://w3c.github.io/webappsec-csp/#can-compile-strings>).
-    let world = bindings::world(ctx)?;
-    world.borrow().compiling_handler.set(true);
-    let compiled = constructor.construct((params.join(","), body.to_owned()));
-    world.borrow().compiling_handler.set(false);
-    compiled
-}
-
 /// The violations an event handler content attribute produces under its
 /// element's document policy. The element is the event target while it stays
 /// connected to that document
@@ -1948,15 +1885,12 @@ pub(crate) fn handler_attribute_violations(
 /// `lineNumber`, and `columnNumber`; a handler the parser inserted has none
 /// (<https://w3c.github.io/webappsec-csp/#should-block-inline>,
 /// <https://w3c.github.io/webappsec-csp/#create-violation-for-global>).
-pub(crate) fn handler_attribute_allowed<'js>(
-    ctx: &Ctx<'js>,
-    target: &Value<'js>,
+pub(crate) fn handler_attribute_allowed(
+    ctx: &Ctx<'_>,
+    id: NodeId,
     source: &str,
     position: Option<(&str, u32, u32)>,
 ) -> bool {
-    let Some(id) = bindings::host_node_id(ctx, target) else {
-        return true;
-    };
     // The inline check reads the element's own Document's policy list, while
     // the violation is reported on the current settings object's global
     // (<https://w3c.github.io/webappsec-csp/#should-block-inline>).
@@ -1994,6 +1928,17 @@ pub(crate) fn handler_attribute_allowed<'js>(
     !crate::csp::blocks(&violations)
 }
 
+/// The four legacy prefixed animation and transition handlers: their content
+/// attribute names are all lowercase while their event types are camelCase
+/// (<https://drafts.csswg.org/css-animations-1/#extensions-to-the-globaleventhandlers-mixin>,
+/// <https://drafts.csswg.org/css-transitions-1/#extensions-to-the-globaleventhandlers-mixin>).
+const PREFIXED_HANDLERS: [(&str, &str); 4] = [
+    ("onwebkitanimationend", "webkitAnimationEnd"),
+    ("onwebkitanimationiteration", "webkitAnimationIteration"),
+    ("onwebkitanimationstart", "webkitAnimationStart"),
+    ("onwebkittransitionend", "webkitTransitionEnd"),
+];
+
 /// The handler property name for an event type.
 ///
 /// The four legacy `webkit`-prefixed animation and transition event types keep
@@ -2002,20 +1947,64 @@ pub(crate) fn handler_attribute_allowed<'js>(
 /// `on` plus the type
 /// (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handlers-on-elements,-document-objects,-and-window-objects>).
 fn handler_attribute_name(typ: &str) -> String {
-    match typ {
-        "webkitAnimationEnd" => "onwebkitanimationend".to_owned(),
-        "webkitAnimationIteration" => "onwebkitanimationiteration".to_owned(),
-        "webkitAnimationStart" => "onwebkitanimationstart".to_owned(),
-        "webkitTransitionEnd" => "onwebkittransitionend".to_owned(),
-        _ => format!("on{typ}"),
-    }
+    PREFIXED_HANDLERS
+        .iter()
+        .find(|(_, event_type)| *event_type == typ)
+        .map_or_else(|| format!("on{typ}"), |(name, _)| (*name).to_owned())
 }
 
-/// Calls a target's `on<type>` handler attribute, if one is assigned
+/// Runs the handlers this engine keeps as plain properties after the
+/// listener list. Event handlers on elements, documents, and a document
+/// realm's window are ordinary listeners registered by activation, so their
+/// order among `addEventListener` calls is the spec's; only targets this
+/// engine does not give an event handler map — constructible targets such as
+/// `MessagePort` and `XMLHttpRequest`, `Attr`, and a worker global — still run
+/// their property here
+/// (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes>).
+fn run_plain_property_handlers<'js>(
+    ctx: &Ctx<'js>,
+    event: &Class<'js, JsEvent>,
+    path: &[PathItem<'js>],
+    typ: &str,
+    bubbles: bool,
+) -> Result<()> {
+    let event_value = Class::into_value(event.clone());
+    for (index, item) in path.iter().enumerate() {
+        if index > 0 && !bubbles {
+            break;
+        }
+        if index > 0 {
+            let class = event.borrow();
+            let state = class.state();
+            if state.stop_propagation || state.stop_immediate {
+                break;
+            }
+        }
+        // Handler attributes are listeners too, so a target whose global lost
+        // its browsing context runs none of them
+        // (<https://dom.spec.whatwg.org/#concept-event-listener-inner-invoke>).
+        if !target_is_fully_active(ctx, &item.reference) {
+            continue;
+        }
+        match handler_storage(item.reference.key, &item.reference.world) {
+            HandlerStorage::PlainProperty => {}
+            HandlerStorage::Window | HandlerStorage::Node(_) => continue,
+        }
+        call_handler_attribute(
+            ctx,
+            Some(&item.target),
+            typ,
+            &event_value,
+            item.invocation_target_in_shadow_tree,
+        )?;
+    }
+    Ok(())
+}
+
+/// Calls a target's plain-property `on<type>` handler, for the targets this
+/// engine does not give an event handler map: constructible `EventTarget`s
+/// (`MessagePort`, `XMLHttpRequest`), `Attr`, and a worker global
 /// (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handlers>).
-///
-/// The engine does not model the handler registration slot yet, so this runs
-/// after the listener list instead of at the handler's registration position.
 fn call_handler_attribute<'js>(
     ctx: &Ctx<'js>,
     target: Option<&Value<'js>>,
@@ -2033,85 +2022,32 @@ fn call_handler_attribute<'js>(
         return Ok(());
     }
     let name = handler_attribute_name(typ);
-    // A document window's handler lives in a registration slot behind an
-    // accessor, and a global function declaration named `onload` replaces that
-    // accessor with a plain data property on the global object. Chrome keeps
-    // running the slot, so a page function that merely shares the handler's
-    // name must not run on every load; reading the property here would.
-    //
-    // Only a `Window` realm has that accessor: a worker global installs its
-    // handlers as ordinary properties, so its dispatch keeps reading the
-    // property (`worker.onmessage = …` is assigned this way).
-    // (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handlers>).
-    let is_window = {
-        let world = bindings::world(ctx)?;
-        let document = matches!(world.borrow().kind, GlobalKind::Document);
-        document && object.as_value().strict_eq(ctx.globals().as_value())
-    };
-    let mut handler: Value = if is_window {
-        match bindings::world(ctx)?
-            .borrow()
-            .handler_attribute(None, &name)
-        {
-            Some(saved) => saved.restore(ctx)?,
-            None => Value::new_null(ctx.clone()),
-        }
-    } else {
-        object.get(name.as_str())?
-    };
-    if handler.as_function().is_none()
-        && let Some(source) = handler_attribute_source(ctx, object, &name)?
-    {
-        if !handler_attribute_allowed(ctx, object.as_value(), &source, None) {
-            object.set(name.as_str(), Value::new_null(ctx.clone()))?;
-            return Ok(());
-        }
-        // A handler content attribute compiles to a function whose body is
-        // the attribute value and whose `this` is the object. `onerror` takes
-        // the spec's five arguments, not the usual single event argument
-        // (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes>).
-        let params = if typ == "error" {
-            &["event", "source", "lineno", "colno", "error"] as &[&str]
-        } else {
-            &["event"] as &[&str]
-        };
-        match compile_handler_function(ctx, params, &source) {
-            Ok(compiled) => {
-                object.set(name.as_str(), compiled.clone())?;
-                handler = compiled.into_value();
-            }
-            Err(error) => {
-                // A failed compilation reports the error and clears the
-                // handler; it must not abort the dispatch (or the attribute
-                // set) that triggered it.
-                report_exception(ctx, &error);
-                object.set(name.as_str(), Value::new_null(ctx.clone()))?;
-                return Ok(());
-            }
-        }
-    }
+    let handler: Value = object.get(name.as_str())?;
     if let Some(function) = handler.as_function() {
         // A realm's own global is an `OnErrorEventHandler`: both `Window` and
         // `WorkerGlobalScope` call `onerror` with
-        // `(message, filename, lineno, colno, error)`. A `Worker` object is
-        // also a non-node event target, but its `onerror` receives the
-        // `ErrorEvent` like any other handler
+        // `(message, filename, lineno, colno, error)` when the event is an
+        // `ErrorEvent` of type `error`. A `Worker` object is also a non-node
+        // event target, but its `onerror` receives the `ErrorEvent` like any
+        // other handler
         // (<https://html.spec.whatwg.org/multipage/webappapis.html#the-event-handler-processing-algorithm>).
-        let is_window = {
+        let is_global = {
             let world = bindings::world(ctx)?;
             let world = world.borrow();
-            world
-                .window_object()
-                .and_then(|window| window.restore(ctx).ok())
-                .is_some_and(|window| window.as_value() == object.as_value())
+            object.as_value() == ctx.globals().as_value()
+                || world
+                    .window_object()
+                    .and_then(|window| window.restore(ctx).ok())
+                    .is_some_and(|window| window.as_value() == object.as_value())
         };
+        let special_error = typ == "error" && is_global && is_event_of(ctx, event, "ErrorEvent");
         call_with_current_event(
             function.as_value(),
             event,
             invocation_target_in_shadow_tree,
-            |_realm| {
-                if typ == "error" && is_window {
-                    call_error_handler(ctx, function, object, event)
+            |_| {
+                if special_error {
+                    call_error_handler(ctx, function, object, event).map(|_| ())
                 } else {
                     function.call::<_, ()>((This(object.clone()), event.clone()))
                 }
@@ -2121,17 +2057,463 @@ fn call_handler_attribute<'js>(
     Ok(())
 }
 
+/// Where one event target keeps its handlers
+/// (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-map>).
+#[derive(Clone, Copy)]
+enum HandlerStorage {
+    /// The window's entry, keyed `(None, name)`.
+    Window,
+    /// An element's or document's entry, keyed `(Some(node), name)`.
+    Node(NodeId),
+    /// A target this engine has not given an event handler map: `Attr`,
+    /// constructible `EventTarget`s, and a worker global.
+    PlainProperty,
+}
+
+/// The one place that decides how a dispatch path item stores its handlers,
+/// so the map's listener path and the plain-property fallback cannot drift.
+/// A worker realm installs its handlers as ordinary properties on the global,
+/// so its `Window` key is not a map.
+fn handler_storage(key: EventTargetKey, world: &Rc<RefCell<World>>) -> HandlerStorage {
+    match key {
+        EventTargetKey::Window if world.borrow().kind == GlobalKind::Document => {
+            HandlerStorage::Window
+        }
+        EventTargetKey::Window
+        | EventTargetKey::Attribute { .. }
+        | EventTargetKey::Standalone(_) => HandlerStorage::PlainProperty,
+        EventTargetKey::Node(id) => HandlerStorage::Node(id),
+    }
+}
+
+impl HandlerStorage {
+    /// The world's map key for a map-backed target.
+    fn map_target(self) -> Option<NodeId> {
+        match self {
+            Self::Node(id) => Some(id),
+            Self::Window | Self::PlainProperty => None,
+        }
+    }
+}
+
+/// Gets the current value of one event handler, compiling a raw content
+/// attribute in the handler target document's realm
+/// (<https://html.spec.whatwg.org/multipage/webappapis.html#getting-the-current-value-of-the-event-handler>).
+pub(crate) fn current_handler_value<'js>(
+    ctx: &Ctx<'js>,
+    world: &Rc<RefCell<World>>,
+    target: Option<NodeId>,
+    name: &str,
+) -> Result<Value<'js>> {
+    let Some(slot) = world.borrow().handler_slot(target, name) else {
+        return Ok(Value::new_null(ctx.clone()));
+    };
+    match slot.value {
+        HandlerValue::Null => Ok(Value::new_null(ctx.clone())),
+        HandlerValue::Value(saved) => saved.restore(ctx),
+        HandlerValue::Raw(body) => {
+            // A document with no browsing context, or with scripting
+            // disabled, never compiles its event handler content attributes.
+            // The raw value stays in the map: only the answer is null, so the
+            // handler still works if the document is adopted somewhere
+            // scripting is enabled
+            // (<https://html.spec.whatwg.org/multipage/webappapis.html#getting-the-current-value-of-the-event-handler>,
+            // <https://html.spec.whatwg.org/multipage/browsers.html#sandboxed-scripts-browsing-context-flag>).
+            let has_context = {
+                let world = world.borrow();
+                let document =
+                    target.map_or_else(|| world.main_document_id(), |id| Some(id.document_id()));
+                document.is_some_and(|document| world.main_document_id() == Some(document))
+                    && !world.sandbox.scripts_disabled()
+            };
+            if !has_context {
+                return Ok(Value::new_null(ctx.clone()));
+            }
+            let Some(realm) = world.borrow().realm_context.clone() else {
+                return Ok(Value::new_null(ctx.clone()));
+            };
+            let compiled: Result<Persistent<Value<'static>>> = realm.with(|realm_ctx| {
+                compile_handler_text(&realm_ctx, name, target.is_none(), &body)
+                    .map(|function| Persistent::save(&realm_ctx, function.as_value().clone()))
+            });
+            match compiled {
+                Ok(saved) => {
+                    world.borrow_mut().set_handler_value(
+                        target,
+                        name,
+                        HandlerValue::Value(saved.clone()),
+                    );
+                    saved.restore(ctx)
+                }
+                Err(error) => {
+                    // A parse error clears the value but leaves the handler
+                    // active, and reports in the handler's realm
+                    // (<https://html.spec.whatwg.org/multipage/webappapis.html#getting-the-current-value-of-the-event-handler>).
+                    world
+                        .borrow_mut()
+                        .set_handler_value(target, name, HandlerValue::Null);
+                    realm.with(|realm_ctx| report_exception(&realm_ctx, &error));
+                    Ok(Value::new_null(ctx.clone()))
+                }
+            }
+        }
+    }
+}
+
+/// The source text of an event handler's function, which is what
+/// `Function.prototype.toString` reports
+/// (<https://html.spec.whatwg.org/multipage/webappapis.html#getting-the-current-value-of-the-event-handler>).
+fn handler_function_source(name: &str, is_window: bool, body: &str) -> String {
+    if name == "onerror" && is_window {
+        format!("function {name}(event, source, lineno, colno, error) {{\n{body}\n}}")
+    } else {
+        format!("function {name}(event) {{\n{body}\n}}")
+    }
+}
+
+/// Parses `body` as a `FunctionBody`, the requirement on an event handler
+/// content attribute. The parse also keeps a body whose braces would close the
+/// `sourceText` wrapper out of the function object that is actually returned
+/// (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes>).
+fn validate_handler_body(ctx: &Ctx<'_>, body: &str) -> Result<()> {
+    let bridge = super::bridge::object(ctx)?;
+    let constructor: Object = bridge.get("__tb_function")?;
+    let Some(constructor) = constructor.as_constructor() else {
+        return Err(Exception::throw_internal(
+            ctx,
+            "Function constructor is not constructible",
+        ));
+    };
+    // No parameter list: the body may declare anything, including `event`.
+    let _: Function = constructor.construct((body.to_owned(),))?;
+    Ok(())
+}
+
+/// Compiles one handler source text in `ctx`'s realm, returning a function
+/// whose `toString()` is the spec's `sourceText`
+/// (<https://html.spec.whatwg.org/multipage/webappapis.html#getting-the-current-value-of-the-event-handler>).
+fn compile_handler_text<'js>(
+    ctx: &Ctx<'js>,
+    name: &str,
+    is_window: bool,
+    body: &str,
+) -> Result<Function<'js>> {
+    let world = bindings::world(ctx)?;
+    // CSP's inline check owns the handler, so the string-compilation hook
+    // must not apply the `'unsafe-eval'` rule to it
+    // (<https://w3c.github.io/webappsec-csp/#can-compile-strings>).
+    world.borrow().compiling_handler.set(true);
+    let compiled = (|| {
+        validate_handler_body(ctx, body)?;
+        let source = handler_function_source(name, is_window, body);
+        let mut options = rquickjs::context::EvalOptions::default();
+        options.strict = false;
+        options.filename = Some(crate::js::bridge::ENGINE_FILENAME.into());
+        let value: Value = ctx.eval_with_options(format!("({source})"), options)?;
+        value
+            .into_function()
+            .ok_or_else(|| Exception::throw_type(ctx, "event handler source is not a function"))
+    })();
+    world.borrow().compiling_handler.set(false);
+    compiled
+}
+
+/// The event type an event handler listens for, from the same table.
+fn handler_event_type(name: &str) -> String {
+    PREFIXED_HANDLERS
+        .iter()
+        .find(|(handler, _)| *handler == name)
+        .map_or_else(
+            || name.strip_prefix("on").unwrap_or(name).to_owned(),
+            |(_, event_type)| (*event_type).to_owned(),
+        )
+}
+
+/// One handler's listener object. It carries no callback: dispatch sees the
+/// name and runs the processing algorithm against the current value
+/// (<https://html.spec.whatwg.org/multipage/webappapis.html#the-event-handler-processing-algorithm>).
+fn handler_listener(name: &str) -> Rc<Listener> {
+    Rc::new(Listener {
+        typ: handler_event_type(name),
+        callback: None,
+        capture: false,
+        once: false,
+        passive: false,
+        signal: None,
+        removed: Cell::new(false),
+        handler_name: Some(name.to_owned()),
+    })
+}
+
+/// Registers the listener an event handler uses while it is active
+/// (<https://html.spec.whatwg.org/multipage/webappapis.html#activate-an-event-handler>).
+pub(crate) fn activate_handler(world: &mut World, target: Option<NodeId>, name: &str) {
+    let Some(slot) = world.handler_slot(target, name) else {
+        return;
+    };
+    if slot.listener.is_some() {
+        return;
+    }
+    let listener = handler_listener(name);
+    world.add_listener(EventTargetKey::from(target), Rc::clone(&listener));
+    world.set_handler_listener(target, name, Some(listener));
+}
+
+/// Clears one event handler and removes its listener. The map entry stays
+/// with a null value, so a later install pass on the same element does not
+/// resurrect the content attribute
+/// (<https://html.spec.whatwg.org/multipage/webappapis.html#deactivate-an-event-handler>).
+pub(crate) fn deactivate_handler(world: &Rc<RefCell<World>>, target: Option<NodeId>, name: &str) {
+    let listener = world
+        .borrow()
+        .handler_slot(target, name)
+        .and_then(|slot| slot.listener);
+    if let Some(listener) = listener {
+        listener.removed.set(true);
+        world
+            .borrow_mut()
+            .remove_listener(EventTargetKey::from(target), &listener);
+    }
+    world.borrow_mut().deactivate_handler_slot(target, name);
+}
+
+/// Moves one adopted node's handler map entries to the copy that replaces
+/// it. Adoption materializes a new node id, and the handler map is node
+/// state: a script-assigned handler must travel with the node instead of
+/// being rederived from the content attribute
+/// (<https://dom.spec.whatwg.org/#concept-node-adopt>).
+pub(crate) fn transfer_node_handlers(
+    from_world: &Rc<RefCell<World>>,
+    from: NodeId,
+    to_world: &Rc<RefCell<World>>,
+    to: NodeId,
+) {
+    // The iterator expression's borrow would live for the whole loop, and
+    // the body takes the same world mutably. Same-world adoption is the
+    // common case.
+    let names = from_world.borrow().handler_names(Some(from));
+    for name in names {
+        let Some(slot) = from_world.borrow_mut().take_handler(Some(from), &name) else {
+            continue;
+        };
+        if let Some(listener) = &slot.listener {
+            listener.removed.set(true);
+            from_world
+                .borrow_mut()
+                .remove_listener(EventTargetKey::Node(from), listener);
+        }
+        to_world
+            .borrow_mut()
+            .set_handler_value(Some(to), &name, slot.value);
+        if slot.listener.is_some() {
+            let listener = handler_listener(&name);
+            to_world
+                .borrow_mut()
+                .add_listener(EventTargetKey::Node(to), Rc::clone(&listener));
+            to_world
+                .borrow_mut()
+                .set_handler_listener(Some(to), &name, Some(listener));
+        }
+    }
+}
+
+/// Re-registers the window's handler listeners after a navigation cleared
+/// the listener list while keeping the same `Window` object. The handler map
+/// entries stay; only their listeners are rebuilt
+/// (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handlers>).
+pub(crate) fn reactivate_window_handlers(world: &mut World) {
+    for name in world.handler_names(None) {
+        let active = world
+            .handler_slot(None, &name)
+            .is_some_and(|slot| !matches!(slot.value, HandlerValue::Null));
+        if active {
+            activate_handler(world, None, &name);
+        }
+    }
+}
+
+/// Runs one event handler's processing algorithm for a dispatch path item
+/// (<https://html.spec.whatwg.org/multipage/webappapis.html#the-event-handler-processing-algorithm>).
+fn run_handler_listener<'js>(
+    ctx: &Ctx<'js>,
+    event: &Class<'js, JsEvent>,
+    item: &PathItem<'js>,
+    name: &str,
+) {
+    let storage = handler_storage(item.reference.key, &item.reference.world);
+    if matches!(storage, HandlerStorage::PlainProperty) {
+        return;
+    }
+    let world = Rc::clone(&item.reference.world);
+    let callback = match current_handler_value(ctx, &world, storage.map_target(), name) {
+        Ok(callback) => callback,
+        Err(error) => {
+            report_exception(ctx, &error);
+            return;
+        }
+    };
+    // A handler value that is not callable is ignored at invoke time. The
+    // attribute accepts any object (`[LegacyTreatNonObjectAsNull]` clears
+    // only non-objects), and a browser does not throw for a plain object or
+    // a `Function.prototype` object assigned as the handler
+    // (<https://webidl.spec.whatwg.org/#LegacyTreatNonObjectAsNull>,
+    // <https://html.spec.whatwg.org/multipage/webappapis.html#the-event-handler-processing-algorithm>).
+    let Some(function) = callback.as_function() else {
+        return;
+    };
+    let typ = event.borrow().state().typ.clone();
+    let event_value = Class::into_value(event.clone());
+    // "Special error event handling" is a property of the event and its
+    // target, not of the handler's name: an `ErrorEvent` of type `error`
+    // invoked at a global gets the five-argument call and cancels on `true`;
+    // every other handler cancels on `false`
+    // (<https://html.spec.whatwg.org/multipage/webappapis.html#the-event-handler-processing-algorithm>).
+    let special_error = typ == "error"
+        && matches!(storage, HandlerStorage::Window)
+        && is_event_of(ctx, &event_value, "ErrorEvent");
+    let this = item.target.clone();
+    call_with_current_event(
+        &callback,
+        &event_value,
+        item.invocation_target_in_shadow_tree,
+        |realm| {
+            let return_value: Value = if special_error {
+                call_error_handler(realm, function, &this, &event_value)?
+            } else {
+                function.call((This(this.clone()), event_value.clone()))?
+            };
+            process_handler_return(
+                realm,
+                event,
+                &event_value,
+                name,
+                &typ,
+                special_error,
+                &return_value,
+            )
+        },
+    );
+}
+
+/// Whether `event` is a `BeforeUnloadEvent` object, which decides the branch
+/// the processing algorithm takes for a `beforeunload` event
+/// (<https://html.spec.whatwg.org/multipage/webappapis.html#the-event-handler-processing-algorithm>).
+fn is_before_unload_event<'js>(ctx: &Ctx<'js>, event: &Value<'js>) -> bool {
+    is_event_of(ctx, event, "BeforeUnloadEvent")
+}
+
+/// Whether `event` is an instance of this realm's pinned event interface.
+/// A page that replaces the global constructor must not change the answer,
+/// so the prototype chain is compared against the constructor captured at
+/// install (<https://html.spec.whatwg.org/multipage/webappapis.html#dom-createevent>).
+fn is_event_of<'js>(ctx: &Ctx<'js>, event: &Value<'js>, interface: &str) -> bool {
+    let Some(object) = event.as_object() else {
+        return false;
+    };
+    let Some(pinned) = bindings::world(ctx)
+        .ok()
+        .and_then(|world| world.borrow().event_ctors.get(interface).cloned())
+    else {
+        return false;
+    };
+    let Ok(ctor) = pinned.restore(ctx) else {
+        return false;
+    };
+    let Ok(prototype) = ctor.get::<_, Value>("prototype") else {
+        return false;
+    };
+    let Some(prototype) = prototype.as_object() else {
+        return false;
+    };
+    let mut current = object.get_prototype();
+    while let Some(proto) = current {
+        if proto.as_value() == prototype.as_value() {
+            return true;
+        }
+        current = proto.get_prototype();
+    }
+    false
+}
+
+/// Processes an event handler's return value
+/// (<https://html.spec.whatwg.org/multipage/webappapis.html#the-event-handler-processing-algorithm>).
+fn process_handler_return<'js>(
+    ctx: &Ctx<'js>,
+    event: &Class<'js, JsEvent>,
+    event_value: &Value<'js>,
+    name: &str,
+    typ: &str,
+    special_error: bool,
+    return_value: &Value<'js>,
+) -> Result<()> {
+    // `onbeforeunload` is an `OnBeforeUnloadEventHandler`, whose return type
+    // is `DOMString?`: undefined and null become null, and every other value
+    // is coerced to a string
+    // (<https://html.spec.whatwg.org/multipage/webappapis.html#onbeforeunloadeventhandler>).
+    let before_unload_return = if name == "onbeforeunload" {
+        if return_value.is_null() || return_value.is_undefined() {
+            None
+        } else {
+            Some(bindings::webidl_to_string(ctx, return_value.clone())?)
+        }
+    } else {
+        None
+    };
+    if typ == "beforeunload" && is_before_unload_event(ctx, event_value) {
+        // A non-null return cancels and fills `returnValue` while it is empty.
+        let text = match (name == "onbeforeunload", &before_unload_return) {
+            (true, coerced) => coerced.clone(),
+            (false, _) if return_value.is_null() || return_value.is_undefined() => None,
+            (false, _) => Some(bindings::webidl_to_string(ctx, return_value.clone())?),
+        };
+        if let Some(text) = text {
+            set_event_canceled(event);
+            if let Some(object) = event_value.as_object() {
+                let current: String = object.get("returnValue").unwrap_or_default();
+                if current.is_empty() {
+                    object.set("returnValue", text)?;
+                }
+            }
+        }
+        return Ok(());
+    }
+    let canceled = if special_error {
+        return_value.as_bool() == Some(true)
+    } else if name == "onbeforeunload" {
+        // A coerced `onbeforeunload` return is a string or null, never the
+        // boolean false, so it only cancels a BeforeUnloadEvent
+        // (<https://html.spec.whatwg.org/multipage/webappapis.html#the-event-handler-processing-algorithm>).
+        false
+    } else {
+        return_value.as_bool() == Some(false)
+    };
+    if canceled {
+        set_event_canceled(event);
+    }
+    Ok(())
+}
+
+/// Sets an event's canceled flag when it is cancelable and no passive
+/// listener is running (<https://dom.spec.whatwg.org/#set-the-canceled-flag>).
+fn set_event_canceled(event: &Class<'_, JsEvent>) {
+    let class = event.borrow();
+    let mut state = class.state_mut();
+    if state.cancelable && !state.in_passive {
+        state.canceled = true;
+    }
+}
+
 /// The special `window.onerror` signature: `(message, filename, lineno, colno,
-/// error)`, where returning `true` cancels the event
+/// error)`
 /// (<https://html.spec.whatwg.org/multipage/webappapis.html#the-event-handler-processing-algorithm>).
 fn call_error_handler<'js>(
     ctx: &Ctx<'js>,
     function: &Function<'js>,
-    object: &Object<'js>,
+    this: &Value<'js>,
     event: &Value<'js>,
-) -> Result<()> {
+) -> Result<Value<'js>> {
     let Some(event_object) = event.as_object() else {
-        return function.call::<_, ()>((This(object.clone()), event.clone()));
+        return function.call((This(this.clone()), event.clone()));
     };
     let field = |name: &str| {
         event_object
@@ -2143,64 +2525,7 @@ fn call_error_handler<'js>(
     let lineno = field("lineno");
     let colno = field("colno");
     let error = field("error");
-    let result: Value = function.call((
-        This(object.clone()),
-        message,
-        filename,
-        lineno,
-        colno,
-        error,
-    ))?;
-    if result.as_bool() == Some(true)
-        && let Ok(prevent) = event_object.get::<_, Function>("preventDefault")
-        && prevent
-            .call::<_, ()>((This(event_object.clone()),))
-            .is_err()
-    {
-        // Clear the exception a page-clobbered `preventDefault` threw.
-        let _ = ctx.catch();
-    }
-    Ok(())
-}
-
-/// The content-attribute source for one handler: the target node's own
-/// attribute, or for a window target the active document body's attribute,
-/// which forwards window handlers to the window
-/// (<https://html.spec.whatwg.org/multipage/dom.html#body-element-event-handlers>).
-fn handler_attribute_source<'js>(
-    ctx: &Ctx<'js>,
-    target: &Object<'js>,
-    name: &str,
-) -> Result<Option<String>> {
-    if let Some(id) = bindings::host_node_id(ctx, &target.clone().into_value()) {
-        if bindings::handler_cleared(ctx, id, name)? {
-            return Ok(None);
-        }
-        let body = bindings::handler_attribute(ctx, id, name)?;
-        return Ok(body.filter(|source| !source.trim().is_empty()));
-    }
-    let Some(body) = active_body(ctx) else {
-        return Ok(None);
-    };
-    if bindings::handler_cleared(ctx, body, name)?
-        || bindings::window_handler_cleared(ctx, body, name)?
-    {
-        return Ok(None);
-    }
-    Ok(bindings::handler_attribute(ctx, body, name)?.filter(|source| !source.trim().is_empty()))
-}
-
-/// The body element of the current realm's active document, when it has one.
-fn active_body(ctx: &Ctx<'_>) -> Option<crate::dom::tree::NodeId> {
-    let world = bindings::world(ctx).ok()?;
-    let world = world.borrow();
-    let parsed = world.main_document()?;
-    let document = parsed.id;
-    let base = &parsed.document.base;
-    base.query_selector_in(base.root_node().id, "body")
-        .ok()
-        .flatten()
-        .map(|node| crate::dom::tree::NodeId { document, node })
+    function.call((This(this.clone()), message, filename, lineno, colno, error))
 }
 
 /// `ToBoolean` for an optional argument; a missing or undefined argument is

@@ -1126,10 +1126,7 @@ fn get_handler_in<'js>(
     name: &str,
     ctx: &Ctx<'js>,
 ) -> Result<Value<'js>> {
-    match world.borrow().handler_attribute(target, name) {
-        Some(saved) => saved.restore(ctx),
-        None => Ok(Value::new_null(ctx.clone())),
-    }
+    crate::js::events::current_handler_value(ctx, world, target, name)
 }
 
 /// Stores the handler property `name` on the window (`None` target) or on
@@ -1157,20 +1154,20 @@ fn set_handler_in<'js>(
     ctx: &Ctx<'js>,
 ) {
     // An event handler IDL attribute converts through a callback type marked
-    // `[LegacyTreatNonObjectAsNull]`: any value that is not an object clears
-    // the handler instead of being stored or throwing. Without this, assigning
-    // a string leaves a non-callable value in the slot and a later read
-    // returns it
+    // `[LegacyTreatNonObjectAsNull]`: any value that is not an object
+    // deactivates the handler instead of being stored or throwing
     // (<https://webidl.spec.whatwg.org/#LegacyTreatNonObjectAsNull>,
     // <https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-idl-attributes>).
-    let saved = if value.is_object() {
-        Some(Persistent::save(ctx, value))
+    if value.is_object() {
+        world.borrow_mut().set_handler_value(
+            target,
+            name,
+            crate::js::world::HandlerValue::Value(Persistent::save(ctx, value)),
+        );
+        crate::js::events::activate_handler(&mut world.borrow_mut(), target, name);
     } else {
-        None
-    };
-    world
-        .borrow_mut()
-        .set_handler_attribute(target, name, saved);
+        crate::js::events::deactivate_handler(world, target, name);
+    }
 }
 
 /// Whether the calling realm's frame owns `endpoint`.

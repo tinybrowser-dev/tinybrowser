@@ -977,6 +977,10 @@ fn install_document(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
     });
     if let Some(id) = document_id {
         globals.set("document", wrap_node(ctx, id)?)?;
+        // The parser installed the document's content attributes before this
+        // realm existed, so their change steps run here, before page script
+        // (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes>).
+        attributes::install_parsed_handlers(ctx, id)?;
     }
 
     install_location(ctx, &globals, world)?;
@@ -2078,6 +2082,11 @@ pub(crate) fn refresh_document_global(ctx: &Ctx<'_>) -> Result<()> {
     });
     if let Some(id) = document_id {
         ctx.globals().set("document", wrap_node(ctx, id)?)?;
+        // A document installed into a realm that already exists never passed
+        // through the realm-install walk, so its parser-installed handler
+        // attributes get their change steps here
+        // (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes>).
+        attributes::install_parsed_handlers(ctx, id)?;
     }
     Ok(())
 }

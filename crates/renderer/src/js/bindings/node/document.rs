@@ -988,6 +988,10 @@ impl JsNode {
             .map_err(|err| throw_dom_error(&ctx, err))?;
         drop(target);
         drop(world);
+        // Importing copies the attributes without their change steps, so the
+        // copy's event handler content attributes need their steps run here
+        // (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes>).
+        super::super::install_parsed_handlers(&ctx, id)?;
         wrap_node(&ctx, id)
     }
 

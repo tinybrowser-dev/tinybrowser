@@ -33,6 +33,10 @@ pub(crate) fn adopt_across_documents(
     let fresh = adopt_across_store(&mut store.borrow_mut(), parent, node)
         .map_err(|err| throw_dom_error(ctx, err))?;
     retarget_adopted_subtree(ctx, node, fresh)?;
+    // Attributes an adopted subtree carries get their handler change steps
+    // in the document that now owns it
+    // (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes>).
+    super::install_parsed_handlers(ctx, fresh)?;
     Ok(fresh)
 }
 
@@ -90,6 +94,14 @@ fn retarget_adopted_subtree(ctx: &Ctx<'_>, from: NodeId, to: NodeId) -> Result<(
     while let Some((from, to)) = stack.pop() {
         adopted.push((from, to));
         super::retarget_wrapper(ctx, from, to)?;
+        // The handler map is node state: a script-assigned value must travel
+        // to the copy that replaces the source, not be rederived from the
+        // content attribute
+        // (<https://dom.spec.whatwg.org/#concept-node-adopt>).
+        if let (Ok(from_owner), Ok(to_owner)) = (world_for_node(ctx, from), world_for_node(ctx, to))
+        {
+            crate::js::events::transfer_node_handlers(&from_owner, from, &to_owner, to);
+        }
         // The cryptographic nonce slot follows the adopted node into its
         // new identity; content attributes travel with the materialized
         // copy already.

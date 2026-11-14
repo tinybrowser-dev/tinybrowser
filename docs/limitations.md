@@ -758,6 +758,34 @@ realm, because `QuickJS` stores a realm only on functions
 `docs/upstream.md`). `Event.timeStamp` now shares `performance.now()`'s time
 origin, but the engine does not coarsen the clock to HR-Time's 5-microsecond
 resolution, so `Event-timestamp-safe-resolution.html` stays red.
+
+Event handler attributes use HTML's event handler map: the content attribute
+stores its raw source, activation registers a real listener, and the source
+compiles lazily in the handler document's realm. The scope chain is still the
+global one. HTML puts a `NewObjectEnvironment(document, true, …)` around it,
+then the element and its form owner, so `compile-event-handler-lexical-scopes*`
+and `compile-event-handler-symbol-unscopables` fail: a handler cannot see
+`document` properties, element mixin members, or `form.elements` through the
+bare `elements` name. `QuickJS`'s `Function` constructor and `eval` can only
+reach the global environment, so this needs a custom environment record rather
+than another wrapper. The same gap covers the element's own properties
+(`HTMLTableCellElement.prototype.cellIndex` and friends) and the form owner.
+`event-handler-idl-attribute-realm` also fails: compilation happens in the
+realm `world_for_node` resolves for the target document, but after the test
+moves a body between frames the getter still answers null instead of a function
+from the new document's realm. Two more gaps are recorded rather than worked
+around: a parser-installed handler runs its attribute change steps in the walk
+at realm install, so the CSP inline check for a parsed handler fires before
+page script rather than at parse time, and `compile-event-handler-settings-objects`
+still times out.
+
+The same-document traversal files
+(`html/browsers/browsing-the-web/history-traversal/event-order/same-document-traverse-*.html`)
+used to fail their first ordering assertion because handlers ran after the
+listener list. With the map they now pass that assertion and hang on
+`history.back()`: this engine does not fire `popstate` and `hashchange`
+synchronously from the traversal inside a `hashchange` listener, so the test's
+second listener never runs.
 `Event-dispatch-single-activation-behavior.html`
 exceeds the harness budget. `Event-dispatch-click.html` is flaky under the
 in-process harness: it passes its 33 subtests in some batch runs and hits the

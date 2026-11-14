@@ -1048,6 +1048,11 @@ pub(crate) struct Listener {
     /// Cleared when the listener is removed; a clone taken for dispatch still
     /// sees the removal (<https://dom.spec.whatwg.org/#concept-event-listener>).
     pub removed: Cell<bool>,
+    /// Set for the listener an event handler registers on activation. Such a
+    /// listener has no callback: dispatch runs the HTML event handler
+    /// processing algorithm instead
+    /// (<https://html.spec.whatwg.org/multipage/webappapis.html#the-event-handler-processing-algorithm>).
+    pub handler_name: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -1061,6 +1066,12 @@ pub(crate) enum EventTargetKey {
     },
     /// A constructible `EventTarget`, numbered per world.
     Standalone(u64),
+}
+
+impl From<Option<NodeId>> for EventTargetKey {
+    fn from(node: Option<NodeId>) -> Self {
+        node.map_or(EventTargetKey::Window, EventTargetKey::Node)
+    }
 }
 
 /// One `blob:` URL's data and the `Blob.type` it was created from, so a
@@ -1479,6 +1490,25 @@ pub(crate) struct World {
     pub(crate) deliver_mutations_fn: Option<Persistent<Function<'static>>>,
 }
 
+/// The value of one event handler: absent, a JavaScript value, or the raw
+/// source of a content attribute that has not been compiled yet
+/// (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-value>).
+#[derive(Clone)]
+pub(crate) enum HandlerValue {
+    Null,
+    Value(Persistent<Value<'static>>),
+    Raw(String),
+}
+
+/// One entry of a target's event handler map: its value and the listener
+/// registered while the handler is active
+/// (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-map>).
+#[derive(Clone)]
+pub(crate) struct EventHandlerSlot {
+    pub(crate) value: HandlerValue,
+    pub(crate) listener: Option<Rc<Listener>>,
+}
+
 /// The realm's event-target graph.
 ///
 /// The maps are keyed by document (`None` keys are the window), so the two
@@ -1500,11 +1530,7 @@ pub(crate) struct EventTargetState {
     /// stays alive. Keyed by `(None, name)` for the window and
     /// `(Some(node), name)` for an element
     /// (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handlers>).
-    handler_attributes: HashMap<(Option<NodeId>, String), Persistent<Value<'static>>>,
-    /// Handler properties explicitly set to null or undefined, so a dispatch
-    /// does not resurrect the element's content attribute
-    /// (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes>).
-    cleared_handlers: HashSet<(Option<NodeId>, String)>,
+    handlers: HashMap<(Option<NodeId>, String), EventHandlerSlot>,
 }
 
 impl EventTargetState {
@@ -1515,17 +1541,23 @@ impl EventTargetState {
     /// (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handlers>).
     fn reset_for_navigation(&mut self) {
         self.listeners.clear();
-        self.handler_attributes
-            .retain(|(node, _), _| node.is_none());
-        self.cleared_handlers.retain(|(node, _)| node.is_none());
+        // A retained window handler keeps its map entry, but the listener's
+        // registration did not survive the cleared list, so it must be
+        // rebuilt rather than left pointing at nothing.
+        self.handlers.retain(|(node, _), slot| {
+            if node.is_none() {
+                slot.listener = None;
+                true
+            } else {
+                false
+            }
+        });
     }
 
     /// Drops every handler of one document's elements.
     fn forget_document(&mut self, document: u32) {
-        self.handler_attributes
+        self.handlers
             .retain(|(node, _), _| node.is_none_or(|node| node.document_id() != document));
-        self.cleared_handlers
-            .retain(|(node, _)| node.is_none_or(|node| node.document_id() != document));
     }
 
     /// Drops the whole graph, window object included; the realm is going.
@@ -1534,8 +1566,7 @@ impl EventTargetState {
         self.standalone_targets.clear();
         self.window = None;
         self.next_standalone_target = 0;
-        self.handler_attributes.clear();
-        self.cleared_handlers.clear();
+        self.handlers.clear();
     }
 }
 
@@ -2117,6 +2148,10 @@ impl World {
         // must not fire in the new document
         // (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handlers>).
         self.events.reset_for_navigation();
+        // The window object and its handler values survive a navigation, so
+        // its handler listeners are registered again in the fresh list
+        // (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handlers>).
+        crate::js::events::reactivate_window_handlers(self);
         // A new realm owns fresh observers; navigation drops the old ones.
         self.clear_observers();
         id
@@ -3840,45 +3875,94 @@ impl World {
         self.document == Some(node.document_id())
     }
 
-    /// One event handler property, when set.
-    pub(crate) fn handler_attribute(
+    /// One event handler map entry, cloned so the caller works outside the
+    /// borrow (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-map>).
+    pub(crate) fn handler_slot(
         &self,
         node: Option<NodeId>,
         name: &str,
-    ) -> Option<Persistent<Value<'static>>> {
-        self.events
-            .handler_attributes
-            .get(&(node, name.to_owned()))
-            .cloned()
+    ) -> Option<EventHandlerSlot> {
+        self.events.handlers.get(&(node, name.to_owned())).cloned()
     }
 
-    /// Sets or clears one event handler property.
-    pub(crate) fn set_handler_attribute(
+    /// Replaces one event handler's value, keeping its listener.
+    pub(crate) fn set_handler_value(
         &mut self,
         node: Option<NodeId>,
         name: &str,
-        value: Option<Persistent<Value<'static>>>,
+        value: HandlerValue,
     ) {
-        if let Some(value) = value {
-            self.events
-                .cleared_handlers
-                .remove(&(node, name.to_owned()));
-            self.events
-                .handler_attributes
-                .insert((node, name.to_owned()), value);
+        let entry = self
+            .events
+            .handlers
+            .entry((node, name.to_owned()))
+            .or_insert_with(|| EventHandlerSlot {
+                value: HandlerValue::Null,
+                listener: None,
+            });
+        entry.value = value;
+    }
+
+    /// Records the listener an active event handler registered. The entry is
+    /// created when missing, so a listener can never be orphaned in the
+    /// target's listener list
+    /// (<https://html.spec.whatwg.org/multipage/webappapis.html#activate-an-event-handler>).
+    pub(crate) fn set_handler_listener(
+        &mut self,
+        node: Option<NodeId>,
+        name: &str,
+        listener: Option<Rc<Listener>>,
+    ) {
+        let entry = self
+            .events
+            .handlers
+            .entry((node, name.to_owned()))
+            .or_insert_with(|| EventHandlerSlot {
+                value: HandlerValue::Null,
+                listener: None,
+            });
+        entry.listener = listener;
+    }
+
+    /// The names of every handler map entry of one target, for adoption to
+    /// move the whole map with the node.
+    pub(crate) fn handler_names(&self, node: Option<NodeId>) -> Vec<String> {
+        self.events
+            .handlers
+            .keys()
+            .filter(|(key, _)| *key == node)
+            .map(|(_, name)| name.clone())
+            .collect()
+    }
+
+    /// Deactivates one event handler: its value becomes null and its listener
+    /// leaves the listener list, while the map entry stays. Keeping the entry
+    /// is what makes an explicitly cleared handler stay cleared, instead of
+    /// the next parse or insertion pass resurrecting its content attribute
+    /// (<https://html.spec.whatwg.org/multipage/webappapis.html#deactivate-an-event-handler>).
+    pub(crate) fn deactivate_handler_slot(&mut self, node: Option<NodeId>, name: &str) {
+        if let Some(entry) = self.events.handlers.get_mut(&(node, name.to_owned())) {
+            entry.value = HandlerValue::Null;
+            entry.listener = None;
         } else {
-            self.events
-                .handler_attributes
-                .remove(&(node, name.to_owned()));
-            self.events.cleared_handlers.insert((node, name.to_owned()));
+            self.events.handlers.insert(
+                (node, name.to_owned()),
+                EventHandlerSlot {
+                    value: HandlerValue::Null,
+                    listener: None,
+                },
+            );
         }
     }
 
-    /// Whether one handler property was explicitly cleared by script.
-    pub(crate) fn handler_cleared(&self, node: Option<NodeId>, name: &str) -> bool {
-        self.events
-            .cleared_handlers
-            .contains(&(node, name.to_owned()))
+    /// Removes one event handler map entry, for adoption to move it to the
+    /// copy that replaces the node.
+    pub(crate) fn take_handler(
+        &mut self,
+        node: Option<NodeId>,
+        name: &str,
+    ) -> Option<EventHandlerSlot> {
+        self.events.handlers.remove(&(node, name.to_owned()))
     }
 
     pub(crate) fn set_active_element(&mut self, document: u32, node: Option<NodeId>) {

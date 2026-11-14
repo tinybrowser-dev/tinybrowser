@@ -156,6 +156,13 @@ pub(super) fn replace_with_markup(
     drop(world);
     fixup_controls_on_insert(ctx, container.document, &controls)?;
     register_inserted_iframes(ctx, &added)?;
+    // Parsed content attributes never pass through the DOM setter, so their
+    // handler change steps run as part of the insertion, before the
+    // fragment's scripts
+    // (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes>).
+    for root in &added {
+        super::super::install_parsed_handlers(ctx, *root)?;
+    }
     // Scripts run as part of the insertion, before the custom element
     // reactions `[CEReactions]` flushes when the method returns
     // (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-element-sethtmlunsafe>).
@@ -555,6 +562,13 @@ fn insert_html_unsafe(
     drop(world);
     fixup_controls_on_insert(ctx, point.container.document, &controls)?;
     register_inserted_iframes(ctx, &added)?;
+    // Parsed content attributes never pass through the DOM setter, so their
+    // handler change steps run as part of the insertion, before the
+    // fragment's scripts
+    // (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes>).
+    for root in &added {
+        super::super::install_parsed_handlers(ctx, *root)?;
+    }
     // Scripts run as part of the insertion, before the custom element
     // reactions the method's `[CEReactions]` flushes when it returns
     // (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-element-appendhtmlunsafe>).
@@ -2622,6 +2636,12 @@ impl JsNode {
         drop(world);
         fixup_controls_on_insert(&ctx, element.document, &controls)?;
         register_inserted_iframes(&ctx, &moved)?;
+        // Parsed content attributes never pass through the DOM setter, so
+        // their handler change steps run as part of the insertion
+        // (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes>).
+        for root in &moved {
+            super::super::install_parsed_handlers(&ctx, *root)?;
+        }
         // Custom elements in parsed markup upgrade, like the innerHTML and
         // outerHTML paths below.
         upgrade_parsed_tree(
@@ -2702,6 +2722,12 @@ impl JsNode {
         drop(parsed);
         drop(world);
         register_inserted_iframes(ctx, &added)?;
+        // Parsed content attributes never pass through the DOM setter, so
+        // their handler change steps run as part of the insertion
+        // (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes>).
+        for root in &added {
+            super::super::install_parsed_handlers(ctx, *root)?;
+        }
         upgrade_parsed_tree(ctx, parent)?;
         schedule_mutation_delivery(ctx)
     }

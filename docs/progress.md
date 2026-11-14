@@ -2364,3 +2364,52 @@ Evidence: `dom/events` 490 to **498** subtests, no lost subtests.
 at `0b584af2`, so they are pre-existing navigation-timing failures, not this
 change. `html/dom` stays at 65341, `dom/nodes` at 14550, and `html/browsers`
 at 1009, with no lost subtests.
+Event handler content attributes now follow HTML's event handler map instead
+of a compiled slot invoked after the listener list. `World` keeps one
+`EventHandlerSlot` per `(target, name)` with a value that is null, a
+JavaScript value, or the raw attribute source; setting the attribute stores
+the source and activates a real listener with no callback, and dispatch runs
+the event handler processing algorithm when that listener comes up
+(`crates/renderer/src/js/events.rs`, `world.rs`). The listener is registered
+where the attribute was set, so `onclick` and `addEventListener` now interleave
+in the order they were written instead of every handler running last
+(`inline-event-handler-ordering.html`). The raw value compiles lazily in the
+handler document's realm, which is what makes a `DOMParser` document's handler
+run in the page realm while a document without a browsing context never
+compiles at all (`event-handler-idl-attribute-realm`, `uncompiled_event_handler_with_scripting_disabled.html`);
+the compiled function's `toString()` is the spec's `sourceText`
+(`event-handler-sourcetext.html`). Returning `false` (or `true` for a window
+`onerror`) sets the canceled flag, an `onbeforeunload` return coerces through
+`DOMString?` and only cancels a real `BeforeUnloadEvent`, and a handler value
+that is an object but not callable is ignored rather than thrown
+(`event-handler-handleEvent-ignored.html`). Special error handling keys off an
+`ErrorEvent` of type `error` at a global, not off the handler's name, so
+`window.onerror` gets its five arguments for a real error and one argument for
+`new Event("error")`; a worker global keeps its plain-property handlers by
+being classified as one (`Worker_Self_Origin.html` 6/6). The adopted node's
+map entries travel with it, so `el.onclick = fn` survives moving the element
+to another document instead of being rederived from the attribute.
+
+Attribute change steps are the only place the map changes, so every path that
+installs attributes without the DOM setter runs them: the parser walk at realm
+install, `innerHTML`/`outerHTML`/`insertAdjacentHTML`/`setHTMLUnsafe`, and now
+`cloneNode`, `importNode`, and cross-document adoption
+(`crates/renderer/src/js/bindings/attributes.rs`). The clone and adoption
+hooks were not optional: cloning an element out of `<template>` content
+copied the `onclick` attribute but not its handler, so `click()` ran the
+default action and navigated the test page
+(`html/semantics/forms/the-label-element/clicking-interactive-content.html`,
+36/36 back).
+
+Evidence: `html/webappapis` 2558 to **2607** subtests, `dom/events` 498 to
+**638** (`Event-dispatch-single-activation-behavior.html` 0/132 to 132/132,
+`Event-dispatch-click.html` 0/33 to 33/33), `html/browsers` 1009 to **1012**,
+with `html/dom` at 65341, `dom/nodes` at 14550, `css/selectors` at 4777, and
+`html/semantics/forms` 4521 to **4522**, all with no lost subtests. Batch runs report
+harness timeouts for `nameditem-*`, `grandparent_session_aboutsrcdoc`, and
+`form-double-submit`; each passes in isolation (the last only intermittently,
+at `0b584af2` too), and `form-submit-and-window-stop` timed out there as well.
+Still open: the handler scope chain has no `document`/element/form-owner
+object environment, and the same-document traversal files now get past their
+first ordering assertion and hang on `history.back()` firing `popstate` and
+`hashchange` synchronously (`docs/limitations.md`).
