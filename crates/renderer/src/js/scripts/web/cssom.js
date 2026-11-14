@@ -229,6 +229,30 @@
   CSSFontFaceRule.prototype = Object.create(CSSRule.prototype);
   CSSKeyframesRule.prototype = Object.create(CSSRule.prototype);
   CSSKeyframeRule.prototype = Object.create(CSSRule.prototype);
+  // `CSSRule`'s rule-type constants. WebIDL exposes a constant on both the
+  // interface object and the interface prototype object
+  // (<https://webidl.spec.whatwg.org/#idl-constants>,
+  // <https://drafts.csswg.org/cssom/#the-cssrule-interface>).
+  for (const [name, value] of [
+    ['STYLE_RULE', 1],
+    ['CHARSET_RULE', 2],
+    ['IMPORT_RULE', 3],
+    ['MEDIA_RULE', 4],
+    ['FONT_FACE_RULE', 5],
+    ['PAGE_RULE', 6],
+    ['KEYFRAMES_RULE', 7],
+    ['KEYFRAME_RULE', 8],
+    ['NAMESPACE_RULE', 10],
+    ['COUNTER_STYLE_RULE', 11],
+    ['SUPPORTS_RULE', 12],
+    ['FONT_FEATURE_VALUES_RULE', 14],
+  ]) {
+    for (const target of [CSSRule, CSSRule.prototype]) {
+      __tbDefineProperty(target, name, {
+        value, writable: false, enumerable: true, configurable: false,
+      });
+    }
+  }
   // `CSSRuleList` is an interface object with no constructor; a live list is
   // its instance (<https://drafts.csswg.org/cssom/#the-cssrulelist-interface>).
   function CSSRuleList() { __tbIllegal(); }
@@ -644,6 +668,21 @@
         throw new __tbDomException('constructable sheet has no parsed rule list', 'NotSupportedError');
       }
       __tbDelete(this, [], index, arguments.length);
+    }
+    // Legacy members: `addRule` builds `<selector> { <block> }` and inserts
+    // it at `index` (or appends), returning -1; `removeRule` is `deleteRule`
+    // (<https://drafts.csswg.org/cssom/#legacy-css-style-sheet-members>).
+    addRule(selector, block, index) {
+      let rule = selector === undefined ? 'undefined' : String(selector);
+      rule += ' { ';
+      block = block === undefined ? 'undefined' : String(block);
+      if (block !== '') rule += block + ' ';
+      rule += '}';
+      this.insertRule(rule, index === undefined ? this.cssRules.length : index);
+      return -1;
+    }
+    removeRule(index) {
+      this.deleteRule(index === undefined ? 0 : index);
     }
   }
   Object.defineProperty(globalThis, 'CSSStyleSheet', {
