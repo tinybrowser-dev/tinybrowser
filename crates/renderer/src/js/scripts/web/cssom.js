@@ -407,6 +407,18 @@
         value == null ? '' : String(value), String(priority) === 'important',
       );
     };
+    // Removing a property through the same host setter: an empty value is the
+    // engine's remove path, and the call answers the previous serialized value
+    // (<https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-removeproperty>).
+    style.removeProperty = function(name) {
+      if (entry.detached) return '';
+      const property = String(name);
+      const previous = style.getPropertyValue(property);
+      host.__tb_sheet_style_set_property(
+        sheet.__tbOwner, sheet.__tbId, pathKey(), property, '', false,
+      );
+      return previous;
+    };
     style.item = function(index) {
       if (arguments.length < 1) throw new TypeError('item requires 1 argument');
       if (entry.detached) return '';
@@ -414,6 +426,10 @@
       index = index >>> 0;
       return index < names.length ? names[index] : '';
     };
+    // `stringifier attribute CSSOMString cssText` gives every declaration
+    // object a `toString` that answers its serialization
+    // (<https://drafts.csswg.org/cssom/#the-cssstyledeclaration-interface>).
+    style.toString = function() { return this.cssText; };
     return style;
   }
   function __tbCachedRule(sheet, path, parentRule) {
@@ -993,6 +1009,7 @@
               case 'getPropertyValue':
               case 'getPropertyPriority':
               case 'item':
+              case 'toString':
                 return () => '';
               default:
                 return typeof property === 'string' ? '' : undefined;
@@ -1025,6 +1042,9 @@
         get(target, property, receiver) {
           if (typeof property !== 'string') return Reflect.get(target, property, receiver);
           if (property === 'getPropertyValue') return read;
+          if (property === 'toString') {
+            return () => String(Reflect.get(target, 'cssText') ?? '');
+          }
           // A computed style carries no priority flags, so no declaration it
           // reports is `!important`
           // (<https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-getpropertypriority>).

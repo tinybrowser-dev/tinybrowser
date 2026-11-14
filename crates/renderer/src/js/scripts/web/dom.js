@@ -163,6 +163,10 @@ host.__tbMakeStyle = element => {
       // (<https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-csstext>).
       element.setAttribute('style', serialized());
     },
+    // `stringifier attribute CSSOMString cssText` gives every declaration
+    // object a `toString` that answers its serialization
+    // (<https://drafts.csswg.org/cssom/#the-cssstyledeclaration-interface>).
+    toString() { return serialized(); },
     get length() { return names().length; },
     item(index) {
       if (arguments.length < 1) throw new TypeError('item requires 1 argument');

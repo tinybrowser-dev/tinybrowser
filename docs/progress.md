@@ -2435,3 +2435,25 @@ Evidence: `css/cssom` 3331 to **3337** subtests, no lost subtests.
 `html/semantics/forms` at 4522 against freshly captured baselines at the
 parent commit. The one form diff, `form-double-submit.html`, fails the same
 way three times at the parent commit, so it is pre-existing.
+CSS declaration blocks now carry `removeProperty` and the CSSOM stringifier.
+`css/cssom/property-accessors.html` sets and removes properties on a computed
+style, an inline style, and a rule's style; the rule style had no
+`removeProperty`, so that call threw and the crash test's `catch` compared the
+wrong declarations and failed all nine properties. `CSSStyleDeclaration`
+objects also failed `String(decl)`: the inline-style proxy answered
+`toString` with the empty string from its unknown-property path, so
+`ToPrimitive` got a non-callable. The rule style delegates removal to the host
+setter's empty-value path and returns the previous value, and every declaration
+object (inline, rule, computed, and the empty computed declaration) now has a
+`toString` stringifier
+(`crates/renderer/src/js/scripts/web/cssom.js`, `dom.js`,
+<https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-removeproperty>,
+<https://drafts.csswg.org/cssom/#the-cssstyledeclaration-interface>).
+
+Evidence: `css/cssom` 3337 to **3347** subtests, no lost subtests;
+`property-accessors.html` 0/9 to 9/9. Against the previous slice's runs,
+`css/cssom-view` stays at 1616, `resize-observer` at 50,
+`intersection-observer` at 185, `css/selectors` at 4777, and
+`html/semantics/forms` 4522 to 4523 with no lost subtests.
+`cargo fmt --check`, `tools/check clippy`, and the renderer (175),
+webidl-bindgen (42), and wpt-harness (30) test binaries pass.
