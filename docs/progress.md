@@ -2224,3 +2224,37 @@ Evidence: `html/dom` 65239 to **65253** subtests, no lost subtests.
 28/28, `dataset-prototype.html` 0/2 to 2/2; `dataset-get`, `dataset-set`, and
 `dataset-enumeration` stay green. `html/browsers/the-window-object` stays at
 238 subtests with no lost subtests.
+`Document` now supports named properties
+(`crates/renderer/src/js/bindings/node/named.rs`). `JsNode` is an exotic
+class, and its `[[GetOwnProperty]]`/`[[OwnPropertyKeys]]` hooks answer only
+for `Document`, decided by a flag stored on the wrapper at construction. The
+supported property names follow the HTML named-element definition: each
+element in the document tree contributes its `id` first and its `name`
+second, ignoring later duplicates; `embed`, `form`, and `iframe` are named by
+`name`; `object` by `name` or `id`; `img` by `name`, or by `id` while it also
+carries a non-empty `name`. Template contents and shadow trees are outside
+the document tree and contribute nothing. A single match answers the element,
+an `iframe` with a content navigable answers its `WindowProxy`, and several
+matches answer one live `HTMLCollection` whose identity is cached per
+`(document, name)` so it survives tree moves and name mutations.
+
+Named properties do not shadow built-ins here: a name a prototype already
+carries is not exposed. That is the direction of the open WHATWG change
+<https://github.com/whatwg/html/pull/13161> and what Firefox Nightly ships;
+the current IDL still marks `Document` `[LegacyOverrideBuiltIns]`, and the
+matching `nameditem-no-shadowing.tentative.html` asserts the no-shadowing
+behavior. The `[[Set]]` hook creates an ordinary own property that shadows a
+supported name, and the delete hook refuses to delete one, matching Web IDL's
+legacy platform object internal methods.
+
+Evidence: `html/dom` 65253 to **65339** subtests, no lost subtests.
+All `nameditem-*` files pass except the two `HTMLDocument` assertions in
+`nameditem-no-shadowing.tentative.html`, which stay red because the engine
+has no `HTMLDocument` interface object (that file goes 5/8 to 6/8);
+`nameditem-01` 0/7 to 7/7, `-02` 2/12 to 12/12, `-04` 3/12 to 12/12,
+`-05` 3/12 to 12/12, `-06` 2/9 to 9/9, `-07` 0/14 to 14/14, `-08` 0/2 to 2/2,
+`-adoption` 0/1 to 1/1, the four `img-name-*` files 0/1 to 1/1 each,
+`-names` 3/21 to 21/21, `-supported-property-names-order` 0/1 to 1/1,
+`-tree-order` 0/1 to 1/1, and `-tree-transitions` 0/2 to 2/2.
+`dom/nodes` stays at 14550, `html/browsers` at 1000, and `css/selectors` at
+4777 subtests, with no lost subtests.

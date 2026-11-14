@@ -38,6 +38,10 @@ pub(crate) enum CollectionKind {
     SelectOptions,
     SelectedOptions,
     WindowNamed(String),
+    /// The `HTMLCollection` a Document named property answers when several
+    /// elements share the name
+    /// (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-nameditem>).
+    DocumentNamed(String),
     /// `Document.scripts`: HTML `script` descendants of the document element
     /// (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-scripts>).
     HtmlScripts,
@@ -102,6 +106,7 @@ impl CollectionQuery {
             | CollectionKind::SelectOptions
             | CollectionKind::SelectedOptions
             | CollectionKind::WindowNamed(_)
+            | CollectionKind::DocumentNamed(_)
             | CollectionKind::HtmlScripts
             | CollectionKind::HtmlLinks
             | CollectionKind::HtmlImages
@@ -180,6 +185,9 @@ fn query_ids(ctx: &Ctx<'_>, scope: NodeId, kind: &CollectionKind) -> Result<Vec<
         CollectionKind::SelectOptions => select_options(base, document, scope.node),
         CollectionKind::SelectedOptions => Vec::new(),
         CollectionKind::WindowNamed(name) => collect_window_named(base, document, scope.node, name),
+        CollectionKind::DocumentNamed(name) => {
+            collect_document_named(base, document, scope.node, name)
+        }
         CollectionKind::HtmlScripts => collect_html_scripts(&parsed.document, document, scope.node),
         CollectionKind::HtmlLinks => collect_html_links(&parsed.document, document, scope.node),
         CollectionKind::HtmlImages => {
@@ -431,6 +439,91 @@ fn named_exists(base: &blitz_dom::BaseDocument, scope: BlitzId, name: &str) -> b
                 && attr(base, id, "name").is_some_and(|value| value == name)
         })
     })
+}
+
+/// The named elements with `name` in `scope`'s document tree, in tree order
+/// (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-nameditem>).
+pub(crate) fn collect_document_named(
+    base: &blitz_dom::BaseDocument,
+    document: u32,
+    scope: BlitzId,
+    name: &str,
+) -> Vec<NodeId> {
+    if name.is_empty() {
+        return Vec::new();
+    }
+    descendants(base, scope)
+        .into_iter()
+        .filter(|&id| is_named_element(base, id, name))
+        .map(|node| NodeId { document, node })
+        .collect()
+}
+
+/// Whether `id` is a named element with `name`: one of the HTML elements
+/// whose `name` the Document named getter exposes, plus the `object` and
+/// `img` `id` cases
+/// (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-nameditem>).
+fn is_named_element(base: &blitz_dom::BaseDocument, id: BlitzId, name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let Some(qual) = element_name(base, id) else {
+        return false;
+    };
+    if qual.ns != html_namespace() {
+        return false;
+    }
+    let carries = |local: &str| attr(base, id, local).is_some_and(|value| value == name);
+    match qual.local.as_str() {
+        "embed" | "form" | "iframe" => carries("name"),
+        "object" => carries("name") || carries("id"),
+        // An `img` is exposed by its `id` only while it also carries a
+        // non-empty `name`, whatever that name is.
+        "img" => {
+            carries("name")
+                || (carries("id") && attr(base, id, "name").is_some_and(|value| !value.is_empty()))
+        }
+        _ => false,
+    }
+}
+
+/// The supported property names of a Document, in tree order: each named
+/// element contributes its `id` value first and its `name` value second,
+/// ignoring later duplicates
+/// (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-nameditem>).
+pub(crate) fn document_supported_names(
+    base: &blitz_dom::BaseDocument,
+    scope: BlitzId,
+) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut seen = HashSet::new();
+    for id in descendants(base, scope) {
+        if let Some(value) = attr(base, id, "id")
+            && is_named_element(base, id, value)
+            && seen.insert(value.to_owned())
+        {
+            names.push(value.to_owned());
+        }
+        if let Some(value) = attr(base, id, "name")
+            && is_named_element(base, id, value)
+            && seen.insert(value.to_owned())
+        {
+            names.push(value.to_owned());
+        }
+    }
+    names
+}
+
+/// Whether `name` is a supported property name of the Document at `scope`.
+pub(crate) fn document_has_named_property(
+    base: &blitz_dom::BaseDocument,
+    scope: BlitzId,
+    name: &str,
+) -> bool {
+    !name.is_empty()
+        && descendants(base, scope)
+            .into_iter()
+            .any(|id| is_named_element(base, id, name))
 }
 
 fn collect_by_tag_ns(
@@ -798,6 +891,7 @@ impl<'js> node_list_generated::NodeList<'js> for JsNodeList {
             | CollectionKind::SelectOptions
             | CollectionKind::SelectedOptions
             | CollectionKind::WindowNamed(_)
+            | CollectionKind::DocumentNamed(_)
             | CollectionKind::HtmlScripts
             | CollectionKind::HtmlLinks
             | CollectionKind::HtmlImages

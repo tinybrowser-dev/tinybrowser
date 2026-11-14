@@ -1626,6 +1626,11 @@ pub(crate) struct DocumentState {
     /// caching layer
     /// (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes:element>).
     pub(crate) element_reference_cache: HashMap<(NodeId, String), ElementReferenceCache>,
+    /// The `HTMLCollection` each Document named property last answered, keyed by
+    /// `(document node, name)`. The collection is live, so only its identity is
+    /// cached; a name that stops naming several elements stops resolving here
+    /// (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-nameditem>).
+    pub(crate) document_named: HashMap<(NodeId, String), Persistent<Value<'static>>>,
     /// The base URL each `base` element may freeze, or `None` when its
     /// `href` is refused or unusable.
     base_results: HashMap<NodeId, Option<Url>>,
@@ -1803,6 +1808,7 @@ impl DocumentState {
         self.base_href_seen.clear();
         self.base_results.clear();
         self.element_reference_cache.clear();
+        self.document_named.clear();
         self.frame_navigations.clear();
         self.parser_inserted.clear();
         self.decoders.clear();
@@ -1831,6 +1837,8 @@ impl DocumentState {
         self.base_results
             .retain(|node, _| node.document != document);
         self.element_reference_cache
+            .retain(|(node, _), _| node.document != document);
+        self.document_named
             .retain(|(node, _), _| node.document != document);
         self.nonce_slots.retain(|node, _| node.document != document);
         self.creator_stacks
