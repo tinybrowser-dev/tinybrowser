@@ -17,7 +17,6 @@ use crate::dom::insertion::{
 use crate::dom::tree::{NodeId, attr, html_namespace};
 
 use super::JsNode;
-use super::document::document_first;
 use super::element::{
     content_attr, reflect_clamped_ulong, reflect_cross_origin, reflect_ulong, set_cross_origin,
 };
@@ -354,9 +353,17 @@ impl JsNode {
         let Some(parsed) = parsed.document(self.handle.get().0) else {
             return rquickjs::String::from_str(ctx.clone(), "");
         };
-        let title = document_first(&parsed, "title");
-        match title {
-            Some(title) => dom_string(ctx, &parsed.document.descendant_dom_text(title.node)),
+        match document_title_element(&parsed) {
+            // The getter answers the title element's child text content with
+            // ASCII whitespace stripped and collapsed
+            // (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-title>).
+            Some(title) => dom_string(
+                ctx,
+                &parsed
+                    .document
+                    .descendant_dom_text(title.node)
+                    .strip_and_collapse_ascii_whitespace(),
+            ),
             None => rquickjs::String::from_str(ctx.clone(), ""),
         }
     }
@@ -369,48 +376,66 @@ impl JsNode {
         let Some(mut parsed) = world.document_mut(self.handle.get().0) else {
             return Ok(());
         };
-        let base_root = parsed.document.base.root_node().id;
         let document = parsed.id;
-        let title = parsed
-            .document
-            .base
-            .query_selector_in(base_root, "title")
-            .ok()
-            .flatten()
-            .map_or_else(
-                || {
-                    let name = QualName::new(None, html_namespace(), LocalName::from("title"));
-                    let title = parsed
-                        .document
-                        .base
-                        .mutate()
-                        .create_element(name, Vec::new());
-                    let title = NodeId {
-                        document,
-                        node: title,
-                    };
-                    let target = parsed
-                        .document
-                        .base
-                        .query_selector_in(base_root, "head")
-                        .ok()
-                        .flatten()
-                        .or_else(|| {
-                            parsed
-                                .document
-                                .base
-                                .query_selector_in(base_root, "html")
-                                .ok()
-                                .flatten()
-                        })
-                        .map(|node| NodeId { document, node });
-                    if let Some(target) = target {
-                        insert_parsed(&mut parsed, target, title, None);
-                    }
-                    title
-                },
-                |node| NodeId { document, node },
-            );
+        let Some(element) =
+            crate::dom::namespaces::document_element_of(&parsed.document, self.handle.get().0)
+        else {
+            return Ok(());
+        };
+        let svg_root = element_is_svg_svg(&parsed.document, element.node);
+        let html_document = matches!(parsed.content_type, "text/html" | "application/xhtml+xml");
+        // A document with no document element, or one that is neither HTML nor
+        // an SVG `svg`, cannot hold a title
+        // (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-title>).
+        if !html_document && !svg_root {
+            return Ok(());
+        }
+        let title = match document_title_element(&parsed) {
+            Some(title) => title,
+            None if svg_root => {
+                // An SVG document's title is the first SVG `title` child of
+                // its document element.
+                let name = QualName::new(None, markup5ever::ns!(svg), LocalName::from("title"));
+                let title = parsed
+                    .document
+                    .base
+                    .mutate()
+                    .create_element(name, Vec::new());
+                let title = NodeId {
+                    document,
+                    node: title,
+                };
+                let reference = parsed
+                    .document
+                    .base
+                    .get_node(element.node)
+                    .and_then(|node| node.children.first().copied())
+                    .map(|node| NodeId { document, node });
+                insert_parsed(&mut parsed, element, title, reference);
+                title
+            }
+            None if html_document => {
+                // An HTML document appends the new `title` to its `head`; a
+                // document with no head element has nowhere to put one, so
+                // the write does nothing.
+                let Some(head) = document_head_element(&parsed, element) else {
+                    return Ok(());
+                };
+                let name = QualName::new(None, html_namespace(), LocalName::from("title"));
+                let title = parsed
+                    .document
+                    .base
+                    .mutate()
+                    .create_element(name, Vec::new());
+                let title = NodeId {
+                    document,
+                    node: title,
+                };
+                insert_parsed(&mut parsed, head, title, None);
+                title
+            }
+            None => return Ok(()),
+        };
         let added = if text.is_empty() {
             Vec::new()
         } else {
@@ -426,6 +451,100 @@ impl JsNode {
         drop(world);
         schedule_mutation_delivery(ctx)
     }
+}
+
+/// The document's title element
+/// (<https://html.spec.whatwg.org/multipage/dom.html#the-title-element>).
+///
+/// An SVG document (its document element is an SVG `svg`) uses an SVG `title`
+/// that is a child of the document element. Every other document uses the
+/// first `title` in the HTML namespace in tree order, which is why an HTML
+/// title still counts in an XML document.
+fn document_title_element(parsed: &crate::Parsed) -> Option<NodeId> {
+    let base = &parsed.document.base;
+    let root = base.root_node().id;
+    let document_element = base.get_node(root).and_then(|node| {
+        node.children
+            .iter()
+            .copied()
+            .find(|child| base.get_node(*child).is_some_and(is_element_node))
+    });
+    if document_element.is_some_and(|id| element_is_svg_svg(&parsed.document, id)) {
+        return base
+            .get_node(document_element?)
+            .and_then(|node| {
+                node.children.iter().copied().find(|child| {
+                    base.get_node(*child)
+                        .and_then(|node| node.data.downcast_element())
+                        .is_some_and(|data| {
+                            data.name.ns == markup5ever::ns!(svg)
+                                && data.name.local.as_str() == "title"
+                        })
+                })
+            })
+            .map(|node| NodeId {
+                document: parsed.id,
+                node,
+            });
+    }
+    let mut stack: Vec<_> = base
+        .get_node(root)
+        .map_or_default(|node| node.children.iter().rev().copied().collect());
+    while let Some(id) = stack.pop() {
+        let Some(node) = base.get_node(id) else {
+            continue;
+        };
+        if let Some(data) = node.data.downcast_element()
+            && data.name.ns == markup5ever::ns!(html)
+            && data.name.local.as_str() == "title"
+        {
+            return Some(NodeId {
+                document: parsed.id,
+                node: id,
+            });
+        }
+        stack.extend(node.children.iter().rev().copied());
+    }
+    None
+}
+
+/// Whether `node` is an element.
+fn is_element_node(node: &blitz_dom::Node) -> bool {
+    node.data.downcast_element().is_some()
+}
+
+/// Whether `node` is an SVG `svg` element, which makes its document an SVG
+/// document for `document.title`.
+fn element_is_svg_svg(
+    document: &crate::documents::BlitzDocument,
+    node: blitz_traits::node_id::NodeId,
+) -> bool {
+    document
+        .base
+        .get_node(node)
+        .and_then(|node| node.data.downcast_element())
+        .is_some_and(|data| {
+            data.name.ns == markup5ever::ns!(svg) && data.name.local.as_str() == "svg"
+        })
+}
+
+/// The `head` element of an HTML document, if the document element has one.
+fn document_head_element(parsed: &crate::Parsed, document_element: NodeId) -> Option<NodeId> {
+    let base = &parsed.document.base;
+    base.get_node(document_element.node)
+        .and_then(|node| {
+            node.children.iter().copied().find(|child| {
+                base.get_node(*child)
+                    .and_then(|node| node.data.downcast_element())
+                    .is_some_and(|data| {
+                        data.name.ns == markup5ever::ns!(html) && data.name.local.as_str() == "head"
+                    })
+            })
+        })
+        .map(|node| NodeId {
+            document: parsed.id,
+            node,
+        })
 }
 /// Removes the `index`th row of `table` in `table.rows` order; `-1` is the
 /// last row. Out-of-range indexes throw `IndexSizeError`

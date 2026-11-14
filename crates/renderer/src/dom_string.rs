@@ -143,6 +143,27 @@ impl DomString {
             },
         }
     }
+    /// Strips leading and trailing ASCII whitespace and collapses each
+    /// remaining run to one U+0020 SPACE
+    /// (<https://infra.spec.whatwg.org/#strip-and-collapse-ascii-whitespace>).
+    ///
+    /// Operates on code units so an unpaired surrogate survives unchanged.
+    pub(crate) fn strip_and_collapse_ascii_whitespace(&self) -> Self {
+        let mut units = Vec::new();
+        let mut pending_space = false;
+        for unit in self.units().iter().copied() {
+            if matches!(unit, 0x09 | 0x0a | 0x0c | 0x0d | 0x20) {
+                pending_space = !units.is_empty();
+                continue;
+            }
+            if pending_space {
+                units.push(0x20);
+                pending_space = false;
+            }
+            units.push(unit);
+        }
+        Self::from_utf16(units)
+    }
 }
 
 impl From<&str> for DomString {

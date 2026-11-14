@@ -2138,3 +2138,20 @@ Evidence: `html/dom` 64417 to **65181** subtests, no lost subtests.
 `aria-attribute-reflection-enumerated.tentative.html` 997/1761 to 1761/1761,
 `aria-attribute-reflection.html` 41/41 and
 `aria-attribute-reflection.tentative.html` 3/3.
+`document.title` now follows the title-element definition instead of the first
+`title` in the tree (`crates/renderer/src/js/bindings/node/html_elements.rs`).
+An SVG document — one whose document element is an SVG `svg` — uses an SVG
+`title` that is a child of that element, and the setter creates one as the
+document element's first child. Every other document uses the first `title` in
+the HTML namespace in tree order, even when the document is XML, and the setter
+appends a new HTML `title` to the document's `head`. A document whose element is
+neither HTML nor an SVG `svg` has no title, so the setter does nothing there.
+The getter applies the HTML strip-and-collapse rule to the title element's
+child text content, which also normalizes the initial `<title>` text
+(`crates/renderer/src/dom_string.rs`).
+
+Evidence: `html/dom` 65181 to **65204** subtests, no lost subtests.
+`dom-tree-accessors` 157 to 180. `document.title-01` 3/4 to 4/4,
+`-02.xhtml` 3/4 to 4/4, `-03` 1/11 to 11/11, `-04.xhtml` 0/1 to 1/1, `-07`
+4/9 to 9/9, `-09` 1/5 to 5/5, and `document.title-not-in-html-svg` 1/2 to 2/2;
+`-05`, `-06`, and `-08` stay green.
