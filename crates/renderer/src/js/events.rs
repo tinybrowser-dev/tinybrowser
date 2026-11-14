@@ -1557,7 +1557,7 @@ fn invoke<'js>(
                 &value,
                 &event_value,
                 item.invocation_target_in_shadow_tree,
-                || call_listener(ctx, &value, &item.target, &event_value),
+                |realm| call_listener(realm, &value, &item.target, &event_value),
             );
         }
         event.borrow().state_mut().in_passive = false;
@@ -1583,11 +1583,11 @@ fn call_with_current_event<'js>(
     callback: &Value<'js>,
     event: &Value<'js>,
     invocation_target_in_shadow_tree: bool,
-    call: impl FnOnce() -> Result<()>,
+    call: impl FnOnce(&Ctx<'js>) -> Result<()>,
 ) {
     let realm = listener_realm(callback);
     let Some(world) = bindings::try_world(&realm) else {
-        if let Err(error) = call() {
+        if let Err(error) = call(&realm) {
             report_exception(&realm, &error);
         }
         return;
@@ -1596,7 +1596,7 @@ fn call_with_current_event<'js>(
     if !invocation_target_in_shadow_tree {
         world.borrow_mut().current_event = Some(Persistent::save(&realm, event.clone()));
     }
-    let outcome = call();
+    let outcome = call(&realm);
     // The report runs before the restore, so the listener's own realm still
     // sees the event as its current event while `onerror` handles the throw.
     if let Err(error) = outcome {
@@ -2095,7 +2095,7 @@ fn call_handler_attribute<'js>(
             function.as_value(),
             event,
             invocation_target_in_shadow_tree,
-            || {
+            |_realm| {
                 if typ == "error" && is_window {
                     call_error_handler(ctx, function, object, event)
                 } else {

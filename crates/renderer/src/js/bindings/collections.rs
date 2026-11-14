@@ -184,7 +184,9 @@ fn query_ids(ctx: &Ctx<'_>, scope: NodeId, kind: &CollectionKind) -> Result<Vec<
         CollectionKind::ElementsByName(name) => collect_by_name(base, document, scope.node, name),
         CollectionKind::SelectOptions => select_options(base, document, scope.node),
         CollectionKind::SelectedOptions => Vec::new(),
-        CollectionKind::WindowNamed(name) => collect_window_named(base, document, scope.node, name),
+        CollectionKind::WindowNamed(name) => {
+            collect_window_named(&owner, base, document, scope.node, name)
+        }
         CollectionKind::DocumentNamed(name) => {
             collect_document_named(base, document, scope.node, name)
         }
@@ -394,11 +396,12 @@ fn collect_by_name(
         .collect()
 }
 
-/// The Window named objects with `name`: every element whose ID is `name`,
-/// plus `embed`, `form`, `img`, and `object` elements whose `name` is `name`,
-/// in tree order
+/// The Window named objects with `name` in `scope`'s document tree, in tree
+/// order: any element's ID, an `embed`/`form`/`img`/`object`'s `name`, and a
+/// same-origin child navigable's target name
 /// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#named-access-on-the-window-object>).
 fn collect_window_named(
+    world: &crate::js::world::World,
     base: &blitz_dom::BaseDocument,
     document: u32,
     scope: BlitzId,
@@ -409,36 +412,88 @@ fn collect_window_named(
     }
     descendants(base, scope)
         .into_iter()
-        .filter(|&id| {
-            if attr(base, id, "id").is_some_and(|value| value == name) {
-                return true;
-            }
-            element_name(base, id).is_some_and(|qual| {
-                qual.ns == html_namespace()
-                    && matches!(qual.local.as_str(), "embed" | "form" | "img" | "object")
-                    && attr(base, id, "name").is_some_and(|value| value == name)
-            })
-        })
+        .filter(|&id| is_window_named_object(world, base, document, id, name))
         .map(|node| NodeId { document, node })
         .collect()
 }
 
-/// Whether a named getter exposes `name`: some descendant carries it as `id`,
-/// or an `embed`/`form`/`img`/`object` carries it as `name`.
-fn named_exists(base: &blitz_dom::BaseDocument, scope: BlitzId, name: &str) -> bool {
+/// Whether `id` is one of the Window named objects with `name`
+/// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#named-access-on-the-window-object>):
+/// any element's ID, an `embed`/`form`/`img`/`object`'s `name`, or a
+/// same-origin child navigable's target name.
+fn is_window_named_object(
+    world: &crate::js::world::World,
+    base: &blitz_dom::BaseDocument,
+    document: u32,
+    id: BlitzId,
+    name: &str,
+) -> bool {
+    if attr(base, id, "id").is_some_and(|value| value == name) {
+        return true;
+    }
+    let Some(qual) = element_name(base, id) else {
+        return false;
+    };
+    if qual.ns != html_namespace() {
+        return false;
+    }
+    match qual.local.as_str() {
+        "embed" | "form" | "img" | "object" => {
+            attr(base, id, "name").is_some_and(|value| value == name)
+        }
+        "iframe" | "frame" => {
+            let id = NodeId { document, node: id };
+            navigable_target_name(world, id).is_some_and(|target| target == name)
+        }
+        _ => false,
+    }
+}
+
+/// The target name of `id`'s child navigable
+/// (<https://html.spec.whatwg.org/multipage/document-sequences.html#nav-target>).
+/// It follows `window.name` as well as the `name` content attribute, so an
+/// iframe whose child renames itself stops answering to its old attribute.
+fn navigable_target_name(world: &crate::js::world::World, id: NodeId) -> Option<String> {
+    let frame = world.frame_for_container(id)?;
+    if !is_same_origin_navigable(world, frame) {
+        return None;
+    }
+    let shared = world.shared();
+    let name = shared.borrow().tree.name(frame).to_owned();
+    (!name.is_empty()).then_some(name)
+}
+
+/// Whether `frame` is same-origin with this Window. A cross-origin child does
+/// not contribute its target name to the Window's supported property names
+/// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#named-access-on-the-window-object>).
+fn is_same_origin_navigable(
+    world: &crate::js::world::World,
+    frame: crate::protocol::FrameId,
+) -> bool {
+    match world.frame_world(frame) {
+        Some(child) => child.borrow().origin == world.origin,
+        // A child whose realm has not started yet is its initial about:blank,
+        // which inherits the parent's origin.
+        None => true,
+    }
+}
+
+/// Whether a named getter exposes `name`: some descendant is a Window named
+/// object with it
+/// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#named-access-on-the-window-object>).
+fn named_exists(
+    world: &crate::js::world::World,
+    base: &blitz_dom::BaseDocument,
+    document: u32,
+    scope: BlitzId,
+    name: &str,
+) -> bool {
     if name.is_empty() {
         return false;
     }
-    descendants(base, scope).into_iter().any(|id| {
-        if attr(base, id, "id").is_some_and(|value| value == name) {
-            return true;
-        }
-        element_name(base, id).is_some_and(|qual| {
-            qual.ns == html_namespace()
-                && matches!(qual.local.as_str(), "embed" | "form" | "img" | "object")
-                && attr(base, id, "name").is_some_and(|value| value == name)
-        })
-    })
+    descendants(base, scope)
+        .into_iter()
+        .any(|id| is_window_named_object(world, base, document, id, name))
 }
 
 /// The named elements with `name` in `scope`'s document tree, in tree order
@@ -1510,18 +1565,34 @@ pub(crate) fn install_collection_brand(ctx: &Ctx<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Determines the value of a Window named property: the single named element,
-/// or an `HTMLCollection` when several share the name
+/// Determines the value of a Window named property: a same-origin child
+/// navigable's `WindowProxy`, the single named element, or an `HTMLCollection`
+/// when several share the name
 /// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#named-access-on-the-window-object>).
 fn window_named_value(ctx: Ctx<'_>, name: String) -> Result<Value<'_>> {
     if name.is_empty() {
         return Ok(Value::new_undefined(ctx.clone()));
     }
-    let document = world(&ctx)?.borrow().main_document_root();
+    let world = world(&ctx)?;
+    let document = world.borrow().main_document_root();
     let Some(document) = document else {
         return Ok(Value::new_undefined(ctx.clone()));
     };
     let ids = query_ids(&ctx, document, &CollectionKind::WindowNamed(name.clone()))?;
+    // A same-origin child navigable wins over the element that hosts it: the
+    // Window named getter answers its active `WindowProxy`. An element that
+    // matched only by `id` is still that element
+    // (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-window-nameditem>).
+    {
+        let owner = world.borrow();
+        for id in &ids {
+            if navigable_target_name(&owner, *id).is_some_and(|target| target == name)
+                && let Some(window) = frame_window(&ctx, *id)?
+            {
+                return Ok(window);
+            }
+        }
+    }
     match ids.as_slice() {
         [] => Ok(Value::new_undefined(ctx)),
         [id] => wrap_node(&ctx, *id),
@@ -1532,6 +1603,19 @@ fn window_named_value(ctx: Ctx<'_>, name: String) -> Result<Value<'_>> {
             Some("HTMLCollection"),
         ),
     }
+}
+
+/// The active `WindowProxy` of `id`'s child navigable
+/// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-window-nameditem>).
+fn frame_window<'js>(ctx: &Ctx<'js>, id: NodeId) -> Result<Option<Value<'js>>> {
+    let world = world_for_node(ctx, id)?;
+    let frame = world.borrow().frame_for_container(id);
+    let Some(frame) = frame else {
+        return Ok(None);
+    };
+    let proxy: Function = crate::js::bridge::object(ctx)?.get("__tbFrameProxy")?;
+    let value: Value = proxy.call((crate::js::js_number(frame.get()),))?;
+    Ok(Some(value))
 }
 
 /// Whether `name` is a supported Window named-property name
@@ -1546,7 +1630,13 @@ fn window_named_has(ctx: Ctx<'_>, name: String) -> Result<bool> {
         return Ok(false);
     };
     let base = &parsed.document.base;
-    Ok(named_exists(base, base.root_node().id, &name))
+    Ok(named_exists(
+        &world,
+        base,
+        parsed.id,
+        base.root_node().id,
+        &name,
+    ))
 }
 
 fn named_item<'js>(ctx: &Ctx<'js>, query: &CollectionQuery, name: &str) -> Result<Value<'js>> {

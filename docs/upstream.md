@@ -169,6 +169,16 @@ Known gaps this engine fails honestly (no fork patch yet):
 
 ## Open issues
 
+- `QuickJS` records a realm only on functions (`JS_GetFunctionRealm`), so a
+  plain object that crossed a realm boundary has no recoverable creation
+  realm; its `Ctx` is the realm that last handled it. The DOM inner invoke
+  algorithm asks for the callback object's associated realm to pick
+  `listenerGlobal` (which `window.event` and an exception report use), which
+  is why `dom/events/EventListener-handleEvent-cross-realm.html` still fails
+  its five plain-object cases in `crates/renderer/src/js/events.rs`
+  (`listener_realm`). Functions and callable proxies carry a realm and work.
+  Fixing this needs cross-compartment wrappers or a realm slot on every
+  object, both of which the engine does not have.
 - `HTMLDocument` is not declared by the current HTML or DOM specification, but
   every engine exposes it and WPT relies on it: `document.constructor` is
   `HTMLDocument` and `Object.getPrototypeOf(document)` is

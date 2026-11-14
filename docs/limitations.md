@@ -751,7 +751,11 @@ retargeted across a shadow boundary and dispatch does not reset `target` and
 `relatedTarget` afterwards, so `relatedTarget.window.html` and
 `shadow-relatedTarget.html` fail; the event path follows parent nodes and
 crosses a shadow root to its host for a composed event, but it does not follow
-`assignedSlot` because Blitz has no slot assignment. `Event-dispatch-single-activation-behavior.html`
+`assignedSlot` because Blitz has no slot assignment. A listener that is a
+plain object created in another realm cannot report its exception in that
+realm, because `QuickJS` stores a realm only on functions
+(`EventListener-handleEvent-cross-realm.html`, recorded in
+`docs/upstream.md`). `Event-dispatch-single-activation-behavior.html`
 exceeds the harness budget. `Event-dispatch-click.html` is flaky under the
 in-process harness: it passes its 33 subtests in some batch runs and hits the
 per-file budget in others, on both the old and the new tree.

@@ -2303,3 +2303,27 @@ is unchanged (17) and the only remaining `event-global*` failure is the
 `Performance` target, which has no `addEventListener` in this engine.
 `html/dom` stays at 65341, `dom/nodes` at 14550, `html/browsers` at 1000, and
 `css/selectors` at 4777, with no lost subtests.
+Window named access now includes the document-tree child navigables' target
+names (`crates/renderer/src/js/bindings/collections.rs`). The supported name
+set adds an `iframe`/`frame` whose navigable target name matches and whose
+child is same-origin, and the named getter answers that child's active
+`WindowProxy`; a name matched only by the element's `id` still answers the
+element, as the spec's "if objects contains a navigable" step requires. The
+target name is read from the frame tree, so both the `name` content attribute
+and a later `window.name` assignment move the name: the child's rename stops
+the old name and starts the new one.
+
+The listener adapter also reports a thrown exception with the listener's realm
+context, so a callback interface's own `onerror` sees it, and `call_listener`
+throws the "not callable" `TypeError` in that realm.
+
+Evidence: `html/browsers` 1001 to **1009** subtests. `nested-context.html`
+1/2 to 2/2, `window-named-properties.html` 2/7 to 4/7,
+`named-objects.html` 5/6 to 6/6, `window-null-names.html` 0/1 to 1/1,
+`window-indexed-access-vs-named-access.html` 5/10 to 8/10, and
+`length-attribute.window.html` 0/1 to 1/1. The remaining `window[index]`
+failures are the global's own indexed accessors shadowing a name, and
+`Window`-based assertions still hit the missing `Window` interface object
+(both recorded in `docs/limitations.md`). `dom/events` stays at 486,
+`html/dom` at 65341, `dom/nodes` at 14550, and `css/selectors` at 4777, with
+no lost subtests.
