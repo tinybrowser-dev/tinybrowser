@@ -369,8 +369,7 @@
   __tbRuleStringAttribute(CSSConditionRule, ['conditionText']);
   __tbRuleStringAttribute(CSSScopeRule, ['start', 'end']);
   __tbRuleStringAttribute(CSSContainerRule, ['containerName', 'containerQuery']);
-  __tbRuleStringAttribute(CSSImportRule, ['href', 'media', 'layerName', 'supportsText']);
-  __tbRuleStringAttribute(CSSMediaRule, ['media']);
+  __tbRuleStringAttribute(CSSImportRule, ['href', 'layerName', 'supportsText']);
   __tbRuleStringAttribute(CSSNamespaceRule, ['namespaceURI', 'prefix']);
   __tbRuleStringAttribute(CSSLayerBlockRule, ['name']);
   __tbRuleStringAttribute(CSSLayerStatementRule, ['nameList']);
@@ -422,6 +421,40 @@
       enumerable: true, configurable: true,
     });
   }
+  // `media` is `[SameObject]` on a media rule and `[SameObject,
+  // PutForwards=mediaText]` on an import rule: both answer one `MediaList`
+  // backed by the rule's query list
+  // (<https://drafts.csswg.org/cssom/#dom-cssmediarule-media>).
+  const __tbRuleMedia = (ctor, putForwards) => {
+    __tbDefineProperty(ctor.prototype, 'media', {
+      get() {
+        const entry = __tbRuleState(this);
+        if (entry.media === null) {
+          const slot = {
+            text: '',
+            get: () => {
+              const next = entry.read();
+              return next && next.media ? next.media : '';
+            },
+            set: value => {
+              if (entry.detached) return;
+              host.__tb_sheet_rule_set_media(
+                entry.sheet.__tbOwner, entry.sheet.__tbId, __tbRulePath(entry.path), value,
+              );
+            },
+          };
+          const list = Object.create(MediaList.prototype);
+          __tbMediaListSlots.set(list, slot);
+          entry.media = list;
+        }
+        return entry.media;
+      },
+      set: putForwards ? function(value) { this.media.mediaText = value; } : undefined,
+      enumerable: true, configurable: true,
+    });
+  };
+  __tbRuleMedia(CSSMediaRule, false);
+  __tbRuleMedia(CSSImportRule, true);
   const __tbRuleChildList = ctor => {
     __tbDefineProperty(ctor.prototype, 'cssRules', {
       get() {
@@ -600,7 +633,7 @@
     }
     const entry = {
       path: path.slice(), detached: false, frozenText: '', rule: null,
-      list: null, style: null, sheet, parentRule, info: null, read: null,
+      list: null, style: null, media: null, sheet, parentRule, info: null, read: null,
     };
     const rule = Object.create(CSSRule.prototype);
     entry.read = () => {
@@ -728,6 +761,50 @@
     },
     writable: true, enumerable: true, configurable: true,
   });
+  // A medium is compared in its normalized form: the engine lowercases media
+  // types and collapses whitespace, and CSSOM compares the parsed queries, so
+  // matching ignores case and runs of whitespace
+  // (<https://drafts.csswg.org/cssom/#dom-medialist-appendmedium>).
+  const __tbNormalizedMedium = value =>
+    String(value).trim().toLowerCase().replace(/\s+/g, ' ');
+  const __tbMediumEntries = text => {
+    const entries = [];
+    for (const part of __tbSplitMedia(text, ',')) {
+      if (part.trim() !== '') entries.push(part.trim());
+    }
+    return entries;
+  };
+  __tbDefineProperty(MediaList.prototype, 'appendMedium', {
+    value: function appendMedium(medium) {
+      if (arguments.length < 1) throw new TypeError('appendMedium requires 1 argument');
+      const slot = __tbMediaListSlots.get(this);
+      if (!slot) throw new TypeError('Illegal invocation');
+      const text = String(medium);
+      if (text.trim() === '') return;
+      const normalized = __tbNormalizedMedium(text);
+      const entries = __tbMediumEntries(slot.get());
+      if (entries.some(entry => __tbNormalizedMedium(entry) === normalized)) return;
+      const current = entries.join(', ');
+      slot.set(current === '' ? text : current + ', ' + text);
+    },
+    writable: true, enumerable: true, configurable: true,
+  });
+  __tbDefineProperty(MediaList.prototype, 'deleteMedium', {
+    value: function deleteMedium(medium) {
+      if (arguments.length < 1) throw new TypeError('deleteMedium requires 1 argument');
+      const slot = __tbMediaListSlots.get(this);
+      if (!slot) throw new TypeError('Illegal invocation');
+      const normalized = __tbNormalizedMedium(medium);
+      const entries = __tbMediumEntries(slot.get());
+      const index = entries.findIndex(entry => __tbNormalizedMedium(entry) === normalized);
+      if (index < 0) {
+        throw new __tbDomException('The medium is not in the list', 'NotFoundError');
+      }
+      entries.splice(index, 1);
+      slot.set(entries.join(', '));
+    },
+    writable: true, enumerable: true, configurable: true,
+  });
   __tbDefineProperty(MediaList.prototype, Symbol.toStringTag, {
     value: 'MediaList', writable: false, enumerable: false, configurable: true,
   });
@@ -812,6 +889,9 @@
       if (this.__tbMedia === undefined) this.__tbMedia = __tbSheetMediaList(this);
       return this.__tbMedia;
     }
+    // `[PutForwards=mediaText]`: assigning the attribute replaces the list's
+    // text (<https://drafts.csswg.org/cssom/#dom-stylesheet-media>).
+    set media(value) { this.media.mediaText = value; }
     replaceSync(text) {
       if (this.__tbId !== undefined) {
         throw new __tbDomException('associated sheet is not constructable', 'NotAllowedError');

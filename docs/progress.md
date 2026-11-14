@@ -2485,3 +2485,23 @@ wpt-harness (30) test binaries pass. `CSSFontFeatureValuesRule.fontFamily` has
 no setter in the style engine, so it is not exposed on the prototype; a JS
 assignment keeps the old own-property behavior, recorded in
 `docs/limitations.md`.
+Media lists are now live objects on rules and stylesheets. A media rule's and
+an import rule's `media` are `[SameObject]` `MediaList`s backed by the engine's
+query list, and `StyleSheet.media` gained its `[PutForwards=mediaText]` setter;
+`MediaList` gained `appendMedium`/`deleteMedium`, with the same normalized-form
+comparison CSSOM requires
+(`crates/renderer/src/js/scripts/web/cssom.js`). The Blitz CSSOM snapshot now
+reports a media rule's `media` text and an import rule's `supportsText`, and a
+new `cssom_rule_set_media` parses the setter's text with stylo's
+`MediaList::parse` and replaces the list on the rule or the imported sheet
+(`third_party/blitz` commit `6152e0e2d`, recorded in `docs/upstream.md`).
+
+Evidence: `css/cssom` 3370 to **3394** subtests, no lost subtests.
+`MediaList-parsing.html` 0/13 to 13/13 and `cssimportrule.html` 6/11 to 9/11;
+`StyleSheet-properties.html` 26/35. The remaining `cssimportrule.html` failures
+are `CSSImportRule.styleSheet` (the imported sheet is still not exposed) and the
+`@page` rule the engine does not list. `css/cssom-view` stays at 1616,
+`resize-observer` at 50, `intersection-observer` at 185, `css/selectors` at
+4778, `html/dom` at 65341, and `html/semantics/forms` at 4522, with no lost
+subtests. `cargo fmt --check` (both trees), `tools/check clippy`, and the
+renderer (175), webidl-bindgen (42), and wpt-harness (30) test binaries pass.

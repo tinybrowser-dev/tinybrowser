@@ -18,6 +18,12 @@ use crate::dom::tree::NodeId;
 
 pub(super) fn install(ctx: &Ctx<'_>) -> Result<()> {
     let bridge = crate::js::bridge::object(ctx)?;
+    install_style_functions(&bridge)?;
+    install_sheet_functions(&bridge)
+}
+
+/// The `CSS` namespace's parsers and the inline declaration block.
+fn install_style_functions(bridge: &Object<'_>) -> Result<()> {
     bridge.set(
         "__tb_css_supports_declaration",
         rquickjs::prelude::Func::from(css_supports_declaration),
@@ -30,6 +36,36 @@ pub(super) fn install(ctx: &Ctx<'_>) -> Result<()> {
         "__tb_style_property_supported",
         rquickjs::prelude::Func::from(style_property_supported),
     )?;
+    bridge.set(
+        "__tb_inline_style_css_text",
+        rquickjs::prelude::Func::from(inline_style_css_text),
+    )?;
+    bridge.set(
+        "__tb_inline_style_property_names",
+        rquickjs::prelude::Func::from(inline_style_property_names),
+    )?;
+    bridge.set(
+        "__tb_inline_style_get_property",
+        rquickjs::prelude::Func::from(inline_style_get_property),
+    )?;
+    bridge.set(
+        "__tb_inline_style_set_css_text",
+        rquickjs::prelude::Func::from(inline_style_set_css_text),
+    )?;
+    bridge.set(
+        "__tb_inline_style_set_property",
+        rquickjs::prelude::Func::from(inline_style_set_property),
+    )?;
+    bridge.set(
+        "__tb_inline_style_remove_property",
+        rquickjs::prelude::Func::from(inline_style_remove_property),
+    )?;
+    Ok(())
+}
+
+/// Stylesheet and rule-list access behind `document.styleSheets` and
+/// `CSSRule`.
+fn install_sheet_functions(bridge: &Object<'_>) -> Result<()> {
     bridge.set(
         "__tb_sheet_owner_nodes",
         rquickjs::prelude::Func::from(sheet_owner_nodes),
@@ -83,28 +119,8 @@ pub(super) fn install(ctx: &Ctx<'_>) -> Result<()> {
         rquickjs::prelude::Func::from(sheet_rule_set_selector_text),
     )?;
     bridge.set(
-        "__tb_inline_style_css_text",
-        rquickjs::prelude::Func::from(inline_style_css_text),
-    )?;
-    bridge.set(
-        "__tb_inline_style_property_names",
-        rquickjs::prelude::Func::from(inline_style_property_names),
-    )?;
-    bridge.set(
-        "__tb_inline_style_get_property",
-        rquickjs::prelude::Func::from(inline_style_get_property),
-    )?;
-    bridge.set(
-        "__tb_inline_style_set_css_text",
-        rquickjs::prelude::Func::from(inline_style_set_css_text),
-    )?;
-    bridge.set(
-        "__tb_inline_style_set_property",
-        rquickjs::prelude::Func::from(inline_style_set_property),
-    )?;
-    bridge.set(
-        "__tb_inline_style_remove_property",
-        rquickjs::prelude::Func::from(inline_style_remove_property),
+        "__tb_sheet_rule_set_media",
+        rquickjs::prelude::Func::from(sheet_rule_set_media),
     )?;
     bridge.set(
         "__tb_sheet_insert_rule",
@@ -572,6 +588,38 @@ fn sheet_rule_set_selector_text<'js>(
         .base
         .stylesheet_rule_set_selector_text(node.node, &path, &selectors)
         .map_err(|err| cssom_throw(&ctx, err))
+}
+
+/// Replaces a rule's media query list
+/// (`MediaList.mediaText` setter through `CSSMediaRule.media` or
+/// `CSSImportRule.media`)
+/// (<https://drafts.csswg.org/cssom/#dom-medialist-mediatext>).
+fn sheet_rule_set_media<'js>(
+    ctx: Ctx<'js>,
+    element: Value<'js>,
+    id: f64,
+    path: String,
+    text: String,
+) -> Result<()> {
+    let world = world(&ctx)?;
+    let Some(node) = host_node_id(&ctx, &element) else {
+        return Ok(());
+    };
+    let Some(sheet) = sheet_id(id) else {
+        return Ok(());
+    };
+    let Some(path) = with_path(&path) else {
+        return Ok(());
+    };
+    let world = world.borrow();
+    let Some(mut parsed) = world.document_mut(node) else {
+        return Ok(());
+    };
+    let _ = parsed
+        .document
+        .base
+        .cssom_rule_set_media(sheet, &path, &text);
+    Ok(())
 }
 
 /// The element's inline declaration block, serialized
