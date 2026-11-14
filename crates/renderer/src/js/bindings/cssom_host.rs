@@ -177,6 +177,10 @@ fn install_constructable_sheet_functions(bridge: &Object<'_>) -> Result<()> {
         "__tb_set_cssom_sheet_disabled",
         rquickjs::prelude::Func::from(set_cssom_sheet_disabled),
     )?;
+    bridge.set(
+        "__tb_set_adopted_sheets",
+        rquickjs::prelude::Func::from(set_adopted_sheets),
+    )?;
     Ok(())
 }
 
@@ -766,6 +770,33 @@ fn sheet_find_keyframe<'js>(
         Some(index) => i32::try_from(index).unwrap_or(-1),
         None => -1,
     }
+}
+
+/// Replaces the document's adopted stylesheet list with the sheets named by
+/// `ids`, in cascade order
+/// (<https://drafts.csswg.org/cssom/#dom-document-adoptedstylesheets>).
+fn set_adopted_sheets<'js>(ctx: Ctx<'js>, address: Value<'js>, ids: Array<'js>) -> bool {
+    let Ok(world) = world(&ctx) else {
+        return false;
+    };
+    let Some(node) = host_node_id(&ctx, &address) else {
+        return false;
+    };
+    let mut sheets = Vec::with_capacity(ids.len());
+    for index in 0..ids.len() {
+        let Ok(value) = ids.get::<f64>(index) else {
+            return false;
+        };
+        let Some(id) = sheet_id(value) else {
+            return false;
+        };
+        sheets.push(id);
+    }
+    let world = world.borrow_mut();
+    let Some(mut parsed) = world.document_mut(node) else {
+        return false;
+    };
+    parsed.document.base.set_adopted_stylesheets(&sheets)
 }
 
 /// Creates a constructable sheet and answers its CSSOM sheet id, or -1 when

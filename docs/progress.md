@@ -2697,3 +2697,34 @@ Evidence: `css/cssom` 3624 to **3651** subtests, no lost subtests.
 4522 to **4523**. `cargo fmt --check` (both trees), `tools/check clippy`, and
 the renderer (175), webidl-bindgen (42), and wpt-harness (30) test binaries
 pass.
+`document.adoptedStyleSheets` is now an observable array of constructable
+sheets whose order is the cascade order, applied after every document sheet
+(<https://drafts.csswg.org/cssom/#dom-document-adoptedstylesheets>,
+<https://github.com/WICG/observable-array>). Every in-place mutation (`push`,
+`pop`, `splice`, `reverse`, an index or `length` write) validates the whole
+list — a non-object is a `TypeError`, a sheet the constructor did not build is
+`NotAllowedError` — and hands the ids to the engine only when the list is
+valid, restoring the previous contents on rejection. Assigning the attribute
+replaces the array's contents in place, so a held array keeps tracking the
+document. The engine removes the old list from the stylist and appends the new
+one in order, keeps adopted sheets live for rule edits, and places a document
+sheet inserted later before them
+(`third_party/blitz` commit `2049b2b0d`, recorded in `docs/upstream.md`).
+Shadow-root adoption remains out because the engine's
+`implicit_scope_for_sheet_in_shadow_root` is unimplemented; that is recorded in
+`docs/limitations.md`.
+
+Evidence: `css/cssom` 3651 to **3673** subtests, no lost subtests.
+`adoptedstylesheets-cascade-order.html` 0/13 to 10/13,
+`adoptedstylesheets-modify-array-and-sheet.html` 0/3 to 3/3,
+`CSSStyleSheet-constructable-replace-cssRules.html` 0/2 to 2/2,
+`CSSStyleSheet-constructable.html` 3/13 to 6/13,
+`CSSStyleSheet-constructable-duplicate.html` 0/4 to 2/4,
+`CSSStyleSheet-constructable-invalidation.html` 0/3 to 1/3, and
+`CSSStyleSheet-constructable-cssRules.html` 0/1 to 1/1. `css/cssom-view` stays
+at 1616, `resize-observer` at 50, `css/selectors` at 4791,
+`intersection-observer` at 185, and `html/dom` at 65341, with no lost subtests;
+`html/semantics/forms` stays at 4522, losing one `form-double-submit-3`
+subtest that fails 3/3 in isolation at the parent commit too. `cargo fmt
+--check` (both trees), `tools/check clippy`, and the renderer (175),
+webidl-bindgen (42), and wpt-harness (30) test binaries pass.

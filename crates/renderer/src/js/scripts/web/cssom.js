@@ -202,6 +202,8 @@
   // path or swallow an exception.
   const __tbReflectGet = Reflect.get;
   const __tbReflectHas = Reflect.has;
+  const __tbReflectSet = Reflect.set;
+  const __tbReflectDelete = Reflect.deleteProperty;
   const __tbBind = Function.prototype.bind;
   const __tbDomException = globalThis.DOMException;
   const __tbCharCodeAt = String.prototype.charCodeAt;
@@ -1308,6 +1310,119 @@
   }
   Object.defineProperty(globalThis.Document.prototype, 'styleSheets', {
     get() { return __tbStyleSheetList(this); },
+    enumerable: true,
+    configurable: true,
+  });
+  // `adoptedStyleSheets` is an observable array of constructable sheets that
+  // apply after every document sheet, in list order. Every in-place mutation
+  // (`push`, `splice`, `reverse`, an index or `length` write) validates the
+  // list and hands it to the engine, so cascade order and application follow
+  // the array (<https://drafts.csswg.org/cssom/#dom-document-adoptedstylesheets>,
+  // <https://github.com/WICG/observable-array>).
+  const __tbAdoptedMutators = new Set([
+    'push', 'pop', 'shift', 'unshift', 'splice', 'reverse', 'sort', 'fill', 'copyWithin',
+  ]);
+  const __tbAdoptedSheet = value => {
+    if (value === null || (typeof value !== 'object' && typeof value !== 'function')) {
+      throw new TypeError('adopted style sheet must be a CSSStyleSheet');
+    }
+    if (value.__tbConstructable !== true) {
+      throw new __tbDomException('only constructable sheets may be adopted', 'NotAllowedError');
+    }
+    return value;
+  };
+  const __tbObservableSheetArray = apply => {
+    const target = [];
+    const restore = snapshot => {
+      target.length = 0;
+      for (const sheet of snapshot) __tbArray.push(target, sheet);
+    };
+    // Validate the whole list before the engine sees it, so a rejected
+    // mutation leaves the observable array unchanged
+    const commit = () => {
+      const sheets = [];
+      for (const sheet of target) sheets.push(__tbAdoptedSheet(sheet));
+      apply(sheets);
+    };
+    // A mutator like `push` is several index writes plus a `length` write; one
+    // engine update at the end covers the whole call
+    let running = false;
+    return new Proxy(target, {
+      get(list, property) {
+        const value = __tbApply(__tbReflectGet, Reflect, [list, property, list]);
+        if (typeof value !== 'function' || !__tbAdoptedMutators.has(property)) return value;
+        return function(...args) {
+          const snapshot = list.slice();
+          running = true;
+          try {
+            return __tbApply(value, list, args);
+          } catch (error) {
+            restore(snapshot);
+            throw error;
+          } finally {
+            running = false;
+            try {
+              commit();
+            } catch (error) {
+              restore(snapshot);
+              throw error;
+            }
+          }
+        };
+      },
+      set(list, property, value) {
+        const indexed = property === 'length' || __tbCanonicalIndex(property);
+        const snapshot = indexed ? list.slice() : null;
+        const ok = __tbApply(__tbReflectSet, Reflect, [list, property, value, list]);
+        if (!indexed || running) return ok;
+        try {
+          commit();
+        } catch (error) {
+          restore(snapshot);
+          return false;
+        }
+        return ok;
+      },
+      deleteProperty(list, property) {
+        const indexed = __tbCanonicalIndex(property);
+        const snapshot = indexed ? list.slice() : null;
+        const ok = __tbApply(__tbReflectDelete, Reflect, [list, property]);
+        if (!indexed || running) return ok;
+        try {
+          commit();
+        } catch (error) {
+          restore(snapshot);
+          return false;
+        }
+        return ok;
+      },
+    });
+  };
+  const __tbAdoptedSheetArrays = new WeakMap();
+  const __tbAdoptedStyleSheets = document => {
+    __tbCssomDocumentBrand(document);
+    let list = __tbAdoptedSheetArrays.get(document);
+    if (list !== undefined) return list;
+    list = __tbObservableSheetArray(sheets => host.__tb_set_adopted_sheets(
+      document, sheets.map(sheet => sheet.__tbId),
+    ));
+    __tbAdoptedSheetArrays.set(document, list);
+    return list;
+  };
+  Object.defineProperty(globalThis.Document.prototype, 'adoptedStyleSheets', {
+    get() { return __tbAdoptedStyleSheets(this); },
+    set(value) {
+      // The setter replaces the observable array's contents in place, so the
+      // array object a page already holds keeps tracking the document
+      // (<https://drafts.csswg.org/cssom/#dom-document-adoptedstylesheets>).
+      const list = __tbAdoptedStyleSheets(this);
+      const sheets = [];
+      if (value !== null && value !== undefined) {
+        for (const sheet of __tbArrayFrom(value)) sheets.push(__tbAdoptedSheet(sheet));
+      }
+      list.length = 0;
+      if (sheets.length !== 0) list.push(...sheets);
+    },
     enumerable: true,
     configurable: true,
   });
