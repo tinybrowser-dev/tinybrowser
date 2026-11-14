@@ -2203,3 +2203,24 @@ repeated reads return the same object
 
 Evidence: `html/dom` 65234 to **65239** subtests, no lost subtests.
 `document.embeds-document.plugins-01.html` 0/5 to 5/5.
+`dataset` now behaves as the spec's `DOMStringMap`
+(`crates/renderer/src/js/scripts/web/dom.js`). The interface object
+`DOMStringMap` is installed in the realm, with a normal
+`DOMStringMap.prototype` chained to `Object.prototype`, so
+`element.dataset instanceof DOMStringMap` holds and pages can extend the
+prototype; the interface itself is not constructible. The proxy over the
+element's `data-*` attributes gained the `has` trap, so `"foo" in dataset`
+tracks the attributes, and the getter, deleter, and own-property descriptor
+now ignore names that no name-value pair can produce (a U+002D followed by an
+ASCII lower alpha), which is why `dataset["foo-bar"]` stays undefined even when
+`data-foo-bar` is present. Named properties resolve before the prototype chain
+because `DOMStringMap` has `[LegacyOverrideBuiltIns]`, while a non-set name
+still reaches `Object.prototype`, and the named setter runs for every string
+property, including one a prototype accessor also names.
+
+Evidence: `html/dom` 65239 to **65253** subtests, no lost subtests.
+`dataset.html` 3/8 to 8/8, `dataset-binding.window.html` 2/4 to 4/4,
+`dataset-delete.html` 8/9 to 9/9, `dataset-get-invalid-names.html` 24/28 to
+28/28, `dataset-prototype.html` 0/2 to 2/2; `dataset-get`, `dataset-set`, and
+`dataset-enumeration` stay green. `html/browsers/the-window-object` stays at
+238 subtests with no lost subtests.

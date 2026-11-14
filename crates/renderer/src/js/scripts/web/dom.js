@@ -1,33 +1,101 @@
-host.__tbMakeDataset = element => new Proxy(Object.create(null), {
-  get(_target, property) {
-    if (property === Symbol.toStringTag) return 'DOMStringMap';
-    if (typeof property !== 'string') return undefined;
-    const name = 'data-' + property.replace(/[A-Z]/g, letter => '-' + letter.toLowerCase());
-    const value = element.getAttribute(name);
-    return value === null ? undefined : value;
+// `dataset` returns a `DOMStringMap`, whose supported property names come from
+// the element's `data-*` attributes. The interface object exists so
+// `dataset instanceof DOMStringMap` works and pages can extend
+// `DOMStringMap.prototype`; it is not constructible and every instance is one
+// of these proxies
+// (<https://html.spec.whatwg.org/multipage/dom.html#domstringmap>).
+const __tbDOMStringMapPrototype = Object.create(Object.prototype);
+const __tbDOMStringMap = function () {
+  throw new TypeError('Illegal constructor');
+};
+Object.defineProperty(__tbDOMStringMap, 'name', {
+  __proto__: null, value: 'DOMStringMap', configurable: true,
+});
+Object.defineProperty(__tbDOMStringMap, 'length', {
+  __proto__: null, value: 0, configurable: true,
+});
+Object.defineProperty(__tbDOMStringMap, 'prototype', {
+  __proto__: null, value: __tbDOMStringMapPrototype, writable: false,
+});
+Object.defineProperty(__tbDOMStringMapPrototype, 'constructor', {
+  __proto__: null, value: __tbDOMStringMap, writable: true, configurable: true,
+});
+Object.defineProperty(__tbDOMStringMapPrototype, Symbol.toStringTag, {
+  __proto__: null, value: 'DOMStringMap', configurable: true,
+});
+Object.defineProperty(globalThis, 'DOMStringMap', {
+  __proto__: null, value: __tbDOMStringMap, writable: true, configurable: true,
+});
+
+// The content attribute a dataset property name names, or null when the name
+// is not one the element's name-value pairs can produce: a U+002D followed by
+// an ASCII lower alpha never appears in a pair name
+// (<https://html.spec.whatwg.org/multipage/dom.html#dom-domstringmap-nameditem>).
+const __tbDatasetAttribute = property => {
+  if (/-[a-z]/.test(property)) return null;
+  return 'data-' + property.replace(/[A-Z]/g, letter => '-' + letter.toLowerCase());
+};
+
+host.__tbMakeDataset = element => new Proxy(Object.create(__tbDOMStringMapPrototype), {
+  // Named properties come from the attributes, before the prototype chain,
+  // because `DOMStringMap` has `[LegacyOverrideBuiltIns]`
+  // (<https://webidl.spec.whatwg.org/#LegacyOverrideBuiltIns>).
+  get(target, property, receiver) {
+    if (typeof property === 'string') {
+      const name = __tbDatasetAttribute(property);
+      if (name !== null) {
+        const value = element.getAttribute(name);
+        if (value !== null) return value;
+      }
+    }
+    return Reflect.get(target, property, receiver);
   },
-  set(_target, property, value) {
-    property = String(property);
+  set(target, property, value, receiver) {
+    if (typeof property !== 'string') return Reflect.set(target, property, value, receiver);
+    // The named setter runs for every string property, whether or not the name
+    // is a supported property name yet
+    // (<https://webidl.spec.whatwg.org/#legacy-platform-object-set>).
     if (/-[a-z]/.test(property)) throw new DOMException('invalid dataset property', 'SyntaxError');
     const name = 'data-' + property.replace(/[A-Z]/g, letter => '-' + letter.toLowerCase());
     element.setAttribute(name, String(value));
     return true;
   },
-  deleteProperty(_target, property) {
-    property = String(property);
-    const name = 'data-' + property.replace(/[A-Z]/g, letter => '-' + letter.toLowerCase());
-    element.removeAttribute(name);
-    return true;
+  // Only a name that a pair can produce reaches the deleter; any other name
+  // deletes an ordinary property instead
+  // (<https://webidl.spec.whatwg.org/#legacy-platform-object-delete>).
+  deleteProperty(target, property) {
+    if (typeof property === 'string') {
+      const name = __tbDatasetAttribute(property);
+      if (name !== null) {
+        element.removeAttribute(name);
+        return true;
+      }
+    }
+    return Reflect.deleteProperty(target, property);
+  },
+  has(target, property) {
+    if (typeof property === 'string') {
+      const name = __tbDatasetAttribute(property);
+      if (name !== null && element.hasAttribute(name)) return true;
+    }
+    return Reflect.has(target, property);
   },
   ownKeys() {
     return element.getAttributeNames().filter(name =>
       name.startsWith('data-') && !/[A-Z]/.test(name.slice(5))
     ).map(name => name.slice(5).replace(/-([a-z])/g, (_match, letter) => letter.toUpperCase()));
   },
-  getOwnPropertyDescriptor(_target, property) {
-    const value = this.get(_target, property);
-    if (value === undefined) return undefined;
-    return { configurable: true, enumerable: true, writable: true, value };
+  getOwnPropertyDescriptor(target, property) {
+    if (typeof property === 'string') {
+      const name = __tbDatasetAttribute(property);
+      if (name !== null) {
+        const value = element.getAttribute(name);
+        if (value !== null) {
+          return { configurable: true, enumerable: true, writable: true, value };
+        }
+      }
+    }
+    return Reflect.getOwnPropertyDescriptor(target, property);
   }
 });
 
