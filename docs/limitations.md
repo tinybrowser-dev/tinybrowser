@@ -625,9 +625,8 @@ names in lowercase and the HTTP field name is case-insensitive
 (<https://www.rfc-editor.org/rfc/rfc9110#field.names>), so the server reports
 `user-agent:` where the test expects `User-Agent:`. The value matches.
 
-Three members are absent: `window.external` (a legacy interface no current
-specification defines), `onmousewheel` (a legacy alias of `onwheel`), and
-`getSelection` (the `Selection` interface is not implemented).
+Two members are absent: `window.external` (a legacy interface no current
+specification defines) and `onmousewheel` (a legacy alias of `onwheel`).
 
 Cross-origin window member access answers `undefined` instead of throwing
 `SecurityError`. The spec throws for every property outside the cross-origin
@@ -826,6 +825,41 @@ its stored selection instead of resetting it, so
 in non-dirty textarea should make selection{Start,End} 0". And per-element
 scroll offsets do not exist yet (Blitz exposes only the viewport scroll), so
 `selection.html` fails its `scrollLeft` preservation subtest for an `input`.
+
+## Selection
+
+The `Selection` interface and `Document.getSelection` / `Window.getSelection`
+are a JavaScript shim (`crates/renderer/src/js/scripts/web/selection.js`). The
+selection holds at most one `Range`, by strong reference, so `getRangeAt(0)`
+returns the object `addRange` stored and a DOM mutation that moves that live
+range moves the selection with it. Anchor and focus follow `direction`, a
+point outside the document tree reads as `null` with offset `0`, `getSelection`
+returns `null` on a document with no browsing context, and the `Range`
+arguments reject non-Ranges with `TypeError` before any algorithm step runs
+(<https://w3c.github.io/selection-api/#selection-interface>).
+
+Three members are listed unimplemented at installation and stay absent from
+the interface: `deleteFromDocument`, `getComposedRanges`, and `modify`. The
+selection is also not connected to engine state that a browser drives:
+
+- Pointer and keyboard gestures do not set or move it, so a caret a test
+  creates with `test_driver` or a click is unknown to `getSelection`, and
+  `selectionchange` is never fired.
+- `input` and `textarea` keep their own `selectionStart`/`selectionEnd`; the
+  document selection does not mirror or control a text control's internal
+  selection.
+- No highlight is painted for it: Blitz paints its own text-selection state,
+  which this shim does not read or write.
+
+Tests that only build a selection through the API pass; tests that expect a
+caret, `modify`, `deleteFromDocument`, `getComposedRanges`, or
+`selectionchange` from a gesture fail (the `selection/caret/`, `bidi/`,
+`contenteditable/`, `textcontrols/`, and `shadow-dom/` files).
+
+A same-origin child frame whose realm has not started answers no
+`getSelection`, so the three `getSelection.html` subtests that run in the task
+that appended the iframe fail; the same pending-realm gap affects `navigator`
+identity across navigation.
 
 ## DOM events
 

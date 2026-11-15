@@ -611,23 +611,114 @@ fn arguments(
             }
             (Some(_), Some(default)) => {
                 optional = true;
-                let weedle::literal::DefaultValue::String(default) = &default.value else {
-                    return Err(Error("JS argument defaults are not supported yet".into()));
-                };
-                match &lowered {
-                    JsType::Native(ReturnType::String | ReturnType::UsvString) => {}
-                    _ => return Err(Error("JS string defaults require string arguments".into())),
-                }
-                format!(
-                    "{present} && args[{index}] !== undefined ? {converted} : {:?}",
-                    default.0
-                )
+                let literal = default_literal(&lowered, &default.value)?;
+                // A default is an IDL value of the argument's own type, so it
+                // is converted the same way a supplied value is
+                // (<https://webidl.spec.whatwg.org/#idl-default-values>).
+                let literal = input(database, &lowered, &literal, allow_shared)?;
+                format!("{present} && args[{index}] !== undefined ? {converted} : {literal}")
             }
             _ => return Err(Error("JS argument optionality is not supported yet".into())),
         };
         conversions.push(converted);
     }
     Ok((required, format!("[{}]", conversions.join(","))))
+}
+
+/// The JavaScript literal for an IDL argument default, checked against the
+/// argument's lowered type. The caller converts the literal like any other
+/// value of that type
+/// (<https://webidl.spec.whatwg.org/#idl-default-values>).
+fn default_literal(
+    type_: &JsType,
+    default: &weedle::literal::DefaultValue<'_>,
+) -> Result<String, Error> {
+    use weedle::literal::{DefaultValue, FloatLit};
+
+    let literal = match default {
+        DefaultValue::String(default) => match type_ {
+            JsType::Native(ReturnType::String | ReturnType::UsvString) => {
+                format!("{:?}", default.0)
+            }
+            _ => return Err(Error("JS string defaults require string arguments".into())),
+        },
+        DefaultValue::Boolean(default) => match type_ {
+            JsType::Native(ReturnType::Boolean) => default.0.to_string(),
+            _ => {
+                return Err(Error(
+                    "JS boolean defaults require boolean arguments".into(),
+                ));
+            }
+        },
+        // An integer literal is a valid default for an integer argument and
+        // for a `double`, and a floating point literal only for a `double`
+        // (<https://webidl.spec.whatwg.org/#idl-default-values>).
+        DefaultValue::Integer(default) => match type_ {
+            JsType::Native(
+                ReturnType::UnsignedShort
+                | ReturnType::UnsignedLong
+                | ReturnType::UnsignedLongLong
+                | ReturnType::Short
+                | ReturnType::Long
+                | ReturnType::Double
+                | ReturnType::RestrictedDouble,
+            ) => integer_default(default)?,
+            _ => {
+                return Err(Error(
+                    "JS integer defaults require numeric arguments".into(),
+                ));
+            }
+        },
+        DefaultValue::Float(default) => match type_ {
+            JsType::Native(ReturnType::Double | ReturnType::RestrictedDouble) => match default {
+                FloatLit::Value(value) => value.0.trim().to_owned(),
+                FloatLit::NaN(_) => "NaN".to_owned(),
+                FloatLit::Infinity(_) => "Infinity".to_owned(),
+                FloatLit::NegInfinity(_) => "-Infinity".to_owned(),
+            },
+            _ => return Err(Error("JS float defaults require double arguments".into())),
+        },
+        DefaultValue::Null(_) => "null".to_owned(),
+        DefaultValue::EmptyArray(_) | DefaultValue::EmptyDictionary(_) => {
+            return Err(Error("JS argument defaults are not supported yet".into()));
+        }
+    };
+    Ok(literal)
+}
+
+/// An IDL integer default as a decimal JavaScript literal. The grammar admits
+/// decimal, hexadecimal, and octal forms; JavaScript accepts the decimal one
+/// everywhere a number is expected.
+fn integer_default(default: &weedle::literal::IntegerLit<'_>) -> Result<String, Error> {
+    use weedle::literal::IntegerLit;
+
+    let (text, radix) = match default {
+        IntegerLit::Dec(value) => (value.0, 10),
+        IntegerLit::Hex(value) => (value.0, 16),
+        IntegerLit::Oct(value) => (value.0, 8),
+    };
+    let text = text.trim();
+    let (negative, digits) = match text.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, text),
+    };
+    let digits = match radix {
+        16 => digits
+            .strip_prefix("0x")
+            .or_else(|| digits.strip_prefix("0X"))
+            .unwrap_or(digits),
+        // The octal grammar includes the leading zero; `0` alone is an empty
+        // digit run.
+        8 => digits.strip_prefix('0').unwrap_or(digits),
+        _ => digits,
+    };
+    let magnitude = if digits.is_empty() {
+        0
+    } else {
+        i128::from_str_radix(digits, radix)
+            .map_err(|_| Error(format!("IDL integer default is out of range: {text}")))?
+    };
+    Ok(if negative { -magnitude } else { magnitude }.to_string())
 }
 
 fn input(

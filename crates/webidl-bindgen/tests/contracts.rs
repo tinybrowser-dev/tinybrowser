@@ -1153,6 +1153,46 @@ fn javascript_structured_types_convert_sequences_and_promises() {
     }
 }
 
+/// Argument defaults lower to a literal of the argument's own type, which is
+/// then converted like any supplied value
+/// (<https://webidl.spec.whatwg.org/#idl-default-values>).
+#[test]
+fn javascript_argument_defaults_lower_by_argument_type() {
+    let idl = [Source {
+        name: "fixture.idl",
+        text: "[Exposed=Window] interface Sample {
+            undefined moveNode(Node? node, optional unsigned long offset = 0);
+            undefined mask(optional unsigned long bits = 0x1F, optional unsigned long mode = 010);
+            undefined setEnabled(optional boolean enabled = true);
+            undefined setScale(optional double scale = 1.5);
+            undefined setRatio(optional unrestricted double ratio = 2);
+        };",
+    }];
+    let source = Source {
+        name: "fixture.js",
+        text: "__tbInstallGlobal('Sample', class Sample {
+            moveNode(node, offset) {}
+            mask(bits, mode) {}
+            setEnabled(enabled) {}
+            setScale(scale) {}
+            setRatio(ratio) {}
+        })",
+    };
+    let output = compile_javascript(&idl, &source)
+        .expect("argument defaults")
+        .source;
+    for fragment in [
+        // `010` is octal in the IDL grammar and decimal in the output
+        ": __tbIDLUnsignedLong(31)",
+        ": __tbIDLUnsignedLong(8)",
+        ": __tbIDLBoolean(true)",
+        ": __tbIDLRestrictedDouble(1.5)",
+        ": __tbIDLDouble(2)",
+    ] {
+        assert!(output.contains(fragment), "missing {fragment}: {output}");
+    }
+}
+
 #[test]
 fn a_secure_context_constant_is_gated_where_it_is_installed() {
     // `[SecureContext]` const is rejected on the member itself, but a

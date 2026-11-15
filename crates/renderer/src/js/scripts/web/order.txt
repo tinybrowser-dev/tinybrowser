@@ -38,6 +38,9 @@ geometry.js
 # `getClientRects`, `getComputedStyle`, and `DOMRect`, which the earlier
 # shims and bindings install.
 cssom_geometry.js
+# `selection.js` installs the Selection interface and the Document's
+# `getSelection`, both of which the earlier bindings provide.
+selection.js
 workers.js
 # `window.js` installs the window's own members; it reads nothing from the
 # later shims.

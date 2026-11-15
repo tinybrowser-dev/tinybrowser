@@ -2951,3 +2951,46 @@ with the double-submit flake, which fails 3/3 at the parent commit; and
 `html/browsers` identical at 1012/2689 subtests and 537/758 files.
 `cargo fmt --check` (main tree), `tools/check clippy`, and the renderer (175),
 webidl-bindgen (42), and wpt-harness (30) test binaries pass.
+
+The Selection API now exists. `crates/renderer/src/js/scripts/web/selection.js`
+installs the `Selection` interface plus `Document.getSelection` and
+`Window.getSelection`, and holds one `Range` by strong reference, so
+`getRangeAt(0)` returns the object `addRange` stored and a mutation that moves
+the live range moves the selection with it
+(<https://w3c.github.io/selection-api/#selection-interface>). Anchor and focus
+derive from the stored direction, a boundary point outside the document tree
+reads as `null` with offset `0` (a foreign, detached, or template document's
+nodes do not belong to the selection's document tree), and `getSelection`
+answers `null` on a document with no browsing context. The `Range` arguments
+run WebIDL's interface conversion first, so `removeRange(null)` is a
+`TypeError` rather than the algorithm's `NotFoundError`
+(<https://webidl.spec.whatwg.org/#es-interface>). Direction is `forward` when
+the focus is not before the anchor, including the equal case.
+
+The webidl-bindgen JavaScript path also gained argument defaults for types
+other than strings: boolean, integer (decimal, hexadecimal, and octal literals,
+emitted as decimal), floating point (including `NaN` and the infinities), and
+`null`. Each default is checked against the argument's type and converted like
+a supplied value, and an integer literal is accepted for a `double`
+(<https://webidl.spec.whatwg.org/#idl-default-values>).
+
+Evidence, against a stash build of the parent commit: `selection` 48 to
+**33,364** passing subtests with no lost subtests and 92 of 151 files OK (from
+49). `dom/ranges` 40,269 to **41,694** (+1,425) with no lost subtests: the
+1,415 `getSelection is not defined` failures from `Range-mutations.js` now run
+their selection half, and `selection/getSelection.html` passes 15 of 18,
+`setBaseAndExtent.html` 96 of 120, `isCollapsed.html`, `type.html`,
+`removeAllRanges.html`, `collapseToStartEnd.html`, and every `addRange-*` file
+pass. The three remaining `getSelection.html` failures are the pending-realm
+gap (a child frame's realm starts after the task that appended it), and the
+rest need a caret engine: `modify`, `deleteFromDocument`, `getComposedRanges`,
+`selectionchange` from a gesture, and text-control selection, all recorded in
+`docs/limitations.md`.
+
+Regressions are clean: `css/cssom-view` stays at 1,911 with no lost subtests;
+the `dom/events`+`css/cssom`+`css/selectors`+observer batch is 9,371
+unchanged; `html/dom` and forms 69,865 (the known flaky double-submit pair
+contributes the one difference); `html/webappapis` 2,613; and `html/browsers`
+1,012/2,689 subtests and 537/758 files, all unchanged. `cargo fmt --check`,
+`tools/check clippy`, and the renderer (175), webidl-bindgen (43, including a
+new argument-default test), and wpt-harness (30) test binaries pass.

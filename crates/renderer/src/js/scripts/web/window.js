@@ -123,4 +123,9 @@
   // (<https://html.spec.whatwg.org/multipage/window-object.html#dom-window-focus>).
   method('blur', function blur() {});
   method('focus', function focus() {});
+  // The window's selection is the document's one selection object
+  // (<https://w3c.github.io/selection-api/#extensions-to-the-window-interface>).
+  method('getSelection', function getSelection() {
+    return document.getSelection();
+  });
 }
