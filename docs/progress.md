@@ -3660,3 +3660,11 @@ always updates. `HTMLSelectedContentElement` is now the element's interface.
 `form-double-submit-3.html` flake flipped, and it fails in isolation too);
 `css/selectors` is unchanged at 4,793. The synchronous-vs-microtask update and
 the missing insertion/moving steps are recorded in `docs/limitations.md`.
+
+`document.getElementsByName` now returns only HTML-namespace elements with a
+matching `name` attribute; a foreign element such as `<math name>` or
+`<svg name>` no longer appears in the list
+(<https://html.spec.whatwg.org/multipage/dom.html#dom-document-getelementsbyname>).
+Both `document.getElementsByName-namespace.html` and its XHTML twin go 0/1 to
+1/1, and the `html/dom` + `dom/events` + forms batch goes 70,671 to 70,673 with
+nothing lost.

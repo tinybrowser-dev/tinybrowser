@@ -397,10 +397,20 @@ fn collect_by_name(
     descendants(base, scope)
         .into_iter()
         .filter(|&id| {
-            is_element(base, id) && attr(base, id, "name").is_some_and(|value| value == name)
+            // Only HTML elements take part: a foreign-element `name` attribute
+            // is not one the document exposes here
+            // (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-getelementsbyname>).
+            is_html_element(base, id) && attr(base, id, "name").is_some_and(|value| value == name)
         })
         .map(|node| NodeId { document, node })
         .collect()
+}
+
+/// Whether `id` is an element in the HTML namespace.
+fn is_html_element(base: &blitz_dom::BaseDocument, id: BlitzId) -> bool {
+    base.get_node(id)
+        .and_then(|node| node.data.downcast_element())
+        .is_some_and(|element| element.name.ns == html_namespace())
 }
 
 /// The Window named objects with `name` in `scope`'s document tree, in tree
@@ -941,7 +951,7 @@ impl<'js> node_list_generated::NodeList<'js> for JsNodeList {
                 descendants(base, scope.node)
                     .into_iter()
                     .filter(|&id| {
-                        is_element(base, id)
+                        is_html_element(base, id)
                             && attr(base, id, "name").is_some_and(|value| value == name)
                     })
                     .count()
