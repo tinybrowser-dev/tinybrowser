@@ -3420,3 +3420,22 @@ Regression batches are clean: `dom/events` 716, `html/dom` 65,364,
 `html/webappapis` 2,613, all unchanged or up with no losses. `cargo fmt
 --check`, `tools/check clippy`, and the renderer (176), wpt-harness (29), and
 one other test pass.
+
+`details` elements now fire their `toggle` event on any `open` attribute change,
+not only when a `summary` is activated: the IDL setter, `setAttribute`, and
+`removeAttribute` all reach the same attribute-change hook. The event is a
+trusted `ToggleEvent` that reports the state the burst started from and the
+state it ends at, does not bubble, and is not cancelable; a second change
+before the queued task runs updates only the end state, so `open` then
+`removeAttribute("open")` fires once with `oldState: "closed"` and
+`newState: "closed"`
+(<https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-details-toggle-event-task>).
+`toggleEvent.html` goes from 1/11 to **9/11** and
+`html/semantics/interactive-elements` from 43 to **52** passing subtests with
+no losses. The two remaining subtests need the parser's `open` attribute set to
+queue the task (the parser path has no attribute-change hook yet), recorded in
+`docs/limitations.md`. Regression batches are clean: `html/dom` 65,364,
+`dom/events` 716, and forms 4,525 with no losses (one known
+`form-double-submit-*` flake recovers in isolation). `cargo fmt --check`,
+`tools/check clippy`, and the renderer (176), wpt-harness (29), and one other
+test pass.

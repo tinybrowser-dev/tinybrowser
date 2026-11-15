@@ -676,6 +676,11 @@ pub(crate) struct Document {
     /// Whether a [`Task::AnimationEvents`] is already queued, so one batch
     /// covers every event the resolve observed.
     animation_events_queued: bool,
+    /// The `details` elements with a queued `toggle` task, each with the state
+    /// it started from and the state it ends at. A later change before the
+    /// task runs updates only the end state, so the element still fires one
+    /// event (<https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-details-toggle-event-task>).
+    pending_details_toggles: Vec<(crate::dom::tree::NodeId, bool, bool)>,
     timers: HashMap<TimerId, Timer>,
     next_timer_id: TimerId,
     /// Every queued, in-flight, and cancelled dial for this document.
@@ -1021,6 +1026,7 @@ impl Document {
             scroll_events_queued: false,
             pending_animation_events: Vec::new(),
             animation_events_queued: false,
+            pending_details_toggles: Vec::new(),
             timers: HashMap::new(),
             next_timer_id: TimerId::default(),
             dials: DialLedger::new(Arc::clone(&runtime.stop), Arc::clone(&runtime.wake)),
@@ -2100,7 +2106,24 @@ impl Document {
     }
 
     /// Queues the `toggle` task of a `details` element whose `open` changed.
-    pub(crate) fn push_details_toggle(&mut self, id: crate::dom::tree::NodeId) {
+    /// A second change before the task runs keeps the first state and only
+    /// moves the end state, so one task fires one event for the whole burst
+    /// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-details-toggle-event-task>).
+    pub(crate) fn push_details_toggle(
+        &mut self,
+        id: crate::dom::tree::NodeId,
+        old_open: bool,
+        new_open: bool,
+    ) {
+        if let Some(pending) = self
+            .pending_details_toggles
+            .iter_mut()
+            .find(|(pending, _, _)| *pending == id)
+        {
+            pending.2 = new_open;
+            return;
+        }
+        self.pending_details_toggles.push((id, old_open, new_open));
         self.tasks.push_back(Task::DetailsToggle(id));
     }
 

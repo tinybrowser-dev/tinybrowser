@@ -1067,11 +1067,14 @@ second listener never runs.
 Click activation follows DOM's activation target selection: only a
 `MouseEvent` named `click` activates, an ancestor qualifies only for a bubbling
 event, and `summary` activates its parent `details`. A `toggle` event queued
-from that activation is a plain `Event`: `ToggleEvent` is not constructible
-here, so `oldState`/`newState` are missing, and only the summary activation
-path queues it — setting or removing the `open` attribute directly does not run
-HTML's details notification steps. The `submit`/`reset` stop at an ancestor
-form during bubbling follows the browser quirk recorded in
+from a `details` element's `open` attribute change is a trusted `ToggleEvent`
+with `oldState`/`newState`, and the attribute-change path covers the IDL
+setter, `setAttribute`, and `removeAttribute` as well as summary activation.
+The parser does not run an attribute-change hook when it creates an element
+with an `open` attribute, so markup like `<details open>` does not queue its
+initial `toggle` event, and a `DOMParser` document has no event-loop task
+queue for one to run in (`docs/upstream.md`). The `submit`/`reset` stop at an
+ancestor form during bubbling follows the browser quirk recorded in
 <https://github.com/whatwg/html/issues/3599>.
 
 ## Cookie Store

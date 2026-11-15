@@ -1142,6 +1142,31 @@ pub(crate) fn fire_animation_event(
     Ok(())
 }
 
+/// Fires a trusted `toggle` event carrying the states the element moved
+/// between. The event uses the `ToggleEvent` interface when the realm exposes
+/// it and does not bubble or cancel
+/// (<https://html.spec.whatwg.org/multipage/popover.html#the-toggleevent-interface>).
+pub(crate) fn fire_toggle(
+    ctx: &Ctx<'_>,
+    target: EventTargetKey,
+    old_state: &str,
+    new_state: &str,
+) -> Result<()> {
+    let class = realm_event(ctx, JsEvent::trusted("toggle", false, false))?;
+    if bindings::world(ctx)?
+        .borrow()
+        .event_ctors
+        .contains_key("ToggleEvent")
+    {
+        set_exposed_event_prototype(ctx, &class, "ToggleEvent")?;
+    }
+    class.prop("oldState", old_state)?;
+    class.prop("newState", new_state)?;
+    class.prop("source", Value::new_null(ctx.clone()))?;
+    dispatch(ctx, target, &class, None)?;
+    Ok(())
+}
+
 /// Fires a trusted event that crosses shadow boundaries. `input` and
 /// `beforeinput` are composed, while `change` is not
 /// (<https://w3c.github.io/uievents/#events-inputevents>).

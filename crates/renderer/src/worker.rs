@@ -1589,7 +1589,7 @@ impl Worker {
             | RealmRequest::SelectionChanged(_)
             // A worker global has no `details` element, so no toggle task can
             // arise there.
-            | RealmRequest::DetailsToggle(_)
+            | RealmRequest::DetailsToggle { .. }
             | RealmRequest::WorkerBlocked(_, _)
             | RealmRequest::DeclarativeRefresh(_)
             | RealmRequest::HtmlWrite(_)

@@ -1621,9 +1621,13 @@ pub(crate) enum RealmRequest {
     /// queues its `select` task.
     SelectionChanged(NodeId),
     /// A `details` element's `open` attribute changed; the document queues its
-    /// `toggle` task
+    /// `toggle` task with the states the element moved between
     /// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-details-toggle-event-task>).
-    DetailsToggle(NodeId),
+    DetailsToggle {
+        id: NodeId,
+        old_open: bool,
+        new_open: bool,
+    },
     /// One policy's violations, queued because the check ran where no event
     /// can be dispatched directly. `Some` names the node the event belongs
     /// to; `None` means the realm has no document — a worker — and the
@@ -3423,10 +3427,14 @@ impl World {
     /// Queues the `toggle` task of a `details` element whose `open` attribute
     /// changed, so the event fires after the current script finishes
     /// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-details-toggle-event-task>).
-    pub(crate) fn queue_details_toggle(&mut self, id: NodeId) {
+    pub(crate) fn queue_details_toggle(&mut self, id: NodeId, old_open: bool, new_open: bool) {
         self.outbox
             .borrow_mut()
-            .push_back(RealmRequest::DetailsToggle(id));
+            .push_back(RealmRequest::DetailsToggle {
+                id,
+                old_open,
+                new_open,
+            });
     }
 
     /// Queues violations for targets the caller cannot dispatch into (the

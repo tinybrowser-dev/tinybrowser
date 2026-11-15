@@ -527,10 +527,22 @@ pub(crate) fn fire_selection_changed(ctx: &Ctx<'_>, id: NodeId) -> Result<()> {
 }
 
 /// Fires the queued `toggle` event of a `details` element whose `open`
-/// attribute changed. The event bubbles and is not cancelable
+/// attribute changed. The event is a `ToggleEvent` that reports the state the
+/// burst started from and the state it ended at, does not bubble, and is not
+/// cancelable
 /// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-details-toggle-event-task>).
-pub(crate) fn fire_details_toggle(ctx: &Ctx<'_>, id: NodeId) -> Result<()> {
-    events::fire_trusted(ctx, EventTargetKey::Node(id), "toggle", true, false)
+pub(crate) fn fire_details_toggle(
+    ctx: &Ctx<'_>,
+    id: NodeId,
+    old_open: bool,
+    new_open: bool,
+) -> Result<()> {
+    events::fire_toggle(
+        ctx,
+        EventTargetKey::Node(id),
+        if old_open { "open" } else { "closed" },
+        if new_open { "open" } else { "closed" },
+    )
 }
 
 /// Fires one queued scroll event. A viewport scroll reports at the Document

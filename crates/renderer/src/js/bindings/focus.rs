@@ -765,7 +765,7 @@ fn toggle_details(ctx: &Ctx<'_>, summary: NodeId) -> Result<()> {
     } else {
         super::set_attribute_sync(ctx, details, "open", "")?;
     }
-    world.borrow_mut().queue_details_toggle(details);
+    // The attribute-change hook queues the `toggle` task with the states.
     Ok(())
 }
 

@@ -338,7 +338,18 @@ impl Document {
                 self.adopt_js_work();
             }
             Task::DetailsToggle(node) => {
-                self.fire_js(|js| js.fire_details_toggle(node));
+                // The task fires the state the burst started from and the
+                // state it ends at; a later change before this ran only moved
+                // the end state
+                // (<https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-details-toggle-event-task>).
+                if let Some(index) = self
+                    .pending_details_toggles
+                    .iter()
+                    .position(|(pending, _, _)| *pending == node)
+                {
+                    let (_, old_open, new_open) = self.pending_details_toggles.remove(index);
+                    self.fire_js(|js| js.fire_details_toggle(node, old_open, new_open));
+                }
                 self.adopt_js_work();
             }
             Task::ScrollEvents => {
@@ -456,7 +467,11 @@ impl Document {
                 self.frame_traversals.push(delta);
             }
             RealmRequest::SelectionChanged(node) => self.push_selection_changed(node),
-            RealmRequest::DetailsToggle(node) => self.push_details_toggle(node),
+            RealmRequest::DetailsToggle {
+                id,
+                old_open,
+                new_open,
+            } => self.push_details_toggle(id, old_open, new_open),
             RealmRequest::CspViolation(Some(target), violations) => {
                 self.fire_csp_violations(target, &violations);
             }

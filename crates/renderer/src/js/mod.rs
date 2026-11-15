@@ -1228,10 +1228,15 @@ impl JsRealm {
     /// Fires the queued `toggle` event of a `details` element whose `open`
     /// attribute changed
     /// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-details-toggle-event-task>).
-    pub(crate) fn fire_details_toggle(&self, id: crate::dom::tree::NodeId) -> Result<(), JsError> {
+    pub(crate) fn fire_details_toggle(
+        &self,
+        id: crate::dom::tree::NodeId,
+        old_open: bool,
+        new_open: bool,
+    ) -> Result<(), JsError> {
         self.with_budget(None, MicrotaskCheckpoint::Perform, || {
             self.context.with(|ctx| {
-                bindings::fire_details_toggle(&ctx, id)?;
+                bindings::fire_details_toggle(&ctx, id, old_open, new_open)?;
                 Ok(())
             })
         })
@@ -1596,6 +1601,7 @@ impl JsRealm {
                 "SecurityPolicyViolationEvent",
                 "StorageEvent",
                 "TextEvent",
+                "ToggleEvent",
                 "TouchEvent",
                 "UIEvent",
             ] {
