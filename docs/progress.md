@@ -3571,3 +3571,15 @@ ancestor, or a second `optgroup`, ends the search at null
 of those elements is outside the select's list of options.
 `option-form-ancestor-select.html` goes 0/2 to 2/2 and the `html/dom` +
 `dom/events` + forms batch 70,637 to 70,640 with nothing lost.
+
+`MouseEvent` now answers the CSSOM View coordinates: `x`/`y` (the client
+coordinates under their CSSOM View names), `pageX`/`pageY` (client plus the
+viewport's scroll offset), and `offsetX`/`offsetY` (client relative to the
+target's padding edge, measured from its border box plus border width; a target
+with no box has no padding edge, so the coordinate itself is the offset)
+(<https://drafts.csswg.org/cssom-view/#dom-mouseevent-pagex>,
+<https://w3c.github.io/uievents/#dom-mouseevent-offsetx>).
+`dom/events/mouse-event-retarget.html` goes 0/1 to 1/1; the `html/dom` +
+`dom/events` + forms batch gains it with nothing lost (the
+`form-double-submit*.html` pair flipped, the known timing-dependent flakes that
+also flip in isolation).

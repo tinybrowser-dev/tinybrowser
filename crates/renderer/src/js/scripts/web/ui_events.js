@@ -63,6 +63,20 @@ const __tbFreshMouseEvent = () => ({
   ctrlKey: false, shiftKey: false, altKey: false, metaKey: false,
   button: 0, buttons: 0, relatedTarget: null,
 });
+// The event target's padding edge in client coordinates, or null when the
+// target has no box to measure
+// (<https://w3c.github.io/uievents/#dom-mouseevent-offsetx>).
+const __tbPaddingEdge = event => {
+  const target = event.target;
+  if (target === null || target === undefined || target.nodeType !== 1) return null;
+  const rect = target.getBoundingClientRect();
+  const style = globalThis.getComputedStyle(target);
+  const pixels = value => {
+    const number = globalThis.parseFloat(value);
+    return globalThis.Number.isNaN(number) ? 0 : number;
+  };
+  return [rect.left + pixels(style.borderLeftWidth), rect.top + pixels(style.borderTopWidth)];
+};
 const __tbMouseEventConstructor = globalThis.MouseEvent = class MouseEvent extends UIEvent {
   constructor(type, init) {
     if (arguments.length < 1) {
@@ -110,6 +124,33 @@ const __tbMouseEventConstructor = globalThis.MouseEvent = class MouseEvent exten
   get screenY() { return __tbEventEntry(this, __tbMouseEventData, __tbFreshMouseEvent).screenY; }
   get clientX() { return __tbEventEntry(this, __tbMouseEventData, __tbFreshMouseEvent).clientX; }
   get clientY() { return __tbEventEntry(this, __tbMouseEventData, __tbFreshMouseEvent).clientY; }
+  // `x` and `y` are the client coordinates under their CSSOM View names
+  // (<https://w3c.github.io/uievents/#dom-mouseevent-x>).
+  get x() { return __tbEventEntry(this, __tbMouseEventData, __tbFreshMouseEvent).clientX; }
+  get y() { return __tbEventEntry(this, __tbMouseEventData, __tbFreshMouseEvent).clientY; }
+  // `pageX`/`pageY` add the viewport's scroll offset to the client coordinates
+  // (<https://drafts.csswg.org/cssom-view/#dom-mouseevent-pagex>).
+  get pageX() {
+    return __tbEventEntry(this, __tbMouseEventData, __tbFreshMouseEvent).clientX + globalThis.scrollX;
+  }
+  get pageY() {
+    return __tbEventEntry(this, __tbMouseEventData, __tbFreshMouseEvent).clientY + globalThis.scrollY;
+  }
+  // `offsetX`/`offsetY` are the client coordinates relative to the target's
+  // padding edge: its border box's origin plus the border width. A target with
+  // no box (a text node, the document) has no padding edge, and the coordinate
+  // itself is the offset
+  // (<https://w3c.github.io/uievents/#dom-mouseevent-offsetx>).
+  get offsetX() {
+    const edge = __tbPaddingEdge(this);
+    const clientX = __tbEventEntry(this, __tbMouseEventData, __tbFreshMouseEvent).clientX;
+    return edge === null ? clientX : clientX - edge[0];
+  }
+  get offsetY() {
+    const edge = __tbPaddingEdge(this);
+    const clientY = __tbEventEntry(this, __tbMouseEventData, __tbFreshMouseEvent).clientY;
+    return edge === null ? clientY : clientY - edge[1];
+  }
   get ctrlKey() { return __tbEventEntry(this, __tbMouseEventData, __tbFreshMouseEvent).ctrlKey; }
   get shiftKey() { return __tbEventEntry(this, __tbMouseEventData, __tbFreshMouseEvent).shiftKey; }
   get altKey() { return __tbEventEntry(this, __tbMouseEventData, __tbFreshMouseEvent).altKey; }
