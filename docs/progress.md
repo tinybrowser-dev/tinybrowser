@@ -3760,3 +3760,21 @@ the outer document's active element. The `html/dom` + `dom/events` + forms batch
 keeps its count with nothing lost (the
 `form-double-submit-to-different-origin-frame.html` flake flipped; it passes in
 isolation), and `html/semantics/interaction` + `uievents` hold 57/79.
+
+`performance.now()` and `Event.timeStamp` now report the same clock at the
+resolution the high resolution time spec requires: 100 microseconds, or 5 in a
+cross-origin isolated document. Both round down to that grid
+(<https://w3c.github.io/hr-time/#dfn-current-high-resolution-time>), so an event
+created between two `now()` reads still reports a timestamp inside them. The
+realm's resolution is published on the bridge, and the performance shim and
+`stamp_event` apply the same floor to the same monotonic clock.
+`performance-timeline/webtiming-resolution.any.html` goes 1/2 to 2/2 and
+`dom/events/Event-timestamp-safe-resolution.html` goes 0/1 to 1/1; the
+`hr-time` suite and `Event-timestamp-high-resolution.html` keep their counts.
+A before/after run over `performance-timeline`, `user-timing`,
+`navigation-timing`, `resource-timing`, `html/dom`, `dom/events`, and
+`css/cssom-view` gains 2 with nothing lost (the two resource-timing subtests
+that moved are one flaky test that swaps results between its http and https
+variants; `dom/nodes/Document-createElement-namespace.html` timed out in both
+runs and also times out on the pre-change binary, so it is unrelated).
+`dom/nodes` (14,558) and `css/selectors` (4,793) are unchanged.

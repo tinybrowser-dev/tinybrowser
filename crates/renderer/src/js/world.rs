@@ -2500,6 +2500,19 @@ impl World {
         self.policy.cross_origin_isolated
     }
 
+    /// The resolution, in microseconds, that this realm's high resolution
+    /// clocks report: 5 for a cross-origin isolated document, 100 otherwise.
+    /// The ceiling bounds the precision a timing side channel can observe, and
+    /// is why an isolated document must opt in before it gets the finer clock
+    /// (<https://w3c.github.io/hr-time/#dfn-current-high-resolution-time>).
+    pub(crate) fn time_resolution_micros(&self) -> u32 {
+        if self.is_cross_origin_isolated() {
+            5
+        } else {
+            100
+        }
+    }
+
     /// Whether this realm's frame is still attached to its document. A
     /// removed iframe's frame may still sit in the tree until the engine
     /// reconciles, so the container's connectedness decides.
@@ -4169,6 +4182,18 @@ impl World {
     pub(crate) fn brand(&self, name: &str) -> Option<Persistent<Object<'static>>> {
         self.brands.get(name).cloned()
     }
+}
+
+/// Rounds `millis` down to a multiple of `resolution_micros`. `performance.now()`
+/// and `Event.timeStamp` read the same clock through this, so an event created
+/// between two `now()` reads still reports a timestamp inside them
+/// (<https://w3c.github.io/hr-time/#dfn-current-high-resolution-time>).
+pub(crate) fn clamp_time(millis: f64, resolution_micros: u32) -> f64 {
+    if resolution_micros <= 1 {
+        return millis;
+    }
+    let step = f64::from(resolution_micros);
+    ((millis * 1000.0) / step).floor() * step / 1000.0
 }
 
 /// Whether `mutation` is observable by `observer`, producing a record when

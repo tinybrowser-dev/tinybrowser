@@ -61,6 +61,13 @@ pub(crate) fn install(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
     bridge.set("__tbSecureContext", secure_context)?;
     let cross_origin_isolated = world.borrow().is_cross_origin_isolated();
     bridge.set("__tbCrossOriginIsolated", cross_origin_isolated)?;
+    // The high resolution clocks (`performance.now()` and `Event.timeStamp`)
+    // clamp to this resolution
+    // (<https://w3c.github.io/hr-time/#dfn-current-high-resolution-time>).
+    bridge.set(
+        "__tbTimeResolutionMicros",
+        world.borrow().time_resolution_micros(),
+    )?;
     // A sandboxed document has an opaque origin, and every `CookieStore`
     // method rejects with a `SecurityError` there
     // (<https://cookiestore.spec.whatwg.org/#dom-cookiestore-get>).

@@ -38,12 +38,13 @@ fn stamp_event(ctx: &Ctx<'_>, event: &JsEvent) {
     let Ok(world) = bindings::world(ctx) else {
         return;
     };
-    let now = {
+    let (now, resolution) = {
         let world = world.borrow();
         let (sampled, origin) = world.event_clock;
-        origin + sampled.elapsed().as_secs_f64() * 1000.0
+        let now = origin + sampled.elapsed().as_secs_f64() * 1000.0;
+        (now, world.time_resolution_micros())
     };
-    event.state_mut().time_stamp = now;
+    event.state_mut().time_stamp = super::world::clamp_time(now, resolution);
 }
 
 /// One event target together with the world that owns it

@@ -12,9 +12,18 @@
 // started, which is what Event.timeStamp is measured against.
 {
   const __tbNativePerformance = globalThis.performance;
-  const __tbNow = __tbNativePerformance && typeof __tbNativePerformance.now === 'function'
+  const __tbNativeNow = __tbNativePerformance && typeof __tbNativePerformance.now === 'function'
     ? () => __tbNativePerformance.now()
     : () => Date.now();
+  // `performance.now()` and `Event.timeStamp` report the same clock at the same
+  // resolution: 100 microseconds, or 5 in a cross-origin isolated document.
+  // Rounding down keeps an event created between two reads inside them
+  // (<https://w3c.github.io/hr-time/#dfn-current-high-resolution-time>).
+  const __tbResolutionMicros = host.__tbTimeResolutionMicros;
+  const __tbClampTime = value => __tbResolutionMicros <= 1
+    ? value
+    : Math.floor(value * 1000 / __tbResolutionMicros) * __tbResolutionMicros / 1000;
+  const __tbNow = () => __tbClampTime(__tbNativeNow());
   // The epoch instant this realm's timeline starts from. The native clock is
   // monotonic, not epoch-based, so subtract it from the wall clock once
   // (<https://w3c.github.io/hr-time/#dom-performance-timeorigin>).
