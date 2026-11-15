@@ -1219,6 +1219,23 @@ impl JsRealm {
         })
     }
 
+    /// Runs one batch of scroll steps, dispatching the `scroll` and
+    /// `scrollend` events a document queued in order
+    /// (<https://drafts.csswg.org/cssom-view/#run-the-scroll-steps>).
+    pub(crate) fn fire_scroll_events(
+        &self,
+        events: &[blitz_dom::PendingScrollEvent],
+    ) -> Result<(), JsError> {
+        self.with_budget(None, MicrotaskCheckpoint::Perform, || {
+            self.context.with(|ctx| {
+                for event in events {
+                    bindings::fire_scroll_event(&ctx, *event)?;
+                }
+                Ok(())
+            })
+        })
+    }
+
     /// Dispatches one trusted `securitypolicyviolation` event per violation.
     pub(crate) fn fire_csp_violations(
         &self,

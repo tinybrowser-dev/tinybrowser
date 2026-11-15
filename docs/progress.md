@@ -2907,3 +2907,47 @@ its one flaky subtest (`form-double-submit-3.html` passes 1 of 3 isolated
 runs). `cargo fmt --check` (main tree; the fork's remaining diffs are
 pre-existing), `tools/check clippy`, and the renderer (175), webidl-bindgen
 (42), and wpt-harness (30) test binaries pass.
+
+Programmatic scrolling now reports its `scroll` and `scrollend` events. Blitz
+queues one `scroll` entry per scrolling box that moved and one `scrollend`
+entry when the operation completes — at once for an instant scroll, on the
+frame a smooth one reaches its target — and the renderer runs the scroll steps
+in a task, after the assignment, with the `scroll` entries before the
+`scrollend` entries
+(<https://drafts.csswg.org/cssom-view/#scrolling-events>). A viewport event
+targets the `Document` and bubbles; an element's targets the element and does
+not. A host that sleeps until the next deadline now gets a 16 ms frame deadline
+while a scroll animation runs, so a smooth scroll advances at rendering
+opportunities instead of jumping straight to the next page timer; that is what
+lets a page await `scrollend` without also polling the offset.
+
+`scrollIntoView` also carries the distance its inner scrollers are about to
+scroll into the outer alignment. The scrolls of one call start together, so an
+outer box measured from the pre-scroll layout would put a nested target at the
+wrong offset: `scrollIntoView-multiple-nested.html` expected 600 and got the
+clamped 800. Only an animation still owes layout that distance; an instant
+scroll is already in the offsets the next measurement reads.
+
+Evidence: `css/cssom-view` 1897 to **1911** passing subtests, no lost
+subtests, and 213 of 240 files OK (from 209).
+`scrollIntoView-smooth.html` 0/4 to 4/4 (TIMEOUT to OK, likewise
+`scrollIntoView-multiple.html` and `-nested.html`),
+`scroll-behavior-scrollintoview-nested.html` 1/2 to 2/2, and
+`smooth-scroll-in-load-event.html` 0/1 to 1/1 (TIMEOUT to OK).
+`dom/events/scrolling` 6 to **14** passing subtests over its 9 loadable files
+with 8 of 9 files OK (from 6), including both scroll-target files,
+`scroll-events-fired-once-per-frame-across-display-none.html`,
+`scroll-event-not-fired-on-ancestor-style-change.html`, and
+`scrollend-event-fired-after-instant-scroll-in-microtask.html`.
+`css/css-scroll-snap` 153 to **158** with 137 of 173 files OK (from 125), as
+twelve re-snap and snap-event files stop timing out.
+
+Regressions are clean: `css/css-transitions` 945 and `css/css-animations` 812
+unchanged; the `dom/events`+`css/cssom`+`css/selectors`+observer batch is 9371
+with 8 gains from the scrolling files and 2 flaky `insertRule-charset-no-index`
+losses that pass 3/3 in isolation; `html/webappapis` 2613 (the rAF
+same-dispatch-time file, which passes in isolation); `html/dom` and forms 69864
+with the double-submit flake, which fails 3/3 at the parent commit; and
+`html/browsers` identical at 1012/2689 subtests and 537/758 files.
+`cargo fmt --check` (main tree), `tools/check clippy`, and the renderer (175),
+webidl-bindgen (42), and wpt-harness (30) test binaries pass.

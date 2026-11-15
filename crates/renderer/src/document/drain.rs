@@ -14,6 +14,12 @@ use crate::protocol::{BrowserEvent, RendererEvent, TimerId};
 /// enqueue more work while a request runs, so a turn must not loop forever.
 const MAX_REALM_REQUESTS_PER_TURN: usize = 1024;
 
+/// How long a host may sleep while a scroll animation is in progress. The
+/// animation advances once per rendering opportunity, and this is the frame
+/// interval the host uses to schedule them
+/// (<https://drafts.csswg.org/cssom-view/#scroll-an-element>).
+const SCROLL_FRAME_INTERVAL: Duration = Duration::from_millis(16);
+
 impl Document {
     /// Runs one batch of ready work and reports whether the engine must
     /// reconcile and run another pass: a task ran (its side effects include a
@@ -30,13 +36,21 @@ impl Document {
             self.tasks.push_back(Task::Timer(id));
         }
         self.adopt_js_work();
+        self.adopt_scroll_events();
         self.drain_blitz_fetches();
         self.launch_queued_dials();
         self.adopt_dial_completions();
         let Some(task) = self.tasks.pop_front() else {
             let fired = self.check_load();
+            // The settle can finish a smooth scroll, which the next scroll
+            // steps report
+            // (<https://drafts.csswg.org/cssom-view/#run-the-scroll-steps>).
+            self.adopt_scroll_events();
             return !self.stop.is_set()
-                && (fired || self.has_pending_frame_loads() || self.awaits_proxy_replay());
+                && (fired
+                    || self.has_pending_frame_loads()
+                    || self.awaits_proxy_replay()
+                    || !self.tasks.is_empty());
         };
         // Joins the drain's turn when one is open, so serial tasks share
         // its deadline. A task outside a drain still opens its own turn.
@@ -111,11 +125,23 @@ impl Document {
     /// Earliest timer deadline this document waits for.
     #[must_use]
     pub(crate) fn next_deadline(&self) -> Option<Instant> {
-        self.timers
+        let timers = self
+            .timers
             .values()
             .filter(|timer| !timer.fired)
             .filter_map(|timer| timer.when)
-            .min()
+            .min();
+        // A scroll animation advances at rendering opportunities, so a host
+        // that sleeps until the next deadline wakes once per frame while one
+        // runs instead of jumping straight to the next page timer
+        // (<https://drafts.csswg.org/cssom-view/#scroll-an-element>).
+        let frame = self
+            .scroll_animation_active()
+            .then(|| Instant::now() + SCROLL_FRAME_INTERVAL);
+        match (timers, frame) {
+            (Some(timer), Some(frame)) => Some(timer.min(frame)),
+            (timer, frame) => timer.or(frame),
+        }
     }
 
     pub(crate) fn schedule_timer(&mut self, delay: Duration) -> TimerId {
@@ -305,6 +331,12 @@ impl Document {
             }
             Task::DetailsToggle(node) => {
                 self.fire_js(|js| js.fire_details_toggle(node));
+                self.adopt_js_work();
+            }
+            Task::ScrollEvents => {
+                self.scroll_events_queued = false;
+                let events = std::mem::take(&mut self.pending_scroll_events);
+                self.fire_js(|js| js.fire_scroll_events(&events));
                 self.adopt_js_work();
             }
         }

@@ -154,6 +154,10 @@ enum Task {
     /// attribute changed
     /// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-details-toggle-event-task>).
     DetailsToggle(crate::dom::tree::NodeId),
+    /// One batch of scroll steps: the `scroll` and `scrollend` events Blitz
+    /// queued since the last batch, dispatched in that order
+    /// (<https://drafts.csswg.org/cssom-view/#run-the-scroll-steps>).
+    ScrollEvents,
 }
 
 /// Why a realm is being replaced.
@@ -643,6 +647,14 @@ pub(crate) struct Document {
     shared: SharedHandle,
     url: Url,
     tasks: VecDeque<Task>,
+    /// Scroll and `scrollend` events Blitz has queued, waiting for the scroll
+    /// steps. An event never fires inside the assignment that scrolled: the
+    /// task that runs the steps dispatches this list in order
+    /// (<https://drafts.csswg.org/cssom-view/#run-the-scroll-steps>).
+    pending_scroll_events: Vec<blitz_dom::PendingScrollEvent>,
+    /// Whether a [`Task::ScrollEvents`] is already queued, so the next scroll
+    /// steps batch has one task however many boxes moved.
+    scroll_events_queued: bool,
     timers: HashMap<TimerId, Timer>,
     next_timer_id: TimerId,
     /// Every queued, in-flight, and cancelled dial for this document.
@@ -972,6 +984,8 @@ impl Document {
             shared: runtime.shared.clone(),
             url: document_url,
             tasks: VecDeque::new(),
+            pending_scroll_events: Vec::new(),
+            scroll_events_queued: false,
             timers: HashMap::new(),
             next_timer_id: TimerId::default(),
             dials: DialLedger::new(Arc::clone(&runtime.stop), Arc::clone(&runtime.wake)),
@@ -4285,6 +4299,37 @@ impl Document {
         self.world.borrow().notify_cookie_changes();
         self.fire_js(crate::js::JsRealm::process_cookie_changes);
         self.adopt_js_work();
+    }
+
+    /// Whether the active document still has a smooth scroll or fling to
+    /// advance.
+    fn scroll_animation_active(&self) -> bool {
+        let world = self.world.borrow();
+        world
+            .main_document()
+            .is_some_and(|parsed| parsed.document.base.has_scroll_animation())
+    }
+
+    /// Moves the scroll events Blitz queued into the next scroll steps. A
+    /// scroll that happened inside a task fires after that task, never inside
+    /// the assignment that caused it
+    /// (<https://drafts.csswg.org/cssom-view/#run-the-scroll-steps>).
+    fn adopt_scroll_events(&mut self) {
+        let events = {
+            let world = self.world.borrow();
+            match world.main_document_mut() {
+                Some(mut parsed) => parsed.document.base.take_pending_scroll_events(),
+                None => Vec::new(),
+            }
+        };
+        if events.is_empty() {
+            return;
+        }
+        self.pending_scroll_events.extend(events);
+        if !self.scroll_events_queued {
+            self.scroll_events_queued = true;
+            self.tasks.push_back(Task::ScrollEvents);
+        }
     }
 
     /// Applies Blitz's queued resource messages and gives the active document

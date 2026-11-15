@@ -181,10 +181,23 @@ engine. The engine's model has these gaps:
   two animations, and two `scrollIntoView` calls on unrelated scrollers both
   complete. The animation is sampled from the document's animation timeline,
   the same clock the resolving frame reads, so it advances with frames rather
-  than with the wall clock. The engine dispatches no `scroll` or `scrollend`
-  events for a programmatic scroll, so a test that awaits `scrollend` after
-  one times out (`scrollIntoView-smooth.html`, `scrollIntoView-multiple*.html`,
-  and the `dom/events/scrolling/scrollend-*` files).
+  than with the wall clock.
+- Programmatic scrolling queues `scroll` and `scrollend` events. A viewport
+  scroll reports at the `Document` and bubbles; an element's own scrolling box
+  reports at the element and does not. Both are queued per box, coalesced for
+  one run of scroll steps, and dispatched in a task after the assignment that
+  scrolled, with `scroll` entries before the `scrollend` entries
+  (<https://drafts.csswg.org/cssom-view/#scrolling-events>). An instant
+  programmatic scroll completes at once; a smooth one reports its end on the
+  frame that reaches the target. A host that sleeps on deadlines is given a
+  16 ms frame deadline while a scroll animation runs, so the animation advances
+  on rendering opportunities instead of jumping to the next page timer.
+  Remaining gaps in that surface: a user fling does not report `scrollend`
+  (this renderer feeds no wheel or touch input to Blitz), an interrupted smooth
+  scroll reports no end, text controls scrolling their own content queue no
+  event, and layout-time clamping of an element's scroll offset neither reports
+  nor fires anything. Snap events (`scrollsnapchange`, `scrollsnapchanging`)
+  and `VisualViewport` scroll events are absent with those features themselves.
 - `scrollIntoView` scrolls every scrolling box in the target's containing
   block chain, innermost to outermost, then the viewport. The block and inline
   positions are mapped through each box's writing mode, and the `container`

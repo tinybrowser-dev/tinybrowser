@@ -533,6 +533,36 @@ pub(crate) fn fire_details_toggle(ctx: &Ctx<'_>, id: NodeId) -> Result<()> {
     events::fire_trusted(ctx, EventTargetKey::Node(id), "toggle", true, false)
 }
 
+/// Fires one queued scroll event. A viewport scroll reports at the Document
+/// and bubbles; an element's own scrolling box reports at that element and
+/// does not. Neither is cancelable
+/// (<https://drafts.csswg.org/cssom-view/#scrolling-events>).
+pub(crate) fn fire_scroll_event(ctx: &Ctx<'_>, event: blitz_dom::PendingScrollEvent) -> Result<()> {
+    let typ = match event.kind {
+        blitz_dom::ScrollEventKind::Scroll => "scroll",
+        blitz_dom::ScrollEventKind::ScrollEnd => "scrollend",
+    };
+    match event.target {
+        blitz_dom::ScrollEventTarget::Viewport => {
+            let document = main_document(ctx)?;
+            events::fire_trusted(ctx, EventTargetKey::Node(document), typ, true, false)
+        }
+        blitz_dom::ScrollEventTarget::Element(node) => {
+            let document = world(ctx)?.borrow().main_document_id();
+            let Some(document) = document else {
+                return Ok(());
+            };
+            events::fire_trusted(
+                ctx,
+                EventTargetKey::Node(NodeId { document, node }),
+                typ,
+                false,
+                false,
+            )
+        }
+    }
+}
+
 /// Dispatches one trusted `securitypolicyviolation` event per blocked policy
 /// at `target` (<https://w3c.github.io/webappsec-csp/#report-violation>).
 pub(crate) fn fire_csp_violations(
