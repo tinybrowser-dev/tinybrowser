@@ -1950,36 +1950,52 @@ impl JsNode {
         Ok(read(node))
     }
 
-    /// Whether this wrapper is its document's root element.
-    pub(super) fn is_document_element(&self, ctx: &Ctx<'_>) -> Result<bool> {
+    /// `clientWidth`/`clientHeight` share their steps: a boxless element
+    /// answers zero (a non-atomic inline's flattened box has no size of its
+    /// own, so Blitz answers zero too), the root element outside quirks mode and
+    /// the body element in quirks mode answer the viewport, and everything else
+    /// answers its padding edge (<https://drafts.csswg.org/cssom-view/#dom-element-clientwidth>,
+    /// <https://drafts.csswg.org/cssom-view/#dom-element-clientheight>).
+    fn client_size(&self, ctx: &Ctx<'_>, vertical: bool) -> Result<i32> {
+        let id = self.handle.get().0;
         let world = world(ctx)?;
         let world = world.borrow();
-        let Some(parsed) = world.document(self.handle.get().0) else {
-            return Ok(false);
+        let Some(mut parsed) = world.document_mut(id) else {
+            return Ok(0);
         };
-        Ok(super::scrolling::root_element(&parsed) == Some(self.handle.get().0))
+        let base = &mut parsed.document.base;
+        base.resolve(crate::animation_seconds());
+        let Some(node) = base.get_node(id.node) else {
+            return Ok(0);
+        };
+        let boxless = !has_associated_box(base, node);
+        let padding_edge = if vertical {
+            node.client_height()
+        } else {
+            node.client_width()
+        };
+        if boxless {
+            return Ok(0);
+        }
+        if super::scrolling::client_area_is_viewport(&parsed, id) {
+            let (width, height) = world.viewport_size.get();
+            return Ok(cssom_round(f64::from(if vertical {
+                height
+            } else {
+                width
+            })));
+        }
+        Ok(cssom_round(f64::from(padding_edge)))
     }
 
     // https://drafts.csswg.org/cssom-view/#dom-element-clientwidth
     pub(super) fn client_width(&self, ctx: &Ctx<'_>) -> Result<i32> {
-        if self.is_document_element(ctx)? {
-            let (width, _) = world(ctx)?.borrow().viewport_size.get();
-            return Ok(cssom_round(f64::from(width)));
-        }
-        Ok(cssom_round(f64::from(
-            self.layout_metric(ctx, blitz_dom::Node::client_width)?,
-        )))
+        self.client_size(ctx, false)
     }
 
     // https://drafts.csswg.org/cssom-view/#dom-element-clientheight
     pub(super) fn client_height(&self, ctx: &Ctx<'_>) -> Result<i32> {
-        if self.is_document_element(ctx)? {
-            let (_, height) = world(ctx)?.borrow().viewport_size.get();
-            return Ok(cssom_round(f64::from(height)));
-        }
-        Ok(cssom_round(f64::from(
-            self.layout_metric(ctx, blitz_dom::Node::client_height)?,
-        )))
+        self.client_size(ctx, true)
     }
 
     // https://drafts.csswg.org/cssom-view/#dom-element-clientleft
@@ -1996,18 +2012,44 @@ impl JsNode {
         )))
     }
 
+    /// `scrollWidth`/`scrollHeight` share their steps: the root element outside
+    /// quirks mode, and the body element in quirks mode when it does not scroll
+    /// itself on the axis, answer the viewport's scrolling area; everything else
+    /// answers its own (<https://drafts.csswg.org/cssom-view/#dom-element-scrollwidth>,
+    /// <https://drafts.csswg.org/cssom-view/#dom-element-scrollheight>).
+    fn scroll_size(&self, ctx: &Ctx<'_>, vertical: bool) -> Result<i32> {
+        let id = self.handle.get().0;
+        let world = world(ctx)?;
+        let world = world.borrow();
+        let Some(mut parsed) = world.document_mut(id) else {
+            return Ok(0);
+        };
+        parsed.document.base.resolve(crate::animation_seconds());
+        if super::scrolling::scroll_area_is_viewport(&parsed, id, vertical) {
+            let (width, height) = world.viewport_size.get();
+            let viewport = f64::from(if vertical { height } else { width });
+            return Ok(cssom_round(super::scrolling::viewport_scroll_area(
+                &parsed, vertical, viewport,
+            )));
+        }
+        let Some(node) = parsed.document.base.get_node(id.node) else {
+            return Ok(0);
+        };
+        Ok(cssom_round(f64::from(if vertical {
+            node.scroll_height()
+        } else {
+            node.scroll_width()
+        })))
+    }
+
     // https://drafts.csswg.org/cssom-view/#dom-element-scrollwidth
     pub(super) fn scroll_width(&self, ctx: &Ctx<'_>) -> Result<i32> {
-        Ok(cssom_round(f64::from(
-            self.layout_metric(ctx, blitz_dom::Node::scroll_width)?,
-        )))
+        self.scroll_size(ctx, false)
     }
 
     // https://drafts.csswg.org/cssom-view/#dom-element-scrollheight
     pub(super) fn scroll_height(&self, ctx: &Ctx<'_>) -> Result<i32> {
-        Ok(cssom_round(f64::from(
-            self.layout_metric(ctx, blitz_dom::Node::scroll_height)?,
-        )))
+        self.scroll_size(ctx, true)
     }
 
     pub(super) fn get_attribute<'js>(

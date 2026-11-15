@@ -351,6 +351,25 @@ implementation can satisfy both; the stable test follows the published spec and
 stays green until the ARIA change ships. The tentative test's failing subtests
 are therefore the two per attribute that read a removed attribute.
 
+## Element client and scroll metrics
+
+`clientWidth`/`clientHeight` and `scrollWidth`/`scrollHeight` follow the CSSOM
+View steps. A boxless element answers zero, the root element outside quirks
+mode and the body element in quirks mode answer the viewport, and every other
+element answers its padding edge or its scrolling area. `scrollWidth`/
+`scrollHeight` also answer the viewport's scrolling area for the root element
+(in non-quirks documents) and for a quirks-mode body that is not potentially
+scrollable on the queried axis, measured as the larger of the root element's
+scrolling area and the viewport extent, because the viewport's scrolling area
+always covers the initial containing block
+(<https://drafts.csswg.org/cssom-view/#dom-element-scrollheight>).
+
+A non-atomic inline element reports a zero `clientWidth`/`clientHeight`, which
+is what the spec's "no associated box or an inline box" step requires: Blitz
+gives the flattened inline root no size of its own. `client-props-input.html`
+still differs on an `<input>`'s inline axis, where the spec clips to the
+content box; the engine reports the padding box for both controls.
+
 ## Element offset metrics
 
 `offsetParent`, `offsetLeft`, `offsetTop`, `offsetWidth`, and `offsetHeight`

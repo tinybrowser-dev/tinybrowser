@@ -147,6 +147,53 @@ fn potentially_scrollable_for_scrolling_element(parsed: &Parsed, element: NodeId
         || potentially_scrollable_in(parsed, element, true, true)
 }
 
+/// The width or height of the viewport's scrolling area, which CSSOM View
+/// answers for the root element and for a quirks-mode body that does not scroll
+/// itself: the initial containing block (the viewport) unioned with every
+/// descendant's margin box, which Blitz records as the root element's scrolling
+/// area (<https://drafts.csswg.org/cssom-view/#dom-element-scrollheight>).
+///
+/// `viewport` is the viewport extent on the axis, because the scrolling area
+/// always covers the initial containing block.
+pub(super) fn viewport_scroll_area(parsed: &Parsed, vertical: bool, viewport: f64) -> f64 {
+    let content = root_element(parsed)
+        .and_then(|root| parsed.document.base.get_node(root.node))
+        .map_or(0.0, |node| {
+            f64::from(if vertical {
+                node.scroll_height()
+            } else {
+                node.scroll_width()
+            })
+        });
+    content.max(viewport)
+}
+
+/// Whether `scrollWidth`/`scrollHeight` on this element report the viewport's
+/// scrolling area instead of the element's own: the root element when the
+/// document is not in quirks mode, and the body element in quirks mode when it
+/// is not potentially scrollable in that axis
+/// (<https://drafts.csswg.org/cssom-view/#dom-element-scrollheight>).
+pub(super) fn scroll_area_is_viewport(parsed: &Parsed, element: NodeId, vertical: bool) -> bool {
+    let quirks = parsed.quirks_mode == QuirksMode::Quirks;
+    if root_element(parsed) == Some(element) {
+        return !quirks;
+    }
+    quirks
+        && body_element(parsed) == Some(element)
+        && !potentially_scrollable_in(parsed, element, vertical, false)
+}
+
+/// Whether `clientWidth`/`clientHeight` on this element report the viewport
+/// size: the root element when the document is not in quirks mode, and the body
+/// element in quirks mode
+/// (<https://drafts.csswg.org/cssom-view/#dom-element-clientwidth>).
+pub(super) fn client_area_is_viewport(parsed: &Parsed, element: NodeId) -> bool {
+    if root_element(parsed) == Some(element) {
+        return parsed.quirks_mode != QuirksMode::Quirks;
+    }
+    parsed.quirks_mode == QuirksMode::Quirks && body_element(parsed) == Some(element)
+}
+
 /// The document's `scrollingElement`
 /// (<https://drafts.csswg.org/cssom-view/#dom-document-scrollingelement>).
 ///

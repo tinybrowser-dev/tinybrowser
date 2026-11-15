@@ -3050,3 +3050,37 @@ batch is 9,371 unchanged with no lost subtests; `html/dom` and forms 69,865 →
 and `html/webappapis` 2,613 unchanged. `cargo fmt --check`, `tools/check
 clippy`, and the renderer (175), webidl-bindgen (43), and wpt-harness (30)
 test binaries pass.
+
+`clientWidth`/`clientHeight` and `scrollWidth`/`scrollHeight` now implement
+the CSSOM View steps for the root element and the quirks-mode body. Both
+viewport branches were missing: `clientWidth`/`clientHeight` special-cased
+only the root element (outside quirks mode), and `scrollWidth`/`scrollHeight`
+had no viewport branch at all, so a quirks-mode document answered the body's
+own box (240x90 instead of the viewport's 600) and a non-quirks document's
+root answered its content height (108 instead of 600 for an empty page).
+
+The steps are now shared per pair. `client_size` answers zero for a boxless
+element, the viewport for the root outside quirks mode or the body in quirks
+mode, and the element's padding edge otherwise. `scroll_size` answers the
+viewport's scrolling area for the root outside quirks mode and for a
+quirks-mode body that is not potentially scrollable on the queried axis, and
+the element's own scrolling area otherwise; `Scrolling`'s existing
+`potentially_scrollable_in`, `root_element`, and `body_element` are the same
+helpers the scroll getters use, so the two families cannot disagree about
+which element scrolls the document. The viewport's scrolling area is the
+root element's scrolling area floored at the viewport extent, because the
+viewport's scrolling area always covers the initial containing block
+(<https://drafts.csswg.org/cssom-view/#dom-element-scrollheight>).
+
+Evidence: `css/cssom-view` 1,934 to **1,939** passing subtests with no lost
+subtests, files OK 212 to **213**. `HTMLBody-ScrollArea_quirksmode.html`
+passes 10 of 10 (from 7), and `scrolling-quirks-vs-nonquirks.html` gains
+"clientWidth/clientHeight on the root element in quirks mode" and on the body.
+The rest of the suite is unchanged, including its 10 error and 4 timeout
+files. Regressions are clean: the
+`dom/events`+`css/cssom`+`css/selectors`+observer batch is 9,371 unchanged
+with no lost subtests; `css/css-scroll-snap` 158 unchanged; `html/dom` and
+forms 69,865 (the one difference is the known alternating double-submit
+flake); `html/webappapis` 2,613. `cargo fmt --check`, `tools/check clippy`, and
+the renderer (175), webidl-bindgen (43), and wpt-harness (30) test binaries
+pass.
