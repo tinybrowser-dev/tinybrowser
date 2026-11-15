@@ -3668,3 +3668,14 @@ matching `name` attribute; a foreign element such as `<math name>` or
 Both `document.getElementsByName-namespace.html` and its XHTML twin go 0/1 to
 1/1, and the `html/dom` + `dom/events` + forms batch goes 70,671 to 70,673 with
 nothing lost.
+
+`document.cookie` is now an attribute of the `Document` interface rather than an
+own property of the global document, so every `Document` object answers it. A
+cookie-averse document (no browsing context, or a URL that is not HTTP(S))
+returns the empty string and ignores writes, as the spec requires
+(<https://html.spec.whatwg.org/multipage/dom.html#dom-document-cookie>). A
+document made by `createHTMLDocument` now behaves like that instead of reading
+`undefined`. `document-cookie.html` goes 4/5 to 5/5 and the `html/dom` +
+`dom/events` + forms batch goes 70,673 to 70,674 with nothing lost (the
+`form-double-submit-to-different-origin-frame.html` flake flipped, and it flips
+in isolation too).

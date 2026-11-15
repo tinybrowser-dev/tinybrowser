@@ -123,15 +123,24 @@ if (typeof globalThis.console === 'undefined') {
     assert: noop, time: noop, timeEnd: noop, count: noop,
   };
 }
-// A worker global has no document and no cookie store.
-if (globalThis.document) {
-  Object.defineProperty(document, 'cookie', {
-    get() { return host.__cookieGet(); },
+// `document.cookie` lives on the interface, not the instance, so every
+// Document answers it. A cookie-averse document (no browsing context, or a URL
+// that is not HTTP(S)) answers the empty string and ignores writes
+// (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-cookie>).
+if (globalThis.document && globalThis.Document) {
+  Object.defineProperty(globalThis.Document.prototype, 'cookie', {
+    get() {
+      if (host.__tbCookieAverse(this)) return '';
+      return host.__cookieGet();
+    },
     set(v) {
+      if (host.__tbCookieAverse(this)) return;
       // The write is a cookie store change like any other, so the host
       // queues the observation in every realm
       // (<https://cookiestore.spec.whatwg.org/#process-cookie-changes>).
       host.__cookieSet(String(v));
-    }
+    },
+    enumerable: true,
+    configurable: true,
   });
 }

@@ -1951,6 +1951,8 @@ impl JsRealm {
             }),
         )?;
 
+        bridge::object(ctx)?.set("__tbCookieAverse", Func::from(cookie_averse))?;
+
         bridge::object(ctx)?.set(
             "__cookieSet",
             Func::from(move |ctx: Ctx<'_>, value: String| -> rquickjs::Result<()> {
@@ -3335,6 +3337,30 @@ fn cookie_store_write(options: &Object<'_>) -> rquickjs::Result<net::ScriptCooki
 /// (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-cookie>).
 fn cookie_store_url(world: &World) -> Url {
     world.cookie_url()
+}
+
+/// Whether `document` is cookie-averse: it has no browsing context, or its URL
+/// is not an HTTP(S) URL. Such a document answers `""` for `cookie` and ignores
+/// writes
+/// (<https://html.spec.whatwg.org/multipage/dom.html#cookie-averse-document-object>).
+fn cookie_averse<'js>(ctx: Ctx<'js>, document: Value<'js>) -> bool {
+    let Some(id) = bindings::host_node_id(&ctx, &document) else {
+        return true;
+    };
+    let Ok(world) = bindings::world(&ctx) else {
+        return true;
+    };
+    let world = world.borrow();
+    // Only a world's own document has a browsing context; every script-created
+    // document (`createHTMLDocument`, `DOMParser`, `createDocument`) is
+    // cookie-averse.
+    if !world.is_main_document(id) {
+        return true;
+    }
+    !world
+        .document_url_of(id)
+        .parse::<Url>()
+        .is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
 }
 
 fn millis(delay: f64) -> u32 {
