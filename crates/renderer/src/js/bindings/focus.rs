@@ -61,8 +61,19 @@ fn is_focusable_in(base: &blitz_dom::BaseDocument, node: BlitzId) -> bool {
     if !is_connected(base, node) || is_actually_disabled(base, node) {
         return false;
     }
-    // `tabindex` applies to SVG elements too.
-    if attr(base, node, "tabindex").is_some() {
+    // A focusable area is being rendered, and `display: none` takes the
+    // element (and its whole subtree) out of rendering
+    // (<https://html.spec.whatwg.org/multipage/interaction.html#focusable-area>).
+    if !is_rendered(base, node) {
+        return false;
+    }
+    // `tabindex` applies to SVG elements too. Only an integer is a valid
+    // value: an empty or unparseable attribute is ignored rather than making
+    // the element focusable
+    // (<https://html.spec.whatwg.org/multipage/interaction.html#attr-tabindex>).
+    if attr(base, node, "tabindex")
+        .is_some_and(|value| crate::dom::parse::parse_integer(value).is_some())
+    {
         return true;
     }
     if element.name.ns != html_namespace() {
@@ -74,6 +85,21 @@ fn is_focusable_in(base: &blitz_dom::BaseDocument, node: BlitzId) -> bool {
         "button" | "select" | "textarea" => true,
         _ => false,
     }
+}
+
+/// Whether `node` generates a box: no ancestor puts the subtree outside
+/// rendering with `display: none`
+/// (<https://drafts.csswg.org/css-display-3/#valdef-display-none>).
+fn is_rendered(base: &blitz_dom::BaseDocument, node: BlitzId) -> bool {
+    let mut cursor = Some(node);
+    while let Some(current) = cursor {
+        let display = base.resolved_style_value(current, "display");
+        if display.eq_ignore_ascii_case("none") {
+            return false;
+        }
+        cursor = base.get_node(current).and_then(|tree| tree.parent);
+    }
+    true
 }
 
 /// The HTML "actually disabled" check for the form controls the engine

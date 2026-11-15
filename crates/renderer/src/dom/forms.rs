@@ -502,6 +502,66 @@ pub(crate) fn option_select_owner(base: &BaseDocument, node: BlitzId) -> Option<
     None
 }
 
+/// Whether `node` is a labelable element
+/// (<https://html.spec.whatwg.org/multipage/forms.html#category-label>).
+fn is_labelable(base: &BaseDocument, node: BlitzId) -> bool {
+    let Some(element) = base
+        .get_node(node)
+        .and_then(|tree| tree.data.downcast_element())
+    else {
+        return false;
+    };
+    if element.name.ns != html_namespace() {
+        return false;
+    }
+    match element.name.local.as_str() {
+        // A hidden input is not labelable
+        // (<https://html.spec.whatwg.org/multipage/input.html#hidden-state-(type=hidden)>).
+        "input" => {
+            !attr(base, node, "type").is_some_and(|kind| kind.eq_ignore_ascii_case("hidden"))
+        }
+        "button" | "meter" | "output" | "progress" | "select" | "textarea" => true,
+        _ => false,
+    }
+}
+
+/// A label element's labeled control.
+///
+/// With a `for` attribute, the control is the first element in the label's
+/// tree whose ID is that value, when it is a labelable element. Without one,
+/// it is the first labelable element descendant in tree order
+/// (<https://html.spec.whatwg.org/multipage/forms.html#labeled-control>).
+pub(crate) fn labeled_control(
+    base: &BaseDocument,
+    document: u32,
+    label: BlitzId,
+) -> Option<NodeId> {
+    if let Some(target) = attr(base, label, "for") {
+        let found = crate::dom::tree::first_element_with_id(
+            base,
+            document,
+            crate::dom::tree::root_of(base, label),
+            target,
+        )?;
+        return is_labelable(base, found.node).then_some(found);
+    }
+    let mut stack: Vec<BlitzId> = base.get_node(label).map_or_else(Vec::new, |tree| {
+        tree.children.iter().rev().copied().collect()
+    });
+    while let Some(current) = stack.pop() {
+        if is_labelable(base, current) {
+            return Some(NodeId {
+                document,
+                node: current,
+            });
+        }
+        if let Some(tree) = base.get_node(current) {
+            stack.extend(tree.children.iter().rev().copied());
+        }
+    }
+    None
+}
+
 /// Whether an option is disabled: the option itself or its parent optgroup.
 /// A disabled select does not disable its options
 /// (<https://html.spec.whatwg.org/multipage/form-elements.html#concept-option-disabled>).

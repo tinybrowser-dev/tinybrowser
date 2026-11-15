@@ -3132,9 +3132,31 @@ pub(super) fn sibling_not_in(
 
 /// Moves focus to `id` when it is focusable
 /// (<https://html.spec.whatwg.org/multipage/interaction.html#dom-focus>).
+///
+/// A `label` that is not itself focusable forwards the focus to its labeled
+/// control: the spec leaves the label's behavior to the platform, and browsers
+/// forward so that a label can be used as the control's focus proxy
+/// (<https://html.spec.whatwg.org/multipage/forms.html#the-label-element>).
 pub(super) fn focus_element(ctx: &Ctx<'_>, id: NodeId) -> Result<()> {
     if is_focusable(ctx, id)? {
-        focus_node(ctx, id)?;
+        return focus_node(ctx, id);
+    }
+    let control = {
+        let owner = world_for_node(ctx, id)?;
+        let owner = owner.borrow();
+        let Some(parsed) = owner.document(id) else {
+            return Ok(());
+        };
+        let base = &parsed.document.base;
+        if !crate::dom::tree::is_html_element(base, id.node, "label") {
+            return Ok(());
+        }
+        crate::dom::forms::labeled_control(base, id.document, id.node)
+    };
+    if let Some(control) = control
+        && is_focusable(ctx, control)?
+    {
+        focus_node(ctx, control)?;
     }
     Ok(())
 }

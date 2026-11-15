@@ -3625,3 +3625,17 @@ object's origin. The two differ for `about:blank`, `about:srcdoc`, and
 `html/dom/self-origin.sub.html` goes 9/11 to 11/11; the `html/dom` +
 `dom/events` + forms batch gains all of them with nothing lost (the
 `form-double-submit.html` flake flipped, and it fails in isolation too).
+
+`label.focus()` now forwards focus to the label's labeled control when the
+label itself is not focusable: the control named by `for` (the first element in
+the label's tree with that id, when it is labelable), or the first labelable
+descendant in tree order
+(<https://html.spec.whatwg.org/multipage/forms.html#labeled-control>). Two
+focusability bugs surfaced with it and are fixed: an empty or unparseable
+`tabindex` no longer makes an element focusable, and a `display: none` subtree is
+not a focusable area
+(<https://html.spec.whatwg.org/multipage/interaction.html#focusable-area>).
+`forward-focus-to-associated-element.html` goes 2/6 to 6/6; the `html/dom` +
+`dom/events` + forms batch and `css/selectors` keep every subtest (a
+`form-double-submit-to-different-origin-frame.html` flake flipped, and it
+flips in isolation too).
