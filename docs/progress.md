@@ -3679,3 +3679,11 @@ document made by `createHTMLDocument` now behaves like that instead of reading
 `dom/events` + forms batch goes 70,673 to 70,674 with nothing lost (the
 `form-double-submit-to-different-origin-frame.html` flake flipped, and it flips
 in isolation too).
+
+Disabling a `fieldset` now moves focus away from a control inside it. A
+focused control that a newly disabled fieldset makes unfocusable is blurred
+(firing `blur` and `focusout`) when the attribute changes, instead of waiting
+for a rendering update this engine does not run
+(<https://html.spec.whatwg.org/multipage/interaction.html#focusable-area>).
+`disabled-003.html` goes 0/2 to 2/2 and the `html/dom` + `dom/events` + forms
+batch goes 70,674 to 70,676 with nothing lost.

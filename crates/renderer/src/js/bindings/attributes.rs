@@ -1731,6 +1731,48 @@ fn apply_input_value_attribute_change(ctx: &Ctx<'_>, element: NodeId, local: &st
     Ok(())
 }
 
+/// Moves focus away from a control that a newly disabled `fieldset` makes
+/// unfocusable. A browser runs the focus fixup during the rendering update;
+/// doing it when the attribute changes gives the same observable result
+/// (<https://html.spec.whatwg.org/multipage/interaction.html#focusable-area>).
+fn apply_disabled_focus_fixup(ctx: &Ctx<'_>, element: NodeId) -> Result<()> {
+    let world_rc = world_for_node(ctx, element)?;
+    let active = {
+        let world = world_rc.borrow();
+        let Some(parsed) = world.document(element) else {
+            return Ok(());
+        };
+        let base = &parsed.document.base;
+        if !crate::dom::tree::is_html_element(base, element.node, "fieldset")
+            || crate::dom::tree::attr(base, element.node, "disabled").is_none()
+        {
+            return Ok(());
+        }
+        let Some(active) = world.active_element(element.document_id()) else {
+            return Ok(());
+        };
+        // Only a control inside the fieldset loses focus; a focused element
+        // elsewhere is untouched.
+        let mut inside = false;
+        let mut cursor = base.get_node(active.node).and_then(|tree| tree.parent);
+        while let Some(current) = cursor {
+            if current == element.node {
+                inside = true;
+                break;
+            }
+            cursor = base.get_node(current).and_then(|tree| tree.parent);
+        }
+        if !inside {
+            return Ok(());
+        }
+        active
+    };
+    if !super::is_focusable(ctx, active)? {
+        super::blur_node(ctx, active)?;
+    }
+    Ok(())
+}
+
 /// Runs the select selectedness rules after an attribute that changes the
 /// available or default selection
 /// (<https://html.spec.whatwg.org/multipage/form-elements.html#the-select-element>).
@@ -2037,6 +2079,9 @@ pub(crate) fn after_attribute_change(
     }
     if matches!(local, "selected" | "multiple" | "size" | "disabled") {
         apply_select_attribute_change(ctx, element, local)?;
+    }
+    if local == "disabled" {
+        apply_disabled_focus_fixup(ctx, element)?;
     }
     if matches!(
         local,
