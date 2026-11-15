@@ -472,11 +472,28 @@ fn has_optgroup_ancestor(base: &BaseDocument, node: BlitzId) -> bool {
     false
 }
 
-/// The `select` whose list of options contains `node`: its nearest ancestor
-/// `select` element, if any.
+/// The `select` whose list of options contains `node`: the option's nearest
+/// ancestor `select`, found by the spec's algorithm.
+///
+/// A `datalist`, `hr`, or `option` ancestor, or a second `optgroup`, ends the
+/// search at null: those elements break the option's connection to a select
+/// (<https://html.spec.whatwg.org/multipage/form-elements.html#get-the-nearest-ancestor-select>).
 pub(crate) fn option_select_owner(base: &BaseDocument, node: BlitzId) -> Option<BlitzId> {
+    let mut ancestor_optgroup = false;
     let mut cursor = base.get_node(node).and_then(|target| target.parent);
     while let Some(current) = cursor {
+        if ["datalist", "hr", "option"]
+            .iter()
+            .any(|local| is_html_element(base, current, local))
+        {
+            return None;
+        }
+        if is_html_element(base, current, "optgroup") {
+            if ancestor_optgroup {
+                return None;
+            }
+            ancestor_optgroup = true;
+        }
         if is_html_element(base, current, "select") {
             return Some(current);
         }

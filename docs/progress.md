@@ -3562,3 +3562,12 @@ indexed-only object requires
 cannot claim two shapes. `common-HTMLOptionsCollection.html` goes 6/8 to 8/8
 and `common-HTMLOptionsCollection-add.html` 1/3 to 3/3; the `html/dom` +
 `dom/events` + forms batch goes from 70,633 to 70,637 with nothing lost.
+
+`option.form` now answers the form owner of the option's nearest ancestor
+`select`, found with the spec's algorithm: a `datalist`, `hr`, or `option`
+ancestor, or a second `optgroup`, ends the search at null
+(<https://html.spec.whatwg.org/multipage/form-elements.html#dom-option-form>).
+`option_select_owner` uses that same algorithm, so an option nested inside one
+of those elements is outside the select's list of options.
+`option-form-ancestor-select.html` goes 0/2 to 2/2 and the `html/dom` +
+`dom/events` + forms batch 70,637 to 70,640 with nothing lost.

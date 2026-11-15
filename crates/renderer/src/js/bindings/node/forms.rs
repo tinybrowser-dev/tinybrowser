@@ -356,9 +356,9 @@ impl<'js> html_select_element_generated::HTMLSelectElement<'js> for JsNode {
 }
 
 impl<'js> html_option_element_generated::HTMLOptionElement<'js> for JsNode {
-    /// <https://html.spec.whatwg.org/multipage/forms.html#dom-fae-form>
+    /// <https://html.spec.whatwg.org/multipage/form-elements.html#dom-option-form>
     fn get_form(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
-        self.form(ctx.clone())
+        self.option_form(ctx.clone())
     }
 
     // https://html.spec.whatwg.org/multipage/form-elements.html#dom-option-label
@@ -938,6 +938,27 @@ impl JsNode {
 
     pub(super) fn set_form_enctype(&self, ctx: Ctx<'_>, value: WebIdlString) -> Result<()> {
         self.set_attribute(ctx, WebIdlString("formenctype".into()), value)
+    }
+
+    /// The form owner of an option's nearest ancestor `select`: an option has
+    /// no form owner of its own, and a `datalist`, `hr`, `option`, or second
+    /// `optgroup` between it and the select cuts the connection
+    /// (<https://html.spec.whatwg.org/multipage/form-elements.html#dom-option-form>).
+    pub(super) fn option_form<'js>(&self, ctx: Ctx<'js>) -> Result<Value<'js>> {
+        let form = {
+            let world = world(&ctx)?;
+            let world = world.borrow();
+            world.document(self.handle.get().0).and_then(|parsed| {
+                let id = self.handle.get().0;
+                let select =
+                    crate::dom::forms::option_select_owner(&parsed.document.base, id.node)?;
+                form_owner_of(&parsed.document.base, id.document, select)
+            })
+        };
+        match form {
+            Some(form) => wrap_node(&ctx, form),
+            None => Ok(Value::new_null(ctx)),
+        }
     }
 
     /// <https://html.spec.whatwg.org/multipage/forms.html#dom-fae-form>
