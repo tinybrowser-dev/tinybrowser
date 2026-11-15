@@ -1751,7 +1751,7 @@ impl JsNode {
             return Vec::new();
         };
         let base = &mut parsed.document.base;
-        base.resolve(0.0);
+        base.resolve(crate::animation_seconds());
         let Some(node) = base.get_node(id.node) else {
             return Vec::new();
         };
@@ -1822,7 +1822,7 @@ impl JsNode {
             return false;
         };
         let base = &mut parsed.document.base;
-        base.resolve(0.0);
+        base.resolve(crate::animation_seconds());
         let Some(node) = base.get_node(id.node) else {
             return false;
         };
@@ -1872,7 +1872,7 @@ impl JsNode {
             return Ok(());
         };
         let id = self.handle.get().0;
-        parsed.document.base.resolve(0.0);
+        parsed.document.base.resolve(crate::animation_seconds());
         // A boxless element has nothing to bring into view
         // (<https://drafts.csswg.org/cssom-view/#dom-element-scrollintoview>).
         if !parsed
@@ -1943,7 +1943,7 @@ impl JsNode {
             return Ok(0.0);
         };
         let base = &mut parsed.document.base;
-        base.resolve(0.0);
+        base.resolve(crate::animation_seconds());
         let Some(node) = base.get_node(self.handle.get().0.node) else {
             return Ok(0.0);
         };

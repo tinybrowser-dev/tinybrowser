@@ -4715,7 +4715,7 @@ fn current_color(ctx: &Ctx<'_>, object: &Object<'_>) -> Result<style::color::Abs
     let Some(current) = with_canvas_document(ctx, object, |node, parsed| {
         let node = node?;
         let base = &mut parsed.document.base;
-        base.resolve(0.0);
+        base.resolve(crate::animation_seconds());
         let styles = base
             .get_node(node.node)
             .and_then(|node| node.primary_styles())?;

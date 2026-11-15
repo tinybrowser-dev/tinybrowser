@@ -154,7 +154,7 @@ fn potentially_scrollable_for_scrolling_element(parsed: &Parsed, element: NodeId
 /// potentially scrollable, and null otherwise; every other document answers
 /// with its root element or null.
 pub(super) fn scrolling_element(parsed: &mut Parsed) -> Option<NodeId> {
-    parsed.document.base.resolve(0.0);
+    parsed.document.base.resolve(crate::animation_seconds());
     if parsed.quirks_mode == QuirksMode::Quirks {
         let body = body_element(parsed)?;
         return (!potentially_scrollable_for_scrolling_element(parsed, body)).then_some(body);
@@ -214,7 +214,7 @@ fn scroll_to(
     let x = if x.is_finite() { x } else { 0.0 };
     let y = if y.is_finite() { y } else { 0.0 };
     let quirks = parsed.quirks_mode == QuirksMode::Quirks;
-    parsed.document.base.resolve(0.0);
+    parsed.document.base.resolve(crate::animation_seconds());
     let root = root_element(parsed);
     let target = if root == Some(element) {
         if quirks {
@@ -263,7 +263,7 @@ pub(crate) fn element_scroll_position(ctx: &Ctx<'_>, id: NodeId, vertical: bool)
     let Some(mut parsed) = world.document_mut(id) else {
         return 0.0;
     };
-    parsed.document.base.resolve(0.0);
+    parsed.document.base.resolve(crate::animation_seconds());
     scroll_position(&parsed, id, vertical)
 }
 
@@ -331,7 +331,7 @@ fn viewport_scroll_offset(ctx: Ctx<'_>) -> Vec<f64> {
     let Some(mut parsed) = world.document_mut_by_id(document) else {
         return vec![0.0, 0.0];
     };
-    parsed.document.base.resolve(0.0);
+    parsed.document.base.resolve(crate::animation_seconds());
     let scroll = parsed.document.base.viewport_scroll();
     vec![scroll.x, scroll.y]
 }
@@ -350,7 +350,7 @@ fn scroll_viewport(ctx: Ctx<'_>, x: f64, y: f64, behavior: String) {
         return;
     };
     let behavior = scroll_behavior(&behavior);
-    parsed.document.base.resolve(0.0);
+    parsed.document.base.resolve(crate::animation_seconds());
     let Some(root) = root_element(&parsed) else {
         return;
     };

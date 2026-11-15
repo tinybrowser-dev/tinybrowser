@@ -1076,7 +1076,7 @@ fn resolved_style<'js>(
     // mutations made earlier in the same script, including layout-dependent
     // used values
     // (<https://drafts.csswg.org/cssom/#dom-window-getcomputedstyle>).
-    base.resolve(0.0);
+    base.resolve(crate::animation_seconds());
     match computed_pseudo_element(pseudo) {
         Some(pseudo) => base.resolved_pseudo_style_value(id.node, pseudo, &property),
         // A pseudo-element the engine does not cascade has no value of its own
@@ -1173,7 +1173,7 @@ fn has_computed_style<'js>(ctx: Ctx<'js>, element: Value<'js>) -> bool {
         // Reading a computed style forces a style flush, so connectedness and
         // flat-tree membership describe the tree as the page left it
         // (<https://drafts.csswg.org/cssom/#dom-window-getcomputedstyle>).
-        base.resolve(0.0);
+        base.resolve(crate::animation_seconds());
         if !crate::dom::tree::is_connected(base, id.node)
             || !crate::dom::tree::is_in_flat_tree(base, id.node)
         {
@@ -1201,7 +1201,7 @@ fn has_computed_style<'js>(ctx: Ctx<'js>, element: Value<'js>) -> bool {
         return false;
     };
     let base = &mut parsed.document.base;
-    base.resolve(0.0);
+    base.resolve(crate::animation_seconds());
     base.get_node(container.node).is_some_and(|node| {
         node.try_stylo_element_data()
             .as_ref()
@@ -1339,7 +1339,7 @@ pub(crate) fn layout_boxes(world: &World, document: NodeId) -> Vec<crate::render
         return Vec::new();
     };
     let base = &mut parsed.document.base;
-    base.resolve(0.0);
+    base.resolve(crate::animation_seconds());
     let mut boxes = Vec::new();
     let mut stack = vec![base.root_node().id];
     while let Some(id) = stack.pop() {

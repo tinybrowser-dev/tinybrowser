@@ -159,9 +159,14 @@ Teaching the Servo style backend the property belongs upstream
 engine. The engine's model has these gaps:
 
 - The viewport's scrollable range is the root element's own scrollable
-  overflow. A body element with `overflow: hidden`, `scroll`, or `auto` does not
-  contribute its scrolling area when the root element's overflow is `visible`,
-  although CSS overflow propagates the body's overflow to the viewport
+  overflow, extended by the boxes Taffy hoists to the initial containing block
+  (the absolutely positioned ones, whose layout the root's positioning pass
+  produces after the root's own): their extents are added unless they are
+  `position: fixed`, which does not scroll with the document
+  (<https://drafts.csswg.org/css-overflow-3/#scrollable>). A body element with
+  `overflow: hidden`, `scroll`, or `auto` still does not contribute its
+  scrolling area when the root element's overflow is `visible`, although CSS
+  overflow propagates the body's overflow to the viewport
   (<https://drafts.csswg.org/css-overflow-3/#overflow-propagation>). A page that
   hides body overflow and then scrolls the document clamps to zero.
 - A child frame's viewport is its iframe's content box, forwarded by
@@ -170,9 +175,16 @@ engine. The engine's model has these gaps:
   the engine re-lays out the child when the box size changes. The iframe's
   `width`/`height` attributes and CSS size reach the child; scrollbar gutters
   and `scrolling="no"` still do not reduce it.
-- `scroll-behavior: smooth` starts Blitz's animation, but the in-process WPT
-  harness does not drive the renderer's frame loop to completion, so a test that
-  waits for the animation end times out. Instant and auto scrolling work.
+- `scroll-behavior: smooth` and a `behavior: "smooth"` request animate the
+  scrolling box they move. Each box animates independently: a `scrollIntoView`
+  of an element inside a scroller and the viewport it finally reaches run as
+  two animations, and two `scrollIntoView` calls on unrelated scrollers both
+  complete. The animation is sampled from the document's animation timeline,
+  the same clock the resolving frame reads, so it advances with frames rather
+  than with the wall clock. The engine dispatches no `scroll` or `scrollend`
+  events for a programmatic scroll, so a test that awaits `scrollend` after
+  one times out (`scrollIntoView-smooth.html`, `scrollIntoView-multiple*.html`,
+  and the `dom/events/scrolling/scrollend-*` files).
 - `scrollIntoView` scrolls every scrolling box in the target's containing
   block chain, innermost to outermost, then the viewport. The block and inline
   positions are mapped through each box's writing mode, and the `container`

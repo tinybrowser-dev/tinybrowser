@@ -65,6 +65,20 @@ pub use protocol::{
 pub use remote::RemoteValue;
 pub use storage::PendingStorageEvent;
 
+/// The document animation timeline, in seconds.
+///
+/// It follows the clock the page's timers use (`tokio::time`, which the WPT
+/// harness advances virtually), so a CSS transition and a smooth scroll make
+/// progress as frames run rather than only with the wall clock
+/// (<https://drafts.csswg.org/cssom-view/#scroll-an-element>).
+pub(crate) fn animation_seconds() -> f64 {
+    static EPOCH: std::sync::OnceLock<tokio::time::Instant> = std::sync::OnceLock::new();
+    EPOCH
+        .get_or_init(tokio::time::Instant::now)
+        .elapsed()
+        .as_secs_f64()
+}
+
 /// The current document readiness
 /// (<https://html.spec.whatwg.org/multipage/dom.html#current-document-readiness>).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

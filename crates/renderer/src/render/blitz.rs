@@ -37,7 +37,7 @@ pub(crate) fn resolve_until_settled(base: &mut blitz_dom::BaseDocument) -> u32 {
         if base.has_pending_critical_resources() || !base.needs_resolve() {
             break;
         }
-        base.resolve(0.0);
+        base.resolve(crate::animation_seconds());
         passes += 1;
         // An animation sets `needs_resolve` for the *next* rendering
         // opportunity, not this one.
@@ -71,7 +71,7 @@ pub(crate) fn render_html(html: &str, width: u32, height: u32) -> Result<RgbaIma
     };
     let document = blitz_html::HtmlDocument::from_html(html, config);
     let mut base: blitz_dom::BaseDocument = document.into();
-    base.resolve(0.0);
+    base.resolve(crate::animation_seconds());
     paint(&mut base, width, height)
 }
 
@@ -206,7 +206,7 @@ mod tests {
         let mut base: blitz_dom::BaseDocument = document.into();
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
-            base.resolve(0.0);
+            base.resolve(crate::animation_seconds());
             base.handle_messages();
             // Deliver every queued fetch the way the document would: read
             // the CSS over plain TCP and hand the bytes to the handler.

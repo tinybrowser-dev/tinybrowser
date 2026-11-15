@@ -2862,3 +2862,48 @@ identity gap recorded in `docs/limitations.md`.
 `html/browsers`, which exercises the pending-frame proxy, measures 1012/2689
 subtests and 537/758 files. `cargo fmt --check`, `tools/check clippy`, and the
 renderer (175), webidl-bindgen (42), and wpt-harness (30) test binaries pass.
+
+Smooth scrolling now runs on the document's animation timeline and each
+scrolling box animates on its own. Blitz timed a smooth scroll with
+`SystemTime::now()` and kept one animation slot for the whole document, so a
+`scrollIntoView` of a container was cancelled when its viewport scroll
+started. `BaseDocument::resolve` now stores the embedder's animation time in
+`animation_time_ms`, which `start_scroll_animation` and
+`resolve_scroll_animation` read, and `ScrollAnimations` holds one smooth scroll
+per `ScrollTarget` beside the single fling
+(<https://drafts.csswg.org/cssom-view/#scroll-an-element>). A user-initiated
+scroll aborts the smooth scroll of the box it moves, not every smooth scroll in
+the document. The renderer passes `crate::animation_seconds()` — the
+`tokio::time` clock the WPT harness advances virtually — to every
+`BaseDocument::resolve` call, so an animation, a timer, and a frame observe the
+same time.
+
+The viewport's scrollable overflow also unions the boxes Taffy hoists to the
+initial containing block, which its root positioning pass produces after the
+root's own layout: absolutely positioned content past the root's height now
+extends the scroll range, while a `position: fixed` box does not
+(<https://drafts.csswg.org/css-overflow-3/#scrollable>).
+
+Evidence: `css/cssom-view` 1760 to **1897** passing subtests, no lost
+subtests, and 209 of 240 files OK (from 208; `background-change-during-smooth-scroll.html`
+moves TIMEOUT to OK). `scroll-behavior-main-frame-root` 2/40 to 39/40,
+`main-frame-window` 2/28 to 27/28, `subframe-root` 20/40 to 39/40,
+`subframe-window` 14/28 to 27/28, `scroll-behavior-element` 19/39 to 38/39,
+`scroll-behavior-smooth-positions` 0/23 to 22/23, and
+`scroll-behavior-default-css` 1/3 to 2/3. Every remaining failure in those
+files is `waitForCompositorReady()`, which needs Web Animations
+(`document.body.animate(...).finished`). `scrollIntoView-smooth.html` and the
+two `scrollIntoView-multiple*` files stay TIMEOUT at 0/4: they await
+`scrollend`, which the engine does not dispatch (recorded in
+`docs/limitations.md`).
+
+Regressions are clean: `css/css-transitions` 945 and `css/css-animations` 812
+unchanged, and `dom/events` 665, `css/cssom` 3674, `css/selectors` 4791,
+`intersection-observer` 185, `resize-observer` 50, `html/dom` 65341, and
+`html/semantics/forms` 4524 all with no lost subtests. The loaded
+`dom/events/scrolling` files and `css/css-scroll-snap` (21/173) match the
+parent commit's results exactly, and the double-submit pair keeps alternating
+its one flaky subtest (`form-double-submit-3.html` passes 1 of 3 isolated
+runs). `cargo fmt --check` (main tree; the fork's remaining diffs are
+pre-existing), `tools/check clippy`, and the renderer (175), webidl-bindgen
+(42), and wpt-harness (30) test binaries pass.
