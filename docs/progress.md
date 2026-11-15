@@ -3439,3 +3439,14 @@ queue the task (the parser path has no attribute-change hook yet), recorded in
 `form-double-submit-*` flake recovers in isolation). `cargo fmt --check`,
 `tools/check clippy`, and the renderer (176), wpt-harness (29), and one other
 test pass.
+
+`navigator.windowControlsOverlay` now exists as a `WindowControlsOverlay`
+object. The UA has no window controls overlay, so `visible` is false, the
+`[SameObject]` instance is not constructible, `getTitlebarAreaRect()` answers
+an empty `DOMRect`, and `ongeometrychange` is a real event handler attribute
+that never runs because no `geometrychange` can fire
+(<https://wicg.github.io/window-controls-overlay/#windowcontrolsany>).
+`navigator-window-controls-overlay.tentative.html` goes from 0/7 to **7/7**
+and `html/webappapis` from 2,613 to **2,622** with no losses. `cargo fmt
+--check`, `tools/check clippy`, and the renderer (176), wpt-harness (29), and
+one other test pass.

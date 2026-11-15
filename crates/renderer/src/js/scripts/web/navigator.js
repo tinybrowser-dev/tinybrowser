@@ -392,6 +392,65 @@
     }
   }
 
+  // The UA has no window controls overlay (it is a desktop-window feature),
+  // so the object reports `visible: false`, an empty titlebar area, and a
+  // handler that never runs. The interface is not constructible; the
+  // `[SameObject]` member answers the realm's one instance
+  // (<https://wicg.github.io/window-controls-overlay/#windowcontrolsany>).
+  if (host.__tbIsWorker !== true) {
+    const navigatorBrand = host.slots('webidl.Navigator');
+    const overlayKey = host.slots('tinybrowser.WindowControlsOverlay');
+    function WindowControlsOverlay() {
+      throw new TypeError('Illegal constructor');
+    }
+    WindowControlsOverlay.prototype = Object.create(EventTarget.prototype, {
+      constructor: { value: WindowControlsOverlay, writable: true, configurable: true },
+      visible: {
+        get() {
+          if (!overlayKey.has(this)) throw new TypeError('Illegal invocation');
+          return false;
+        },
+        enumerable: true, configurable: true,
+      },
+      getTitlebarAreaRect: {
+        value: function getTitlebarAreaRect() {
+          if (!overlayKey.has(this)) throw new TypeError('Illegal invocation');
+          return new DOMRect(0, 0, 0, 0);
+        },
+        writable: true, enumerable: true, configurable: true,
+      },
+      ongeometrychange: {
+        get() {
+          if (!overlayKey.has(this)) throw new TypeError('Illegal invocation');
+          return overlayKey.get(this).handler;
+        },
+        set(value) {
+          if (!overlayKey.has(this)) throw new TypeError('Illegal invocation');
+          overlayKey.get(this).handler = typeof value === 'function' ? value : null;
+        },
+        enumerable: true, configurable: true,
+      },
+    });
+    __tbDefineProperty(WindowControlsOverlay.prototype, Symbol.toStringTag, {
+      value: 'WindowControlsOverlay', writable: false, enumerable: false, configurable: true,
+    });
+    const windowControlsOverlay = Object.create(WindowControlsOverlay.prototype);
+    overlayKey.set(windowControlsOverlay, { handler: null });
+    __tbDefineProperty(globalThis, 'WindowControlsOverlay', {
+      value: WindowControlsOverlay, writable: true, configurable: true,
+    });
+    const overlayGetter = function() {
+      if (!navigatorBrand.has(this)) throw new TypeError('Illegal invocation');
+      return windowControlsOverlay;
+    };
+    __tbDefineProperty(overlayGetter, 'name', {
+      __proto__: null, value: 'get windowControlsOverlay', configurable: true,
+    });
+    __tbDefineProperty(Navigator.prototype, 'windowControlsOverlay', {
+      __proto__: null, get: overlayGetter, enumerable: true, configurable: true,
+    });
+  }
+
   if (host.__tbSecureContext === true) {
     Object.defineProperty(globalThis, 'NavigatorUAData', {
       value: NavigatorUAData, writable: true, configurable: true,
