@@ -230,6 +230,61 @@ impl<'js> html_style_element_generated::HTMLStyleElement<'js> for JsNode {
     }
 }
 
+impl<'js> html_dialog_element_generated::HTMLDialogElement<'js> for JsNode {
+    // https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:dom-dialog-returnvalue
+    fn get_return_value(&self, ctx: &Ctx<'js>) -> Result<rquickjs::String<'js>> {
+        let value = super::dialog::return_value(ctx, self.handle.get().0)?;
+        rquickjs::String::from_str(ctx.clone(), &value.to_string_lossy())
+    }
+
+    // https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:dom-dialog-returnvalue
+    fn set_return_value(&self, ctx: &Ctx<'js>, value: rquickjs::String<'js>) -> Result<()> {
+        super::dialog::set_return_value(
+            ctx,
+            self.handle.get().0,
+            crate::dom_string::DomString::from_utf16(value.to_utf16()?),
+        )
+    }
+
+    // The computed closed-by state: the attribute's keyword, with the Auto
+    // state reporting `closerequest` for a modal dialog and `none` otherwise.
+    // The generator owns the `[ReflectSetter]` setter
+    // (<https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:dom-dialog-closedby>).
+    fn get_closed_by(&self, ctx: &Ctx<'js>) -> Result<rquickjs::String<'js>> {
+        let state = super::dialog::closed_by(ctx, self.handle.get().0);
+        rquickjs::String::from_str(ctx.clone(), state)
+    }
+
+    // https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:dom-dialog-show
+    fn show(&self, ctx: Ctx<'js>) -> Result<()> {
+        super::dialog::show(&ctx, self.handle.get().0)
+    }
+
+    // https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:dom-dialog-close
+    fn close(&self, ctx: Ctx<'js>, arg_0: Option<rquickjs::String<'js>>) -> Result<()> {
+        let result = arg_0
+            .map(|value| {
+                value
+                    .to_utf16()
+                    .map(crate::dom_string::DomString::from_utf16)
+            })
+            .transpose()?;
+        super::dialog::close(&ctx, self.handle.get().0, result)
+    }
+
+    // https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:dom-dialog-requestclose
+    fn request_close(&self, ctx: Ctx<'js>, arg_0: Option<rquickjs::String<'js>>) -> Result<()> {
+        let result = arg_0
+            .map(|value| {
+                value
+                    .to_utf16()
+                    .map(crate::dom_string::DomString::from_utf16)
+            })
+            .transpose()?;
+        super::dialog::request_close(&ctx, self.handle.get().0, result)
+    }
+}
+
 impl<'js> html_script_element_generated::HTMLScriptElement<'js> for JsNode {
     // https://html.spec.whatwg.org/multipage/scripting.html#dom-script-crossorigin
     fn get_cross_origin(&self, ctx: &Ctx<'js>) -> Result<Option<rquickjs::String<'js>>> {

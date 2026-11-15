@@ -1077,6 +1077,16 @@ queue for one to run in (`docs/upstream.md`). The `submit`/`reset` stop at an
 ancestor form during bubbling follows the browser quirk recorded in
 <https://github.com/whatwg/html/issues/3599>.
 
+`dialog` elements support `show()`, `close()`, `requestClose()`,
+`returnValue`, and `closedBy`, with the `beforetoggle`, `toggle`, `cancel`,
+and `close` events and a `method=dialog` form submission closing the nearest
+ancestor dialog. `showModal()` is still absent: it needs a top layer to be the
+top-most modal dialog, to block the document and make the rest inert, and to
+carry the `:modal`/`::backdrop` rendering, none of which Blitz has. The
+`closedby` Auto state therefore always computes to `none`, and an image
+submit button closes its dialog with the previous return value because the
+click coordinate is not tracked.
+
 ## Cookie Store
 
 `CookieStore`, `CookieChangeEvent`, and the `cookieStore` attribute are a

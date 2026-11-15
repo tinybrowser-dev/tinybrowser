@@ -1587,9 +1587,10 @@ impl Worker {
             // there; a request cannot arise
             // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#textFieldSelection>).
             | RealmRequest::SelectionChanged(_)
-            // A worker global has no `details` element, so no toggle task can
-            // arise there.
-            | RealmRequest::DetailsToggle { .. }
+            // A worker global has no `details` element and no dialog, so no
+            // toggle or close task can arise there.
+            | RealmRequest::ToggleEvent { .. }
+            | RealmRequest::DialogClose(_)
             | RealmRequest::WorkerBlocked(_, _)
             | RealmRequest::DeclarativeRefresh(_)
             | RealmRequest::HtmlWrite(_)

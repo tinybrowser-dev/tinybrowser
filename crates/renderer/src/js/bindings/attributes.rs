@@ -1932,17 +1932,19 @@ fn refresh_meta_pragmas(ctx: &Ctx<'_>, element: NodeId, local: &str) {
 }
 
 /// Queues a `details` element's `toggle` task when its `open` attribute
-/// changed state. The task reports the state the burst started from and the
-/// state it ends at, so a second change before the task runs only moves the
-/// end state
+/// A `details` element's `open` change queues its `toggle` task; a dialog's is
+/// handled by `show()`, `close()`, and `requestClose()`, and its own attribute
+/// change steps only touch the close watcher this engine does not have. The
+/// task reports the state the burst started from and the state it ends at, so
+/// a second change before the task runs only moves the end state
 /// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#the-details-element-attr-attribute-change-steps>).
-fn queue_details_toggle_for_open_change(
+fn apply_open_attribute_change(
     ctx: &Ctx<'_>,
     element: NodeId,
     previous: Option<&str>,
 ) -> Result<()> {
     let owner = world_for_node(ctx, element)?;
-    let is_details_open = {
+    let open = {
         let world = owner.borrow();
         world.document(element).and_then(|parsed| {
             let base = &parsed.document.base;
@@ -1950,12 +1952,14 @@ fn queue_details_toggle_for_open_change(
                 .then(|| crate::dom::tree::attr(base, element.node, "open").is_some())
         })
     };
-    if let Some(open) = is_details_open {
+    if let Some(open) = open {
         let old_open = previous.is_some();
         if old_open != open {
-            owner
-                .borrow_mut()
-                .queue_details_toggle(element, old_open, open);
+            owner.borrow_mut().queue_toggle_task(
+                element,
+                if old_open { "open" } else { "closed" },
+                if open { "open" } else { "closed" },
+            );
         }
     }
     Ok(())
@@ -1979,7 +1983,7 @@ pub(crate) fn after_attribute_change(
         update_handler_attribute(ctx, element, local, HandlerUpdate::Set);
     }
     if local == "open" {
-        queue_details_toggle_for_open_change(ctx, element, previous)?;
+        apply_open_attribute_change(ctx, element, previous)?;
     }
     if local == "type" {
         apply_input_type_change(ctx, element, previous)?;

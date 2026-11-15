@@ -337,19 +337,9 @@ impl Document {
                 self.fire_js(|js| js.fire_selection_changed(node));
                 self.adopt_js_work();
             }
-            Task::DetailsToggle(node) => {
-                // The task fires the state the burst started from and the
-                // state it ends at; a later change before this ran only moved
-                // the end state
-                // (<https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-details-toggle-event-task>).
-                if let Some(index) = self
-                    .pending_details_toggles
-                    .iter()
-                    .position(|(pending, _, _)| *pending == node)
-                {
-                    let (_, old_open, new_open) = self.pending_details_toggles.remove(index);
-                    self.fire_js(|js| js.fire_details_toggle(node, old_open, new_open));
-                }
+            Task::ToggleEvent(node) => self.run_toggle_task(node),
+            Task::DialogClose(node) => {
+                self.fire_js(|js| js.fire_dialog_close(node));
                 self.adopt_js_work();
             }
             Task::ScrollEvents => {
@@ -365,6 +355,23 @@ impl Document {
                 self.adopt_js_work();
             }
         }
+    }
+
+    /// Fires the coalesced `toggle` event of one element: the state the burst
+    /// started from and the state it ended at. A later change before the task
+    /// ran only moved the end state
+    /// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-details-toggle-event-task>,
+    /// <https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-dialog-toggle-event-task>).
+    fn run_toggle_task(&mut self, node: NodeId) {
+        if let Some(index) = self
+            .pending_toggles
+            .iter()
+            .position(|(pending, _, _)| *pending == node)
+        {
+            let (_, old_state, new_state) = self.pending_toggles.remove(index);
+            self.fire_js(|js| js.fire_toggle_task(node, &old_state, &new_state));
+        }
+        self.adopt_js_work();
     }
 
     /// Drains the realm's outbox in enqueue order. Requests generated while
@@ -467,11 +474,12 @@ impl Document {
                 self.frame_traversals.push(delta);
             }
             RealmRequest::SelectionChanged(node) => self.push_selection_changed(node),
-            RealmRequest::DetailsToggle {
+            RealmRequest::ToggleEvent {
                 id,
-                old_open,
-                new_open,
-            } => self.push_details_toggle(id, old_open, new_open),
+                old_state,
+                new_state,
+            } => self.push_toggle_task(id, old_state, new_state),
+            RealmRequest::DialogClose(id) => self.push_dialog_close(id),
             RealmRequest::CspViolation(Some(target), violations) => {
                 self.fire_csp_violations(target, &violations);
             }

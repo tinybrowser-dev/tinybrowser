@@ -884,11 +884,58 @@
     return concatBytes(chunks);
   };
 
+  // The submitter's method: its own `formmethod` when that attribute is
+  // present, otherwise the form's `method`. Both are enumerated attributes
+  // whose keywords are `get`, `post`, and `dialog`, with `get` as the
+  // invalid-value default
+  // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#attr-fs-method>).
+  const formMethod = (form, submitter) => {
+    const attribute = submitter !== undefined && submitter !== null
+        && submitter.hasAttribute('formmethod')
+      ? submitter.getAttribute('formmethod')
+      : form.getAttribute('method');
+    if (attribute === null) return 'get';
+    const keyword = __tbAsciiLower(attribute);
+    return keyword === 'post' || keyword === 'dialog' ? keyword : 'get';
+  };
+
+  // A `method=dialog` submission closes the form's nearest ancestor dialog
+  // instead of navigating. The result starts as null, so closing without a
+  // submitter or without a `value` attribute leaves the dialog's return value
+  // alone
+  // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#form-submission-algorithm>).
+  const submitDialogForm = (form, submitter) => {
+    const dialog = form.closest('dialog');
+    if (dialog === null) return;
+    let result = null;
+    if (submitter !== undefined && submitter !== null) {
+      const tag = submitter.tagName;
+      const isSubmit = tag === 'BUTTON'
+        ? submitter.type === 'submit'
+        : tag === 'INPUT' && (submitter.type === 'submit' || submitter.type === 'image');
+      // An image button's result would be its selected coordinate; this engine
+      // does not track the click position, so it closes with the previous
+      // return value (recorded in docs/limitations.md).
+      if (isSubmit && submitter.type !== 'image' && submitter.hasAttribute('value')) {
+        result = submitter.value;
+      }
+    }
+    if (result === null) dialog.close();
+    else dialog.close(result);
+  };
+
   // A submit button overrides its form's action/method/enctype/target through
   // its `form*` attributes; the engine resolves all four, including the
   // submitter's state, so the form and the button cannot disagree
   // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#form-submission-algorithm>).
   const submitForm = (form, formData, submitter) => {
+    // `method=dialog` never navigates, and the engine's navigation plan
+    // reports no plan for it, so it is handled here
+    // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#form-submission-algorithm>).
+    if (formMethod(form, submitter) === 'dialog') {
+      submitDialogForm(form, submitter);
+      return;
+    }
     const plan = host.__tbFormPlan(form, submitter === undefined ? null : submitter);
     if (plan === null) return;
     const action = plan[0];

@@ -1152,7 +1152,31 @@ pub(crate) fn fire_toggle(
     old_state: &str,
     new_state: &str,
 ) -> Result<()> {
-    let class = realm_event(ctx, JsEvent::trusted("toggle", false, false))?;
+    fire_toggle_event(
+        ctx, target, "toggle", old_state, new_state, None, false, false,
+    )?;
+    Ok(())
+}
+
+/// Fires one trusted `ToggleEvent` and reports whether it was not canceled, so
+/// `show()` can stop when a `beforetoggle` listener prevents the change
+/// (<https://html.spec.whatwg.org/multipage/popover.html#the-toggleevent-interface>,
+/// <https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:dom-dialog-show>).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one parameter per ToggleEvent member plus its dispatch flags"
+)]
+pub(crate) fn fire_toggle_event(
+    ctx: &Ctx<'_>,
+    target: EventTargetKey,
+    typ: &str,
+    old_state: &str,
+    new_state: &str,
+    source: Option<crate::dom::tree::NodeId>,
+    bubbles: bool,
+    cancelable: bool,
+) -> Result<bool> {
+    let class = realm_event(ctx, JsEvent::trusted(typ, bubbles, cancelable))?;
     if bindings::world(ctx)?
         .borrow()
         .event_ctors
@@ -1162,9 +1186,12 @@ pub(crate) fn fire_toggle(
     }
     class.prop("oldState", old_state)?;
     class.prop("newState", new_state)?;
-    class.prop("source", Value::new_null(ctx.clone()))?;
-    dispatch(ctx, target, &class, None)?;
-    Ok(())
+    let source = match source {
+        Some(id) => bindings::wrap_node(ctx, id)?,
+        None => Value::new_null(ctx.clone()),
+    };
+    class.prop("source", source)?;
+    dispatch(ctx, target, &class, None)
 }
 
 /// Fires a trusted event that crosses shadow boundaries. `input` and

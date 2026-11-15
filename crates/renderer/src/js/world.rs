@@ -1620,14 +1620,19 @@ pub(crate) enum RealmRequest {
     /// A text control's selection changed extent or direction; the document
     /// queues its `select` task.
     SelectionChanged(NodeId),
-    /// A `details` element's `open` attribute changed; the document queues its
-    /// `toggle` task with the states the element moved between
-    /// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-details-toggle-event-task>).
-    DetailsToggle {
+    /// A `details` element's `open` attribute changed, or a `dialog` showed or
+    /// closed; the document queues its `toggle` task with the states the
+    /// element moved between
+    /// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-details-toggle-event-task>,
+    /// <https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-dialog-toggle-event-task>).
+    ToggleEvent {
         id: NodeId,
-        old_open: bool,
-        new_open: bool,
+        old_state: String,
+        new_state: String,
     },
+    /// A closed dialog's queued `close` event
+    /// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:close-event>).
+    DialogClose(NodeId),
     /// One policy's violations, queued because the check ran where no event
     /// can be dispatched directly. `Some` names the node the event belongs
     /// to; `None` means the realm has no document — a worker — and the
@@ -1782,6 +1787,15 @@ pub(crate) struct DocumentState {
     /// write, closed by clearing on removal. Clones copy the slot, adopts
     /// retarget it, and `forget_document` drops a dead document's entries.
     pub(crate) nonce_slots: HashMap<NodeId, String>,
+    /// Per-dialog `returnValue`, which is element state rather than a
+    /// reflected content attribute. It starts empty and is only written by
+    /// the IDL setter or by closing the dialog with a value
+    /// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:dom-dialog-returnvalue>).
+    pub(crate) dialog_return_values: HashMap<NodeId, crate::dom_string::DomString>,
+    /// The element each shown dialog focuses again when it closes, captured
+    /// before the dialog focusing steps run
+    /// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:previously-focused-element>).
+    pub(crate) dialog_previously_focused: HashMap<NodeId, Option<NodeId>>,
     /// The executing script's URL, line, and column captured when a
     /// subresource URL entered an element: a `src` set, or an insertion when
     /// no set chose the URL. A later CSP violation for that element's load
@@ -1887,6 +1901,8 @@ impl DocumentState {
         self.selections.clear();
         self.remote_ids.clear();
         self.remote_nodes.clear();
+        self.dialog_return_values.clear();
+        self.dialog_previously_focused.clear();
     }
 
     /// Drops the entries one document's nodes left behind.
@@ -1906,6 +1922,10 @@ impl DocumentState {
         self.reported_handlers
             .retain(|(node, _), _| node.document != document);
         self.controls.retain(|node, _| node.document != document);
+        self.dialog_return_values
+            .retain(|node, _| node.document != document);
+        self.dialog_previously_focused
+            .retain(|node, _| node.document != document);
     }
 }
 
@@ -3425,16 +3445,27 @@ impl World {
     }
 
     /// Queues the `toggle` task of a `details` element whose `open` attribute
-    /// changed, so the event fires after the current script finishes
-    /// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-details-toggle-event-task>).
-    pub(crate) fn queue_details_toggle(&mut self, id: NodeId, old_open: bool, new_open: bool) {
+    /// changed or of a `dialog` that showed or closed, so the event fires
+    /// after the current script finishes
+    /// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-details-toggle-event-task>,
+    /// <https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-dialog-toggle-event-task>).
+    pub(crate) fn queue_toggle_task(&mut self, id: NodeId, old_state: &str, new_state: &str) {
         self.outbox
             .borrow_mut()
-            .push_back(RealmRequest::DetailsToggle {
+            .push_back(RealmRequest::ToggleEvent {
                 id,
-                old_open,
-                new_open,
+                old_state: old_state.to_owned(),
+                new_state: new_state.to_owned(),
             });
+    }
+
+    /// Queues the `close` event a dialog fires on the user interaction task
+    /// source
+    /// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:close-event>).
+    pub(crate) fn queue_dialog_close(&mut self, id: NodeId) {
+        self.outbox
+            .borrow_mut()
+            .push_back(RealmRequest::DialogClose(id));
     }
 
     /// Queues violations for targets the caller cannot dispatch into (the

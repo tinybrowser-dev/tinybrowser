@@ -11,7 +11,8 @@ use crate::dom::tree::NodeId;
 use crate::js::world::Handle;
 
 pub(super) mod core;
-pub(crate) mod document;
+pub(crate) mod dialog;
+pub(super) mod document;
 pub(super) mod element;
 pub(super) mod forms;
 pub(super) mod html_elements;

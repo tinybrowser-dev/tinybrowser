@@ -527,22 +527,26 @@ pub(crate) fn fire_selection_changed(ctx: &Ctx<'_>, id: NodeId) -> Result<()> {
 }
 
 /// Fires the queued `toggle` event of a `details` element whose `open`
-/// attribute changed. The event is a `ToggleEvent` that reports the state the
-/// burst started from and the state it ended at, does not bubble, and is not
-/// cancelable
-/// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-details-toggle-event-task>).
-pub(crate) fn fire_details_toggle(
+/// attribute changed, or of a dialog that showed or closed. The event is a
+/// `ToggleEvent` that reports the state the burst started from and the state
+/// it ended at, does not bubble, and is not cancelable; a dialog's `toggle`
+/// carries the invoker in `source`, which is null for a direct method call
+/// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-details-toggle-event-task>,
+/// <https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-dialog-toggle-event-task>).
+pub(crate) fn fire_toggle_task(
     ctx: &Ctx<'_>,
     id: NodeId,
-    old_open: bool,
-    new_open: bool,
+    old_state: &str,
+    new_state: &str,
 ) -> Result<()> {
-    events::fire_toggle(
-        ctx,
-        EventTargetKey::Node(id),
-        if old_open { "open" } else { "closed" },
-        if new_open { "open" } else { "closed" },
-    )
+    events::fire_toggle(ctx, EventTargetKey::Node(id), old_state, new_state)
+}
+
+/// Fires the `close` event a closed dialog queued on the user interaction task
+/// source. It does not bubble and is not cancelable
+/// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:close-event>).
+pub(crate) fn fire_dialog_close(ctx: &Ctx<'_>, id: NodeId) -> Result<()> {
+    events::fire_trusted(ctx, EventTargetKey::Node(id), "close", false, false)
 }
 
 /// Fires one queued scroll event. A viewport scroll reports at the Document

@@ -1226,17 +1226,29 @@ impl JsRealm {
     }
 
     /// Fires the queued `toggle` event of a `details` element whose `open`
-    /// attribute changed
-    /// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-details-toggle-event-task>).
-    pub(crate) fn fire_details_toggle(
+    /// attribute changed, or of a dialog that showed or closed
+    /// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-details-toggle-event-task>,
+    /// <https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-dialog-toggle-event-task>).
+    pub(crate) fn fire_toggle_task(
         &self,
         id: crate::dom::tree::NodeId,
-        old_open: bool,
-        new_open: bool,
+        old_state: &str,
+        new_state: &str,
     ) -> Result<(), JsError> {
         self.with_budget(None, MicrotaskCheckpoint::Perform, || {
             self.context.with(|ctx| {
-                bindings::fire_details_toggle(&ctx, id, old_open, new_open)?;
+                bindings::fire_toggle_task(&ctx, id, old_state, new_state)?;
+                Ok(())
+            })
+        })
+    }
+
+    /// Fires the queued `close` event of a dialog
+    /// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:close-event>).
+    pub(crate) fn fire_dialog_close(&self, id: crate::dom::tree::NodeId) -> Result<(), JsError> {
+        self.with_budget(None, MicrotaskCheckpoint::Perform, || {
+            self.context.with(|ctx| {
+                bindings::fire_dialog_close(&ctx, id)?;
                 Ok(())
             })
         })

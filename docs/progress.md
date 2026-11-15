@@ -3450,3 +3450,24 @@ that never runs because no `geometrychange` can fire
 and `html/webappapis` from 2,613 to **2,622** with no losses. `cargo fmt
 --check`, `tools/check clippy`, and the renderer (176), wpt-harness (29), and
 one other test pass.
+
+`dialog` elements now implement the non-modal half of their API: `show()`,
+`close(returnValue)`, `requestClose(returnValue)`, `returnValue`, and the
+computed `closedBy` state. `show()` and `close()` fire a `beforetoggle`
+`ToggleEvent` synchronously (cancelable for `show`), queue the coalesced
+`toggle` task, and `close()` queues the `close` event on the user interaction
+task source; `requestClose()` fires a cancelable `cancel` event first and
+ignores `closedby`. The dialog focusing steps focus an autofocus descendant,
+then the first focusable descendant, then the dialog, and `close()` restores
+the previously focused element. A `method=dialog` form submission now closes
+the form's nearest ancestor dialog instead of navigating, with the submitter's
+optional value as the result
+(<https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element>,
+<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#form-submission-algorithm>).
+`showModal()` stays absent because it needs a top layer, document blocking,
+and inertness, none of which Blitz has; the gap is recorded in
+`docs/limitations.md`. `html/semantics/interactive-elements` goes from 43 to
+**88** passing subtests with no losses, and the `html/dom` (65,364),
+`dom/events` (716), forms (4,525), and `html/webappapis` (2,622) batches are
+unchanged. `cargo fmt --check`, `tools/check clippy`, and the renderer (176),
+wpt-harness (29), and one other test pass.
