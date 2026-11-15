@@ -3404,3 +3404,19 @@ behavior itself is separate work. `blocking-idl-attr.html` goes from 0/6 to
 **79,926** passing subtests with no losses. `cargo fmt --check`,
 `tools/check clippy`, and the renderer (176), wpt-harness (29), and one other
 test pass.
+
+`ToggleEvent` is exposed as a constructor with the `oldState`, `newState`, and
+`source` members, the interface `toggle` events use on a `details` element and
+on a popover. The `EventInit` conversions follow WebIDL's `DOMString` rules
+(`undefined` is the default empty string, `null` is `"null"`, an array is
+joined), and `source` is retargeted against the event's target on every read
+with the DOM retarget algorithm, so a source inside the same shadow tree as
+the target answers that tree's host
+(<https://html.spec.whatwg.org/multipage/popover.html#the-toggleevent-interface>,
+<https://dom.spec.whatwg.org/#retarget>). `toggleevent-interface.html` goes from
+0/40 to **40/40** and `html/semantics/popovers` from 2 to **42** passing
+subtests with no losses; the popover engine behavior itself is separate work.
+Regression batches are clean: `dom/events` 716, `html/dom` 65,364,
+`html/webappapis` 2,613, all unchanged or up with no losses. `cargo fmt
+--check`, `tools/check clippy`, and the renderer (176), wpt-harness (29), and
+one other test pass.

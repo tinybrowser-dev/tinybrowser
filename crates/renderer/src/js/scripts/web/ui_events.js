@@ -340,6 +340,45 @@ __tbExposeEvent('HashChangeEvent', __tbEventConstructor, __tbHashChangeEventData
   () => ({ oldURL: '', newURL: '' }),
   init => ({ oldURL: __tbEventString(init.oldURL), newURL: __tbEventString(init.newURL) }),
   ['oldURL', 'newURL']);
+// The `toggle` event of a `details` element or a popover carries the states
+// it moved between, and the invoker that requested the change
+// (<https://html.spec.whatwg.org/multipage/popover.html#the-toggleevent-interface>).
+const __tbToggleEventData = host.slots('tinybrowser.toggleevent.data');
+__tbExposeEvent('ToggleEvent', __tbEventConstructor, __tbToggleEventData,
+  () => ({ oldState: '', newState: '', source: null }),
+  init => ({
+    oldState: __tbEventString(init.oldState),
+    newState: __tbEventString(init.newState),
+    source: init.source === undefined ? null : init.source,
+  }),
+  ['oldState', 'newState']);
+// `source` is retargeted against the event's target on every read
+// (<https://html.spec.whatwg.org/multipage/popover.html#dom-toggleevent-source>,
+// <https://dom.spec.whatwg.org/#retarget>). `getRootNode` is captured at
+// realm init so a page-patched `Node.prototype` cannot change the walk.
+const __tbGetRootNode = Node.prototype.getRootNode;
+function __tbRetarget(a, b) {
+  while (a !== null && typeof a === 'object' && typeof a.nodeType === 'number') {
+    const root = __tbGetRootNode.call(a);
+    const host = root === null ? undefined : root.host;
+    if (host === undefined || host === null) return a;
+    if (b === null || typeof b !== 'object' || typeof b.nodeType !== 'number') return a;
+    const bRoot = __tbGetRootNode.call(b);
+    const bHost = bRoot === null ? undefined : bRoot.host;
+    if (bHost === undefined || bHost === null) return a;
+    a = host;
+  }
+  return a;
+}
+__tbDefineProperty(globalThis.ToggleEvent.prototype, 'source', {
+  __proto__: null,
+  get() {
+    const entry = __tbEventEntry(this, __tbToggleEventData,
+      () => ({ oldState: '', newState: '', source: null }));
+    return __tbRetarget(entry.source, this.target);
+  },
+  enumerable: true, configurable: true,
+});
 // The engine fires its own trusted `hashchange`; it owns the event object and
 // trust flag, and this writes the interface's slot map for it.
 host.__tbSetHashChange = (event, oldURL, newURL) => {
