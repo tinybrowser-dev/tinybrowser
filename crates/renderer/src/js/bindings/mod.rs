@@ -1749,6 +1749,7 @@ const ELEMENT_INTERFACES: &[(&str, &str)] = &[
     ("script", "HTMLScriptElement"),
     ("section", "HTMLElement"),
     ("select", "HTMLSelectElement"),
+    ("selectedcontent", "HTMLSelectedContentElement"),
     ("small", "HTMLElement"),
     ("source", "HTMLSourceElement"),
     ("slot", "HTMLSlotElement"),

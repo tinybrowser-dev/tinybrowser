@@ -30,6 +30,7 @@ include!(concat!(env!("OUT_DIR"), "/HTMLMetaElement.rs"));
 include!(concat!(env!("OUT_DIR"), "/HTMLTitleElement.rs"));
 include!(concat!(env!("OUT_DIR"), "/HTMLStyleElement.rs"));
 include!(concat!(env!("OUT_DIR"), "/HTMLScriptElement.rs"));
+include!(concat!(env!("OUT_DIR"), "/HTMLSelectedContentElement.rs"));
 include!(concat!(env!("OUT_DIR"), "/HTMLSlotElement.rs"));
 include!(concat!(env!("OUT_DIR"), "/HTMLMapElement.rs"));
 include!(concat!(env!("OUT_DIR"), "/HTMLObjectElement.rs"));
@@ -705,6 +706,7 @@ pub(super) fn install(ctx: &Ctx<'_>) -> Result<()> {
     html_pre_element_generated::install(ctx)?;
     html_quote_element_generated::install(ctx)?;
     html_script_element_generated::install(ctx)?;
+    html_selected_content_element_generated::install(ctx)?;
     html_slot_element_generated::install(ctx)?;
     html_source_element_generated::install(ctx)?;
     html_span_element_generated::install(ctx)?;

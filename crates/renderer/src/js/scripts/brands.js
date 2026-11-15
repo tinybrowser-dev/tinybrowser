@@ -151,6 +151,7 @@
     ['HTMLQuoteElement', HTMLElementInterface],
     ['HTMLScriptElement', HTMLElementInterface],
     ['HTMLSelectElement', HTMLElementInterface],
+    ['HTMLSelectedContentElement', HTMLElementInterface],
     ['HTMLSourceElement', HTMLElementInterface],
     ['HTMLSlotElement', HTMLElementInterface],
     ['HTMLSpanElement', HTMLElementInterface],

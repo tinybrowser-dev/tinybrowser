@@ -89,6 +89,10 @@ pub(crate) fn initialize_controls(parsed: &mut Parsed) {
     for select in selects {
         parsed.document.invalidate_selectedness(select);
         run_selectedness_setting(parsed, select);
+        // The parse-time insertion steps of a selectedcontent element queue an
+        // update, so a freshly parsed select keeps its element in step
+        // (<https://html.spec.whatwg.org/multipage/form-elements.html#the-selectedcontent-element>).
+        update_selectedcontent(parsed, select);
     }
 }
 
@@ -666,7 +670,14 @@ pub(crate) fn options_inserted(parsed: &mut Parsed, options: impl IntoIterator<I
     }
     for select in selects {
         parsed.document.invalidate_selectedness(select);
-        run_selectedness_setting(parsed, select);
+        let changed = run_selectedness_setting(parsed, select);
+        // A newly inserted option's post-connection steps update the select's
+        // selectedcontent elements only when the insertion changes the
+        // selection, and only while the select is connected
+        // (<https://html.spec.whatwg.org/multipage/form-elements.html#the-option-element>).
+        if changed && is_connected(&parsed.document.base, select) {
+            update_selectedcontent(parsed, select);
+        }
     }
 }
 
@@ -806,6 +817,7 @@ pub(crate) fn reset_select_selectedness(parsed: &mut Parsed, select: BlitzId) {
     }
     parsed.document.invalidate_selectedness(select);
     run_selectedness_setting(parsed, select);
+    update_selectedcontent(parsed, select);
 }
 
 /// Strips and collapses ASCII whitespace runs to single spaces, dropping
@@ -1056,6 +1068,10 @@ pub(crate) fn set_option_selected(parsed: &mut Parsed, option: BlitzId, selected
     if let Some(select) = option_select_owner(&parsed.document.base, option) {
         parsed.document.invalidate_selectedness(select);
         run_selectedness_setting(parsed, select);
+        // Setting selectedness runs "ask for a reset", which refreshes the
+        // select's selectedcontent elements
+        // (<https://html.spec.whatwg.org/multipage/form-elements.html#dom-option-selected>).
+        update_selectedcontent(parsed, select);
     }
 }
 
@@ -1107,6 +1123,10 @@ fn select_only_option(parsed: &mut Parsed, select: BlitzId, keep: Option<BlitzId
     }
     drop(mutator);
     parsed.document.mark_selectedness_normalized(select);
+    // Both `select` setters define the whole selection, so the selectedcontent
+    // elements follow afterwards
+    // (<https://html.spec.whatwg.org/multipage/form-elements.html#dom-select-value>).
+    update_selectedcontent(parsed, select);
 }
 
 /// Runs the selectedness rules after an option's `selected` attribute
@@ -1131,6 +1151,10 @@ pub(crate) fn option_selected_attribute_changed(parsed: &mut Parsed, option: Bli
     }
     parsed.document.invalidate_selectedness(select);
     run_selectedness_setting(parsed, select);
+    // The attribute write runs the selectedness setting algorithm followed by
+    // an update of the select's selectedcontent elements
+    // (<https://html.spec.whatwg.org/multipage/form-elements.html#the-select-element>).
+    update_selectedcontent(parsed, select);
 }
 
 /// Runs the selectedness rules after a select's `multiple`, `size`, or an
@@ -1150,5 +1174,147 @@ pub(crate) fn select_attribute_changed(parsed: &mut Parsed, select: BlitzId, att
         }
     }
     parsed.document.invalidate_selectedness(select);
-    run_selectedness_setting(parsed, select);
+    let changed = run_selectedness_setting(parsed, select);
+    // Removing `multiple` always refreshes the selectedcontent elements, since
+    // they are not kept up to date while it is present. A `size` or `disabled`
+    // change only refreshes them when the selectedness actually changed
+    // (<https://html.spec.whatwg.org/multipage/form-elements.html#the-select-element>).
+    if changed || attribute == "multiple" {
+        update_selectedcontent(parsed, select);
+    }
+}
+
+/// A `selectedcontent` element's nearest ancestor `select`, when it reflects
+/// one: an `option` or another `selectedcontent` in between disables it, and so
+/// does a second nested `select`
+/// (<https://html.spec.whatwg.org/multipage/form-elements.html#the-selectedcontent-element>).
+fn selectedcontent_select(base: &BaseDocument, node: BlitzId) -> Option<BlitzId> {
+    let mut nearest = None;
+    let mut cursor = base.get_node(node).and_then(|tree| tree.parent);
+    while let Some(current) = cursor {
+        if is_html_element(base, current, "select") {
+            if nearest.is_some() {
+                return None;
+            }
+            nearest = Some(current);
+        } else if is_html_element(base, current, "option")
+            || is_html_element(base, current, "selectedcontent")
+        {
+            return None;
+        }
+        cursor = base.get_node(current).and_then(|tree| tree.parent);
+    }
+    nearest
+}
+
+/// The `selectedcontent` descendants of `select`, in tree order, that are
+/// enabled and reflect that select
+/// (<https://html.spec.whatwg.org/multipage/form-elements.html#the-selectedcontent-element>).
+fn enabled_selectedcontents(base: &BaseDocument, select: BlitzId) -> Vec<BlitzId> {
+    let mut found = Vec::new();
+    let mut stack: Vec<BlitzId> = base.get_node(select).map_or_else(Vec::new, |tree| {
+        tree.children.iter().rev().copied().collect()
+    });
+    while let Some(current) = stack.pop() {
+        if is_html_element(base, current, "selectedcontent")
+            && selectedcontent_select(base, current) == Some(select)
+        {
+            found.push(current);
+        }
+        if let Some(tree) = base.get_node(current) {
+            stack.extend(tree.children.iter().rev().copied());
+        }
+    }
+    found
+}
+
+/// Updates a select's descendant `selectedcontent` elements to reflect its
+/// first selected option: each gets a clone of the option's children, with the
+/// elements the algorithm removes dropped, or is emptied when nothing is
+/// selected (<https://html.spec.whatwg.org/multipage/form-elements.html#the-selectedcontent-element>).
+pub(crate) fn update_selectedcontent(parsed: &mut Parsed, select: BlitzId) {
+    // The selectedcontent elements of a select with `multiple` are not kept up
+    // to date.
+    if attr(&parsed.document.base, select, "multiple").is_some() {
+        return;
+    }
+    let targets = enabled_selectedcontents(&parsed.document.base, select);
+    if targets.is_empty() {
+        return;
+    }
+    let option = select_options(&parsed.document.base, parsed.id, select)
+        .into_iter()
+        .find(|option| option_selectedness(&parsed.document.base, option.node));
+    let document = parsed.id;
+    for selectedcontent in targets {
+        // Each selectedcontent needs its own clone set: inserting one set
+        // would move it away from the previous element
+        // (<https://dom.spec.whatwg.org/#concept-node-replace-all>).
+        let children = option.map_or_else(Vec::new, |option| {
+            cloned_option_contents(parsed, option.node)
+        });
+        let selectedcontent = NodeId {
+            document,
+            node: selectedcontent,
+        };
+        let iframes =
+            crate::dom::insertion::replace_all_journaled(parsed, selectedcontent, children);
+        // The clones drop iframe, frame, embed, and object, so the replacement
+        // never carries a child navigable.
+        debug_assert_eq!(iframes.len(), 0);
+    }
+}
+
+/// A clone of an option's children for one `selectedcontent` element, with
+/// HTML and SVG `script`, `frame`, `iframe`, `embed`, and `object` elements
+/// removed (<https://html.spec.whatwg.org/multipage/form-elements.html#the-selectedcontent-element>).
+fn cloned_option_contents(parsed: &mut Parsed, option: BlitzId) -> Vec<NodeId> {
+    let children: Vec<BlitzId> = parsed
+        .document
+        .base
+        .get_node(option)
+        .map_or_else(Vec::new, |tree| tree.children.iter().copied().collect());
+    let document = parsed.id;
+    let mut clones = Vec::new();
+    for child in children {
+        let child = NodeId {
+            document,
+            node: child,
+        };
+        if let Ok(cloned) =
+            crate::dom::adoption::clone_within_document(&mut parsed.document, document, child, true)
+        {
+            clones.push(cloned);
+        }
+    }
+    remove_unclonable(&mut parsed.document, &clones);
+    clones
+}
+
+/// Removes the elements a cloned option's contents must not carry. Collecting
+/// in tree order means an element removed with its parent is already detached
+/// when its own turn comes, which the removal tolerates
+/// (<https://dom.spec.whatwg.org/#concept-node-remove>).
+fn remove_unclonable(doc: &mut crate::documents::BlitzDocument, roots: &[NodeId]) {
+    let mut doomed = Vec::new();
+    let mut stack: Vec<BlitzId> = roots.iter().rev().map(|root| root.node).collect();
+    while let Some(current) = stack.pop() {
+        let Some(tree) = doc.base.get_node(current) else {
+            continue;
+        };
+        if let Some(element) = tree.data.downcast_element() {
+            let local = element.name.local.as_str();
+            let html = element.name.ns == html_namespace();
+            let svg = element.name.ns.as_str() == "http://www.w3.org/2000/svg";
+            if (html && matches!(local, "script" | "frame" | "iframe" | "embed" | "object"))
+                || (svg && local == "script")
+            {
+                doomed.push(current);
+            }
+        }
+        stack.extend(tree.children.iter().rev().copied());
+    }
+    for doomed in doomed {
+        doc.base.mutate().remove_node(doomed);
+    }
 }

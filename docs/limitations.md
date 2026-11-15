@@ -955,6 +955,30 @@ step 3 of the append algorithm does not exempt that case, and Chrome and
 Firefox fail the same two subtests. WPT `fetch/api/cors/` covers the
 surface.
 
+## Select and selectedcontent
+
+`selectedcontent` reflects the first selected option's children when it sits in
+a `select`, and a select's descendants are updated when selectedness changes
+through `option.selected`, `select.value`, `select.selectedIndex`, the
+`selected`/`disabled`/`size`/`multiple` attributes, and after parsing. Three
+parts of the algorithm are missing.
+
+- The update is synchronous. The spec queues a microtask from an option's
+  insertion, removal, and moving steps, so the element stays stale until the
+  microtask. Removing the selected option therefore leaves the old content in
+  place here, and `selectedcontent-insertion-removal.html`'s removal subtest
+  fails.
+- A dynamically inserted `selectedcontent` element is not updated by its own
+  insertion steps; only a selectedness change or the initial parse fills it.
+  `selectedcontent-insertion-removal.html`'s insertion subtests and
+  `selectedcontent-nested.html` depend on those steps.
+- The mutation records the update produces are not ordered the way the parser
+  queues them, so `selectedcontent-mutations.html` cannot match its recorded
+  sequences.
+
+The `selectedcontentelement` attribute that associates a `selectedcontent` by
+id is not implemented.
+
 ## Rendered text
 
 `innerText`/`outerText` dispatch on each element's generated box, so a

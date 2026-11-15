@@ -3639,3 +3639,24 @@ not a focusable area
 `dom/events` + forms batch and `css/selectors` keep every subtest (a
 `form-double-submit-to-different-origin-frame.html` flake flipped, and it
 flips in isolation too).
+
+The `selectedcontent` element now reflects the first selected option of its
+`select`. The update collects the select's enabled descendant selectedcontent
+elements (an `option` or another `selectedcontent` in between disables one, and
+so does a second nested `select`), clones the option's children with HTML and
+SVG `script`, `frame`, `iframe`, `embed`, and `object` removed, and replaces
+each element's children with its own clone set
+(<https://html.spec.whatwg.org/multipage/form-elements.html#the-selectedcontent-element>).
+It runs after parsing and whenever selectedness changes: `option.selected`,
+`select.value`, `select.selectedIndex`, the `selected`/`disabled`/`size`/
+`multiple` attributes, option insertion, and a form reset. A `size` change that
+does not change selectedness leaves the children alone, and removing `multiple`
+always updates. `HTMLSelectedContentElement` is now the element's interface.
+`selectedcontent-attribute-change.html` goes 0/7 to 7/7,
+`selectedcontent-subtree-mutations.html` 0/2 to 2/2,
+`selectedcontent-option-insertion.html` 0/2 to 2/2,
+`selectedcontent-nested-select.html` 0/1 to 1/1, and the `html/dom` +
+`dom/events` + forms batch gains 15 subtests with nothing lost (the
+`form-double-submit-3.html` flake flipped, and it fails in isolation too);
+`css/selectors` is unchanged at 4,793. The synchronous-vs-microtask update and
+the missing insertion/moving steps are recorded in `docs/limitations.md`.
