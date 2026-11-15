@@ -14,7 +14,16 @@ One-shot PNG only: CDP Page.captureScreenshot is PNG-only
 (crates/cdp/src/dispatch.rs:882), no continuous paint loop, no GPU,
 no vsync, no video. requestAnimationFrame is a 16ms timer with
 documented deviations: shared timer table, Date.now() timestamps,
-no per-frame timestamp sharing (timers.js:63).
+no per-frame timestamp sharing (timers.js:63). The reftest harness treats its
+screenshot as a rendering opportunity: it advances up to three 16ms frames so
+the page's queued frame callbacks run before the capture
+(`SCREENSHOT_FRAMES` in `tools/wpt-harness/src/engine.rs`).
+
+The canvas background is propagated from the body to the viewport for
+`background-color` only. A body `background-image` is painted over the body's
+box and not over the whole canvas, so a page whose only background is a body
+image (or gradient) renders blank where a browser tiles it across the page;
+`resize-observer/devicepixel2-ref.html` is one such reference.
 
 ## Intl
 
@@ -376,12 +385,12 @@ content box; the engine reports the padding box for both controls.
 follow the CSSOM View algorithms and share Blitz's offset rectangle, which
 handles the first fragment box of a non-atomic inline. Remaining gaps:
 
-- Table layout ignores captions ("Probably a table caption: ignore" in
-  `third_party/blitz/packages/blitz-dom/src/layout/table.rs`), so a table's
-  `offsetWidth`/`offsetHeight` exclude the caption and a cell's `offsetTop` does
-  not account for it. `offsetTopLeft-table-caption.html` fails and
-  `table-offset-props.html` passes 5 of 13. Caption layout belongs upstream
-  (`docs/upstream.md`).
+- A table with captions measures as its wrapper box (blitz@095b629bc), so
+  `offsetWidth`/`offsetHeight` include the captions and a cell's `offsetTop`
+  accounts for them. The remaining gap is a collapsed-border table's box: the
+  engine reports the grid's content extent instead of the half-border extents,
+  so `table-offset-props.html`'s "Table with collapsed border" reads 20 instead
+  of 26.
 - CSS `zoom` is parsed but never applied to layout, so offsets and sizes are
   unscaled; `offsetTop-offsetLeft-with-zoom.html` cannot pass. The `zoom`
   property is not in the current CSSOM View algorithms, which apply `unscaled`
@@ -409,9 +418,9 @@ handles the first fragment box of a non-atomic inline. Remaining gaps:
   and fixed" early return cannot be evaluated either: the walk crosses a closed
   shadow root to its host, where the hidden relationship is not observable, and
   shadow-tree content has no computed styles. Blitz's own
-  `Node::offset_top_left` also stops only at positioned, `body`, `td`, and `th`
-  ancestors, so it does not see a `transform`/`filter`/`contain` fixed-position
-  containing block or a `table`; inside such an ancestor the offset rectangle
+  `Node::offset_top_left` also stops only at positioned, `body`, `td`, `th`, and
+  `table` ancestors, so it does not see a `transform`/`filter`/`contain`
+  fixed-position containing block; inside such an ancestor the offset rectangle
   and `offsetParent` can disagree (`docs/upstream.md`).
 - `position: sticky` has no offset in layout, so a stuck box's `offsetLeft`
   reports its unstuck position. `position-sticky-right.html` and
@@ -435,6 +444,32 @@ handles the first fragment box of a non-atomic inline. Remaining gaps:
   `element.scrollParent()` and no shipping browser implements either shape, so
   the API is deferred until the surface settles (`docs/priorities.md`).
 
+## Table captions
+
+A table with captions lays out as its wrapper box: an anonymous block that
+holds the caption boxes above and below the grid, with the table's margin,
+position, insets, float, and clear, while the grid keeps the border, padding,
+and size (blitz@095b629bc). The table element's own box is the wrapper, so its
+`offsetWidth`/`offsetHeight`, `getBoundingClientRect()`, and hit-testing region
+cover the captions, and each caption's `offsetTop` is measured from the
+wrapper's top. Remaining gaps:
+
+- The grid stays the element's painting box, so the table's own `border`,
+  `background`, and `border-radius` paint around the grid, not around the
+  captions. A table border that should surround the caption is missing, and so
+  is a background that should sit behind it.
+- A collapsed-border table's box reports the grid's content extent rather than
+  the half-border extents (see `## Element offset metrics`).
+- Caption width: the wrapper is the wider of the grid and the captions'
+  margin boxes, clamped to the containing block only when the containing block
+  is wider than the grid, because a shrink-to-fit ancestor is sized from the
+  table. Percentage caption widths resolve against the grid, not the wrapper.
+- A caption's `writing-mode` is converted with the table's writing mode for
+  placement, so a vertical caption in a horizontal table gets horizontal
+  margins and vice versa.
+- `position: absolute` on a caption is laid out as an out-of-flow box of the
+  table rather than being excluded from the wrapper, and `float` on a caption is
+  ignored: both are always in flow.
 
 ## Custom scheme handlers
 

@@ -437,6 +437,29 @@ async fn run_reftest(
     }
 }
 
+/// Frames a screenshot may wait for, so that a page which re-queues its
+/// animation-frame callback still reaches a capture.
+const SCREENSHOT_FRAMES: u32 = 3;
+
+/// Whether the page has callbacks queued with `requestAnimationFrame`.
+fn has_pending_frame_callbacks(session: &mut Session) -> bool {
+    session
+        .renderer
+        .eval("String(globalThis.__tbPendingFrameCallbacks())")
+        .is_ok_and(|count| count != "0")
+}
+
+/// Moves the page's clock forward by `delay`, so that timers that are due then
+/// run on the next drain.
+async fn advance(session: &mut Session, virtual_time: bool, delay: Duration) {
+    if virtual_time {
+        session.services.advance_clock(delay);
+        tokio::time::advance(delay).await;
+    } else {
+        tokio::time::sleep(delay.min(Duration::from_millis(50))).await;
+    }
+}
+
 /// Waits until a reftest removes its `reftest-wait` class.
 ///
 /// A document that leaves the class on and has no runnable task left cannot
@@ -449,6 +472,13 @@ async fn settle_reftest(
     fire_test_rendered: bool,
 ) -> Result<(), Failure> {
     let mut rendered = false;
+    // The screenshot is a rendering opportunity: the page's queued
+    // `requestAnimationFrame` callbacks run before the capture, and a callback
+    // that queues another one gets the next frame. The engine models a frame
+    // callback as a 16ms timer, so this advances to the next deadline. Bounded,
+    // so a callback that re-queues itself cannot hold the capture forever
+    // (<https://html.spec.whatwg.org/multipage/imagebitmap-and-animations.html#run-the-animation-frame-callbacks>).
+    let mut frames_left = SCREENSHOT_FRAMES;
     loop {
         let _yielded = session.renderer.drain_until(deadline);
         // An image, stylesheet, or font is still in flight. Its completion is
@@ -475,6 +505,13 @@ async fn settle_reftest(
             .eval("String(document.documentElement.classList.contains('reftest-wait'))")
             .unwrap_or_default();
         if waiting != "true" {
+            if frames_left > 0 && has_pending_frame_callbacks(session) {
+                frames_left -= 1;
+                if let Some(delay) = session.renderer.time_until_deadline() {
+                    advance(session, virtual_time, delay).await;
+                    continue;
+                }
+            }
             return Ok(());
         }
         if Instant::now() >= deadline {
@@ -484,12 +521,7 @@ async fn settle_reftest(
             return Err(Failure::Timeout);
         };
         if !delay.is_zero() {
-            if virtual_time {
-                session.services.advance_clock(delay);
-                tokio::time::advance(delay).await;
-            } else {
-                tokio::time::sleep(delay.min(Duration::from_millis(50))).await;
-            }
+            advance(session, virtual_time, delay).await;
         }
     }
 }

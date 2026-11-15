@@ -474,7 +474,6 @@
   const parseFloatValue = globalThis.parseFloat;
   const min = Math.min;
   const max = Math.max;
-  const floor = Math.floor;
 
   const live = PrivateSet();
   let frameHandle = null;
@@ -518,11 +517,21 @@
       borderHeight,
       contentWidth,
       contentHeight,
+      // The content box's viewport position, which decides which device
+      // pixels its snapped edges fall on.
+      contentX: rect.left + lengthPx(style.borderLeftWidth) + lengthPx(style.paddingLeft),
+      contentY: rect.top + lengthPx(style.borderTopWidth) + lengthPx(style.paddingTop),
       contentLeft: left,
       contentTop: top,
       vertical,
     };
   };
+  // A box's size in device pixels: each edge is snapped to the nearest device
+  // pixel and the size is the distance between them, so a box that starts
+  // mid-pixel rounds its two edges, not its size
+  // (<https://drafts.csswg.org/css-box-4/#snap>).
+  const snappedSize = (start, size, ratio) =>
+    Math.round((start + size) * ratio) - Math.round(start * ratio);
   const boxSize = (measured, box) => {
     if (box === 'border-box') {
       return {
@@ -532,10 +541,17 @@
     }
     if (box === 'device-pixel-content-box') {
       const ratio = globalThis.devicePixelRatio || 1;
-      return {
-        inline: floor((measured.vertical ? measured.contentHeight : measured.contentWidth) * ratio),
-        block: floor((measured.vertical ? measured.contentWidth : measured.contentHeight) * ratio),
-      };
+      const inline = snappedSize(
+        measured.vertical ? measured.contentY : measured.contentX,
+        measured.vertical ? measured.contentHeight : measured.contentWidth,
+        ratio,
+      );
+      const block = snappedSize(
+        measured.vertical ? measured.contentX : measured.contentY,
+        measured.vertical ? measured.contentWidth : measured.contentHeight,
+        ratio,
+      );
+      return { inline, block };
     }
     return {
       inline: measured.vertical ? measured.contentHeight : measured.contentWidth,

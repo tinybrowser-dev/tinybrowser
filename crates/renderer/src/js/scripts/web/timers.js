@@ -90,16 +90,29 @@ globalThis.clearInterval = globalThis.clearTimeout;
 // DOMHighResTimeStamp (each gets `Date.now()`), handles share the timer
 // table with the +1 offset, and `cancelAnimationFrame` of a plain
 // `setTimeout` handle cancels that timer.
+let pendingFrameCallbacks = 0;
 globalThis.requestAnimationFrame = function(fn) {
   if (typeof fn !== 'function') {
     throw new TypeError('requestAnimationFrame requires a callback');
   }
+  pendingFrameCallbacks += 1;
   return __tbTimer(function() {
+    pendingFrameCallbacks -= 1;
     fn(Date.now());
   }, 16, [], false) + 1;
 };
 globalThis.cancelAnimationFrame = function(id) {
+  // A cancelled callback stays counted: the harness only uses the count to
+  // decide whether to give the page a frame before a screenshot, and it
+  // bounds that to a few frames.
   globalThis.clearTimeout(Number(id) - 1);
+};
+// Whether the page has animation-frame callbacks queued. A host that is about
+// to paint (the reftest harness) runs them first, because a screenshot is a
+// rendering opportunity
+// (<https://html.spec.whatwg.org/multipage/imagebitmap-and-animations.html#run-the-animation-frame-callbacks>).
+globalThis.__tbPendingFrameCallbacks = function() {
+  return pendingFrameCallbacks;
 };
 // A no-op console: enough for scripts that only log, without a logging pipe.
 if (typeof globalThis.console === 'undefined') {

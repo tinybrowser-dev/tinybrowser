@@ -3084,3 +3084,69 @@ forms 69,865 (the one difference is the known alternating double-submit
 flake); `html/webappapis` 2,613. `cargo fmt --check`, `tools/check clippy`, and
 the renderer (175), webidl-bindgen (43), and wpt-harness (30) test binaries
 pass.
+
+A table with captions now lays out as the wrapper box CSS Tables 3 requires
+(blitz@095b629bc). Blitz had dropped captions from layout entirely ("Probably
+a table caption: ignore"): the table's box was the grid, the captions were
+never laid out or painted, and CSSOM View measured the grid alone. The wrapper
+is an anonymous block whose children are the top captions, the grid, and the
+bottom captions, and it carries the table's margin, position, insets, float,
+and clear; the grid keeps the border, padding, and size. The grid's own
+algorithm is untouched — its existing `TableTreeWrapper` is the wrapper's grid
+child.
+
+The wrapper sizes itself to the wider of the grid and the captions' margin
+boxes, clamped to the containing block only when that block is wider than the
+grid: a shrink-to-fit ancestor is sized from the table, so clamping there
+would shrink a wider caption. Captions are then moved onto the grid's origin,
+because their DOM parent is the table element whose box is the grid. The
+element's stored layout is re-expressed as the grid box, so its border,
+background, and hit-testing region cover the table rather than the captions,
+while `Node::table_wrapper` reports the wrapper box to
+`getBoundingClientRect()`/`offsetWidth`/`offsetHeight` and
+`offset_top_left` measures from the wrapper's padding edge.
+
+Two smaller corrections came with it. Border-spacing padding is skipped only
+when the grid is empty: explicit `<col>`/`<tr>` tracks still generate
+anonymous cells, which keep their spacing (`html5-table-formatting-2.html`).
+And a caption whose style changes rebuilds the table box, because the wrapper
+orders captions by `caption-side` and caches their margin boxes when the
+table is built; before, a runtime `caption-side` flip left the caption where
+it was.
+
+Evidence, against the pre-change baseline: `css/css-tables` 481 → **492**
+passing subtests with **no lost subtests**, gaining
+`caption-relative-positioning.html`, `tentative/caption.html` (4 subtests),
+`caption-side-1.html` (2), `caption-writing-mode-001.html` (2),
+`tentative/table-minmax.html` (3), `tentative/tbody-height-redistribution.html`,
+and `width-distribution/computing-table-width-0.html`;
+`paint/table-border-paint-caption-change.html` (a reftest) passes once the
+harness runs the page's frames, below. `css/cssom-view`
+`offsetTopLeft-table-caption.html` passes and `table-offset-props.html` goes
+from 5 of 13 to 12 of 13; the suite is 1,947 → **1,949** with no lost
+subtests.
+
+The reftest harness now runs a page's pending frame callbacks before it
+captures (`SCREENSHOT_FRAMES` in `tools/wpt-harness/src/engine.rs`): a
+screenshot is a rendering opportunity, so the callbacks queued with
+`requestAnimationFrame` run first and a callback that queues another gets the
+next frame, bounded to three frames so a self-requeueing callback cannot hold
+the capture. That recovers `table-border-paint-caption-change.html` and
+`html/webappapis/animation-frames/nested-raf-not-sync.html`, and it exposes one
+pre-existing paint gap: the canvas background is propagated from the body for
+`background-color` only, so `resize-observer/devicepixel2-ref.html` (a body
+`background-image`) renders blank and its test now reports the difference.
+Its sibling `devicepixel.html` already failed on the same gap. Recorded in
+`docs/limitations.md`.
+
+`devicePixelContentBoxSize` now snaps each edge to the nearest device pixel
+instead of flooring the size, so a box that starts mid-pixel reports the
+pixels it covers (<https://drafts.csswg.org/css-box-4/#snap>).
+
+Regression batches: the `dom/events`+`css/cssom`+`css/selectors`+observer
+batch is 9,371 unchanged with no lost subtests; `html/dom` and forms 69,865 →
+69,866 (the known alternating double-submit flake, a different file this
+time); `html/webappapis` 2,613 → 2,614 (the nested-rAF gain above);
+`css/css-scroll-snap` 158 unchanged. `cargo fmt --check`, `tools/check
+clippy`, and the renderer (175), webidl-bindgen (43), and wpt-harness (30)
+test binaries pass.
