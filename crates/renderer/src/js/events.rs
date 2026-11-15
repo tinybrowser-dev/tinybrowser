@@ -1103,6 +1103,45 @@ pub(crate) fn fire_trusted(
     Ok(())
 }
 
+/// Fires one CSS animation or transition lifecycle event at its element. The
+/// events bubble and are not cancelable
+/// (<https://drafts.csswg.org/css-animations-1/#events>,
+/// <https://drafts.csswg.org/css-transitions-1/#transition-events>).
+pub(crate) fn fire_animation_event(
+    ctx: &Ctx<'_>,
+    target: EventTargetKey,
+    event: &blitz_dom::animation_events::PendingAnimationEvent,
+) -> Result<()> {
+    let interface = if event.kind.is_transition() {
+        "TransitionEvent"
+    } else {
+        "AnimationEvent"
+    };
+    let class = realm_event(ctx, JsEvent::trusted(event.kind.event_type(), true, false))?;
+    // A trusted event is not built by the shim's constructor, so its slot has
+    // no entry. Expose the interface prototype when the realm has it and set
+    // the readonly members as own data properties, which shadow the shim's
+    // slot-reading getters
+    // (<https://webidl.spec.whatwg.org/#idl-read-only-attributes>).
+    if bindings::world(ctx)?
+        .borrow()
+        .event_ctors
+        .contains_key(interface)
+    {
+        set_exposed_event_prototype(ctx, &class, interface)?;
+    }
+    let name_member = if event.kind.is_transition() {
+        "propertyName"
+    } else {
+        "animationName"
+    };
+    class.prop(name_member, event.name.clone())?;
+    class.prop("elapsedTime", event.elapsed_time)?;
+    class.prop("pseudoElement", event.pseudo_element.clone())?;
+    dispatch(ctx, target, &class, None)?;
+    Ok(())
+}
+
 /// Fires a trusted event that crosses shadow boundaries. `input` and
 /// `beforeinput` are composed, while `change` is not
 /// (<https://w3c.github.io/uievents/#events-inputevents>).
@@ -1308,7 +1347,10 @@ fn run_invocations<'js>(
         } else {
             CAPTURING_PHASE
         };
-        invoke(ctx, event, item, phase, true)?;
+        let found = invoke(ctx, event, item, phase, true)?;
+        if !found {
+            invoke_legacy(ctx, event, item, phase, true)?;
+        }
     }
     // Bubble phase: target to root.
     for item in path {
@@ -1331,9 +1373,55 @@ fn run_invocations<'js>(
         {
             break;
         }
-        invoke(ctx, event, item, phase, false)?;
+        let found = invoke(ctx, event, item, phase, false)?;
+        if !found {
+            invoke_legacy(ctx, event, item, phase, false)?;
+        }
     }
     Ok(())
+}
+
+/// The legacy event type a trusted CSS animation or transition event is
+/// rewritten to for a listener list that had no unprefixed listener
+/// (<https://dom.spec.whatwg.org/#concept-event-listener-invoke> step 2).
+fn legacy_event_type(typ: &str) -> Option<&'static str> {
+    match typ {
+        "animationend" => Some("webkitAnimationEnd"),
+        "animationiteration" => Some("webkitAnimationIteration"),
+        "animationstart" => Some("webkitAnimationStart"),
+        "transitionend" => Some("webkitTransitionEnd"),
+        _ => None,
+    }
+}
+
+/// Runs the legacy-event rewrite for one path item: when the first inner
+/// invoke found no listener and the event is trusted, the event's type becomes
+/// the prefixed legacy name for a second pass, then is restored
+/// (<https://dom.spec.whatwg.org/#concept-event-listener-invoke> step 2).
+fn invoke_legacy<'js>(
+    ctx: &Ctx<'js>,
+    event: &Class<'js, JsEvent>,
+    item: &PathItem<'js>,
+    phase: u16,
+    capturing: bool,
+) -> Result<()> {
+    {
+        let class = event.borrow();
+        if !class.state().is_trusted {
+            return Ok(());
+        }
+    }
+    let original = event.borrow().state().typ.clone();
+    let Some(legacy) = legacy_event_type(&original) else {
+        return Ok(());
+    };
+    {
+        let class = event.borrow();
+        legacy.clone_into(&mut class.state_mut().typ);
+    }
+    let outcome = invoke(ctx, event, item, phase, capturing);
+    event.borrow().state_mut().typ = original;
+    outcome.map(|_| ())
 }
 
 /// Whether an event path item is an HTML `form` element.
@@ -1520,20 +1608,25 @@ fn target_is_fully_active(ctx: &Ctx<'_>, reference: &EventTargetRef) -> bool {
 
 /// [Invoke](https://dom.spec.whatwg.org/#concept-event-listener-invoke) the
 /// listeners of one path item.
+///
+/// Returns the inner invoke's `found`: whether the listener list held a
+/// listener whose type matched the event, before the capture-phase filter
+/// skipped it. The caller uses it for the legacy-event rewrite
+/// (<https://dom.spec.whatwg.org/#concept-event-listener-invoke> step 2).
 fn invoke<'js>(
     ctx: &Ctx<'js>,
     event: &Class<'js, JsEvent>,
     item: &PathItem<'js>,
     phase: u16,
     capturing: bool,
-) -> Result<()> {
+) -> Result<bool> {
     if !target_is_fully_active(ctx, &item.reference) {
-        return Ok(());
+        return Ok(false);
     }
     {
         let class = event.borrow();
         if class.state().stop_propagation {
-            return Ok(());
+            return Ok(false);
         }
         let mut state = class.state_mut();
         state.phase = phase;
@@ -1545,6 +1638,7 @@ fn invoke<'js>(
         .borrow()
         .listener_snapshot(item.reference.key);
     let event_value = Class::into_value(event.clone());
+    let mut found = false;
     for listener in listeners {
         // The check is per listener, not per path item: a listener can remove
         // the target's frame or adopt the node into an inactive document, and
@@ -1560,6 +1654,11 @@ fn invoke<'js>(
         if typ != listener.typ {
             continue;
         }
+        // A type match marks the list as found even when the capture-phase
+        // filter skips this listener, which is what suppresses the legacy
+        // rewrite for that path item
+        // (<https://dom.spec.whatwg.org/#concept-event-listener-inner-invoke>).
+        found = true;
         if capturing != listener.capture {
             continue;
         }
@@ -1603,7 +1702,7 @@ fn invoke<'js>(
             break;
         }
     }
-    Ok(())
+    Ok(found)
 }
 
 /// Runs one listener call with the listener's realm current event set to

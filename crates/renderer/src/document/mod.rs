@@ -158,6 +158,10 @@ enum Task {
     /// queued since the last batch, dispatched in that order
     /// (<https://drafts.csswg.org/cssom-view/#run-the-scroll-steps>).
     ScrollEvents,
+    /// One batch of CSS animation and transition events the last resolve
+    /// observed, dispatched in observation order
+    /// (<https://drafts.csswg.org/css-animations-1/#events>).
+    AnimationEvents,
 }
 
 /// Why a realm is being replaced.
@@ -665,6 +669,13 @@ pub(crate) struct Document {
     /// Whether a [`Task::ScrollEvents`] is already queued, so the next scroll
     /// steps batch has one task however many boxes moved.
     scroll_events_queued: bool,
+    /// CSS animation and transition lifecycle events Blitz's last resolve
+    /// observed, waiting for the rendering-opportunity batch that fires them
+    /// (<https://drafts.csswg.org/css-animations-1/#events>).
+    pending_animation_events: Vec<blitz_dom::animation_events::PendingAnimationEvent>,
+    /// Whether a [`Task::AnimationEvents`] is already queued, so one batch
+    /// covers every event the resolve observed.
+    animation_events_queued: bool,
     timers: HashMap<TimerId, Timer>,
     next_timer_id: TimerId,
     /// Every queued, in-flight, and cancelled dial for this document.
@@ -1008,6 +1019,8 @@ impl Document {
             tasks: VecDeque::new(),
             pending_scroll_events: Vec::new(),
             scroll_events_queued: false,
+            pending_animation_events: Vec::new(),
+            animation_events_queued: false,
             timers: HashMap::new(),
             next_timer_id: TimerId::default(),
             dials: DialLedger::new(Arc::clone(&runtime.stop), Arc::clone(&runtime.wake)),
@@ -4377,6 +4390,18 @@ impl Document {
             .is_some_and(|parsed| parsed.document.base.has_scroll_animation())
     }
 
+    /// Whether the active document still has a CSS animation or transition
+    /// that can finish, so it needs a rendering opportunity each frame until
+    /// it settles. An infinite animation never settles and is excluded, so a
+    /// crashtest with one still reaches quiescence
+    /// (<https://drafts.csswg.org/css-animations-1/#events>).
+    fn css_animation_active(&self) -> bool {
+        let world = self.world.borrow();
+        world
+            .main_document()
+            .is_some_and(|parsed| parsed.document.base.has_finishing_css_animations())
+    }
+
     /// Moves the scroll events Blitz queued into the next scroll steps. A
     /// scroll that happened inside a task fires after that task, never inside
     /// the assignment that caused it
@@ -4396,6 +4421,28 @@ impl Document {
         if !self.scroll_events_queued {
             self.scroll_events_queued = true;
             self.tasks.push_back(Task::ScrollEvents);
+        }
+    }
+
+    /// Moves the animation and transition events Blitz's last resolve observed
+    /// into the next rendering-opportunity batch. A lifecycle change fires
+    /// after the resolve that observed it, never inside the style pass
+    /// (<https://drafts.csswg.org/css-animations-1/#events>).
+    fn adopt_animation_events(&mut self) {
+        let events = {
+            let world = self.world.borrow();
+            match world.main_document_mut() {
+                Some(mut parsed) => parsed.document.base.take_pending_animation_events(),
+                None => Vec::new(),
+            }
+        };
+        if events.is_empty() {
+            return;
+        }
+        self.pending_animation_events.extend(events);
+        if !self.animation_events_queued {
+            self.animation_events_queued = true;
+            self.tasks.push_back(Task::AnimationEvents);
         }
     }
 

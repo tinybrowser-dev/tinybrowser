@@ -37,6 +37,7 @@ impl Document {
         }
         self.adopt_js_work();
         self.adopt_scroll_events();
+        self.adopt_animation_events();
         self.drain_blitz_fetches();
         self.launch_queued_dials();
         self.adopt_dial_completions();
@@ -46,6 +47,10 @@ impl Document {
             // steps report
             // (<https://drafts.csswg.org/cssom-view/#run-the-scroll-steps>).
             self.adopt_scroll_events();
+            // The settle ticks CSS animations and transitions, so this
+            // resolve's lifecycle events join the same batch
+            // (<https://drafts.csswg.org/css-animations-1/#events>).
+            self.adopt_animation_events();
             return !self.stop.is_set()
                 && (fired
                     || self.has_pending_frame_loads()
@@ -134,9 +139,12 @@ impl Document {
         // A scroll animation advances at rendering opportunities, so a host
         // that sleeps until the next deadline wakes once per frame while one
         // runs instead of jumping straight to the next page timer
-        // (<https://drafts.csswg.org/cssom-view/#scroll-an-element>).
-        let frame = self
-            .scroll_animation_active()
+        // (<https://drafts.csswg.org/cssom-view/#scroll-an-element>). A CSS
+        // animation or transition is ticked by the same rendering
+        // opportunities, so it needs the same per-frame wake-up or its
+        // lifecycle events never fire
+        // (<https://drafts.csswg.org/css-animations-1/#events>).
+        let frame = (self.scroll_animation_active() || self.css_animation_active())
             .then(|| Instant::now() + SCROLL_FRAME_INTERVAL);
         match (timers, frame) {
             (Some(timer), Some(frame)) => Some(timer.min(frame)),
@@ -337,6 +345,12 @@ impl Document {
                 self.scroll_events_queued = false;
                 let events = std::mem::take(&mut self.pending_scroll_events);
                 self.fire_js(|js| js.fire_scroll_events(&events));
+                self.adopt_js_work();
+            }
+            Task::AnimationEvents => {
+                self.animation_events_queued = false;
+                let events = std::mem::take(&mut self.pending_animation_events);
+                self.fire_js(|js| js.fire_animation_events(&events));
                 self.adopt_js_work();
             }
         }

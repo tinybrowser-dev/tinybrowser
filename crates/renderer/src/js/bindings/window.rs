@@ -575,6 +575,27 @@ pub(crate) fn fire_scroll_event(ctx: &Ctx<'_>, event: blitz_dom::PendingScrollEv
     }
 }
 
+/// Fires one CSS animation or transition lifecycle event at the element Blitz
+/// recorded it for, in the calling realm
+/// (<https://drafts.csswg.org/css-animations-1/#events>).
+pub(crate) fn fire_animation_event(
+    ctx: &Ctx<'_>,
+    event: &blitz_dom::animation_events::PendingAnimationEvent,
+) -> Result<()> {
+    let document = world(ctx)?.borrow().main_document_id();
+    let Some(document) = document else {
+        return Ok(());
+    };
+    events::fire_animation_event(
+        ctx,
+        EventTargetKey::Node(NodeId {
+            document,
+            node: event.target,
+        }),
+        event,
+    )
+}
+
 /// Dispatches one trusted `securitypolicyviolation` event per blocked policy
 /// at `target` (<https://w3c.github.io/webappsec-csp/#report-violation>).
 pub(crate) fn fire_csp_violations(

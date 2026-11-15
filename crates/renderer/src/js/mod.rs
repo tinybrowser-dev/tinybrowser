@@ -1254,6 +1254,23 @@ impl JsRealm {
         })
     }
 
+    /// Runs one batch of CSS animation and transition lifecycle events a
+    /// resolve observed, in observation order
+    /// (<https://drafts.csswg.org/css-animations-1/#events>).
+    pub(crate) fn fire_animation_events(
+        &self,
+        events: &[blitz_dom::animation_events::PendingAnimationEvent],
+    ) -> Result<(), JsError> {
+        self.with_budget(None, MicrotaskCheckpoint::Perform, || {
+            self.context.with(|ctx| {
+                for event in events {
+                    bindings::fire_animation_event(&ctx, event)?;
+                }
+                Ok(())
+            })
+        })
+    }
+
     /// Dispatches one trusted `securitypolicyviolation` event per violation.
     pub(crate) fn fire_csp_violations(
         &self,

@@ -3321,3 +3321,39 @@ same task. Regression batches are clean: `dom/events`+`css/cssom`+
 `html/dom`+forms 69,866 → 69,868 with no losses (the two gains are the
 `form-double-submit-*` flake, which recovers), `html/webappapis` 2,613
 unchanged, and `css/cssom-view`+`css/css-scroll-snap` 2,124 unchanged.
+
+The engine now fires CSS animation and transition lifecycle events. Blitz
+already advanced every animation on the document timeline, so the fork
+(`third_party/blitz` 736a87b86) records the state changes the tick observes and
+the renderer dispatches them as trusted `AnimationEvent` and `TransitionEvent`
+at the target element:
+
+- `animationstart` (an animation leaves its delay phase), `animationiteration`
+  (a boundary is crossed), `animationend` (the last iteration finishes), and
+  `animationcancel`;
+- `transitionrun` (a transition is created), `transitionstart`,
+  `transitionend`, and `transitioncancel`.
+
+Each event carries the animation name or transitioned property, the
+originating pseudo selector, and `elapsedTime`
+(<https://drafts.csswg.org/css-animations-1/#events>,
+<https://drafts.csswg.org/css-transitions-1/#transition-events>). The DOM
+legacy rewrite is implemented for trusted events: a listener list with no
+unprefixed listener is invoked a second time with the event type rewritten to
+`webkitAnimationStart`/`webkitAnimationIteration`/`webkitAnimationEnd`/
+`webkitTransitionEnd`, then the type is restored
+(<https://dom.spec.whatwg.org/#concept-event-listener-invoke>). A document with
+a resize or transition that can finish gets a rendering opportunity each frame,
+which is what advances the tick; an infinite animation is excluded so a
+crashtest with one still reaches quiescence.
+
+Evidence, subtest diffs against saved baselines with no loss:
+`dom/events` 674 -> **716** (the five `webkit-*-event` files and
+`EventListener-invoke-legacy.html` go from timeouts to 58/58),
+`css/css-transitions` 945 -> **976**, and `css/css-animations` 812 -> **813**.
+Regression batches are clean: events/CSSOM/selectors/observers 9,374 -> 9,416
+with no losses, `html/dom`+forms 69,868 -> 69,868 (one `form-double-submit-*`
+flake, which recovers in isolation), `html/webappapis` 2,613 unchanged, and
+`css/cssom-view`+`css/css-scroll-snap` 2,124 unchanged. `cargo fmt --check`,
+`tools/check clippy`, and the renderer (176), wpt-harness (29), and one other
+test pass.

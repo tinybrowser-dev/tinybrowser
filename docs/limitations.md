@@ -977,17 +977,28 @@ identity across navigation.
 
 ## DOM events
 
-`AnimationEvent` and `TransitionEvent` are constructible and every animation
-and transition handler attribute exists, but the engine has no animation
-engine: CSS `animation` and `transition` never start a timeline, so it never
-fires `animationstart`, `animationend`, `animationiteration`,
-`transitionrun`, `transitionstart` or `transitionend`. WPT's
-`dom/events/webkit-*-event.html` files therefore pass their property and
-`dispatchEvent` subtests and time out on every subtest that triggers an
-animation. The legacy prefixed-event rewrite (a trusted `webkitAnimationEnd`
-is delivered as `animationend` when an unprefixed listener exists) is not
-implemented for the same reason; it is only observable on an engine-fired,
-trusted event.
+`AnimationEvent` and `TransitionEvent` are constructible, every animation and
+transition handler attribute exists, and the engine fires the lifecycle events
+Blitz's animation tick observes: `animationstart`, `animationiteration`,
+`animationend`, `animationcancel`, `transitionrun`, `transitionstart`,
+`transitionend`, and `transitioncancel` (`docs/upstream.md`). The DOM legacy
+rewrite is implemented for trusted events: a listener list with no listener for
+the unprefixed type is invoked a second time with the event's type rewritten to
+`webkitAnimationStart`, `webkitAnimationIteration`, `webkitAnimationEnd`, or
+`webkitTransitionEnd`, then the type is restored
+(<https://dom.spec.whatwg.org/#concept-event-listener-invoke>). The engine
+requests a rendering opportunity each frame while a CSS animation or transition
+can still finish, which is what advances the tick; an infinite animation is
+excluded, so a page that wants frames for one asks with
+`requestAnimationFrame`.
+
+Still missing: the Web Animations API itself, so `Element.getAnimations()` and
+the `Animation` object are absent and every `event-dispatch.tentative.html`
+subtest that seeks an animation fails. `elapsedTime` is computed from Blitz's
+timeline (`started_at`, `duration`, iteration count), so it is exact for a
+delay of zero or more and approximate for a seek the page cannot perform.
+There is no `animationcancel` for an element removed from the document, because
+the animation set is cleared without a restyle to observe it.
 
 
 A node can be adopted into another document while its own native method is
