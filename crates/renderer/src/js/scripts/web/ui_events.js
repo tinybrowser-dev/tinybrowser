@@ -456,6 +456,7 @@ __tbExposeEvent('FocusEvent', __tbUIEventConstructor, __tbFocusEventData,
   __tbFreshFocusEvent,
   init => ({ relatedTarget: init.relatedTarget || null }),
   ['relatedTarget']);
+const __tbFocusEventPrototype = globalThis.FocusEvent.prototype;
 __tbExposeEvent('TextEvent', __tbUIEventConstructor, host.slots('tinybrowser.textevent.data'),
   () => ({ data: '' }),
   init => ({ data: __tbEventString(init.data) }),
@@ -479,19 +480,33 @@ __tbExposeEvent('DragEvent', __tbMouseEventConstructor, host.slots('tinybrowser.
 // Only the interfaces that define the attribute have a slot entry; an event of
 // another interface has none, and the host treats it as a null relatedTarget
 // (<https://dom.spec.whatwg.org/#concept-event-dispatch>).
-const __tbRelatedTargetMaps = [__tbMouseEventData, __tbFocusEventData];
+const __tbRelatedTargetSlots = [
+  [__tbMouseEventData, __tbFreshMouseEvent, __tbMouseEventConstructor.prototype],
+  [__tbFocusEventData, __tbFreshFocusEvent, __tbFocusEventPrototype],
+];
 host.__tbRelatedTargetGet = event => {
-  for (const data of __tbRelatedTargetMaps) {
+  for (const [data] of __tbRelatedTargetSlots) {
     const entry = data.get(event);
     if (entry !== undefined) return entry.relatedTarget;
   }
   return null;
 };
 host.__tbRelatedTargetSet = (event, value) => {
-  for (const data of __tbRelatedTargetMaps) {
+  for (const [data] of __tbRelatedTargetSlots) {
     const entry = data.get(event);
     if (entry !== undefined) {
       entry.relatedTarget = value;
+      return;
+    }
+  }
+};
+// A trusted event is created in Rust with the interface's prototype but
+// without a constructor call, so its slot entry is initialized here before
+// dispatch reads it.
+host.__tbInitRelatedTarget = (event, value) => {
+  for (const [data, fresh, prototype] of __tbRelatedTargetSlots) {
+    if (prototype.isPrototypeOf(event)) {
+      __tbEventEntry(event, data, fresh).relatedTarget = value;
       return;
     }
   }

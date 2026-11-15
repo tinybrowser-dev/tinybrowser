@@ -3741,3 +3741,22 @@ the host as target while the early-return subtest expects the same dispatch to
 reset it, and the activation subtest expects targets to be reset before
 `input` runs, which the spec's `clearTargets` rule does not do for an input
 outside a shadow tree. Both are recorded in `docs/limitations.md`.
+
+The engine's `focus`, `blur`, `focusin`, and `focusout` are now trusted
+`FocusEvent` objects that carry the other side of the focus move as
+`relatedTarget` (the element losing focus for `focus`/`focusin`, the element
+gaining it for `blur`/`focusout`), and dispatch retargets it per path struct
+(<https://html.spec.whatwg.org/multipage/interaction.html#focus-update-steps>,
+<https://w3c.github.io/uievents/#events-focusevent>). A trusted event gets the
+`FocusEvent` prototype from the realm's pinned constructor and its related
+target is seeded into the interface's private slot by the UI events shim.
+`dom/events/shadow-relatedTarget.html` goes 0/2 to 2/2, and
+`uievents/order-of-events/focus-events/focus-automated-blink-webkit.html` goes
+0/2 to 1/2: the same-document subtest now also asserts the exact
+`relatedTarget` sequence (`null`, `null`, the new element for blur/focusout, the
+old element for focus/focusin). The cross-document subtest still fails because
+focus is tracked per document, so moving focus into a child frame does not blur
+the outer document's active element. The `html/dom` + `dom/events` + forms batch
+keeps its count with nothing lost (the
+`form-double-submit-to-different-origin-frame.html` flake flipped; it passes in
+isolation), and `html/semantics/interaction` + `uievents` hold 57/79.

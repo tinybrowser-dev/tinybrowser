@@ -1277,6 +1277,28 @@ pub(crate) fn fire_document_unload(ctx: &Ctx<'_>) -> Result<()> {
     fire_trusted(ctx, EventTargetKey::Window, "unload", false, false)
 }
 
+/// Fires a trusted `FocusEvent` that carries the related target. Dispatch
+/// retargets it for every path struct, so a listener outside a shadow tree sees
+/// the host instead of the inner node
+/// (<https://w3c.github.io/uievents/#events-focusevent>).
+pub(crate) fn fire_trusted_focus(
+    ctx: &Ctx<'_>,
+    target: EventTargetKey,
+    typ: &str,
+    bubbles: bool,
+    related: Option<NodeId>,
+) -> Result<()> {
+    let event = realm_event(ctx, JsEvent::trusted(typ, bubbles, false))?;
+    set_exposed_event_prototype(ctx, &event, "FocusEvent")?;
+    if let Some(related) = related {
+        let value = bindings::wrap_node(ctx, related)?;
+        let init: Function = crate::js::bridge::object(ctx)?.get("__tbInitRelatedTarget")?;
+        init.call::<_, ()>((Class::into_value(event.clone()), value))?;
+    }
+    dispatch(ctx, target, &event, None)?;
+    Ok(())
+}
+
 /// Fires a trusted event and reports whether it was not canceled, for
 /// cancelable events that gate a following action such as `reset`.
 pub(crate) fn fire_trusted_cancelable(

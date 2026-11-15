@@ -325,17 +325,37 @@ pub(crate) fn focus_node(ctx: &Ctx<'_>, node: NodeId) -> Result<()> {
         return Ok(());
     }
     // `set_active_element` mirrors into Blitz (`set_focus_to`/`clear_focus`).
-    // Focus events carry no `relatedTarget` until `FocusEvent` exists.
+    // Every focus event carries the other side of the move as its related
+    // target, which dispatch retargets for each path struct
+    // (<https://html.spec.whatwg.org/multipage/interaction.html#focus-update-steps>).
     world.borrow_mut().set_active_element(document, None);
     if let Some(previous) = previous {
-        events::fire_trusted(ctx, EventTargetKey::Node(previous), "blur", false, false)?;
+        events::fire_trusted_focus(
+            ctx,
+            EventTargetKey::Node(previous),
+            "blur",
+            false,
+            Some(node),
+        )?;
         // A handler may have moved focus; the spec's focus update steps stop
         // when the focused area changed during the blur chain.
         if world.borrow().active_element(document).is_some() {
-            events::fire_trusted(ctx, EventTargetKey::Node(previous), "focusout", true, false)?;
+            events::fire_trusted_focus(
+                ctx,
+                EventTargetKey::Node(previous),
+                "focusout",
+                true,
+                Some(node),
+            )?;
             return Ok(());
         }
-        events::fire_trusted(ctx, EventTargetKey::Node(previous), "focusout", true, false)?;
+        events::fire_trusted_focus(
+            ctx,
+            EventTargetKey::Node(previous),
+            "focusout",
+            true,
+            Some(node),
+        )?;
     }
     // Handlers may have made the target unfocusable; browsers then do not
     // designate or fire on it.
@@ -343,8 +363,8 @@ pub(crate) fn focus_node(ctx: &Ctx<'_>, node: NodeId) -> Result<()> {
         return Ok(());
     }
     world.borrow_mut().set_active_element(document, Some(node));
-    events::fire_trusted(ctx, EventTargetKey::Node(node), "focus", false, false)?;
-    events::fire_trusted(ctx, EventTargetKey::Node(node), "focusin", true, false)?;
+    events::fire_trusted_focus(ctx, EventTargetKey::Node(node), "focus", false, previous)?;
+    events::fire_trusted_focus(ctx, EventTargetKey::Node(node), "focusin", true, previous)?;
     Ok(())
 }
 
@@ -357,8 +377,8 @@ pub(crate) fn blur_node(ctx: &Ctx<'_>, node: NodeId) -> Result<()> {
         return Ok(());
     }
     world.borrow_mut().set_active_element(document, None);
-    events::fire_trusted(ctx, EventTargetKey::Node(node), "blur", false, false)?;
-    events::fire_trusted(ctx, EventTargetKey::Node(node), "focusout", true, false)?;
+    events::fire_trusted_focus(ctx, EventTargetKey::Node(node), "blur", false, None)?;
+    events::fire_trusted_focus(ctx, EventTargetKey::Node(node), "focusout", true, None)?;
     Ok(())
 }
 

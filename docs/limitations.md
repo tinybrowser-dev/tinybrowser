@@ -1069,9 +1069,14 @@ and expects both targets reset; the algorithm's skip rule
 the latter. The activation-behavior subtest expects `input` to observe a
 cleared target and relatedTarget, but `clearTargets` is false for an input
 outside a shadow tree, so the spec keeps them
-(<https://dom.spec.whatwg.org/#concept-event-dispatch>). Focus events fired by
-the engine are plain `Event`s with no related target, so `shadow-relatedTarget`
-stays 0/2.
+(<https://dom.spec.whatwg.org/#concept-event-dispatch>).
+
+Engine-fired `focus`, `blur`, `focusin`, and `focusout` are `FocusEvent`
+objects carrying the other side of the focus move as `relatedTarget`, which
+dispatch retargets, so `shadow-relatedTarget` and the same-document half of
+`uievents/order-of-events/focus-events/focus-automated-blink-webkit.html` pass.
+Focus is tracked per document, so moving focus into a child frame does not blur
+the outer document's active element and the cross-document half still fails.
 
 A node can be adopted into another document while its own native method is
 still on the stack: an event listener that moves the dispatching target.
