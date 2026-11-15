@@ -1751,14 +1751,25 @@
     configurable: true,
   });
 
+  // `labels` is `[SameObject]`, so one NodeList serves every access for the
+  // element's lifetime. The collection stays live: it reads the label set on
+  // each access and answers empty once the element stops being labelable
+  // (<https://html.spec.whatwg.org/multipage/forms.html#dom-labels>).
+  const labelLists = new WeakMap();
   const labelsOf = element => {
     if (!isLabelable(element)) return null;
-    return collectionOf(() => {
-      const root = element.getRootNode ? element.getRootNode() : element.ownerDocument;
-      const labels = Array.from(root.querySelectorAll('label'));
-      if (root.nodeType === 1 && root.tagName === 'LABEL') labels.unshift(root);
-      return labels.filter(label => label.control === element);
-    }, collectionInterface('NodeList').prototype, false);
+    let list = labelLists.get(element);
+    if (list === undefined) {
+      list = collectionOf(() => {
+        if (!isLabelable(element)) return [];
+        const root = element.getRootNode ? element.getRootNode() : element.ownerDocument;
+        const labels = Array.from(root.querySelectorAll('label'));
+        if (root.nodeType === 1 && root.tagName === 'LABEL') labels.unshift(root);
+        return labels.filter(label => label.control === element);
+      }, collectionInterface('NodeList').prototype, false);
+      labelLists.set(element, list);
+    }
+    return list;
   };
   for (const name of [
     'HTMLButtonElement', 'HTMLInputElement', 'HTMLMeterElement', 'HTMLOutputElement',

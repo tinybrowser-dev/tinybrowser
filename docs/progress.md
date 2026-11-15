@@ -3506,3 +3506,16 @@ search used by the form-owner and image-owner lookups goes through one
 because an element root has no `getElementById`. `html/semantics/forms/the-datalist-element`
 goes 4/6 to 6/6 files, and the `html/dom` + `dom/events` + forms batch goes from
 70,626 to 70,628 with nothing lost.
+
+`labels` is now `[SameObject]`: one live `NodeList` per element, cached in a
+per-realm `WeakMap`, so a retained reference answers the current label set and
+goes empty once the element stops being labelable
+(<https://html.spec.whatwg.org/multipage/forms.html#dom-labels>). The radio
+button group rule now also runs on a type change: an input that becomes a
+checked radio unchecks the other elements in its group, as "a type change is
+signalled" requires
+(<https://html.spec.whatwg.org/multipage/input.html#radio-button-group>).
+`labelable-elements.html` goes 25/26 to 26/26 and `radio-morphed.html` 0/1 to
+1/1; the `html/dom` + `dom/events` + forms batch gains both with nothing lost
+(the `form-double-submit-3.html` subtest flipped again, a known
+timing-dependent flake that fails in isolation).

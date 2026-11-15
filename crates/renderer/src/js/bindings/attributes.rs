@@ -1803,7 +1803,54 @@ fn apply_input_type_change(ctx: &Ctx<'_>, element: NodeId, previous: Option<&str
     // type
     // (<https://html.spec.whatwg.org/multipage/input.html#the-input-element>).
     world_rc.borrow_mut().clear_control_edit_state(element);
+    apply_radio_group_after_type_change(&world_rc, element, new);
     Ok(())
+}
+
+/// A type change signalled for a radio whose checkedness is true unchecks the
+/// other elements in its radio button group
+/// (<https://html.spec.whatwg.org/multipage/input.html#radio-button-group>).
+///
+/// The checkedness comes from the `checked` content attribute, which every
+/// input state carries, so a text input that was checked becomes the group's
+/// checked radio and clears the one that held it.
+fn apply_radio_group_after_type_change(
+    world: &Rc<RefCell<World>>,
+    element: NodeId,
+    new: crate::dom::input::InputType,
+) {
+    if new != crate::dom::input::InputType::Radio {
+        return;
+    }
+    let uncheck = {
+        let world = world.borrow();
+        let Some(parsed) = world.document(element) else {
+            return;
+        };
+        let base = &parsed.document.base;
+        let checked = base
+            .get_node(element.node)
+            .and_then(|node| node.data.downcast_element())
+            .is_some_and(blitz_dom::ElementData::checkedness);
+        if !checked {
+            return;
+        }
+        let name = crate::dom::tree::attr(base, element.node, "name")
+            .unwrap_or_default()
+            .to_owned();
+        crate::dom::forms::radio_group_members(base, element.document, &name, element.node)
+    };
+    if uncheck.is_empty() {
+        return;
+    }
+    let world = world.borrow();
+    let Some(mut parsed) = world.document_mut(element) else {
+        return;
+    };
+    let mut mutator = parsed.document.base.mutate();
+    for member in uncheck {
+        mutator.set_checkedness(member.node, false, Dirtiness::Keep);
+    }
 }
 
 /// Decides what the current value becomes across a type change
