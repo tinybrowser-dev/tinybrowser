@@ -3390,3 +3390,17 @@ missing parent falls through to translate-enabled. The setter writes `yes` or
 **16/16** and `html/dom` from 65,343 to **65,358** passing subtests with no
 losses. `cargo fmt --check`, `tools/check clippy`, and the renderer (176),
 wpt-harness (29), and one other test pass.
+
+`link`, `script`, and `style` now expose the `blocking` `DOMTokenList`, and
+`DOMTokenList.supports()` knows its supported tokens. The list is
+`[SameObject, PutForwards=value]`, so it reuses the same object cache that
+`classList` and `sandbox` use (a shared `token_list` helper now builds all
+three), and `supports("render")` answers true while any other token answers
+false; a list without supported tokens still throws the spec's `TypeError`
+(<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#blocking-attributes>,
+<https://dom.spec.whatwg.org/#dom-domtokenlist-supports>). The blocking engine
+behavior itself is separate work. `blocking-idl-attr.html` goes from 0/6 to
+**6/6**; `dom/nodes` + `dom/collections` + `html/dom` goes from 79,920 to
+**79,926** passing subtests with no losses. `cargo fmt --check`,
+`tools/check clippy`, and the renderer (176), wpt-harness (29), and one other
+test pass.

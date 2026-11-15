@@ -154,6 +154,8 @@ impl<K: Eq + Hash> WrapperCache<K> {
 pub(crate) enum SameObject {
     /// `Element.classList`.
     ClassList,
+    /// `link`/`script`/`style` `blocking`.
+    Blocking,
     /// `HTMLIFrameElement.sandbox`.
     Sandbox,
     /// `Element.attributes`.
@@ -182,8 +184,9 @@ pub(crate) enum SameObject {
 
 impl SameObject {
     /// Every member, for rekeying the cache on adoption.
-    pub(crate) const ALL: [SameObject; 13] = [
+    pub(crate) const ALL: [SameObject; 14] = [
         SameObject::ClassList,
+        SameObject::Blocking,
         SameObject::Sandbox,
         SameObject::Attributes,
         SameObject::Style,

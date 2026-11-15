@@ -203,19 +203,22 @@ impl<'js> dom_token_list_generated::DOMTokenList<'js> for JsTokenList {
 
     // https://dom.spec.whatwg.org/#dom-domtokenlist-supports
     fn supports(&self, ctx: Ctx<'js>, token: rquickjs::String<'js>) -> Result<bool> {
-        // `iframe.sandbox` is the one token list with supported tokens
-        // (<https://html.spec.whatwg.org/multipage/iframe-embed-object.html#attr-iframe-sandbox>).
-        let attribute: &str = self.attribute.as_ref();
-        if attribute != "sandbox" {
+        let token = token.to_string()?;
+        match self.attribute.as_ref() {
+            // `iframe.sandbox` is one token list with supported tokens
+            // (<https://html.spec.whatwg.org/multipage/iframe-embed-object.html#attr-iframe-sandbox>).
+            "sandbox" => Ok(crate::protocol::SandboxFlags::supports(&token)),
+            // A `blocking` attribute's possible blocking tokens; `render` is
+            // the only one so far
+            // (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#blocking-attributes>).
+            "blocking" => Ok(token == "render"),
             // Validation steps step 1: no supported tokens means a `TypeError`
             // (<https://dom.spec.whatwg.org/#concept-domtokenlist-validation>).
-            return Err(Exception::throw_type(
+            _ => Err(Exception::throw_type(
                 &ctx,
                 "DOMTokenList has no supported tokens",
-            ));
+            )),
         }
-        let token = token.to_string()?;
-        Ok(crate::protocol::SandboxFlags::supports(&token))
     }
 }
 

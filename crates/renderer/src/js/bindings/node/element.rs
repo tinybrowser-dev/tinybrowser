@@ -2267,27 +2267,42 @@ impl JsNode {
 
     // https://dom.spec.whatwg.org/#dom-element-classlist
     pub(super) fn class_list<'js>(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
+        self.token_list(
+            ctx,
+            SameObject::ClassList,
+            markup5ever::local_name!("class"),
+        )
+    }
+
+    /// The `[SameObject]` `DOMTokenList` over one of the element's content
+    /// attributes: the first read builds it, later reads answer the same
+    /// object
+    /// (<https://dom.spec.whatwg.org/#interface-domtokenlist>).
+    pub(super) fn token_list<'js>(
+        &self,
+        ctx: &Ctx<'js>,
+        member: SameObject,
+        attribute: markup5ever::LocalName,
+    ) -> Result<Value<'js>> {
         let world_rc = world(ctx)?;
-        if let Some(saved) = world_rc
-            .borrow()
-            .same_object(self.handle.get().0, SameObject::ClassList)
+        if let Some(saved) = world_rc.borrow().same_object(self.handle.get().0, member)
             && let Some(value) = deref_weak(ctx, saved)?
         {
             return Ok(value);
         }
-        let class = host::instance_for_node(
+        let list = host::instance_for_node(
             ctx,
             self.handle.get().0,
             JsTokenList {
                 element: self.handle.get(),
-                attribute: markup5ever::local_name!("class"),
+                attribute,
             },
         )?;
-        let value = Class::into_value(class);
+        let value = Class::into_value(list);
         let weak = make_weak(ctx, value.clone())?;
         world_rc.borrow_mut().intern_same_object(
             self.handle.get().0,
-            SameObject::ClassList,
+            member,
             Persistent::save(ctx, weak),
         );
         Ok(value)

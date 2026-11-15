@@ -15,6 +15,7 @@ use crate::dom::insertion::{
     iframe_containers_in_subtrees, insert_parsed, replace_all_journaled, unlink_journaled,
 };
 use crate::dom::tree::{NodeId, attr, html_namespace};
+use crate::js::world::SameObject;
 
 use super::JsNode;
 use super::element::{
@@ -205,6 +206,28 @@ impl<'js> html_link_element_generated::HTMLLinkElement<'js> for JsNode {
     fn set_cross_origin(&self, ctx: &Ctx<'js>, value: Option<rquickjs::String<'js>>) -> Result<()> {
         set_cross_origin(ctx, self.handle.get().0, value)
     }
+
+    // `[SameObject, PutForwards=value] readonly attribute DOMTokenList blocking`
+    // (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#blocking-attributes>).
+    fn get_blocking(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
+        self.token_list(
+            ctx,
+            SameObject::Blocking,
+            markup5ever::local_name!("blocking"),
+        )
+    }
+}
+
+impl<'js> html_style_element_generated::HTMLStyleElement<'js> for JsNode {
+    // `[SameObject, PutForwards=value] readonly attribute DOMTokenList blocking`
+    // (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#blocking-attributes>).
+    fn get_blocking(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
+        self.token_list(
+            ctx,
+            SameObject::Blocking,
+            markup5ever::local_name!("blocking"),
+        )
+    }
 }
 
 impl<'js> html_script_element_generated::HTMLScriptElement<'js> for JsNode {
@@ -216,6 +239,16 @@ impl<'js> html_script_element_generated::HTMLScriptElement<'js> for JsNode {
     // https://html.spec.whatwg.org/multipage/scripting.html#dom-script-crossorigin
     fn set_cross_origin(&self, ctx: &Ctx<'js>, value: Option<rquickjs::String<'js>>) -> Result<()> {
         set_cross_origin(ctx, self.handle.get().0, value)
+    }
+
+    // `[SameObject, PutForwards=value] readonly attribute DOMTokenList blocking`
+    // (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#blocking-attributes>).
+    fn get_blocking(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
+        self.token_list(
+            ctx,
+            SameObject::Blocking,
+            markup5ever::local_name!("blocking"),
+        )
     }
 
     // https://html.spec.whatwg.org/multipage/scripting.html#dom-script-text
