@@ -9,9 +9,13 @@ use rquickjs::{Ctx, Result};
 
 pub(crate) fn rendered_text(ctx: &Ctx<'_>, id: NodeId) -> Result<String> {
     let owner = world_for_node(ctx, id)?;
-    let owner = owner.borrow();
-    let Some(parsed) = owner.document(id) else {
+    let owner = owner.borrow_mut();
+    let Some(mut parsed) = owner.document_mut(id) else {
         return Ok(String::new());
     };
+    // Rendered-text collection asks each element for its resolved `display`,
+    // so layout (and the style traversal that feeds it) has to be current
+    // (<https://html.spec.whatwg.org/multipage/dom.html#the-innertext-idl-attribute>).
+    parsed.document.base.resolve(crate::animation_seconds());
     Ok(crate::dom::text::rendered_text(&parsed.document.base, id))
 }

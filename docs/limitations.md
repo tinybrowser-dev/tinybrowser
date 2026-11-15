@@ -955,6 +955,17 @@ step 3 of the append algorithm does not exempt that case, and Chrome and
 Firefox fail the same two subtests. WPT `fetch/api/cors/` covers the
 surface.
 
+## Rendered text
+
+`innerText`/`outerText` dispatch on each element's generated box, so a
+`display:table-cell` from a stylesheet separates cells with tabs exactly like a
+`td`. Two gaps remain. First, `::first-line` and `::first-letter`
+`text-transform` do not reach the collected text: the collection reads the
+element's own resolved style and Blitz exposes no per-pseudo resolved value, so
+`getter.html`'s three pseudo-element subtests still report the untransformed
+text. Second, `element.animate()` is absent, so animated `text-transform` never
+runs.
+
 ## Text selection
 
 The `select` event is queued correctly, but two selection behaviours still

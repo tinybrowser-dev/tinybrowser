@@ -136,6 +136,54 @@ fn not_rendered(base: &BaseDocument, node: BlitzId, style: &InlineStyle<'_>) -> 
     style.display_none() || html_hidden(base, node)
 }
 
+/// The table-internal box an element generates, decided by its used
+/// `display` value.
+///
+/// The innerText steps dispatch on the box an element generates, not on its
+/// tag, so a `div` with `display:table-cell` from a stylesheet contributes a
+/// tab-separated cell exactly like a `td`
+/// (<https://html.spec.whatwg.org/multipage/dom.html#the-innertext-idl-attribute>).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TableBox {
+    Table,
+    InlineTable,
+    Row,
+    Cell,
+    Caption,
+    RowGroup,
+    Column,
+    ColumnGroup,
+}
+
+/// The table box `node` generates, or `None` for an element outside table
+/// layout.
+///
+/// The `style` attribute wins because it is the inline presentation hint;
+/// otherwise the resolved `display` counts, which is what makes a class rule
+/// such as `.cell { display: table-cell }` visible to the collection.
+fn table_box_of(base: &BaseDocument, node: BlitzId, style: &InlineStyle<'_>) -> Option<TableBox> {
+    let keyword = match style.display {
+        Some(display) => display.trim().to_ascii_lowercase(),
+        None => base.resolved_style_value(node, "display"),
+    };
+    table_box_keyword(&keyword)
+}
+
+/// The box a `display` keyword names, or `None` for a non-table display.
+fn table_box_keyword(keyword: &str) -> Option<TableBox> {
+    Some(match keyword {
+        "table" => TableBox::Table,
+        "inline-table" => TableBox::InlineTable,
+        "table-row" => TableBox::Row,
+        "table-cell" => TableBox::Cell,
+        "table-caption" => TableBox::Caption,
+        "table-row-group" | "table-header-group" | "table-footer-group" => TableBox::RowGroup,
+        "table-column" => TableBox::Column,
+        "table-column-group" => TableBox::ColumnGroup,
+        _ => return None,
+    })
+}
+
 /// HTML `hidden` other than `until-found`, which still renders.
 fn html_hidden(base: &BaseDocument, node: BlitzId) -> bool {
     let Some(tree) = base.get_node(node) else {
@@ -652,6 +700,19 @@ impl Collector<'_> {
         self.trailing_atomic = false;
     }
 
+    /// A table-cell separator: a tab that starts a fresh cell, clearing the
+    /// boundary state the previous cell left
+    /// (<https://html.spec.whatwg.org/multipage/dom.html#the-innertext-idl-attribute>).
+    fn push_tab(&mut self) {
+        self.out.push('\t');
+        self.pending_space = false;
+        self.force_space = false;
+        self.last_preserve = false;
+        self.trailing_breaks = 0;
+        self.trailing_forced = false;
+        self.trailing_atomic = false;
+    }
+
     /// Ensures `count` block-boundary newlines when the buffer has content,
     /// absorbing a pending space and trailing spaces (unless preserved).
     /// Only breaks issued here count toward collapsing; content newlines
@@ -746,10 +807,40 @@ fn collect_node(
             }
             let mode = white_space_of(base, node, &style, inherited_mode);
             let transform = transform_of(base, node, &style, inherited_transform);
-            // A `tr` target (or nested row) collects its cells directly.
-            if html && local == "tr" {
-                collect_row(collector, node, mode, visibility, transform);
-                return;
+            // A table box collects structurally whatever set its `display`:
+            // the `style` attribute, a stylesheet rule, or the UA sheet. A
+            // `tr` target (or nested row) collects its cells directly, and a
+            // cell reached outside a table still shows its own content.
+            if let Some(table_box) = table_box_of(base, node, &style) {
+                match table_box {
+                    TableBox::Table => {
+                        collect_table(collector, node, mode, visibility, transform, true);
+                        return;
+                    }
+                    TableBox::InlineTable => {
+                        collect_table(collector, node, mode, visibility, transform, false);
+                        return;
+                    }
+                    TableBox::Row => {
+                        collect_row(collector, node, mode, visibility, transform);
+                        return;
+                    }
+                    // A caption, row group, column, column group, or stray
+                    // cell is a transparent container here: its content
+                    // collects inline, and an enclosing table walk decides
+                    // the separators.
+                    TableBox::Caption
+                    | TableBox::RowGroup
+                    | TableBox::Column
+                    | TableBox::ColumnGroup
+                    | TableBox::Cell => {
+                        if subtree_skipped(base, node) {
+                            return;
+                        }
+                        collect_children(collector, node, mode, visibility, transform, false);
+                        return;
+                    }
+                }
             }
             if html && local == "hr" {
                 collector.ensure_breaks(1);
@@ -787,7 +878,9 @@ fn collect_node(
                 }
                 Level::Block | Level::Paragraph => {
                     if html && local == "table" {
-                        collect_table(collector, node, mode, visibility, transform);
+                        // A `table` whose `display` a style attribute
+                        // overrides still collects its rows structurally.
+                        collect_table(collector, node, mode, visibility, transform, true);
                         return;
                     }
                     if html && local == "select" {
@@ -897,8 +990,14 @@ fn collect_table(
     mode: WhiteSpace,
     visibility: Visibility,
     transform: Transform,
+    block: bool,
 ) {
-    collector.ensure_breaks(1);
+    // A block-level table gets its own lines; an `inline-table` joins the
+    // surrounding text without boundary breaks
+    // (<https://html.spec.whatwg.org/multipage/dom.html#the-innertext-idl-attribute>).
+    if block {
+        collector.ensure_breaks(1);
+    }
     let base = collector.base;
     let Some(table) = base.get_node(node) else {
         return;
@@ -912,7 +1011,11 @@ fn collect_table(
         .rev()
         .map(|&child| (child, true, visibility, mode, transform))
         .collect();
-    let mut first = true;
+    let mut first_row = true;
+    // Whether the previous item was a cell of the anonymous row that collects
+    // cells which are direct children of the table
+    // (<https://drafts.csswg.org/css-tables-3/#anonymous-table-boxes>).
+    let mut open_row = false;
     while let Some((current, top, inherited, inherited_mode, inherited_transform)) = stack.pop() {
         let style = InlineStyle::of(base, current);
         // `display:none` and `hidden` subtrees never render, so they
@@ -927,46 +1030,90 @@ fn collect_table(
             (element.name.ns == crate::dom::tree::html_namespace())
                 .then_some(element.name.local.as_str())
         });
+        // A row, cell, or caption counts by its box, not its tag, so a
+        // `display:table-row`/`table-cell` element joins the walk
+        // (<https://html.spec.whatwg.org/multipage/dom.html#the-innertext-idl-attribute>).
+        let table_box = table_box_of(base, current, &style);
+        let is_row = matches!(kind, Some("tr")) || table_box == Some(TableBox::Row);
+        let is_cell = matches!(kind, Some("td" | "th")) || table_box == Some(TableBox::Cell);
+        let is_caption = matches!(kind, Some("caption")) || table_box == Some(TableBox::Caption);
         // Rows and cells resolve their own box properties so `tbody`/`tr`
         // styles (e.g. `visibility:collapse`) apply to their cells.
         let item_visibility = visibility_of(&style, inherited);
         let item_mode = white_space_of(base, current, &style, inherited_mode);
         let item_transform = transform_of(base, current, &style, inherited_transform);
-        match kind {
-            Some("tr") => {
-                if !first {
+        if is_row {
+            open_row = false;
+            if !first_row {
+                collector.ensure_breaks(1);
+            }
+            first_row = false;
+            collect_row(
+                collector,
+                current,
+                item_mode,
+                item_visibility,
+                item_transform,
+            );
+        } else if is_caption && top {
+            open_row = false;
+            collector.ensure_breaks(1);
+            first_row = false;
+            collect_children(
+                collector,
+                current,
+                item_mode,
+                item_visibility,
+                item_transform,
+                false,
+            );
+        } else if is_cell {
+            // Cells that are direct children of the table form an anonymous
+            // row: tab-separated, with a line break before the row itself.
+            if open_row {
+                collector.push_tab();
+            } else {
+                if !first_row {
                     collector.ensure_breaks(1);
                 }
-                first = false;
-                collect_row(
-                    collector,
-                    current,
-                    item_mode,
-                    item_visibility,
-                    item_transform,
-                );
+                first_row = false;
+                open_row = true;
             }
-            Some("caption") if top => {
-                collector.ensure_breaks(1);
-                first = false;
-                collect_children(
-                    collector,
-                    current,
-                    item_mode,
-                    item_visibility,
-                    item_transform,
-                    false,
-                );
-            }
-            Some("td" | "th" | "table") => {}
-            _ => {
-                for &child in tree.children.iter().rev() {
-                    stack.push((child, false, item_visibility, item_mode, item_transform));
-                }
+            collect_children(
+                collector,
+                current,
+                item_mode,
+                item_visibility,
+                item_transform,
+                false,
+            );
+        } else if matches!(kind, Some("table")) || table_box == Some(TableBox::Table) {
+            // A nested table does not join this table's rows.
+            open_row = false;
+        } else if table_box == Some(TableBox::InlineTable) {
+            open_row = false;
+            collect_table(
+                collector,
+                current,
+                item_mode,
+                item_visibility,
+                item_transform,
+                false,
+            );
+        } else if tree.data.downcast_element().is_none() {
+            // A text node between cells does not end the anonymous row, and
+            // table whitespace renders nothing
+            // (<https://html.spec.whatwg.org/multipage/dom.html#the-innertext-idl-attribute>).
+        } else {
+            open_row = false;
+            for &child in tree.children.iter().rev() {
+                stack.push((child, false, item_visibility, item_mode, item_transform));
             }
         }
     }
-    collector.ensure_breaks(1);
+    if block {
+        collector.ensure_breaks(1);
+    }
 }
 
 /// Collects one table row: cells tab-separated (including trailing empty
@@ -986,29 +1133,25 @@ fn collect_row(
     };
     let mut cell_first = true;
     for &cell in &tree.children {
-        let is_cell = base.get_node(cell).is_some_and(|tree| {
-            tree.data.downcast_element().is_some_and(|element| {
-                element.name.ns == crate::dom::tree::html_namespace()
-                    && matches!(element.name.local.as_str(), "td" | "th")
-            })
+        let Some(cell_tree) = base.get_node(cell) else {
+            continue;
+        };
+        let style = InlineStyle::of(base, cell);
+        let is_cell = cell_tree.data.downcast_element().is_some_and(|element| {
+            (element.name.ns == crate::dom::tree::html_namespace()
+                && matches!(element.name.local.as_str(), "td" | "th"))
+                || table_box_of(base, cell, &style) == Some(TableBox::Cell)
         });
         if !is_cell {
             continue;
         }
-        let style = InlineStyle::of(base, cell);
         // `display:none` and `hidden` cells never render, not even their
         // tab stop.
         if not_rendered(base, cell, &style) {
             continue;
         }
         if !cell_first {
-            collector.out.push('\t');
-            collector.pending_space = false;
-            collector.force_space = false;
-            collector.trailing_breaks = 0;
-            collector.trailing_atomic = false;
-            collector.last_preserve = false;
-            collector.trailing_forced = false;
+            collector.push_tab();
         }
         cell_first = false;
         let cell_visibility = visibility_of(&style, visibility);

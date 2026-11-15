@@ -3583,3 +3583,16 @@ with no box has no padding edge, so the coordinate itself is the offset)
 `dom/events` + forms batch gains it with nothing lost (the
 `form-double-submit*.html` pair flipped, the known timing-dependent flakes that
 also flip in isolation).
+
+`innerText` collection now dispatches on the box an element generates, not on
+its tag: a `div` with `display:table` (from a stylesheet rule or the `style`
+attribute) collects like a `<table>`, `display:table-row` like a `<tr>`,
+`display:table-cell` like a `<td>`, and `display:inline-table` joins the
+surrounding text without boundary breaks while still separating its rows and
+cells (<https://html.spec.whatwg.org/multipage/dom.html#the-innertext-idl-attribute>).
+The resolved `display` comes from `BaseDocument::resolved_style_value`, so the
+getter resolves layout first. Cells that are direct children of the table form
+an anonymous row, tab-separated. `getter.html` goes 267/276 to 273/276; the
+`html/dom` + `dom/events` + forms batch gains six subtests with nothing lost
+(the `form-double-submit-to-different-origin-frame.html` subtest is the known
+timing-dependent flake and fails in isolation too).
