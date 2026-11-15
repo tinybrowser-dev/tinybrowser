@@ -556,6 +556,28 @@ stylesheet type carries no owner node to fix that with. The 262 `@scope`
 subtests in `css/css-cascade` mostly fail, and the pref stays off;
 `docs/upstream.md` records the reason.
 
+## Selector matching
+
+Four form pseudo-classes match: `:required`, `:optional`, `:read-write`, and
+`:read-only` (`docs/upstream.md`). The validity-dependent ones do not:
+`:valid`, `:invalid`, `:in-range`, `:out-of-range`, `:user-valid`, and
+`:user-invalid` never match, because constraint validation runs in the web
+shim (`crates/renderer/src/js/scripts/web/forms.js`) and Blitz has no validity
+state for the selector to read. A stylesheet's `input:invalid { … }` therefore
+never applies, and every test that asserts `matches(':invalid')` fails on that
+assertion even when `input.validity` is right — which is why
+`html/semantics/forms/the-input-element/pattern_attribute.html` reports
+pattern mismatches through `validity` and still fails. Making these match needs
+the validity state to reach the tree (a control's flags are computed from
+attributes and the live value, pattern matching included, so the shim's
+`RegExp` has to stay the evaluator) and an invalidation path from every control
+mutation to the selector bits.
+
+The pinned style crate revision also predates four selectors, which therefore
+fail to parse: `:heading()` (182 subtests in `css/selectors/heading.html`),
+class-prefix selectors such as `.foo-*`, `:has-slotted()`, and `:dir()` (the
+last needs a style-crate fork to add the pseudo-class). They stay upstream.
+
 ## Imported CSS style sheets
 
 `StyleSheet` on an associated sheet reports `type`, `href`, `ownerNode`,

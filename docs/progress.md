@@ -3519,3 +3519,15 @@ signalled" requires
 1/1; the `html/dom` + `dom/events` + forms batch gains both with nothing lost
 (the `form-double-submit-3.html` subtest flipped again, a known
 timing-dependent flake that fails in isolation).
+
+`:required`, `:optional`, `:read-write`, and `:read-only` now match. Blitz
+answered `false` for all four, so `input:required { … }` never applied even
+though `ElementState` already had the bits; `ElementData::sync_form_selector_state`
+derives them from the element's attributes and runs at construction and on
+every `required`/`readonly`/`type`/`contenteditable`/`disabled` change
+(<https://html.spec.whatwg.org/multipage/semantics-other.html#selector-required>,
+<https://html.spec.whatwg.org/multipage/semantics-other.html#selector-read-write>).
+`css/selectors/selector-required.html` passes and
+`css/selectors/invalidation/input-pseudo-classes-in-has.html` goes 3/10 to 5/10;
+`css/selectors` 4,791 to 4,793 and the `html/dom` + `dom/events` + forms batch
+70,629 to 70,630, with nothing lost in either.
