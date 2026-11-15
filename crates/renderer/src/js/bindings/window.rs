@@ -545,7 +545,19 @@ pub(crate) fn fire_scroll_event(ctx: &Ctx<'_>, event: blitz_dom::PendingScrollEv
     match event.target {
         blitz_dom::ScrollEventTarget::Viewport => {
             let document = main_document(ctx)?;
-            events::fire_trusted(ctx, EventTargetKey::Node(document), typ, true, false)
+            events::fire_trusted(ctx, EventTargetKey::Node(document), typ, true, false)?;
+            // The visual viewport scrolls with the layout viewport, so it
+            // reports the same event at its own target after the window's
+            // handlers ran
+            // (<https://drafts.csswg.org/cssom-view/#scrolling-events>).
+            let host = crate::js::bridge::object(ctx)?;
+            let Some(func) =
+                host.get::<_, Option<rquickjs::Function>>("__tbVisualViewportScroll")?
+            else {
+                return Ok(());
+            };
+            func.call::<_, ()>((typ,))?;
+            Ok(())
         }
         blitz_dom::ScrollEventTarget::Element(node) => {
             let document = world(ctx)?.borrow().main_document_id();

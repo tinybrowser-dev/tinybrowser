@@ -935,6 +935,24 @@ impl JsRealm {
         })
     }
 
+    /// Tells the page shim to dispatch `resize` on `window.visualViewport`
+    /// when the viewport's size changed
+    /// (<https://drafts.csswg.org/cssom-view/#run-the-resize-steps>).
+    pub(crate) fn report_visual_viewport_changes(&self) -> Result<(), JsError> {
+        self.with_budget(None, MicrotaskCheckpoint::Perform, || {
+            self.context.with(|ctx| {
+                let host = bridge::object(&ctx)?;
+                let Some(func) =
+                    host.get::<_, Option<Function>>("__tbReportVisualViewportChanges")?
+                else {
+                    return Ok(());
+                };
+                func.call::<_, ()>(())?;
+                Ok(())
+            })
+        })
+    }
+
     /// Tells the page shim to dispatch `change` on `MediaQueryList`s whose
     /// result flipped (<https://drafts.csswg.org/cssom-view/#evaluate-media-queries-and-report-changes>).
     pub(crate) fn report_media_changes(&self) -> Result<(), JsError> {

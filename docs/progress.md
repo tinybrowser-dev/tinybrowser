@@ -3291,3 +3291,33 @@ surfaces). `html/dom` and forms lose nothing and gain the two
 batch loses nothing, and `html/webappapis` is unchanged. The remaining three
 subtests are the Location-revocation and entry-realm gaps recorded in
 `docs/limitations.md`.
+
+`window.visualViewport` is implemented. The engine has no pinch zoom and no
+visual chrome that scrolls apart from the layout viewport, so the visual
+viewport always coincides with it: `offsetLeft`/`offsetTop` are 0, `scale` is
+1, `width`/`height` are the layout viewport's, and `pageLeft`/`pageTop` are the
+page's scroll offset
+(<https://drafts.csswg.org/cssom-view/#the-visualviewport-interface>). The
+object is a `[SameObject, Replaceable]` `EventTarget`; `resize` fires when the
+viewport size changed since the last report (the spec's "run the resize
+steps"), and `scroll`/`scrollend` follow the viewport's own scroll steps.
+
+Two things underneath had to be fixed to get there:
+
+- A bare `scrollTo(...)` (and `scroll`/`scrollBy`) in a strict-mode script
+  passes `this` as `undefined`. WebIDL replaces a null or undefined `this` with
+  the realm's global object before the interface check
+  (<https://webidl.spec.whatwg.org/#es-operations>), so the shared scroll
+  wrapper now substitutes `globalThis` first; without it every
+  `scrollTo(1000, 1200)` in a page's own script silently did nothing.
+- A same-origin child whose realm has not started answers `visualViewport`,
+  `scroll`, `scrollTo`, and `scrollBy` through its `WindowProxy`, bound to the
+  child frame's viewport metrics and scroll offset, instead of `undefined`.
+
+Evidence: `visual-viewport` goes from 3/15 files (11 errors, 1 timeout) to
+**15/15**, including the iframe variants that read `frames[0].window` in the
+same task. Regression batches are clean: `dom/events`+`css/cssom`+
+`css/selectors`+observers 9,374 passing subtests with no losses,
+`html/dom`+forms 69,866 → 69,868 with no losses (the two gains are the
+`form-double-submit-*` flake, which recovers), `html/webappapis` 2,613
+unchanged, and `css/cssom-view`+`css/css-scroll-snap` 2,124 unchanged.

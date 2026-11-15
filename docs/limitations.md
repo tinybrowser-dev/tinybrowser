@@ -217,7 +217,16 @@ engine. The engine's model has these gaps:
   scroll reports no end, text controls scrolling their own content queue no
   event, and layout-time clamping of an element's scroll offset neither reports
   nor fires anything. Snap events (`scrollsnapchange`, `scrollsnapchanging`)
-  and `VisualViewport` scroll events are absent with those features themselves.
+  are absent with that feature itself.
+- `window.visualViewport` exists and reports the layout viewport: this engine
+  has no pinch zoom and no visual chrome that scrolls apart from the layout
+  viewport, so `offsetLeft`/`offsetTop` are 0, `scale` is 1,
+  `width`/`height` are the layout viewport's, and `pageLeft`/`pageTop` are the
+  page's scroll offset. `resize` fires when the viewport size changed since the
+  last report, and `scroll`/`scrollend` follow the viewport's own scroll steps.
+  A same-origin child whose realm has not started answers `visualViewport`,
+  `scroll`, `scrollTo`, and `scrollBy` through its `WindowProxy`, bound to the
+  child frame's metrics.
 - `scrollIntoView` scrolls every scrolling box in the target's containing
   block chain, innermost to outermost, then the viewport. The block and inline
   positions are mapped through each box's writing mode, and the `container`

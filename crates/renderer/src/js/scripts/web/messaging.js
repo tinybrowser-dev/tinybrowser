@@ -1279,6 +1279,13 @@ const __tbFrameProxy = frame => {
           // answer it from the caller's realm
           // (<https://drafts.csswg.org/cssom/#dom-window-getcomputedstyle>).
           if (property === 'getComputedStyle') return globalThis.getComputedStyle;
+          // The target frame's own viewport metrics and scroll methods, which
+          // the caller's realm holds no copy of
+          // (<https://drafts.csswg.org/cssom-view/#the-visualviewport-interface>).
+          if (property === 'visualViewport') return host.__tbFrameVisualViewport(frame);
+          if (property === 'scroll' || property === 'scrollTo' || property === 'scrollBy') {
+            return host.__tbFrameScrollMethod(frame, property === 'scrollBy');
+          }
           if (property === 'addEventListener') {
             return eventTargetMethod(property, '__tbFrameAddEventListener');
           }
@@ -1427,6 +1434,8 @@ const __tbFrameProxy = frame => {
         return typeof property === 'string' && __tbFrameNamedChild(frame, property) != null;
       }
       if (property === 'location' || property === 'name' || property === 'document') return true;
+      if (property === 'visualViewport' || property === 'scroll' ||
+          property === 'scrollTo' || property === 'scrollBy') return true;
       if (property === 'addEventListener' || property === 'removeEventListener'
           || property === 'dispatchEvent') return true;
       return __tbFrameForwarded(property, globalThis[property]);

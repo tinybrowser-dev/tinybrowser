@@ -3023,8 +3023,11 @@ impl Document {
             }
         }
         // Viewport changes can flip `matchMedia` results
-        // (<https://drafts.csswg.org/cssom-view/#evaluate-media-queries-and-report-changes>).
+        // (<https://drafts.csswg.org/cssom-view/#evaluate-media-queries-and-report-changes>),
+        // and they resize the visual viewport
+        // (<https://drafts.csswg.org/cssom-view/#run-the-resize-steps>).
         self.fire_js(super::js::JsRealm::report_media_changes);
+        self.fire_js(super::js::JsRealm::report_visual_viewport_changes);
     }
 
     /// Sets the frame's persisted viewport size without touching its current

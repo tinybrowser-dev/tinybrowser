@@ -133,6 +133,18 @@ fn install_frame_functions(globals: &Object<'_>) -> Result<()> {
         "__tbFrameElement",
         rquickjs::prelude::Func::from(frame_element),
     )?;
+    globals.set(
+        "__tbFrameViewportSize",
+        rquickjs::prelude::Func::from(frame_viewport_size),
+    )?;
+    globals.set(
+        "__tbFrameViewportScroll",
+        rquickjs::prelude::Func::from(frame_viewport_scroll),
+    )?;
+    globals.set(
+        "__tbFrameScrollViewport",
+        rquickjs::prelude::Func::from(frame_scroll_viewport),
+    )?;
     Ok(())
 }
 
@@ -837,6 +849,62 @@ fn same_origin_frame(ctx: &Ctx<'_>, frame: f64) -> Result<Option<Rc<RefCell<Worl
 /// (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-get>).
 fn frame_same_origin(ctx: Ctx<'_>, frame: f64) -> Result<bool> {
     Ok(same_origin_frame(&ctx, frame)?.is_some())
+}
+
+/// The viewport size `[width, height]` of a frame whose realm has not started,
+/// for its `visualViewport`
+/// (<https://drafts.csswg.org/cssom-view/#the-visualviewport-interface>).
+fn frame_viewport_size(ctx: Ctx<'_>, frame: f64) -> Vec<f64> {
+    let Ok(Some(target)) = same_origin_frame(&ctx, frame) else {
+        return vec![0.0, 0.0];
+    };
+    let (width, height) = target.borrow().viewport_size.get();
+    vec![f64::from(width), f64::from(height)]
+}
+
+/// The viewport scroll offset `[x, y]` of a frame whose realm has not started,
+/// for its `visualViewport`
+/// (<https://drafts.csswg.org/cssom-view/#dom-visualviewport-pageleft>).
+fn frame_viewport_scroll(ctx: Ctx<'_>, frame: f64) -> Vec<f64> {
+    let Ok(Some(target)) = same_origin_frame(&ctx, frame) else {
+        return vec![0.0, 0.0];
+    };
+    let world = target.borrow();
+    let Some(document) = world.main_document_id() else {
+        return vec![0.0, 0.0];
+    };
+    let Some(mut parsed) = world.document_mut_by_id(document) else {
+        return vec![0.0, 0.0];
+    };
+    parsed.document.base.resolve(crate::animation_seconds());
+    let scroll = parsed.document.base.viewport_scroll();
+    vec![scroll.x, scroll.y]
+}
+
+/// Scrolls the viewport of a frame whose realm has not started, for a
+/// `scroll`/`scrollTo`/`scrollBy` call through its `WindowProxy`
+/// (<https://drafts.csswg.org/cssom-view/#dom-window-scrollto>).
+fn frame_scroll_viewport(ctx: Ctx<'_>, frame: f64, x: f64, y: f64, behavior: String) {
+    let Ok(Some(target)) = same_origin_frame(&ctx, frame) else {
+        return;
+    };
+    let behavior = match behavior.as_str() {
+        "instant" => blitz_dom::ScrollBehavior::Instant,
+        "smooth" => blitz_dom::ScrollBehavior::Smooth,
+        _ => blitz_dom::ScrollBehavior::Auto,
+    };
+    let world = target.borrow();
+    let Some(document) = world.main_document_id() else {
+        return;
+    };
+    let Some(mut parsed) = world.document_mut_by_id(document) else {
+        return;
+    };
+    parsed.document.base.resolve(crate::animation_seconds());
+    let Some(root) = super::node::scrolling::root_element(&parsed) else {
+        return;
+    };
+    parsed.document.base.scroll_to(root.node, x, y, behavior);
 }
 
 /// The target window's `Location` for a frame whose realm has not started,

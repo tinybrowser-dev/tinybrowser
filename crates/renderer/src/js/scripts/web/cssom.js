@@ -114,6 +114,12 @@
   // (<https://drafts.csswg.org/cssom-view/#dom-element-scroll>).
   const __tbScroll = (target, receiver, args, relative, receiverCheck) => {
     try {
+      // A null or undefined `this` is replaced with the realm's global object
+      // before the interface check, which is why a bare `scrollTo(...)` in a
+      // sloppy-mode script (where `this` is the global object) and in a strict
+      // one (where it is undefined) both work
+      // (<https://webidl.spec.whatwg.org/#es-operations>).
+      if (receiver === null || receiver === undefined) receiver = globalThis;
       // The receiver check comes first, and a failure rejects like every other
       // error in a promise-returning operation
       // (<https://webidl.spec.whatwg.org/#es-operations>).
@@ -1883,5 +1889,129 @@
       return list;
     },
     writable: true, configurable: true,
+  });
+
+  // ── visualViewport ──────────────────────────────────────────────────
+  // This engine has no pinch zoom and no visual chrome that scrolls apart from
+  // the layout viewport, so the visual viewport always coincides with it: its
+  // offset is zero and its scale is 1. `width`/`height` are the layout
+  // viewport's, and `pageLeft`/`pageTop` are the page's scroll offset
+  // (<https://drafts.csswg.org/cssom-view/#the-visualviewport-interface>).
+  const __tbVisualViewportSlots = host.slots('VisualViewport');
+  function VisualViewport() {
+    throw new TypeError('Illegal constructor');
+  }
+  VisualViewport.prototype = Object.create(__tbEventTarget.prototype, {
+    constructor: { value: VisualViewport, writable: true, configurable: true },
+  });
+  __tbDefineProperty(VisualViewport.prototype, Symbol.toStringTag, {
+    value: 'VisualViewport', writable: false, enumerable: false, configurable: true,
+  });
+  function __tbVisualViewportBrand(viewport) {
+    const slot = __tbVisualViewportSlots.get(viewport);
+    if (!slot) throw new TypeError('Illegal invocation');
+    return slot;
+  }
+  // A viewport bound to another frame reads that frame's metrics through
+  // `frame`; this realm's own viewport reads them from the current world
+  const __tbVisualViewportSize = (slot) => slot.frame === undefined
+    ? __tbViewportSize()
+    : host.__tbFrameViewportSize(slot.frame);
+  const __tbVisualViewportScroll = (slot) => slot.frame === undefined
+    ? __tbViewportScroll()
+    : host.__tbFrameViewportScroll(slot.frame);
+  for (const [name, read] of [
+    ['offsetLeft', () => 0],
+    ['offsetTop', () => 0],
+    ['pageLeft', slot => __tbVisualViewportScroll(slot)[0]],
+    ['pageTop', slot => __tbVisualViewportScroll(slot)[1]],
+    ['width', slot => __tbVisualViewportSize(slot)[0]],
+    ['height', slot => __tbVisualViewportSize(slot)[1]],
+    ['scale', () => 1],
+  ]) {
+    __tbDefineProperty(VisualViewport.prototype, name, {
+      get() { return read(__tbVisualViewportBrand(this)); },
+      enumerable: true, configurable: true,
+    });
+  }
+  // The handler attributes are plain properties on the target, which the
+  // dispatcher reads after the listener list, exactly like `MediaQueryList`'s
+  // `onchange`.
+  for (const name of ['onresize', 'onscroll', 'onscrollend']) {
+    __tbDefineProperty(VisualViewport.prototype, name, {
+      get() { return __tbVisualViewportBrand(this)[name]; },
+      set(value) {
+        __tbVisualViewportBrand(this)[name] = typeof value === 'function' ? value : null;
+      },
+      enumerable: true, configurable: true,
+    });
+  }
+  const __tbVisualViewport = (() => {
+    const viewport = __tbConstruct(__tbEventTarget, [], VisualViewport);
+    const size = __tbViewportSize();
+    __tbVisualViewportSlots.set(viewport, {
+      // The size the last `resize` reported, so a layout that does not move
+      // the viewport fires nothing.
+      width: size[0],
+      height: size[1],
+      onresize: null,
+      onscroll: null,
+      onscrollend: null,
+    });
+    return viewport;
+  })();
+  __tbReplaceable('visualViewport', () => __tbVisualViewport);
+  // `[SameObject]`: a frame answers the same `VisualViewport` every read, and
+  // its getters read the target frame's live metrics
+  // (<https://drafts.csswg.org/cssom-view/#dom-window-visualviewport>).
+  const __tbFrameVisualViewports = new __tbPrivateMap();
+  host.__tbFrameVisualViewport = function __tbFrameVisualViewport(frame) {
+    const cached = __tbFrameVisualViewports.get(frame);
+    if (cached !== undefined) return cached;
+    const viewport = __tbConstruct(__tbEventTarget, [], VisualViewport);
+    __tbVisualViewportSlots.set(viewport, {
+      frame,
+      width: 0,
+      height: 0,
+      onresize: null,
+      onscroll: null,
+      onscrollend: null,
+    });
+    __tbFrameVisualViewports.set(frame, viewport);
+    return viewport;
+  };
+  // The `scroll`/`scrollTo`/`scrollBy` of a frame whose realm has not started:
+  // they scroll the target frame's viewport, which is what the WindowProxy's
+  // own method would do
+  // (<https://drafts.csswg.org/cssom-view/#dom-window-scrollto>).
+  host.__tbFrameScrollMethod = (frame, relative) => function(...args) {
+    return __tbScroll({
+      current: (_receiver, vertical) =>
+        host.__tbFrameViewportScroll(frame)[vertical ? 1 : 0],
+      scrollTo: (_receiver, x, y, behavior) =>
+        host.__tbFrameScrollViewport(frame, x, y, behavior),
+    }, this, args, relative, () => true);
+  };
+  // Dispatches `resize` when the viewport size changed since the last report,
+  // which is what the spec's "run the resize steps" does for the visual
+  // viewport (<https://drafts.csswg.org/cssom-view/#run-the-resize-steps>).
+  function __tbReportVisualViewportChanges() {
+    const slot = __tbVisualViewportSlots.get(__tbVisualViewport);
+    if (!slot) return;
+    const size = __tbViewportSize();
+    if (size[0] === slot.width && size[1] === slot.height) return;
+    slot.width = size[0];
+    slot.height = size[1];
+    __tbApply(__tbDispatchEvent, __tbVisualViewport, [new __tbEvent('resize')]);
+  }
+  host.__tbReportVisualViewportChanges = __tbReportVisualViewportChanges;
+  // The visual viewport scrolls with the page, so it reports the same
+  // `scroll`/`scrollend` the viewport does, at its own event target
+  // (<https://drafts.csswg.org/cssom-view/#scrolling-events>).
+  host.__tbVisualViewportScroll = function __tbVisualViewportScroll(type) {
+    __tbApply(__tbDispatchEvent, __tbVisualViewport, [new __tbEvent(String(type))]);
+  };
+  Object.defineProperty(globalThis, 'VisualViewport', {
+    value: VisualViewport, writable: true, configurable: true,
   });
 }
