@@ -1302,6 +1302,88 @@ pub(crate) fn fire_trusted_click(ctx: &Ctx<'_>, target: EventTargetKey) -> Resul
     dispatch(ctx, target, &event, None)
 }
 
+/// The early return when the retargeted related target is the target itself: no
+/// listener runs, and the targets are reset. The reset is what the WPT test for
+/// this branch asserts
+/// (<https://dom.spec.whatwg.org/#concept-event-dispatch>).
+fn skip_dispatch<'js>(
+    ctx: &Ctx<'js>,
+    event: &Class<'js, JsEvent>,
+    event_value: &Value<'js>,
+    has_related: bool,
+) -> Result<bool> {
+    let canceled = {
+        let class = event.borrow();
+        let mut state = class.state_mut();
+        state.dispatching = false;
+        state.target = None;
+        state.current_target = None;
+        state.phase = NONE;
+        state.path.clear();
+        state.stop_propagation = false;
+        state.stop_immediate = false;
+        state.canceled
+    };
+    if has_related {
+        store_related_target(ctx, event_value, None)?;
+    }
+    Ok(!canceled)
+}
+
+/// Whether the event reports no targets after dispatch: the last struct with
+/// its own shadow-adjusted target, or that struct's related target, is a node
+/// whose root is a shadow root. It is decided before any listener runs, so a
+/// listener that moves the target out of the tree cannot change it
+/// (<https://dom.spec.whatwg.org/#concept-event-dispatch>).
+fn clears_targets<'js>(ctx: &Ctx<'js>, path: &[PathItem<'js>]) -> bool {
+    match path
+        .iter()
+        .rev()
+        .find(|item| item.shadow_adjusted_target.is_some())
+    {
+        Some(item) => {
+            item.shadow_adjusted_target
+                .as_ref()
+                .is_some_and(reference_is_in_shadow_tree)
+                || item
+                    .related_target
+                    .as_ref()
+                    .is_some_and(|value| value_is_in_shadow_tree(ctx, value))
+        }
+        None => false,
+    }
+}
+
+/// The end-of-dispatch bookkeeping: clears the phase, current target, path, and
+/// stop flags, drops the targets when `clear_targets` is set, and returns the
+/// canceled flag (<https://dom.spec.whatwg.org/#concept-event-dispatch>).
+fn finish_dispatch<'js>(
+    ctx: &Ctx<'js>,
+    event: &Class<'js, JsEvent>,
+    event_value: &Value<'js>,
+    clear_targets: bool,
+    has_related: bool,
+) -> Result<bool> {
+    let canceled = {
+        let class = event.borrow();
+        let mut state = class.state_mut();
+        state.phase = NONE;
+        state.current_target = None;
+        state.path.clear();
+        state.dispatching = false;
+        state.stop_propagation = false;
+        state.stop_immediate = false;
+        if clear_targets {
+            state.target = None;
+        }
+        state.canceled
+    };
+    if clear_targets && has_related {
+        store_related_target(ctx, event_value, None)?;
+    }
+    Ok(canceled)
+}
+
 /// [Dispatch](https://dom.spec.whatwg.org/#concept-event-dispatch) an event.
 fn dispatch<'js>(
     ctx: &Ctx<'js>,
@@ -1310,15 +1392,17 @@ fn dispatch<'js>(
     window: Option<&Rc<RefCell<World>>>,
 ) -> Result<bool> {
     let composed = event.borrow().state().composed;
-    let path = build_path(ctx, target, window, composed)?;
+    let event_value = Class::into_value(event.clone());
+    let related = related_target_value(ctx, &event_value)?;
+    let path = build_path(ctx, target, window, composed, related.as_ref())?;
+    if path.is_empty() {
+        return skip_dispatch(ctx, event, &event_value, related.is_some());
+    }
     {
         let class = event.borrow();
         let mut state = class.state_mut();
         state.dispatching = true;
-        state.target = Some(EventTargetRef {
-            key: target,
-            world: Rc::clone(&path[0].reference.world),
-        });
+        state.target = Some(path[0].event_target.clone());
         state.current_target = None;
         state.phase = NONE;
         // The stop flags are intentionally not cleared here: an event that was
@@ -1357,6 +1441,10 @@ fn dispatch<'js>(
     } else {
         None
     };
+    // `clearTargets` is decided before any listener runs, so a listener that
+    // moves the target out of the tree cannot change it
+    // (<https://dom.spec.whatwg.org/#concept-event-dispatch>).
+    let clear_targets = clears_targets(ctx, &path);
     let result = run_invocations(ctx, event, &path, target, bubbles, &typ);
     // Handlers on elements, documents, and a document realm's window are
     // listeners, and their listener already ran with the list. Only the
@@ -1374,17 +1462,7 @@ fn dispatch<'js>(
     };
     // Clear the dispatch state on both paths, so a failed invocation cannot
     // leave the event permanently undispatchable.
-    let canceled = {
-        let class = event.borrow();
-        let mut state = class.state_mut();
-        state.phase = NONE;
-        state.current_target = None;
-        state.path.clear();
-        state.dispatching = false;
-        state.stop_propagation = false;
-        state.stop_immediate = false;
-        state.canceled
-    };
+    let canceled = finish_dispatch(ctx, event, &event_value, clear_targets, related.is_some())?;
     let outcome = result.and(handler);
     // The activation target runs its activation behavior after dispatch:
     // roll back for a canceled event, otherwise complete it. A label or
@@ -1518,97 +1596,353 @@ fn is_html_form(item: &EventTargetRef) -> bool {
 struct PathItem<'js> {
     reference: EventTargetRef,
     target: Value<'js>,
+    /// This struct's shadow-adjusted target, when it has its own. The dispatch
+    /// target and, for a composed event that leaves a shadow tree, the host
+    /// carry one; every other struct reports the nearest preceding one
+    /// (<https://dom.spec.whatwg.org/#concept-event-dispatch>).
+    shadow_adjusted_target: Option<EventTargetRef>,
+    /// `event.target` while this struct's listeners run: this struct's
+    /// shadow-adjusted target or the nearest preceding non-null one
+    /// (<https://dom.spec.whatwg.org/#concept-event-listener-invoke>).
+    event_target: EventTargetRef,
+    /// `event.relatedTarget` while this struct's listeners run, retargeted
+    /// against the invocation target
+    /// (<https://dom.spec.whatwg.org/#concept-event-dispatch>).
+    related_target: Option<Value<'js>>,
     /// Whether the invocation target's root is a shadow root, which suppresses
     /// the legacy `window.event` for this item's listeners
     /// (<https://dom.spec.whatwg.org/#concept-event-path-append>).
     invocation_target_in_shadow_tree: bool,
 }
 
+/// The event's `relatedTarget`, as the interface stores it. `None` when the
+/// value is null or the interface has no `relatedTarget` attribute
+/// (<https://dom.spec.whatwg.org/#concept-event-relatedtarget>).
+fn related_target_value<'js>(ctx: &Ctx<'js>, event: &Value<'js>) -> Result<Option<Value<'js>>> {
+    let bridge = crate::js::bridge::object(ctx)?;
+    let getter: Function = bridge.get("__tbRelatedTargetGet")?;
+    let value: Value = getter.call((event.clone(),))?;
+    Ok((!value.is_null() && !value.is_undefined()).then_some(value))
+}
+
+/// Stores `relatedTarget` back into the interface's own slot, so a listener
+/// reads the value the current path struct defines
+/// (<https://dom.spec.whatwg.org/#concept-event-listener-invoke>).
+fn store_related_target<'js>(
+    ctx: &Ctx<'js>,
+    event: &Value<'js>,
+    value: Option<&Value<'js>>,
+) -> Result<()> {
+    let bridge = crate::js::bridge::object(ctx)?;
+    let setter: Function = bridge.get("__tbRelatedTargetSet")?;
+    let value = match value {
+        Some(value) => value.clone(),
+        None => Value::new_null(ctx.clone()),
+    };
+    setter.call::<_, ()>((event.clone(), value))
+}
+
+/// Whether `ancestor` is a shadow-including inclusive ancestor of `node`
+/// (<https://dom.spec.whatwg.org/#concept-shadow-including-inclusive-ancestor>).
+fn is_shadow_including_inclusive_ancestor(
+    world: &Rc<RefCell<World>>,
+    ancestor: NodeId,
+    node: NodeId,
+) -> bool {
+    let mut current = node;
+    loop {
+        if current == ancestor {
+            return true;
+        }
+        let (parent, host) = {
+            let world = world.borrow();
+            (world.node_parent(current), world.shadow_root_host(current))
+        };
+        match parent.or(host) {
+            Some(next) => current = next,
+            None => return false,
+        }
+    }
+}
+
+/// Retargets a related target against the object it is reported to
+/// (<https://dom.spec.whatwg.org/#retarget>).
+///
+/// Only a node can be retargeted: a related target that is not a node, or a
+/// node whose root is not a shadow root, is returned unchanged.
+fn retarget_related<'js>(
+    ctx: &Ctx<'js>,
+    value: &Value<'js>,
+    against: &EventTargetRef,
+) -> Result<Value<'js>> {
+    let Some(mut id) = bindings::host_node_id(ctx, value) else {
+        return Ok(value.clone());
+    };
+    // A related target against a non-node target still retargets: the target
+    // being a node only decides whether a root already contains it
+    // (<https://dom.spec.whatwg.org/#retarget>).
+    let against_node = match against.key {
+        EventTargetKey::Node(id) => {
+            Some(bindings::realm_registry(ctx)?.borrow_mut().live_node_id(id))
+        }
+        _ => None,
+    };
+    let original = id;
+    loop {
+        let Some(world) = bindings::owning_world(ctx, id) else {
+            break;
+        };
+        let root = plain_root(&world, id);
+        // A's root not being a shadow root ends the loop at the current node
+        let Some(host) = world.borrow().shadow_root_host(root) else {
+            break;
+        };
+        if against_node
+            .is_some_and(|against| is_shadow_including_inclusive_ancestor(&world, root, against))
+        {
+            break;
+        }
+        id = host;
+    }
+    if id == original {
+        return Ok(value.clone());
+    }
+    let world =
+        bindings::owning_world(ctx, id).ok_or_else(|| Exception::throw_type(ctx, "stale node"))?;
+    resolve_target(
+        ctx,
+        &EventTargetRef {
+            key: EventTargetKey::Node(id),
+            world,
+        },
+    )
+}
+
+/// Whether a related target value is a node whose root is a shadow root
+/// (<https://dom.spec.whatwg.org/#concept-tree-root>).
+fn value_is_in_shadow_tree<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> bool {
+    let Some(id) = bindings::host_node_id(ctx, value) else {
+        return false;
+    };
+    let Some(world) = bindings::owning_world(ctx, id) else {
+        return false;
+    };
+    node_root_is_shadow(&world, id)
+}
+
+/// Whether a target reference is a node whose root is a shadow root
+/// (<https://dom.spec.whatwg.org/#concept-tree-root>).
+fn reference_is_in_shadow_tree(reference: &EventTargetRef) -> bool {
+    let EventTargetKey::Node(id) = reference.key else {
+        return false;
+    };
+    node_root_is_shadow(&reference.world, id)
+}
+
 /// Whether `id`'s tree root is a shadow root
 /// (<https://dom.spec.whatwg.org/#concept-tree-root>).
-fn is_in_shadow_tree(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>, id: NodeId) -> Result<bool> {
-    let mut root = id;
-    while let Some(parent) = world.borrow().node_parent(root) {
-        root = parent;
+fn node_root_is_shadow(world: &Rc<RefCell<World>>, mut id: NodeId) -> bool {
+    let world = world.borrow();
+    while let Some(parent) = world.node_parent(id) {
+        id = parent;
     }
-    bindings::node_is_shadow_root(ctx, root)
+    let Some(parsed) = world.document(id) else {
+        return false;
+    };
+    parsed
+        .document
+        .base
+        .get_node(id.node)
+        .is_some_and(|node| matches!(node.data, blitz_dom::NodeData::ShadowRoot { .. }))
+}
+
+/// The event target reference for a dispatch target
+/// (<https://dom.spec.whatwg.org/#concept-event-target>).
+fn target_reference(
+    ctx: &Ctx<'_>,
+    target: EventTargetKey,
+    window: Option<&Rc<RefCell<World>>>,
+) -> Result<EventTargetRef> {
+    let world = match target {
+        EventTargetKey::Window => match window {
+            Some(world) => Rc::clone(world),
+            None => bindings::world(ctx)?,
+        },
+        _ => target_world(ctx, target)?,
+    };
+    Ok(EventTargetRef { key: target, world })
+}
+
+/// The root of `id` in its tree
+/// (<https://dom.spec.whatwg.org/#concept-tree-root>).
+fn plain_root(world: &Rc<RefCell<World>>, mut id: NodeId) -> NodeId {
+    while let Some(parent) = world.borrow().node_parent(id) {
+        id = parent;
+    }
+    id
+}
+
+/// The one-item path of a target that is not a node: an `Attr`, a `Window`, or
+/// a constructible `EventTarget`
+/// (<https://dom.spec.whatwg.org/#concept-event-path-append>).
+fn single_target_path<'js>(
+    ctx: &Ctx<'js>,
+    reference: EventTargetRef,
+    related: Option<Value<'js>>,
+) -> Result<Vec<PathItem<'js>>> {
+    Ok(vec![PathItem {
+        target: resolve_target(ctx, &reference)?,
+        shadow_adjusted_target: Some(reference.clone()),
+        event_target: reference.clone(),
+        reference,
+        related_target: related,
+        invocation_target_in_shadow_tree: false,
+    }])
+}
+
+/// One ancestor's path item. `Ok(None)` means the ancestor is the related
+/// target, so the path stops before it
+/// (<https://dom.spec.whatwg.org/#concept-event-dispatch>).
+///
+/// `current_root` and `event_target` follow the algorithm's `target` variable:
+/// when the path leaves a shadow tree at its host, the host becomes the target
+/// for the structs above it.
+fn ancestor_path_item<'js>(
+    ctx: &Ctx<'js>,
+    world: &Rc<RefCell<World>>,
+    node: NodeId,
+    current_root: &mut NodeId,
+    event_target: &mut EventTargetRef,
+    related: Option<&Value<'js>>,
+) -> Result<Option<PathItem<'js>>> {
+    let reference = EventTargetRef {
+        key: EventTargetKey::Node(node),
+        world: Rc::clone(world),
+    };
+    let value = resolve_target(ctx, &reference)?;
+    let related_here = match related {
+        Some(original) => Some(retarget_related(ctx, original, &reference)?),
+        None => None,
+    };
+    if is_shadow_including_inclusive_ancestor(world, *current_root, node) {
+        let invocation_target_in_shadow_tree = bindings::node_is_shadow_root(ctx, *current_root)?;
+        return Ok(Some(PathItem {
+            reference,
+            target: value,
+            shadow_adjusted_target: None,
+            event_target: event_target.clone(),
+            related_target: related_here,
+            invocation_target_in_shadow_tree,
+        }));
+    }
+    if related_here
+        .as_ref()
+        .is_some_and(|related| related.strict_eq(&value))
+    {
+        return Ok(None);
+    }
+    *current_root = plain_root(world, node);
+    *event_target = reference.clone();
+    let invocation_target_in_shadow_tree = bindings::node_is_shadow_root(ctx, *current_root)?;
+    Ok(Some(PathItem {
+        reference,
+        target: value,
+        shadow_adjusted_target: Some(event_target.clone()),
+        event_target: event_target.clone(),
+        related_target: related_here,
+        invocation_target_in_shadow_tree,
+    }))
 }
 
 /// Builds the event path: the target, its ancestors, and the window
 /// (<https://dom.spec.whatwg.org/#concept-event-path-append>).
+///
+/// An empty path means the dispatch is skipped: the retargeted related target
+/// is the target itself, so the event never propagates
+/// (<https://dom.spec.whatwg.org/#concept-event-dispatch>).
 fn build_path<'js>(
     ctx: &Ctx<'js>,
     target: EventTargetKey,
     window: Option<&Rc<RefCell<World>>>,
     composed: bool,
+    related: Option<&Value<'js>>,
 ) -> Result<Vec<PathItem<'js>>> {
-    match target {
-        EventTargetKey::Window => {
-            let world = match window {
-                Some(world) => Rc::clone(world),
-                None => bindings::world(ctx)?,
-            };
-            let reference = EventTargetRef { key: target, world };
-            let value = resolve_target(ctx, &reference)?;
-            Ok(vec![PathItem {
-                reference,
-                target: value,
-                invocation_target_in_shadow_tree: false,
-            }])
+    let reference = target_reference(ctx, target, window)?;
+    let related_against_target = match related {
+        Some(value) => Some(retarget_related(ctx, value, &reference)?),
+        None => None,
+    };
+    // If the target is the retargeted related target, the event is not
+    // dispatched at all; the exception is an event whose own relatedTarget is
+    // the target, which still runs
+    // (<https://dom.spec.whatwg.org/#concept-event-dispatch>).
+    if let (Some(value), Some(retargeted)) = (related, &related_against_target) {
+        let target_value = resolve_target(ctx, &reference)?;
+        if target_value.strict_eq(retargeted) && !target_value.strict_eq(value) {
+            return Ok(Vec::new());
         }
+    }
+    match target {
+        EventTargetKey::Window => single_target_path(ctx, reference, related_against_target),
         EventTargetKey::Attribute { .. } | EventTargetKey::Standalone(_) => {
             // https://dom.spec.whatwg.org/#get-the-parent
             // https://dom.spec.whatwg.org/#interface-attr
             // Attr's owner element is not its parent; Chromium's
             // EventPath::CalculatePath likewise follows parentNode().
-            let reference = EventTargetRef {
-                key: target,
-                world: target_world(ctx, target)?,
-            };
             if let EventTargetKey::Standalone(id) = target
                 && reference.world.borrow().standalone_target(id).is_none()
             {
                 return Err(Exception::throw_internal(ctx, "missing EventTarget"));
             }
-            let value = resolve_target(ctx, &reference)?;
-            Ok(vec![PathItem {
-                reference,
-                target: value,
-                invocation_target_in_shadow_tree: false,
-            }])
+            single_target_path(ctx, reference, related_against_target)
         }
         EventTargetKey::Node(id) => {
-            let world = bindings::world_for_node(ctx, id)?;
-            let mut invocation_target_in_shadow_tree = is_in_shadow_tree(ctx, &world, id)?;
-            let mut path = Vec::new();
-            let mut cursor = Some(id);
-            let mut reached_document = false;
+            let world = Rc::clone(&reference.world);
+            // The dispatch algorithm's `target` root, which decides whether an
+            // ancestor already contains the target, and which changes when the
+            // path leaves a shadow tree for its host
+            // (<https://dom.spec.whatwg.org/#concept-event-dispatch>).
+            let mut current_root = plain_root(&world, id);
+            let mut event_target = reference.clone();
+            let origin_in_shadow_tree = bindings::node_is_shadow_root(ctx, current_root)?;
+            let mut path = vec![PathItem {
+                reference: reference.clone(),
+                target: resolve_target(ctx, &reference)?,
+                shadow_adjusted_target: Some(reference),
+                event_target: event_target.clone(),
+                related_target: related_against_target,
+                invocation_target_in_shadow_tree: origin_in_shadow_tree,
+            }];
+            let mut cursor = world.borrow().node_parent(id);
+            // The dispatch target is the document itself when it has no
+            // parent: its window is still the last path item
+            // (<https://dom.spec.whatwg.org/#get-the-parent>).
+            let mut reached_document = world.borrow().node_is_document(id);
             while let Some(node) = cursor {
-                let reference = EventTargetRef {
-                    key: EventTargetKey::Node(node),
-                    world: Rc::clone(&world),
+                let Some(item) = ancestor_path_item(
+                    ctx,
+                    &world,
+                    node,
+                    &mut current_root,
+                    &mut event_target,
+                    related,
+                )?
+                else {
+                    // The parent is the related target, so the path stops
+                    // before it (<https://dom.spec.whatwg.org/#concept-event-dispatch>).
+                    break;
                 };
-                let value = resolve_target(ctx, &reference)?;
-                path.push(PathItem {
-                    reference,
-                    target: value,
-                    invocation_target_in_shadow_tree,
-                });
+                let invocation_target_in_shadow_tree = item.invocation_target_in_shadow_tree;
+                path.push(item);
                 let parent = world.borrow().node_parent(node);
                 if let Some(parent) = parent {
                     cursor = Some(parent);
                 } else {
                     reached_document = world.borrow().node_is_document(node);
                     // A composed event continues past a shadow root at its
-                    // host; the host and its ancestors are outside the shadow
-                    // tree, so they report the legacy current event
-                    // (<https://dom.spec.whatwg.org/#get-the-parent>).
+                    // host (<https://dom.spec.whatwg.org/#get-the-parent>).
                     cursor = if composed && invocation_target_in_shadow_tree {
-                        let host = world.borrow().shadow_root_host(node);
-                        if host.is_some() {
-                            invocation_target_in_shadow_tree = false;
-                        }
-                        host
+                        world.borrow().shadow_root_host(node)
                     } else {
                         None
                     };
@@ -1617,14 +1951,20 @@ fn build_path<'js>(
             if reached_document {
                 // A document's parent is its own window, not the dispatching
                 // realm's (<https://dom.spec.whatwg.org/#get-the-parent>).
-                let reference = EventTargetRef {
+                let window_reference = EventTargetRef {
                     key: EventTargetKey::Window,
                     world,
                 };
-                let value = resolve_target(ctx, &reference)?;
+                let related_here = match related {
+                    Some(original) => Some(retarget_related(ctx, original, &window_reference)?),
+                    None => None,
+                };
                 path.push(PathItem {
-                    reference,
-                    target: value,
+                    reference: window_reference.clone(),
+                    target: resolve_target(ctx, &window_reference)?,
+                    shadow_adjusted_target: None,
+                    event_target,
+                    related_target: related_here,
                     invocation_target_in_shadow_tree: false,
                 });
             }
@@ -1702,6 +2042,10 @@ fn invoke<'js>(
         let mut state = class.state_mut();
         state.phase = phase;
         state.current_target = Some(item.reference.clone());
+        // The target is this struct's shadow-adjusted target or, when it has
+        // none, the nearest preceding one
+        // (<https://dom.spec.whatwg.org/#concept-event-listener-invoke>).
+        state.target = Some(item.event_target.clone());
     }
     let listeners = item
         .reference
@@ -1709,6 +2053,9 @@ fn invoke<'js>(
         .borrow()
         .listener_snapshot(item.reference.key);
     let event_value = Class::into_value(event.clone());
+    if let Some(related) = &item.related_target {
+        store_related_target(ctx, &event_value, Some(related))?;
+    }
     let mut found = false;
     for listener in listeners {
         // The check is per listener, not per path item: a listener can remove
@@ -2205,6 +2552,15 @@ fn run_plain_property_handlers<'js>(
         match handler_storage(item.reference.key, &item.reference.world) {
             HandlerStorage::PlainProperty => {}
             HandlerStorage::Window | HandlerStorage::Node(_) => continue,
+        }
+        {
+            let class = event.borrow();
+            let mut state = class.state_mut();
+            state.current_target = Some(item.reference.clone());
+            state.target = Some(item.event_target.clone());
+        }
+        if let Some(related) = &item.related_target {
+            store_related_target(ctx, &event_value, Some(related))?;
         }
         call_handler_attribute(
             ctx,

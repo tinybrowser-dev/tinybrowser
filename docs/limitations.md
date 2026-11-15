@@ -1060,6 +1060,18 @@ delay of zero or more and approximate for a seek the page cannot perform.
 There is no `animationcancel` for an element removed from the document, because
 the animation set is cleared without a restyle to observe it.
 
+`relatedTarget` retargeting follows the dispatch algorithm, with two
+`relatedTarget.window.html` subtests left that cannot both pass. The retarget
+loop dispatches on the host with a shadow-root relatedTarget and expects the
+host to stay the target, while the early-return subtest runs the same dispatch
+and expects both targets reset; the algorithm's skip rule
+(`target is not relatedTarget or target is event's relatedTarget`) only gives
+the latter. The activation-behavior subtest expects `input` to observe a
+cleared target and relatedTarget, but `clearTargets` is false for an input
+outside a shadow tree, so the spec keeps them
+(<https://dom.spec.whatwg.org/#concept-event-dispatch>). Focus events fired by
+the engine are plain `Event`s with no related target, so `shadow-relatedTarget`
+stays 0/2.
 
 A node can be adopted into another document while its own native method is
 still on the stack: an event listener that moves the dispatching target.

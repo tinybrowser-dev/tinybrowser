@@ -450,8 +450,10 @@ __tbExposeEvent('CompositionEvent', __tbUIEventConstructor, host.slots('tinybrow
   () => ({ data: '' }),
   init => ({ data: __tbEventString(init.data) }),
   ['data']);
-__tbExposeEvent('FocusEvent', __tbUIEventConstructor, host.slots('tinybrowser.focusevent.data'),
-  () => ({ relatedTarget: null }),
+const __tbFocusEventData = host.slots('tinybrowser.focusevent.data');
+const __tbFreshFocusEvent = () => ({ relatedTarget: null });
+__tbExposeEvent('FocusEvent', __tbUIEventConstructor, __tbFocusEventData,
+  __tbFreshFocusEvent,
   init => ({ relatedTarget: init.relatedTarget || null }),
   ['relatedTarget']);
 __tbExposeEvent('TextEvent', __tbUIEventConstructor, host.slots('tinybrowser.textevent.data'),
@@ -471,6 +473,29 @@ __tbExposeEvent('DragEvent', __tbMouseEventConstructor, host.slots('tinybrowser.
   () => ({ dataTransfer: null }),
   init => ({ dataTransfer: init.dataTransfer || null }),
   ['dataTransfer']);
+
+// The dispatch algorithm rewrites `relatedTarget` for every event path struct,
+// so the host reads and writes the same private slot the interface getters use.
+// Only the interfaces that define the attribute have a slot entry; an event of
+// another interface has none, and the host treats it as a null relatedTarget
+// (<https://dom.spec.whatwg.org/#concept-event-dispatch>).
+const __tbRelatedTargetMaps = [__tbMouseEventData, __tbFocusEventData];
+host.__tbRelatedTargetGet = event => {
+  for (const data of __tbRelatedTargetMaps) {
+    const entry = data.get(event);
+    if (entry !== undefined) return entry.relatedTarget;
+  }
+  return null;
+};
+host.__tbRelatedTargetSet = (event, value) => {
+  for (const data of __tbRelatedTargetMaps) {
+    const entry = data.get(event);
+    if (entry !== undefined) {
+      entry.relatedTarget = value;
+      return;
+    }
+  }
+};
 // CSS Animations and Transitions own the event interfaces whose handlers the
 // legacy `webkit` names alias
 // (<https://drafts.csswg.org/css-animations-1/#interface-animationevent>,

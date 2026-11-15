@@ -3716,3 +3716,28 @@ local name alone and create its own null-namespace one
 batch gains it with nothing lost, and `dom/nodes` keeps every attribute subtest
 (the `setAttribute`/`removeAttribute` namespace behavior stays as the DOM spec
 defines it).
+
+Event dispatch now implements the spec's `relatedTarget` retargeting. The path
+builder retargets the event's relatedTarget against every struct's invocation
+target, stores the result for the struct (`invoke` writes it back to the event's
+attribute), and retargets a shadow-tree related node to its host. Retargeting
+now runs against non-node targets too, which is what turns a shadow-tree related
+node into its host for `Window`, `XMLHttpRequest`, and constructible
+`EventTarget` targets
+(<https://dom.spec.whatwg.org/#concept-event-dispatch>,
+<https://dom.spec.whatwg.org/#retarget>). Event dispatch also learned the rest
+of the spec's path bookkeeping: each struct carries its shadow-adjusted target
+(so a composed event leaving a shadow tree reports the host as `event.target`
+above it), the path stops before a related target that is an ancestor, a
+dispatch whose retargeted related target is the target itself runs no listener
+and resets both targets, and `clearTargets` (decided before any listener runs)
+drops `target`/`relatedTarget` once the last shadow-adjusted target or its
+related target sits in a shadow tree. `dom/events/relatedTarget.window.html`
+goes 0/6 to 4/6, matching or beating Chromium (which gets 3/6); the `html/dom` +
+`dom/events` + forms batch gains 4 with nothing lost, and `dom/nodes` (14,558)
+and `css/selectors` (4,793) are unchanged. Two subtests remain: the retarget
+loop expects a dispatch on the host with a shadow-root relatedTarget to keep
+the host as target while the early-return subtest expects the same dispatch to
+reset it, and the activation subtest expects targets to be reset before
+`input` runs, which the spec's `clearTargets` rule does not do for an input
+outside a shadow tree. Both are recorded in `docs/limitations.md`.
