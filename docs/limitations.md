@@ -19,11 +19,22 @@ screenshot as a rendering opportunity: it advances up to three 16ms frames so
 the page's queued frame callbacks run before the capture
 (`SCREENSHOT_FRAMES` in `tools/wpt-harness/src/engine.rs`).
 
-The canvas background is propagated from the body to the viewport for
-`background-color` only. A body `background-image` is painted over the body's
-box and not over the whole canvas, so a page whose only background is a body
-image (or gradient) renders blank where a browser tiles it across the page;
-`resize-observer/devicepixel2-ref.html` is one such reference.
+The canvas background is painted from the root element, or from its first
+`body` child when the root's `background-image` is `none` and its
+`background-color` is transparent (blitz@c83bacef7). Colour, images, and
+gradients all cover the canvas, their images are sized and positioned against
+the root element's box as the spec requires, and a `display: none` root or body
+leaves the canvas transparent
+(<https://drafts.csswg.org/css-backgrounds-3/#special-backgrounds>).
+`background-clip` does not narrow a canvas background, so `clip: text` paints
+the canvas rather than the glyphs. Blitz's background paint has two gaps of its
+own: `background-attachment: local` is treated as `scroll` for every element,
+so the positioning area does not move with the box's contents, and CSS
+Backgrounds 4's `background-clip: border-area` is not implemented, which the
+`clip-border-area-*` reftests exercise. One canvas-specific gap remains: a
+`space` pattern with only one image per axis is not repeated over the painting
+area, so a canvas layer whose painting area is larger than the positioning area
+paints one tile where a browser repeats it.
 
 ## Intl
 

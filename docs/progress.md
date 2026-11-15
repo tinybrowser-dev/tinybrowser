@@ -3150,3 +3150,50 @@ time); `html/webappapis` 2,613 → 2,614 (the nested-rAF gain above);
 `css/css-scroll-snap` 158 unchanged. `cargo fmt --check`, `tools/check
 clippy`, and the renderer (175), webidl-bindgen (43), and wpt-harness (30)
 test binaries pass.
+
+The canvas background now propagates images, not just a colour (blitz@c83bacef7).
+Blitz painted a background colour from the body onto the canvas and nothing
+else, so a page whose canvas background was a body `background-image` or
+gradient rendered blank — which is exactly what
+`css-backgrounds/background-image-shared-stylesheet-ref.html` and
+`resize-observer/devicepixel2-ref.html` paint. The paint pass now draws the
+whole background (colour, images, gradients) of the root element, or of its
+first `body` child when the root's `background-image` is `none` and its
+`background-color` is transparent, over the canvas; an element that generates
+no box leaves the canvas transparent. The painting area is always the canvas
+(at least the viewport), while images are sized and positioned against the root
+element's box, as the spec says; `background-clip` does not narrow a canvas
+background, so `clip: text` paints the canvas rather than the glyphs, and the
+source element stops painting its own background because the propagated values
+replace its used values. The source's outset `box-shadow` is clipped to its
+border box, since it no longer paints a background that could cover the shadow.
+
+Tiling had to follow. `repeat` and `round` raster tiles now cover the union of
+the positioning and painting boxes rather than stopping at the positioning box:
+the image sampler repeats inside a single quad, so the quad is what has to
+reach the painting area, and its phase stays anchored at the positioning box.
+`space` keeps its count and stride from the positioning area and then repeats
+that pattern over the painting area, except when only one image fits, where one
+image is placed at `background-position`. Gradient layers use the same painting
+area. That last rule is what keeps
+`background-repeat-space-8.html` honest: its `space` box now fills the border
+area like its `repeat` reference, while its single-tile gradient box still
+matches the `no-repeat` reference.
+
+Evidence against the pre-change run of the same 261-file `css/css-backgrounds`
+slice: eight reftests flip to passing — `background-attachment-margin-root-002`,
+`background-color-body-propagation-004`,
+`background-color-root-propagation-001`,
+`background-color-root-propagation-002`,
+`background-image-shared-stylesheet`, `origin-content-box`,
+`origin-content-box_with_radius`, and `gradient-repeat-spaced-with-borders` —
+with **no lost tests** and `background-repeat-space-8` still passing.
+`resize-observer/devicepixel2.html` passes again as well, recovering the
+file-level regression the table-caption slice's frame-settling exposed.
+`css/css-tables` stays at 492 passing subtests and `css/cssom-view` at 1,949,
+both with no losses (its `cssom-geometryutils-connected-callback.html` flake
+timed out in the batch and passes 3 of 3 in isolation). Regression batches lose
+nothing: `dom/events`+`css/cssom`+`css/selectors`+observers 9,371 → 9,373,
+`html/dom` and forms 69,866 → 69,867, `html/webappapis` 2,613 (the nested-rAF
+test flips on `Date.now()` granularity in both directions), `css/css-scroll-snap`
+158.
