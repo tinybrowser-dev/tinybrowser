@@ -70,10 +70,13 @@ impl Component {
                 .fragment()
                 .filter(|fragment| !fragment.is_empty())
                 .map_or_else(String::new, |fragment| format!("#{fragment}")),
-            // The settings object's origin, not the URL's: `about:blank`,
-            // `about:srcdoc`, and `data:` documents carry a captured origin
-            // (<https://html.spec.whatwg.org/multipage/browsers.html#concept-origin>).
-            Self::Origin => world.origin.ascii_serialization(),
+            // The URL's origin, not the settings object's: `about:blank`,
+            // `about:srcdoc`, and `javascript:` documents carry a captured
+            // origin that `window.origin` reports, but `Location.origin`
+            // serializes its own URL's origin, which is opaque for those
+            // schemes
+            // (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-origin>).
+            Self::Origin => url.origin().ascii_serialization(),
             Self::Protocol => format!("{}:", url.scheme()),
             Self::Host => match url.port() {
                 Some(port) => format!("{}:{port}", url.host_str().unwrap_or_default()),

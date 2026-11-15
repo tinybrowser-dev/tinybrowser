@@ -3616,3 +3616,12 @@ is unavailable and the getter answers the current time, which the spec requires
 for that case. `document-lastModified-01.html` goes 0/3 to 3/3; the `html/dom` +
 `dom/events` + forms batch keeps every subtest (one harness-budget timeout on
 `form-double-submit-requestsubmit.html` that passes 36/36 in isolation twice).
+
+`location.origin` now serializes the document URL's origin, not the settings
+object's origin. The two differ for `about:blank`, `about:srcdoc`, and
+`javascript:` documents: `window.origin` reports the inherited origin, while
+`Location.origin` serializes its own URL, which is opaque for those schemes
+(<https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-origin>).
+`html/dom/self-origin.sub.html` goes 9/11 to 11/11; the `html/dom` +
+`dom/events` + forms batch gains all of them with nothing lost (the
+`form-double-submit.html` flake flipped, and it fails in isolation too).
