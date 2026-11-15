@@ -34,6 +34,10 @@ fonts.js
 canvas_filter.js
 css_color_api.js
 geometry.js
+# `cssom_geometry.js` reads the renderer's `getBoundingClientRect`,
+# `getClientRects`, `getComputedStyle`, and `DOMRect`, which the earlier
+# shims and bindings install.
+cssom_geometry.js
 workers.js
 # `window.js` installs the window's own members; it reads nothing from the
 # later shims.

@@ -2802,3 +2802,39 @@ all with no lost subtests. `html/semantics/forms` loses 1 subtest
 (175), webidl-bindgen (42), and wpt-harness (30) test binaries pass; the two
 browser integration failures are the environment failures that reproduce at
 the parent commit.
+
+CSSOM View geometry is now a full API surface. `cssom_geometry.js` installs
+`DOMQuad` and `DOMRectList`, and `GeometryUtils` (`getBoxQuads`,
+`convertPointFromNode`, `convertRectFromNode`, `convertQuadFromNode`) on
+`Element`, `Text`, and `Document`
+(<https://drafts.csswg.org/cssom-view/#the-geometryutils-interface>,
+<https://drafts.fxtf.org/geometry/#DOMQuad>). Each method follows the spec's
+box adjustments: a quad is built in the node's border-box space, shifted by
+the source's viewport origin, and expressed in `relativeTo`'s border-box
+space; `fromBox`/`toBox` add the margin, border, padding, or content offset
+from the element's computed edges. `getBoundingClientRect()` now answers the
+union of an element's box fragments and `getClientRects()` one rect per line
+box, both through `BaseDocument::get_client_bounding_rect`/`node_client_rects`
+instead of a linear scan of every laid-out box, so a non-atomic inline returns
+its per-line fragments. `DOMRect`/`DOMRectList` now carry their
+`Symbol.toStringTag`, and `getClientRects()` is iterable.
+
+A geometry conversion reads layout once per node: the four-point conversions
+share the two origins, which is what keeps
+`cssom-geometryutils-connected-callback.html` (300 elements times six markers)
+inside the harness budget.
+
+Evidence: `css/cssom-view` 1616 to **1760** passing subtests, no lost
+subtests; `getClientRects-inline.html` moves FAIL to PASS.
+`cssom-geometryutils-convertPointFromNode` 0/20 to 20/20,
+`convertQuadFromNode` 0/18 to 18/18, `convertRectFromNode` 0/18 to 18/18,
+`element-types` 1/41 to 41/41, `getBoxQuads-options` 0/17 to 17/17,
+`lifecycle` 0/4 to 4/4, `same-origin-iframe` 0/2 to 2/2, `shadow-dom` 1/2 to
+2/2, `fragmentation` 0/4 to 3/4, `transforms` 0/10 to 7/10,
+`cssom-getBoxQuads-001` 0/6 to 6/6 and `-002` 0/1 to 1/1. `dom/events` stays
+at 665, `css/cssom` 3674, `css/selectors` 4791, `intersection-observer` 185,
+`resize-observer` 50, `html/dom` 65341, and `html/semantics/forms` 4524, all
+with no lost subtests. `cargo fmt --check` (both trees), `tools/check clippy`,
+and the renderer (175), webidl-bindgen (42), and wpt-harness (30) test
+binaries pass; the two browser integration failures are the environment
+failures that reproduce at the parent commit.

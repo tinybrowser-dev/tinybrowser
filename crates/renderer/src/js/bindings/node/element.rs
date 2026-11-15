@@ -5,9 +5,9 @@ use super::super::{
     AttrArgument, CollectionKind, JsNamedNodeMap, JsTokenList, LegacyNullString, NodeContext,
     NodeOrString, OptString, WebIdlString, active_world, after_attribute_change, attached_attr_id,
     attr_owner, attr_state, attr_wrapper, attribute_local_name, attribute_value, blur_node,
-    deref_weak, document_is_html_content, dom_string, element_box_ctx, element_click,
-    fixup_focus_after_removal, focus_node, get_element_reference, get_element_reference_list, host,
-    host_node_id, is_focusable, js_string_to_utf8, live_collection, make_weak, rect_object,
+    deref_weak, document_is_html_content, dom_string, element_click, fixup_focus_after_removal,
+    focus_node, get_element_reference, get_element_reference_list, host, host_node_id,
+    is_focusable, js_string_to_utf8, live_collection, make_weak, rect_object,
     remove_attribute_sync, schedule_mutation_delivery, set_attribute_node, set_attribute_sync,
     set_element_reference, set_element_reference_list, string_value, throw_dom, throw_dom_error,
     touch_attr, valid_attribute_local_name, validate_and_extract, with_node_data, world,
@@ -1711,13 +1711,12 @@ impl<'js> html_hyperlink_element_utils_generated::HTMLHyperlinkElementUtils<'js>
 }
 
 impl JsNode {
-    // The element's border box from the render pipeline's layout; zero when
-    // the element generates no box (for example `display: none`).
+    // The union of the element's box fragments relative to the viewport; zero
+    // when the element generates no box (for example `display: none`).
     pub(super) fn get_bounding_client_rect<'js>(&self, ctx: Ctx<'js>) -> Result<Value<'js>> {
-        match element_box_ctx(&ctx, self.handle.get().0)? {
+        match self.client_rects(&ctx, true).into_iter().next() {
             Some((left, top, width, height)) => {
-                let (scroll_x, scroll_y) = viewport_offset(&ctx, self.handle.get().0)?;
-                Ok(rect_object(&ctx, left - scroll_x, top - scroll_y, width, height)?.into_value())
+                Ok(rect_object(&ctx, left, top, width, height)?.into_value())
             }
             None => Ok(rect_object(&ctx, 0.0, 0.0, 0.0, 0.0)?.into_value()),
         }
@@ -1725,14 +1724,77 @@ impl JsNode {
 
     pub(super) fn get_client_rects<'js>(&self, ctx: Ctx<'js>) -> Result<Value<'js>> {
         let array = Array::new(ctx.clone())?;
-        if let Some((left, top, width, height)) = element_box_ctx(&ctx, self.handle.get().0)? {
-            let (scroll_x, scroll_y) = viewport_offset(&ctx, self.handle.get().0)?;
-            array.set(
-                0,
-                rect_object(&ctx, left - scroll_x, top - scroll_y, width, height)?,
-            )?;
+        for (index, (left, top, width, height)) in
+            self.client_rects(&ctx, false).into_iter().enumerate()
+        {
+            array.set(index, rect_object(&ctx, left, top, width, height)?)?;
         }
         Ok(array.into_value())
+    }
+
+    /// The element's box fragments relative to the viewport
+    /// (<https://drafts.csswg.org/cssom-view/#dom-element-getclientrects>).
+    ///
+    /// A non-atomic inline is laid out as style spans in its inline root, so
+    /// it has one fragment per line box; every other element has one border
+    /// box. `bounding` asks for the union of those fragments, which is what
+    /// `getBoundingClientRect()` reports; a union of no fragments is a zero
+    /// rect. An element with no associated box (for example `display: none`)
+    /// generates none.
+    fn client_rects(&self, ctx: &Ctx<'_>, bounding: bool) -> Vec<(f64, f64, f64, f64)> {
+        let id = self.handle.get().0;
+        let Some(world) = active_world(ctx, id) else {
+            return Vec::new();
+        };
+        let world = world.borrow();
+        let Some(mut parsed) = world.document_mut(id) else {
+            return Vec::new();
+        };
+        let base = &mut parsed.document.base;
+        base.resolve(0.0);
+        let Some(node) = base.get_node(id.node) else {
+            return Vec::new();
+        };
+        if !has_associated_box(base, node) {
+            return Vec::new();
+        }
+        let mut rects: Vec<(f64, f64, f64, f64)> = base
+            .node_client_rects(id.node)
+            .into_iter()
+            .map(|rect| (rect.x, rect.y, rect.width, rect.height))
+            .collect();
+        // An empty non-atomic inline is flattened into its inline root and has
+        // no fragment of its own, but it still has a position: the layout
+        // box's origin, which is where its caret would be
+        // (<https://drafts.csswg.org/css-inline-3/#invisible-line-boxes>).
+        if rects.is_empty() {
+            let position = node.absolute_position(0.0, 0.0);
+            let size = node.final_layout().size;
+            let scroll = base.viewport_scroll();
+            rects.push((
+                f64::from(position.x) - scroll.x,
+                f64::from(position.y) - scroll.y,
+                f64::from(size.width),
+                f64::from(size.height),
+            ));
+        }
+        if bounding {
+            let Some((first, rest)) = rects.split_first() else {
+                return Vec::new();
+            };
+            let mut left = first.0;
+            let mut top = first.1;
+            let mut right = first.0 + first.2;
+            let mut bottom = first.1 + first.3;
+            for rect in rest {
+                left = left.min(rect.0);
+                top = top.min(rect.1);
+                right = right.max(rect.0 + rect.2);
+                bottom = bottom.max(rect.1 + rect.3);
+            }
+            return vec![(left, top, right - left, bottom - top)];
+        }
+        rects
     }
 
     /// Whether this element is potentially visible, following the optional
@@ -3238,22 +3300,6 @@ pub(super) fn set_cross_origin(
         Some(value) => set_attribute_sync(ctx, id, "crossorigin", &value.to_string()?),
         None => remove_attribute_sync(ctx, id, "", "crossorigin", false),
     }
-}
-
-/// The first child of `parsed`'s document root satisfying `want`.
-/// Rounds a CSSOM View extent to the nearest integer, with non-finite values
-/// reading as zero
-/// (<https://drafts.csswg.org/cssom-view/#extension-to-the-element-interface>).
-/// Current viewport offset for `id`'s document.
-/// <https://drafts.csswg.org/cssom-view/#scrolling-viewport>
-pub(super) fn viewport_offset(ctx: &Ctx<'_>, id: NodeId) -> Result<(f64, f64)> {
-    let world = world_for_node(ctx, id)?;
-    let world = world.borrow();
-    let Some(parsed) = world.document(id) else {
-        return Ok((0.0, 0.0));
-    };
-    let scroll = parsed.document.base.viewport_scroll();
-    Ok((scroll.x, scroll.y))
 }
 
 /// The node whose children are a template's contents: the inert fragment

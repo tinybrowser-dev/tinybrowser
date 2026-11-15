@@ -1385,12 +1385,6 @@ pub(crate) fn element_box(world: &World, node: NodeId) -> Option<(f64, f64, f64,
         })
 }
 
-/// [`element_box`] for a JS binding's context.
-pub(super) fn element_box_ctx(ctx: &Ctx<'_>, node: NodeId) -> Result<Option<(f64, f64, f64, f64)>> {
-    let world = world_for_node(ctx, node)?;
-    Ok(element_box(&world.borrow(), node))
-}
-
 /// Current viewport offset from the document's scrolling element.
 /// <https://drafts.csswg.org/cssom-view/#scrolling-viewport>
 pub(crate) fn viewport_scroll(world: &World, node: NodeId) -> (f64, f64) {

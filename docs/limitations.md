@@ -1122,3 +1122,20 @@ There is no Paint Timing, Largest Contentful Paint, Event Timing, Layout
 Instability, or Container Timing entry. `navigation-id-initial-load.tentative.html`
 waits for a largest-contentful-paint entry and therefore times out; that test
 was already failing before the timeline existed.
+
+## CSSOM View geometry
+
+`GeometryUtils` computes from the layout boxes the renderer has, and the
+layout crate does not apply CSS transforms. A transformed element's
+`getBoundingClientRect()`, `getBoxQuads()`, and `elementFromPoint()` use its
+untransformed border box, so non-axis-aligned quads, `scale(0)` collapse, and
+motion-path positions are wrong; the affine conversion itself assumes a pure
+translation. Multi-column and other fragmentation is not implemented: an
+element returns one quad, not one per fragment.
+
+`Range.getClientRects()` and `Range.getBoundingClientRect()` are absent, so a
+`Text` node's `getBoxQuads()` falls back to its parent element's rects and
+`DOMRectList.html`'s Range subtest fails. Converting coordinates across
+frames uses each frame element's content-box origin; the cross-origin A-B-A
+test also needs a `Window.frames` collection that the engine does not expose,
+so it fails with a script error rather than the expected `SecurityError`.
