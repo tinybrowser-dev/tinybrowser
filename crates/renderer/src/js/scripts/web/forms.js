@@ -653,7 +653,14 @@
     }
     const init = arguments[1];
     const event = Reflect.construct(globalThis.Event, arguments, new.target);
-    SUBMITTER.set(event, (init === undefined || init === null || init.submitter === undefined) ? null : init.submitter);
+    const submitter = (init === undefined || init === null || init.submitter === undefined)
+      ? null : init.submitter;
+    // `HTMLElement? submitter` refuses any other value during conversion
+    // (<https://webidl.spec.whatwg.org/#es-nullable-type>).
+    if (submitter !== null && !(submitter instanceof globalThis.HTMLElement)) {
+      throw new TypeError('The submitter member must be an HTMLElement or null');
+    }
+    SUBMITTER.set(event, submitter);
     return event;
   }
   const submitProto = Object.create(globalThis.Event.prototype);
@@ -1064,12 +1071,15 @@
     formsFiringSubmission.add(form);
     try {
       if (!noValidate && !form.checkValidity()) return;
+      // The event itself must carry the trust bit, which only the engine can
+      // set, so the shim builds it and the host dispatches it
+      // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#form-submission-algorithm>).
       const event = new SubmitEvent('submit', {
         submitter: submitter === undefined ? null : submitter,
         bubbles: true,
         cancelable: true,
       });
-      if (!form.dispatchEvent(event)) return;
+      if (!host.__tbFireSubmitEvent(form, event)) return;
       runSubmission(form, submitter);
     } finally {
       formsFiringSubmission.delete(form);

@@ -3531,3 +3531,16 @@ every `required`/`readonly`/`type`/`contenteditable`/`disabled` change
 `css/selectors/invalidation/input-pseudo-classes-in-has.html` goes 3/10 to 5/10;
 `css/selectors` 4,791 to 4,793 and the `html/dom` + `dom/events` + forms batch
 70,629 to 70,630, with nothing lost in either.
+
+The `submit` event of a form submission is now fired by the engine with the
+trust bit set: the shim builds the `SubmitEvent` (its prototype and
+`submitter` stay shim-owned) and a host function dispatches it trusted, because
+`HTMLElement.click()` starting a submission is a user-agent event
+(<https://dom.spec.whatwg.org/#concept-event-dispatch>). `SubmitEvent`'s
+`submitter` member now refuses a non-`HTMLElement` value with a `TypeError`, as
+the nullable `HTMLElement?` conversion requires
+(<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#submitevent>).
+`button-events.html` goes 8/9 to 9/9 and `SubmitEvent.window.html` 5/7 to 6/7;
+the `html/dom` + `dom/events` + forms batch goes from 70,630 to 70,631 with
+nothing lost (the `form-double-submit*.html` pair flipped, the known
+timing-dependent flakes that also flip in isolation).

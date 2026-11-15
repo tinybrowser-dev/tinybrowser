@@ -66,6 +66,10 @@ pub(super) fn install(_ctx: &Ctx<'_>, globals: &Object<'_>) -> Result<()> {
         rquickjs::prelude::Func::from(form_can_submit),
     )?;
     globals.set(
+        "__tbFireSubmitEvent",
+        rquickjs::prelude::Func::from(fire_submit_event_js),
+    )?;
+    globals.set(
         "__tbSameOriginWithTop",
         rquickjs::prelude::Func::from(same_origin_with_top),
     )?;
@@ -408,6 +412,22 @@ fn form_can_submit<'js>(ctx: Ctx<'js>, form: Value<'js>) -> bool {
         return false;
     };
     !focus::cannot_navigate(&owner.borrow(), node)
+}
+
+/// Dispatches the `submit` event the shim built at `form` with the trust bit
+/// set, and reports whether it was not canceled. The submission algorithm
+/// around it stays in the shim; only the engine can mark a user-agent event
+/// trusted
+/// (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#form-submission-algorithm>).
+fn fire_submit_event_js<'js>(ctx: Ctx<'js>, form: Value<'js>, event: Value<'js>) -> Result<bool> {
+    let Some(form) = host_node_id(&ctx, &form) else {
+        return Ok(false);
+    };
+    crate::js::events::dispatch_shim_event_trusted(
+        &ctx,
+        crate::js::world::EventTargetKey::Node(form),
+        event,
+    )
 }
 
 /// Resolves an encoding label to its canonical name, or `null`

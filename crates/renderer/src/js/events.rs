@@ -1194,6 +1194,25 @@ pub(crate) fn fire_toggle_event(
     dispatch(ctx, target, &class, None)
 }
 
+/// Dispatches an event the shim built at `target` with the trust bit set and
+/// reports whether it was not canceled.
+///
+/// A submission an activation behavior starts is a user-agent event, so its
+/// `submit` listener has to see `isTrusted` true, and only the engine can set
+/// that bit. Everything else about the event (the `SubmitEvent` prototype and
+/// its `submitter`) stays with the shim, which is why it builds the object and
+/// the engine only owns the dispatch
+/// (<https://dom.spec.whatwg.org/#concept-event-dispatch>,
+/// <https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#form-submission-algorithm>).
+pub(crate) fn dispatch_shim_event_trusted<'js>(
+    ctx: &Ctx<'js>,
+    target: EventTargetKey,
+    event: Value<'js>,
+) -> Result<bool> {
+    let event = Class::<JsEvent>::from_js(ctx, event)?;
+    dispatch_checked(ctx, target, &event, true, None)
+}
+
 /// Fires a trusted event that crosses shadow boundaries. `input` and
 /// `beforeinput` are composed, while `change` is not
 /// (<https://w3c.github.io/uievents/#events-inputevents>).
