@@ -304,19 +304,25 @@ pub(crate) fn is_html_element(
         .is_some_and(|node| is_html_tag(Some(&node.data), local))
 }
 
-/// First element in tree order whose `id` content attribute is `id`.
-/// An empty ID matches nothing
+/// First element in tree order within `root`'s tree whose `id` content
+/// attribute is `id`. An empty ID matches nothing
 /// (<https://dom.spec.whatwg.org/#concept-id>,
 /// <https://dom.spec.whatwg.org/#dom-nonelementparentnode-getelementbyid>).
+///
+/// The search is scoped to one tree: a shadow tree's root is not its host, so
+/// a `form` attribute on a control inside a shadow root never names an element
+/// in the host's tree
+/// (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#form-owner>).
 pub(crate) fn first_element_with_id(
     base: &blitz_dom::BaseDocument,
     document: u32,
+    root: BlitzNodeId,
     id: &str,
 ) -> Option<NodeId> {
     if id.is_empty() {
         return None;
     }
-    let mut stack = vec![base.root_node().id];
+    let mut stack = vec![root];
     while let Some(current) = stack.pop() {
         let Some(node) = base.get_node(current) else {
             continue;
@@ -356,7 +362,7 @@ pub(crate) fn form_owner_of(
     if let Some(form_id) = attr(base, node, "form")
         && is_connected(base, node)
     {
-        if let Some(found) = first_element_with_id(base, document, form_id)
+        if let Some(found) = first_element_with_id(base, document, root_of(base, node), form_id)
             && is_html_element(base, found.node, "form")
         {
             return Some(found);

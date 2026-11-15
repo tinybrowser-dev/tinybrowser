@@ -4,7 +4,10 @@ use std::cell::Cell;
 
 use rquickjs::{
     Atom, Ctx, Exception, Result, Value,
-    class::{ExoticSetResult, PropertyDescriptor, PropertyName, Trace},
+    class::{
+        ExoticDefineResult, ExoticSetResult, PropertyDefinition, PropertyDescriptor, PropertyName,
+        Trace,
+    },
 };
 
 use crate::dom::tree::NodeId;
@@ -14,6 +17,7 @@ pub(super) mod core;
 pub(crate) mod dialog;
 pub(super) mod document;
 pub(super) mod element;
+mod form_named;
 pub(super) mod forms;
 pub(super) mod html_elements;
 pub(super) mod media;
@@ -57,6 +61,11 @@ pub(crate) struct JsNode {
     /// changes its brand.
     #[qjs(skip_trace)]
     pub(crate) document: Cell<bool>,
+    /// Whether this wrapper is an `HTMLFormElement`, which is also a legacy
+    /// platform object with indexed and named properties. Set at construction
+    /// with the brand.
+    #[qjs(skip_trace)]
+    pub(crate) form: Cell<bool>,
 }
 
 impl super::host::SharedClass for JsNode {
@@ -92,6 +101,9 @@ impl JsNode {
         atom: Atom<'js>,
         object: Value<'js>,
     ) -> Result<Option<PropertyDescriptor<'js>>> {
+        if self.form.get() {
+            return form_named::named_property(ctx, self.handle.get().0, &atom, &object);
+        }
         if !self.document.get() {
             return Ok(None);
         }
@@ -105,6 +117,9 @@ impl JsNode {
         ctx: &Ctx<'js>,
         object: Value<'js>,
     ) -> Result<Vec<PropertyName<'js>>> {
+        if self.form.get() {
+            return form_named::named_property_names(ctx, self.handle.get().0, &object);
+        }
         if !self.document.get() {
             return Ok(Vec::new());
         }
@@ -124,7 +139,19 @@ impl JsNode {
         // A different receiver means `Reflect.set` or a `super` write, which
         // the ordinary prototype walk handles
         // (<https://webidl.spec.whatwg.org/#legacy-platform-object-set>).
-        if !self.document.get() || object != receiver {
+        if !self.document.get() && !self.form.get() {
+            return Ok(ExoticSetResult::Fallthrough);
+        }
+        if self.form.get() {
+            return form_named::set_named_property(
+                ctx,
+                self.handle.get().0,
+                &atom,
+                &object,
+                &receiver,
+            );
+        }
+        if object != receiver {
             return Ok(ExoticSetResult::Fallthrough);
         }
         named::set_named_property(ctx, self.handle.get().0, &atom, &object, value)
@@ -138,9 +165,26 @@ impl JsNode {
         atom: Atom<'js>,
         object: Value<'js>,
     ) -> Result<bool> {
+        if self.form.get() {
+            return form_named::delete_named_property(ctx, self.handle.get().0, &atom, &object);
+        }
         if !self.document.get() {
             return Ok(false);
         }
         named::delete_named_property(ctx, self.handle.get().0, &atom, &object)
+    }
+
+    // https://webidl.spec.whatwg.org/#legacy-platform-object-defineownproperty
+    #[qjs(define_own_property)]
+    fn define_named_property<'js>(
+        &self,
+        ctx: &Ctx<'js>,
+        atom: Atom<'js>,
+        descriptor: PropertyDefinition<'js>,
+    ) -> Result<ExoticDefineResult> {
+        if !self.form.get() {
+            return Ok(ExoticDefineResult::Fallthrough);
+        }
+        form_named::define_named_property(ctx, self.handle.get().0, &atom, descriptor)
     }
 }

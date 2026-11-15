@@ -1813,7 +1813,7 @@
         }
         if (property === Symbol.iterator) return function* () { yield* list; };
         if (typeof property === 'string') {
-          if (/^\d+$/.test(property)) return list[Number(property)];
+          if (isArrayIndex(property)) return list[Number(property)];
           const named = namedItemIn(list, property, getList);
           return named === null ? Reflect.get(prototype, property, receiver) : named;
         }
@@ -1826,7 +1826,7 @@
             value: list.length, writable: true, enumerable: false, configurable: true,
           };
         }
-        if (typeof property === 'string' && /^\d+$/.test(property)) {
+        if (typeof property === 'string' && isArrayIndex(property)) {
           const index = Number(property);
           if (index < list.length) {
             return {
@@ -1840,10 +1840,20 @@
       has(_target, property) {
         const list = getList();
         if (property === 'length' || property === 'item' || property === 'namedItem') return true;
-        if (typeof property === 'string' && /^\d+$/.test(property)) return list[Number(property)] !== undefined;
+        if (typeof property === 'string' && isArrayIndex(property)) return list[Number(property)] !== undefined;
         return namedItemIn(list, String(property), getList) !== null;
       },
     });
+
+  // A canonical array index string: `ToString(ToUint32(P)) === P` and the
+  // value below 2^32 - 1. "03" is a name, not an index, so an element called
+  // "03" answers through the named getter
+  // (<https://tc39.es/ecma262/#array-index>).
+  const isArrayIndex = property => {
+    if (!/^(?:0|[1-9][0-9]*)$/.test(property)) return false;
+    const index = Number(property);
+    return Number.isSafeInteger(index) && String(index) === property && index < 4294967295;
+  };
 
   const namedItemIn = (list, name, liveList) => {
     const matches = () => (liveList ? liveList() : list).filter(
@@ -1854,6 +1864,35 @@
     if (first.length === 1) return first[0];
     return collectionOf(matches, RadioNodeListInterface.prototype, true);
   };
+
+  // The form owner of a form-associated `img`, which has no `form` IDL
+  // attribute of its own
+  // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#form-owner>).
+  const imageFormOwner = element => {
+    const id = element.getAttribute('form');
+    if (id === null) return element.closest('form');
+    if (!element.isConnected) return null;
+    const root = element.getRootNode();
+    const found = root.getElementById ? root.getElementById(id) : null;
+    return found !== null && found.localName === 'form' ? found : null;
+  };
+
+  // The live matches of a form's named getter, for the RadioNodeList it
+  // answers when a name matches several controls
+  // (<https://html.spec.whatwg.org/multipage/forms.html#dom-form-nameditem>).
+  const formNamedMatches = (form, name) => {
+    const listed = listedElements(form).filter(
+      element => element.id === name || element.getAttribute('name') === name,
+    );
+    if (listed.length > 0) return listed;
+    return Array.from(form.ownerDocument.querySelectorAll('img'))
+      .filter(element => imageFormOwner(element) === form)
+      .filter(element => element.id === name || element.getAttribute('name') === name);
+  };
+
+  host.__tbFormRadioNodeList = (form, name) => collectionOf(
+    () => formNamedMatches(form, name), RadioNodeListInterface.prototype, true,
+  );
 
   // `document.forms` is a generated `[SameObject] HTMLCollection` member
   // (<https://html.spec.whatwg.org/multipage/obsolete.html#dom-document-forms>).

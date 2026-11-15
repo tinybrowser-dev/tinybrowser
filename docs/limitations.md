@@ -1087,6 +1087,18 @@ carry the `:modal`/`::backdrop` rendering, none of which Blitz has. The
 submit button closes its dialog with the previous return value because the
 click coordinate is not tracked.
 
+`HTMLFormElement` implements its indexed and named getters: `form[0]` and
+`form[name]` answer the same listed elements as `form.elements`, a name that
+matches several controls answers the live `RadioNodeList`, and the past names
+map keeps a name that a single control stopped carrying. Named properties
+override prototype members and are non-enumerable, as
+`LegacyOverrideBuiltIns` and `LegacyUnenumerableNamedProperties` require. One
+gap remains: Blitz's `file-input` feature adds the browse button to a file
+input as a light-DOM child (`third_party/blitz/packages/blitz-dom/src/mutator.rs`),
+where browsers keep it in a user-agent shadow tree, so
+`form.elements` counts that button and `form-elements-filter.html` fails its
+first assertion.
+
 ## Cookie Store
 
 `CookieStore`, `CookieChangeEvent`, and the `cookieStore` attribute are a

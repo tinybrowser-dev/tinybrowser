@@ -1796,6 +1796,15 @@ pub(crate) struct DocumentState {
     /// before the dialog focusing steps run
     /// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:previously-focused-element>).
     pub(crate) dialog_previously_focused: HashMap<NodeId, Option<NodeId>>,
+    /// Each form's past names map: the names a single-control named getter
+    /// answer left behind, in insertion order (the map's age order)
+    /// (<https://html.spec.whatwg.org/multipage/forms.html#past-names-map>).
+    pub(crate) form_past_names: std::cell::RefCell<HashMap<NodeId, Vec<(String, NodeId)>>>,
+    /// The live `RadioNodeList` each form named getter answered, keyed by
+    /// `(form, name)`. The collection is live, so only its identity is cached;
+    /// a name that stops naming several controls stops resolving here
+    /// (<https://html.spec.whatwg.org/multipage/forms.html#dom-form-nameditem>).
+    pub(crate) form_named_lists: HashMap<(NodeId, String), Persistent<Value<'static>>>,
     /// The executing script's URL, line, and column captured when a
     /// subresource URL entered an element: a `src` set, or an insertion when
     /// no set chose the URL. A later CSP violation for that element's load
@@ -1903,6 +1912,8 @@ impl DocumentState {
         self.remote_nodes.clear();
         self.dialog_return_values.clear();
         self.dialog_previously_focused.clear();
+        self.form_past_names.borrow_mut().clear();
+        self.form_named_lists.clear();
     }
 
     /// Drops the entries one document's nodes left behind.
@@ -1926,6 +1937,11 @@ impl DocumentState {
             .retain(|node, _| node.document != document);
         self.dialog_previously_focused
             .retain(|node, _| node.document != document);
+        self.form_past_names
+            .borrow_mut()
+            .retain(|node, _| node.document != document);
+        self.form_named_lists
+            .retain(|(node, _), _| node.document != document);
     }
 }
 

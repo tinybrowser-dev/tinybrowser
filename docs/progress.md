@@ -3471,3 +3471,26 @@ and inertness, none of which Blitz has; the gap is recorded in
 `dom/events` (716), forms (4,525), and `html/webappapis` (2,622) batches are
 unchanged. `cargo fmt --check`, `tools/check clippy`, and the renderer (176),
 wpt-harness (29), and one other test pass.
+
+`HTMLFormElement` now implements its legacy indexed and named properties.
+`form[0]` returns the same elements as `form.elements`, `form[name]` answers a
+control by `id`/`name` (listed elements first, then form-associated `img`), a
+name that matches several controls answers a cached live `RadioNodeList`, and
+the past names map keeps a name after the control stops carrying it, dropping
+entries when the element changes form owner. Named properties override
+prototype members and are non-enumerable
+(`[LegacyOverrideBuiltIns]`, `[LegacyUnenumerableNamedProperties]`), writes and
+deletes to a supported name or index fail, and `[[OwnPropertyKeys]]` lists the
+indices then the supported names
+(<https://html.spec.whatwg.org/multipage/forms.html#dom-form-nameditem>,
+<https://webidl.spec.whatwg.org/#legacy-platform-object>). The form-owner
+lookup now scopes a `form` attribute's id search to the element's own tree, so
+a control inside a shadow root no longer resolves a form in the host's tree.
+`form-nameditem.html` goes 6/17 to 17/17, `form-indexed-element.html` 0/2 to
+2/2, `form-indexed-property-names.html` 0/1 to 1/1, and
+`form-elements-matches.html` 1/2 to 2/2; `form-elements-filter.html` stays 1/2
+because Blitz's file-input browse button is a light-DOM child (recorded in
+`docs/limitations.md`). The `html/dom` + `dom/events` + forms batch goes from
+70,605 to 70,626 passing with nothing lost, and `html/webappapis` stays at
+2,622. `cargo fmt --check`, `tools/check clippy`, and the renderer (176),
+wpt-harness (29), and one other test pass.

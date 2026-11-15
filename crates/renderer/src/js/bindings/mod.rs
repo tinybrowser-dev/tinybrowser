@@ -1576,6 +1576,7 @@ fn wrap_with_brand<'js>(ctx: &Ctx<'js>, id: NodeId, brand: &str) -> Result<Value
             brand,
             "Document" | "XMLDocument" | "HTMLDocument"
         )),
+        form: std::cell::Cell::new(brand == "HTMLFormElement"),
     };
     let class = if let Some(prototype) = node_wrapper_prototype(ctx, id, brand)? {
         host::instance_proto(value, prototype)?
