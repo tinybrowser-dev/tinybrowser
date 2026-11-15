@@ -24,6 +24,7 @@ pub(super) mod media;
 mod named;
 pub(super) mod offset;
 pub(super) mod scrolling;
+mod select_props;
 mod zoom;
 
 pub(super) use core::{compare_node_position, insert_converted_node};
@@ -55,17 +56,45 @@ pub(crate) struct JsNode {
     /// is interior-mutable: retargeting needs no `borrow_mut` on the class.
     #[qjs(skip_trace)]
     pub(crate) handle: Cell<Handle>,
-    /// Whether this wrapper is a `Document`, the only node interface with
-    /// named properties. Set at construction and never changes: a document is
-    /// never adopted into another document, which is the only way a wrapper
-    /// changes its brand.
+    /// The legacy platform object shape this wrapper answers. Set at
+    /// construction from the interface brand and never changes: a wrapper
+    /// keeps its interface through `adoptNode`, so only construction decides.
     #[qjs(skip_trace)]
-    pub(crate) document: Cell<bool>,
-    /// Whether this wrapper is an `HTMLFormElement`, which is also a legacy
-    /// platform object with indexed and named properties. Set at construction
-    /// with the brand.
-    #[qjs(skip_trace)]
-    pub(crate) form: Cell<bool>,
+    pub(crate) legacy: Cell<LegacyShape>,
+}
+
+/// The Web IDL legacy platform object shape a node wrapper answers.
+///
+/// Most node wrappers are ordinary platform objects with no indexed or named
+/// properties. Only these interfaces declare them, so the exotic hooks need
+/// the shape rather than a boolean per interface; one value also means a
+/// wrapper cannot claim two shapes at once
+/// (<https://webidl.spec.whatwg.org/#legacy-platform-object>).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LegacyShape {
+    /// No indexed or named properties.
+    None,
+    /// A `Document`: named properties only
+    /// (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-nameditem>).
+    Document,
+    /// An `HTMLFormElement`: indexed and named properties
+    /// (<https://html.spec.whatwg.org/multipage/forms.html#dom-form-elements>).
+    Form,
+    /// An `HTMLSelectElement`: indexed properties over its options
+    /// (<https://html.spec.whatwg.org/multipage/form-elements.html#dom-select-length>).
+    Select,
+}
+
+impl LegacyShape {
+    /// The shape an interface brand declares.
+    pub(crate) fn of_brand(brand: &str) -> Self {
+        match brand {
+            "Document" | "XMLDocument" | "HTMLDocument" => Self::Document,
+            "HTMLFormElement" => Self::Form,
+            "HTMLSelectElement" => Self::Select,
+            _ => Self::None,
+        }
+    }
 }
 
 impl super::host::SharedClass for JsNode {
@@ -101,13 +130,16 @@ impl JsNode {
         atom: Atom<'js>,
         object: Value<'js>,
     ) -> Result<Option<PropertyDescriptor<'js>>> {
-        if self.form.get() {
-            return form_named::named_property(ctx, self.handle.get().0, &atom, &object);
+        match self.legacy.get() {
+            LegacyShape::Form => {
+                form_named::named_property(ctx, self.handle.get().0, &atom, &object)
+            }
+            LegacyShape::Select => select_props::indexed_property(ctx, self.handle.get().0, &atom),
+            LegacyShape::Document => {
+                named::named_property(ctx, self.handle.get().0, &atom, &object)
+            }
+            LegacyShape::None => Ok(None),
         }
-        if !self.document.get() {
-            return Ok(None);
-        }
-        named::named_property(ctx, self.handle.get().0, &atom, &object)
     }
 
     // https://webidl.spec.whatwg.org/#legacy-platform-object-ownpropertykeys
@@ -117,13 +149,14 @@ impl JsNode {
         ctx: &Ctx<'js>,
         object: Value<'js>,
     ) -> Result<Vec<PropertyName<'js>>> {
-        if self.form.get() {
-            return form_named::named_property_names(ctx, self.handle.get().0, &object);
+        match self.legacy.get() {
+            LegacyShape::Form => {
+                form_named::named_property_names(ctx, self.handle.get().0, &object)
+            }
+            LegacyShape::Select => select_props::indexed_property_names(ctx, self.handle.get().0),
+            LegacyShape::Document => named::named_property_names(ctx, self.handle.get().0, &object),
+            LegacyShape::None => Ok(Vec::new()),
         }
-        if !self.document.get() {
-            return Ok(Vec::new());
-        }
-        named::named_property_names(ctx, self.handle.get().0, &object)
     }
 
     // https://webidl.spec.whatwg.org/#legacy-platform-object-set
@@ -139,22 +172,25 @@ impl JsNode {
         // A different receiver means `Reflect.set` or a `super` write, which
         // the ordinary prototype walk handles
         // (<https://webidl.spec.whatwg.org/#legacy-platform-object-set>).
-        if !self.document.get() && !self.form.get() {
-            return Ok(ExoticSetResult::Fallthrough);
-        }
-        if self.form.get() {
-            return form_named::set_named_property(
+        match self.legacy.get() {
+            LegacyShape::Form => {
+                form_named::set_named_property(ctx, self.handle.get().0, &atom, &object, &receiver)
+            }
+            LegacyShape::Select => Ok(select_props::set_indexed_property(
                 ctx,
                 self.handle.get().0,
                 &atom,
                 &object,
                 &receiver,
-            );
+            )),
+            LegacyShape::Document => {
+                if object != receiver {
+                    return Ok(ExoticSetResult::Fallthrough);
+                }
+                named::set_named_property(ctx, self.handle.get().0, &atom, &object, value)
+            }
+            LegacyShape::None => Ok(ExoticSetResult::Fallthrough),
         }
-        if object != receiver {
-            return Ok(ExoticSetResult::Fallthrough);
-        }
-        named::set_named_property(ctx, self.handle.get().0, &atom, &object, value)
     }
 
     // https://webidl.spec.whatwg.org/#legacy-platform-object-delete
@@ -165,13 +201,20 @@ impl JsNode {
         atom: Atom<'js>,
         object: Value<'js>,
     ) -> Result<bool> {
-        if self.form.get() {
-            return form_named::delete_named_property(ctx, self.handle.get().0, &atom, &object);
+        match self.legacy.get() {
+            LegacyShape::Form => {
+                form_named::delete_named_property(ctx, self.handle.get().0, &atom, &object)
+            }
+            LegacyShape::Select => Ok(select_props::delete_indexed_property(
+                ctx,
+                self.handle.get().0,
+                &atom,
+            )),
+            LegacyShape::Document => {
+                named::delete_named_property(ctx, self.handle.get().0, &atom, &object)
+            }
+            LegacyShape::None => Ok(false),
         }
-        if !self.document.get() {
-            return Ok(false);
-        }
-        named::delete_named_property(ctx, self.handle.get().0, &atom, &object)
     }
 
     // https://webidl.spec.whatwg.org/#legacy-platform-object-defineownproperty
@@ -182,9 +225,16 @@ impl JsNode {
         atom: Atom<'js>,
         descriptor: PropertyDefinition<'js>,
     ) -> Result<ExoticDefineResult> {
-        if !self.form.get() {
-            return Ok(ExoticDefineResult::Fallthrough);
+        match self.legacy.get() {
+            LegacyShape::Form => {
+                form_named::define_named_property(ctx, self.handle.get().0, &atom, descriptor)
+            }
+            LegacyShape::Select => Ok(select_props::define_indexed_property(
+                ctx,
+                self.handle.get().0,
+                &atom,
+            )),
+            LegacyShape::Document | LegacyShape::None => Ok(ExoticDefineResult::Fallthrough),
         }
-        form_named::define_named_property(ctx, self.handle.get().0, &atom, descriptor)
     }
 }

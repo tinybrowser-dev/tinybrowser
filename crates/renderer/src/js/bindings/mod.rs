@@ -1572,11 +1572,7 @@ fn instantiate_node<'js>(ctx: &Ctx<'js>, id: NodeId) -> Result<Value<'js>> {
 fn wrap_with_brand<'js>(ctx: &Ctx<'js>, id: NodeId, brand: &str) -> Result<Value<'js>> {
     let value = JsNode {
         handle: std::cell::Cell::new(Handle(id)),
-        document: std::cell::Cell::new(matches!(
-            brand,
-            "Document" | "XMLDocument" | "HTMLDocument"
-        )),
-        form: std::cell::Cell::new(brand == "HTMLFormElement"),
+        legacy: std::cell::Cell::new(node::LegacyShape::of_brand(brand)),
     };
     let class = if let Some(prototype) = node_wrapper_prototype(ctx, id, brand)? {
         host::instance_proto(value, prototype)?

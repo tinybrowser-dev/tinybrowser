@@ -3551,3 +3551,14 @@ it
 (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#the-formdataevent-interface>).
 `FormDataEvent.window.html` goes 1/2 to 2/2 and the `html/dom` + `dom/events` +
 forms batch 70,631 to 70,633 with nothing lost.
+
+`HTMLSelectElement` is a legacy platform object with an indexed getter, so
+`select[0]` now answers the same options as `select.options`; a non-index key
+falls through, and a write or delete of a supported index fails as an
+indexed-only object requires
+(<https://html.spec.whatwg.org/multipage/form-elements.html#dom-select-length>,
+<https://webidl.spec.whatwg.org/#legacy-platform-object>). The wrapper's two
+`Document`/`HTMLFormElement` booleans became one `LegacyShape`, so a wrapper
+cannot claim two shapes. `common-HTMLOptionsCollection.html` goes 6/8 to 8/8
+and `common-HTMLOptionsCollection-add.html` 1/3 to 3/3; the `html/dom` +
+`dom/events` + forms batch goes from 70,633 to 70,637 with nothing lost.
