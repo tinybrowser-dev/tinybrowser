@@ -3705,3 +3705,14 @@ The attribute was in the IDL but the generator skips members without an
 implementation, so the getter unlocks it. `access-key-label.html` goes 1/2 to
 2/2 and the `html/dom` + `dom/events` + forms batch goes 70,676 to 70,677 with
 nothing lost.
+
+A `dataset` write now runs the HTML `DOMStringMap` setter's "set an attribute
+value" with a null namespace, instead of `setAttribute`. The two differ:
+`setAttribute` matches the first attribute by qualified name regardless of
+namespace, while `dataset` must leave a namespaced attribute that shares the
+local name alone and create its own null-namespace one
+(<https://html.spec.whatwg.org/multipage/dom.html#dom-domstringmap-setitem>).
+`custom-attrs.html` goes 0/1 to 1/1; the `html/dom` + `dom/events` + forms
+batch gains it with nothing lost, and `dom/nodes` keeps every attribute subtest
+(the `setAttribute`/`removeAttribute` namespace behavior stays as the DOM spec
+defines it).

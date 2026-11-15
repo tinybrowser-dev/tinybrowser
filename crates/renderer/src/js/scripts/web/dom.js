@@ -57,7 +57,12 @@ host.__tbMakeDataset = element => new Proxy(Object.create(__tbDOMStringMapProtot
     // (<https://webidl.spec.whatwg.org/#legacy-platform-object-set>).
     if (/-[a-z]/.test(property)) throw new DOMException('invalid dataset property', 'SyntaxError');
     const name = 'data-' + property.replace(/[A-Z]/g, letter => '-' + letter.toLowerCase());
-    element.setAttribute(name, String(value));
+    // `DOMStringMap`'s setter runs "set an attribute value" with a null
+    // namespace, which matches the existing attribute by namespace and local
+    // name. `setAttribute` would instead match by qualified name and replace a
+    // namespaced attribute that only shares the local name
+    // (<https://html.spec.whatwg.org/multipage/dom.html#dom-domstringmap-setitem>).
+    element.setAttributeNS(null, name, String(value));
     return true;
   },
   // Only a name that a pair can produce reaches the deleter; any other name
