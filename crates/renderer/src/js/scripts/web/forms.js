@@ -1568,13 +1568,28 @@
     },
   });
 
-  // The `list` attribute's datalist, or null
+  // The first element in `root`'s tree with that ID. An element root has no
+  // `getElementById`, so the descendants are searched in tree order
+  // (<https://dom.spec.whatwg.org/#concept-id>).
+  const firstElementWithId = (root, id) => {
+    if (id === '') return null;
+    if (root.nodeType === 1 && root.getAttribute('id') === id) return root;
+    const candidates = root.querySelectorAll ? root.querySelectorAll('[id]') : [];
+    for (const element of candidates) {
+      if (element.getAttribute('id') === id) return element;
+    }
+    return null;
+  };
+
+  // The `list` attribute's datalist, or null. The id is resolved in the
+  // input's own tree, so a detached tree still finds its datalist
   // (<https://html.spec.whatwg.org/multipage/input.html#dom-input-list>).
   Object.defineProperty(globalThis.HTMLInputElement.prototype, 'list', {
     get() {
       const id = this.getAttribute('list');
       if (id === null) return null;
-      const element = this.ownerDocument.getElementById(id);
+      const root = this.getRootNode ? this.getRootNode() : this.ownerDocument;
+      const element = firstElementWithId(root, id);
       return element !== null && element.tagName === 'DATALIST' ? element : null;
     },
     configurable: true,
@@ -1872,8 +1887,7 @@
     const id = element.getAttribute('form');
     if (id === null) return element.closest('form');
     if (!element.isConnected) return null;
-    const root = element.getRootNode();
-    const found = root.getElementById ? root.getElementById(id) : null;
+    const found = firstElementWithId(element.getRootNode(), id);
     return found !== null && found.localName === 'form' ? found : null;
   };
 

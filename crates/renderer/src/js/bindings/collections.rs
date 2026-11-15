@@ -36,6 +36,9 @@ pub(crate) enum CollectionKind {
     ElementsByClass(String),
     ElementsByName(String),
     SelectOptions,
+    /// `datalist.options`: HTML `option` descendants of the datalist
+    /// (<https://html.spec.whatwg.org/multipage/form-elements.html#dom-datalist-options>).
+    DataListOptions,
     SelectedOptions,
     WindowNamed(String),
     /// The `HTMLCollection` a Document named property answers when several
@@ -104,6 +107,7 @@ impl CollectionQuery {
             | CollectionKind::ElementsByClass(_)
             | CollectionKind::ElementsByName(_)
             | CollectionKind::SelectOptions
+            | CollectionKind::DataListOptions
             | CollectionKind::SelectedOptions
             | CollectionKind::WindowNamed(_)
             | CollectionKind::DocumentNamed(_)
@@ -183,6 +187,9 @@ fn query_ids(ctx: &Ctx<'_>, scope: NodeId, kind: &CollectionKind) -> Result<Vec<
         ),
         CollectionKind::ElementsByName(name) => collect_by_name(base, document, scope.node, name),
         CollectionKind::SelectOptions => select_options(base, document, scope.node),
+        CollectionKind::DataListOptions => {
+            collect_html_descendants(&parsed.document, document, scope.node, "option")
+        }
         CollectionKind::SelectedOptions => Vec::new(),
         CollectionKind::WindowNamed(name) => {
             collect_window_named(&owner, base, document, scope.node, name)
@@ -944,6 +951,7 @@ impl<'js> node_list_generated::NodeList<'js> for JsNodeList {
             | CollectionKind::ElementsByTagNs { .. }
             | CollectionKind::ElementsByClass(_)
             | CollectionKind::SelectOptions
+            | CollectionKind::DataListOptions
             | CollectionKind::SelectedOptions
             | CollectionKind::WindowNamed(_)
             | CollectionKind::DocumentNamed(_)

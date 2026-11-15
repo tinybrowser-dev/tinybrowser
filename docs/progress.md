@@ -3494,3 +3494,15 @@ because Blitz's file-input browse button is a light-DOM child (recorded in
 70,605 to 70,626 passing with nothing lost, and `html/webappapis` stays at
 2,622. `cargo fmt --check`, `tools/check clippy`, and the renderer (176),
 wpt-harness (29), and one other test pass.
+
+`HTMLDataListElement.options` now returns the live `HTMLCollection` of the
+datalist's `option` descendants
+(<https://html.spec.whatwg.org/multipage/form-elements.html#dom-datalist-options>),
+and `input.list` resolves its id in the input's own tree, so a detached tree
+still finds its datalist
+(<https://html.spec.whatwg.org/multipage/input.html#dom-input-list>). The id
+search used by the form-owner and image-owner lookups goes through one
+`firstElementWithId` helper that walks an element root's `[id]` descendants,
+because an element root has no `getElementById`. `html/semantics/forms/the-datalist-element`
+goes 4/6 to 6/6 files, and the `html/dom` + `dom/events` + forms batch goes from
+70,626 to 70,628 with nothing lost.

@@ -404,6 +404,18 @@ impl<'js> html_option_element_generated::HTMLOptionElement<'js> for JsNode {
     }
 }
 
+impl<'js> html_data_list_element_generated::HTMLDataListElement<'js> for JsNode {
+    // https://html.spec.whatwg.org/multipage/form-elements.html#dom-datalist-options
+    fn get_options(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
+        live_collection(
+            ctx,
+            self.handle.get().0,
+            CollectionKind::DataListOptions,
+            Some("HTMLCollection"),
+        )
+    }
+}
+
 impl<'js> html_button_element_generated::HTMLButtonElement<'js> for JsNode {
     /// <https://html.spec.whatwg.org/multipage/forms.html#dom-fae-form>
     fn get_form(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
