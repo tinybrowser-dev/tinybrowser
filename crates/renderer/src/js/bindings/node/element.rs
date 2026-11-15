@@ -1105,6 +1105,13 @@ impl<'js> html_element_generated::HTMLElement<'js> for JsNode {
         set_nonce_slot(ctx, self.handle.get().0, &value.to_string()?)
     }
 
+    // https://html.spec.whatwg.org/multipage/interaction.html#dom-accesskeylabel
+    fn get_access_key_label(&self, ctx: &Ctx<'js>) -> Result<rquickjs::String<'js>> {
+        let value = content_attr(ctx, self.handle.get().0, "accesskey");
+        let label = access_key_label(value.as_deref().unwrap_or_default());
+        rquickjs::String::from_str(ctx.clone(), &label)
+    }
+
     // The translation mode: the nearest ancestor-or-self HTML element whose
     // `translate` attribute is in the yes or no state decides, while the
     // inherit state, a non-HTML element, and a missing parent all fall
@@ -3168,6 +3175,24 @@ pub(super) fn content_attr(ctx: &Ctx<'_>, id: NodeId, name: &str) -> Option<Stri
     borrowed.document(id).and_then(|parsed| {
         crate::dom::tree::attr(&parsed.document.base, id.node, name).map(str::to_owned)
     })
+}
+
+/// The `accessKeyLabel` string: the platform's modifier names plus the
+/// uppercased key. An attribute that does not hold exactly one key has no
+/// label
+/// (<https://html.spec.whatwg.org/multipage/interaction.html#dom-accesskeylabel>).
+fn access_key_label(value: &str) -> String {
+    let mut tokens = value.split_ascii_whitespace();
+    let Some(token) = tokens.next() else {
+        return String::new();
+    };
+    if tokens.next().is_some() {
+        return String::new();
+    }
+    let Some(key) = token.chars().next() else {
+        return String::new();
+    };
+    format!("Alt+Shift+{}", key.to_ascii_uppercase())
 }
 
 /// The border width `clientLeft`/`clientTop` report on one axis

@@ -3696,3 +3696,12 @@ the real one is ignored and a nested `head` is never returned
 `document.head-02.html` goes 0/1 to 1/1 and the `html/dom` + `dom/events` +
 forms batch keeps its count with nothing lost (two `form-double-submit` flakes
 swapped; both flip in isolation, and `form-double-submit.html` passes there).
+
+`HTMLElement.accessKeyLabel` now exists: it answers a modifier-plus-key label
+(`Alt+Shift+B`) when the `accesskey` attribute holds exactly one key, and the
+empty string for an absent, empty, or multi-key value
+(<https://html.spec.whatwg.org/multipage/interaction.html#dom-accesskeylabel>).
+The attribute was in the IDL but the generator skips members without an
+implementation, so the getter unlocks it. `access-key-label.html` goes 1/2 to
+2/2 and the `html/dom` + `dom/events` + forms batch goes 70,676 to 70,677 with
+nothing lost.
