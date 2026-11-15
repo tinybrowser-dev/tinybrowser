@@ -1255,7 +1255,8 @@ impl JsNode {
     // https://html.spec.whatwg.org/multipage/dom.html#dom-document-head
     pub(super) fn head<'js>(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
         document_value(ctx, self.handle.get().0, |parsed| {
-            document_first(parsed, "head")
+            let root = document_first_child(parsed, |data| matches!(data, NodeData::Element(_)))?;
+            head_child(parsed, root)
         })
     }
 
@@ -1991,6 +1992,34 @@ pub(in crate::js::bindings) fn fragment_context_name(spec: &str) -> QualName {
 /// The first `body` or `frameset` child of `root` in the HTML namespace, which
 /// is what `document.body` returns and what `document.body`'s setter replaces
 /// (<https://html.spec.whatwg.org/multipage/dom.html#the-body-element-2>).
+/// The head element of the document whose root element is `root`: the first
+/// HTML `head` child. The root element must be the HTML `html` element, because
+/// the head element is defined as a child of it
+/// (<https://html.spec.whatwg.org/multipage/dom.html#the-head-element-2>).
+pub(super) fn head_child(parsed: &crate::Parsed, root: NodeId) -> Option<NodeId> {
+    let base = &parsed.document.base;
+    let html_root = base
+        .get_node(root.node)
+        .and_then(|node| node.data.downcast_element())
+        .is_some_and(|element| {
+            element.name.ns == html_namespace() && element.name.local.as_str() == "html"
+        });
+    if !html_root {
+        return None;
+    }
+    base.get_node(root.node).and_then(|candidate| {
+        candidate.children.iter().find_map(|child| {
+            let node = base.get_node(*child)?;
+            let element = node.data.downcast_element()?;
+            (element.name.ns == html_namespace() && element.name.local.as_str() == "head")
+                .then_some(NodeId {
+                    document: parsed.id,
+                    node: *child,
+                })
+        })
+    })
+}
+
 pub(super) fn body_child(parsed: &crate::Parsed, root: NodeId) -> Option<NodeId> {
     let base = &parsed.document.base;
     base.get_node(root.node).and_then(|candidate| {

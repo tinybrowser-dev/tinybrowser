@@ -3687,3 +3687,12 @@ for a rendering update this engine does not run
 (<https://html.spec.whatwg.org/multipage/interaction.html#focusable-area>).
 `disabled-003.html` goes 0/2 to 2/2 and the `html/dom` + `dom/events` + forms
 batch goes 70,674 to 70,676 with nothing lost.
+
+`document.head` now follows the spec's definition: the first `head` element
+that is a child of the HTML `html` root element. It no longer falls back to a
+document-wide CSS lookup, so a `head` in a foreign namespace inserted before
+the real one is ignored and a nested `head` is never returned
+(<https://html.spec.whatwg.org/multipage/dom.html#the-head-element-2>).
+`document.head-02.html` goes 0/1 to 1/1 and the `html/dom` + `dom/events` +
+forms batch keeps its count with nothing lost (two `form-double-submit` flakes
+swapped; both flip in isolation, and `form-double-submit.html` passes there).
