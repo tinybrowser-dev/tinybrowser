@@ -117,6 +117,97 @@
   // The user agent's registered handlers for this realm.
   const protocolHandlers = new Map();
 
+  // The UA renders no PDF content, so `pdfViewerEnabled` is false and both
+  // plugin lists are empty. A Window has one `PluginArray` and one
+  // `MimeTypeArray`, and every `Navigator` of that Window returns the same
+  // object
+  // (<https://html.spec.whatwg.org/multipage/system-state.html#navigatorplugins>,
+  // <https://html.spec.whatwg.org/multipage/system-state.html#pdf-viewer-plugin-objects-list>).
+  //
+  // Both interfaces are legacy platform objects with named properties, which
+  // the binding generator's prototype does not synthesize, so they are written
+  // here like the other legacy collections
+  // (<https://webidl.spec.whatwg.org/#es-legacy-platform-objects>). An empty
+  // list has no named or indexed property to find, so every `item` and
+  // `namedItem` answer is null.
+  const pluginArrayBrand = host.slots('tinybrowser.PluginArray');
+  const mimeTypeArrayBrand = host.slots('tinybrowser.MimeTypeArray');
+  const checkBrand = (slot, receiver) => {
+    if (!slot.has(receiver)) throw new TypeError('Illegal invocation');
+  };
+  function PluginArray() {
+    throw new TypeError('Illegal constructor');
+  }
+  PluginArray.prototype = Object.create(Object.prototype, {
+    constructor: { value: PluginArray, writable: true, configurable: true },
+    length: {
+      get() { checkBrand(pluginArrayBrand, this); return 0; },
+      enumerable: true, configurable: true,
+    },
+    item: {
+      // https://html.spec.whatwg.org/multipage/system-state.html#dom-pluginarray-item
+      value: function item(index) {
+        checkBrand(pluginArrayBrand, this);
+        return null;
+      },
+      writable: true, enumerable: true, configurable: true,
+    },
+    namedItem: {
+      // https://html.spec.whatwg.org/multipage/system-state.html#dom-pluginarray-nameditem
+      value: function namedItem(name) {
+        checkBrand(pluginArrayBrand, this);
+        return null;
+      },
+      writable: true, enumerable: true, configurable: true,
+    },
+    refresh: {
+      // https://html.spec.whatwg.org/multipage/system-state.html#dom-pluginarray-refresh
+      value: function refresh() {
+        checkBrand(pluginArrayBrand, this);
+      },
+      writable: true, enumerable: true, configurable: true,
+    },
+  });
+  __tbDefineProperty(PluginArray.prototype, Symbol.toStringTag, {
+    value: 'PluginArray', writable: false, enumerable: false, configurable: true,
+  });
+  __tbDefineProperty(PluginArray, 'length', { value: 0, configurable: true });
+  const pluginArray = Object.create(PluginArray.prototype);
+  pluginArrayBrand.set(pluginArray, true);
+
+  function MimeTypeArray() {
+    throw new TypeError('Illegal constructor');
+  }
+  MimeTypeArray.prototype = Object.create(Object.prototype, {
+    constructor: { value: MimeTypeArray, writable: true, configurable: true },
+    length: {
+      get() { checkBrand(mimeTypeArrayBrand, this); return 0; },
+      enumerable: true, configurable: true,
+    },
+    item: {
+      // https://html.spec.whatwg.org/multipage/system-state.html#dom-mimetypearray-item
+      value: function item(index) {
+        checkBrand(mimeTypeArrayBrand, this);
+        return null;
+      },
+      writable: true, enumerable: true, configurable: true,
+    },
+    namedItem: {
+      // https://html.spec.whatwg.org/multipage/system-state.html#dom-mimetypearray-nameditem
+      value: function namedItem(name) {
+        checkBrand(mimeTypeArrayBrand, this);
+        return null;
+      },
+      writable: true, enumerable: true, configurable: true,
+    },
+  });
+  __tbDefineProperty(MimeTypeArray.prototype, Symbol.toStringTag, {
+    value: 'MimeTypeArray', writable: false, enumerable: false, configurable: true,
+  });
+  __tbDefineProperty(MimeTypeArray, 'length', { value: 0, configurable: true });
+  const mimeTypeArray = Object.create(MimeTypeArray.prototype);
+  mimeTypeArrayBrand.set(mimeTypeArray, true);
+
   // `Navigator` includes seven NavigatorID/Language/etc. mixins, so the
   // generator resolves `userAgentData` from `Navigator includes NavigatorUA`
   // and applies its `[SecureContext]` exposure per member.
@@ -267,6 +358,38 @@
     __tbDefineProperty(Navigator.prototype, 'sendBeacon', {
       __proto__: null, value: sendBeacon, writable: true, enumerable: true, configurable: true,
     });
+  }
+
+  // `NavigatorPlugins` is Window-only and all three members read state this
+  // realm already owns, so they install on the generated prototype here. A
+  // worker's `Navigator` has none of them
+  // (<https://html.spec.whatwg.org/multipage/system-state.html#navigatorplugins>).
+  if (host.__tbIsWorker !== true) {
+    const navigatorBrand = host.slots('webidl.Navigator');
+    const attribute = (name, read) => {
+      const getter = function() {
+        if (!navigatorBrand.has(this)) throw new TypeError('Illegal invocation');
+        return read();
+      };
+      __tbDefineProperty(getter, 'name', {
+        __proto__: null, value: 'get ' + name, configurable: true,
+      });
+      __tbDefineProperty(Navigator.prototype, name, {
+        __proto__: null, get: getter, enumerable: true, configurable: true,
+      });
+    };
+    // `[SameObject]`: the Window's one array answers every read
+    // (<https://html.spec.whatwg.org/multipage/system-state.html#dom-navigator-plugins>).
+    attribute('plugins', () => pluginArray);
+    attribute('mimeTypes', () => mimeTypeArray);
+    // The UA has no PDF viewer, so the flag is false and both arrays are empty
+    // (<https://html.spec.whatwg.org/multipage/system-state.html#dom-navigator-pdfviewerenabled>).
+    attribute('pdfViewerEnabled', () => false);
+    for (const [name, value] of [['PluginArray', PluginArray], ['MimeTypeArray', MimeTypeArray]]) {
+      __tbDefineProperty(globalThis, name, {
+        __proto__: null, value, writable: true, configurable: true,
+      });
+    }
   }
 
   if (host.__tbSecureContext === true) {

@@ -80,6 +80,10 @@
   // and its text never renders
   // (<https://html.spec.whatwg.org/multipage/window-object.html#dom-window-status>).
   replaceable('status', () => '');
+  // `clientInformation` is the legacy alias of `navigator`; it is
+  // `[Replaceable]`, so an assignment hides the accessor
+  // (<https://html.spec.whatwg.org/multipage/window-object.html#dom-window-clientinformation>).
+  replaceable('clientInformation', () => navigator);
   // A document whose browsing context is still alive is never closed
   // (<https://html.spec.whatwg.org/multipage/window-object.html#dom-window-closed>).
   replaceable('closed', () => false);

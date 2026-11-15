@@ -412,6 +412,12 @@ which needs navigation interception for non-HTTP schemes. A page can register
 and unregister handlers, and the argument checks match a browser, but a
 registered handler has no observable effect on navigation yet.
 
+`protocol.tentative.https.html` also expects the unregistered decentralized
+schemes `cabal`, `dat`, `did`, `dweb`, `ethereum`, `hyper`, `ipfs`, `ipns`, and
+`ssb` to be accepted. HTML's safelisted scheme list does not contain them
+(<https://html.spec.whatwg.org/multipage/system-state.html#safelisted-scheme>),
+so this implementation refuses them and the file's 18 subtests fail.
+
 
 ## Scoped styles
 
@@ -560,11 +566,39 @@ Five things the spec's algorithms ask for are absent:
 The window's own members that no generated interface provides are installed by
 `crates/renderer/src/js/scripts/web/window.js`: `BarProp` with the six
 `[Replaceable]` bar attributes, `devicePixelRatio`, `screenX`, `screenY`,
-`status`, `closed`, `frameElement`, and the `alert`, `confirm`, `prompt`,
-`print`, `moveBy`, `moveTo`, `resizeBy`, `resizeTo`, `stop`, `blur`, and
-`focus` operations. There is no window manager, so the geometry and bar
-attributes report the viewport and `visible: true`, prompts do nothing,
-`confirm` answers false, and `prompt` answers null.
+`status`, `closed`, `frameElement`, `clientInformation`, and the `alert`,
+`confirm`, `prompt`, `print`, `moveBy`, `moveTo`, `resizeBy`, `resizeTo`,
+`stop`, `blur`, and `focus` operations. There is no window manager, so the
+geometry and bar attributes report the viewport and `visible: true`, prompts
+do nothing, `confirm` answers false, and `prompt` answers null.
+
+`NavigatorPlugins` reports what the engine has: no PDF viewer, so
+`navigator.pdfViewerEnabled` is false and `navigator.plugins` and
+`navigator.mimeTypes` are the Window's one empty `PluginArray` and
+`MimeTypeArray`. Because no list can hold an entry, no `Plugin` or `MimeType`
+object is ever created and those two interface objects are not exposed. The
+same-origin frame proxy answers `navigator` and `clientInformation` for a
+child whose realm has not started, using the child's pending `Navigator`.
+
+A navigation creates a new document realm, so `window.navigator`,
+`window.clientInformation`, and every other per-Window object change identity
+across a navigation. HTML keeps the `Window` (and these objects) when a
+navigation away from the initial `about:blank` reuses the browsing context, so
+`per-global.window.html` fails its two navigation subtests.
+
+`navigator.windowControlsOverlay` is `[SecureContext]` in the Window Controls
+Overlay draft
+(<https://wicg.github.io/window-controls-overlay/#extensions-to-the-navigator-interface>).
+WPT serves `navigator-window-controls-overlay.tentative.html` from an insecure
+origin, where the member is correctly absent, so all seven of its subtests
+fail. For a document that did see it, `visible` would be false and
+`getTitlebarAreaRect()` a zero `DOMRect`, because the title bar area is empty.
+
+`navigator.any.html`'s `userAgent value` subtest compares the `User-Agent`
+header the server saw, raw, with `navigator.userAgent`. hyper writes header
+names in lowercase and the HTTP field name is case-insensitive
+(<https://www.rfc-editor.org/rfc/rfc9110#field.names>), so the server reports
+`user-agent:` where the test expects `User-Agent:`. The value matches.
 
 Three members are absent: `window.external` (a legacy interface no current
 specification defines), `onmousewheel` (a legacy alias of `onwheel`), and

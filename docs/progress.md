@@ -2838,3 +2838,27 @@ with no lost subtests. `cargo fmt --check` (both trees), `tools/check clippy`,
 and the renderer (175), webidl-bindgen (42), and wpt-harness (30) test
 binaries pass; the two browser integration failures are the environment
 failures that reproduce at the parent commit.
+
+The `Navigator` surface now reports what the engine has.
+`navigator.plugins` and `navigator.mimeTypes` are the Window's one empty
+`PluginArray` and `MimeTypeArray`, and `pdfViewerEnabled` is false, which is
+HTML's answer for a user agent without a PDF viewer
+(<https://html.spec.whatwg.org/multipage/system-state.html#navigatorplugins>).
+Both interfaces are legacy platform objects with named properties, which the
+binding generator's prototype does not synthesize, so they are written with
+the other legacy collections; an empty list answers null from every `item` and
+`namedItem`, and a worker's `Navigator` carries none of the three members.
+`window.clientInformation` is the `[Replaceable]` alias of `navigator`, and a
+same-origin frame whose realm has not started answers it from the child's
+pending `Navigator`, like `window.navigator`.
+
+Evidence: `html/webappapis` 2607 to **2613** passing subtests, with no lost
+subtests and no file-status changes. `clientinformation.window.html` 1/2 to
+2/2, `plugins-and-mimetypes.html` 0/3 to 3/3, and `per-global.window.html`
+2/6 to 4/6; the two remaining per-global failures are the realm-per-document
+identity gap recorded in `docs/limitations.md`.
+`css/cssom-view` stays at 1760, `dom/events` 665, `css/cssom` 3674, `html/dom`
+65341, and `html/semantics/forms` 4524, all with no lost subtests.
+`html/browsers`, which exercises the pending-frame proxy, measures 1012/2689
+subtests and 537/758 files. `cargo fmt --check`, `tools/check clippy`, and the
+renderer (175), webidl-bindgen (42), and wpt-harness (30) test binaries pass.

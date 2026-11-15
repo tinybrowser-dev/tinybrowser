@@ -1249,6 +1249,10 @@ const __tbFrameProxy = frame => {
           if (host.__tbFrameSameOrigin(frame)) {
             if (property === 'name') return host.__tbFrameName(frame);
             if (property === 'navigator') return __tbFrameNavigator(frame);
+            // `clientInformation` is the legacy alias of this window's
+            // `navigator`, so a pending frame answers it the same way
+            // (<https://html.spec.whatwg.org/multipage/window-object.html#dom-window-clientinformation>).
+            if (property === 'clientInformation') return __tbFrameNavigator(frame);
             // `getComputedStyle` answers from the element's own document and
             // carries no window state, so a pending same-origin child can
             // answer it from the caller's realm
