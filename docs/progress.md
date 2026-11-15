@@ -3231,3 +3231,27 @@ budget at 5.20 s in the batch and does so identically on the stashed baseline
 build, so it is a pre-existing speed work item, not a regression.
 `css/css-tables` stays at 492 passing subtests, `css/css-backgrounds` at 4,616
 with no losses, and `css/css-viewport/zoom` at 346 with no losses.
+
+`HTMLImageElement.x`/`y` are implemented, with the zoomed replaced-element
+size underneath them (blitz@bf3bb8346). `x`/`y` return the scaled coordinate of
+the first box's left/top border edge relative to the initial containing block
+origin, ignoring transforms
+(<https://drafts.csswg.org/cssom-view/#dom-htmlimageelement-x>), which is the
+document-relative box position: the viewport's scroll offset is added back to
+`get_client_bounding_rect`'s viewport-relative rectangle. A boxless image
+answers zero. The intrinsic-size bug that `image-x-y-zoom.html` exposed is
+fixed too: an intrinsic size is a physical length, so a replaced element's
+intrinsic width and height and its 300x150 default object size are now scaled by
+its effective zoom. A `width: auto` 1x1 image inside a `zoom: 4` box lays out
+4px tall instead of 1px, and the image whose own `zoom` is 2 inside that box is
+8px tall, which puts the container's four images at y = 8, 9, 148, 112, and
+120 as the test expects.
+
+Evidence: `css/cssom-view/image-x-y-zoom.html` 1/2 -> 2/2,
+`cssom-view-img-attributes-001.html` 4/4 (including the `display: none`
+zeros), and `HTMLImageElement-x-and-y-ignore-transforms.html` 1/1. In the full
+`css/cssom-view` run the file count goes 1,949 -> **1,959** passing subtests
+with the same two `cssom-geometryutils-connected-callback.html` budget losses
+that predate the zoom work; `css/css-viewport/zoom` stays at 346,
+`css/css-tables` at 492, and `css/css-backgrounds` at 4,616, all with no
+losses.

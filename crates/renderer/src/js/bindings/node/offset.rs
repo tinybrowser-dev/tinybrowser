@@ -40,6 +40,31 @@ pub(super) fn offset_top(ctx: &Ctx<'_>, id: NodeId) -> i32 {
     offset_origin(ctx, id).map_or(0, |(_, y)| cssom_round(y))
 }
 
+/// `HTMLImageElement.x`/`y`: the scaled coordinate of the first box's left or
+/// top border edge relative to the initial containing block origin, ignoring
+/// transforms, or zero when the element has no box
+/// (<https://drafts.csswg.org/cssom-view/#dom-htmlimageelement-x>,
+/// <https://drafts.csswg.org/cssom-view/#dom-htmlimageelement-y>).
+///
+/// The initial containing block origin is the document origin, so the
+/// viewport's scroll offset, which `get_client_bounding_rect` removes, is added
+/// back.
+pub(super) fn image_edge(ctx: &Ctx<'_>, id: NodeId, vertical: bool) -> i32 {
+    measure(ctx, id, |base, node| {
+        if !has_associated_box(base, node) {
+            return None;
+        }
+        let rect = base.get_client_bounding_rect(node.id)?;
+        let scroll = base.viewport_scroll();
+        Some(if vertical {
+            rect.y + scroll.y
+        } else {
+            rect.x + scroll.x
+        })
+    })
+    .map_or(0, cssom_round)
+}
+
 // https://drafts.csswg.org/cssom-view/#dom-htmlelement-offsetwidth
 pub(super) fn offset_width(ctx: &Ctx<'_>, id: NodeId) -> i32 {
     offset_rect(ctx, id).map_or(0, |rect| cssom_round(rect.width))

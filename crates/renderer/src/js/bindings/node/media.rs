@@ -263,6 +263,16 @@ impl<'js> html_image_element_generated::HTMLImageElement<'js> for JsNode {
         self.complete(ctx.clone())
     }
 
+    // https://drafts.csswg.org/cssom-view/#dom-htmlimageelement-x
+    fn get_x(&self, ctx: &Ctx<'js>) -> Result<i32> {
+        Ok(super::offset::image_edge(ctx, self.handle.get().0, false))
+    }
+
+    // https://drafts.csswg.org/cssom-view/#dom-htmlimageelement-y
+    fn get_y(&self, ctx: &Ctx<'js>) -> Result<i32> {
+        Ok(super::offset::image_edge(ctx, self.handle.get().0, true))
+    }
+
     // https://html.spec.whatwg.org/multipage/embedded-content.html#dom-img-currentsrc
     fn get_current_src(&self, ctx: &Ctx<'js>) -> Result<crate::dom_string::DomString> {
         Ok(self.current_src(ctx.clone())?.into())

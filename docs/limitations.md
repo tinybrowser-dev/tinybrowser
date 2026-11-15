@@ -420,8 +420,12 @@ handles the first fragment box of a non-atomic inline. Remaining gaps:
   instead of 0/1 for a zoomed element whose top margin collapses into an
   unpositioned ancestor. Chrome reports 0 there; the spec's box coordinates
   give 1, so tinybrowser follows the spec (`docs/upstream.md`).
-- `image-x-y-zoom.html` needs `HTMLImageElement.x`/`y`, which are not
-  implemented.
+- `HTMLImageElement.x`/`y` return the scaled coordinate of the first box's
+  left/top border edge relative to the initial containing block origin,
+  ignoring transforms (`crates/renderer/src/js/bindings/node/offset.rs`), and a
+  replaced element's intrinsic size is scaled by its effective zoom
+  (blitz@bf3bb8346), so a `width: auto` image inside a `zoom: 4` box is four
+  times its intrinsic size.
 - `getBoundingClientRect-zoom.html` and `getClientRects-zoom.html` fail only
   their transform-plus-zoom subtest, because transforms are not applied to
   those rectangles at all (a pre-existing gap, unrelated to zoom).
