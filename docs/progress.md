@@ -3357,3 +3357,24 @@ flake, which recovers in isolation), `html/webappapis` 2,613 unchanged, and
 `css/cssom-view`+`css/css-scroll-snap` 2,124 unchanged. `cargo fmt --check`,
 `tools/check clippy`, and the renderer (176), wpt-harness (29), and one other
 test pass.
+
+Table `clientWidth`/`clientHeight`/`clientLeft`/`clientTop` and
+`scrollWidth`/`scrollHeight` now follow CSSOM View's table rules. A table's
+client size is its offset size — the table wrapper box when it has captions,
+else the grid's border box — and not the generic padding edge, which dropped
+the captions and subtracted the grid's own border; `clientLeft`/`clientTop` are
+0 because the wrapper box has no border; and the scroll size is at least that
+box. The renderer reuses Blitz's offset rectangle for the table, so the client
+and offset members cannot disagree
+(<https://drafts.csswg.org/cssom-view/#dom-element-clientwidth>,
+<https://drafts.csswg.org/css-tables-3/#table-wrapper-box>).
+
+Evidence: `table-client-props.html` 4/15 -> **13/15**, `table-scroll-props.html`
+4/13 -> **12/13**, and the two spec tests
+(`table-with-border-client-width-height.html`,
+`table-border-separate-client-width-height.html`) 1/1. `css/cssom-view` goes
+from 1,966 to **1,984** passing subtests with no losses. `css/css-tables` is
+unchanged at 492, `css/cssom` at 3,674, and `html/dom` at 65,343, all with no
+losses. The three remaining subtests are the collapsed-border half extents,
+recorded in `docs/limitations.md`. `cargo fmt --check`, `tools/check clippy`,
+and the renderer (176), wpt-harness (29), and one other test pass.

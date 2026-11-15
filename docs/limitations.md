@@ -410,7 +410,10 @@ handles the first fragment box of a non-atomic inline. Remaining gaps:
   accounts for them. The remaining gap is a collapsed-border table's box: the
   engine reports the grid's content extent instead of the half-border extents,
   so `table-offset-props.html`'s "Table with collapsed border" reads 20 instead
-  of 26.
+  of 26. The same gap reaches `clientWidth`/`clientHeight`, which for a table
+  report its offset size, and `scrollWidth`/`scrollHeight`: a collapsed-border
+  table reads its content extent instead of 26 (`table-client-props.html`,
+  `table-scroll-props.html`).
 - CSS `zoom` is applied by layout: Stylo scales absolute lengths by the
   element's effective zoom, so boxes and their positions are zoomed. The
   geometry members follow CSSOM View's zoom rules

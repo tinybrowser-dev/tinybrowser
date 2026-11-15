@@ -1980,6 +1980,8 @@ impl JsNode {
         let edge = if viewport_client {
             let (width, height) = world.viewport_size.get();
             f64::from(if vertical { height } else { width })
+        } else if let Some(table) = table_offset_edge(base, id, vertical) {
+            table
         } else {
             f64::from(if vertical {
                 node.client_height()
@@ -2010,6 +2012,13 @@ impl JsNode {
     // https://drafts.csswg.org/cssom-view/#dom-element-clientleft
     pub(super) fn client_left(&self, ctx: &Ctx<'_>) -> Result<i32> {
         Ok(cssom_round(self.layout_metric(ctx, |node| {
+            // A table's box is the wrapper box, which has no border of its
+            // own; the grid's border belongs to the table's content edge, not
+            // its client edge
+            // (<https://drafts.csswg.org/cssom-view/#dom-element-clientleft>).
+            if crate::dom::tree::is_html_tag(Some(&node.data), "table") {
+                return 0.0;
+            }
             super::zoom::unscaled(node, f64::from(client_border(node, false)))
         })?))
     }
@@ -2017,6 +2026,9 @@ impl JsNode {
     // https://drafts.csswg.org/cssom-view/#dom-element-clienttop
     pub(super) fn client_top(&self, ctx: &Ctx<'_>) -> Result<i32> {
         Ok(cssom_round(self.layout_metric(ctx, |node| {
+            if crate::dom::tree::is_html_tag(Some(&node.data), "table") {
+                return 0.0;
+            }
             super::zoom::unscaled(node, f64::from(client_border(node, true)))
         })?))
     }
@@ -2044,6 +2056,22 @@ impl JsNode {
                 node,
                 super::scrolling::viewport_scroll_area(&parsed, vertical, viewport),
             )));
+        }
+        // A table's scrolling area starts from its own box (the wrapper box
+        // with captions, else the grid's border box), not its padding edge,
+        // and grows with whatever overflows it. The generic path would start
+        // from the padding edge and drop the captions
+        // (<https://drafts.csswg.org/cssom-view/#dom-element-scrollwidth>,
+        // <https://drafts.csswg.org/css-tables-3/#table-wrapper-box>).
+        if let Some(table) = table_offset_edge(&parsed.document.base, id, vertical) {
+            // The scrolling area is at least the table's own box; Blitz's
+            // scroll size covers the padding edge and any overflow beyond it
+            let scroll = f64::from(if vertical {
+                node.scroll_height()
+            } else {
+                node.scroll_width()
+            });
+            return Ok(cssom_round(super::zoom::unscaled(node, table.max(scroll))));
         }
         Ok(cssom_round(super::zoom::unscaled(
             node,
@@ -3590,4 +3618,24 @@ impl From<element_generated::ScrollLogicalPosition> for blitz_dom::ScrollLogical
             element_generated::ScrollLogicalPosition::Nearest => Self::Nearest,
         }
     }
+}
+
+/// A table's `clientWidth`/`clientHeight` is its `offsetWidth`/`offsetHeight`:
+/// the table wrapper box when it has captions, else the grid's border box.
+/// CSSOM View's generic answer is the padding edge, which for a table would
+/// drop the captions and subtract the grid's own border; browsers, and the
+/// spec's own table tests, report the offset size instead
+/// (<https://drafts.csswg.org/cssom-view/#dom-element-clientwidth>,
+/// <https://drafts.csswg.org/css-tables-3/#table-wrapper-box>).
+fn table_offset_edge(
+    base: &blitz_dom::BaseDocument,
+    id: crate::dom::tree::NodeId,
+    vertical: bool,
+) -> Option<f64> {
+    let node = base.get_node(id.node)?;
+    if !crate::dom::tree::is_html_tag(Some(&node.data), "table") {
+        return None;
+    }
+    base.offset_rect(id.node)
+        .map(|rect| if vertical { rect.height } else { rect.width })
 }
