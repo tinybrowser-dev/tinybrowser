@@ -19,6 +19,7 @@ pub(super) mod media;
 mod named;
 pub(super) mod offset;
 pub(super) mod scrolling;
+mod zoom;
 
 pub(super) use core::{compare_node_position, insert_converted_node};
 pub(super) use document::{

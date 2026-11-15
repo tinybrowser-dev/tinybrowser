@@ -784,6 +784,11 @@ impl<'js> element_generated::Element<'js> for JsNode {
         Ok(())
     }
 
+    // https://drafts.csswg.org/cssom-view/#dom-element-currentcsszoom
+    fn get_current_css_zoom(&self, ctx: &Ctx<'js>) -> Result<f64> {
+        self.current_css_zoom(ctx)
+    }
+
     // https://drafts.csswg.org/cssom-view/#dom-element-clientwidth
     fn get_client_width(&self, ctx: &Ctx<'js>) -> Result<i32> {
         self.client_width(ctx)
@@ -1935,8 +1940,8 @@ impl JsNode {
     pub(super) fn layout_metric(
         &self,
         ctx: &Ctx<'_>,
-        read: impl FnOnce(&blitz_dom::Node) -> f32,
-    ) -> Result<f32> {
+        read: impl FnOnce(&blitz_dom::Node) -> f64,
+    ) -> Result<f64> {
         let world = world(ctx)?;
         let world = world.borrow();
         let Some(mut parsed) = world.document_mut(self.handle.get().0) else {
@@ -1963,29 +1968,26 @@ impl JsNode {
         let Some(mut parsed) = world.document_mut(id) else {
             return Ok(0);
         };
-        let base = &mut parsed.document.base;
-        base.resolve(crate::animation_seconds());
+        parsed.document.base.resolve(crate::animation_seconds());
+        let viewport_client = super::scrolling::client_area_is_viewport(&parsed, id);
+        let base = &parsed.document.base;
         let Some(node) = base.get_node(id.node) else {
             return Ok(0);
         };
-        let boxless = !has_associated_box(base, node);
-        let padding_edge = if vertical {
-            node.client_height()
-        } else {
-            node.client_width()
-        };
-        if boxless {
+        if !has_associated_box(base, node) {
             return Ok(0);
         }
-        if super::scrolling::client_area_is_viewport(&parsed, id) {
+        let edge = if viewport_client {
             let (width, height) = world.viewport_size.get();
-            return Ok(cssom_round(f64::from(if vertical {
-                height
+            f64::from(if vertical { height } else { width })
+        } else {
+            f64::from(if vertical {
+                node.client_height()
             } else {
-                width
-            })));
-        }
-        Ok(cssom_round(f64::from(padding_edge)))
+                node.client_width()
+            })
+        };
+        Ok(cssom_round(super::zoom::unscaled(node, edge)))
     }
 
     // https://drafts.csswg.org/cssom-view/#dom-element-clientwidth
@@ -1998,18 +2000,25 @@ impl JsNode {
         self.client_size(ctx, true)
     }
 
+    /// `Element.currentCSSZoom`: the element's effective zoom, or `1.0` when it
+    /// is not being rendered
+    /// (<https://drafts.csswg.org/cssom-view/#dom-element-currentcsszoom>).
+    pub(super) fn current_css_zoom(&self, ctx: &Ctx<'_>) -> Result<f64> {
+        self.layout_metric(ctx, super::zoom::effective_zoom)
+    }
+
     // https://drafts.csswg.org/cssom-view/#dom-element-clientleft
     pub(super) fn client_left(&self, ctx: &Ctx<'_>) -> Result<i32> {
-        Ok(cssom_round(f64::from(
-            self.layout_metric(ctx, |node| client_border(node, false))?,
-        )))
+        Ok(cssom_round(self.layout_metric(ctx, |node| {
+            super::zoom::unscaled(node, f64::from(client_border(node, false)))
+        })?))
     }
 
     // https://drafts.csswg.org/cssom-view/#dom-element-clienttop
     pub(super) fn client_top(&self, ctx: &Ctx<'_>) -> Result<i32> {
-        Ok(cssom_round(f64::from(
-            self.layout_metric(ctx, |node| client_border(node, true))?,
-        )))
+        Ok(cssom_round(self.layout_metric(ctx, |node| {
+            super::zoom::unscaled(node, f64::from(client_border(node, true)))
+        })?))
     }
 
     /// `scrollWidth`/`scrollHeight` share their steps: the root element outside
@@ -2025,21 +2034,25 @@ impl JsNode {
             return Ok(0);
         };
         parsed.document.base.resolve(crate::animation_seconds());
-        if super::scrolling::scroll_area_is_viewport(&parsed, id, vertical) {
-            let (width, height) = world.viewport_size.get();
-            let viewport = f64::from(if vertical { height } else { width });
-            return Ok(cssom_round(super::scrolling::viewport_scroll_area(
-                &parsed, vertical, viewport,
-            )));
-        }
         let Some(node) = parsed.document.base.get_node(id.node) else {
             return Ok(0);
         };
-        Ok(cssom_round(f64::from(if vertical {
-            node.scroll_height()
-        } else {
-            node.scroll_width()
-        })))
+        if super::scrolling::scroll_area_is_viewport(&parsed, id, vertical) {
+            let (width, height) = world.viewport_size.get();
+            let viewport = f64::from(if vertical { height } else { width });
+            return Ok(cssom_round(super::zoom::unscaled(
+                node,
+                super::scrolling::viewport_scroll_area(&parsed, vertical, viewport),
+            )));
+        }
+        Ok(cssom_round(super::zoom::unscaled(
+            node,
+            f64::from(if vertical {
+                node.scroll_height()
+            } else {
+                node.scroll_width()
+            }),
+        )))
     }
 
     // https://drafts.csswg.org/cssom-view/#dom-element-scrollwidth

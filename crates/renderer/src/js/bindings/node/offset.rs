@@ -66,11 +66,24 @@ pub(super) fn offset_height(ctx: &Ctx<'_>, id: NodeId) -> i32 {
 fn offset_rect(ctx: &Ctx<'_>, id: NodeId) -> Option<blitz_dom::BoundingRect> {
     measure(ctx, id, |base, node| {
         if has_associated_box(base, node) {
-            base.offset_rect(node.id)
+            base.offset_rect(node.id).map(|rect| unscaled(node, rect))
         } else {
             None
         }
     })
+}
+
+/// Converts a layout rectangle to the unscaled CSSOM View rectangle of
+/// `node`, whose `offsetLeft`/`offsetTop`/`offsetWidth`/`offsetHeight` report
+/// lengths divided by its effective zoom
+/// (<https://drafts.csswg.org/css-viewport/#zoom-dom-cssom>).
+fn unscaled(node: &blitz_dom::Node, rect: blitz_dom::BoundingRect) -> blitz_dom::BoundingRect {
+    blitz_dom::BoundingRect {
+        x: super::zoom::unscaled(node, rect.x),
+        y: super::zoom::unscaled(node, rect.y),
+        width: super::zoom::unscaled(node, rect.width),
+        height: super::zoom::unscaled(node, rect.height),
+    }
 }
 
 /// The element's offset origin: the first box's top border edge for
@@ -87,6 +100,7 @@ fn offset_origin(ctx: &Ctx<'_>, id: NodeId) -> Option<(f64, f64)> {
         }
         base.offset_rect(node.id)
             .or_else(|| empty_inline_rect(base, node))
+            .map(|rect| unscaled(node, rect))
             .map(|rect| (rect.x, rect.y))
     })
 }

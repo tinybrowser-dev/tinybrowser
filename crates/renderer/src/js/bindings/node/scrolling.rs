@@ -220,7 +220,21 @@ fn viewport_offset(parsed: &Parsed, vertical: bool) -> f64 {
 ///
 /// The root element reports the viewport. In quirks mode the body element does
 /// too, unless it is potentially scrollable, and the root element reports zero.
+/// The offset is a layout length, but the CSSOM View member is unscaled
+/// (<https://drafts.csswg.org/css-viewport/#zoom-dom-cssom>).
 fn scroll_position(parsed: &Parsed, element: NodeId, vertical: bool) -> f64 {
+    let offset = scroll_position_scaled(parsed, element, vertical);
+    let zoom = parsed
+        .document
+        .base
+        .get_node(element.node)
+        .map_or(1.0, super::zoom::effective_zoom);
+    offset / zoom
+}
+
+/// An element's `scrollTop`/`scrollLeft` in layout lengths, before the
+/// element's effective zoom is removed.
+fn scroll_position_scaled(parsed: &Parsed, element: NodeId, vertical: bool) -> f64 {
     let quirks = parsed.quirks_mode == QuirksMode::Quirks;
     if root_element(parsed) == Some(element) {
         return if quirks {
@@ -296,6 +310,14 @@ fn scroll_to(
     // both coordinates and `css/cssom-view/scrolling-quirks-vs-nonquirks.html`
     // asserts that (`scroll(50, 60)` leaves scrollLeft at 50). Follow the
     // browser.
+    //
+    // The arguments are unscaled CSSOM View lengths, which the scroll engine
+    // stores in layout lengths
+    // (<https://drafts.csswg.org/css-viewport/#zoom-dom-cssom>).
+    let (x, y) = match parsed.document.base.get_node(target.node) {
+        Some(node) => (super::zoom::scaled(node, x), super::zoom::scaled(node, y)),
+        None => (x, y),
+    };
     parsed.document.base.scroll_to(target.node, x, y, behavior);
 }
 

@@ -3197,3 +3197,37 @@ nothing: `dom/events`+`css/cssom`+`css/selectors`+observers 9,371 → 9,373,
 `html/dom` and forms 69,866 → 69,867, `html/webappapis` 2,613 (the nested-rAF
 test flips on `Date.now()` granularity in both directions), `css/css-scroll-snap`
 158.
+
+CSSOM View now applies its `zoom` rules (blitz@15cbe6725). CSS `zoom` was
+already applied by layout, but every geometry member returned the zoomed
+layout length, so a `zoom: 4` box reported a 256px `clientWidth` for a 64px
+box and `offsetWidth` grew with the zoom. The spec splits the members
+(<https://drafts.csswg.org/css-viewport/#zoom-dom-cssom>):
+`getBoundingClientRect()`, `getClientRects()`, and `IntersectionObserver`
+return scaled lengths (which the layout values already are), and every other
+geometry API is unscaled. `offsetLeft`/`offsetTop`/`offsetWidth`/`offsetHeight`,
+`clientTop`/`clientLeft`/`clientWidth`/`clientHeight`,
+`scrollTop`/`scrollLeft`/`scrollWidth`/`scrollHeight`, and the coordinates
+passed to `scrollTo`/`scrollBy` now divide or multiply by the element's
+effective zoom (`crates/renderer/src/js/bindings/node/zoom.rs`), and
+`Element.currentCSSZoom` returns that zoom, or 1 for an element that is not
+rendered.
+
+Rounding had to follow. CSSOM View rounds `offsetTop` once, at the end, so the
+offset walk now sums the unrounded layout: a `zoom: 0.5` box at y = 5.5
+reports 11, not 12. `unrounded_layout` is written in the placer's writing mode,
+so nodes placed by a vertical box use the rounded physical layout instead.
+Paint snaps its scroll offsets to whole CSS pixels, because Taffy's final
+layout is integer-rounded and an unrounded offset left a strip of the
+scrollport's own background at its leading edge.
+
+Evidence against the pre-change `css/cssom-view` run: 1,949 → **1,953**
+passing subtests. `scrollTo-zoom.html` flips FAIL → PASS, and the gains are
+`Element-currentCSSZoom.html` (both subtests), `client-props-zoom.html` (1),
+`offsetTop-offsetLeft-with-zoom.html` (the offset-width subtest), and
+`scroll-zoom.html` (both scroll-size subtests). The only lost subtests are the
+two in `cssom-geometryutils-connected-callback.html`, which exceeds the 5 s
+budget at 5.20 s in the batch and does so identically on the stashed baseline
+build, so it is a pre-existing speed work item, not a regression.
+`css/css-tables` stays at 492 passing subtests, `css/css-backgrounds` at 4,616
+with no losses, and `css/css-viewport/zoom` at 346 with no losses.

@@ -402,13 +402,34 @@ handles the first fragment box of a non-atomic inline. Remaining gaps:
   engine reports the grid's content extent instead of the half-border extents,
   so `table-offset-props.html`'s "Table with collapsed border" reads 20 instead
   of 26.
-- CSS `zoom` is parsed but never applied to layout, so offsets and sizes are
-  unscaled; `offsetTop-offsetLeft-with-zoom.html` cannot pass. The `zoom`
-  property is not in the current CSSOM View algorithms, which apply `unscaled`
-  coordinates to `offsetTop`/`offsetLeft`, so the property needs layout support
-  before those tests can distinguish the rules. `offsetParent`'s "different
-  effective zoom" clause is unimplemented for the same reason; Chrome does not
-  fire it either (probed), so no test covers it.
+- CSS `zoom` is applied by layout: Stylo scales absolute lengths by the
+  element's effective zoom, so boxes and their positions are zoomed. The
+  geometry members follow CSSOM View's zoom rules
+  (<https://drafts.csswg.org/css-viewport/#zoom-dom-cssom>):
+  `getBoundingClientRect()`, `getClientRects()`, and `IntersectionObserver`
+  report scaled lengths (the layout values), while every other geometry API is
+  unscaled — `offsetLeft`/`offsetTop`/`offsetWidth`/`offsetHeight`,
+  `clientTop`/`clientLeft`/`clientWidth`/`clientHeight`,
+  `scrollTop`/`scrollLeft`/`scrollWidth`/`scrollHeight`, and the coordinates
+  passed to `scrollTo`/`scrollBy` are divided or multiplied by the element's
+  effective zoom (`crates/renderer/src/js/bindings/node/zoom.rs`), and
+  `Element.currentCSSZoom` returns it. The offset walk itself is unrounded and
+  falls back to the rounded physical layout under a vertical placer, because
+  `unrounded_layout` is written in the placer's writing mode.
+- `offsetTop-offsetLeft-with-zoom.html`'s second subtest still reports 1/2
+  instead of 0/1 for a zoomed element whose top margin collapses into an
+  unpositioned ancestor. Chrome reports 0 there; the spec's box coordinates
+  give 1, so tinybrowser follows the spec (`docs/upstream.md`).
+- `image-x-y-zoom.html` needs `HTMLImageElement.x`/`y`, which are not
+  implemented.
+- `getBoundingClientRect-zoom.html` and `getClientRects-zoom.html` fail only
+  their transform-plus-zoom subtest, because transforms are not applied to
+  those rectangles at all (a pre-existing gap, unrelated to zoom).
+- `offsetParent`'s "different effective zoom" clause is unimplemented; Chrome
+  does not fire it either (probed), so no test covers it.
+- `cssom-geometryutils-connected-callback.html` exceeds the 5 s per-test
+  budget at 5.2 s, identically on the pre-zoom build, so it is a speed work
+  item rather than a geometry error.
 - Vertical writing modes are laid out: `blitz-dom`'s `writing-mode` feature is
   on, and its `init_stylo_prefs` sets the style crate's
   `layout.css.writing-mode.enabled` and `...sideways.enabled` prefs, so the
