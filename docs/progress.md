@@ -3608,3 +3608,11 @@ is "undefined", it is falsy, and `document.all == null`
 `getComputedStyle(el).cssFloat` also reads `float` now instead of the nonexistent
 `css-float`. `html/dom/historical.html` goes 10/13 to 13/13 and the
 `html/dom` + `dom/events` + forms batch 70,644 to 70,647 with nothing lost.
+
+`document.lastModified` now answers the local time as `MM/DD/YYYY hh:mm:ss`
+(<https://html.spec.whatwg.org/multipage/dom.html#dom-document-lastmodified>).
+The engine does not record a document's source modification time, so the time
+is unavailable and the getter answers the current time, which the spec requires
+for that case. `document-lastModified-01.html` goes 0/3 to 3/3; the `html/dom` +
+`dom/events` + forms batch keeps every subtest (one harness-budget timeout on
+`form-double-submit-requestsubmit.html` that passes 36/36 in isolation twice).

@@ -594,3 +594,22 @@ globalThis.Document.parseHTMLUnsafe = function parseHTMLUnsafe(html) {
     enumerable: true, configurable: true,
   });
 }
+
+// `document.lastModified` answers the source file's last modification in the
+// local time zone as `MM/DD/YYYY hh:mm:ss`. This engine does not record a
+// document's source modification time, so the time is not available and the
+// getter answers the current time, which is what the spec requires for that
+// case
+// (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-lastmodified>).
+{
+  const two = value => String(value).padStart(2, '0');
+  Object.defineProperty(globalThis.Document.prototype, 'lastModified', {
+    get() {
+      const now = new Date();
+      return `${two(now.getMonth() + 1)}/${two(now.getDate())}/`
+        + `${String(now.getFullYear()).padStart(4, '0')} `
+        + `${two(now.getHours())}:${two(now.getMinutes())}:${two(now.getSeconds())}`;
+    },
+    enumerable: true, configurable: true,
+  });
+}
