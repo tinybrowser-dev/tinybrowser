@@ -2994,3 +2994,59 @@ contributes the one difference); `html/webappapis` 2,613; and `html/browsers`
 1,012/2,689 subtests and 537/758 files, all unchanged. `cargo fmt --check`,
 `tools/check clippy`, and the renderer (175), webidl-bindgen (43, including a
 new argument-default test), and wpt-harness (30) test binaries pass.
+
+`Document.elementFromPoint()` and `elementsFromPoint()` now use Blitz's hit
+testing instead of a box-containment scan over a flat tree-order list. The
+renderer had its own approximation: every element's border box, the deepest
+containing one wins, no transforms, no stacking order, no overflow clipping,
+no `pointer-events`, no text runs. The fork's `Node::hit_inner` already walked
+paint order (a Blitz feature the renderer was not using), so the renderer now
+calls it through `BaseDocument::element_from_point` and a new
+`elements_from_point` (blitz@fce5b5524). The walk fills a `HitCollector`: the
+`first()` form keeps the topmost box for pointer targeting and scrollbar
+thumbs, and `all()` keeps every painted box, which is what
+`elementsFromPoint()` returns — the full paint-order stack, deduplicated per
+element, rather than the hit element plus its ancestors.
+
+Three corrections came with it. Hit testing resolves style and layout first
+(`resolve_until_settled`), because a page may ask right after a mutation. A
+document that is not a realm's main document (a `createHTMLDocument` result,
+an `XMLDocument` from `DOMParser`) has no viewport, so both methods answer
+`null`/`[]` instead of reading another document's layout. And CDP's
+`DOM.getNodeForLocation` names a point in page coordinates, so the renderer
+subtracts the viewport scroll before the CSSOM View hit test.
+
+A box with no area is no longer its own hit target: a zero-height block's top
+edge satisfies the inclusive edge test, so `elementFromPoint(0, 0)` used to
+name `head`. `NodeBox.visible` lost its last reader and is gone.
+
+Evidence, against `cv9` (css/cssom-view at 1,911 passing subtests):
+**1,934** passing subtests (+23 net), files OK 213 → 212. Gained:
+`elementFromPoint-002/003` "dynamic changes to visibility" (now OK),
+`elementFromPoint-dynamic-anon-box`, `elementsFromPoint`'s
+`pointer-events`, SVG, and empty-query cases (8 of 9, from 4), the four
+`elementsFromPoint-inline-*` writing-mode files, `elementsFromPoint-simple`,
+`elementsFromPoint-table`, `elementsFromPoint-invalid-cases`,
+`negativeMargins`, `elementFromPoint`'s `pointer-events` and "no hit target"
+cases (8 of 11, from 6), and `elementFromPosition` (16 of 16, from 11).
+
+Three subtests are lost and accounted for. Two are
+`cssom-geometryutils-connected-callback.html`, which runs at ~4.8 s against a
+5 s file budget (~4.63 s at the parent) and flips to ERROR/TIMEOUT in a batch
+run; it passes alone, repeatedly. The third is
+`elementFromPoint-negative-z-index-inline.html` "Scrolling preserves hit
+testing of negative z-index inline content": it passed before because the old
+hit test agreed with an equally-wrong `getBoundingClientRect()`, and the
+point it computes is now correctly outside the viewport. Its two root causes
+are pre-existing and independent of this change: Parley starts each line's
+`text_wrap_mode` at `Wrap`, so `white-space: nowrap` does not stop an atomic
+inline from wrapping, and `physical_unrounded_geometry` subtracts an
+element's own scroll offset. Both are recorded in `docs/upstream.md` and
+`docs/limitations.md`.
+
+Regressions are clean: the `dom/events`+`css/cssom`+`css/selectors`+observer
+batch is 9,371 unchanged with no lost subtests; `html/dom` and forms 69,865 →
+69,866 (the known alternating double-submit flake, one subtest the other way);
+and `html/webappapis` 2,613 unchanged. `cargo fmt --check`, `tools/check
+clippy`, and the renderer (175), webidl-bindgen (43), and wpt-harness (30)
+test binaries pass.

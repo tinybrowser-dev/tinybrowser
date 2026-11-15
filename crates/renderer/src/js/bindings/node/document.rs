@@ -5,8 +5,8 @@ use super::super::{
     CollectionKind, JsImplementation, LegacyNullString, NodeContext, OptString, WebIdlCodeUnits,
     WebIdlString, attr_wrapper, child_value, deref_weak, document_base_url_string,
     document_is_html, document_is_html_content, document_url_string, element_at_point_ctx,
-    elements_by_tag, find_element_by_id, fixup_focus_after_removal, host, host_node_id,
-    import_attr, is_main_document, live_collection, make_weak, new_detached_attr,
+    elements_at_point, elements_by_tag, find_element_by_id, fixup_focus_after_removal, host,
+    host_node_id, import_attr, is_main_document, live_collection, make_weak, new_detached_attr,
     node_is_shadow_root, required_node, schedule_mutation_delivery, set_attribute_sync, throw_dom,
     throw_dom_error, valid_attribute_local_name, valid_element_local_name, validate_and_extract,
     with_node_data, world, world_for_node, wrap_new_document_in_world, wrap_node,
@@ -745,32 +745,35 @@ impl JsNode {
         x: f64,
         y: f64,
     ) -> Result<Value<'js>> {
-        let Some(node) = element_at_point_ctx(&ctx, self.handle.get().0, x, y)? else {
+        // A document with no browsing context has no viewport, and nothing to
+        // hit (<https://drafts.csswg.org/cssom-view/#dom-document-elementfrompoint>).
+        let id = self.handle.get().0;
+        if !world_for_node(&ctx, id)?.borrow().is_main_document(id) {
+            return Ok(Value::new_null(ctx));
+        }
+        let Some(node) = element_at_point_ctx(&ctx, id, x, y)? else {
             return Ok(Value::new_null(ctx));
         };
         wrap_node(&ctx, node)
     }
 
-    // The no-layout hit test: the deepest element whose virtual box contains
-    // the point (see `element_at_point`).
+    // https://drafts.csswg.org/cssom-view/#dom-document-elementsfrompoint
     pub(super) fn elements_from_point<'js>(
         &self,
         ctx: Ctx<'js>,
         x: f64,
         y: f64,
     ) -> Result<Vec<Value<'js>>> {
-        let mut elements = Vec::new();
-        let Some(node) = element_at_point_ctx(&ctx, self.handle.get().0, x, y)? else {
-            return Ok(elements);
-        };
-        // The hit-test stack: the element and its ancestors, topmost first.
-        let world = world_for_node(&ctx, node)?;
-        let mut cursor = Some(node);
-        while let Some(current) = cursor {
-            elements.push(wrap_node(&ctx, current)?);
-            cursor = world.borrow().node_parent(current);
+        let id = self.handle.get().0;
+        let world = world_for_node(&ctx, id)?;
+        if !world.borrow().is_main_document(id) {
+            return Ok(Vec::new());
         }
-        Ok(elements)
+        let nodes = elements_at_point(&world.borrow(), id, x, y);
+        nodes
+            .into_iter()
+            .map(|node| wrap_node(&ctx, node))
+            .collect()
     }
 
     // https://dom.spec.whatwg.org/#dom-document-createelement

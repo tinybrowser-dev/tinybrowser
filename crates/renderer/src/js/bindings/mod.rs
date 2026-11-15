@@ -60,7 +60,6 @@ use std::rc::{Rc, Weak};
 
 use blitz_dom::NodeData;
 use markup5ever::{LocalName, Namespace, Prefix, QualName};
-use stylo_taffy::CopyStyleGetters;
 
 use crate::dom::TreeError;
 use crate::dom::tree::{NodeId, is_element, sibling};
@@ -1333,8 +1332,6 @@ pub(super) fn webdriver_element(ctx: Ctx<'_>, remote_id: f64) -> Result<Value<'_
 
 /// Every element's border box from the Blitz layout, in tree order.
 pub(crate) fn layout_boxes(world: &World, document: NodeId) -> Vec<crate::render::NodeBox> {
-    use style::computed_values::visibility::T as Visibility;
-
     let Some(mut parsed) = world.document_mut(document) else {
         return Vec::new();
     };
@@ -1349,9 +1346,6 @@ pub(crate) fn layout_boxes(world: &World, document: NodeId) -> Vec<crate::render
         if node.data.downcast_element().is_some() {
             let position = node.absolute_position(0.0, 0.0);
             let size = node.final_layout().size;
-            let visible = node
-                .primary_styles()
-                .is_some_and(|styles| styles.clone_visibility() == Visibility::Visible);
             boxes.push(crate::render::NodeBox {
                 node: NodeId {
                     document: document.document,
@@ -1361,7 +1355,6 @@ pub(crate) fn layout_boxes(world: &World, document: NodeId) -> Vec<crate::render
                 y: position.y,
                 width: size.width,
                 height: size.height,
-                visible,
             });
         }
         stack.extend(node.children.iter().rev().copied());
@@ -1395,30 +1388,54 @@ pub(crate) fn viewport_scroll(world: &World, node: NodeId) -> (f64, f64) {
     (scroll.x, scroll.y)
 }
 
-/// The deepest element whose laid-out border box contains the point, if any.
+/// The element at viewport coordinate `(x, y)`, or `None` when the point is
+/// outside the viewport.
+///
+/// Blitz owns hit testing: it walks the paint order (stacking contexts
+/// included), applies transforms, scroll offsets, overflow clipping, and
+/// `pointer-events`, and resolves text runs and anonymous boxes to their
+/// element (<https://drafts.csswg.org/cssom-view/#dom-document-elementfrompoint>).
+/// Hit testing consults layout, and a caller may ask right after a mutation,
+/// so the document's style/layout pass runs first.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "Blitz layout is f32; a point inside the viewport is exactly representable"
+)]
 pub(crate) fn element_at_point(world: &World, document: NodeId, x: f64, y: f64) -> Option<NodeId> {
-    let (scroll_x, scroll_y) = viewport_scroll(world, document);
-    let x = x + scroll_x;
-    let y = y + scroll_y;
-    let mut best = None;
-    for item in layout_boxes(world, document) {
-        let node = item.node;
-        // Hidden boxes keep their geometry but never win hit testing; the
-        // flat pre-order walk still reaches visible descendants.
-        if !item.visible {
-            continue;
-        }
-        if x >= f64::from(item.x)
-            && x < f64::from(item.x + item.width)
-            && y >= f64::from(item.y)
-            && y < f64::from(item.y + item.height)
-        {
-            // Tree order is pre-order, so the last containing box is the
-            // deepest one.
-            best = Some(node);
-        }
-    }
-    best
+    let mut parsed = world.document_mut(document)?;
+    crate::render::resolve_until_settled(&mut parsed.document.base);
+    parsed
+        .document
+        .base
+        .element_from_point(x as f32, y as f32)
+        .map(|node| NodeId {
+            document: document.document,
+            node,
+        })
+}
+
+/// Every element at viewport coordinate `(x, y)` in paint order, topmost
+/// first, as for `document.elementsFromPoint()`
+/// (<https://drafts.csswg.org/cssom-view/#dom-document-elementsfrompoint>).
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "Blitz layout is f32; a point inside the viewport is exactly representable"
+)]
+pub(crate) fn elements_at_point(world: &World, document: NodeId, x: f64, y: f64) -> Vec<NodeId> {
+    let Some(mut parsed) = world.document_mut(document) else {
+        return Vec::new();
+    };
+    crate::render::resolve_until_settled(&mut parsed.document.base);
+    parsed
+        .document
+        .base
+        .elements_from_point(x as f32, y as f32)
+        .into_iter()
+        .map(|node| NodeId {
+            document: document.document,
+            node,
+        })
+        .collect()
 }
 
 /// [`element_at_point`] for a JS binding's context.

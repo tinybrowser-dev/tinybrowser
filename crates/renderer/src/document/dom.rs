@@ -348,7 +348,10 @@ impl Document {
             let Some(root) = world.main_document_root() else {
                 return DomReply::NodeForLocation { node_id: 0 };
             };
-            crate::js::element_at_point(&world, root, x, y)
+            // CDP names a point in page coordinates; CSSOM View's hit test
+            // takes viewport coordinates, so remove the viewport scroll.
+            let (scroll_x, scroll_y) = crate::js::viewport_scroll(&world, root);
+            crate::js::element_at_point(&world, root, x - scroll_x, y - scroll_y)
         };
         DomReply::NodeForLocation {
             node_id: node.map_or(0, |node| self.remote_id(node)),

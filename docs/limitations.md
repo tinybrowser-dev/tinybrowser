@@ -1220,11 +1220,48 @@ was already failing before the timeline existed.
 
 `GeometryUtils` computes from the layout boxes the renderer has, and the
 layout crate does not apply CSS transforms. A transformed element's
-`getBoundingClientRect()`, `getBoxQuads()`, and `elementFromPoint()` use its
-untransformed border box, so non-axis-aligned quads, `scale(0)` collapse, and
-motion-path positions are wrong; the affine conversion itself assumes a pure
-translation. Multi-column and other fragmentation is not implemented: an
-element returns one quad, not one per fragment.
+`getBoundingClientRect()` and `getBoxQuads()` use its untransformed border
+box, so non-axis-aligned quads, `scale(0)` collapse, and motion-path
+positions are wrong; the affine conversion itself assumes a pure translation.
+Multi-column and other fragmentation is not implemented: an element returns
+one quad, not one per fragment.
+
+Hit testing (`elementFromPoint()`/`elementsFromPoint()`) is Blitz's
+paint-order walk, so it does apply transforms, stacking contexts, scroll
+offsets, overflow clipping, and `pointer-events`, and it resolves text runs
+and anonymous boxes to their element. `elementsFromPoint()` returns the whole
+painted stack in paint order, not the hit element plus its ancestors. Gaps
+remain:
+
+- SVG internals are not walked: a point over a `<rect>` inside an `<svg>`
+  answers the `<svg>` element.
+- Image maps are not implemented, so a point over an `<area>` answers the
+  enclosing `<img>`.
+- A rounded `fieldset` border is not followed; the point is tested against
+  the border box.
+- A list marker painted outside its `<li>` (`list-style-position: outside`)
+  is not a hit target, so the point answers the `<ul>`.
+- `white-space: nowrap` does not stop an atomic inline at the start of a line
+  from wrapping, because Parley starts each line's wrap mode at `Wrap`; a
+  nowrap box whose first child overflows can break before the second, which
+  moves what the hit test finds (recorded in `docs/upstream.md`).
+- `physical_unrounded_geometry` subtracts an element's own scroll offset, so
+  the client rect of a scrolled box is reported shifted by its own scroll;
+  hit testing is unaffected but `getBoundingClientRect()` on that box is not.
+- `elementsFromPoint-iframes.html` needs a loaded child document; the frame
+  load and `contentDocument` timing gap is the realm-per-document limitation
+  above.
+
+`cssom-geometryutils-connected-callback.html` runs at ~4.8 s against the 5 s
+file budget (it was ~4.63 s before hit testing existed), so a batch run can
+push it into ERROR/TIMEOUT; the two subtests pass when the file runs alone.
+
+`Range.getClientRects()` and `Range.getBoundingClientRect()` are absent, so a
+`Text` node's `getBoxQuads()` falls back to its parent element's rects and
+`DOMRectList.html`'s Range subtest fails. Converting coordinates across
+frames uses each frame element's content-box origin; the cross-origin A-B-A
+test also needs a `Window.frames` collection that the engine does not expose,
+so it fails with a script error rather than the expected `SecurityError`.
 
 `Range.getClientRects()` and `Range.getBoundingClientRect()` are absent, so a
 `Text` node's `getBoxQuads()` falls back to its parent element's rects and

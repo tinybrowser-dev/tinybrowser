@@ -6,6 +6,8 @@ Policy: upstream bugs stay upstream. Our code stays simple; these fail closed as
 
 ### blitz (third_party/blitz, master)
 
+- fce5b5524 collect every painted box under a hit-test point, in paint order. `Node::hit_inner` returned the first matching box, so `elementsFromPoint` could only be approximated as the hit element plus its ancestors, which is wrong when two overlapping siblings both lie under the point. The walk now fills a `HitCollector`: `first()` keeps the topmost box (pointer targeting, scrollbar thumbs) and stops, `all()` keeps every box in the same descent (positive z-index hoisted children, children in paint order, negative z-index hoisted children, the inline root's text cluster, then the box itself). `BaseDocument::elements_from_point` maps the collected boxes through the anonymous-box/text-node resolution to elements, keeps the first mention of each, and answers the root element when the point is inside the viewport but over no box. A box with no area also stops being a hit target for itself: a zero-height block's top edge satisfies the inclusive edge test, so `elementFromPoint` at the viewport origin named `head`. Upstream-able: CSSOM View defines both lists and CSS 2.1 the stacking order (<https://drafts.csswg.org/cssom-view/#dom-document-elementsfrompoint>, <https://drafts.csswg.org/css2/#elaborate-stacking-contexts>).
+
 - fcb2bf32d queue scroll and scrollend events, and carry inner scrolls into an outer alignment. `BaseDocument` had no pending scroll events list, so an embedder could only see a scroll through the `dispatch_event` callback and had nothing for `scrollend`; it now keeps one `scroll` entry per box that moved and one `scrollend` entry when the operation completes (at once for an instant scroll, on the frame a smooth one reaches its target), coalesced per box and taken with `take_pending_scroll_events`. `scrollIntoView` also carries the distance its inner scrollers are about to move into each outer alignment: the scrolls of one call start together, so an outer box measured before its inner scroller moved put a nested target at the wrong offset (`scrollIntoView-multiple-nested.html` scrolled to the clamped 800 instead of 600), and only a running animation owes layout that distance. Upstream-able: CSSOM View defines the pending list, the per-box coalescing, and the scroll steps that fire the two events (<https://drafts.csswg.org/cssom-view/#scrolling-events>), and its `scrollIntoView` algorithm scrolls the ancestor chain for one target.
 
 - 0c5744b6a drive scroll animations from the document timeline, one per target. A smooth scroll was timed with `SystemTime::now()` and held in one slot, so it neither advanced with the embedder's frames nor let two scrolling boxes animate at once: `scrollIntoView` on a container was cancelled by the viewport scroll that followed it. `BaseDocument::resolve` now stores the embedder's animation time in `animation_time_ms` and `ScrollAnimations` keeps one smooth scroll per `ScrollTarget` beside the single fling, with a user scroll aborting only the box it moves. The viewport's scrollable overflow also unions the boxes Taffy hoists to the initial containing block (excluding `position: fixed` ones), which the root positioning pass lays out after the root's own. Upstream-able: CSSOM View times scrolls on the document timeline and per scrolling box (<https://drafts.csswg.org/cssom-view/#scroll-an-element>), and CSS Overflow puts rooted out-of-flow boxes in the scrollable overflow (<https://drafts.csswg.org/css-overflow-3/#scrollable>).
@@ -192,6 +194,18 @@ Known gaps this engine fails honestly (no fork patch yet):
 - weedle4 at 7dd96ea plus an async_sequence terminal and type. WebIDL async-iterable support; the generator rejects conversions it cannot generate.
 
 ## Open issues
+
+- Parley 0.12.0 starts every line with `text_wrap_mode: Wrap` and only records
+  the styled mode as it walks each atom (`layout/line_break.rs`, the
+  `LineState` default and the "lag text_wrap_mode style by one atom" step), so
+  an atomic inline box at the start of a line is always allowed to wrap
+  regardless of `white-space: nowrap`. A `nowrap` block whose first child is
+  wider than the block therefore breaks before the second inline-block
+  (`css/cssom-view/elementFromPoint-negative-z-index-inline.html` "Scrolling
+  preserves hit testing of negative z-index inline content" depends on the
+  nowrap line staying on one line). The fix belongs in Parley's line breaker,
+  which should seed the line's mode from the first styled run; patch it
+  upstream rather than special-casing the mode in Blitz's inline builder.
 
 - `QuickJS` records a realm only on functions (`JS_GetFunctionRealm`), so a
   plain object that crossed a realm boundary has no recoverable creation

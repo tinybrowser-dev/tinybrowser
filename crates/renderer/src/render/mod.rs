@@ -125,9 +125,6 @@ pub struct NodeBox {
     pub y: f32,
     pub width: f32,
     pub height: f32,
-    /// Whether the originating style is visible. Hidden boxes still report
-    /// geometry, but hit testing skips them (descendants override).
-    pub visible: bool,
 }
 
 /// A render failure that is the document's fault rather than the caller's.
