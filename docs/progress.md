@@ -3544,3 +3544,10 @@ the nullable `HTMLElement?` conversion requires
 the `html/dom` + `dom/events` + forms batch goes from 70,630 to 70,631 with
 nothing lost (the `form-double-submit*.html` pair flipped, the known
 timing-dependent flakes that also flip in isolation).
+
+`FormDataEvent`'s `formData` member is `required FormData`, so the constructor
+now throws `TypeError` for a value that is not a `FormData` instead of storing
+it
+(<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#the-formdataevent-interface>).
+`FormDataEvent.window.html` goes 1/2 to 2/2 and the `html/dom` + `dom/events` +
+forms batch 70,631 to 70,633 with nothing lost.

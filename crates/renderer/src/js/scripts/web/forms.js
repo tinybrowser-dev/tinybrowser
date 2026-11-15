@@ -687,6 +687,12 @@
     if (init === undefined || init === null || init.formData === undefined || init.formData === null) {
       throw new TypeError('FormDataEventInit requires formData');
     }
+    // `required FormData formData` refuses any other value during conversion
+    // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#the-formdataevent-interface>,
+    // <https://webidl.spec.whatwg.org/#es-dictionary>).
+    if (!(init.formData instanceof globalThis.FormData)) {
+      throw new TypeError('The formData member must be a FormData');
+    }
     const event = Reflect.construct(globalThis.Event, arguments, new.target);
     FORMDATA.set(event, init.formData);
     return event;
