@@ -37,7 +37,7 @@ fn world_for_window_this<'js>(ctx: &Ctx<'js>, this: &Object<'js>) -> Result<Rc<R
         return Ok(current);
     };
     // https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-get
-    let same_origin = target.borrow().origin == current.borrow().origin;
+    let same_origin = target.borrow().same_origin_domain_with(&current.borrow());
     if same_origin { Ok(target) } else { Ok(current) }
 }
 

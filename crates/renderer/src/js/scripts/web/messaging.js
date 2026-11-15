@@ -1126,6 +1126,17 @@ Object.defineProperty(globalThis.MessageChannel.prototype, Symbol.toStringTag, {
 // The cross-origin member set follows Blink's `[CrossOrigin]` IDL attributes
 // and Firefox's `sCrossOriginProperties`: postMessage, window, self, frames,
 // length, top, parent, closed, and the indexed getter.
+// The frame id of `frame`'s document-tree child navigable whose target name
+// is `name`, or null
+// (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-getownproperty>).
+const __tbFrameNamedChild = (frame, name) => {
+  const count = host.__tbFrameChildCount(frame);
+  for (let index = 0; index < count; index += 1) {
+    const child = host.__tbFrameChild(frame, index);
+    if (child != null && host.__tbFrameName(child) === name) return child;
+  }
+  return null;
+};
 const __tbFrameProxy = frame => {
   if (frame == null) return undefined;
   if (frame === __tbFrameId) return globalThis;
@@ -1138,6 +1149,26 @@ const __tbFrameProxy = frame => {
   const crossOrigin = () => {
     throw new globalThis.DOMException('Blocked a frame from accessing a cross-origin frame.', 'SecurityError');
   };
+  // `focus`/`blur` on a cross-origin window: the same engine no-op the
+  // same-origin window installs.
+  const crossOriginNoop = function() {};
+  // The `Location` object a cross-origin caller sees: every member throws, and
+  // its prototype is null. Assignment is ignored, as it was before the object
+  // existed
+  // (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#the-location-interface>).
+  const crossOriginLocation = () => cachedMember('crossOriginLocation', 'frame', () => {
+    const location = __tbObjectCreate(null);
+    for (const name of ['href', 'protocol', 'host', 'hostname', 'port', 'pathname',
+                        'search', 'hash', 'origin', 'toString']) {
+      __tbDefineProperty(location, name, {
+        get: crossOrigin,
+        set: crossOriginNoop,
+        configurable: false,
+        enumerable: true,
+      });
+    }
+    return location;
+  });
   // One function per proxy: a shipped engine keeps
   // `contentWindow.postMessage` identity stable, and so do we.
   const postMessage = function(message, targetOrigin, transfer) {
@@ -1223,19 +1254,10 @@ const __tbFrameProxy = frame => {
       }
       const sameOrigin = host.__tbFrameGlobal(frame);
       if (sameOrigin == null) {
-        // A frame whose navigable was destroyed keeps the Window a script
-        // already referenced until the engine drops it at the end of the
-        // turn, so a same-origin read in the removing task still answers
-        // instead of throwing; the destroy steps remove the tree entry first
-        // (<https://html.spec.whatwg.org/multipage/document-sequences.html#destroy-a-child-navigable>).
-        // A cross-origin member read answers `undefined` rather than throwing
-        // `SecurityError`; that gap is recorded in `docs/limitations.md`
-        // because closing it needs `document.domain` and a cross-origin
-        // `Location`.
-        if (host.__tbFrameRegistered(frame) || host.__tbFrameSameOrigin(frame)) {
-          // A document exists before its realm does: `window.open`'s initial
-          // about:blank and an `iframe` inserted in a running script. Its
-          // wrapper belongs to this realm until the target realm starts.
+        // A document exists before its realm does: `window.open`'s initial
+        // about:blank and an `iframe` inserted in a running script. Its
+        // wrapper belongs to this realm until the target realm starts.
+        if (host.__tbFrameSameOrigin(frame)) {
           if (property === 'document') return host.__tbFrameDocument(frame);
           const pending = __tbFramePendingSets[frame];
           if (pending !== undefined && __tbApply(__tbHasOwnProperty, pending, [property])) {
@@ -1246,46 +1268,69 @@ const __tbFrameProxy = frame => {
           // callable globals (constructors in particular) that a page reads
           // through `contentWindow` in the same task
           // (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-get>).
-          if (host.__tbFrameSameOrigin(frame)) {
-            if (property === 'name') return host.__tbFrameName(frame);
-            if (property === 'navigator') return __tbFrameNavigator(frame);
-            // `clientInformation` is the legacy alias of this window's
-            // `navigator`, so a pending frame answers it the same way
-            // (<https://html.spec.whatwg.org/multipage/window-object.html#dom-window-clientinformation>).
-            if (property === 'clientInformation') return __tbFrameNavigator(frame);
-            // `getComputedStyle` answers from the element's own document and
-            // carries no window state, so a pending same-origin child can
-            // answer it from the caller's realm
-            // (<https://drafts.csswg.org/cssom/#dom-window-getcomputedstyle>).
-            if (property === 'getComputedStyle') return globalThis.getComputedStyle;
-            if (property === 'addEventListener') {
-              return eventTargetMethod(property, '__tbFrameAddEventListener');
-            }
-            if (property === 'removeEventListener') {
-              return eventTargetMethod(property, '__tbFrameRemoveEventListener');
-            }
-            if (property === 'dispatchEvent') {
-              return eventTargetMethod(property, '__tbFrameDispatchEvent');
-            }
-            if (property === 'location') {
-              if (pendingLocation === undefined) {
-                pendingLocation = host.__tbFrameLocation(frame);
-                if (pendingLocation !== null && pendingLocation !== undefined) {
-                  __tbDefineProperty(pendingLocation, 'toString', {
-                    value: function() { return String(this.href); },
-                    writable: true, enumerable: false, configurable: true,
-                  });
-                }
-              }
-              return pendingLocation;
-            }
-            const value = globalThis[property];
-            if (__tbFrameForwarded(property, value)) return value;
+          if (property === 'name') return host.__tbFrameName(frame);
+          if (property === 'navigator') return __tbFrameNavigator(frame);
+          // `clientInformation` is the legacy alias of this window's
+          // `navigator`, so a pending frame answers it the same way
+          // (<https://html.spec.whatwg.org/multipage/window-object.html#dom-window-clientinformation>).
+          if (property === 'clientInformation') return __tbFrameNavigator(frame);
+          // `getComputedStyle` answers from the element's own document and
+          // carries no window state, so a pending same-origin child can
+          // answer it from the caller's realm
+          // (<https://drafts.csswg.org/cssom/#dom-window-getcomputedstyle>).
+          if (property === 'getComputedStyle') return globalThis.getComputedStyle;
+          if (property === 'addEventListener') {
+            return eventTargetMethod(property, '__tbFrameAddEventListener');
           }
-          // A realm that has not started yet cannot answer its own members;
-          // the loading, navigated-away, and cross-origin cases all land here.
+          if (property === 'removeEventListener') {
+            return eventTargetMethod(property, '__tbFrameRemoveEventListener');
+          }
+          if (property === 'dispatchEvent') {
+            return eventTargetMethod(property, '__tbFrameDispatchEvent');
+          }
+          if (property === 'location') {
+            if (pendingLocation === undefined) {
+              pendingLocation = host.__tbFrameLocation(frame);
+              if (pendingLocation !== null && pendingLocation !== undefined) {
+                __tbDefineProperty(pendingLocation, 'toString', {
+                  value: function() { return String(this.href); },
+                  writable: true, enumerable: false, configurable: true,
+                });
+              }
+            }
+            return pendingLocation;
+          }
+          const value = globalThis[property];
+          if (__tbFrameForwarded(property, value)) return value;
+          // A same-origin realm that has not started yet cannot answer its
+          // own members.
           return undefined;
         }
+        // The cross-origin accessible members that the common whitelist above
+        // does not cover: `location` is a `Location` object whose members
+        // throw, `focus`/`blur` are this engine's no-ops, and `opener` is
+        // null because auxiliary contexts here open with no opener
+        // (<https://html.spec.whatwg.org/multipage/browsers.html#crossoriginproperties-(-o-)>,
+        // <https://html.spec.whatwg.org/multipage/window-object.html#dom-window-focus>,
+        // <https://html.spec.whatwg.org/multipage/window-object.html#dom-opener>).
+        switch (property) {
+          case 'location': return crossOriginLocation();
+          case 'focus': case 'blur': return crossOriginNoop;
+          case 'opener': return null;
+        }
+        // Cross-origin named access still reaches a child navigable's
+        // WindowProxy, the one non-index member a cross-origin window
+        // exposes besides the cross-origin property set
+        // (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-getownproperty>).
+        if (typeof property === 'string') {
+          const child = __tbFrameNamedChild(frame, property);
+          if (child != null) return __tbFrameProxy(child);
+        }
+        // A frame whose navigable was destroyed keeps the Window a script
+        // already referenced until the engine drops it at the end of the
+        // turn; the destroy steps remove the tree entry first
+        // (<https://html.spec.whatwg.org/multipage/document-sequences.html#destroy-a-child-navigable>).
+        if (!host.__tbFrameRegistered(frame)) return undefined;
         crossOrigin();
       }
       switch (property) {
@@ -1374,7 +1419,13 @@ const __tbFrameProxy = frame => {
       }
       const pending = __tbFramePendingSets[frame];
       if (pending !== undefined && property in pending) return true;
-      if (!host.__tbFrameSameOrigin(frame)) return false;
+      if (!host.__tbFrameSameOrigin(frame)) {
+        switch (property) {
+          case 'location': case 'opener': case 'focus': case 'blur':
+            return true;
+        }
+        return typeof property === 'string' && __tbFrameNamedChild(frame, property) != null;
+      }
       if (property === 'location' || property === 'name' || property === 'document') return true;
       if (property === 'addEventListener' || property === 'removeEventListener'
           || property === 'dispatchEvent') return true;

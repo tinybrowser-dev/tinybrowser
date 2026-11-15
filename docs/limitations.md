@@ -718,18 +718,33 @@ names in lowercase and the HTTP field name is case-insensitive
 Two members are absent: `window.external` (a legacy interface no current
 specification defines) and `onmousewheel` (a legacy alias of `onwheel`).
 
-Cross-origin window member access answers `undefined` instead of throwing
-`SecurityError`. The spec throws for every property outside the cross-origin
-list, and implementing that was tried: it raises
-`window-security.https.html` from 12 to 121 of 124, but it regresses
-`windowproxy-prototype-setting-same-origin-domain.sub.html` and
-`location-prototype-setting-cross-origin-domain.sub.html`, whose subtests read
-`frames[0].TypeError` and `frames[0].location` after setting `document.domain`.
-`document.domain` is unimplemented and is the feature those tests exercise, so
-closing this needs same-origin-domain origin comparison (an origin type that
-carries an optional domain) and a cross-origin `Location` object with a null,
-immutable prototype. Reverted until that lands; the throw is otherwise
-correct.
+Cross-origin window member access follows the WindowProxy rules: the
+cross-origin property set answers (`window`, `self`, `frames`, `length`, `top`,
+`parent`, `close`, `closed`, `postMessage`, `location`, `opener`, `focus`,
+`blur`, and the indexed getter), a named child navigable answers its
+`WindowProxy`, and every other member throws `SecurityError`
+(<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-get>).
+Cross-origin `location` is a `Location` object whose members throw; its
+prototype is null, and an assignment is ignored rather than navigating, because
+the renderer has no cross-origin navigation entry point. Remaining gaps in
+this surface:
+
+- A same-origin `Location` object a script already holds does not re-check the
+  origin on each access, so it keeps answering after the two documents'
+  `document.domain` values diverge (one subtest of
+  `document_domain_access_details.sub.html`).
+- `document.open()`'s "same origin with the entry document" step cannot be
+  evaluated when the call arrives through an object from another realm: a
+  native method runs with its receiver's realm, so
+  `iframe.contentDocument.open()` does not see the caller and does not throw
+  (`document_domain_setter.html`'s last subtest). The same reason makes one
+  `cross-origin-objects` case report `TypeError` instead of `SecurityError`.
+- `document.domain` and the same-origin-domain relation are implemented: the
+  setter rejects a document without a browsing context, a sandboxed document,
+  an opaque origin, and a value that is not a registrable domain suffix, and an
+  `about:blank` or `srcdoc` document shares its creator's domain because it
+  shares the origin object. `document.domain` does not widen
+  `showPicker()`'s same-origin check or `document.open()`'s.
 
 ## Missing surfaces
 

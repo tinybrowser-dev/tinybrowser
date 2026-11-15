@@ -235,7 +235,7 @@ fn frame_event_target(ctx: &Ctx<'_>, frame: u64) -> Result<Rc<RefCell<World>>> {
     let Some(target) = current.borrow().frame_world(FrameId::new(frame)) else {
         return Err(Exception::throw_type(ctx, "incompatible receiver"));
     };
-    let same_origin = target.borrow().origin == current.borrow().origin;
+    let same_origin = target.borrow().same_origin_domain_with(&current.borrow());
     if !same_origin {
         return Err(Exception::throw_type(ctx, "incompatible receiver"));
     }
@@ -665,7 +665,11 @@ fn frame_world_with_origin(
     let Some(target) = current.borrow().frame_world(FrameId::new(frame)) else {
         return Ok(None);
     };
-    let same_origin = target.borrow().origin == current.borrow().origin;
+    // The WindowProxy's origin check is same origin-domain, so a pair of
+    // documents that both set `document.domain` to the same value can reach
+    // each other
+    // (<https://html.spec.whatwg.org/multipage/browsers.html#same-origin-domain>).
+    let same_origin = target.borrow().same_origin_domain_with(&current.borrow());
     Ok(Some((target, same_origin)))
 }
 

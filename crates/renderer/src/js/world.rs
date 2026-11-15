@@ -1368,6 +1368,13 @@ pub(crate) struct World {
     /// blob lookups and same-origin checks must reuse this value
     /// (<https://html.spec.whatwg.org/multipage/browsers.html#concept-origin>).
     pub(crate) origin: url::Origin,
+    /// The origin's domain, set by `document.domain`; `None` until a script
+    /// assigns it. Only a tuple origin has one, and a navigation replaces it
+    /// along with the origin. An `about:blank` or `srcdoc` document inherits
+    /// its creator's *origin*, which is why the cell is shared with the
+    /// creator: a later assignment on either document is visible to both
+    /// (<https://html.spec.whatwg.org/multipage/browsers.html#relaxing-the-same-origin-restriction>).
+    pub(crate) domain: Rc<RefCell<Option<String>>>,
     /// The top-level traversable's origin, recorded when a child realm is
     /// created; `None` for a top-level realm, which answers its own origin
     /// (<https://html.spec.whatwg.org/multipage/webappapis.html#concept-environment-top-level-origin>).
@@ -1984,6 +1991,7 @@ impl World {
             timer_string: Cell::new(false),
             owned: HashSet::new(),
             origin: document_url.origin(),
+            domain: Rc::new(RefCell::new(None)),
             top_level: None,
             first_party: true,
             parent_context: None,
@@ -2947,7 +2955,46 @@ impl World {
         self.referrer_url = url.clone();
         self.document_url = url;
         self.origin = origin;
+        // A new document starts with a null domain; the origin is the one the
+        // navigation determined
+        // (<https://html.spec.whatwg.org/multipage/browsers.html#relaxing-the-same-origin-restriction>).
+        self.domain = Rc::new(RefCell::new(None));
         self.refresh_first_party();
+    }
+
+    /// The origin's effective domain: its `document.domain` value when one is
+    /// set, its host otherwise, or `None` for an opaque origin
+    /// (<https://html.spec.whatwg.org/multipage/browsers.html#concept-origin-effective-domain>).
+    pub(crate) fn effective_domain(&self) -> Option<String> {
+        match &self.origin {
+            url::Origin::Tuple(_, host, _) => Some(
+                self.domain
+                    .borrow()
+                    .clone()
+                    .unwrap_or_else(|| host.to_string()),
+            ),
+            url::Origin::Opaque(_) => None,
+        }
+    }
+
+    /// Whether this realm's origin and `other`'s are same origin-domain: same
+    /// scheme and equal non-null domains, or same origin with both domains
+    /// null
+    /// (<https://html.spec.whatwg.org/multipage/browsers.html#same-origin-domain>).
+    pub(crate) fn same_origin_domain_with(&self, other: &Self) -> bool {
+        match (&self.origin, &other.origin) {
+            (url::Origin::Tuple(left_scheme, _, _), url::Origin::Tuple(right_scheme, _, _)) => {
+                match (&*self.domain.borrow(), &*other.domain.borrow()) {
+                    (Some(left), Some(right)) => left_scheme == right_scheme && left == right,
+                    _ => {
+                        self.domain.borrow().is_none()
+                            && other.domain.borrow().is_none()
+                            && self.origin == other.origin
+                    }
+                }
+            }
+            _ => self.origin == other.origin,
+        }
     }
 
     /// Resolves `spec` against this document's URL, falling back to the

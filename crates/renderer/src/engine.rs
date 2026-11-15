@@ -2671,11 +2671,16 @@ impl Engine {
     /// so a script-set realm survives; otherwise installs the inherited blank.
     fn keep_initial_blank(&mut self, child: FrameId, parent: FrameId) {
         let inherited = self.frames.get(&parent).map(|document| {
+            let world = document.world();
+            let world = world.borrow();
             (
                 document.inherited_url(),
-                document.world().borrow().cookie_url(),
+                world.cookie_url(),
                 document.referrer_url(),
-                document.world().borrow().origin.clone(),
+                crate::document::InheritedOrigin {
+                    origin: world.origin.clone(),
+                    domain: Rc::clone(&world.domain),
+                },
             )
         });
         if self
@@ -2690,8 +2695,8 @@ impl Engine {
             return;
         };
         match inherited {
-            Some((url, cookie_url, referrer, origin)) => {
-                document.load_about_blank(Some(&url), &cookie_url, Some(origin));
+            Some((url, cookie_url, referrer, inherited)) => {
+                document.load_about_blank(Some(&url), &cookie_url, Some(inherited));
                 document.set_document_referrer(Some(referrer));
             }
             None => {
@@ -2989,22 +2994,35 @@ impl Engine {
                 document.base_url(),
                 world.cookie_url(),
                 world.referrer_url.clone(),
-                world.origin.clone(),
+                crate::document::InheritedOrigin {
+                    origin: world.origin.clone(),
+                    domain: Rc::clone(&world.domain),
+                },
                 world.policy.clone(),
             )
         });
         let Some(document) = self.frames.get_mut(&child) else {
             return;
         };
-        if let Some((base, cookie_url, referrer_url, origin, policy)) = inherited {
-            document.load_frame_srcdoc(&base, &cookie_url, &referrer_url, origin, &policy, markup);
+        if let Some((base, cookie_url, referrer_url, inherited, policy)) = inherited {
+            document.load_frame_srcdoc(
+                &base,
+                &cookie_url,
+                &referrer_url,
+                inherited,
+                &policy,
+                markup,
+            );
         } else {
             let blank = about_blank();
             document.load_frame_srcdoc(
                 &blank,
                 &blank,
                 &blank,
-                url::Origin::new_opaque(),
+                crate::document::InheritedOrigin {
+                    origin: url::Origin::new_opaque(),
+                    domain: Rc::new(std::cell::RefCell::new(None)),
+                },
                 &PolicyContainer::default(),
                 markup,
             );

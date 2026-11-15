@@ -113,6 +113,16 @@ impl<'js> document_generated::Document<'js> for JsNode {
         Ok(self.url(ctx))
     }
 
+    // https://html.spec.whatwg.org/multipage/browsers.html#dom-document-domain
+    fn get_domain(&self, ctx: &Ctx<'js>) -> Result<crate::dom_string::DomString> {
+        Ok(self.domain_string(ctx).into())
+    }
+
+    // https://html.spec.whatwg.org/multipage/browsers.html#dom-document-domain
+    fn set_domain(&self, ctx: &Ctx<'js>, value: rquickjs::String<'js>) -> Result<()> {
+        self.set_document_domain(ctx, value.to_string()?)
+    }
+
     // https://html.spec.whatwg.org/multipage/dom.html#dom-document-referrer
     fn get_referrer(&self, ctx: &Ctx<'js>) -> Result<crate::dom_string::DomString> {
         Ok(
@@ -687,6 +697,64 @@ impl<'js> html_frame_element_generated::HTMLFrameElement<'js> for JsNode {
 }
 
 impl JsNode {
+    /// `document.domain`: the origin's effective domain, which is the domain a
+    /// previous assignment stored or the origin's host
+    /// (<https://html.spec.whatwg.org/multipage/browsers.html#dom-document-domain>).
+    ///
+    /// A document a script created has no origin of its own, so it answers its
+    /// realm's effective domain, as the getter's "this Document's origin" step
+    /// reads for the realm's document.
+    pub(super) fn domain_string(&self, ctx: &Ctx<'_>) -> String {
+        let id = self.handle.get().0;
+        let Ok(owner) = world_for_node(ctx, id) else {
+            return String::new();
+        };
+        owner.borrow().effective_domain().unwrap_or_default()
+    }
+
+    /// The `document.domain` setter
+    /// (<https://html.spec.whatwg.org/multipage/browsers.html#dom-document-domain>).
+    ///
+    /// Every rejection is a `SecurityError`: a document without a browsing
+    /// context, a sandboxed document, an opaque origin, and a value that is not
+    /// a registrable domain suffix of the effective domain. The last rule is
+    /// what stops two unrelated sites from joining their origins.
+    pub(super) fn set_document_domain(&self, ctx: &Ctx<'_>, value: String) -> Result<()> {
+        let id = self.handle.get().0;
+        let owner = world_for_node(ctx, id)?;
+        // The throw builds a `DOMException` in the realm, which installs its
+        // prototype and borrows the world again, so the world must not stay
+        // borrowed across it.
+        let rejection = {
+            let world = owner.borrow_mut();
+            if !world.is_main_document(id) || !world.has_browsing_context() {
+                Some("document.domain is not available on a document without a browsing context.")
+            } else if world
+                .sandbox
+                .contains(crate::protocol::SandboxFlag::DocumentDomain)
+            {
+                Some("document.domain is not available in a sandboxed document.")
+            } else {
+                match world.effective_domain() {
+                    None => Some("An opaque origin has no domain."),
+                    Some(effective) => match registrable_domain_suffix(&value, &effective) {
+                        None => Some(
+                            "The value is not a registrable domain suffix of the document's domain.",
+                        ),
+                        Some(domain) => {
+                            *world.domain.borrow_mut() = Some(domain);
+                            None
+                        }
+                    },
+                }
+            }
+        };
+        match rejection {
+            Some(message) => Err(throw_dom(ctx, "SecurityError", message)),
+            None => Ok(()),
+        }
+    }
+
     // https://dom.spec.whatwg.org/#dom-document-activeelement
     pub(super) fn active_element<'js>(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
         let document = self.handle.get().0;
@@ -1440,15 +1508,14 @@ impl JsNode {
         let root = world.borrow().frame_document(self.handle.get().0);
         match root {
             Some(root) => {
-                // Captured origins: `Url::origin()` is a new opaque value for
-                // `about:blank`, `data:`, and `blob:`
-                // (<https://html.spec.whatwg.org/multipage/browsers.html#determining-the-origin>).
-                let parent_origin = world.borrow().origin.clone();
-                let child_origin = world
+                // `contentDocument` compares same origin-domain, so setting
+                // `document.domain` on both documents exposes the child to the
+                // parent (<https://html.spec.whatwg.org/multipage/iframe-embed-object.html#dom-iframe-contentdocument>).
+                let same_origin = world
                     .borrow()
                     .owner_world(root)
-                    .map(|child| child.borrow().origin.clone());
-                if child_origin.is_some_and(|origin| origin == parent_origin) {
+                    .is_some_and(|child| child.borrow().same_origin_domain_with(&world.borrow()));
+                if same_origin {
                     wrap_node(&ctx, root)
                 } else {
                     Ok(Value::new_null(ctx))
@@ -2581,4 +2648,81 @@ pub(super) fn inner_html_fragment_context(ctx: &Ctx<'_>, id: NodeId) -> Result<S
         }
     };
     Ok(html_fragment_context(&name))
+}
+
+/// The domain a `document.domain` assignment stores, or `None` when the value
+/// is not a registrable domain suffix of, or equal to, `original`
+/// (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#is-a-registrable-domain-suffix-of-or-is-equal-to>).
+///
+/// A host suffix that is a public suffix cannot be named: that is what stops
+/// `document.domain = "com"`, and the check is why the public suffix list is
+/// needed rather than a plain label-boundary comparison.
+fn registrable_domain_suffix(value: &str, original: &str) -> Option<String> {
+    let host = url::Host::parse(value).ok()?;
+    let url::Host::Domain(host) = &host else {
+        // An IP address is not a domain, so it has no registrable suffix.
+        return None;
+    };
+    let parsed_original = url::Host::parse(original).ok()?;
+    let url::Host::Domain(parsed_original) = &parsed_original else {
+        return None;
+    };
+    if host == parsed_original {
+        return Some(host.clone());
+    }
+    if !parsed_original.ends_with(&format!(".{host}")) {
+        return None;
+    }
+    if net::is_public_suffix(host) {
+        return None;
+    }
+    // The spec's second rejection: the suffix itself reaches into the
+    // original host's public suffix from below.
+    let suffix = public_suffix(parsed_original)?;
+    if suffix.ends_with(&format!(".{host}")) {
+        return None;
+    }
+    Some(host.clone())
+}
+
+/// The longest suffix of `host` that is itself a public suffix, which is the
+/// URL standard's `host` public suffix
+/// (<https://url.spec.whatwg.org/#host-public-suffix>).
+fn public_suffix(host: &str) -> Option<&str> {
+    let mut candidate = host;
+    loop {
+        if net::is_public_suffix(candidate) {
+            return Some(candidate);
+        }
+        let (_, rest) = candidate.split_once('.')?;
+        candidate = rest;
+    }
+}
+
+#[cfg(test)]
+mod domain_tests {
+    use super::registrable_domain_suffix;
+
+    /// The setter accepts the document's own host and a label-boundary suffix,
+    /// and rejects a public suffix, another site, and an IP address
+    /// (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#is-a-registrable-domain-suffix-of-or-is-equal-to>).
+    #[test]
+    fn registrable_domain_suffixes() {
+        assert_eq!(
+            registrable_domain_suffix("www.example.com", "www.example.com").as_deref(),
+            Some("www.example.com")
+        );
+        assert_eq!(
+            registrable_domain_suffix("example.com", "www.example.com").as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(registrable_domain_suffix("com", "www.example.com"), None);
+        assert_eq!(registrable_domain_suffix("test", "web-platform.test"), None);
+        assert_eq!(
+            registrable_domain_suffix("example.org", "www.example.com"),
+            None
+        );
+        assert_eq!(registrable_domain_suffix("127.0.0.1", "127.0.0.1"), None);
+        assert_eq!(registrable_domain_suffix("", "www.example.com"), None);
+    }
 }

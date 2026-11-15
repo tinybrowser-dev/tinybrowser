@@ -3255,3 +3255,39 @@ with the same two `cssom-geometryutils-connected-callback.html` budget losses
 that predate the zoom work; `css/css-viewport/zoom` stays at 346,
 `css/css-tables` at 492, and `css/css-backgrounds` at 4,616, all with no
 losses.
+
+`document.domain` and the same-origin-domain relation are implemented, and the
+WindowProxy now follows the cross-origin access rules instead of answering
+`undefined`. Origins carry an optional domain set by the setter: a plain tuple
+origin starts with a null domain, and an `about:blank` or `srcdoc` document
+shares its creator's domain cell because it inherits the creator's *origin
+object*, so an assignment on either side is visible to both. The setter runs
+the spec's rejections — no browsing context, the sandboxed `document.domain`
+flag, an opaque origin, and a value that is not a registrable domain suffix of
+the effective domain — and the last rule uses the vendored public suffix list,
+so `document.domain = "test"` throws. Same-origin-domain is the spec's
+comparison: equal non-null domains with the same scheme, or same origin with
+both domains null
+(<https://html.spec.whatwg.org/multipage/browsers.html#same-origin-domain>).
+
+Every WindowProxy decision now goes through that relation: reaching the target
+window, `frameElement`, `EventTarget` forwarding, and `contentDocument`.
+Cross-origin reads follow the WindowProxy algorithm: the cross-origin property
+set answers, a named child navigable answers its `WindowProxy` (so
+`parent[name]` works from a sibling), and every other member throws
+`SecurityError`; `location` is a null-prototype `Location` whose members throw,
+and `opener`, `focus`, and `blur` answer without throwing. `document.open()`
+keeps its plain same-origin check, which `document.domain` does not widen.
+
+Evidence against the pre-change run of the same directories:
+`document_domain.html` 0/4 -> 4/4, `document_domain_access_details.sub.html`
+2/12 -> 10/12, `document_domain_setter.html` 0/3 -> 2/3,
+`document_domain_setter_srcdoc.html` 3/3 (unchanged),
+`sandboxed-document_domain.html` 0/5 -> 5/5, and
+`window-security.https.html` 13/124 -> 122/124 (the two remaining subtests
+want `window.external` and `onmousewheel`, which are recorded missing
+surfaces). `html/dom` and forms lose nothing and gain the two
+`self-origin.sub.html` document.domain subtests, the events/CSSOM/selectors
+batch loses nothing, and `html/webappapis` is unchanged. The remaining three
+subtests are the Location-revocation and entry-realm gaps recorded in
+`docs/limitations.md`.

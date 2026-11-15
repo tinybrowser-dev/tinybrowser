@@ -454,7 +454,10 @@ fn materialize_iframe_document(
     document.load_about_blank_tree(
         Some(&base_url),
         &world_rc.borrow().cookie_url(),
-        Some(origin),
+        Some(InheritedOrigin {
+            origin,
+            domain: Rc::clone(&world_rc.borrow().domain),
+        }),
     );
     // The initial blank reports its creator's URL, walked out of a `srcdoc`
     // chain the same way the referrer source is
@@ -518,7 +521,14 @@ fn materialize_auxiliary_document(
     } else {
         origin
     };
-    document.load_about_blank_tree(Some(&url), &world_rc.borrow().cookie_url(), Some(origin));
+    document.load_about_blank_tree(
+        Some(&url),
+        &world_rc.borrow().cookie_url(),
+        Some(InheritedOrigin {
+            origin,
+            domain: Rc::clone(&world_rc.borrow().domain),
+        }),
+    );
     if opener == crate::protocol::OpenerPolicy::NoReferrer {
         document.set_document_referrer(None);
     }
@@ -935,6 +945,18 @@ fn starts_with_ascii_case(input: &str, prefix: &str) -> bool {
     input.len() >= prefix.len() && input[..prefix.len()].eq_ignore_ascii_case(prefix)
 }
 
+/// A document's origin together with the domain cell it shares with its
+/// creator when the origin is inherited.
+///
+/// An `about:blank` or `srcdoc` document inherits its creator's *origin
+/// object*, not just an equal origin, so a `document.domain` assignment on
+/// either document is visible to both
+/// (<https://html.spec.whatwg.org/multipage/browsers.html#relaxing-the-same-origin-restriction>).
+pub(crate) struct InheritedOrigin {
+    pub(crate) origin: url::Origin,
+    pub(crate) domain: Rc<RefCell<Option<String>>>,
+}
+
 impl Document {
     /// A document sharing its renderer process's `QuickJS` heap, wake handle,
     /// document store, realm registry, and frame tree.
@@ -1218,7 +1240,14 @@ impl Document {
             // runs, exactly as it does for a script-created iframe
             // (<https://html.spec.whatwg.org/multipage/iframe-embed-object.html#the-iframe-element:html-element-insertion-steps>).
             let cookie_url = self.world.borrow().cookie_url();
-            document.load_about_blank_tree(Some(&base_url), &cookie_url, Some(origin));
+            document.load_about_blank_tree(
+                Some(&base_url),
+                &cookie_url,
+                Some(InheritedOrigin {
+                    origin,
+                    domain: Rc::clone(&self.world.borrow().domain),
+                }),
+            );
             document.set_document_referrer(Some(referrer_url.clone()));
             if let Some(root) = document.document_root() {
                 document
@@ -1343,7 +1372,10 @@ impl Document {
                 base,
                 &cookie_url,
                 &state.referrer_url,
-                state.origin.clone(),
+                InheritedOrigin {
+                    origin: state.origin.clone(),
+                    domain: Rc::new(RefCell::new(None)),
+                },
                 &state.policy,
                 markup,
             );
@@ -1356,7 +1388,10 @@ impl Document {
         self.load_about_blank(
             state.base_url.as_ref(),
             &cookie_url,
-            Some(state.origin.clone()),
+            Some(InheritedOrigin {
+                origin: state.origin.clone(),
+                domain: Rc::new(RefCell::new(None)),
+            }),
         );
         self.set_document_referrer(state.referrer.clone());
         self.world.borrow_mut().policy = state.policy.clone();
@@ -1589,14 +1624,27 @@ impl Document {
         &mut self,
         inherited_url: Option<&Url>,
         cookie_url: &Url,
-        inherited_origin: Option<url::Origin>,
+        inherited: Option<InheritedOrigin>,
     ) {
         let Some(base) = inherited_url else {
             return;
         };
         let blank = about_blank();
-        let origin = self.sandboxed_origin(inherited_origin);
+        // A sandboxed-origin flag replaces the inherited origin with a fresh
+        // opaque one, which has no domain to share
+        // (<https://html.spec.whatwg.org/multipage/browsers.html#relaxing-the-same-origin-restriction>).
+        let shares_domain = inherited.is_some() && !self.world.borrow().sandbox.origin_is_opaque();
+        let (origin, domain) = match inherited {
+            Some(inherited) => (
+                self.sandboxed_origin(Some(inherited.origin)),
+                inherited.domain,
+            ),
+            None => (None, Rc::new(RefCell::new(None))),
+        };
         self.commit_document_url(blank, origin);
+        if shares_domain {
+            self.world.borrow_mut().domain = domain;
+        }
         let mut world = self.world.borrow_mut();
         world.base_url = Some(base.clone());
         // The blank has no URL of its own that cookies can apply to, so it
@@ -1622,9 +1670,9 @@ impl Document {
         &mut self,
         inherited_url: Option<&Url>,
         cookie_url: &Url,
-        inherited_origin: Option<url::Origin>,
+        inherited: Option<InheritedOrigin>,
     ) {
-        self.apply_blank_url(inherited_url, cookie_url, inherited_origin);
+        self.apply_blank_url(inherited_url, cookie_url, inherited);
         // A blank document's referrer is its creator's URL, unredacted by any
         // policy: the initial `about:blank` was never fetched
         // (<https://html.spec.whatwg.org/multipage/browsers.html#creating-a-new-browsing-context>).
@@ -1647,14 +1695,23 @@ impl Document {
         base: &Url,
         cookie_url: &Url,
         referrer_url: &Url,
-        origin: url::Origin,
+        inherited: InheritedOrigin,
         policy: &PolicyContainer,
         markup: &str,
     ) {
         let url = Url::parse("about:srcdoc").expect("about:srcdoc parses");
         self.http_status = 0;
-        let origin = self.sandboxed_origin(Some(origin));
+        // A `srcdoc` document inherits its creator's origin object, so the two
+        // share a `document.domain` assignment unless a sandbox replaces the
+        // origin with an opaque one
+        // (<https://html.spec.whatwg.org/multipage/browsers.html#relaxing-the-same-origin-restriction>).
+        let shares_domain = !self.world.borrow().sandbox.origin_is_opaque();
+        let domain = inherited.domain;
+        let origin = self.sandboxed_origin(Some(inherited.origin));
         self.commit_document_url(url, origin);
+        if shares_domain {
+            self.world.borrow_mut().domain = domain;
+        }
         {
             let mut world = self.world.borrow_mut();
             world.base_url = Some(base.clone());
@@ -1686,9 +1743,9 @@ impl Document {
         &mut self,
         inherited_url: Option<&Url>,
         cookie_url: &Url,
-        inherited_origin: Option<url::Origin>,
+        inherited: Option<InheritedOrigin>,
     ) {
-        self.apply_blank_url(inherited_url, cookie_url, inherited_origin);
+        self.apply_blank_url(inherited_url, cookie_url, inherited);
         // The initial blank reports its creator's URL as its referrer
         // (<https://html.spec.whatwg.org/multipage/browsers.html#creating-a-new-browsing-context>).
         self.world.borrow_mut().document_referrer = inherited_url.cloned();
@@ -1879,8 +1936,15 @@ impl Document {
 
     fn apply_document_url_same_origin(&mut self, url: &str) {
         if let Ok(url) = Url::parse(url) {
-            let origin = self.world.borrow().origin.clone();
+            let (origin, domain) = {
+                let world = self.world.borrow();
+                (world.origin.clone(), Rc::clone(&world.domain))
+            };
             self.set_document_url(url, Some(origin));
+            // A same-document URL update changes no document, so the origin
+            // and the domain it carries stay
+            // (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate-to-a-fragment>).
+            self.world.borrow_mut().domain = domain;
         }
     }
 
@@ -4798,7 +4862,10 @@ impl Document {
             self.load_about_blank(
                 Some(&about_blank()),
                 &about_blank(),
-                Some(url::Origin::new_opaque()),
+                Some(InheritedOrigin {
+                    origin: url::Origin::new_opaque(),
+                    domain: Rc::new(RefCell::new(None)),
+                }),
             );
         }
         blocked
