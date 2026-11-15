@@ -1650,7 +1650,12 @@
           if (property === 'setProperty' || property === 'removeProperty') {
             return __tbReadOnlyDeclaration;
           }
-          const kebab = property.replace(/[A-Z]/g, letter => '-' + letter.toLowerCase());
+          // `cssFloat` is the one IDL name that does not map to its dashed
+          // spelling: it reads the `float` property
+          // (<https://drafts.csswg.org/cssom/#dom-cssstyleproperties-cssfloat>).
+          const kebab = property === 'cssFloat'
+            ? 'float'
+            : property.replace(/[A-Z]/g, letter => '-' + letter.toLowerCase());
           const engine = resolved(kebab);
           if (engine !== '') return engine;
           if (pseudo !== 0) return kebab in __tbInitialValues ? __tbInitialValues[kebab] : undefined;

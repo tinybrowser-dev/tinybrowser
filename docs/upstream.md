@@ -125,6 +125,14 @@ The BMP decode feature is not a fork change: which formats an engine carries is 
 
 ### rquickjs (third_party/rquickjs, master)
 
+- 5a1f877 expose the `[[IsHTMLDDA]]` slot. `HTMLAllCollection` is the one
+  interface with the slot: `typeof document.all` reports `"undefined"`,
+  `ToBoolean` is false, and loose equality treats it like `null`
+  (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#htmlallcollection>).
+  quickjs already implemented it (`JS_SetIsHTMLDDA`) but the safe wrapper did
+  not expose it, so the embedder could not build a correct `document.all`.
+  `Object::set_is_html_dda` wraps the C setter; it cannot fail because it sets
+  a bit on the object's cell. Upstream-able.
 - Reference-counted `SharedArrayBuffer` blocks for cross-runtime transport.
   QuickJS's default `SharedArrayBuffer` allocator is per-runtime, so a second
   runtime on another thread cannot wrap the first runtime's block: its

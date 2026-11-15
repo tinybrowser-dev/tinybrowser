@@ -1032,6 +1032,10 @@ fn install_host_functions(ctx: &Ctx<'_>) -> Result<()> {
         "__tb_computed_style_names",
         rquickjs::prelude::Func::from(computed_style_names),
     )?;
+    crate::js::bridge::object(ctx)?.set(
+        "__tbMarkHTMLDDA",
+        rquickjs::prelude::Func::from(mark_html_dda),
+    )?;
     node::scrolling::install(ctx)?;
     crate::js::bridge::object(ctx)?.set(
         "__tbSetHTMLUnsafe",
@@ -1149,6 +1153,14 @@ fn computed_style_names<'js>(
         array.set(index, name)?;
     }
     Ok(array)
+}
+
+/// Marks an object with the `[[IsHTMLDDA]]` internal slot. Only `document.all`
+/// carries the slot, and only the engine can set it, because it changes how
+/// `typeof`, `ToBoolean`, and loose equality treat the object
+/// (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#htmlallcollection>).
+fn mark_html_dda(object: rquickjs::Object<'_>) {
+    object.set_is_html_dda();
 }
 
 /// Whether `element` may have a computed style at all. CSSOM reports one only

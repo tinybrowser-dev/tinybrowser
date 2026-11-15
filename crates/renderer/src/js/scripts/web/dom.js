@@ -401,3 +401,196 @@ globalThis.Document.parseHTMLUnsafe = function parseHTMLUnsafe(html) {
     define(prototype, 'replaceWithHTMLUnsafe', 'replaceWith');
   }
 }
+
+// `document.applets` and `document.all` are the two legacy Document
+// collections. The applet element has no support left, so its collection is
+// always empty; `document.all` is an HTMLAllCollection, which is an indexed
+// collection of every element with a named getter over the ids and names of
+// the "all"-named elements, callable like `item()`, and marked with
+// `[[IsHTMLDDA]]` so it answers like `undefined` to `typeof`, `ToBoolean`, and
+// loose equality
+// (<https://html.spec.whatwg.org/multipage/obsolete.html#dom-document-applets>,
+// <https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#htmlallcollection>).
+{
+  const HTMLCollectionPrototype = globalThis.HTMLCollection.prototype;
+  const canonicalIndex = property => {
+    if (!/^(?:0|[1-9][0-9]*)$/.test(property)) return false;
+    const index = Number(property);
+    return Number.isSafeInteger(index) && String(index) === property && index < 4294967295;
+  };
+
+  // `applets` is `[SameObject]`, so one collection serves the document's
+  // lifetime. Its filter matches nothing.
+  const appletsCollections = new WeakMap();
+  const appletsOf = document => {
+    let collection = appletsCollections.get(document);
+    if (collection === undefined) {
+      collection = Object.create(HTMLCollectionPrototype);
+      Object.defineProperties(collection, {
+        length: { value: 0, enumerable: false, configurable: true },
+        item: {
+          value: function item() { return null; },
+          writable: true, enumerable: true, configurable: true,
+        },
+        namedItem: {
+          value: function namedItem() { return null; },
+          writable: true, enumerable: true, configurable: true,
+        },
+        [Symbol.iterator]: {
+          value: function* () {},
+          writable: true, enumerable: false, configurable: true,
+        },
+      });
+      appletsCollections.set(document, collection);
+    }
+    return collection;
+  };
+  Object.defineProperty(globalThis.Document.prototype, 'applets', {
+    get() { return appletsOf(this); },
+    enumerable: true, configurable: true,
+  });
+
+  // A live HTMLCollection over `getList`, for the named getter's answer when
+  // several elements share the name
+  // (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#htmlcollection>).
+  const liveCollection = getList => new Proxy(Object.create(HTMLCollectionPrototype), {
+    get(target, property) {
+      const list = getList();
+      if (property === 'length') return list.length;
+      if (property === 'item') return index => list[index >>> 0] ?? null;
+      if (property === 'namedItem') return name => {
+        const key = String(name);
+        return list.find(element => element.getAttribute('id') === key
+          || element.getAttribute('name') === key) ?? null;
+      };
+      if (property === Symbol.iterator) return function* () { yield* list; };
+      if (typeof property === 'string' && canonicalIndex(property)) {
+        return list[Number(property)];
+      }
+      return Reflect.get(HTMLCollectionPrototype, property, target);
+    },
+    getOwnPropertyDescriptor(target, property) {
+      const list = getList();
+      if (property === 'length') {
+        return { value: list.length, writable: false, enumerable: false, configurable: true };
+      }
+      if (typeof property === 'string' && canonicalIndex(property)) {
+        const index = Number(property);
+        if (index < list.length) {
+          return { value: list[index], writable: false, enumerable: true, configurable: true };
+        }
+      }
+      return undefined;
+    },
+    getPrototypeOf() { return HTMLCollectionPrototype; },
+    has(target, property) {
+      const list = getList();
+      if (typeof property === 'string' && canonicalIndex(property)) {
+        return Number(property) < list.length;
+      }
+      return property in HTMLCollectionPrototype;
+    },
+  });
+
+  // The elements that contribute a `name` to the supported property names: an
+  // `id` counts for every element, a `name` only for these
+  // (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#htmlallcollection>).
+  const allNamed = new Set([
+    'a', 'button', 'embed', 'form', 'frame', 'frameset', 'iframe', 'img',
+    'input', 'map', 'meta', 'object', 'select', 'textarea',
+  ]);
+  const allElements = document => Array.from(document.getElementsByTagName('*'));
+  const namedMatches = (document, name) => allElements(document).filter(element => {
+    if (element.getAttribute('id') === name) return true;
+    return allNamed.has(element.localName) && element.getAttribute('name') === name;
+  });
+
+  const interfaceObject = function HTMLAllCollection() {
+    throw new TypeError('Illegal constructor');
+  };
+  Object.defineProperty(interfaceObject.prototype, Symbol.toStringTag, {
+    value: 'HTMLAllCollection', writable: false, enumerable: false, configurable: true,
+  });
+
+  const allCollections = new WeakMap();
+  const allOf = document => {
+    let collection = allCollections.get(document);
+    if (collection !== undefined) return collection;
+    const elements = () => allElements(document);
+    const named = name => {
+      const matches = namedMatches(document, name);
+      if (matches.length === 0) return null;
+      if (matches.length === 1) return matches[0];
+      return liveCollection(() => namedMatches(document, name));
+    };
+    // "Getting the all-indexed or named element(s)": a canonical index is
+    // indexed, anything else is named
+    // (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#concept-get-all-indexed-or-named>).
+    const indexedOrNamed = nameOrIndex => {
+      if (canonicalIndex(nameOrIndex)) {
+        const list = elements();
+        return Number(nameOrIndex) < list.length ? list[Number(nameOrIndex)] : null;
+      }
+      return named(nameOrIndex);
+    };
+    // `[[Call]]` answers exactly like `item()` and ignores its receiver
+    // (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#htmlallcollection-call>).
+    const target = function () {
+      if (arguments.length === 0 || arguments[0] === undefined) return null;
+      return indexedOrNamed(String(arguments[0]));
+    };
+    const prototype = interfaceObject.prototype;
+    collection = new Proxy(target, {
+      get(_target, property) {
+        if (property === 'length') return elements().length;
+        if (property === 'item') return nameOrIndex => {
+          if (nameOrIndex === undefined) return null;
+          return indexedOrNamed(String(nameOrIndex));
+        };
+        if (property === 'namedItem') return name => named(String(name));
+        if (property === Symbol.iterator) return function* () { yield* elements(); };
+        if (typeof property === 'string') {
+          if (canonicalIndex(property)) {
+            const list = elements();
+            return Number(property) < list.length ? list[Number(property)] : undefined;
+          }
+          const value = named(property);
+          if (value !== null) return value;
+        }
+        return Reflect.get(prototype, property, _target);
+      },
+      getOwnPropertyDescriptor(_target, property) {
+        if (property === 'length') {
+          return {
+            value: elements().length, writable: false, enumerable: false, configurable: true,
+          };
+        }
+        if (typeof property === 'string' && canonicalIndex(property)) {
+          const list = elements();
+          const index = Number(property);
+          if (index < list.length) {
+            return { value: list[index], writable: false, enumerable: true, configurable: true };
+          }
+        }
+        return undefined;
+      },
+      getPrototypeOf() { return prototype; },
+      has(_target, property) {
+        if (typeof property === 'string') {
+          if (canonicalIndex(property)) return Number(property) < elements().length;
+          return named(property) !== null;
+        }
+        return property in prototype;
+      },
+    });
+    // `[[IsHTMLDDA]]` is an engine-level slot; only the host can set it
+    // (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#htmlallcollection>).
+    host.__tbMarkHTMLDDA(collection);
+    allCollections.set(document, collection);
+    return collection;
+  };
+  Object.defineProperty(globalThis.Document.prototype, 'all', {
+    get() { return allOf(this); },
+    enumerable: true, configurable: true,
+  });
+}

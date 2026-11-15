@@ -3596,3 +3596,15 @@ an anonymous row, tab-separated. `getter.html` goes 267/276 to 273/276; the
 `html/dom` + `dom/events` + forms batch gains six subtests with nothing lost
 (the `form-double-submit-to-different-origin-frame.html` subtest is the known
 timing-dependent flake and fails in isolation too).
+
+The two legacy Document collections exist. `document.applets` is the
+`[SameObject]` empty `HTMLCollection` the spec requires, and `document.all` is
+an `HTMLAllCollection`: every element indexed, ids and the names of the
+"all"-named elements (a, button, form, iframe, img, input, select, …) as named
+properties, `item`/`namedItem`/callable/tree order as the interface defines,
+and `[[IsHTMLDDA]]` set through a new rquickjs wrapper, so `typeof document.all`
+is "undefined", it is falsy, and `document.all == null`
+(<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#htmlallcollection>).
+`getComputedStyle(el).cssFloat` also reads `float` now instead of the nonexistent
+`css-float`. `html/dom/historical.html` goes 10/13 to 13/13 and the
+`html/dom` + `dom/events` + forms batch 70,644 to 70,647 with nothing lost.
