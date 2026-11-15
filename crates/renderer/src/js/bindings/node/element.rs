@@ -1105,6 +1105,51 @@ impl<'js> html_element_generated::HTMLElement<'js> for JsNode {
         set_nonce_slot(ctx, self.handle.get().0, &value.to_string()?)
     }
 
+    // The translation mode: the nearest ancestor-or-self HTML element whose
+    // `translate` attribute is in the yes or no state decides, while the
+    // inherit state, a non-HTML element, and a missing parent all fall
+    // through to translate-enabled
+    // (<https://html.spec.whatwg.org/multipage/dom.html#the-translate-attribute>).
+    fn get_translate(&self, ctx: &Ctx<'js>) -> Result<bool> {
+        let owner = world_for_node(ctx, self.handle.get().0)?;
+        let borrowed = owner.borrow();
+        let Some(parsed) = borrowed.document(self.handle.get().0) else {
+            return Ok(true);
+        };
+        let base = &parsed.document.base;
+        let mut cursor = Some(self.handle.get().0.node);
+        while let Some(current) = cursor {
+            let Some(node) = base.get_node(current) else {
+                break;
+            };
+            if let Some(element) = node.data.downcast_element()
+                && element.name.ns == html_namespace()
+            {
+                match crate::dom::tree::attr(base, current, "translate") {
+                    // The empty value default is the Yes state.
+                    Some(value) if value.is_empty() || value.eq_ignore_ascii_case("yes") => {
+                        return Ok(true);
+                    }
+                    Some(value) if value.eq_ignore_ascii_case("no") => return Ok(false),
+                    // The missing and invalid value defaults inherit.
+                    _ => {}
+                }
+            }
+            cursor = node.parent;
+        }
+        Ok(true)
+    }
+
+    // https://html.spec.whatwg.org/multipage/dom.html#the-translate-attribute
+    fn set_translate(&self, ctx: &Ctx<'js>, value: bool) -> Result<()> {
+        set_attribute_sync(
+            ctx,
+            self.handle.get().0,
+            "translate",
+            if value { "yes" } else { "no" },
+        )
+    }
+
     // The computed writing-suggestions value: the nearest ancestor-or-self
     // with the attribute decides (`false` only for an ASCII
     // case-insensitive "false"; any other value means true), defaulting to

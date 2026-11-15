@@ -3378,3 +3378,15 @@ unchanged at 492, `css/cssom` at 3,674, and `html/dom` at 65,343, all with no
 losses. The three remaining subtests are the collapsed-border half extents,
 recorded in `docs/limitations.md`. `cargo fmt --check`, `tools/check clippy`,
 and the renderer (176), wpt-harness (29), and one other test pass.
+
+`HTMLElement.translate` now reports and sets the element's translation mode.
+The getter walks ancestor-or-self: the nearest HTML element whose `translate`
+attribute is in the yes state (including the empty value) answers true, one in
+the no state answers false, and the inherit state, a non-HTML element, or a
+missing parent falls through to translate-enabled. The setter writes `yes` or
+`no` as a content attribute, so it runs CEReactions like any other reflection
+(<https://html.spec.whatwg.org/multipage/dom.html#the-translate-attribute>).
+`html/dom/elements/global-attributes`' translate files go from 0/16 to
+**16/16** and `html/dom` from 65,343 to **65,358** passing subtests with no
+losses. `cargo fmt --check`, `tools/check clippy`, and the renderer (176),
+wpt-harness (29), and one other test pass.
