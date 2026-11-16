@@ -3843,3 +3843,12 @@ cross-origin control reported the wrong exception. The input element's
 `show-picker-cross-origin-iframe.html` goes 2/4 to 4/4, and the forms batch
 goes 4,577 to 4,581 with nothing lost (the other two gains are the known
 `form-double-submit` flake).
+
+The empty `File` a form entry list carries for a file input with no selected
+files keeps the spec's type. The step appends a `File` with an empty name,
+`application/octet-stream` as type, and an empty body
+(<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#constructing-form-data-set>);
+the shim built `new File([], '')`, whose type is the empty string, so
+`new FormData(form).get(...)` reported `type === ""`.
+`form-data-set-empty-file.window.html` goes 3/4 to 4/4 and the forms batch keeps
+its count with nothing lost.

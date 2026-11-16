@@ -415,7 +415,10 @@ Object.defineProperty(globalThis.DataTransfer.prototype, Symbol.toStringTag, {
 
 // A `type=file` input with no files still contributes an entry, an empty File
 // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#constructing-form-data-set>).
-host.__tbEmptyFile = () => new globalThis.File([], '');
+// The empty file a form entry list appends for a file input with no selected
+// files: empty name, `application/octet-stream` type, empty body
+// (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#constructing-form-data-set>).
+host.__tbEmptyFile = () => new globalThis.File([], '', { type: 'application/octet-stream' });
 
 // https://html.spec.whatwg.org/multipage/imagebitmap-and-animations.html#dom-createimagebitmap
 globalThis.createImageBitmap = function createImageBitmap(source, options) {
