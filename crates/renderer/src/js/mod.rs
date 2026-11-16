@@ -1619,6 +1619,7 @@ impl JsRealm {
                 "KeyboardEvent",
                 "MessageEvent",
                 "MouseEvent",
+                "PointerEvent",
                 "SecurityPolicyViolationEvent",
                 "StorageEvent",
                 "TextEvent",

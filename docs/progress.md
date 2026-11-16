@@ -3811,3 +3811,24 @@ fired the event at the checkpoint and could not see the later handler.
 goes 2,547 to 2,553 with nothing lost. The dedicated-worker, shared-worker, and
 iframe files still time out, and `promise-resolution-order.html` still times
 out; those hang in the harness or test setup, not on this path.
+
+Synthetic clicks are pointer events, and `getModifierState()` reports the whole
+`EventModifierInit` dictionary. `HTMLElement.click()` fires a synthetic pointer
+event named `click`
+(<https://html.spec.whatwg.org/multipage/interaction.html#dom-click>), so the
+event's interface is `PointerEvent`, its pointer id is the reserved -1, and
+`pointerType` is empty. Dispatching a `MouseEvent` made `e.constructor` wrong
+and left the pointer members unreadable. `MouseEvent` and `KeyboardEvent` now
+store `modifierAltGraph` and `modifierCapsLock`, which `getModifierState()`
+maps to `AltGraph` and `CapsLock`
+(<https://w3c.github.io/uievents/#dom-keyboardevent-getmodifierstate>). The
+`uievents` and `pointerevents` batches go 660 to 670 with nothing lost:
+`event-getmodifierstate.html` 10/16 to 16/16, `getModifierState.html` 6/7 to
+7/7, `interface/click-event.htm` 0/1 to 1/1, and
+`ui_event_pseudo_target.html` 0/2 to 2/2. The html/dom + dom/events + forms
+batch stays at 70,685 with only the known `form-double-submit` pair swapping,
+and dom/nodes + css/selectors lose nothing once
+`Document-createElement-namespace.html` (51/51 in isolation) is rerun.
+`UIEvent.pseudoTarget` is a getter that reports null because the engine has no
+`CSSPseudoElement`; the attribute is the proposed extension in
+w3c/uievents#413.

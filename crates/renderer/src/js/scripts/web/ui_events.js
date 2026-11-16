@@ -54,6 +54,11 @@ const __tbUIEventConstructor = globalThis.UIEvent = class UIEvent extends Event 
   get view() { return __tbEventEntry(this, __tbUIEventData, __tbFreshUIEvent).view; }
   get detail() { return __tbEventEntry(this, __tbUIEventData, __tbFreshUIEvent).detail; }
   get which() { return __tbEventEntry(this, __tbUIEventData, __tbFreshUIEvent).which; }
+  // The pseudo-element a user-agent event hit. The engine has no
+  // `CSSPseudoElement`, so every event reports null; the attribute is the
+  // proposed extension of UI Events for pseudo-element hit testing
+  // (<https://github.com/w3c/uievents/pull/413>).
+  get pseudoTarget() { return null; }
 };
 Object.defineProperty(globalThis.UIEvent.prototype, Symbol.toStringTag, { value: 'UIEvent', writable: false, enumerable: false, configurable: true });
 
@@ -61,8 +66,23 @@ const __tbMouseEventData = host.slots('tinybrowser.mouseevent.data');
 const __tbFreshMouseEvent = () => ({
   screenX: 0, screenY: 0, clientX: 0, clientY: 0,
   ctrlKey: false, shiftKey: false, altKey: false, metaKey: false,
+  modifierAltGraph: false, modifierCapsLock: false,
   button: 0, buttons: 0, relatedTarget: null,
 });
+// `getModifierState()` reports every `EventModifierInit` member by its key
+// value; a key the dictionary cannot set is always false
+// (<https://w3c.github.io/uievents/#dom-keyboardevent-getmodifierstate>).
+const __tbModifierState = (entry, key) => {
+  switch (__tbStringCtor(key)) {
+    case 'Alt': return !!entry.altKey;
+    case 'AltGraph': return !!entry.modifierAltGraph;
+    case 'CapsLock': return !!entry.modifierCapsLock;
+    case 'Control': return !!entry.ctrlKey;
+    case 'Meta': return !!entry.metaKey;
+    case 'Shift': return !!entry.shiftKey;
+    default: return false;
+  }
+};
 // The event target's padding edge in client coordinates, or null when the
 // target has no box to measure
 // (<https://w3c.github.io/uievents/#dom-mouseevent-offsetx>).
@@ -94,6 +114,8 @@ const __tbMouseEventConstructor = globalThis.MouseEvent = class MouseEvent exten
         clientY: init.clientY === undefined ? 0 : __tbToLong(init.clientY),
         ctrlKey: !!init.ctrlKey, shiftKey: !!init.shiftKey,
         altKey: !!init.altKey, metaKey: !!init.metaKey,
+        modifierAltGraph: !!init.modifierAltGraph,
+        modifierCapsLock: !!init.modifierCapsLock,
         button: button, buttons: init.buttons === undefined ? 0 : __tbToLong(init.buttons),
         relatedTarget: init.relatedTarget || null,
     });
@@ -116,6 +138,7 @@ const __tbMouseEventConstructor = globalThis.MouseEvent = class MouseEvent exten
       clientX: __tbToLong(clientX), clientY: __tbToLong(clientY),
       ctrlKey: !!ctrlKey, shiftKey: !!shiftKey,
       altKey: !!altKey, metaKey: !!metaKey,
+      modifierAltGraph: false, modifierCapsLock: false,
       button: buttonValue, buttons: 0,
       relatedTarget: relatedTarget === undefined ? null : relatedTarget,
     });
@@ -159,7 +182,7 @@ const __tbMouseEventConstructor = globalThis.MouseEvent = class MouseEvent exten
   get buttons() { return __tbEventEntry(this, __tbMouseEventData, __tbFreshMouseEvent).buttons; }
   get relatedTarget() { return __tbEventEntry(this, __tbMouseEventData, __tbFreshMouseEvent).relatedTarget; }
   getModifierState(key) {
-    return { Alt: !!this.altKey, Control: !!this.ctrlKey, Meta: !!this.metaKey, Shift: !!this.shiftKey }[__tbStringCtor(key)] || false;
+    return __tbModifierState(__tbEventEntry(this, __tbMouseEventData, __tbFreshMouseEvent), key);
   }
 };
 Object.defineProperty(globalThis.MouseEvent.prototype, Symbol.toStringTag, { value: 'MouseEvent', writable: false, enumerable: false, configurable: true });
@@ -203,6 +226,18 @@ globalThis.PointerEvent = class PointerEvent extends MouseEvent {
 };
 Object.defineProperty(globalThis.PointerEvent.prototype, Symbol.toStringTag, { value: 'PointerEvent', writable: false, enumerable: false, configurable: true });
 
+// A `click` the engine synthesizes has no pointing device behind it. The
+// reserved pointer id is -1 and `pointerType` is the empty string, while the
+// remaining members keep their dictionary defaults
+// (<https://html.spec.whatwg.org/multipage/interaction.html#dom-click>,
+// <https://w3c.github.io/pointerevents/#dom-pointerevent-initpointerevent>).
+host.__tbInitClickPointer = event => {
+  __tbPointerEventData.set(event, {
+    pointerId: -1, width: 1, height: 1, pressure: 0, tangentialPressure: 0,
+    tiltX: 0, tiltY: 0, twist: 0, pointerType: '', isPrimary: false,
+  });
+};
+
 const __tbWheelEventData = host.slots('tinybrowser.wheelevent.data');
 globalThis.WheelEvent = class WheelEvent extends MouseEvent {
   constructor(type, init) {
@@ -228,6 +263,7 @@ const __tbKeyboardEventData = host.slots('tinybrowser.keyboardevent.data');
 const __tbFreshKeyboardEvent = () => ({
   key: '', code: '', location: 0,
   ctrlKey: false, shiftKey: false, altKey: false, metaKey: false,
+  modifierAltGraph: false, modifierCapsLock: false,
   repeat: false, isComposing: false, keyCode: 0, charCode: 0,
 });
 globalThis.KeyboardEvent = class KeyboardEvent extends UIEvent {
@@ -244,6 +280,8 @@ globalThis.KeyboardEvent = class KeyboardEvent extends UIEvent {
         location: init.location || 0,
         ctrlKey: !!init.ctrlKey, shiftKey: !!init.shiftKey,
         altKey: !!init.altKey, metaKey: !!init.metaKey,
+        modifierAltGraph: !!init.modifierAltGraph,
+        modifierCapsLock: !!init.modifierCapsLock,
         repeat: !!init.repeat, isComposing: !!init.isComposing,
         keyCode: init.keyCode === undefined ? (key.length === 1 ? key.charCodeAt(0) : 0) : init.keyCode,
         charCode: init.charCode || 0,
@@ -267,6 +305,7 @@ globalThis.KeyboardEvent = class KeyboardEvent extends UIEvent {
       location: __tbToLong(location),
       ctrlKey: has('Control'), shiftKey: has('Shift'),
       altKey: has('Alt'), metaKey: has('Meta'),
+      modifierAltGraph: has('AltGraph'), modifierCapsLock: has('CapsLock'),
       repeat: !!repeat, isComposing: false,
       keyCode: 0, charCode: 0,
     });
@@ -283,7 +322,7 @@ globalThis.KeyboardEvent = class KeyboardEvent extends UIEvent {
   get keyCode() { return __tbEventEntry(this, __tbKeyboardEventData, __tbFreshKeyboardEvent).keyCode; }
   get charCode() { return __tbEventEntry(this, __tbKeyboardEventData, __tbFreshKeyboardEvent).charCode; }
   getModifierState(key) {
-    return { Alt: !!this.altKey, Control: !!this.ctrlKey, Meta: !!this.metaKey, Shift: !!this.shiftKey }[__tbStringCtor(key)] || false;
+    return __tbModifierState(__tbEventEntry(this, __tbKeyboardEventData, __tbFreshKeyboardEvent), key);
   }
 };
 Object.defineProperty(globalThis.KeyboardEvent.prototype, Symbol.toStringTag, { value: 'KeyboardEvent', writable: false, enumerable: false, configurable: true });

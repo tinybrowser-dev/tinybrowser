@@ -130,6 +130,11 @@ reports the initial `display: inline` instead of the blockified value the real
 cascade would compute, because stylo drops a pseudo style that is definitely
 not generated.
 
+`UIEvent.pseudoTarget` is always null. The attribute names the
+`CSSPseudoElement` a user-agent event hit, and the engine has no
+`CSSPseudoElement` interface or pseudo-element event targets yet
+(<https://github.com/w3c/uievents/pull/413>).
+
 CSS rule attributes live on the interface prototypes, but
 `CSSFontFeatureValuesRule.fontFamily` is still an own data property: the style
 engine stores a font-feature-values rule's family list behind an immutable

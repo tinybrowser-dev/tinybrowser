@@ -613,14 +613,25 @@ pub(crate) fn realm_event<'js>(ctx: &Ctx<'js>, event: JsEvent) -> Result<Class<'
     bindings::host::instance(ctx, event)
 }
 
-/// The `click` event `HTMLElement.click()` dispatches: a `MouseEvent`, which
-/// is what makes dispatch treat it as an activation event
+/// The `click` event `HTMLElement.click()` dispatches: a synthetic pointer
+/// event, which is what makes dispatch treat it as an activation event
 /// (<https://html.spec.whatwg.org/multipage/interaction.html#dom-click>).
 pub(crate) fn synthetic_click_event<'js>(ctx: &Ctx<'js>) -> Result<Class<'js, JsEvent>> {
     let event = realm_event(ctx, JsEvent::uninitialized())?;
     event.borrow().initialize("click".to_owned(), true, true);
-    set_exposed_event_prototype(ctx, &event, "MouseEvent")?;
+    set_synthetic_click_interface(ctx, &event)?;
     Ok(event)
+}
+
+/// A click the engine synthesizes has no pointing device behind it, so its
+/// interface is `PointerEvent` and its pointer members take the reserved
+/// values: pointer id -1 and an empty `pointerType`
+/// (<https://html.spec.whatwg.org/multipage/interaction.html#dom-click>).
+fn set_synthetic_click_interface<'js>(ctx: &Ctx<'js>, event: &Class<'js, JsEvent>) -> Result<()> {
+    set_exposed_event_prototype(ctx, event, "PointerEvent")?;
+    let init: Function = crate::js::bridge::object(ctx)?.get("__tbInitClickPointer")?;
+    init.call::<_, ()>((Class::into_value(event.clone()),))?;
+    Ok(())
 }
 
 /// `document.createEvent(interface)`
@@ -1318,10 +1329,11 @@ pub(crate) fn fire_trusted_cancelable(
 /// (<https://dom.spec.whatwg.org/#concept-event-dispatch>).
 pub(crate) fn fire_trusted_click(ctx: &Ctx<'_>, target: EventTargetKey) -> Result<bool> {
     let event = realm_event(ctx, JsEvent::trusted("click", true, true))?;
-    // A user-agent click is a `MouseEvent` (browsers dispatch a `PointerEvent`,
-    // a `MouseEvent` subclass), which is what makes dispatch treat it as an
-    // activation event (<https://dom.spec.whatwg.org/#concept-event-dispatch>).
-    set_exposed_event_prototype(ctx, &event, "MouseEvent")?;
+    // A user-agent click is a `PointerEvent` (a `MouseEvent` subclass), which
+    // is what makes dispatch treat it as an activation event
+    // (<https://dom.spec.whatwg.org/#concept-event-dispatch>,
+    // <https://html.spec.whatwg.org/multipage/interaction.html#dom-click>).
+    set_synthetic_click_interface(ctx, &event)?;
     dispatch(ctx, target, &event, None)
 }
 
