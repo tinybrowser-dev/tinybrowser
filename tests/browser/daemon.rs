@@ -46,10 +46,14 @@ fn stale_lock_is_replaced() {
     let mut fixture = Fixture::new("tinybrowser-daemon");
     let dir = fixture.runtime().join("tinybrowser/default");
     std::fs::create_dir_all(&dir).expect("dir");
-    std::fs::write(dir.join("lock"), "999999\n").expect("stale lock");
+    // A pid above `pid_max` can never name a live process, so the registration
+    // is stale on every machine; a plausible-looking pid (like 999999) can be
+    // in use and would make this test depend on the host's process table.
+    let stale = u32::MAX.to_string();
+    std::fs::write(dir.join("lock"), format!("{stale}\n")).expect("stale lock");
     std::fs::write(
         dir.join("daemon.json"),
-        r#"{"pid":999999,"host":"127.0.0.1","port":1}"#,
+        format!(r#"{{"pid":{stale},"host":"127.0.0.1","port":1}}"#),
     )
     .expect("stale json");
     let child_id = fixture.spawn_daemon();
@@ -57,7 +61,7 @@ fn stale_lock_is_replaced() {
     let info = loop {
         if let Ok(text) = std::fs::read_to_string(dir.join("daemon.json"))
             && let Ok(value) = serde_json::from_str::<serde_json::Value>(&text)
-            && value["pid"].as_u64() != Some(999_999)
+            && value["pid"].as_u64() != Some(u64::from(u32::MAX))
             && pid_alive(u32::try_from(value["pid"].as_u64().unwrap_or(0)).unwrap_or(0))
         {
             break value;

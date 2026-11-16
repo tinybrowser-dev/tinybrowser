@@ -3865,3 +3865,9 @@ authorized by its origin instead of being read as a foreign host
 (<https://url.spec.whatwg.org/#origin>). `window.rs`'s blob-popup test and
 `secure_context`'s popup test pass again, and `tests/browser/cookies.rs`
 pins the empty answer; without the change it fails at the first load event.
+
+`daemon::stale_lock_is_replaced` writes a pid above `pid_max` instead of
+999999, so the registration is stale on every host. A live process with pid
+999999 (a kernel worker on the development machine) made the daemon treat the
+stale lock as held and the test failed for the host's process table rather
+than for the daemon.
