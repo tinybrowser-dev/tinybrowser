@@ -1896,7 +1896,8 @@ def patch_wpt(wpt_root: Path, lane: str | None = None) -> None:
                     ports.pop(scheme, None)
         return ports
 
-    ConfigBuilder._get_ports = skip_tls_ports_without_ssl  # ty: ignore[invalid-assignment] -- intentional runtime patch of untyped upstream; verified by every run
+    # Intentional runtime patch of untyped upstream; verified by every run.
+    ConfigBuilder._get_ports = skip_tls_ports_without_ssl
 
     from wptrunner import testloader
 
@@ -1946,7 +1947,8 @@ def patch_wpt(wpt_root: Path, lane: str | None = None) -> None:
                         continue
                 yield test_type, test_path, tests
 
-    testloader.TestFilter: type[testloader.TestFilter] = TinybrowserTestFilter
+    # Intentional runtime patch of untyped upstream; verified by every run.
+    testloader.TestFilter = TinybrowserTestFilter  # ty: ignore[invalid-assignment]
 
     from wptrunner.browsers import base as browser_base
 

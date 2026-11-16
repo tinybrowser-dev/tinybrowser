@@ -7,7 +7,6 @@ cargo-features = [
 [workspace]
 exclude = ["third_party/rquickjs", "third_party/weedle4", "third_party/fontconfig-parser", "third_party/blitz", "third_party/html5ever"]
 members = [
-    "crates/anyrender-tiny-skia",
     "crates/browser",
     "crates/cdp",
     "crates/cookies",
@@ -56,13 +55,12 @@ markup5ever = "0.40"
 wuff = "0.2"
 
 [patch.crates-io]
-# Blitz paints through anyrender main; the renderer's scene and its SVG
-# backend must be that same source or `PaintScene` is a different trait.
-anyrender = { git = "https://github.com/DioxusLabs/anyrender", branch = "main" }
-anyrender_svg = { git = "https://github.com/DioxusLabs/anyrender", branch = "main" }
 # fontconfig-parser 0.5.8 pins roxmltree 0.20; usvg and fontique pin 0.21.
 # The vendored crate is that release with the requirement moved to 0.21.1.
 fontconfig-parser = { path = "third_party/fontconfig-parser" }
+# anyrender_tiny_skia depends on the published debug_timer; Blitz uses its own
+# path copy of the same version. One source keeps one crate in the graph.
+debug_timer = { path = "third_party/blitz/packages/debug_timer" }
 blitz-dom = { path = "third_party/blitz/packages/blitz-dom" }
 blitz-html = { path = "third_party/blitz/packages/blitz-html" }
 blitz-paint = { path = "third_party/blitz/packages/blitz-paint" }

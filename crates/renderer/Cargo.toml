@@ -56,15 +56,15 @@ rquickjs = { version = "0.14.0", default-features = false, features = ["std", "l
 serde = { version = "1", features = ["derive"] }
 # Style / layout / paint.
 
-parley = { version = "0.12", default-features = false, features = ["libm"] }
+parley = { version = "0.13", default-features = false, features = ["libm"] }
 png = "0.18"
 # SVG `naturalWidth`/`naturalHeight` read Blitz's parsed intrinsic lengths.
 svgtypes = "0.16"
-# Stylo is a `links` crate: one copy per graph. The blitz fork pins
-# servo/stylo; the renderer's direct stylo use must pin the same rev or the
-# resolver builds a second servo_style_crate and fails.
-style = { package = "stylo", version = "0.23.0", git = "https://github.com/servo/stylo", rev = "2dca34592ced37c6aa01733e94206a767194cf9d" }
-style_traits = { package = "stylo_traits", version = "0.23.0", git = "https://github.com/servo/stylo", rev = "2dca34592ced37c6aa01733e94206a767194cf9d" }
+# Stylo is a `links` crate: one copy per graph. Blitz pins the crates.io
+# release, so the renderer's direct stylo use must require the same version or
+# the resolver builds a second servo_style_crate and fails.
+style = { package = "stylo", version = "0.24.0" }
+style_traits = { package = "stylo_traits", version = "0.24.0" }
 # Full Blitz adoption: DOM + parse + paint replace the in-tree pipeline.
 # Pinned exact: beta drift is fast, and Cargo.lock pins the rest. The pin
 # must track `version.workspace` in third_party/blitz/Cargo.toml, or
@@ -80,12 +80,12 @@ blitz-paint = "=0.3.0-beta.4"
 # Patched to the blitz fork's vendored copy: the published 0.3.0-beta.4 lacks
 # CopyStyleGetters, which keeps the renderer's clone_* calls compiling.
 stylo_taffy = "=0.3.0-beta.4"
-anyrender_tiny_skia = { path = "../anyrender-tiny-skia" }
+anyrender_tiny_skia = "0.1.0"
 # SVG <img> sources must be rasterized into pixels for drawImage; the SVG
 # renderer is already linked through blitz-paint, so this adds no new code.
 # Match the requirements blitz-paint declares so a Blitz bump cannot pull a
 # second copy of either crate into the graph.
-anyrender_svg = "0.15.0"
+anyrender_svg = "0.16.0"
 kurbo = "0.13.1"
 # Canvas 2D rasterization. Already in the graph through anyrender_tiny_skia,
 # so the canvas context adds no new crate to the binary.
@@ -95,8 +95,8 @@ tiny-skia = { version = "0.12", default-features = false, features = ["std"] }
 # through `image` and `icu`, so this adds no new crate.
 num-traits = "0.2"
 # Canvas text draws the glyph outlines parley shaped. The same skrifa version
-# is already linked by anyrender-tiny-skia.
-skrifa = "0.44"
+# is already linked by blitz-dom and anyrender_tiny_skia.
+skrifa = "0.49"
 # createImageBitmap decodes Blob bytes. Blitz already enables these formats
 # for <img>, so the decoders are in the binary either way. BMP is a decode
 # feature the engine opts into: WPT's security-features endpoints encode their

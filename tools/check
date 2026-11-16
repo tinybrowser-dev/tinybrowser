@@ -155,8 +155,8 @@ run_guards() {
 
 # Astral pins for the tools/wpt Python stack (ruff = lint + format, ty =
 # types). Bump together after `uvx <tool>@<version>` proves green.
-RUFF_PIN="ruff@0.14.8"
-TY_PIN="ty@0.0.9"
+RUFF_PIN="ruff@0.15.14"
+TY_PIN="ty@0.0.104"
 
 run_py() {
   if ! command -v uvx >/dev/null 2>&1; then

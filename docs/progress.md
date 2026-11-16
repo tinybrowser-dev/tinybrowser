@@ -3879,3 +3879,24 @@ can end exactly on a scalar, so the resume path died with `AttributeError:
 'int' object has no attribute 'get'` and took the chunk job with it. The
 selftest now plants a bare `3` between two records: without the guard it
 fails with that same traceback, and with it the chunk resumes.
+
+The Blitz, html5ever, rquickjs, and QuickJS forks are on their upstream
+heads (html5ever 492f52a, rquickjs 1fa03fd, quickjs-ng a71d444, Blitz
+81b489684; AnyRender 0.15, stylo 0.24, Parley 0.13). The Blitz merge keeps
+the fork's own image-request machinery and re-applies its `stylo.rs` deltas
+to upstream's `stylo/` module split; the graph now has one `anyrender`
+(0.15.0), one `anyrender_svg` (0.16.0), and one `anyrender_tiny_skia`
+(0.1.0, crates.io, replacing the in-tree 1,170-line backend), and no crate is
+duplicated at the same version. Upstream's canvas-colour change left the fork's
+single `draw_background` canvas pass skipping the colour, so a root or body
+background colour rendered transparent; the canvas pass paints it again and
+`canvas_background_node` uses `Node::has_boxes()` so `display: contents` does
+not propagate. Local WPT parity: `css/css-backgrounds` 412 -> 420 passing files
+with no regressions (the box-shadow and `background-clip: text` fixes come with
+upstream), `css/selectors` 580 -> 579, the one diff being a single
+antialiased glyph pixel in `nth-child-of-pseudo.html` after the Parley bump.
+`ruff` moves 0.14.8 -> 0.15.14 and `ty` 0.0.9 -> 0.0.104 (each the newest
+release that keeps `tools/wpt` clean), `setup-uv` 10.3.0 -> 10.3.3, and the
+lockfile takes the current patch releases. A rust-toolchain bump is left for a
+release build so the size measurement moves with it.
+

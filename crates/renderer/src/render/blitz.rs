@@ -21,7 +21,7 @@ pub(crate) fn blitz_base_url(url: &url::Url) -> String {
 
 /// Resolves style and layout until Blitz reports no pending critical
 /// resources, bounded so a pathological tree still paints. A document whose
-/// [`needs_resolve`](blitz_dom::BaseDocument::needs_resolve) flag is clear has
+/// [`has_changes`](blitz_dom::BaseDocument::has_changes) flag is clear has
 /// nothing to do, so a paint that follows a scroll or an animation frame does
 /// not pay for a style pass.
 ///
@@ -34,14 +34,14 @@ pub(crate) fn resolve_until_settled(base: &mut blitz_dom::BaseDocument) -> u32 {
         // A render-blocking resource (`<link rel=stylesheet>`) means there is
         // nothing this pass can apply; the arrival marks the document stale and
         // the next rendering opportunity resolves it.
-        if base.has_pending_critical_resources() || !base.needs_resolve() {
+        if base.has_pending_critical_resources() || !base.has_changes() {
             break;
         }
         base.resolve(crate::animation_seconds());
         passes += 1;
-        // An animation sets `needs_resolve` for the *next* rendering
+        // An animation sets `has_changes` for the *next* rendering
         // opportunity, not this one.
-        if !base.needs_resolve() && !base.has_pending_critical_resources() {
+        if !base.has_changes() && !base.has_pending_critical_resources() {
             break;
         }
     }
@@ -102,7 +102,7 @@ pub(crate) fn paint(
     check_dims(width, height)?;
     let mut painter = anyrender_tiny_skia::TinySkiaScenePainter::new(width, height);
     blitz_paint::paint_scene(&mut painter, base, 1.0, width, height, 0, 0);
-    let pixmap = painter.take_pixmap();
+    let pixmap = painter.pixmap();
     let pixels = pixmap.data();
     let mut data = Vec::with_capacity(pixels.len());
     for pixel in pixels.as_chunks::<4>().0 {

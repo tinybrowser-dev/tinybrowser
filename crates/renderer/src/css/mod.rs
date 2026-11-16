@@ -7,9 +7,9 @@ pub(crate) mod color;
 pub(crate) mod supports;
 
 use style::context::QuirksMode;
-use style::custom_properties::AttrTaint;
 use style::parser::ParserContext;
 use style::stylesheets::{CssRuleType, Namespaces, Origin, UrlExtraData};
+use style::substitution::AttrTaint;
 use style_traits::ParsingMode;
 
 /// The URL data a parse with no document behind it resolves URLs against.

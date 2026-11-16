@@ -53,7 +53,7 @@ jobs:
             third_party/blitz third_party/rquickjs third_party/html5ever \
             third_party/wpt
           git -C third_party/rquickjs submodule update --init --depth 1 sys/quickjs
-      - uses: astral-sh/setup-uv@v10.3.0
+      - uses: astral-sh/setup-uv@v10.3.3
       - name: Cargo cache
         uses: actions/cache@v6
         with:
