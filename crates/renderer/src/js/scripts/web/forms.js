@@ -1539,14 +1539,20 @@
     }
     return true;
   };
-  // <https://html.spec.whatwg.org/multipage/form-elements.html#dom-select-showpicker>
+  // <https://html.spec.whatwg.org/multipage/input.html#dom-input-showpicker>
   const showPicker = element => {
-    if (!host.__tbSameOriginWithTop()) {
-      throw new DOMException(
-        'showPicker() requires same-origin with the top-level window', 'SecurityError');
-    }
+    // The steps run in spec order: mutability, origin, activation, rendered.
     if (!controlIsMutable(element)) {
       throw new DOMException('The element is not mutable', 'InvalidStateError');
+    }
+    // A `file` or `color` input skips the origin check: its activation
+    // behaviour has always shown the picker
+    // (<https://html.spec.whatwg.org/multipage/input.html#dom-input-showpicker>).
+    const exemptFromOriginCheck = element.localName === 'input'
+      && (element.type === 'file' || element.type === 'color');
+    if (!exemptFromOriginCheck && !host.__tbSameOriginWithTop()) {
+      throw new DOMException(
+        'showPicker() requires same-origin with the top-level window', 'SecurityError');
     }
     if (!host.__tbUserActivationActive()) {
       throw new DOMException('A user gesture is required', 'NotAllowedError');

@@ -3832,3 +3832,14 @@ and dom/nodes + css/selectors lose nothing once
 `UIEvent.pseudoTarget` is a getter that reports null because the engine has no
 `CSSPseudoElement`; the attribute is the proposed extension in
 w3c/uievents#413.
+
+`input.showPicker()` now follows the spec's step order and exempts the `file`
+and `color` states from the origin check: the steps are mutability, origin,
+transient activation, then the select rendering check
+(<https://html.spec.whatwg.org/multipage/input.html#dom-input-showpicker>). The
+shim checked the origin first and applied it to every input state, so a
+cross-origin file or color picker threw `SecurityError` and a disabled
+cross-origin control reported the wrong exception. The input element's
+`show-picker-cross-origin-iframe.html` goes 2/4 to 4/4, and the forms batch
+goes 4,577 to 4,581 with nothing lost (the other two gains are the known
+`form-double-submit` flake).
