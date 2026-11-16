@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::rc::{Rc, Weak};
 
 use rquickjs::class::{Trace, Tracer};
-use rquickjs::{Class, Ctx, Exception, Result, Value};
+use rquickjs::{Class, Ctx, Exception, FromJs, Result, Value};
 
 use super::host::{NodeReference, instance_proto};
 use super::node::core::{adopt_node, insert_tree_node, insertion_tree_nodes, split_text_node};
@@ -82,6 +82,81 @@ impl Drop for JsRange {
     }
 }
 
+/// `StaticRange` payload: two fixed boundary points that never update when the
+/// tree changes (<https://dom.spec.whatwg.org/#interface-staticrange>).
+///
+/// Unlike [`JsRange`] there is no live-range slot, so no mutation hook has to
+/// keep the points inside their nodes.
+#[derive(rquickjs::JsLifetime)]
+#[rquickjs::class(rename = "StaticRange")]
+pub(crate) struct JsStaticRange {
+    start: PointArg,
+    end: PointArg,
+}
+
+impl<'js> Trace<'js> for JsStaticRange {
+    fn trace<'a>(&self, _tracer: Tracer<'a, 'js>) {}
+}
+
+impl super::host::SharedClass for JsStaticRange {
+    // https://dom.spec.whatwg.org/#interface-staticrange
+    // `StaticRange` has no members of its own; its accessors come from
+    // `AbstractRange`, so both interfaces accept the receiver.
+    fn require_interface(&self, ctx: &Ctx<'_>, interface: &str) -> Result<()> {
+        if matches!(interface, "StaticRange" | "AbstractRange") {
+            Ok(())
+        } else {
+            Err(Exception::throw_type(ctx, "incompatible receiver"))
+        }
+    }
+}
+
+impl<'js> abstract_range_generated::AbstractRange<'js> for JsStaticRange {
+    // https://dom.spec.whatwg.org/#dom-abstractrange-startcontainer
+    fn get_start_container(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
+        match self.start {
+            PointArg::Tree(point) => wrap_node(ctx, point.node),
+            PointArg::Attribute(attr) => attr_wrapper(ctx, attr.id),
+        }
+    }
+
+    // https://dom.spec.whatwg.org/#dom-abstractrange-startoffset
+    fn get_start_offset(&self, _ctx: &Ctx<'js>) -> Result<usize> {
+        Ok(match self.start {
+            PointArg::Tree(point) => usize::try_from(point.offset).unwrap_or(usize::MAX),
+            // An attribute's length is zero, so its offset is always 0.
+            PointArg::Attribute(_) => 0,
+        })
+    }
+
+    // https://dom.spec.whatwg.org/#dom-abstractrange-endcontainer
+    fn get_end_container(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
+        match self.end {
+            PointArg::Tree(point) => wrap_node(ctx, point.node),
+            PointArg::Attribute(attr) => attr_wrapper(ctx, attr.id),
+        }
+    }
+
+    // https://dom.spec.whatwg.org/#dom-abstractrange-endoffset
+    fn get_end_offset(&self, _ctx: &Ctx<'js>) -> Result<usize> {
+        Ok(match self.end {
+            PointArg::Tree(point) => usize::try_from(point.offset).unwrap_or(usize::MAX),
+            PointArg::Attribute(_) => 0,
+        })
+    }
+
+    // https://dom.spec.whatwg.org/#dom-abstractrange-collapsed
+    fn get_collapsed(&self, _ctx: &Ctx<'js>) -> Result<bool> {
+        Ok(match (self.start, self.end) {
+            (PointArg::Tree(start), PointArg::Tree(end)) => start == end,
+            (PointArg::Attribute(start), PointArg::Attribute(end)) => start == end,
+            // A tree point and an attribute point are never equal.
+            (PointArg::Tree(_), PointArg::Attribute(_))
+            | (PointArg::Attribute(_), PointArg::Tree(_)) => false,
+        })
+    }
+}
+
 include!(concat!(env!("OUT_DIR"), "/Range.rs"));
 include!(concat!(env!("OUT_DIR"), "/AbstractRange.rs"));
 
@@ -114,6 +189,41 @@ pub(crate) fn new_range<'js>(ctx: &Ctx<'js>, root: NodeId) -> Result<Value<'js>>
     };
     let (document, slot) = alloc_range(ctx, root.document, RangeState::collapsed(point))?;
     wrap_range(ctx, document, slot)
+}
+
+/// `new StaticRange(init)`: both boundary points are validated exactly like
+/// `Range.setStart`/`setEnd`, but the pair never collapses and never updates
+/// (<https://dom.spec.whatwg.org/#dom-staticrange-staticrange>).
+pub(crate) fn new_static_range<'js>(
+    ctx: &Ctx<'js>,
+    init: Option<Value<'js>>,
+) -> Result<Value<'js>> {
+    let init = init.unwrap_or_else(|| Value::new_undefined(ctx.clone()));
+    let object = init
+        .clone()
+        .into_object()
+        .ok_or_else(|| Exception::throw_type(ctx, "StaticRangeInit is not an object"))?;
+    let required = |name: &str| -> Result<Value<'js>> {
+        let value: Value<'js> = object.get(name)?;
+        if value.is_undefined() {
+            return Err(Exception::throw_type(
+                ctx,
+                &format!("required member {name} is undefined"),
+            ));
+        }
+        Ok(value)
+    };
+    let start_container = super::host::node_argument(ctx, &required("startContainer")?)?;
+    let start_offset = super::WebIdlUnsignedLong::from_js(ctx, required("startOffset")?)?.0;
+    let end_container = super::host::node_argument(ctx, &required("endContainer")?)?;
+    let end_offset = super::WebIdlUnsignedLong::from_js(ctx, required("endOffset")?)?.0;
+    let range = JsStaticRange {
+        start: static_point(ctx, start_container, start_offset)?,
+        end: static_point(ctx, end_container, end_offset)?,
+    };
+    let constructor: rquickjs::Object = ctx.globals().get("StaticRange")?;
+    let prototype: rquickjs::Object = constructor.get("prototype")?;
+    Ok(Class::into_value(instance_proto(range, prototype)?))
 }
 
 /// A synthetic body element when the start node supplies no context element:
@@ -563,6 +673,30 @@ fn check_point(ctx: &Ctx<'_>, node: NodeReference, offset: u32) -> Result<PointA
             })?;
             Ok(PointArg::Tree(point))
         }
+    }
+}
+
+/// Validates one `StaticRange` boundary container. Unlike a live range point,
+/// the offset is not checked against the node's length: a static range only
+/// records the pair, and the spec defines validity separately from
+/// construction (<https://dom.spec.whatwg.org/#interface-staticrange>).
+fn static_point(ctx: &Ctx<'_>, node: NodeReference, offset: u32) -> Result<PointArg> {
+    match node {
+        NodeReference::Attribute { .. } => Err(throw_dom(
+            ctx,
+            "InvalidNodeTypeError",
+            "an attribute cannot hold a static range boundary",
+        )),
+        NodeReference::Tree(id) => read_document(ctx, id.document, |base| {
+            if ranges::is_doctype(base, id) {
+                return Err(throw_dom(
+                    ctx,
+                    "InvalidNodeTypeError",
+                    "a doctype cannot hold a static range boundary",
+                ));
+            }
+            Ok(PointArg::Tree(BoundaryPoint { node: id, offset }))
+        }),
     }
 }
 

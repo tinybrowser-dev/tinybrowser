@@ -66,6 +66,7 @@
   const ShadowRootInterface = define('ShadowRoot', DocumentFragmentInterface);
   const AbstractRangeInterface = define('AbstractRange');
   const RangeInterface = define('Range', AbstractRangeInterface, true);
+  const StaticRangeInterface = define('StaticRange', AbstractRangeInterface, true);
   const HTMLElementInterface = define('HTMLElement', ElementInterface, true);
   const HTMLUnknownElementInterface = define('HTMLUnknownElement', HTMLElementInterface);
   const HTMLMediaElementInterface = define('HTMLMediaElement', HTMLElementInterface);
@@ -86,6 +87,7 @@
     ShadowRoot: ShadowRootInterface.prototype,
     AbstractRange: AbstractRangeInterface.prototype,
     Range: RangeInterface.prototype,
+    StaticRange: StaticRangeInterface.prototype,
     HTMLElement: HTMLElementInterface.prototype,
     HTMLUnknownElement: HTMLUnknownElementInterface.prototype,
     HTMLMediaElement: HTMLMediaElementInterface.prototype,

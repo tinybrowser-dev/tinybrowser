@@ -933,6 +933,7 @@ fn install_document(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
     Class::<JsXmlSerializer>::define(&globals)?;
     Class::<JsMutationObserver>::define(&globals)?;
     Class::<JsRange>::define(&globals)?;
+    Class::<JsStaticRange>::define(&globals)?;
     Class::<JsMutationRecord>::define(&globals)?;
     node::install_custom_construction(ctx)?;
     crate::js::bridge::object(ctx)?.set("__tb_handlerNames", HANDLER_ATTRIBUTES.to_vec())?;

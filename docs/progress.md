@@ -3778,3 +3778,19 @@ that moved are one flaky test that swaps results between its http and https
 variants; `dom/nodes/Document-createElement-namespace.html` timed out in both
 runs and also times out on the pre-change binary, so it is unrelated).
 `dom/nodes` (14,558) and `css/selectors` (4,793) are unchanged.
+
+`StaticRange` is implemented: a new `JsStaticRange` payload stores two fixed
+boundary points and answers the inherited `AbstractRange` accessors through
+the same dispatch as `Range` (the binding generator already merges several
+payloads for one interface, so `AbstractRange`'s generated dispatch tries
+both). Construction follows the spec's two checks: a `DocumentType` or `Attr`
+container is an `InvalidNodeTypeError`, and the offset is stored as given (the
+spec defines validity separately from construction, so an offset past the
+node's length is accepted)
+(<https://dom.spec.whatwg.org/#interface-staticrange>).
+`dom/ranges/StaticRange-constructor.html` goes 0/17 to 17/17. `Range-insertNode`
+was an ERROR in one full-suite run and passes 1840/1840 in isolation and in
+the next run, so its 1,840 subtests are the known batch flake, not a gain from
+this change. `dom/nodes/Document-createElement-namespace.html` timed out in
+the same batch and also times out on the pre-change binary (verified by
+stashing this change), so its 51 subtests are unrelated.

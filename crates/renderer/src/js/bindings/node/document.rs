@@ -1634,6 +1634,7 @@ pub(super) fn construct_node_in_owner<'js>(
             create_node(ctx, document()?, |parsed| parsed.document.create_fragment())
         }
         "Range" => crate::js::bindings::range::new_range(ctx, document()?),
+        "StaticRange" => crate::js::bindings::range::new_static_range(ctx, first),
         "Document" => {
             // The `Document` constructor creates an XML document that still
             // implements `Document`, not `XMLDocument`
