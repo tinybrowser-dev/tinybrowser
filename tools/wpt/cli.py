@@ -2753,6 +2753,10 @@ def read_journal(path: Path) -> tuple[int, list[str]]:
             record = json.loads(line)
         except json.JSONDecodeError:
             continue
+        # A torn write can leave a complete JSON scalar ("12", "null") when the
+        # abort cut between a record and the next one. It names nothing either.
+        if not isinstance(record, dict):
+            continue
         if record.get("event") == "start":
             started[record["id"]] = None
         elif record.get("event") == "done":
@@ -3645,13 +3649,15 @@ def _selftest() -> None:
 
     # run in-process resume: the driver reads the harness journal to tell the
     # files that finished from the one an abort left in flight, and ignores a
-    # line a torn write cut in half.
+    # line a torn write cut in half, including one that cut down to a bare
+    # JSON scalar.
     with tempfile.TemporaryDirectory() as tmp:
         journal = Path(tmp) / "journal.jsonl"
         assert read_journal(journal) == (0, [])
         journal.write_text(
             '{"event":"start","id":"/a.html"}\n'
             '{"event":"done","outcome":{"id":"/a.html","status":"PASS"}}\n'
+            "3\n"
             '{"event":"start","id":"/b.html"}\n'
             '{"event":"done","outcome":{"id":"/b.html","sta'
         )

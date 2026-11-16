@@ -3871,3 +3871,11 @@ pins the empty answer; without the change it fails at the first load event.
 999999 (a kernel worker on the development machine) made the daemon treat the
 stale lock as held and the test failed for the host's process table rather
 than for the daemon.
+
+The in-process WPT driver no longer crashes when an aborted attempt leaves a
+complete JSON scalar in the harness journal. `read_journal` skipped a line
+that fails to parse but called `.get` on anything that did, and a torn write
+can end exactly on a scalar, so the resume path died with `AttributeError:
+'int' object has no attribute 'get'` and took the chunk job with it. The
+selftest now plants a bare `3` between two records: without the guard it
+fails with that same traceback, and with it the chunk resumes.
