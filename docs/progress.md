@@ -3794,3 +3794,20 @@ the next run, so its 1,840 subtests are the known batch flake, not a gain from
 this change. `dom/nodes/Document-createElement-namespace.html` timed out in
 the same batch and also times out on the pre-change binary (verified by
 stashing this change), so its 51 subtests are unrelated.
+
+Unhandled promise rejections now fire from a queued task, not synchronously at
+the microtask checkpoint. The realm keeps the spec's three sets: the
+about-to-be-notified list a rejection joins, the notification task a checkpoint
+queues, and the outstanding rejected promise set a later handler reports
+through `rejectionhandled`
+(<https://html.spec.whatwg.org/multipage/webappapis.html#notify-about-rejected-promises>,
+<https://html.spec.whatwg.org/multipage/webappapis.html#hostpromiserejectiontracker>).
+A handler attached between the checkpoint and the notification task removes
+the promise from that task, so the event is suppressed; before, the engine
+fired the event at the checkpoint and could not see the later handler.
+`promise-rejection-events.html` goes 36/43 to 40/43,
+`promise-rejection-events-attached-in-event.html` goes 0/1 to 1/1, and
+`disallow-crossorigin.html` goes 1/3 to 2/3. The whole `html/webappapis` batch
+goes 2,547 to 2,553 with nothing lost. The dedicated-worker, shared-worker, and
+iframe files still time out, and `promise-resolution-order.html` still times
+out; those hang in the harness or test setup, not on this path.

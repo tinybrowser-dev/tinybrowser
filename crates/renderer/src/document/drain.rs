@@ -354,6 +354,14 @@ impl Document {
                 self.fire_js(|js| js.fire_animation_events(&events));
                 self.adopt_js_work();
             }
+            Task::RejectionTasks => {
+                // The rejection events cannot fail the task: each handler's
+                // exception is reported where it was thrown.
+                if let Some(js) = self.js.as_ref() {
+                    js.fire_rejection_tasks();
+                }
+                self.adopt_js_work();
+            }
         }
     }
 
@@ -498,6 +506,7 @@ impl Document {
                 self.apply_document_stream(command);
                 self.stream_publish = Some(self.stream_publish.unwrap_or(false) || closed);
             }
+            RealmRequest::RejectionTasks => self.tasks.push_back(Task::RejectionTasks),
         }
     }
 

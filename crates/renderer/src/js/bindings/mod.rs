@@ -213,79 +213,131 @@ pub(super) fn report_exception_value<'js>(
     }
 }
 
-/// A promise rejected without a handler, waiting for either the
-/// microtask-checkpoint `unhandledrejection` report or a late handler
+/// One promise rejection the engine tracks for a realm
 /// (<https://html.spec.whatwg.org/multipage/webappapis.html#unhandled-promise-rejections>).
-struct PendingRejection {
-    world: Weak<RefCell<World>>,
-    promise: Persistent<Value<'static>>,
-    reason: Persistent<Value<'static>>,
-    reported: bool,
-}
-
-/// A promise whose `unhandledrejection` already fired and which was handled
-/// afterwards, with the realm that owns it.
-struct LateHandled {
+struct TrackedRejection {
     world: Weak<RefCell<World>>,
     promise: Persistent<Value<'static>>,
     reason: Persistent<Value<'static>>,
 }
 
 thread_local! {
-    static PENDING_REJECTIONS: RefCell<Vec<PendingRejection>> =
+    /// A global object's about-to-be-notified rejected promises list:
+    /// rejections that have not reached a microtask checkpoint yet.
+    static ABOUT_TO_NOTIFY: RefCell<Vec<TrackedRejection>> =
         const { RefCell::new(Vec::new()) };
-    /// Promises whose `unhandledrejection` already fired and which were handled
-    /// afterwards; each fires one `rejectionhandled`.
-    static LATE_HANDLED: RefCell<Vec<LateHandled>> = const { RefCell::new(Vec::new()) };
+    /// Rejections whose `unhandledrejection` task is queued but has not run.
+    /// A handler attached meanwhile removes the entry, so the task skips it
+    /// (<https://html.spec.whatwg.org/multipage/webappapis.html#notify-about-rejected-promises>).
+    static NOTIFICATION_TASKS: RefCell<Vec<TrackedRejection>> =
+        const { RefCell::new(Vec::new()) };
+    /// Reported rejections that are still unhandled: the global object's
+    /// outstanding rejected promises weak set. A late handler queues
+    /// `rejectionhandled`.
+    static OUTSTANDING: RefCell<Vec<TrackedRejection>> =
+        const { RefCell::new(Vec::new()) };
+    /// Rejections whose `rejectionhandled` task is queued but has not run.
+    static HANDLED_TASKS: RefCell<Vec<TrackedRejection>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+/// Whether `entry` holds `promise`.
+fn holds_promise<'js>(ctx: &Ctx<'js>, entry: &TrackedRejection, promise: &Value<'js>) -> bool {
+    entry
+        .promise
+        .clone()
+        .restore(ctx)
+        .is_ok_and(|stored| stored == *promise)
+}
+
+/// Removes and returns the entry for `promise` from `queue`.
+fn remove_promise<'js>(
+    ctx: &Ctx<'js>,
+    queue: &RefCell<Vec<TrackedRejection>>,
+    promise: &Value<'js>,
+) -> Option<TrackedRejection> {
+    let mut queue = queue.borrow_mut();
+    let index = queue
+        .iter()
+        .position(|entry| holds_promise(ctx, entry, promise))?;
+    Some(queue.remove(index))
+}
+
+/// Whether `queue` already holds `promise`.
+fn contains_promise<'js>(
+    ctx: &Ctx<'js>,
+    queue: &RefCell<Vec<TrackedRejection>>,
+    promise: &Value<'js>,
+) -> bool {
+    queue
+        .borrow()
+        .iter()
+        .any(|entry| holds_promise(ctx, entry, promise))
+}
+
+/// Queues the task that fires this realm's pending rejection events.
+fn queue_rejection_task(ctx: &Ctx<'_>) {
+    let Ok(world) = world(ctx) else {
+        return;
+    };
+    world
+        .borrow()
+        .outbox
+        .borrow_mut()
+        .push_back(crate::js::world::RealmRequest::RejectionTasks);
 }
 
 /// `QuickJS`'s host rejection tracker, called when a promise is rejected with no
 /// handler (`handled` false) and again when a handler is attached to a still
-/// unhandled rejection (`handled` true). It only records state; the events fire
-/// from [`drain_rejections`] at the microtask checkpoint, because firing a DOM
-/// event from inside the promise machinery would reenter the engine.
+/// unhandled rejection (`handled` true)
+/// (<https://html.spec.whatwg.org/multipage/webappapis.html#hostpromiserejectiontracker>).
+///
+/// A rejection is only recorded here. The events fire from a task, never from
+/// inside the promise machinery: a handler attached before that task runs must
+/// suppress the notification.
 pub(super) fn note_rejection<'js>(
     ctx: &Ctx<'js>,
     promise: Value<'js>,
     reason: Value<'js>,
     handled: bool,
 ) {
-    PENDING_REJECTIONS.with(|queue| {
-        let mut queue = queue.borrow_mut();
-        let index = queue.iter().position(|entry| {
-            entry
-                .promise
-                .clone()
-                .restore(ctx)
-                .is_ok_and(|stored| stored == promise)
-        });
-        if handled {
-            let Some(index) = index else {
-                return;
-            };
-            let entry = queue.remove(index);
-            if entry.reported {
-                LATE_HANDLED.with(|late| {
-                    late.borrow_mut().push(LateHandled {
-                        world: entry.world.clone(),
-                        promise: entry.promise,
-                        reason: entry.reason,
-                    });
-                });
-            }
+    if handled {
+        // Before the checkpoint the promise is still about to be notified.
+        if ABOUT_TO_NOTIFY
+            .with(|queue| remove_promise(ctx, queue, &promise))
+            .is_some()
+        {
             return;
         }
-        if index.is_some() {
+        // After the checkpoint, the notification task has not run yet.
+        if NOTIFICATION_TASKS
+            .with(|queue| remove_promise(ctx, queue, &promise))
+            .is_some()
+        {
             return;
         }
-        let Ok(world) = world(ctx) else {
+        // A reported rejection handled afterwards queues `rejectionhandled`.
+        let Some(entry) = OUTSTANDING.with(|queue| remove_promise(ctx, queue, &promise)) else {
             return;
         };
-        queue.push(PendingRejection {
+        HANDLED_TASKS.with(|queue| queue.borrow_mut().push(entry));
+        queue_rejection_task(ctx);
+        return;
+    }
+    if ABOUT_TO_NOTIFY.with(|queue| contains_promise(ctx, queue, &promise))
+        || NOTIFICATION_TASKS.with(|queue| contains_promise(ctx, queue, &promise))
+        || OUTSTANDING.with(|queue| contains_promise(ctx, queue, &promise))
+    {
+        return;
+    }
+    let Ok(world) = world(ctx) else {
+        return;
+    };
+    ABOUT_TO_NOTIFY.with(|queue| {
+        queue.borrow_mut().push(TrackedRejection {
             world: Rc::downgrade(&world),
             promise: Persistent::save(ctx, promise),
             reason: Persistent::save(ctx, reason),
-            reported: false,
         });
     });
 }
@@ -297,30 +349,29 @@ pub(super) fn note_rejection<'js>(
 /// `JS_FreeRuntime`'s live-object assertion. Entries whose realm is already
 /// gone are dead weight too.
 pub(super) fn forget_rejections(current: &Rc<RefCell<World>>) {
-    PENDING_REJECTIONS.with(|queue| {
-        queue.borrow_mut().retain(|entry| {
-            entry
-                .world
-                .upgrade()
-                .is_some_and(|world| !Rc::ptr_eq(&world, current))
+    for queue in [
+        &ABOUT_TO_NOTIFY,
+        &NOTIFICATION_TASKS,
+        &OUTSTANDING,
+        &HANDLED_TASKS,
+    ] {
+        queue.with(|queue| {
+            queue.borrow_mut().retain(|entry| {
+                entry
+                    .world
+                    .upgrade()
+                    .is_some_and(|world| !Rc::ptr_eq(&world, current))
+            });
         });
-    });
-    LATE_HANDLED.with(|queue| {
-        queue.borrow_mut().retain(|entry| {
-            entry
-                .world
-                .upgrade()
-                .is_some_and(|world| !Rc::ptr_eq(&world, current))
-        });
-    });
+    }
 }
 
-/// Fires the queued rejection events for `current`'s realm: one
-/// `unhandledrejection` per newly unhandled rejection, then any
-/// `rejectionhandled` a late handler queued. Called after a microtask
-/// checkpoint.
-pub(super) fn drain_rejections(ctx: &Ctx<'_>, current: &Rc<RefCell<World>>) {
-    let pending: Vec<PendingRejection> = PENDING_REJECTIONS.with(|queue| {
+/// Drains `queue` of the entries owned by `current`'s realm.
+fn take_for_realm(
+    queue: &'static std::thread::LocalKey<RefCell<Vec<TrackedRejection>>>,
+    current: &Rc<RefCell<World>>,
+) -> Vec<TrackedRejection> {
+    queue.with(|queue| {
         let mut queue = queue.borrow_mut();
         let mut mine = Vec::new();
         let mut rest = Vec::new();
@@ -337,43 +388,43 @@ pub(super) fn drain_rejections(ctx: &Ctx<'_>, current: &Rc<RefCell<World>>) {
         }
         *queue = rest;
         mine
+    })
+}
+
+/// Ends a microtask checkpoint: clones the about-to-be-notified list into the
+/// realm's notification task and queues that task
+/// (<https://html.spec.whatwg.org/multipage/webappapis.html#notify-about-rejected-promises>).
+pub(super) fn notify_rejected_promises(ctx: &Ctx<'_>, current: &Rc<RefCell<World>>) {
+    let rejected = take_for_realm(&ABOUT_TO_NOTIFY, current);
+    if rejected.is_empty() {
+        return;
+    }
+    NOTIFICATION_TASKS.with(|queue| {
+        let mut queue = queue.borrow_mut();
+        queue.extend(rejected);
     });
-    for mut entry in pending {
-        if entry.reported {
-            PENDING_REJECTIONS.with(|queue| queue.borrow_mut().push(entry));
-            continue;
-        }
-        entry.reported = true;
-        let restored = (
+    queue_rejection_task(ctx);
+}
+
+/// Runs the queued rejection tasks for `current`'s realm: one
+/// `unhandledrejection` per rejection still unhandled at task time, then any
+/// `rejectionhandled` a late handler queued
+/// (<https://html.spec.whatwg.org/multipage/webappapis.html#notify-about-rejected-promises>).
+pub(super) fn fire_rejection_tasks(ctx: &Ctx<'_>, current: &Rc<RefCell<World>>) {
+    for entry in take_for_realm(&NOTIFICATION_TASKS, current) {
+        let (Ok(promise), Ok(reason)) = (
             entry.promise.clone().restore(ctx),
             entry.reason.clone().restore(ctx),
-        );
-        // Re-queue before firing, so a handler attached inside the
-        // `unhandledrejection` event still produces `rejectionhandled`.
-        PENDING_REJECTIONS.with(|queue| queue.borrow_mut().push(entry));
-        if let (Ok(promise), Ok(reason)) = restored {
-            fire_rejection(ctx, false, promise, reason);
-        }
+        ) else {
+            continue;
+        };
+        // A handler attached before this task ran removed the entry from the
+        // notification list, so reaching here means the promise is still
+        // unhandled; it joins the outstanding set that a late handler reports.
+        fire_rejection(ctx, false, promise, reason);
+        OUTSTANDING.with(|queue| queue.borrow_mut().push(entry));
     }
-    let late: Vec<LateHandled> = LATE_HANDLED.with(|queue| {
-        let mut queue = queue.borrow_mut();
-        let mut mine = Vec::new();
-        let mut rest = Vec::new();
-        for entry in queue.drain(..) {
-            if entry
-                .world
-                .upgrade()
-                .is_some_and(|world| Rc::ptr_eq(&world, current))
-            {
-                mine.push(entry);
-            } else {
-                rest.push(entry);
-            }
-        }
-        *queue = rest;
-        mine
-    });
-    for entry in late {
+    for entry in take_for_realm(&HANDLED_TASKS, current) {
         if let (Ok(promise), Ok(reason)) = (entry.promise.restore(ctx), entry.reason.restore(ctx)) {
             fire_rejection(ctx, true, promise, reason);
         }

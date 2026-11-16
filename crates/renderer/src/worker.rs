@@ -1578,6 +1578,7 @@ impl Worker {
                     },
                 );
             }
+            RealmRequest::RejectionTasks => self.js.fire_rejection_tasks(),
             RealmRequest::Script(_)
             | RealmRequest::HistoryPush { .. }
             | RealmRequest::HistoryTraverse { .. }

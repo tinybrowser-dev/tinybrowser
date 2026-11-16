@@ -1547,11 +1547,20 @@ impl JsRealm {
         }
     }
 
-    /// Fires queued `unhandledrejection` / `rejectionhandled` events for this
-    /// realm after a microtask checkpoint.
+    /// Queues the rejection event task after a microtask checkpoint: the
+    /// events themselves fire from that task, never inside the checkpoint
+    /// (<https://html.spec.whatwg.org/multipage/webappapis.html#notify-about-rejected-promises>).
     fn report_pending_rejections(&self) {
         self.context.with(|ctx| {
-            bindings::drain_rejections(&ctx, &self.world);
+            bindings::notify_rejected_promises(&ctx, &self.world);
+        });
+    }
+
+    /// Fires this realm's queued `unhandledrejection` / `rejectionhandled`
+    /// events.
+    pub(crate) fn fire_rejection_tasks(&self) {
+        self.context.with(|ctx| {
+            bindings::fire_rejection_tasks(&ctx, &self.world);
         });
     }
 

@@ -1652,6 +1652,10 @@ pub(crate) enum RealmRequest {
     DeclarativeRefresh(String),
     HtmlWrite(HtmlWrite),
     DocumentStream(DocumentStreamCommand),
+    /// A promise rejection list is ready for its `unhandledrejection` /
+    /// `rejectionhandled` task
+    /// (<https://html.spec.whatwg.org/multipage/webappapis.html#notify-about-rejected-promises>).
+    RejectionTasks,
 }
 
 /// The realm's outgoing work, shared with the host functions that push into it.

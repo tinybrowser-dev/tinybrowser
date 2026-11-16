@@ -167,6 +167,10 @@ enum Task {
     /// observed, dispatched in observation order
     /// (<https://drafts.csswg.org/css-animations-1/#events>).
     AnimationEvents,
+    /// The queued `unhandledrejection` / `rejectionhandled` dispatches for the
+    /// realm's promise rejections
+    /// (<https://html.spec.whatwg.org/multipage/webappapis.html#notify-about-rejected-promises>).
+    RejectionTasks,
 }
 
 /// Why a realm is being replaced.
