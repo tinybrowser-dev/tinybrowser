@@ -3852,3 +3852,16 @@ the shim built `new File([], '')`, whose type is the empty string, so
 `new FormData(form).get(...)` reported `type === ""`.
 `form-data-set-empty-file.window.html` goes 3/4 to 4/4 and the forms batch keeps
 its count with nothing lost.
+
+Cookie access from a frame outside the renderer's site lock no longer kills
+the renderer. One renderer hosts every frame of its tab, so a cross-site
+iframe's `document.cookie` or `cookieStore` call named a URL the browser's
+site lock refused, and the service task answered with a protocol violation:
+it killed the process, and the tab's own mount then failed with `renderer
+stopped`. Any page embedding a cross-site iframe that touched a cookie died
+on load. The four cookie arms now answer inside the lock and nowhere else — a
+URL outside it reads empty and stores nothing — and a `blob:` URL is
+authorized by its origin instead of being read as a foreign host
+(<https://url.spec.whatwg.org/#origin>). `window.rs`'s blob-popup test and
+`secure_context`'s popup test pass again, and `tests/browser/cookies.rs`
+pins the empty answer; without the change it fails at the first load event.

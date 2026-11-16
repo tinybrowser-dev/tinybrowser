@@ -729,40 +729,45 @@ async fn route_service_call(
             send_reply(&context.responder, id, ServiceReply::Unit).await?;
         }
         ServiceCall::Network(NetworkCall::CookieGet { url, partition_key }) => {
-            let Some(url) = assignment.site.authorize_url(&url) else {
-                return Err(RendererViolation);
+            let reply = match assignment.site.authorize_url(&url) {
+                Some(url) => ServiceReply::Cookie(
+                    assignment
+                        .network
+                        .cookies_for(&url, partition_key.as_deref()),
+                ),
+                None => ServiceReply::Cookie(String::new()),
             };
-            let reply = ServiceReply::Cookie(
-                assignment
-                    .network
-                    .cookies_for(&url, partition_key.as_deref()),
-            );
             send_reply(&context.responder, id, reply).await?;
         }
         // Every cookie arm authorizes the URL and passes the partition key the
         // renderer named. The key only narrows the same host's cookie set to
         // one partition, so a renderer that names another top-level site reads
         // data it already owns, never another origin's.
+        //
+        // A renderer hosts every frame of its tab, so a cross-site frame's
+        // document URL is a claim the browser must answer without treating it
+        // as a protocol violation: cookies are origin data, so a URL outside
+        // the lock reads empty and writes nowhere. Killing the renderer would
+        // let any cross-site iframe take its whole page down
+        // (<https://chromium.googlesource.com/chromium/src/+/main/docs/process_model_and_site_isolation.md#process-locks>).
         ServiceCall::Network(NetworkCall::CookieSet {
             value,
             url,
             partition_key,
         }) => {
-            let Some(url) = assignment.site.authorize_url(&url) else {
-                return Err(RendererViolation);
-            };
-            assignment
-                .network
-                .set_cookie(&value, &url, partition_key.as_deref());
+            if let Some(url) = assignment.site.authorize_url(&url) {
+                assignment
+                    .network
+                    .set_cookie(&value, &url, partition_key.as_deref());
+            }
             send_reply(&context.responder, id, ServiceReply::Unit).await?;
         }
         ServiceCall::Network(NetworkCall::CookieStoreGet { url, partition_key }) => {
-            let Some(url) = assignment.site.authorize_url(&url) else {
-                return Err(RendererViolation);
-            };
-            let records = assignment
-                .network
-                .cookie_store_records(&url, partition_key.as_deref());
+            let records = assignment.site.authorize_url(&url).map_or_default(|url| {
+                assignment
+                    .network
+                    .cookie_store_records(&url, partition_key.as_deref())
+            });
             send_reply(&context.responder, id, ServiceReply::CookieStore(records)).await?;
         }
         ServiceCall::Network(NetworkCall::CookieStoreSet {
@@ -770,12 +775,11 @@ async fn route_service_call(
             url,
             partition_key,
         }) => {
-            let Some(url) = assignment.site.authorize_url(&url) else {
-                return Err(RendererViolation);
-            };
-            assignment
-                .network
-                .cookie_store_store(&write, &url, partition_key.as_deref());
+            if let Some(url) = assignment.site.authorize_url(&url) {
+                assignment
+                    .network
+                    .cookie_store_store(&write, &url, partition_key.as_deref());
+            }
             send_reply(&context.responder, id, ServiceReply::Unit).await?;
         }
         ServiceCall::Messaging(MessagingCall::BroadcastPost {

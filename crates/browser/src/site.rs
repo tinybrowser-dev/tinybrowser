@@ -34,19 +34,22 @@ impl Site {
 
     /// Whether a document URL belongs in a renderer locked to this site.
     ///
-    /// HTTP(S) locks accept only their schemeful registrable domain. Opaque
-    /// locks accept only non-network documents; they are unique per tab and
-    /// cannot be used to claim authority for an HTTP(S) principal.
-    /// Chromium applies the same browser-owned process-lock invariant before
-    /// granting access to origin data:
+    /// The check is on the URL's origin, not its host: a `blob:` URL's origin
+    /// is the origin of the URL inside its path
+    /// (<https://url.spec.whatwg.org/#origin>), so a document hosted from a
+    /// blob URL belongs to the site of the page that created it, and a
+    /// same-site renderer may claim it. Every other spelling of a tuple
+    /// origin is the site itself. Opaque locks accept only non-network
+    /// documents; they are unique per tab and cannot be used to claim
+    /// authority for an HTTP(S) principal. Chromium applies the same
+    /// browser-owned process-lock invariant before granting access to origin
+    /// data:
     /// <https://chromium.googlesource.com/chromium/src/+/main/docs/process_model_and_site_isolation.md#process-locks>.
     #[must_use]
     pub(crate) fn allows_url(&self, url: &Url) -> bool {
-        match Self::for_url(url) {
-            Some(site) => site == *self,
-            None => {
-                matches!(self, Self::Opaque(_)) && matches!(url.scheme(), "about" | "blob" | "data")
-            }
+        match self {
+            Self::Tuple(_) => self.allows_origin(&url.origin()),
+            Self::Opaque(_) => matches!(url.scheme(), "about" | "blob" | "data"),
         }
     }
 
@@ -132,6 +135,32 @@ mod tests {
         assert!(opaque.allows_url(&Url::parse("about:blank").expect("url")));
         assert!(!opaque.allows_url(&Url::parse("file:///etc/passwd").expect("url")));
         assert!(!opaque.allows_url(&Url::parse("https://example.test/").expect("url")));
+    }
+
+    /// A document hosted from a blob URL still belongs to the site that
+    /// created it: a `blob:` URL's origin is the origin of the URL in its
+    /// path, so a same-site renderer may claim it while another site's blob
+    /// URL is refused (<https://url.spec.whatwg.org/#origin>).
+    #[test]
+    fn a_blob_url_belongs_to_the_site_that_created_it() {
+        let locked =
+            Site::for_url(&Url::parse("https://www.example.test/").expect("url")).expect("site");
+        assert!(
+            locked.allows_url(
+                &Url::parse("blob:https://ads.example.test/0f8a6a58-2c56-4b49-8bd9-1e6b8f0a4d21")
+                    .expect("url")
+            )
+        );
+        assert!(
+            !locked.allows_url(
+                &Url::parse("blob:https://other.test/0f8a6a58-2c56-4b49-8bd9-1e6b8f0a4d21")
+                    .expect("url")
+            )
+        );
+        assert!(!locked.allows_url(&Url::parse("blob:no-inner-url").expect("url")));
+
+        let opaque = Site::opaque(TabId::new(7));
+        assert!(opaque.allows_url(&Url::parse("blob:https://www.example.test/id").expect("url")));
     }
 
     /// A renderer's origin claim is bounded by the site, not by the top-level

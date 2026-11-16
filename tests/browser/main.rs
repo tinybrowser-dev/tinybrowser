@@ -4,6 +4,7 @@
 
 mod canvas;
 mod cdp;
+mod cookies;
 mod crossorigin;
 mod csp;
 mod daemon;

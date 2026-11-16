@@ -1189,6 +1189,17 @@ U+003B (;) reaches the jar intact. A document that inherits its origin uses
 its creator's cookie URL, captured when the document is installed; the
 document's own `<base href>` never moves it.
 
+One renderer hosts every frame of its tab, so a frame on another site runs
+in a renderer locked to the top-level site. Cookies are origin data and the
+lock is what keeps one renderer from reading another site's, so a cookie
+call naming a URL outside the lock reads empty and stores nothing instead of
+killing the renderer: a page could otherwise end its own process by
+embedding a cross-site iframe that touches `document.cookie`. The cost is
+that such a frame has no cookie access at all until frames get their own
+site. A `blob:` URL stays inside the lock of the site that created it,
+because a blob URL's origin is the origin of the URL in its path
+(<https://url.spec.whatwg.org/#origin>).
+
 Change events work from a per-realm snapshot of the jar's script-visible
 records. Anything that stores a cookie — `cookieStore.set`/`delete`,
 `document.cookie`, or a `Set-Cookie` on a response this renderer dialled —
