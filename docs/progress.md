@@ -3966,3 +3966,11 @@ report "width expected 50 but got 34/36" on those runs. The face now starts
 only after the resolve pass that registered it, and a failed fetch settles it
 through the same hook so `ready` cannot hang. `css/css-font-loading` keeps its
 CI verdicts, and the abspos files pass repeatedly.
+
+Opened the first upstream Blitz PR, <https://github.com/DioxusLabs/blitz/pull/1628>:
+canvas background propagation now paints the root or body background
+(colour, images, gradients) over the canvas, replaces #1605's colour-only
+selection, checks `has_boxes()`, and keeps the repeat/space painting-area
+fixes. The branch is `tinybrowser-dev/blitz` `upstream-canvas-background`,
+rebased on upstream `772e57a2d`, with `cargo check`/`cargo test -p blitz-paint`
+clean. The image-request identity PR (#271 item 2) is still to send.
