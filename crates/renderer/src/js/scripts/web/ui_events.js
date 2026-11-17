@@ -63,26 +63,48 @@ const __tbUIEventConstructor = globalThis.UIEvent = class UIEvent extends Event 
 Object.defineProperty(globalThis.UIEvent.prototype, Symbol.toStringTag, { value: 'UIEvent', writable: false, enumerable: false, configurable: true });
 
 const __tbMouseEventData = host.slots('tinybrowser.mouseevent.data');
-const __tbFreshMouseEvent = () => ({
-  screenX: 0, screenY: 0, clientX: 0, clientY: 0,
-  ctrlKey: false, shiftKey: false, altKey: false, metaKey: false,
-  modifierAltGraph: false, modifierCapsLock: false,
-  button: 0, buttons: 0, relatedTarget: null,
-});
+// One row per `EventModifierInit` member:
+// <https://w3c.github.io/uievents/#dictdef-eventmodifierinit>. The first column
+// is the key `getModifierState()` looks up, the second the slot a constructor,
+// initializer, or event default fills.
+const __tbModifierKeys = [
+  ['Alt', 'altKey'],
+  ['AltGraph', 'modifierAltGraph'],
+  ['CapsLock', 'modifierCapsLock'],
+  ['Control', 'ctrlKey'],
+  ['Fn', 'modifierFn'],
+  ['FnLock', 'modifierFnLock'],
+  ['Hyper', 'modifierHyper'],
+  ['Meta', 'metaKey'],
+  ['NumLock', 'modifierNumLock'],
+  ['ScrollLock', 'modifierScrollLock'],
+  ['Shift', 'shiftKey'],
+  ['Super', 'modifierSuper'],
+  ['Symbol', 'modifierSymbol'],
+  ['SymbolLock', 'modifierSymbolLock'],
+];
+const __tbModifierDefaults = () =>
+  globalThis.Object.fromEntries(__tbModifierKeys.map(([, field]) => [field, false]));
+const __tbModifiersFromInit = init =>
+  globalThis.Object.fromEntries(__tbModifierKeys.map(([, field]) => [field, !!init[field]]));
+const __tbModifiersFromList = list => {
+  const names = list.split(/[,\s]+/);
+  return globalThis.Object.fromEntries(
+    __tbModifierKeys.map(([key, field]) => [field, names.includes(key)]));
+};
 // `getModifierState()` reports every `EventModifierInit` member by its key
 // value; a key the dictionary cannot set is always false
 // (<https://w3c.github.io/uievents/#dom-keyboardevent-getmodifierstate>).
 const __tbModifierState = (entry, key) => {
-  switch (__tbStringCtor(key)) {
-    case 'Alt': return !!entry.altKey;
-    case 'AltGraph': return !!entry.modifierAltGraph;
-    case 'CapsLock': return !!entry.modifierCapsLock;
-    case 'Control': return !!entry.ctrlKey;
-    case 'Meta': return !!entry.metaKey;
-    case 'Shift': return !!entry.shiftKey;
-    default: return false;
-  }
+  const name = __tbStringCtor(key);
+  const row = __tbModifierKeys.find(([known]) => known === name);
+  return row === undefined ? false : !!entry[row[1]];
 };
+const __tbFreshMouseEvent = () => ({
+  screenX: 0, screenY: 0, clientX: 0, clientY: 0,
+  ...__tbModifierDefaults(),
+  button: 0, buttons: 0, relatedTarget: null,
+});
 // The event target's padding edge in client coordinates, or null when the
 // target has no box to measure
 // (<https://w3c.github.io/uievents/#dom-mouseevent-offsetx>).
@@ -112,10 +134,7 @@ const __tbMouseEventConstructor = globalThis.MouseEvent = class MouseEvent exten
         screenY: init.screenY === undefined ? 0 : __tbToLong(init.screenY),
         clientX: init.clientX === undefined ? 0 : __tbToLong(init.clientX),
         clientY: init.clientY === undefined ? 0 : __tbToLong(init.clientY),
-        ctrlKey: !!init.ctrlKey, shiftKey: !!init.shiftKey,
-        altKey: !!init.altKey, metaKey: !!init.metaKey,
-        modifierAltGraph: !!init.modifierAltGraph,
-        modifierCapsLock: !!init.modifierCapsLock,
+        ...__tbModifiersFromInit(init),
         button: button, buttons: init.buttons === undefined ? 0 : __tbToLong(init.buttons),
         relatedTarget: init.relatedTarget || null,
     });
@@ -136,9 +155,7 @@ const __tbMouseEventConstructor = globalThis.MouseEvent = class MouseEvent exten
     __tbMouseEventData.set(this, {
       screenX: __tbToLong(screenX), screenY: __tbToLong(screenY),
       clientX: __tbToLong(clientX), clientY: __tbToLong(clientY),
-      ctrlKey: !!ctrlKey, shiftKey: !!shiftKey,
-      altKey: !!altKey, metaKey: !!metaKey,
-      modifierAltGraph: false, modifierCapsLock: false,
+      ...__tbModifiersFromInit({ ctrlKey, altKey, shiftKey, metaKey }),
       button: buttonValue, buttons: 0,
       relatedTarget: relatedTarget === undefined ? null : relatedTarget,
     });
@@ -262,8 +279,7 @@ Object.defineProperty(globalThis.WheelEvent.prototype, Symbol.toStringTag, { val
 const __tbKeyboardEventData = host.slots('tinybrowser.keyboardevent.data');
 const __tbFreshKeyboardEvent = () => ({
   key: '', code: '', location: 0,
-  ctrlKey: false, shiftKey: false, altKey: false, metaKey: false,
-  modifierAltGraph: false, modifierCapsLock: false,
+  ...__tbModifierDefaults(),
   repeat: false, isComposing: false, keyCode: 0, charCode: 0,
 });
 globalThis.KeyboardEvent = class KeyboardEvent extends UIEvent {
@@ -278,10 +294,7 @@ globalThis.KeyboardEvent = class KeyboardEvent extends UIEvent {
         key: key,
         code: init.code === undefined ? '' : __tbStringCtor(init.code),
         location: init.location || 0,
-        ctrlKey: !!init.ctrlKey, shiftKey: !!init.shiftKey,
-        altKey: !!init.altKey, metaKey: !!init.metaKey,
-        modifierAltGraph: !!init.modifierAltGraph,
-        modifierCapsLock: !!init.modifierCapsLock,
+        ...__tbModifiersFromInit(init),
         repeat: !!init.repeat, isComposing: !!init.isComposing,
         keyCode: init.keyCode === undefined ? (key.length === 1 ? key.charCodeAt(0) : 0) : init.keyCode,
         charCode: init.charCode || 0,
@@ -297,15 +310,12 @@ globalThis.KeyboardEvent = class KeyboardEvent extends UIEvent {
     __tbEventConstructor.prototype.initEvent.call(this, type, bubbles, cancelable);
     const modifiers = modifiersList === undefined || modifiersList === null
       ? '' : __tbStringCtor(modifiersList);
-    const has = name => modifiers.split(/[,\s]+/).includes(name);
     __tbUIEventData.set(this, { view: __tbEventView(view), detail: 0, which: 0 });
     __tbKeyboardEventData.set(this, {
       key: keyIdentifier === undefined ? '' : __tbStringCtor(keyIdentifier),
       code: '',
       location: __tbToLong(location),
-      ctrlKey: has('Control'), shiftKey: has('Shift'),
-      altKey: has('Alt'), metaKey: has('Meta'),
-      modifierAltGraph: has('AltGraph'), modifierCapsLock: has('CapsLock'),
+      ...__tbModifiersFromList(modifiers),
       repeat: !!repeat, isComposing: false,
       keyCode: 0, charCode: 0,
     });
@@ -500,15 +510,24 @@ __tbExposeEvent('TextEvent', __tbUIEventConstructor, host.slots('tinybrowser.tex
   () => ({ data: '' }),
   init => ({ data: __tbEventString(init.data) }),
   ['data']);
-__tbExposeEvent('TouchEvent', __tbUIEventConstructor, host.slots('tinybrowser.touchevent.data'),
-  () => ({ touches: [], targetTouches: [], changedTouches: [], altKey: false, metaKey: false, ctrlKey: false, shiftKey: false }),
+const __tbTouchEventData = host.slots('tinybrowser.touchevent.data');
+const __tbFreshTouchEvent = () => ({
+  touches: [], targetTouches: [], changedTouches: [], ...__tbModifierDefaults(),
+});
+__tbExposeEvent('TouchEvent', __tbUIEventConstructor, __tbTouchEventData,
+  __tbFreshTouchEvent,
   init => ({
     touches: init.touches || [],
     targetTouches: init.targetTouches || [],
     changedTouches: init.changedTouches || [],
-    altKey: !!init.altKey, metaKey: !!init.metaKey, ctrlKey: !!init.ctrlKey, shiftKey: !!init.shiftKey,
+    ...__tbModifiersFromInit(init),
   }),
   ['touches', 'targetTouches', 'changedTouches', 'altKey', 'metaKey', 'ctrlKey', 'shiftKey']);
+// `TouchEvent` also inherits `getModifierState()`
+// (<https://w3c.github.io/uievents/#dom-touchevent-getmodifierstate>).
+globalThis.TouchEvent.prototype.getModifierState = function (key) {
+  return __tbModifierState(__tbEventEntry(this, __tbTouchEventData, __tbFreshTouchEvent), key);
+};
 __tbExposeEvent('DragEvent', __tbMouseEventConstructor, host.slots('tinybrowser.dragevent.data'),
   () => ({ dataTransfer: null }),
   init => ({ dataTransfer: init.dataTransfer || null }),
