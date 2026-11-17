@@ -505,6 +505,42 @@ jobs:
             results
           python3 tools/wpt/cli.py publish \
             --record run.json --data results --sha "$GITHUB_SHA"
+          # The review pass reads this instead of diffing two run.json files by
+          # hand: file-level PASS -> FAIL first, then the subtest count and a
+          # sample. `newly_measured` and new timeouts are counted separately
+          # because neither is a behavior regression.
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+
+          diff = json.loads(Path("results/regressions.json").read_text())
+          previous = (diff.get("previous_sha") or "")[:8]
+          if not diff.get("comparable"):
+              print("### WPT regressions\n")
+              print("Not comparable: the first publish, or the WPT pin changed.\n")
+          else:
+              regressions = diff.get("regressions") or []
+              files = [e for e in regressions if not e.get("subtest")]
+              tests = [e for e in regressions if e.get("subtest")]
+              print(f"### WPT regressions vs `{previous}`\n")
+              if not regressions:
+                  print("No new failures.\n")
+              for entry in files[:50]:
+                  print(f"- `{entry['test']}` ({entry.get('status', 'FAIL')})")
+              if len(files) > 50:
+                  print(f"- ... and {len(files) - 50} more files")
+              if tests:
+                  print(f"\n{len(tests)} new subtest failures, e.g.\n")
+                  for entry in tests[:20]:
+                      print(f"- `{entry['test']}` :: `{entry.get('subtest', '')}` ({entry.get('status', 'FAIL')})")
+                  if len(tests) > 20:
+                      print(f"- ... and {len(tests) - 20} more subtests")
+              print(
+                  f"\nNew timeouts: {len(diff.get('new_timeouts') or [])}; "
+                  f"newly measured: {len(diff.get('newly_measured') or [])}; "
+                  f"fixes: {len(diff.get('fixes') or [])}.\n"
+              )
+          PY
           cd results
           # Untracked files count too: the first publish creates every file.
           if [[ -z "$(git status --porcelain)" ]]; then
