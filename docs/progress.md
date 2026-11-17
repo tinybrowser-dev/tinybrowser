@@ -3900,3 +3900,35 @@ release that keeps `tools/wpt` clean), `setup-uv` 10.3.0 -> 10.3.3, and the
 lockfile takes the current patch releases. A rust-toolchain bump is left for a
 release build so the size measurement moves with it.
 
+
+The in-process harness now installs Ahem. Reftests use `font-family: Ahem`
+without an `@font-face` rule and rely on wptrunner's `--install-fonts`, which
+the harness lane never runs; `infrastructure/assumptions/ahem.html` rendered
+the table identical to its notref ("max channel difference 0, 0 pixels").
+The suite's own `fonts/Ahem.ttf` is read once and registered in each worker's
+font database through `renderer::Fonts::register_font`. The test passed before
+ded6e598 by accident: an unmatched named family used the script fallback while
+the initial family used serif. Upstream's `fallback_font_family` now ends a
+no-generic list with serif (CSS 2.1 § 15.5 step 4), so the missing face became
+visible. `css/css-grid/grid-definition/grid-support-named-grid-lines-001.html`
+(a `/fonts/ahem.css` user) passes again too.
+
+The rest of ded6e598's 99 `PASS -> FAIL` files are mostly verdicts that were
+passing for the wrong reason, not behavior that got worse. Replaying the list
+locally after the Ahem fix leaves 94 failing. Buckets: 40 `css/filter-effects`
+(the old in-tree backend ignored every layer filter except blur and ignored
+backdrop filters; AnyRender 0.15 applies regular filters but still ignores
+`backdrop_filter`, and has no taint rules, so filtered-vs-filtered tests that
+passed with both sides unfiltered now disagree on the backdrop or taint half),
+8 SVG image/orientation (external `<image>` now loads, EXIF orientation and
+density correction are unimplemented; the reference is pre-rotated, the test
+is not), 8 `standard-font-family` mismatch tests (unknown `'ui-serif'` etc.
+now correctly renders like the default serif), 10 `css-text` (mostly ≤36 max
+channel over ≤8 pixels: glyph rasterisation moved with harfrust/skrifa, not a
+layout change), 6 list-marker tests (a 255 marker in the wrong place), and 22
+misc, of which 9 are a single channel level over 7-426 pixels (border,
+flexbox, button centring: anti-aliasing) and 13 are structural (`static-inside-inline`,
+`inline-table-width`, `mix-blend-mode-rotated-clip`, `font-slant`, SVG paint
+servers). The upstream gaps are recorded in `docs/upstream.md`; the fix is to
+implement backdrop filters, filter tainting, and EXIF orientation/density in
+the upstream-shaped layers, not to restore the ignore-filters path.
