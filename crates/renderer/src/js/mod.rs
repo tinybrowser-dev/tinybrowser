@@ -1172,6 +1172,22 @@ impl JsRealm {
         })
     }
 
+    /// Settles one CSS-connected `FontFace` after the engine's own fetch of its
+    /// `@font-face` source finishes.
+    pub(crate) fn font_face_settled(
+        &self,
+        requested: &str,
+        final_url: &str,
+        loaded: bool,
+    ) -> Result<(), JsError> {
+        self.with_budget(None, MicrotaskCheckpoint::Perform, || {
+            self.context.with(|ctx| {
+                bindings::font_face_settled(&ctx, requested, final_url, loaded)?;
+                Ok(())
+            })
+        })
+    }
+
     /// Appends one resource timing entry created by a renderer-side fetch
     /// (<https://w3c.github.io/resource-timing/#dfn-add-a-performanceresourcetiming-entry>).
     pub(crate) fn queue_resource_timing(

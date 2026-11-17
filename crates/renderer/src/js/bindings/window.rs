@@ -10,7 +10,7 @@ use std::rc::Rc;
 
 use crate::dom::tree::NodeId;
 
-use rquickjs::{Class, Ctx, Exception, Object, Persistent, Result, Value};
+use rquickjs::{Class, Ctx, Exception, Function, Object, Persistent, Result, Value};
 
 use crate::js::events::JsEvent;
 use crate::js::world::{EventTargetKey, World};
@@ -520,6 +520,28 @@ pub(crate) fn fire_node_load(ctx: &Ctx<'_>, id: NodeId) -> Result<()> {
 
 pub(crate) fn fire_node_error(ctx: &Ctx<'_>, id: NodeId) -> Result<()> {
     events::fire_trusted(ctx, EventTargetKey::Node(id), "error", false, false)
+}
+
+/// Reports that one `@font-face` source finished loading.
+///
+/// A CSS-connected `FontFace` lives in the page's `FontFaceSet` but the engine
+/// owns its fetch, so the set cannot learn the outcome from a page-side
+/// `fetch`. `__tbFontFaceSettled` matches the face by its resolved source URL
+/// and settles its `loaded` promise, which is what `document.fonts.ready`
+/// waits for (<https://drafts.csswg.org/css-font-loading/#font-face-set-ready>).
+pub(crate) fn font_face_settled(
+    ctx: &Ctx<'_>,
+    requested: &str,
+    final_url: &str,
+    loaded: bool,
+) -> Result<()> {
+    let Some(settle) = ctx
+        .globals()
+        .get::<_, Option<Function>>("__tbFontFaceSettled")?
+    else {
+        return Ok(());
+    };
+    settle.call((requested, final_url, loaded))
 }
 
 /// Fires the asynchronous `select` event of a text control whose selection
