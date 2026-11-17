@@ -44,36 +44,33 @@ fn daemon_registers_loopback_and_second_start_reuses_it() {
 #[test]
 fn stale_lock_is_replaced() {
     let mut fixture = Fixture::new("tinybrowser-daemon");
-    let dir = fixture.runtime().join("tinybrowser/default");
-    std::fs::create_dir_all(&dir).expect("dir");
-    // A pid above `pid_max` can never name a live process, so the registration
-    // is stale on every machine; a plausible-looking pid (like 999999) can be
-    // in use and would make this test depend on the host's process table.
-    let stale = u32::MAX.to_string();
-    std::fs::write(dir.join("lock"), format!("{stale}\n")).expect("stale lock");
-    std::fs::write(
-        dir.join("daemon.json"),
-        format!(r#"{{"pid":{stale},"host":"127.0.0.1","port":1}}"#),
-    )
-    .expect("stale json");
-    let child_id = fixture.spawn_daemon();
+    let first_id = fixture.spawn_daemon();
+    let info = fixture.wait_json();
+    assert_eq!(info["pid"].as_u64().expect("pid"), u64::from(first_id));
+
+    // SIGKILL leaves both the lock file and daemon.json behind. The kernel
+    // releases the file lock with the process, so the next daemon must take
+    // the profile over instead of reading the leftover pid as "held".
+    fixture.children()[0].kill().expect("kill daemon");
+    let _status = fixture.children()[0].wait().expect("reap daemon");
+
+    let second_id = fixture.spawn_daemon();
     let deadline = Instant::now() + Duration::from_secs(5);
     let info = loop {
-        if let Ok(text) = std::fs::read_to_string(dir.join("daemon.json"))
+        if let Ok(text) =
+            std::fs::read_to_string(fixture.runtime().join("tinybrowser/default/daemon.json"))
             && let Ok(value) = serde_json::from_str::<serde_json::Value>(&text)
-            && value["pid"].as_u64() != Some(u64::from(u32::MAX))
-            && pid_alive(u32::try_from(value["pid"].as_u64().unwrap_or(0)).unwrap_or(0))
+            && value["pid"].as_u64() == Some(u64::from(second_id))
         {
             break value;
         }
         assert!(
-            pid_alive(child_id),
-            "daemon exited before replacing stale registration"
+            pid_alive(second_id),
+            "the second daemon exited instead of replacing the killed one"
         );
         assert!(
             Instant::now() < deadline,
-            "stale daemon.json not replaced: {:?}",
-            std::fs::read_to_string(dir.join("daemon.json"))
+            "killed daemon's registration stayed"
         );
         std::thread::sleep(Duration::from_millis(20));
     };

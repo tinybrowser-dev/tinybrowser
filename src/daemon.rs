@@ -1,10 +1,9 @@
 //! Named profile daemon: loopback CDP, runtime-dir registration, startup lock.
 
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
 
 use browser::{Browser, BrowserOptions, Profile, ProfileName};
 use serde_json::json;
@@ -30,9 +29,13 @@ pub async fn run(profile: &Profile, data_home: &Path) -> io::Result<()> {
     fs::create_dir_all(&runtime)?;
     restrict_dir(&runtime)?;
     let Some(_lock) = acquire_lock(&runtime)? else {
+        logging::info!(
+            target: "daemon",
+            "profile {} already has a running daemon",
+            profile.name().as_str()
+        );
         return Ok(());
     };
-    let lock_path = runtime.join("lock");
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
     let addr = listener.local_addr()?;
     logging::debug!(target: "daemon", "runtime dir {}", runtime.display());
@@ -73,7 +76,9 @@ pub async fn run(profile: &Profile, data_home: &Path) -> io::Result<()> {
     if result.is_err() {
         let _close_result = browser.close().await;
     }
-    let _ = fs::remove_file(&lock_path);
+    // The lock file stays: the kernel lock on its open description is what
+    // says "held", and unlinking it would let a third process create a second
+    // lock file while this one is still owned.
     result
 }
 
@@ -99,76 +104,23 @@ fn env_runtime_dir() -> Option<PathBuf> {
 
 fn acquire_lock(runtime: &Path) -> io::Result<Option<File>> {
     let path = runtime.join("lock");
-    loop {
-        match OpenOptions::new().write(true).create_new(true).open(&path) {
-            Ok(mut file) => {
-                writeln!(file, "{}", std::process::id())?;
-                file.sync_all()?;
-                restrict_file(&path)?;
-                return Ok(Some(file));
-            }
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                match lock_status(&path) {
-                    LockStatus::Held => return Ok(None),
-                    LockStatus::InProgress => std::thread::sleep(Duration::from_millis(20)),
-                    LockStatus::Stale => {
-                        if fs::remove_file(&path).is_err() {
-                            std::thread::sleep(Duration::from_millis(20));
-                        }
-                    }
-                }
-            }
-            Err(error) => return Err(error),
+    let file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&path)?;
+    restrict_file(&path)?;
+    match file.try_lock() {
+        Ok(()) => {
+            file.set_len(0)?;
+            writeln!(&file, "{}", std::process::id())?;
+            file.sync_all()?;
+            Ok(Some(file))
         }
+        Err(TryLockError::WouldBlock) => Ok(None),
+        Err(TryLockError::Error(error)) => Err(error),
     }
-}
-
-enum LockStatus {
-    Held,
-    InProgress,
-    Stale,
-}
-
-fn lock_status(path: &Path) -> LockStatus {
-    let Ok(text) = fs::read_to_string(path) else {
-        return if lock_file_stale(path) {
-            LockStatus::Stale
-        } else {
-            LockStatus::InProgress
-        };
-    };
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return if lock_file_stale(path) {
-            LockStatus::Stale
-        } else {
-            LockStatus::InProgress
-        };
-    }
-    let Ok(pid) = trimmed.parse::<u32>() else {
-        return if lock_file_stale(path) {
-            LockStatus::Stale
-        } else {
-            LockStatus::InProgress
-        };
-    };
-    if pid <= 1 {
-        return LockStatus::Stale;
-    }
-    if pid_alive(pid) {
-        LockStatus::Held
-    } else {
-        LockStatus::Stale
-    }
-}
-
-fn lock_file_stale(path: &Path) -> bool {
-    let Ok(modified) = fs::metadata(path).and_then(|meta| meta.modified()) else {
-        return true;
-    };
-    SystemTime::now()
-        .duration_since(modified)
-        .map_or(true, |age| age > Duration::from_secs(2))
 }
 
 fn restrict_dir(path: &Path) -> io::Result<()> {
@@ -209,8 +161,4 @@ fn write_endpoint(runtime: &Path, endpoint: &DaemonEndpoint) -> io::Result<()> {
     restrict_file(&tmp)?;
     fs::rename(&tmp, &path)?;
     restrict_file(&path)
-}
-
-fn pid_alive(pid: u32) -> bool {
-    Path::new("/proc").join(pid.to_string()).exists()
 }
