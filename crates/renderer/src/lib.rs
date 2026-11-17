@@ -49,6 +49,24 @@ pub use render::RgbaImage;
 /// to every engine it creates.
 #[derive(Clone, Default)]
 pub struct Fonts(parley::FontContext);
+
+impl Fonts {
+    /// Registers every face in `data`, which must be a font file.
+    ///
+    /// Returns the number of families added, so a caller can reject data that
+    /// carries no usable face. The WPT harness uses this to provide Ahem:
+    /// reftests name `Ahem` without an `@font-face`, and wptrunner installs
+    /// the file into the system font directory with `--install-fonts`. The
+    /// in-process lane never runs wptrunner, so it registers the suite's
+    /// `fonts/Ahem.ttf` here instead of mutating the user's font directory.
+    pub fn register_font(&mut self, data: Vec<u8>) -> usize {
+        self.0
+            .collection
+            .register_fonts(parley::fontique::Blob::from(data), None)
+            .len()
+    }
+}
+
 pub use js::{Stop, TURN_SCRIPT_BUDGET};
 pub use protocol::{
     BodyDelivery, BrowserEvent, BrowserServices, BrowsingContextHost, ContextName, CookiePolicy,
