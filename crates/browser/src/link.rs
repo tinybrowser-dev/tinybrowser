@@ -728,17 +728,6 @@ async fn route_service_call(
             }
             send_reply(&context.responder, id, ServiceReply::Unit).await?;
         }
-        ServiceCall::Network(NetworkCall::CookieGet { url, partition_key }) => {
-            let reply = match assignment.site.authorize_url(&url) {
-                Some(url) => ServiceReply::Cookie(
-                    assignment
-                        .network
-                        .cookies_for(&url, partition_key.as_deref()),
-                ),
-                None => ServiceReply::Cookie(String::new()),
-            };
-            send_reply(&context.responder, id, reply).await?;
-        }
         // Every cookie arm authorizes the URL and passes the partition key the
         // renderer named. The key only narrows the same host's cookie set to
         // one partition, so a renderer that names another top-level site reads
@@ -750,6 +739,14 @@ async fn route_service_call(
         // the lock reads empty and writes nowhere. Killing the renderer would
         // let any cross-site iframe take its whole page down
         // (<https://chromium.googlesource.com/chromium/src/+/main/docs/process_model_and_site_isolation.md#process-locks>).
+        ServiceCall::Network(NetworkCall::CookieGet { url, partition_key }) => {
+            let cookies = assignment.site.authorize_url(&url).map_or_default(|url| {
+                assignment
+                    .network
+                    .cookies_for(&url, partition_key.as_deref())
+            });
+            send_reply(&context.responder, id, ServiceReply::Cookie(cookies)).await?;
+        }
         ServiceCall::Network(NetworkCall::CookieSet {
             value,
             url,

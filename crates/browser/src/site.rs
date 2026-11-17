@@ -47,9 +47,21 @@ impl Site {
     /// <https://chromium.googlesource.com/chromium/src/+/main/docs/process_model_and_site_isolation.md#process-locks>.
     #[must_use]
     pub(crate) fn allows_url(&self, url: &Url) -> bool {
-        match self {
-            Self::Tuple(_) => self.allows_origin(&url.origin()),
-            Self::Opaque(_) => matches!(url.scheme(), "about" | "blob" | "data"),
+        match (self, url.origin()) {
+            (Self::Tuple(locked), origin @ url::Origin::Tuple(..)) => {
+                net::site_for_origin(&origin).is_some_and(|site| site == *locked)
+            }
+            // A blob URL whose inner URL is HTTP(S) has a tuple origin, so an
+            // opaque lock cannot claim it. Only the schemes that can create a
+            // genuinely opaque document pass; `file:` has an opaque origin too
+            // but is not a non-network document this tab owns.
+            (Self::Opaque(_), url::Origin::Opaque(_)) => {
+                matches!(url.scheme(), "about" | "blob" | "data")
+            }
+            // A tuple lock with an opaque origin and an opaque lock with a
+            // tuple origin name no authority this renderer owns.
+            (Self::Tuple(_), url::Origin::Opaque(_))
+            | (Self::Opaque(_), url::Origin::Tuple(..)) => false,
         }
     }
 
@@ -130,6 +142,10 @@ mod tests {
         assert!(locked.allows_url(&Url::parse("https://b.example.test/path").expect("url")));
         assert!(!locked.allows_url(&Url::parse("http://a.example.test/").expect("url")));
         assert!(!locked.allows_url(&Url::parse("https://other.test/").expect("url")));
+        assert_eq!(
+            Site::for_url(&Url::parse("http://a.example.test/").expect("url")),
+            Some(Site::Tuple("http://example.test".to_owned())),
+        );
 
         let opaque = Site::opaque(TabId::new(7));
         assert!(opaque.allows_url(&Url::parse("about:blank").expect("url")));
@@ -160,7 +176,16 @@ mod tests {
         assert!(!locked.allows_url(&Url::parse("blob:no-inner-url").expect("url")));
 
         let opaque = Site::opaque(TabId::new(7));
-        assert!(opaque.allows_url(&Url::parse("blob:https://www.example.test/id").expect("url")));
+        assert!(
+            !opaque.allows_url(&Url::parse("blob:https://www.example.test/id").expect("url")),
+            "a blob with a tuple origin names an HTTP(S) principal an opaque lock cannot claim",
+        );
+        assert!(
+            opaque.allows_url(
+                &Url::parse("blob:null/0f8a6a58-2c56-4b49-8bd9-1e6b8f0a4d21").expect("url")
+            ),
+            "a blob with an opaque origin belongs to this tab",
+        );
     }
 
     /// A renderer's origin claim is bounded by the site, not by the top-level
