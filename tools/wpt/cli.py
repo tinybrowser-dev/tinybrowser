@@ -1481,8 +1481,10 @@ so latest.json stays small (a full run has ~100k failures) and the next run
 still has every entry to diff against.
 
 The diff is advisory: it lists new failures and fixes, and new TIMEOUTs
-separately because they flip with runner load. Two runs from different WPT
-revisions are not comparable, so the diff is empty and says so.
+separately because they flip with runner load. A file that previously timed
+out or errored reported no subtests, so its first measured failures go in
+`newly_measured`, not `regressions`. Two runs from different WPT revisions are
+not comparable, so the diff is empty and says so.
 
 The command only touches the data directory; the caller owns git."""
 
@@ -1498,19 +1500,45 @@ def diff_failures(previous: list[dict], current: list[dict], comparable: bool) -
     test, and an optional subtest. `comparable` is false across a WPT pin bump:
     the denominator moved, so "new" and "fixed" would describe the pin, not
     the engine.
+
+    A file whose previous file-level row was TIMEOUT, ERROR, or CRASH reported
+    no subtests, so every subtest it reports now is newly measured rather than
+    a regression. Its vanished file-level row is only a fix when the file has
+    no failures at all now.
     """
     before = {failure_key(entry): entry for entry in previous}
     after = {failure_key(entry): entry for entry in current}
-    new = [after[key] for key in after.keys() - before.keys()]
-    fixed = [before[key] for key in before.keys() - after.keys()]
-    # A TIMEOUT flips with runner load; it is watched, not counted as a
-    # regression. Only a hard or ordinary failure counts.
-    new_timeouts = [entry for entry in new if entry.get("status") == "TIMEOUT"]
-    regressions = [entry for entry in new if entry.get("status") != "TIMEOUT"]
+    new_keys = sorted(after.keys() - before.keys())
+    fixed_keys = sorted(before.keys() - after.keys())
+    unmeasured = {"TIMEOUT", "ERROR", "CRASH"}
+
+    def was_unmeasured(test: str) -> bool:
+        row = before.get((test, ""))
+        return row is not None and row.get("status") in unmeasured
+
+    regressions: list[dict] = []
+    new_timeouts: list[dict] = []
+    newly_measured: list[dict] = []
+    for key in new_keys:
+        entry = after[key]
+        if entry.get("status") == "TIMEOUT":
+            new_timeouts.append(entry)
+        elif key[1] and was_unmeasured(key[0]):
+            newly_measured.append(entry)
+        else:
+            regressions.append(entry)
+    fixes = [
+        before[key]
+        for key in fixed_keys
+        # A file-level row that disappears while subtests still fail is a
+        # measurement change, not a fixed test.
+        if key[1] or not any(test == key[0] for test, _ in after)
+    ]
     return {
         "regressions": regressions if comparable else [],
         "new_timeouts": new_timeouts if comparable else [],
-        "fixes": fixed if comparable else [],
+        "newly_measured": newly_measured if comparable else [],
+        "fixes": fixes if comparable else [],
     }
 
 
@@ -1699,7 +1727,8 @@ def publish_main(argv: list[str]) -> int:
     eprint(
         f"publish: {entry['sha'][:8]} at {entry['date']} "
         f"({len(diff['regressions'])} regressions, {len(diff['fixes'])} fixes, "
-        f"{len(diff['new_timeouts'])} new timeouts)"
+        f"{len(diff['new_timeouts'])} new timeouts, "
+        f"{len(diff['newly_measured'])} newly measured)"
     )
     return 0
 
@@ -4043,6 +4072,7 @@ def _selftest_publish() -> None:
         "failures": [
             {"test": "/dom/a.html", "subtest": "", "status": "TIMEOUT"},
             {"test": "/dom/b.html", "subtest": "", "status": "FAIL"},
+            {"test": "/dom/d.html", "subtest": "", "status": "TIMEOUT"},
         ],
     }
     with tempfile.TemporaryDirectory() as tmp:
@@ -4063,6 +4093,7 @@ def _selftest_publish() -> None:
         assert read_failures(data / "failures.jsonl.gz") == [
             {"status": "TIMEOUT", "test": "/dom/a.html", "subtest": ""},
             {"status": "FAIL", "test": "/dom/b.html", "subtest": ""},
+            {"status": "TIMEOUT", "test": "/dom/d.html", "subtest": ""},
         ]
         assert not (data / "previous.json").exists()
         index = json.loads((data / "index.json").read_text())
@@ -4078,6 +4109,8 @@ def _selftest_publish() -> None:
         updated["failures"] = [
             {"test": "/dom/b.html", "subtest": "", "status": "TIMEOUT"},
             {"test": "/dom/c.html", "subtest": "s", "status": "FAIL"},
+            {"test": "/dom/d.html", "subtest": "x", "status": "FAIL"},
+            {"test": "/dom/d.html", "subtest": "y", "status": "FAIL"},
         ]
         second.write_text(json.dumps(updated))
         with (
@@ -4093,6 +4126,13 @@ def _selftest_publish() -> None:
             ("/dom/c.html", "FAIL")
         ]
         assert [e["test"] for e in diff["new_timeouts"]] == []
+        # /dom/d.html had no subtests last run because the file timed out, so
+        # its failures are newly measured, not regressions; its vanished
+        # file-level row is not a fix while the file still fails.
+        assert [(e["test"], e.get("subtest")) for e in diff["newly_measured"]] == [
+            ("/dom/d.html", "x"),
+            ("/dom/d.html", "y"),
+        ]
         assert [e["test"] for e in diff["fixes"]] == ["/dom/a.html"]
         assert not (data / "previous.json").exists()
         assert [
