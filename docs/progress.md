@@ -3932,3 +3932,19 @@ flexbox, button centring: anti-aliasing) and 13 are structural (`static-inside-i
 servers). The upstream gaps are recorded in `docs/upstream.md`; the fix is to
 implement backdrop filters, filter tainting, and EXIF orientation/density in
 the upstream-shaped layers, not to restore the ignore-filters path.
+
+The review pass's small structural fixes landed with tests. The daemon's
+startup lock is now a kernel `File::try_lock()` held for the process lifetime,
+so a crashed daemon's pid cannot be reused to make the next start exit
+silently; `LockStatus`, `lock_file_stale`, and `pid_alive` are gone, and the
+stale-lock test SIGKILLs a daemon and asserts the next one takes over.
+`Site::allows_url` matches the lock and the parsed origin together, which
+stops an opaque lock from admitting `blob:https://bank.test/uuid`; the
+cross-site cookie test now seeds the frame's own site, writes through both
+cookie surfaces, and probes the jar (it fails with the lock removed or either
+write back to a renderer violation). The UI Events shim derives all fourteen
+`EventModifierInit` members, `getModifierState`, and the legacy modifier list
+from one table, and `TouchEvent` gains the inherited method. The `docs` entry
+for the work-invalidation flag now names `has_changes`/`clear_changes`.
+Remaining from the review: the `TinybrowserTestFilter` monkeypatch and its
+`ty: ignore` (#270 item 3), and the three arch items in #267.
