@@ -3948,3 +3948,21 @@ from one table, and `TouchEvent` gains the inherited method. The `docs` entry
 for the work-invalidation flag now names `has_changes`/`clear_changes`.
 Remaining from the review: the `TinybrowserTestFilter` monkeypatch and its
 `ty: ignore` (#270 item 3), and the three arch items in #267.
+
+The `publish` diff no longer counts a timed-out file's first measured
+subtests as regressions or its vanished file-level row as a fix. A file whose
+previous file-level status was TIMEOUT, ERROR, or CRASH puts those failures in
+`newly_measured`; the score job now prints the file-level regressions, a
+subtest sample, and the timeout/newly-measured/fix counts in the step summary,
+so a fork-sync bump shows what it broke without a hand diff. The selftest
+covers the bucket.
+
+The abspos grid flake from #266 was a `document.fonts.ready` bug, not layout
+ordering. A CSS-connected `FontFace` started `loaded` with a resolved promise,
+so a test that measured after `FontFaceSet.ready` shaped with the fallback
+font when the engine's `@font-face` fetch lost the race; `positioned-grid-descendants-002/013`
+report "width expected 50 but got 34/36" on those runs. The face now starts
+`loading`, the engine queues each delivered font response and settles the face
+only after the resolve pass that registered it, and a failed fetch settles it
+through the same hook so `ready` cannot hang. `css/css-font-loading` keeps its
+CI verdicts, and the abspos files pass repeatedly.
