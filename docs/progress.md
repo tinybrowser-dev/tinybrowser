@@ -3966,3 +3966,12 @@ report "width expected 50 but got 34/36" on those runs. The face now starts
 only after the resolve pass that registered it, and a failed fetch settles it
 through the same hook so `ready` cannot hang. `css/css-font-loading` keeps its
 CI verdicts, and the abspos files pass repeatedly.
+
+No pull request is opened anywhere, to any repository, without the user asking
+in that turn. The project and global `AGENTS.md` state it, the four submodule
+`upstream` remotes have their push URL set to `no-push`, and
+`~/.config/opencode/opencode.jsonc` hard-denies `gh pr create/edit/merge/ready`,
+`gh api ... pulls`, `createPullRequest`, `hub pull-request`, and `glab mr
+create` as `tool.use` policies. A policy runs after agent rules and saved "Allow
+always" approvals, so it cannot be lifted from inside a session; a fresh session
+reports `Blocked by configuration policy`.
