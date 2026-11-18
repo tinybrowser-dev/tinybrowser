@@ -4516,9 +4516,6 @@ impl Document {
         let _ = passes;
         self.note_linked_stylesheets();
         self.drain_image_settlements();
-        // The pass that ingested a font response also registered the face, so
-        // only now can a CSS-connected `FontFace` report loaded and resolve
-        // `document.fonts.ready`.
         if !self.pending_font_loads.is_empty() {
             let loads = std::mem::take(&mut self.pending_font_loads);
             self.fire_js(|js| {

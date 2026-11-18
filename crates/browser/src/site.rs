@@ -47,21 +47,11 @@ impl Site {
     /// <https://chromium.googlesource.com/chromium/src/+/main/docs/process_model_and_site_isolation.md#process-locks>.
     #[must_use]
     pub(crate) fn allows_url(&self, url: &Url) -> bool {
-        match (self, url.origin()) {
-            (Self::Tuple(locked), origin @ url::Origin::Tuple(..)) => {
-                net::site_for_origin(&origin).is_some_and(|site| site == *locked)
+        match url.origin() {
+            origin @ url::Origin::Tuple(..) => self.allows_origin(&origin),
+            url::Origin::Opaque(_) => {
+                matches!(self, Self::Opaque(_)) && matches!(url.scheme(), "about" | "blob" | "data")
             }
-            // A blob URL whose inner URL is HTTP(S) has a tuple origin, so an
-            // opaque lock cannot claim it. Only the schemes that can create a
-            // genuinely opaque document pass; `file:` has an opaque origin too
-            // but is not a non-network document this tab owns.
-            (Self::Opaque(_), url::Origin::Opaque(_)) => {
-                matches!(url.scheme(), "about" | "blob" | "data")
-            }
-            // A tuple lock with an opaque origin and an opaque lock with a
-            // tuple origin name no authority this renderer owns.
-            (Self::Tuple(_), url::Origin::Opaque(_))
-            | (Self::Opaque(_), url::Origin::Tuple(..)) => false,
         }
     }
 
