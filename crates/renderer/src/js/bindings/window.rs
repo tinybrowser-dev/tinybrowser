@@ -522,26 +522,26 @@ pub(crate) fn fire_node_error(ctx: &Ctx<'_>, id: NodeId) -> Result<()> {
     events::fire_trusted(ctx, EventTargetKey::Node(id), "error", false, false)
 }
 
-/// Reports that one `@font-face` source finished loading.
-///
-/// A CSS-connected `FontFace` lives in the page's `FontFaceSet` but the engine
-/// owns its fetch, so the set cannot learn the outcome from a page-side
-/// `fetch`. `__tbFontFaceSettled` matches the face by its resolved source URL
-/// and settles its `loaded` promise, which is what `document.fonts.ready`
-/// waits for (<https://drafts.csswg.org/css-font-loading/#font-face-set-ready>).
+/// Settles the CSS-connected `FontFace` of one `@font-face` rule the engine
+/// finished loading, by the rule's CSSOM address. The rule's load belongs to
+/// the engine, so the set cannot learn the outcome from a page-side `fetch`;
+/// the hook resolves the rule's face and settles its `loaded` promise, which
+/// is what `document.fonts.ready` waits for
+/// (<https://drafts.csswg.org/css-font-loading/#font-face-set-ready>). The
+/// hook lives on the realm's bridge: the page cannot call, replace, or delete
+/// it, and a realm without one has no fonts to settle.
 pub(crate) fn font_face_settled(
     ctx: &Ctx<'_>,
-    requested: &str,
-    final_url: &str,
+    sheet: u64,
+    path: Vec<usize>,
     loaded: bool,
 ) -> Result<()> {
-    let Some(settle) = ctx
-        .globals()
-        .get::<_, Option<Function>>("__tbFontFaceSettled")?
-    else {
+    let hook: Option<Function> = crate::js::bridge::object(ctx)?.get("__tbFontFaceSettled")?;
+    let Some(hook) = hook else {
         return Ok(());
     };
-    settle.call((requested, final_url, loaded))
+    let path: Vec<_> = path.into_iter().map(|index| index as f64).collect();
+    hook.call((sheet as f64, path, loaded))
 }
 
 /// Fires the asynchronous `select` event of a text control whose selection

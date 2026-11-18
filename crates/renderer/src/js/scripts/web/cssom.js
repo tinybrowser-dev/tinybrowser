@@ -203,6 +203,11 @@
 // Constructable stylesheet surface used by component libraries, plus the
 // associated CSS style sheet for `<style>` and `<link rel=stylesheet>`.
 // https://drafts.csswg.org/cssom/#the-cssstylesheet-interface
+// Addressing helpers the fonts shim reads: a CSS rule's own address, and the
+// rule object an address names. Assigned inside the block below, which owns
+// the sheet and rule registries they read.
+let __tbCssomRuleAddress;
+let __tbCssomRuleAt;
 {
   // Captured at realm init so a page-patched builtin cannot retarget a rule
   // path or swallow an exception.
@@ -784,6 +789,19 @@
   // IDL attribute
   // (<https://webidl.spec.whatwg.org/#interface-prototype-object>).
   const __tbRuleEntry = Symbol('CSSRule entry');
+  __tbCssomRuleAddress = rule => {
+    const entry = rule[__tbRuleEntry];
+    if (entry === undefined || entry.detached) return null;
+    return { sheetId: entry.sheet.__tbId, path: entry.path.slice() };
+  };
+  __tbCssomRuleAt = (sheetId, path) => {
+    const sheet = __tbSheetsById.get(sheetId);
+    if (sheet === undefined) return null;
+    for (const entry of sheet.__tbRules) {
+      if (!entry.detached && __tbSamePath(entry.path, path)) return entry.rule;
+    }
+    return null;
+  };
   function __tbRuleState(receiver) {
     const entry = receiver[__tbRuleEntry];
     if (entry === undefined) throw new TypeError('Illegal invocation');

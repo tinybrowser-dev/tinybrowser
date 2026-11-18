@@ -364,7 +364,6 @@ class FontFace {
     state.token = 0;
     state.attached = false;
     state.cssConnected = false;
-    state.loadingNotified = false;
     state.loadedPromise = new Promise((resolve, reject) => {
       state.resolveLoaded = resolve;
       state.rejectLoaded = reject;
@@ -474,10 +473,9 @@ class FontFace {
       return state.loadedPromise;
     }
     state.status = 'loading';
-    if (state.attached && !state.loadingNotified) {
-      state.loadingNotified = true;
-      __tbFontFire(__tbFontFaceSet, 'loading', [this]);
-    }
+    // The `loading` event and the set's window are the set's transition, not
+    // this face's (<https://drafts.csswg.org/css-font-loading/#dom-fontfaceset-onloading>).
+    __tbFontSetTrack(__tbFontFaceSet);
     if (state.error !== null) {
       this._fail(state.error);
       state.loadPromise = state.loadedPromise;
@@ -547,6 +545,7 @@ class FontFace {
     }
     state.status = 'loaded';
     state.resolveLoaded(this);
+    __tbFontSetTrack(__tbFontFaceSet);
   }
 
   _fail(error) {
@@ -554,6 +553,7 @@ class FontFace {
     if (state.status === 'error') return;
     state.status = 'error';
     state.rejectLoaded(error);
+    __tbFontSetTrack(__tbFontFaceSet);
   }
 
   _register() {
@@ -584,7 +584,6 @@ class FontFace {
   _detach() {
     const state = __tbFontFaceState(this);
     state.attached = false;
-    state.loadingNotified = false;
     this._unregister();
   }
 }
@@ -638,9 +637,15 @@ function __tbFontCollectRules(list, output) {
 }
 
 function __tbFontCssFaces() {
-  const output = [];
   const document = globalThis.document;
-  if (document === undefined || document.styleSheets === undefined) return output;
+  if (document === undefined || document.styleSheets === undefined) return [];
+  // The stylesheet generation names the sheet state a walk saw: a read that
+  // arrives with the same generation reuses the list instead of re-walking
+  // every sheet and rule
+  // (<https://drafts.csswg.org/css-font-loading/#fontfaceset-iteration).
+  const generation = host.__tb_sheet_generation();
+  if (__tbFontFacesWalk.generation === generation) return __tbFontFacesWalk.faces;
+  const output = [];
   const sheets = document.styleSheets;
   for (let index = 0; index < sheets.length; index++) {
     const sheet = sheets[index];
@@ -651,20 +656,34 @@ function __tbFontCssFaces() {
       // A cross-origin sheet has no readable rules.
     }
   }
-  const faces = [];
-  for (let index = 0; index < output.length; index++) {
-    const rule = output[index];
-    let face = __tbCssFontFaces.get(rule);
-    if (face === undefined) {
-      face = __tbFontFromRule(rule, rule.parentStyleSheet ? rule.parentStyleSheet.href : null);
-      __tbCssFontFaces.set(rule, face);
+  // Creating a face settles the rules the last engine report already
+  // settled, whose handlers track the set again: while this walk is creating,
+  // those tracks are deferred so they do not re-enter the walk; the walk's
+  // own caller observes the final state once it returns.
+  __tbFontWalkDepth += 1;
+  let faces;
+  try {
+    faces = [];
+    for (let index = 0; index < output.length; index++) {
+      const rule = output[index];
+      let face = __tbCssFontFaces.get(rule);
+      if (face === undefined) {
+        face = __tbFontFromRule(rule);
+      }
+      faces.push(face);
     }
-    faces.push(face);
+  } finally {
+    __tbFontWalkDepth -= 1;
   }
+  __tbFontFacesWalk = { generation, faces };
   return faces;
 }
 
-function __tbFontFromRule(rule, sheetUrl) {
+// The cached walk and the depth of the walk creating it.
+let __tbFontFacesWalk = { generation: -1, faces: [] };
+let __tbFontWalkDepth = 0;
+
+function __tbFontFromRule(rule) {
   const style = rule.style;
   const read = name => (style ? __tbStringCtor(style.getPropertyValue(name)) : '');
   const source = read('src');
@@ -686,74 +705,64 @@ function __tbFontFromRule(rule, sheetUrl) {
   const face = new FontFace(read('font-family'), source, descriptors);
   const state = __tbFontFaceState(face);
   state.cssConnected = true;
-  // A CSS-connected face's fetch belongs to the engine, which starts one for
-  // every usable `@font-face` source while the sheet loads. Resolve its URL
-  // against the sheet, not the document, so `__tbFontFaceSettled` can match
-  // the request (<https://drafts.csswg.org/css-values/#urls>).
-  const base = sheetUrl || (globalThis.document && globalThis.document.baseURI) || '';
-  state.sourceUrls = [];
-  let localOnly = true;
-  for (let index = 0; index < state.sources.length; index++) {
-    const entry = state.sources[index];
-    if (entry.local) continue;
-    localOnly = false;
-    try {
-      state.sourceUrls.push(new URL(entry.value, base).href);
-    } catch (error) {
-      state.sourceUrls.push(entry.value);
-    }
-  }
-  if (localOnly) {
-    // No URL source means the engine never fetches; the face is loaded when
-    // one of the `local()` family names is already in the font table.
-    const available = state.sources.some(entry =>
-      entry.local && host.__tbFontFamilyAvailable(entry.value));
-    if (available) {
-      state.status = 'loaded';
-      state.resolveLoaded(face);
-    } else {
-      state.status = 'error';
-      state.rejectLoaded(__tbFontError('font source failed to load', 'NetworkError'));
-    }
-  } else {
-    // `document.fonts.ready` must not resolve before the engine registers the
-    // face (<https://drafts.csswg.org/css-font-loading/#font-face-set-ready>).
-    state.status = 'loading';
-    // The sheet may have been added after the engine's fetch settled; a face
-    // created then has no notification left to wait for.
-    for (let index = 0; index < state.sourceUrls.length; index++) {
-      const settled = __tbSettledFontSources.get(state.sourceUrls[index]);
-      if (settled === undefined) continue;
+  // The face joins the set's memo before anything can settle it: a settle
+  // re-enters the set's tracker, whose walk must find this same face instead
+  // of creating a second one that no report will ever settle.
+  __tbCssFontFaces.set(rule, face);
+  // The engine owns this face's load: it walks the rule's own `src` list and
+  // reports the outcome by the rule's CSSOM address, so the face waits for
+  // that report instead of re-parsing the `src` it read
+  // (<https://drafts.csswg.org/css-font-loading/#font-face-constructor>).
+  const address = __tbCssomRuleAddress(rule);
+  state.status = 'loading';
+  // The rule may have settled before any walk created this face; the recorded
+  // outcome settles it. The enclosing `FontFaceSet` transition is the
+  // caller's to observe: this face was loading only inside one walk.
+  if (address !== null) {
+    const key = address.sheetId + '/' + address.path.join('/');
+    const settled = __tbSettledFontRules.get(key);
+    if (settled !== undefined) {
+      __tbSettledFontRules.delete(key);
       if (settled) face._complete();
       else face._fail(__tbFontError('font source failed to load', 'NetworkError'));
-      break;
     }
   }
   return face;
 }
 
-// Source URLs whose engine fetch has settled, keyed by both the requested and
-// final URL so a redirect still matches. A face created after the notification
-// reads this instead of waiting for a second one.
-const __tbSettledFontSources = new Map();
+// Settle outcomes of @font-face rules whose face has not been created yet,
+// keyed by the rule's CSSOM address (`sheetId/path`). The engine reports each
+// rule's terminal status once; a face created after that reads its entry here
+// instead of waiting for a second report.
+const __tbSettledFontRules = new Map();
 
-/// Settles the CSS-connected faces whose source URL the engine fetched.
-globalThis.__tbFontFaceSettled = function (requested, finalUrl, loaded) {
-  if (requested) __tbSettledFontSources.set(requested, loaded);
-  if (finalUrl) __tbSettledFontSources.set(finalUrl, loaded);
-  const faces = __tbFontCssFaces();
-  for (let index = 0; index < faces.length; index++) {
-    const face = faces[index];
-    const state = __tbFontFaceState(face);
-    if (state.status !== 'loading') continue;
-    const urls = state.sourceUrls;
-    if (__tbArray.indexOf(urls, requested) === -1
-        && (finalUrl === '' || __tbArray.indexOf(urls, finalUrl) === -1)) {
-      continue;
-    }
-    if (loaded) face._complete();
-    else face._fail(__tbFontError('font source failed to load', 'NetworkError'));
+/// Settles the CSS-connected face of the `@font-face` rule the engine just
+/// finished: the CSSOM address names the rule, and the outcome is the
+/// engine's own load result — a source that yields no face moved the rule's
+/// list to the next source, and a list that runs out is an error
+/// (<https://drafts.csswg.org/css-fonts-4/#src-desc>,
+/// <https://drafts.csswg.org/css-font-loading/#dom-fontface-status>).
+host.__tbFontFaceSettled = function (sheetId, path, loaded) {
+  const address = sheetId + '/' + path.join('/');
+  const rule = __tbCssomRuleAt(sheetId, path);
+  if (rule === null) {
+    __tbSettledFontRules.set(address, loaded);
+    return;
   }
+  const face = __tbCssFontFaces.get(rule);
+  if (face === undefined) {
+    __tbSettledFontRules.set(address, loaded);
+    return;
+  }
+  __tbSettledFontRules.delete(address);
+  const state = __tbFontFaceState(face);
+  if (state.status !== 'loading') return;
+  if (loaded) {
+    face._complete();
+  } else {
+    face._fail(__tbFontError('font source failed to load', 'NetworkError'));
+  }
+  __tbFontSetTrack(__tbFontFaceSet);
 };
 
 function __tbFontSetState(set) {
@@ -771,20 +780,53 @@ function __tbFontSetAll(set) {
   return all;
 }
 
-function __tbFontSetRefreshReady(set) {
+/// Observes one `FontFaceSet` transition: the set is loading while any of its
+/// faces is, and its `[[ReadyPromise]]` is replaced exactly when it goes back
+/// to loading, resolved when the last face settles
+/// (<https://drafts.csswg.org/css-font-loading/#font-face-set-ready>).
+/// `loading`, `loadingdone`, and `loadingerror` fire on those transitions with
+/// the faces the window covered, split by outcome
+/// (<https://drafts.csswg.org/css-font-loading/#dom-fontfaceset-onloading>).
+function __tbFontSetTrack(set) {
   const state = __tbFontSetState(set);
-  const faces = state.faces.slice();
-  state.ready = Promise.allSettled(__tbArray.map(faces, face => face.loaded)).then(results => {
-    const failed = __tbArray.filter(results, result => result.status === 'rejected');
+  if (__tbFontWalkDepth > 0) {
+    // A face-creating walk is on the stack: the transitions it triggers are
+    // observed by the track that started the walk, when it returns.
+    return;
+  }
+  // The walk that materializes a rule's face happens inside this read, so a
+  // face created by it is part of the same transition.
+  const all = __tbFontSetAll(set);
+  let loading = false;
+  for (let index = 0; index < all.length; index++) {
+    if (__tbFontFaceState(all[index]).status === 'loading') { loading = true; break; }
+  }
+  if (!loading) {
+    if (!state.pendingReady) return;
+    state.pendingReady = false;
+    const failed = __tbArray.filter(
+      state.loadingFaces, face => __tbFontFaceState(face).status === 'error');
+    const done = __tbArray.filter(
+      state.loadingFaces, face => __tbFontFaceState(face).status === 'loaded');
     if (failed.length !== 0) {
-      __tbFontFire(set, 'loadingerror', __tbArray.filter(
-        faces, (face, index) => results[index].status === 'rejected',
-      ));
-    } else if (faces.length !== 0) {
-      __tbFontFire(set, 'loadingdone', faces);
+      __tbFontFire(set, 'loadingerror', failed);
+    } else if (done.length !== 0) {
+      __tbFontFire(set, 'loadingdone', done);
     }
-    return set;
-  });
+    state.loadingFaces = [];
+    state.resolveReady(set);
+    return;
+  }
+  if (state.pendingReady) return;
+  state.pendingReady = true;
+  state.loadingFaces = [];
+  for (let index = 0; index < all.length; index++) {
+    if (__tbFontFaceState(all[index]).status === 'loading') {
+      state.loadingFaces.push(all[index]);
+    }
+  }
+  state.ready = new Promise(resolve => { state.resolveReady = resolve; });
+  __tbFontFire(set, 'loading', state.loadingFaces.slice());
 }
 
 /// Split a comma-separated value at top level, keeping quoted commas.
@@ -898,7 +940,13 @@ class FontFaceSet extends __tbFontEventTarget {
       throw new TypeError('Illegal constructor');
     }
     super();
-    __tbFontSetSlots.set(this, { faces: [], ready: Promise.resolve(this) });
+    __tbFontSetSlots.set(this, {
+      faces: [],
+      ready: Promise.resolve(this),
+      pendingReady: false,
+      resolveReady: null,
+      loadingFaces: [],
+    });
   }
 
   get size() {
@@ -914,18 +962,12 @@ class FontFaceSet extends __tbFontEventTarget {
   }
 
   get ready() {
+    // A rule whose face no walk created yet (a settle the engine reported
+    // before anything read the set) is materialized here, so a late read
+    // still observes the window it opens.
     const state = __tbFontSetState(this);
-    const pending = __tbArray.filter(
-      __tbFontCssFaces(),
-      face => __tbFontFaceState(face).status === 'loading',
-    );
-    if (pending.length === 0) return state.ready;
-    // CSS-connected faces are in the set but their fetch belongs to the
-    // engine; `__tbFontFaceSettled` settles each one's `loaded` promise
-    // (<https://drafts.csswg.org/css-font-loading/#font-face-set-ready>).
-    return Promise.allSettled(
-      [state.ready, ...__tbArray.map(pending, face => face.loaded)],
-    ).then(() => this);
+    __tbFontSetTrack(this);
+    return state.ready;
   }
 
   has(face) {
@@ -943,7 +985,7 @@ class FontFaceSet extends __tbFontEventTarget {
     if (__tbArray.indexOf(state.faces, face) !== -1) return this;
     state.faces.push(face);
     face._attach();
-    __tbFontSetRefreshReady(this);
+    __tbFontSetTrack(this);
     return this;
   }
 
@@ -954,7 +996,7 @@ class FontFaceSet extends __tbFontEventTarget {
     if (index === -1) return false;
     __tbArray.remove(state.faces, index);
     face._detach();
-    __tbFontSetRefreshReady(this);
+    __tbFontSetTrack(this);
     return true;
   }
 
@@ -963,7 +1005,7 @@ class FontFaceSet extends __tbFontEventTarget {
     const faces = state.faces;
     state.faces = [];
     for (let index = 0; index < faces.length; index++) faces[index]._detach();
-    __tbFontSetRefreshReady(this);
+    __tbFontSetTrack(this);
   }
 
   forEach(callback, thisArg) {
@@ -1068,7 +1110,6 @@ __tbDefineProperty(FontFaceSet.prototype, Symbol.toStringTag, {
 globalThis.FontFaceSet = FontFaceSet;
 
 const __tbFontFaceSet = new FontFaceSet(__tbFontFaceSetToken);
-__tbFontSetSlots.get(__tbFontFaceSet).ready = Promise.resolve(__tbFontFaceSet);
 
 function __tbFontSetOnEvent(name) {
   __tbDefineProperty(FontFaceSet.prototype, name, {

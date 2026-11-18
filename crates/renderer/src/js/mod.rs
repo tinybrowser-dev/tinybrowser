@@ -1176,13 +1176,13 @@ impl JsRealm {
     /// `@font-face` source finishes.
     pub(crate) fn font_face_settled(
         &self,
-        requested: &str,
-        final_url: &str,
+        sheet: u64,
+        path: Vec<usize>,
         loaded: bool,
     ) -> Result<(), JsError> {
         self.with_budget(None, MicrotaskCheckpoint::Perform, || {
             self.context.with(|ctx| {
-                bindings::font_face_settled(&ctx, requested, final_url, loaded)?;
+                bindings::font_face_settled(&ctx, sheet, path, loaded)?;
                 Ok(())
             })
         })

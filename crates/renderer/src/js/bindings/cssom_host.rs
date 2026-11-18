@@ -75,6 +75,10 @@ fn install_sheet_functions(bridge: &Object<'_>) -> Result<()> {
         rquickjs::prelude::Func::from(node_sheet_id),
     )?;
     bridge.set(
+        "__tb_sheet_generation",
+        rquickjs::prelude::Func::from(sheet_generation),
+    )?;
+    bridge.set(
         "__tb_sheet_origin_state",
         rquickjs::prelude::Func::from(sheet_origin_state),
     )?;
@@ -276,6 +280,27 @@ fn node_sheet_id<'js>(ctx: Ctx<'js>, element: Value<'js>) -> f64 {
                 sheet as f64
             }
         })
+}
+
+/// The document's stylesheet generation: a counter that changes whenever the
+/// sheet set or a sheet's rules change, so a cached walk of them knows when it
+/// is stale.
+fn sheet_generation(ctx: Ctx<'_>) -> f64 {
+    let Ok(world) = world(&ctx) else {
+        return -1.0;
+    };
+    let world = world.borrow();
+    let Some(parsed) = world.main_document() else {
+        return -1.0;
+    };
+    let generation = parsed.document.base.stylesheet_generation();
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "the generation counter stays inside the exact integer range of f64"
+    )]
+    {
+        generation as f64
+    }
 }
 
 fn sheet_origin_state<'js>(ctx: Ctx<'js>, element: Value<'js>, id: f64) -> f64 {

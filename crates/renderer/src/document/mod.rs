@@ -629,9 +629,6 @@ pub(crate) struct Document {
         std::sync::mpsc::Receiver<(crate::render::BlitzFetch, crate::render::CountingHandler)>,
     /// Filed Blitz subresource requests by fetch id, delivered on completion.
     blitz_requests: HashMap<u64, BlitzRequest>,
-    /// Font responses a resolve pass ingested, settled into the page's
-    /// `FontFaceSet` only after the pass registered the face.
-    pending_font_loads: Vec<(String, String)>,
     /// Stylesheet and font bodies by request, so a repeat Blitz fetch reuses
     /// the response instead of dialing again. Images are absent: Blitz's own
     /// cache answers a repeat request with no dial
@@ -1026,7 +1023,6 @@ impl Document {
             blitz_fetch_rx: blitz_rx,
             image_settle_rx: settle_rx,
             blitz_requests: HashMap::new(),
-            pending_font_loads: Vec::new(),
             subresource_bytes: HashMap::new(),
             style_policies: HashMap::new(),
             frame,
@@ -4379,10 +4375,6 @@ impl Document {
             self.fail_blitz_request(request);
             return;
         }
-        if destination == Some(crate::csp::Destination::Font) {
-            self.pending_font_loads
-                .push((request.key.url.to_string(), outcome.final_url.to_string()));
-        }
         Box::new(request.handler).response(
             outcome.final_url.to_string(),
             blitz_traits::net::Bytes::from(body.unwrap_or_default().to_vec()),
@@ -4516,11 +4508,34 @@ impl Document {
         let _ = passes;
         self.note_linked_stylesheets();
         self.drain_image_settlements();
-        if !self.pending_font_loads.is_empty() {
-            let loads = std::mem::take(&mut self.pending_font_loads);
+        let settled: Vec<(u64, Vec<usize>, bool)> = {
+            let world = self.world.borrow();
+            let Some(mut parsed) = world.main_document_mut() else {
+                return;
+            };
+            let events = parsed.document.base.take_pending_font_face_events();
+            events
+                .into_iter()
+                .filter_map(|event| {
+                    // The CSSOM address is what script can resolve to a face;
+                    // a rule no live sheet holds (a document rebuilt in
+                    // place) has no face left to settle.
+                    let (sheet, path) = parsed
+                        .document
+                        .base
+                        .cssom_font_face_rule_path(&event.rule)?;
+                    let loaded = matches!(
+                        event.status,
+                        blitz_dom::font_face_events::FontFaceLoadStatus::Loaded
+                    );
+                    Some((sheet, path, loaded))
+                })
+                .collect()
+        };
+        if !settled.is_empty() {
             self.fire_js(|js| {
-                for (requested, final_url) in &loads {
-                    js.font_face_settled(requested, final_url, true)?;
+                for (sheet, path, loaded) in &settled {
+                    js.font_face_settled(*sheet, path.clone(), *loaded)?;
                 }
                 Ok(())
             });
@@ -4908,15 +4923,10 @@ impl Document {
     fn fail_blitz_request(&mut self, request: BlitzRequest) {
         let BlitzRequest {
             handler,
-            key,
             node,
             destination,
             ..
         } = request;
-        if destination == Some(crate::csp::Destination::Font) {
-            let requested = key.url.to_string();
-            self.fire_js(|js| js.font_face_settled(&requested, "", false));
-        }
         Box::new(handler).bytes(String::new(), blitz_traits::net::Bytes::new());
         if !destination.is_some_and(crate::csp::Destination::is_image)
             && let Some(node) = node

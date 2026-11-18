@@ -3975,3 +3975,35 @@ in that turn. The project and global `AGENTS.md` state it, the four submodule
 create` as `tool.use` policies. A policy runs after agent rules and saved "Allow
 always" approvals, so it cannot be lifted from inside a session; a fresh session
 reports `Blocked by configuration policy`.
+
+## @font-face source walks, 2026-11-19
+
+The engine owns the `@font-face` load end to end now (blitz@eea8fe78f): the
+rule's own `src` list is walked in order, a source that yields no face moves
+the walk to the next, and a rule's terminal outcome is reported by its CSSOM
+address (`take_pending_font_face_events`), so the shim settles `FontFace`
+objects by rule identity instead of string-matching request URLs against
+every sheet. `local()` entries fall through — fontique has no way to make a
+held family become another family's source, and the first cut, which settled
+a held `local()` as loaded, was caught by `css/css-fonts/font-face-local-not-family.html`
+rendering the fallback font while reporting success. One file flips red:
+
+- `css/css-fonts/generic-family-keywords-001.html`: FAIL (all 15 subtests
+  failing, `quoted serif matches @font-face rule: expected 50 but got 28`) ->
+  TIMEOUT. The first keyword's subtest now PASSES — the new rule-identity
+  settle fixed the quoted-generic matching the old design could not — and the
+  timeout is a paused-clock delivery bug for the third and later cached font
+  rounds: the page's second `document.fonts.ready` await never resolves, the
+  harness jumps the virtual clock to testharness's per-test timer, and the
+  rest report NOTRUN. Evidence gathered: the same page completes in 1.0 s
+  with the harness's `--real-time` flag and under the daemon with real fonts
+  served; instrumented runs show the first two keywords' rules settling
+  (one Error event per unquoted generic rule, by design, and one Loaded per
+  quoted rule) and no event at all for the third quoted rule — one `Font`
+  dial plus only two `subresource_bytes` cache-hit deliveries for nine
+  walked sheets. The next pass should instrument `drain_blitz_fetches`'
+  ingest for the third cache-hit round: its `ResourceLoad` message is either
+  queued without a following settle pass under the paused clock, or the
+  request never reaches the ingest. Known work item; every other file in
+  the `css/css-font-loading` + `css/css-fonts` selection matches the old
+  baseline exactly, `font-face-local-not-family.html` included.
