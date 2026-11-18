@@ -20,6 +20,7 @@ mod wrapper;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -322,19 +323,17 @@ fn run_pending(
     let watchdog = watchdog::Watchdog::new(workers);
     let done = AtomicBool::new(false);
     let done = &done;
-    // Reftests name the Ahem face without an `@font-face` rule and expect the
-    // suite to have installed it: wptrunner copies `fonts/Ahem.ttf` into the
-    // system font directory while `--install-fonts` is on. The in-process lane
-    // never runs wptrunner, so read the file the suite serves once and register
-    // it in every worker's font database. System-wide installation would mutate
-    // the user's font directory and leave the cache to rebuild.
-    let ahem = match std::fs::read(options.root.join("fonts/Ahem.ttf")) {
-        Ok(data) => data,
+    let ahem: Arc<Vec<u8>> = match std::fs::read(options.root.join("fonts/Ahem.ttf")) {
+        Ok(data) => Arc::new(data),
         Err(error) => {
             eprintln!("wpt-harness: cannot read fonts/Ahem.ttf: {error}");
             std::process::exit(2);
         }
     };
+    if renderer::Fonts::default().register_font(ahem.clone()) == 0 {
+        eprintln!("wpt-harness: fonts/Ahem.ttf contains no font family");
+        std::process::exit(2);
+    }
     let ahem = &ahem;
     std::thread::scope(|scope| {
         // One monitor for every worker: a file that stops returning ends this
@@ -374,10 +373,7 @@ fn run_pending(
                 // One font database per worker: building it scans the system
                 // fonts, and every engine this thread creates can share it.
                 let mut fonts = renderer::Fonts::default();
-                if fonts.register_font(ahem.clone()) == 0 {
-                    eprintln!("wpt-harness: fonts/Ahem.ttf contains no font family");
-                    std::process::exit(2);
-                }
+                fonts.register_font(ahem.clone());
                 while let Some(&index) = pending.get(next.fetch_add(1, Ordering::Relaxed)) {
                     let case = &cases[index];
                     if let Some(journal) = journal {

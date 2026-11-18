@@ -10,6 +10,8 @@
 //! build. Both feed the same [`Engine`], and both implement [`BrowserServices`]
 //! to supply effects.
 
+use std::sync::Arc;
+
 use markup5ever::interface::QuirksMode;
 
 use crate::documents::BlitzDocument;
@@ -53,16 +55,23 @@ pub struct Fonts(parley::FontContext);
 impl Fonts {
     /// Registers every face in `data`, which must be a font file.
     ///
-    /// Returns the number of families added, so a caller can reject data that
-    /// carries no usable face. The WPT harness uses this to provide Ahem:
-    /// reftests name `Ahem` without an `@font-face`, and wptrunner installs
-    /// the file into the system font directory with `--install-fonts`. The
-    /// in-process lane never runs wptrunner, so it registers the suite's
-    /// `fonts/Ahem.ttf` here instead of mutating the user's font directory.
-    pub fn register_font(&mut self, data: Vec<u8>) -> usize {
+    /// The bytes are shared, not copied: the collection keeps the arc. The
+    /// count is one per family the data's faces name — a family the
+    /// collection already holds is counted again — and zero when nothing
+    /// parses, arbitrary bytes included, so `0` is the caller's signal that
+    /// no face registered.
+    ///
+    /// ```
+    /// use renderer::Fonts;
+    /// use std::sync::Arc;
+    ///
+    /// let mut fonts = Fonts::default();
+    /// assert_eq!(fonts.register_font(Arc::new(b"not a font".to_vec())), 0);
+    /// ```
+    pub fn register_font(&mut self, data: Arc<dyn AsRef<[u8]> + Send + Sync>) -> usize {
         self.0
             .collection
-            .register_fonts(parley::fontique::Blob::from(data), None)
+            .register_fonts(parley::fontique::Blob::new(data), None)
             .len()
     }
 }
