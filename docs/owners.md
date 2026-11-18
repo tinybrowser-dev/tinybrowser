@@ -10,6 +10,7 @@ it (#239).
 | Target names and keywords | `renderer::protocol::TargetName` | the type; never a `_self`/`_blank` spelling |
 | Serialized origins | `renderer::protocol::SerializedOrigin` | `Origin`/`Site` after parsing |
 | Origin to URL | `net::origin_url` (`crates/net/src/lib.rs`) | the `Url`, not a string |
+| URL parse with a document encoding | `js::url_parts::encoding_parse_url` | the encoding label, never a second percent-encode loop |
 | Site for an origin | `net::site_for_origin`, `cookies::site_for_origin` | the site string |
 | Referrer policy | `net::referrer` | the enum |
 | Header grammar and request methods | `net::protocol`, `net::cors` | `http`/`net` types |

@@ -147,6 +147,16 @@ run_guards() {
     echo "guard: decode CDP params into a params:: struct" >&2
     status=1
   fi
+  # A URL parsed with a document's encoding goes through one owner,
+  # `js::url_parts::encoding_parse_url`. A second hand-rolled percent-encode
+  # loop for the query reintroduces the two loaders that disagreed (#266).
+  matches="$(grep -rn 'HEX\[' crates/renderer/src --include='*.rs' \
+    | grep -v '^crates/renderer/src/js/url_parts.rs:' || true)"
+  if [[ -n "$matches" ]]; then
+    printf '%s\n' "$matches" >&2
+    echo "guard: parse with an encoding override in js::url_parts" >&2
+    status=1
+  fi
   if [[ "$status" -eq 0 ]]; then
     echo "guards: no second copy of a parsed type"
   fi

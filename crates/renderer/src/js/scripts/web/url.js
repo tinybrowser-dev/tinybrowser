@@ -9,8 +9,10 @@ host.__tbUSVString = __tbIDLUSVString;
 
 // URL decomposition components; indexes match `js/url_parts.rs`
 // (<https://html.spec.whatwg.org/multipage/links.html#url-decomposition-idl-attributes>).
+// The WHATWG URL constructor never takes an encoding override, so its parses
+// are always UTF-8 (<https://url.spec.whatwg.org/#dom-url-url>).
 const __tbUrlPart = (href, index) => {
-  const values = host.__tbUrlParts(href, href);
+  const values = host.__tbUrlParts(href, href, 'utf-8');
   return values === null || values === undefined ? null : values[index];
 };
 const __tbRefreshUrlParams = url => {
@@ -25,7 +27,8 @@ const __tbRefreshUrlParams = url => {
   }
 };
 const __tbSetUrlPart = (url, index, value) => {
-  const result = host.__tbUrlSetPart(__tbUrlState(url).href, __tbUrlState(url).href, index, value);
+  const result = host.__tbUrlSetPart(
+    __tbUrlState(url).href, __tbUrlState(url).href, index, value, 'utf-8');
   if (result !== null && result !== undefined) {
     __tbUrlState(url).href = result;
     __tbRefreshUrlParams(url);
@@ -77,7 +80,8 @@ globalThis.URL = class URL {
       const params = new URLSearchParams(this.search);
       const url = this;
       __tbParamsState(params).sync = value => {
-        const result = host.__tbUrlSetPart(__tbUrlState(url).href, __tbUrlState(url).href, 7, String(value));
+        const result = host.__tbUrlSetPart(
+          __tbUrlState(url).href, __tbUrlState(url).href, 7, String(value), 'utf-8');
         if (result !== null && result !== undefined) __tbUrlState(url).href = result;
       };
       __tbUrlState(this).searchParams = params;

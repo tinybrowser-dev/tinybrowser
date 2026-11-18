@@ -603,10 +603,12 @@ pub(crate) fn nullable_node_argument<'js>(
 }
 
 /// A URL-reflected content attribute: absent reflects as the empty string,
-/// otherwise the value resolves against the document base URL and
+/// otherwise the value resolves against the document base URL with the
+/// document's character encoding as the URL parser's encoding override, and
 /// serializes, falling back to the raw value when parsing fails. A present
 /// but empty attribute still resolves (to the base URL itself)
-/// (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#reflecting-content-attributes-in-idl-attributes>).
+/// (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#reflecting-content-attributes-in-idl-attributes>,
+/// <https://html.spec.whatwg.org/multipage/urls-and-fetching.html#parse-a-url>).
 #[inline(never)]
 pub(crate) fn reflect_url_string(
     ctx: &Ctx<'_>,
@@ -614,16 +616,26 @@ pub(crate) fn reflect_url_string(
     content: &str,
 ) -> Result<crate::dom_string::DomString> {
     let world_rc = world(ctx)?;
-    let raw = world_rc.borrow().document(id).and_then(|parsed| {
-        crate::dom::tree::attr(&parsed.document.base, id.node, content).map(str::to_owned)
-    });
+    let (raw, encoding) = {
+        let world = world_rc.borrow();
+        let Some(parsed) = world.document(id) else {
+            return Ok(crate::dom_string::DomString::default());
+        };
+        let raw =
+            crate::dom::tree::attr(&parsed.document.base, id.node, content).map(str::to_owned);
+        let encoding = encoding_rs::Encoding::for_label(parsed.character_set.as_bytes())
+            .unwrap_or(encoding_rs::UTF_8);
+        (raw, encoding)
+    };
     let Some(raw) = raw else {
         return Ok(crate::dom_string::DomString::default());
     };
     let base = super::document::document_base_url_string(ctx, id);
     Ok(url::Url::parse(&base)
         .ok()
-        .and_then(|base| base.join(&raw).ok())
+        .and_then(|base| {
+            crate::js::url_parts::encoding_parse_url(&raw, &base, &encoding)
+        })
         .map_or(raw, |url| url.to_string())
         .into())
 }

@@ -189,6 +189,10 @@
       return value === null ? null : host.__tbUSVString(value);
     };
     const base = function() { return host.__tbUSVString(document.baseURI); };
+    // The shared decomposition getters parse the href with the document's
+    // character encoding, not UTF-8
+    // (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#parse-a-url>).
+    const charset = function() { return host.__tbUSVString(document.charset); };
     for (const proto of [table.HTMLAnchorElement, table.HTMLAreaElement]) {
       for (const name of Object.keys(parts)) {
         const index = parts[name];
@@ -198,7 +202,7 @@
             // the document URL.
             const href = hrefValue.call(this);
             if (href === null) return name === 'protocol' ? ':' : '';
-            const values = host.__tbUrlParts(href, base.call(this));
+            const values = host.__tbUrlParts(href, base.call(this), charset.call(this));
             if (values === null || values === undefined) {
               return name === 'protocol' ? ':' : '';
             }
@@ -213,7 +217,7 @@
             const href = hrefValue.call(this);
             if (href === null) return;
             const result = host.__tbUrlSetPart(
-              href, base.call(this), index, host.__tbUSVString(value));
+              href, base.call(this), index, host.__tbUSVString(value), charset.call(this));
             if (result !== null && result !== undefined) this.setAttribute('href', result);
           };
         }
