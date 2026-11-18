@@ -1,7 +1,7 @@
 //! Named profile daemon: loopback CDP, runtime-dir registration, startup lock.
 
 use std::fs::{self, File, OpenOptions, TryLockError};
-use std::io::{self, Write};
+use std::io;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 
@@ -76,9 +76,6 @@ pub async fn run(profile: &Profile, data_home: &Path) -> io::Result<()> {
     if result.is_err() {
         let _close_result = browser.close().await;
     }
-    // The lock file stays: the kernel lock on its open description is what
-    // says "held", and unlinking it would let a third process create a second
-    // lock file while this one is still owned.
     result
 }
 
@@ -102,6 +99,13 @@ fn env_runtime_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// Takes the profile's daemon lock, or answers `None` when a daemon holds it.
+///
+/// The lock is an `flock` on the lock file's open description; the file's
+/// contents are nothing (the pid clients read is in `daemon.json`). The open
+/// is read-write only because creating the file requires write access. The
+/// file is never unlinked on exit, because a third process could then create
+/// a second lock file while the old description is still owned.
 fn acquire_lock(runtime: &Path) -> io::Result<Option<File>> {
     let path = runtime.join("lock");
     let file = OpenOptions::new()
@@ -112,12 +116,7 @@ fn acquire_lock(runtime: &Path) -> io::Result<Option<File>> {
         .open(&path)?;
     restrict_file(&path)?;
     match file.try_lock() {
-        Ok(()) => {
-            file.set_len(0)?;
-            writeln!(&file, "{}", std::process::id())?;
-            file.sync_all()?;
-            Ok(Some(file))
-        }
+        Ok(()) => Ok(Some(file)),
         Err(TryLockError::WouldBlock) => Ok(None),
         Err(TryLockError::Error(error)) => Err(error),
     }

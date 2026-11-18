@@ -376,6 +376,11 @@ pub(crate) fn poll_until<T>(what: &str, mut probe: impl FnMut() -> Option<T>) ->
     }
 }
 
+/// Whether a process id still has a `/proc` entry, the test view of "alive".
+pub(crate) fn pid_alive(pid: u32) -> bool {
+    std::path::Path::new("/proc").join(pid.to_string()).exists()
+}
+
 /// The request target of a request head, or `None` when the request line is
 /// malformed. One parser decides both what a server records and what route it
 /// answers: a line with no method, target, or HTTP version is dropped rather

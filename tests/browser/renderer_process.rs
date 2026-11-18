@@ -2,7 +2,7 @@
 
 use std::time::{Duration, Instant};
 
-use crate::fixture::{Fixture, TestServer, ok};
+use crate::fixture::{Fixture, TestServer, ok, pid_alive};
 use serde_json::{Value, json};
 
 fn attach(client: &mut cdp::Client, target: &str) -> String {
@@ -626,10 +626,6 @@ fn renderers_exit_when_the_daemon_is_killed() {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
-}
-
-fn pid_alive(pid: u32) -> bool {
-    std::path::Path::new("/proc").join(pid.to_string()).exists()
 }
 
 #[test]

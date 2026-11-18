@@ -1,11 +1,6 @@
-use std::path::Path;
 use std::time::{Duration, Instant};
 
-use crate::fixture::Fixture;
-
-fn pid_alive(pid: u32) -> bool {
-    Path::new("/proc").join(pid.to_string()).exists()
-}
+use crate::fixture::{Fixture, pid_alive};
 
 #[test]
 fn daemon_registers_loopback_and_second_start_reuses_it() {
@@ -42,15 +37,12 @@ fn daemon_registers_loopback_and_second_start_reuses_it() {
 }
 
 #[test]
-fn stale_lock_is_replaced() {
+fn killed_daemon_is_replaced() {
     let mut fixture = Fixture::new("tinybrowser-daemon");
     let first_id = fixture.spawn_daemon();
     let info = fixture.wait_json();
     assert_eq!(info["pid"].as_u64().expect("pid"), u64::from(first_id));
 
-    // SIGKILL leaves both the lock file and daemon.json behind. The kernel
-    // releases the file lock with the process, so the next daemon must take
-    // the profile over instead of reading the leftover pid as "held".
     fixture.children()[0].kill().expect("kill daemon");
     let _status = fixture.children()[0].wait().expect("reap daemon");
 
