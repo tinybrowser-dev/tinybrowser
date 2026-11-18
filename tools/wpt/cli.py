@@ -11,6 +11,7 @@ scheduling, driving, and reporting. This file owns the phases around it:
 * `merge`  — fold the chunk reports of a CI run into one score.
 * `corpus` — Chrome's per-test subtest counts for the pinned WPT revision.
 * `publish` — one record into the history repo's data directory.
+* `summary` — the regression summary of a published data directory.
 * `profile` — run tests (or read one report) and rank them by wall time.
 * `failures` — print the canonical failure list from a `--score` log.
 * `baseline` — run a slice at two revisions, diff the failure lists.
@@ -62,7 +63,7 @@ from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from timeouts import DEFAULT_TIMEOUT, EXTRA_TIMEOUT, LONG_TIMEOUT
 
@@ -93,6 +94,9 @@ WORKER_VARIANT = re.compile(
 # classified by the report's `expected` field.
 HARD_STATUSES = ("TIMEOUT", "CRASH", "ERROR")
 TIMEOUT_STATUSES = ("TIMEOUT", "EXTERNAL-TIMEOUT")
+# A file-level row with one of these statuses reported no subtests, so
+# whatever it reports on a later run is newly measured, not a regression.
+UNMEASURED_STATUSES = HARD_STATUSES + ("EXTERNAL-TIMEOUT",)
 MAX_LISTED = 40
 
 # `wpt run`'s requirements (tools/wpt/commands.json), which WPT re-checks on
@@ -1489,8 +1493,15 @@ not comparable, so the diff is empty and says so.
 The command only touches the data directory; the caller owns git."""
 
 
-def failure_key(entry: dict) -> tuple[str, str]:
-    return (entry.get("test") or "", entry.get("subtest") or "")
+class FailureKey(NamedTuple):
+    """The identity of one failing row: a file, and "" for the file itself."""
+
+    test: str
+    subtest: str
+
+
+def failure_key(entry: dict) -> FailureKey:
+    return FailureKey(entry.get("test") or "", entry.get("subtest") or "")
 
 
 def diff_failures(previous: list[dict], current: list[dict], comparable: bool) -> dict:
@@ -1501,29 +1512,27 @@ def diff_failures(previous: list[dict], current: list[dict], comparable: bool) -
     the denominator moved, so "new" and "fixed" would describe the pin, not
     the engine.
 
-    A file whose previous file-level row was TIMEOUT, ERROR, or CRASH reported
-    no subtests, so every subtest it reports now is newly measured rather than
-    a regression. Its vanished file-level row is only a fix when the file has
-    no failures at all now.
+    A file whose previous file-level row never finished (a hard status, or an
+    external timeout) reported no subtests, so every subtest it reports now is
+    newly measured rather than a regression. Its vanished file-level row is
+    only a fix when the file has no failures at all now.
     """
     before = {failure_key(entry): entry for entry in previous}
     after = {failure_key(entry): entry for entry in current}
     new_keys = sorted(after.keys() - before.keys())
     fixed_keys = sorted(before.keys() - after.keys())
-    unmeasured = {"TIMEOUT", "ERROR", "CRASH"}
-
-    def was_unmeasured(test: str) -> bool:
-        row = before.get((test, ""))
-        return row is not None and row.get("status") in unmeasured
+    failing_tests = {key.test for key in after}
 
     regressions: list[dict] = []
     new_timeouts: list[dict] = []
     newly_measured: list[dict] = []
     for key in new_keys:
         entry = after[key]
-        if entry.get("status") == "TIMEOUT":
+        if entry.get("status") in TIMEOUT_STATUSES:
             new_timeouts.append(entry)
-        elif key[1] and was_unmeasured(key[0]):
+            continue
+        row = before.get(FailureKey(key.test, ""))
+        if key.subtest and row is not None and row.get("status") in UNMEASURED_STATUSES:
             newly_measured.append(entry)
         else:
             regressions.append(entry)
@@ -1532,7 +1541,7 @@ def diff_failures(previous: list[dict], current: list[dict], comparable: bool) -
         for key in fixed_keys
         # A file-level row that disappears while subtests still fail is a
         # measurement change, not a fixed test.
-        if key[1] or not any(test == key[0] for test, _ in after)
+        if key.subtest or key.test not in failing_tests
     ]
     return {
         "regressions": regressions if comparable else [],
@@ -1730,6 +1739,95 @@ def publish_main(argv: list[str]) -> int:
         f"{len(diff['new_timeouts'])} new timeouts, "
         f"{len(diff['newly_measured'])} newly measured)"
     )
+    return 0
+
+
+SUMMARY_USAGE = """summary --data DIR
+
+Print the regression summary the review pass reads: file-level regressions
+first, then a subtest sample, then the timeout/newly-measured/fix counts.
+`--data` is the results repo's data directory, whose regressions.json the
+last `publish` wrote. Every key is indexed directly, so a schema change in
+`publish` fails here instead of printing zeros."""
+
+# Truncation keeps the step summary readable: a bad push can regress
+# thousands of subtests.
+SUMMARY_FILES = 50
+SUMMARY_SUBTESTS = 20
+
+
+def format_regression_summary(diff: dict) -> str:
+    """The markdown the CI step appends to its job summary.
+
+    `publish` writes every key this reads, so a rename in `diff_failures`
+    or `publish_main` raises here rather than printing zeros.
+    """
+    if not diff["comparable"]:
+        return (
+            "### WPT regressions\n\n"
+            "Not comparable: the first publish, or the WPT pin changed.\n"
+        )
+    previous = (diff["previous_sha"] or "")[:8]
+    regressions = diff["regressions"]
+    files = [entry for entry in regressions if not entry.get("subtest")]
+    tests = [entry for entry in regressions if entry.get("subtest")]
+    out = [f"### WPT regressions vs `{previous}`\n"]
+    if not regressions:
+        out.append("No new failures.\n")
+    for entry in files[:SUMMARY_FILES]:
+        out.append(f"- `{entry['test']}` ({entry.get('status', 'FAIL')})\n")
+    if len(files) > SUMMARY_FILES:
+        out.append(f"- ... and {len(files) - SUMMARY_FILES} more files\n")
+    if tests:
+        out.append(f"\n{len(tests)} new subtest failures, e.g.\n")
+        for entry in tests[:SUMMARY_SUBTESTS]:
+            out.append(
+                f"- `{entry['test']}` :: `{entry.get('subtest', '')}`"
+                f" ({entry.get('status', 'FAIL')})\n"
+            )
+        if len(tests) > SUMMARY_SUBTESTS:
+            out.append(f"- ... and {len(tests) - SUMMARY_SUBTESTS} more subtests\n")
+    out.append(
+        f"\nNew timeouts: {len(diff['new_timeouts'])}; "
+        f"newly measured: {len(diff['newly_measured'])}; "
+        f"fixes: {len(diff['fixes'])}.\n"
+    )
+    return "".join(out)
+
+
+def summary_main(argv: list[str]) -> int:
+    data_dir: Path | None = None
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        name = arg.split("=", 1)[0]
+        if name == "--data":
+            if "=" in arg:
+                value = arg.split("=", 1)[1]
+            elif i + 1 < len(argv) and not argv[i + 1].startswith("-"):
+                value = argv[i + 1]
+                i += 1
+            else:
+                value = ""
+            if not value:
+                return die("summary", "--data needs a value", 2)
+            data_dir = Path(value)
+        elif arg in ("-h", "--help"):
+            print(SUMMARY_USAGE)
+            return 0
+        else:
+            return die("summary", f"unexpected argument {arg}\n{SUMMARY_USAGE}", 2)
+        i += 1
+    if data_dir is None:
+        return die("summary", f"need --data\n{SUMMARY_USAGE}", 2)
+    path = data_dir / "regressions.json"
+    try:
+        diff = json.loads(path.read_text())
+    except OSError as error:
+        return die("summary", f"cannot read {path}: {error}", 2)
+    except json.JSONDecodeError as error:
+        return die("summary", f"{path} is not valid JSON ({error})", 2)
+    sys.stdout.write(format_regression_summary(diff))
     return 0
 
 
@@ -3700,6 +3798,8 @@ def _selftest() -> None:
     _selftest_corpus()
     _selftest_merge()
     _selftest_publish()
+    _selftest_diff()
+    _selftest_summary()
 
 
 def _selftest_profile() -> None:
@@ -4185,7 +4285,110 @@ def _selftest_publish() -> None:
             assert read_failures(data / "failures.jsonl.gz") == []
 
 
-TOP_HELP = """tinybrowser WPT harness: run | score | rerun | merge | corpus | publish | profile | failures | baseline | manifest | overnight | selftest
+def _selftest_diff() -> None:
+    """diff_failures: every bucket, by status and by file shape."""
+
+    def row(test: str, subtest: str, status: str) -> dict:
+        return {"test": test, "subtest": subtest, "status": status}
+
+    previous = [
+        row("/t.html", "", "TIMEOUT"),
+        row("/e.html", "", "ERROR"),
+        row("/c.html", "", "CRASH"),
+        row("/f.html", "", "FAIL"),
+        row("/s.html", "a", "FAIL"),
+        row("/s.html", "b", "FAIL"),
+    ]
+    current = [
+        row("/t.html", "x", "FAIL"),
+        row("/e.html", "x", "FAIL"),
+        row("/c.html", "x", "FAIL"),
+        row("/f.html", "x", "FAIL"),
+        row("/s.html", "b", "FAIL"),
+        row("/n.html", "", "TIMEOUT"),
+        row("/x.html", "", "EXTERNAL-TIMEOUT"),
+    ]
+    diff = diff_failures(previous, current, comparable=True)
+
+    def keys(bucket: str) -> list[tuple[str, str]]:
+        return [(entry["test"], entry["subtest"]) for entry in diff[bucket]]
+
+    # A file that reported no subtests because it never finished is measured
+    # for the first time; a file-level FAIL did finish, so its new subtest is
+    # a regression.
+    assert keys("newly_measured") == [
+        ("/c.html", "x"),
+        ("/e.html", "x"),
+        ("/t.html", "x"),
+    ], diff
+    assert keys("regressions") == [("/f.html", "x")], diff
+    assert keys("new_timeouts") == [("/n.html", ""), ("/x.html", "")], diff
+    # A subtest that stopped failing is fixed even while its file still has
+    # another failure; a vanished file-level row is not.
+    assert keys("fixes") == [("/s.html", "a")], diff
+    assert diff_failures(previous, current, comparable=False) == {
+        "regressions": [],
+        "new_timeouts": [],
+        "newly_measured": [],
+        "fixes": [],
+    }
+
+
+def _selftest_summary() -> None:
+    """The step summary: both branches, the truncation, and the read errors."""
+    empty = {
+        "sha": "aaa",
+        "previous_sha": None,
+        "wpt_revision": "w1",
+        "comparable": False,
+        "regressions": [],
+        "new_timeouts": [],
+        "newly_measured": [],
+        "fixes": [],
+    }
+    assert format_regression_summary(empty) == (
+        "### WPT regressions\n\n"
+        "Not comparable: the first publish, or the WPT pin changed.\n"
+    )
+    comparable = dict(empty, comparable=True, previous_sha="abcdef1234567890")
+    assert format_regression_summary(comparable) == (
+        "### WPT regressions vs `abcdef12`\n"
+        "No new failures.\n"
+        "\nNew timeouts: 0; newly measured: 0; fixes: 0.\n"
+    )
+
+    regressions = [
+        {"test": f"/f{i:02}.html", "subtest": "", "status": "FAIL"} for i in range(60)
+    ] + [{"test": "/s.html", "subtest": f"s{i}", "status": "FAIL"} for i in range(25)]
+    loaded = dict(
+        comparable,
+        regressions=regressions,
+        new_timeouts=[{"test": "/t.html", "subtest": "", "status": "TIMEOUT"}],
+        fixes=[{"test": "/x.html", "subtest": "", "status": "FAIL"}],
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        data = Path(tmp)
+        (data / "regressions.json").write_text(json.dumps(loaded))
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            assert summary_main(["--data", str(data)]) == 0
+        text = captured.getvalue()
+        assert text == format_regression_summary(loaded)
+        assert text.startswith("### WPT regressions vs `abcdef12`\n")
+        assert "- `/f00.html` (FAIL)\n" in text
+        assert "- `/f49.html` (FAIL)\n" in text
+        assert "/f50.html" not in text
+        assert "- ... and 10 more files\n" in text
+        assert "25 new subtest failures, e.g.\n" in text
+        assert "- `/s.html` :: `s19` (FAIL)\n" in text
+        assert "/s20`" not in text
+        assert "- ... and 5 more subtests\n" in text
+        assert text.endswith("\nNew timeouts: 1; newly measured: 0; fixes: 1.\n")
+        with contextlib.redirect_stderr(io.StringIO()):
+            assert summary_main(["--data", str(data / "missing")]) == 2
+
+
+TOP_HELP = """tinybrowser WPT harness: run | score | rerun | merge | corpus | publish | summary | profile | failures | baseline | manifest | overnight | selftest
 
 Lanes — `run <lane>`, required, one executor each:
   run in-process PATH... [--jobs N] [--report FILE] [--baseline FILE]
@@ -4241,6 +4444,10 @@ Reports and diffs:
     latest.json, regressions.json, index.json, and the gzipped failure
     sidecar the next run diffs against. The diff is advisory and empty when
     the WPT revision changed.
+  summary --data DIR
+    Print the regression summary the review pass reads from a published
+    data directory: file-level regressions first, then a subtest sample,
+    then the timeout/newly-measured/fix counts.
   failures [LOG...]
     Print the canonical failure list of a `--score` log, one
     `STATUS PATH :: SUBTEST` line per failing result, sorted and deduplicated.
@@ -4315,6 +4522,8 @@ def main(argv: list[str] | None = None) -> int:
         return merge_main(args)
     if command == "publish":
         return publish_main(args)
+    if command == "summary":
+        return summary_main(args)
     if command == "corpus":
         return corpus_main(args)
     if command == "profile":
@@ -4337,7 +4546,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     return die(
         "wpt",
-        f"unknown command {command}; expected run | score | rerun | merge | profile | failures | baseline | manifest | overnight | selftest",
+        f"unknown command {command}; expected run | score | rerun | merge | publish | summary | profile | failures | baseline | manifest | overnight | selftest",
         2,
     )
 
