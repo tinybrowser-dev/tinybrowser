@@ -9,6 +9,7 @@ mod crossorigin;
 mod csp;
 mod daemon;
 mod fixture;
+mod fonts;
 mod forms;
 mod history;
 mod images;
