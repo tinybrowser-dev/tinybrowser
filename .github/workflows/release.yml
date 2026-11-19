@@ -162,10 +162,10 @@ jobs:
           binary="$(find dist -name tinybrowser -type f)"
           python3 tools/wpt/cli.py run webdriver \
             --binary "$binary" \
-            --processes 2 \
             dom/nodes/Document-createElement.html \
             dom/nodes/Document-createElementNS.html \
-            dom/nodes/Node-appendChild.html
+            dom/nodes/Node-appendChild.html \
+            --processes 2
 
   publish:
     name: publish
