@@ -540,8 +540,14 @@ pub(crate) fn font_face_settled(
     let Some(hook) = hook else {
         return Ok(());
     };
-    let path: Vec<_> = path.into_iter().map(|index| index as f64).collect();
-    hook.call((sheet as f64, path, loaded))
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "sheet ids and rule indices stay inside the exact integer range of f64"
+    )]
+    {
+        let path: Vec<_> = path.into_iter().map(|index| index as f64).collect();
+        hook.call((sheet as f64, path, loaded))
+    }
 }
 
 /// Fires the asynchronous `select` event of a text control whose selection

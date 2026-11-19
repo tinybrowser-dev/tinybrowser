@@ -771,7 +771,7 @@ fn worker_script_url(world: &World, href: &str, base: &str) -> Option<String> {
         encoding_rs::Encoding::for_label(parsed.character_set.as_bytes())
             .unwrap_or(encoding_rs::UTF_8)
     });
-    crate::js::url_parts::encoding_parse_url(href, &base, &encoding)
+    crate::js::url_parts::encoding_parse_url(href, &base, encoding)
         .map(|url| url.as_str().to_owned())
 }
 

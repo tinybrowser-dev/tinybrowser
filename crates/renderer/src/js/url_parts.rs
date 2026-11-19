@@ -190,7 +190,7 @@ fn resolve(spec: &str, base: &str, label: &str) -> Option<url::Url> {
     let encoding = encoding_rs::Encoding::for_label(label.as_bytes()).unwrap_or(encoding_rs::UTF_8);
     url::Url::parse(base)
         .ok()
-        .and_then(|base| encoding_parse_url(spec, &base, &encoding))
+        .and_then(|base| encoding_parse_url(spec, &base, encoding))
         .or_else(|| url::Url::parse(spec).ok())
 }
 
@@ -235,6 +235,21 @@ pub(super) fn encoding_parse_url(
 
 const HEX: &[u8; 16] = b"0123456789ABCDEF";
 
+/// `host` serialization: host plus a non-default port, with IPv6 literals in
+/// brackets (<https://url.spec.whatwg.org/#concept-url-host>).
+fn host(url: &url::Url) -> String {
+    // `host_str` strips the brackets; serialization puts them back.
+    let mut host = match url.host() {
+        Some(url::Host::Ipv6(address)) => format!("[{address}]"),
+        _ => url.host_str().unwrap_or_default().to_owned(),
+    };
+    if let Some(port) = url.port() {
+        host.push(':');
+        host.push_str(&port.to_string());
+    }
+    host
+}
+
 #[cfg(test)]
 mod tests {
     use super::encoding_parse_url;
@@ -261,19 +276,4 @@ mod tests {
         let empty = encoding_parse_url("x?", &base, encoding_rs::SHIFT_JIS).expect("parse");
         assert_eq!(empty.as_str(), "https://example.com/x?");
     }
-}
-
-/// `host` serialization: host plus a non-default port, with IPv6 literals in
-/// brackets (<https://url.spec.whatwg.org/#concept-url-host>).
-fn host(url: &url::Url) -> String {
-    // `host_str` strips the brackets; serialization puts them back.
-    let mut host = match url.host() {
-        Some(url::Host::Ipv6(address)) => format!("[{address}]"),
-        _ => url.host_str().unwrap_or_default().to_owned(),
-    };
-    if let Some(port) = url.port() {
-        host.push(':');
-        host.push_str(&port.to_string());
-    }
-    host
 }
