@@ -633,9 +633,7 @@ pub(crate) fn reflect_url_string(
     let base = super::document::document_base_url_string(ctx, id);
     Ok(url::Url::parse(&base)
         .ok()
-        .and_then(|base| {
-            crate::js::url_parts::encoding_parse_url(&raw, &base, &encoding)
-        })
+        .and_then(|base| crate::js::url_parts::encoding_parse_url(&raw, &base, &encoding))
         .map_or(raw, |url| url.to_string())
         .into())
 }

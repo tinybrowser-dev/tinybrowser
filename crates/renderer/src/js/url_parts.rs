@@ -28,15 +28,15 @@ const HASH: u32 = 8;
 pub(super) fn install(ctx: &Ctx<'_>) -> Result<()> {
     super::bridge::object(ctx)?.set(
         "__tbUrlParts",
-        Func::from(|spec: String, base: String, label: String| {
-            parts(&spec, &base, &label)
-        }),
+        Func::from(|spec: String, base: String, label: String| parts(&spec, &base, &label)),
     )?;
     super::bridge::object(ctx)?.set(
         "__tbUrlSetPart",
-        Func::from(|spec: String, base: String, part: u32, value: String, label: String| {
-            set_part(&spec, &base, part, &value, &label)
-        }),
+        Func::from(
+            |spec: String, base: String, part: u32, value: String, label: String| {
+                set_part(&spec, &base, part, &value, &label)
+            },
+        ),
     )?;
     super::bridge::object(ctx)?.set(
         "__tbParseParams",
@@ -243,8 +243,8 @@ mod tests {
     fn a_query_encodes_in_the_override_encoding() {
         let base = url::Url::parse("https://example.com/page").unwrap();
         // U+65E5 is 0x93 0xFA in Shift_JIS and 0xE6 0x97 0xA5 in UTF-8.
-        let shift_jis = encoding_parse_url("x?q=\u{65E5}", &base, encoding_rs::SHIFT_JIS)
-            .expect("parse");
+        let shift_jis =
+            encoding_parse_url("x?q=\u{65E5}", &base, encoding_rs::SHIFT_JIS).expect("parse");
         assert_eq!(shift_jis.as_str(), "https://example.com/x?q=%93%FA");
         let utf8 = encoding_parse_url("x?q=\u{65E5}", &base, encoding_rs::UTF_8).expect("parse");
         assert_eq!(utf8.as_str(), "https://example.com/x?q=%E6%97%A5");
@@ -255,8 +255,7 @@ mod tests {
         let base = url::Url::parse("https://example.com/p?already=1").unwrap();
         // A relative reference with no `?` keeps the base's query when the
         // URL parser inherits it, as a fragment-only reference does.
-        let fragment = encoding_parse_url("#top", &base, encoding_rs::SHIFT_JIS)
-            .expect("parse");
+        let fragment = encoding_parse_url("#top", &base, encoding_rs::SHIFT_JIS).expect("parse");
         assert_eq!(fragment.as_str(), "https://example.com/p?already=1#top");
         // A reference whose own query is empty keeps the `?`.
         let empty = encoding_parse_url("x?", &base, encoding_rs::SHIFT_JIS).expect("parse");

@@ -20,8 +20,11 @@ document.fonts.ready.then(() => { window.__ready = JSON.stringify({\
 
 #[test]
 fn fonts_ready_waits_for_the_engine_fetch_of_a_css_face() {
-    let ahem = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/third_party/wpt/fonts/Ahem.ttf"))
-        .expect("ahem");
+    let ahem = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/third_party/wpt/fonts/Ahem.ttf"
+    ))
+    .expect("ahem");
     let ahem: &'static [u8] = Box::leak(ahem.into_boxed_slice());
     let server = TestServer::start(
         vec![
@@ -38,7 +41,11 @@ fn fonts_ready_waits_for_the_engine_fetch_of_a_css_face() {
     server.wait("/ahem.ttf");
     std::thread::sleep(std::time::Duration::from_millis(300));
     assert_eq!(
-        evaluate(&mut client, &session, "[window.__ready, document.fonts.status]"),
+        evaluate(
+            &mut client,
+            &session,
+            "[window.__ready, document.fonts.status]"
+        ),
         serde_json::json!([null, "loading"]),
         "ready must not resolve while the CSS face's fetch is in flight"
     );
@@ -49,8 +56,7 @@ fn fonts_ready_waits_for_the_engine_fetch_of_a_css_face() {
             .map(str::to_owned)
     });
     assert_eq!(
-        answer,
-        r#"{"width":200,"faces":["gone:error","held:loaded"]}"#,
+        answer, r#"{"width":200,"faces":["gone:error","held:loaded"]}"#,
         "ready resolves after the face is registered, and a failed source settles too"
     );
 
