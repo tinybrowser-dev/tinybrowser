@@ -75,6 +75,23 @@ impl Document {
 
     /// Whether a task is queued or a timer is already due.
     pub(crate) fn has_ready_work(&self) -> bool {
+        // A blitz subresource fetch queued but not yet ingested is ready
+        // work: the next drain_step answers it from the byte cache or turns
+        // it into a dial, which is the only way a microtask continuation
+        // that just asked for a subresource keeps going — the provider's
+        // count covers the queue and every filed handler, and a handler
+        // whose dial is pending belongs to the dial, not to this queue
+        // (drain.rs's `has_pending_dials` is the host's wait for that one).
+        if self.net_provider.in_flight() > 0 && !self.dials.has_pending() {
+            return true;
+        }
+        // A response handed to a Blitz handler has a document event queued for
+        // the pump. Its effect — a font outcome, a failed stylesheet — exists
+        // only after that pass, so a host must not wait for the next timer
+        // with the response unread.
+        if self.blitz_response_pending {
+            return true;
+        }
         if !self.tasks.is_empty() || self.dials.has_queued() {
             return true;
         }

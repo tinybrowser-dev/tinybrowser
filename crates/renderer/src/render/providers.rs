@@ -93,8 +93,10 @@ impl TinyNetProvider {
         }
     }
 
-    /// Count of fetches filed but not yet delivered.
-    #[cfg(test)]
+    /// Count of fetches filed but not yet delivered: the queue plus every
+    /// handler a dial has not answered yet. A host that reports ready work
+    /// reads it so a fetch queued during a settle's microtask continuation
+    /// keeps the engine ticking until the next drain ingests it.
     pub(crate) fn in_flight(&self) -> usize {
         self.in_flight.load(Ordering::SeqCst)
     }

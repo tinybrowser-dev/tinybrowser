@@ -629,6 +629,19 @@ pub(crate) struct Document {
         std::sync::mpsc::Receiver<(crate::render::BlitzFetch, crate::render::CountingHandler)>,
     /// Filed Blitz subresource requests by fetch id, delivered on completion.
     blitz_requests: HashMap<u64, BlitzRequest>,
+    /// Whether this document handed a response to a Blitz handler and has not
+    /// run [`Self::pump_blitz_messages`] since.
+    ///
+    /// Delivery queues a document event, and the response only exists for
+    /// Blitz once that event is handled — a failed stylesheet keeps the parser
+    /// blocked, a font source settles the rule
+    /// (<https://drafts.csswg.org/css-fonts-4/#font-face-loading>,
+    /// <https://html.spec.whatwg.org/multipage/semantics.html#the-link-element>).
+    /// A cache hit delivers inside the load check, after the settle that would
+    /// observe the event, so the document must report itself busy until the
+    /// next pass pumps it; otherwise a host waiting for the next timer advances
+    /// past the response.
+    blitz_response_pending: bool,
     /// Stylesheet and font bodies by request, so a repeat Blitz fetch reuses
     /// the response instead of dialing again. Images are absent: Blitz's own
     /// cache answers a repeat request with no dial
@@ -1023,6 +1036,7 @@ impl Document {
             blitz_fetch_rx: blitz_rx,
             image_settle_rx: settle_rx,
             blitz_requests: HashMap::new(),
+            blitz_response_pending: false,
             subresource_bytes: HashMap::new(),
             style_policies: HashMap::new(),
             frame,
@@ -4375,6 +4389,7 @@ impl Document {
             self.fail_blitz_request(request);
             return;
         }
+        self.blitz_response_pending = true;
         Box::new(request.handler).response(
             outcome.final_url.to_string(),
             blitz_traits::net::Bytes::from(body.unwrap_or_default().to_vec()),
@@ -4513,22 +4528,21 @@ impl Document {
             let Some(mut parsed) = world.main_document_mut() else {
                 return;
             };
-            let events = parsed.document.base.take_pending_font_face_events();
-            events
+            // The walk recorded each rule's CSSOM address when it started, so
+            // a sheet the document re-processed in the meantime (a `<style>`
+            // the fragment parser installs twice) still answers for the rule
+            // whose outcome this is.
+            parsed
+                .document
+                .base
+                .take_pending_font_face_events()
                 .into_iter()
-                .filter_map(|event| {
-                    // The CSSOM address is what script can resolve to a face;
-                    // a rule no live sheet holds (a document rebuilt in
-                    // place) has no face left to settle.
-                    let (sheet, path) = parsed
-                        .document
-                        .base
-                        .cssom_font_face_rule_path(&event.rule)?;
+                .map(|event| {
                     let loaded = matches!(
                         event.status,
                         blitz_dom::font_face_events::FontFaceLoadStatus::Loaded
                     );
-                    Some((sheet, path, loaded))
+                    (event.sheet, event.path, loaded)
                 })
                 .collect()
         };
@@ -4561,11 +4575,15 @@ impl Document {
     /// failure) still reaches the drain that releases its load token
     /// (<https://html.spec.whatwg.org/multipage/images.html#updating-the-image-data>).
     fn pump_blitz_messages(&mut self) {
-        let world = self.world.borrow();
-        let Some(mut parsed) = world.main_document_mut() else {
-            return;
-        };
-        parsed.document.base.handle_messages();
+        {
+            let world = self.world.borrow();
+            if let Some(mut parsed) = world.main_document_mut() {
+                parsed.document.base.handle_messages();
+            }
+        }
+        // The pump ran the queue the flag stands for; a document with no tree
+        // left drops the events with it.
+        self.blitz_response_pending = false;
     }
 
     /// Fires `load` on connected `<link rel=stylesheet>` elements whose sheet
@@ -4837,6 +4855,7 @@ impl Document {
                     .get(&(incoming.url.clone(), incoming.crossorigin))
                     .cloned()
             {
+                self.blitz_response_pending = true;
                 Box::new(handler).bytes(
                     incoming.url.to_string(),
                     blitz_traits::net::Bytes::from(cached),
@@ -4927,6 +4946,7 @@ impl Document {
             destination,
             ..
         } = request;
+        self.blitz_response_pending = true;
         Box::new(handler).bytes(String::new(), blitz_traits::net::Bytes::new());
         if !destination.is_some_and(crate::csp::Destination::is_image)
             && let Some(node) = node

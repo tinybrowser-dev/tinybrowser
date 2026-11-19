@@ -3986,24 +3986,29 @@ objects by rule identity instead of string-matching request URLs against
 every sheet. `local()` entries fall through — fontique has no way to make a
 held family become another family's source, and the first cut, which settled
 a held `local()` as loaded, was caught by `css/css-fonts/font-face-local-not-family.html`
-rendering the fallback font while reporting success. One file flips red:
+rendering the fallback font while reporting success. A rule reports the CSSOM
+address recorded when its walk starts (blitz@81acbc81c), so a `<style>` the
+fragment parser processes twice still settles its faces, and an `@import`ed
+sheet registers its id at load time so the walk and
+`CSSImportRule.styleSheet` agree.
 
-- `css/css-fonts/generic-family-keywords-001.html`: FAIL (all 15 subtests
-  failing, `quoted serif matches @font-face rule: expected 50 but got 28`) ->
-  TIMEOUT. The first keyword's subtest now PASSES — the new rule-identity
-  settle fixed the quoted-generic matching the old design could not — and the
-  timeout is a paused-clock delivery bug for the third and later cached font
-  rounds: the page's second `document.fonts.ready` await never resolves, the
-  harness jumps the virtual clock to testharness's per-test timer, and the
-  rest report NOTRUN. Evidence gathered: the same page completes in 1.0 s
-  with the harness's `--real-time` flag and under the daemon with real fonts
-  served; instrumented runs show the first two keywords' rules settling
-  (one Error event per unquoted generic rule, by design, and one Loaded per
-  quoted rule) and no event at all for the third quoted rule — one `Font`
-  dial plus only two `subresource_bytes` cache-hit deliveries for nine
-  walked sheets. The next pass should instrument `drain_blitz_fetches`'
-  ingest for the third cache-hit round: its `ResourceLoad` message is either
-  queued without a following settle pass under the paused clock, or the
-  request never reaches the ingest. Known work item; every other file in
-  the `css/css-font-loading` + `css/css-fonts` selection matches the old
-  baseline exactly, `font-face-local-not-family.html` included.
+The one file that was red is `css/css-fonts/generic-family-keywords-001.html`,
+and it is not the delivery path any more: the page did run to its third
+keyword, then the engine went idle after answering two `@font-face` sources
+from the shared byte cache. `Document::pump_blitz_messages` is the only pass
+that turns a delivered response into Blitz state, and the cache hit delivers
+inside the load check *after* that pass, so the queued `ResourceLoad` looked
+like no work at all: `has_ready_work` was false, `time_until_deadline`
+answered the testharness timer, and the paused clock jumped to it. The fix is
+one flag, `blitz_response_pending`, set wherever a response is handed to a
+Blitz handler (`deliver_blitz_resource`, `fail_blitz_request`, the cache
+branch of `drain_blitz_fetches`) and cleared by the pump; `has_ready_work`
+reports it, so the harness drains instead of advancing the clock. Evidence:
+before, 592 tests in the `css/css-font-loading` + `css/css-fonts` slice
+(333 pass, 248 fail, 10 timeout, 1 error); after, 333 pass, 249 fail, 9
+timeout, 1 error, with `generic-family-keywords-001.html` the only status
+change (TIMEOUT -> FAIL). Its remaining five failing subtests are the
+unquoted `math`/`ui-*` generic families, a stylo servo gap recorded in
+`docs/upstream.md`; the ten other subtests pass, including both `serif`
+rounds the old design failed.
+
