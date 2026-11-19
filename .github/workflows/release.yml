@@ -1,0 +1,192 @@
+# Builds the release artifact and publishes the GitHub release on a `v*` tag.
+#
+# The shipped binary is exactly `cargo build --release`: the release profile
+# carries the size invariants (`panic = "abort"`, `build-std`,
+# `force-unwind-tables=no`, LTO, strip), so nothing here repacks, compresses,
+# or strips it afterwards (docs/size.md).
+#
+# A tag must name the version in `Cargo.toml`, and the built binary must pass a
+# smoke run of the webdriver lane before it is published: the release profile
+# is a different codegen shape from the `wpt` profile the suite of record uses,
+# and AGENTS.md requires a `--binary` smoke for any release-binary change.
+#
+# `workflow_dispatch` builds and uploads the artifacts without publishing, so
+# the pipeline can be exercised without cutting a tag.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # A release is never cancelled by a newer dispatch: an interrupted publish
+  # would leave a tag with a partial asset set.
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_INCREMENTAL: "0"
+  # Mirror the flake devShell and the other workflows: link the runner's
+  # OpenSSL instead of building a vendored copy.
+  OPENSSL_NO_VENDOR: "1"
+
+jobs:
+  verify:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Tag names the Cargo version
+        id: version
+        run: |
+          set -euo pipefail
+          read_field() {
+            awk -v section="$1" '
+              $0 == "[" section "]" { inside = 1; next }
+              /^\[/ { inside = 0 }
+              inside && /^version = / { gsub(/"/, "", $3); print $3; exit }
+            ' Cargo.toml
+          }
+          workspace_version="$(read_field workspace.package)"
+          package_version="$(read_field package)"
+          if [[ -z "$workspace_version" || "$package_version" != "$workspace_version" ]]; then
+            echo "::error::Cargo.toml versions disagree: workspace '$workspace_version', package '$package_version'"
+            exit 1
+          fi
+          tag="${GITHUB_REF_NAME}"
+          if [[ "$GITHUB_REF_TYPE" == "tag" && "$tag" != "v$workspace_version" ]]; then
+            echo "::error::tag '$tag' does not name Cargo.toml version 'v$workspace_version'"
+            exit 1
+          fi
+          echo "version=$workspace_version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$workspace_version" >> "$GITHUB_OUTPUT"
+          echo "releasing v$workspace_version"
+
+  linux-x86_64:
+    name: linux-x86_64
+    needs: verify
+    # The oldest still-supported Ubuntu LTS sets the glibc floor (2.35); a
+    # binary built here runs on newer distributions.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+      - name: System libraries
+        run: >
+          sudo apt-get update -qq &&
+          sudo apt-get install -y -qq --no-install-recommends
+          libfontconfig1-dev libssl-dev pkg-config
+      - name: Toolchain
+        run: |
+          rustup toolchain install --profile minimal --component rust-src
+          cargo --version
+      - name: Submodules (build inputs only, shallow)
+        run: |
+          git submodule update --init --depth 1 --jobs 4 \
+            third_party/blitz third_party/rquickjs third_party/html5ever
+          git -C third_party/rquickjs submodule update --init --depth 1 sys/quickjs
+      - name: Cargo cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+      - name: sccache
+        uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          version: "v0.18.0"
+      - name: Build
+        env:
+          SCCACHE_GHA_ENABLED: "true"
+          RUSTC_WRAPPER: "sccache"
+        run: |
+          cargo build --release --locked -p tinybrowser
+          ls -l target/release/tinybrowser
+      - name: Package
+        id: package
+        run: |
+          set -euo pipefail
+          version="${{ needs.verify.outputs.version }}"
+          target=x86_64-unknown-linux-gnu
+          name="tinybrowser-$version-$target"
+          mkdir -p "dist/$name"
+          cp target/release/tinybrowser "dist/$name/"
+          cp LICENSE NOTICE CREDITS.md "dist/$name/"
+          tar --owner=0 --group=0 -C dist -czf "dist/$name.tar.gz" "$name"
+          ( cd dist && sha256sum ./*.tar.gz | sed 's| \./| |' > sha256sums.txt )
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          cat dist/sha256sums.txt
+      - name: Upload the release assets
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: dist/*
+          retention-days: 7
+
+  smoke:
+    name: smoke the release binary
+    needs: [verify, linux-x86_64]
+    # The build runner's glibc is the floor; the smoke runs on the current LTS
+    # whose Python the WPT venv supports.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.3
+      - name: Download the release asset
+        uses: actions/download-artifact@v8
+        with:
+          name: tinybrowser-${{ needs.verify.outputs.version }}-x86_64-unknown-linux-gnu
+          path: dist
+      - name: Unpack
+        run: |
+          set -euo pipefail
+          tar -xzf dist/*.tar.gz -C dist
+          "$(find dist -name tinybrowser -type f)" --version
+      - name: WPT smoke
+        # AGENTS.md: a release-binary change gets a WPT run via `--binary`.
+        # Three files keep it under a minute; an unexpected result fails the
+        # release before anything is published.
+        run: |
+          set -euo pipefail
+          git submodule update --init --depth 1 third_party/wpt
+          binary="$(find dist -name tinybrowser -type f)"
+          python3 tools/wpt/cli.py run webdriver \
+            --binary "$binary" \
+            --processes 2 \
+            dom/nodes/Document-createElement.html \
+            dom/nodes/Document-createElementNS.html \
+            dom/nodes/Node-appendChild.html
+
+  publish:
+    name: publish
+    needs: [verify, linux-x86_64, smoke]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download the release assets
+        uses: actions/download-artifact@v8
+        with:
+          name: tinybrowser-${{ needs.verify.outputs.version }}-x86_64-unknown-linux-gnu
+          path: dist
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "${{ needs.verify.outputs.tag }}" \
+            dist/*.tar.gz dist/sha256sums.txt \
+            --title "tinybrowser ${{ needs.verify.outputs.version }}" \
+            --generate-notes
