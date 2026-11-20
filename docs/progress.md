@@ -4012,3 +4012,32 @@ unquoted `math`/`ui-*` generic families, a stylo servo gap recorded in
 `docs/upstream.md`; the ten other subtests pass, including both `serif`
 rounds the old design failed.
 
+
+## Wasm, 2026-11-20
+
+The component is no longer a second fetch engine. `net` splits at its
+`Transport` port (`native` feature) so the fetch algorithm builds without a
+socket; `crates/wasm` runs `net::Agent` over a `HostTransport` that performs
+one `host.start-fetch` per hop; `crates/dial` owns the carrier adapter and the
+buffered body reader both carriers use. The duplicated redirect loop, cookie
+header and store, credentials gate, and hand-built outcome are deleted.
+
+- Component: 12,388,542 B in the release profile (`jco` adds 415 KiB of JS
+  driver). No hyper, TLS, or DNS.
+- `tinybrowser:browser@0.3.0`: one exchange per `start-fetch` with the method,
+  URL, full header list, body, remaining deadline, and body cap; the response
+  carries the status, HTTP/2 flag, full header list, and body. The redirect
+  mode, credentials mode, cookie, `location`, `final-url`, and `set-cookies`
+  fields are gone because the core decides all of it.
+- `TransportError` gained `Capacity` and `BodyTooLarge`, which a host-driven
+  transport can produce and the page engine names differently from a connect
+  failure. The body deadline moved into the transport that opened the body,
+  so the core no longer needs a reactor for a timer.
+- Parity: the fetch slice (`fetch/api/{redirect,headers,credentials,body}`,
+  33 files) matches the pre-split binary — `--baseline` reported 0
+  regressions, 0 new failures, 0 fixes, 0 tests not selected. The gate now
+  checks the component target on every push, and the release workflow ships
+  it with a 14 MiB cap.
+- `demo/wasm` runs it inside Chrome: a 302 followed by the core, a cookie set
+  by a subresource and sent back on a later fetch, and the script's effect
+  visible in the engine's DOM.
