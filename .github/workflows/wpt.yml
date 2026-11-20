@@ -6,7 +6,9 @@
 #               engine, with a wptserve sidecar for `.py` handler routes. No
 #               WebDriver, wptserve request path, or renderer child per test.
 #   webdriver — the files `run in-process` cannot run: testdriver tests and the
-#               generated worker/module wrappers, driven through the browser.
+#               non-worker generated wrappers, driven through the browser.
+#               Worker variants (`--exclude=worker`) stay excluded by default
+#               until the harness runs them without exceeding the chunk budget.
 #
 # `test262` runs natively in QuickJS in one job. The score job folds every
 # report into one table. There is no nightly duplicate: this is the suite of
@@ -64,7 +66,7 @@ on:
       exclude:
         description: Space-separated upstream --exclude values.
         type: string
-        default: ""
+        default: "worker"
 
 permissions:
   contents: read
@@ -88,7 +90,7 @@ env:
   WPT_HARNESS_CHUNKS: ${{ inputs.harness-chunks || '14' }}
   WPT_WEBDRIVER_CHUNKS: ${{ inputs.webdriver-chunks || '6' }}
   WPT_TEST_TYPES: ${{ inputs.test-types || 'testharness crashtest reftest' }}
-  WPT_EXCLUDE: ${{ inputs.exclude || '' }}
+  WPT_EXCLUDE: ${{ inputs.exclude || 'worker' }}
 
 jobs:
   plan:

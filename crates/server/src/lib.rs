@@ -236,19 +236,11 @@ fn valid_optional_port(tail: &str) -> bool {
 /// Whether `request` carries any `Origin` header.
 ///
 /// Browsers attach `Origin` to cross-origin WebSocket handshakes and `fetch`
-/// calls; local automation clients do not.
+/// calls (including `Origin: null` from sandboxed frames); local automation
+/// clients do not.
 #[must_use]
 pub fn has_origin(request: &Request) -> bool {
     request.headers().contains_key(header::ORIGIN)
-}
-
-/// Whether `request` carries a non-`"null"` `Origin` header.
-#[must_use]
-pub fn has_non_null_origin(request: &Request) -> bool {
-    request
-        .headers()
-        .get(header::ORIGIN)
-        .is_some_and(|value| value.as_bytes() != b"null")
 }
 
 /// Whether `request` carries an `application/json` `Content-Type` header

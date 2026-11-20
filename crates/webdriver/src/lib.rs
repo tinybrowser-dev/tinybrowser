@@ -17,7 +17,7 @@ use browser::{
     BrowserHandle, CookieRecord, CookieSameSite, RemoteValue, ScreenshotRequest, ScriptFailure,
     TabError, TabHandle,
 };
-use http::{Method, StatusCode};
+use http::{Method, StatusCode, header};
 use serde_json::{Value, json};
 use server::{Request, Response, Shutdown};
 use tokio::sync::Mutex;
@@ -56,13 +56,17 @@ async fn serve_request(request: Request, state: AppState) -> Response {
     if !server::is_loopback_host(&request) {
         return server::text(StatusCode::FORBIDDEN, "non-loopback Host header rejected");
     }
-    if server::has_non_null_origin(&request) {
+    if server::has_origin(&request) {
         return server::text(StatusCode::FORBIDDEN, "Origin header rejected");
     }
+    // Reject browser-safelisted non-JSON Content-Types (e.g. `text/plain`,
+    // `application/x-www-form-urlencoded`). An absent `Content-Type` is
+    // allowed because wptrunner's Python WebDriver client omits it on POST.
     if matches!(
         *request.method(),
         Method::POST | Method::PUT | Method::PATCH
-    ) && !server::is_json_content_type(&request)
+    ) && request.headers().contains_key(header::CONTENT_TYPE)
+        && !server::is_json_content_type(&request)
     {
         return server::text(
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
