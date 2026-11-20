@@ -1,6 +1,6 @@
 ## Binary size
 
-11,492,008 bytes (2026-10-18)
+11.76 MiB native (`cargo build --release`), 11.97 MiB WASI Preview 2 component (`tinybrowser-wasm`); see `docs/size.md` for the full ledger.
 
 ## WPT
 

@@ -146,12 +146,12 @@ pub(crate) const HELP: &str = r"The smallest headless browser for AI agents
 Usage: tinybrowser [OPTIONS] [COMMAND]
 
 Commands:
-  daemon     Run the profile daemon until the process exits
+  daemon     Run the profile daemon (CDP) until the process exits
   renderer   Run a renderer worker on its private platform channel
-  webdriver  Serve classic `WebDriver` on this loopback port
+  webdriver  Serve classic `WebDriver` on a loopback port
   help       Print this message
 
-Options:
+Global options:
       --log-level <LEVEL>
           Minimum log level: error, warn, info, debug, or trace [default: info]
 
@@ -164,6 +164,22 @@ Options:
           Print version
   -h, --help
           Print help
+
+Daemon options (`tinybrowser daemon [OPTIONS]`):
+      --profile <NAME>
+          Named profile directory [default: default]
+
+WebDriver options (`tinybrowser webdriver --port <PORT> [OPTIONS]`):
+      --port <PORT>
+          Loopback port to listen on (required)
+      --profile <NAME>
+          Named profile directory [default: default]
+      --proxy <URI>
+          HTTP/HTTPS proxy URI for outbound requests
+      --resolve <PATTERN=ADDR>
+          Override DNS resolution for host pattern (repeatable)
+      --tls-ca <PATH>
+          Additional PEM CA certificate file to trust (repeatable)
 ";
 
 /// Scans `args` (without the executable name) into an [`Outcome`].
