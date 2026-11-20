@@ -229,7 +229,8 @@ interface engine {
         events: func() -> result<list<frame-event>, string>;
         /// Text of the document's title.
         title: func() -> result<string, string>;
-        /// Text content of the document body; empty before the body exists.
+        /// Visible rendered text of the document body (`document.body.innerText`);
+        /// empty before the body exists.
         text: func() -> result<string, string>;
     }
 

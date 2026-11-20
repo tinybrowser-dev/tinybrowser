@@ -519,6 +519,35 @@ impl RealmRegistry {
         })
     }
 
+    /// Straight-alpha RGBA snapshots for every `<canvas>` element in `doc_id`
+    /// that has a live 2D bitmap, so the paint pass can composite them into
+    /// Blitz's `SpecialElementData::Image` slot.
+    pub(crate) fn document_canvas_snapshots(
+        &self,
+        doc_id: u32,
+    ) -> Vec<(crate::dom::tree::BlitzId, u32, u32, Vec<u8>)> {
+        let mut snapshots = Vec::new();
+        for (&node, &canvas_id) in &self.canvas_nodes {
+            if node.document_id() != doc_id {
+                continue;
+            }
+            let Some(canvas) = self
+                .canvases
+                .get(&canvas_id)
+                .and_then(|s| s.canvas.as_ref())
+            else {
+                continue;
+            };
+            if canvas.width == 0 || canvas.height == 0 {
+                continue;
+            }
+            if let Some(pixels) = canvas.read_pixels(0, 0, canvas.width, canvas.height) {
+                snapshots.push((node.node, canvas.width, canvas.height, pixels));
+            }
+        }
+        snapshots
+    }
+
     /// A gradient defined on another canvas, for cross-canvas styles
     /// (<https://html.spec.whatwg.org/multipage/canvas.html#canvasgradient>).
     pub(crate) fn canvas_gradient(&self, id: CanvasId, resource: u32) -> Option<Gradient> {

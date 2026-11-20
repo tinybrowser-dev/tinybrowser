@@ -1550,6 +1550,7 @@ impl Engine {
                     1.0,
                     blitz_traits::shell::ColorScheme::Light,
                 ));
+            sync_canvas_images(&world, &mut parsed);
             crate::render::resolve_until_settled(&mut parsed.document.base);
             let image = crate::render::paint(&mut parsed.document.base, width, height).map_err(
                 |error| TabError::Render {
@@ -3455,6 +3456,34 @@ fn percent_decode(source: &str) -> String {
         .into_owned()
 }
 
+/// Copies each active 2D `<canvas>` bitmap in `parsed` into its Blitz node's
+/// raster image slot so `blitz-paint` composites it natively with full CSS
+/// layout, `object-fit`, clipping, transforms, and stacking order
+/// (<https://html.spec.whatwg.org/multipage/canvas.html#the-canvas-element>).
+fn sync_canvas_images(world: &crate::js::World, parsed: &mut crate::Parsed) {
+    let snapshots = world
+        .runtime
+        .registry
+        .borrow()
+        .document_canvas_snapshots(parsed.id);
+    for (blitz_id, width, height, pixels) in snapshots {
+        if let Some(element) = parsed
+            .document
+            .base
+            .get_node_mut(blitz_id)
+            .and_then(blitz_dom::Node::element_data_mut)
+        {
+            element.special_data = blitz_dom::node::SpecialElementData::Image(Box::new(
+                blitz_dom::node::ImageData::Raster(blitz_dom::node::RasterImageData::new(
+                    width,
+                    height,
+                    Arc::new(pixels),
+                )),
+            ));
+        }
+    }
+}
+
 /// Capture surface sides: at least 1 and at most the painter cap. A capture
 /// is transient, so an out-of-range request is clamped rather than rejected.
 fn capture_sides(width: u32, height: u32) -> Result<(u32, u32), TabError> {
@@ -4811,6 +4840,40 @@ mod messaging_tests {
         assert_eq!(
             probe,
             r#"{"previous":1,"resizable":false,"maxByteLength":65536,"oldByteLength":0,"oldDetached":true,"byteLength":131072,"firstByte":9,"resizableAfter":false,"overflow":"RangeError","zero":1,"zeroReplaced":true,"zeroDetached":true,"zeroByteLength":65536}"#
+        );
+    }
+
+    /// A `<canvas>` drawn with 2D context commands composites into `render_frame`
+    /// screenshots. Mutation that breaks it: removing `sync_canvas_images` in
+    /// `Engine::render_frame` leaves the pixel white (`[255, 255, 255, 255]`).
+    #[test]
+    fn canvas_2d_paints_into_screenshot() {
+        let mut engine = engine();
+        engine
+            .mount_frame(
+                FrameId::MAIN,
+                &mount(
+                    "https://example.test/canvas",
+                    r##"<!doctype html><body style="margin:0"><canvas id="c" width="64" height="64"></canvas><script>const ctx = document.getElementById("c").getContext("2d"); ctx.fillStyle = "#cc2211"; ctx.fillRect(0, 0, 64, 64);</script></body>"##,
+                ),
+            )
+            .expect("mount");
+        let _ready = engine.drain_ready();
+        let frame = engine
+            .render_frame(
+                FrameId::MAIN,
+                &crate::ScreenshotRequest {
+                    viewport_width: 64,
+                    viewport_height: 64,
+                    clip: None,
+                },
+            )
+            .expect("render");
+        let center = ((32 * 64 + 32) * 4) as usize;
+        let pixel = &frame.data[center..center + 4];
+        assert!(
+            pixel[0] > 180 && pixel[1] < 60 && pixel[2] < 40 && pixel[3] == 255,
+            "expected red canvas pixel at center, got {pixel:?}"
         );
     }
 

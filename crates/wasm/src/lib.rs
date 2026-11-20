@@ -289,7 +289,7 @@ impl GuestTab for Tab {
 
     fn text(&self) -> Result<String, String> {
         self.with_renderer(|renderer| {
-            renderer.eval("document.body === null ? '' : document.body.textContent")
+            renderer.eval("document.body === null ? '' : document.body.innerText")
         })
     }
 }
