@@ -55,6 +55,15 @@ all (std aborts before the hook). `panic = "unwind"` costs a further 2.98 MiB
 (13.59 MiB) and is rejected; it is the only way rquickjs could catch a panic
 in a JS callback (see `docs/upstream.md`).
 
+## The wasm component
+
+The browser component is a different artifact with a different profile, so it
+gets its own number: `cargo build -p tinybrowser-wasm --target wasm32-wasip2
+--release` produces a component of 12,388,542 B (11.81 MiB). It carries the
+renderer, QuickJS, the font stack, and the fetch core, but no hyper, no TLS, and
+no DNS: the host moves the bytes. `jco transpile` then emits that component plus
+a 415 KiB JS driver, which is what a page loads.
+
 ## Where the bytes are (`.text`, ~8.4 MiB at 12.07 MiB total)
 
 | area | size | note |

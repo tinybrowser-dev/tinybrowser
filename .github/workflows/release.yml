@@ -132,6 +132,71 @@ jobs:
           path: dist/*
           retention-days: 7
 
+  wasm32-wasip2:
+    name: wasm32-wasip2
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - name: Toolchain
+        run: |
+          rustup toolchain install --profile minimal --component rust-src
+          rustup target add wasm32-wasip2
+          cargo --version
+      - name: Submodules (build inputs only, shallow)
+        run: |
+          git submodule update --init --depth 1 --jobs 4 \
+            third_party/blitz third_party/rquickjs third_party/html5ever
+          git -C third_party/rquickjs submodule update --init --depth 1 sys/quickjs
+      - name: Cargo cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-wasm-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-wasm-
+      - name: sccache
+        uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          version: "v0.18.0"
+      - name: Build
+        env:
+          SCCACHE_GHA_ENABLED: "true"
+          RUSTC_WRAPPER: "sccache"
+        run: |
+          cargo build --release --locked -p tinybrowser-wasm --target wasm32-wasip2
+          component=target/wasm32-wasip2/release/tinybrowser_wasm.wasm
+          size=$(stat -c %s "$component")
+          echo "component: $size bytes" >> "$GITHUB_STEP_SUMMARY"
+          # The measured component is ~11.8 MiB; the cap is 14 MiB, enough for
+          # a toolchain bump and too little to hide a dependency arriving.
+          if (( size > 14 * 1024 * 1024 )); then
+            echo "::error::$component is $size bytes, over the 14 MiB cap"
+            exit 1
+          fi
+      - name: Package
+        id: package
+        run: |
+          set -euo pipefail
+          version="${{ needs.verify.outputs.version }}"
+          target=wasm32-wasip2
+          name="tinybrowser-$version-$target"
+          mkdir -p "dist/$name"
+          cp target/wasm32-wasip2/release/tinybrowser_wasm.wasm "dist/$name/tinybrowser.wasm"
+          cp LICENSE NOTICE CREDITS.md "dist/$name/"
+          tar --owner=0 --group=0 -C dist -czf "dist/$name.tar.gz" "$name"
+          ( cd dist && sha256sum ./*.tar.gz | sed 's| \./| |' > sha256sums.txt )
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          cat dist/sha256sums.txt
+      - name: Upload the release assets
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: dist/*
+          retention-days: 7
+
   smoke:
     name: smoke the release binary
     needs: [verify, linux-x86_64]
@@ -169,7 +234,7 @@ jobs:
 
   publish:
     name: publish
-    needs: [verify, linux-x86_64, smoke]
+    needs: [verify, linux-x86_64, wasm32-wasip2, smoke]
     if: github.ref_type == 'tag'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -179,8 +244,9 @@ jobs:
       - name: Download the release assets
         uses: actions/download-artifact@v8
         with:
-          name: tinybrowser-${{ needs.verify.outputs.version }}-x86_64-unknown-linux-gnu
+          pattern: tinybrowser-${{ needs.verify.outputs.version }}-*
           path: dist
+          merge-multiple: true
       - name: Release
         env:
           GH_TOKEN: ${{ github.token }}
