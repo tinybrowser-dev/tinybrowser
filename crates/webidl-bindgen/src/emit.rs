@@ -27,7 +27,6 @@ pub(crate) fn interface(interface: &Interface) -> TokenStream {
     let unscopables = unscopables(interface);
     let (routes, groups) = dispatch_groups(interface, &payload, "dispatch");
     let (alternate_dispatch, alternate_groups) = alternate_dispatch(interface);
-    let legacy_code = legacy_codes(interface);
     let definition = definition(interface, &payload, required);
     let constructor_dispatch = match interface.kind {
         InterfaceKind::Complete => quote! {
@@ -86,8 +85,6 @@ pub(crate) fn interface(interface: &Interface) -> TokenStream {
 
             #(#groups)*
             #(#alternate_groups)*
-
-            #legacy_code
         }
     }
 }
@@ -2089,8 +2086,4 @@ fn union_fallback(union: &Union) -> TokenStream {
         };
     }
     quote! { Err(rquickjs::Exception::throw_type(ctx, "value does not match the union")) }
-}
-
-fn legacy_codes(_interface: &Interface) -> TokenStream {
-    quote! {}
 }

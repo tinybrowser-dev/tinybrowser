@@ -300,11 +300,6 @@ pub enum HistoryHandling {
     Replace,
 }
 
-/// Observable HTML-job outcomes, in the order the renderer ran them.
-///
-/// The IPC wire carries only [`BrowserEvent`]; timer, fetch, and script
-/// failures are renderer-side progress that no host acts on, so they never
-/// cross the process boundary.
 /// Identity of one host timer in a document's timer table.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct TimerId(u64);

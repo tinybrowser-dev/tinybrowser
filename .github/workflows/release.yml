@@ -55,9 +55,13 @@ jobs:
             ' Cargo.toml
           }
           workspace_version="$(read_field workspace.package)"
-          package_version="$(read_field package)"
-          if [[ -z "$workspace_version" || "$package_version" != "$workspace_version" ]]; then
-            echo "::error::Cargo.toml versions disagree: workspace '$workspace_version', package '$package_version'"
+          package_inherits="$(awk '
+            $0 == "[package]" { inside = 1; next }
+            /^\[/ { inside = 0 }
+            inside && /^version\.workspace = true$/ { print "yes"; exit }
+          ' Cargo.toml)"
+          if [[ -z "$workspace_version" || "$package_inherits" != "yes" ]]; then
+            echo "::error::Cargo.toml must set [workspace.package] version and inherit it in [package]"
             exit 1
           fi
           tag="${GITHUB_REF_NAME}"

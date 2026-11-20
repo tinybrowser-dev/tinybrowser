@@ -8,10 +8,8 @@
   // observer's own bookkeeping after it exists.
   const requestFrame = globalThis.requestAnimationFrame;
   const computedStyle = globalThis.getComputedStyle;
-  const ElementCtor = globalThis.Element;
   const DOMExceptionCtor = globalThis.DOMException;
   const create = Object.create;
-  const setPrototypeOf = __tbSetPrototypeOf;
   const freeze = __tbFreeze;
   const define = __tbDefineProperty;
   const apply = __tbApply;
@@ -23,7 +21,6 @@
   const setTimer = globalThis.setTimeout;
   const toString = String;
   const toObject = Object;
-  const arrayIsArray = Array.isArray;
   const clock = () => (globalThis.performance ? globalThis.performance.now() : Date.now());
 
   const liveObservers = PrivateSet();

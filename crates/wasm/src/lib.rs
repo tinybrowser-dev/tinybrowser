@@ -102,15 +102,10 @@ impl Guest for Component {
         let Some((registry, dial_id)) = lock(waiting_dials()).remove(&id) else {
             return false;
         };
-        let Some(mut dial) = lock(&registry.dials).remove(&dial_id) else {
+        let Some(dial) = lock(&registry.dials).remove(&dial_id) else {
             return false;
         };
-        if !network().transport.complete(id, result) {
-            // The exchange is gone, so nothing will resume this future. Fail
-            // the dial rather than park the tab with no one to wake it.
-            dial.fail(DialFailure::Connect);
-            return false;
-        }
+        network().transport.complete(id, result);
         DialRegistry::poll(&registry, dial_id, dial);
         true
     }
@@ -471,10 +466,10 @@ fn waiting_dials() -> &'static Mutex<HashMap<u64, Parked>> {
     WAITING.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// The component's local storage areas, keyed by origin. Entries keep
-/// insertion order: the storage proxy exposes enumeration and `key(index)`
-/// directly, and a `HashMap` would make both unstable.
-/// A browser tab has no profile on disk, so the areas die with the component.
+/// The component's local storage areas, keyed by origin. Each [`StorageArea`]
+/// keeps insertion order for `key(index)` and enumeration; the outer map only
+/// indexes areas by origin. A browser tab has no profile on disk, so the areas
+/// die with the component.
 fn local_storage() -> &'static Mutex<HashMap<renderer::StorageKey, StorageArea>> {
     static AREAS: OnceLock<Mutex<HashMap<renderer::StorageKey, StorageArea>>> = OnceLock::new();
     AREAS.get_or_init(|| Mutex::new(HashMap::new()))
@@ -559,7 +554,7 @@ impl NetworkHost for WasmServices {
         url: &url::Url,
         partition_key: Option<&str>,
     ) {
-        let _stored = network()
+        network()
             .agent
             .set_script_cookie_partition(write, url, partition_key);
     }
@@ -728,25 +723,9 @@ impl MessagingHost for WasmServices {
 
 impl Drop for WasmServices {
     fn drop(&mut self) {
-        let owed: Vec<u64> = {
-            let mut waiting = lock(waiting_dials());
-            let ids: Vec<u64> = waiting
-                .iter()
-                .filter(|(_, (registry, _))| Arc::ptr_eq(registry, &self.registry))
-                .map(|(id, _)| *id)
-                .collect();
-            for id in &ids {
-                waiting.remove(id);
-            }
-            ids
-        };
-        for id in owed {
-            network().transport.abandon(id);
-            host::cancel_fetch(id);
-        }
-        let dials = std::mem::take(&mut *lock(&self.registry.dials));
-        for (_, mut dial) in dials {
-            dial.fail(DialFailure::Cancelled);
+        let ids: Vec<u64> = lock(&self.registry.dials).keys().copied().collect();
+        for id in ids {
+            self.registry.cancel(id);
         }
         lock(session_storage()).remove(&self.owner);
     }

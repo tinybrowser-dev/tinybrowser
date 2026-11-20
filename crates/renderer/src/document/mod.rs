@@ -774,7 +774,7 @@ pub(crate) struct Document {
     /// scripts after a parser-inserted `src` run only once it executes
     /// (<https://html.spec.whatwg.org/multipage/scripting.html#prepare-the-script-element>).
     parser_blocked_script: Option<crate::dom::tree::NodeId>,
-    deferred_modules: Vec<(crate::dom::tree::NodeId, crate::js::ScriptSource)>,
+    deferred_modules: Vec<(crate::dom::tree::NodeId, crate::js::ScriptElementSource)>,
     stop: Arc<crate::js::Stop>,
 }
 
@@ -3600,7 +3600,7 @@ impl Document {
             self.deliver_mutations();
             let script = crate::js::script_at(&self.world.borrow(), id);
             match script {
-                Some(crate::js::Script::Classic(crate::js::ScriptSource::Inline {
+                Some(crate::js::Script::Classic(crate::js::ScriptElementSource::Inline {
                     source,
                     line,
                 })) => {
@@ -3614,7 +3614,7 @@ impl Document {
                     let filename = self.url.as_str().to_owned();
                     self.eval_classic(&source, Some(id), line, &filename);
                 }
-                Some(crate::js::Script::Classic(crate::js::ScriptSource::Src(src))) => {
+                Some(crate::js::Script::Classic(crate::js::ScriptElementSource::Src(src))) => {
                     if self.start_src_script(id, &src, launched, &parse_base) {
                         return true;
                     }

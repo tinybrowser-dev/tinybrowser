@@ -320,12 +320,12 @@ impl Agent {
         write: &crate::ScriptCookieWrite,
         uri: &Url,
         partition_key: Option<&str>,
-    ) -> bool {
+    ) {
         let origin = uri.origin();
         self.jar().store_script(
             write,
             self.fetch_op(uri, &origin, RetrievalKind::NonHttp, partition_key),
-        )
+        );
     }
 
     /// `document.cookie` setter for a request with no top-level site.
@@ -412,13 +412,7 @@ impl Agent {
     ) -> Result<(), NetError> {
         let cookie = self.jar().cookie_string(operation);
         if !cookie.is_empty() {
-            let value = match headers.value("cookie") {
-                Some(existing) => {
-                    format!("{}; {cookie}", String::from_utf8_lossy(existing.as_bytes()))
-                }
-                None => cookie,
-            };
-            let value = HeaderValue::from_str(&value).map_err(|_| NetError::RejectedRequest)?;
+            let value = HeaderValue::from_str(&cookie).map_err(|_| NetError::RejectedRequest)?;
             headers.set(header::COOKIE, value);
         }
         if headers.value("user-agent").is_none() {

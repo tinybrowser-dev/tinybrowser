@@ -18,7 +18,7 @@ use rquickjs::{
 
 use super::state::{Canvas2D, JpegQuality};
 use super::{
-    CanvasHost, DomString, ElementCanvas, OffscreenCanvasHost, offscreen_canvas_id, world,
+    CanvasHost, CanvasString, ElementCanvas, OffscreenCanvasHost, offscreen_canvas_id, world,
 };
 use crate::js::bindings::{dom_exception_value, throw_dom};
 
@@ -97,7 +97,7 @@ fn format<'js>(ctx: &Ctx<'js>, mime: Option<&Value<'js>>) -> Result<CanvasImageF
     let Some(mime) = mime.filter(|mime| !mime.is_undefined()) else {
         return Ok(CanvasImageFormat::Png);
     };
-    let mime = DomString::from_js(ctx, mime.clone())?;
+    let mime = CanvasString::from_js(ctx, mime.clone())?;
     Ok(if mime.0.eq_ignore_ascii_case("image/jpeg") {
         CanvasImageFormat::Jpeg
     } else {
@@ -163,7 +163,7 @@ fn encode_options<'js>(ctx: &Ctx<'js>, options: Option<&Value<'js>>) -> Result<I
     let format = if type_value.is_undefined() {
         CanvasImageFormat::Png
     } else {
-        let mime = DomString::from_js(ctx, type_value)?;
+        let mime = CanvasString::from_js(ctx, type_value)?;
         if mime.0.eq_ignore_ascii_case("image/jpeg") {
             CanvasImageFormat::Jpeg
         } else {

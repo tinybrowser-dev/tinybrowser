@@ -2248,10 +2248,13 @@ pub(crate) fn prepare_classic_script(ctx: &Ctx<'_>, id: NodeId) -> Result<()> {
             return Ok(());
         }
         match crate::js::script_at(&world, id) {
-            Some(crate::js::Script::Classic(crate::js::ScriptSource::Inline { source, line })) => {
-                Kind::Inline(source, line)
+            Some(crate::js::Script::Classic(crate::js::ScriptElementSource::Inline {
+                source,
+                line,
+            })) => Kind::Inline(source, line),
+            Some(crate::js::Script::Classic(crate::js::ScriptElementSource::Src(_))) => {
+                Kind::External
             }
-            Some(crate::js::Script::Classic(crate::js::ScriptSource::Src(_))) => Kind::External,
             // A module script is always deferred: its graph is fetched as a
             // script request, and the element's `load` waits for it
             // (<https://html.spec.whatwg.org/multipage/scripting.html#attr-script-type-module>).

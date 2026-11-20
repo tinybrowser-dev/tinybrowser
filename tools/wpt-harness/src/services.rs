@@ -1034,8 +1034,7 @@ impl NetworkHost for FsServices {
         url: &Url,
         partition_key: Option<&str>,
     ) {
-        let _stored = self
-            .agent
+        self.agent
             .set_script_cookie_partition(write, url, partition_key);
         self.publish_cookies();
     }

@@ -142,12 +142,12 @@ pub enum ScriptValue {
 /// [HTML prepare the script element](https://html.spec.whatwg.org/multipage/webappapis.html#prepare-the-script-element)
 #[derive(Clone)]
 pub(crate) enum Script {
-    Classic(ScriptSource),
-    Module(ScriptSource),
+    Classic(ScriptElementSource),
+    Module(ScriptElementSource),
 }
 
 #[derive(Clone)]
-pub(crate) enum ScriptSource {
+pub(crate) enum ScriptElementSource {
     /// Inline text, with the 1-based document line its source starts on.
     Inline {
         source: String,
@@ -2682,8 +2682,8 @@ pub(crate) fn script_at(world: &World, id: crate::dom::tree::NodeId) -> Option<S
         return None;
     }
     let source = match crate::dom::tree::attr(base, id.node, "src") {
-        Some(src) if !src.trim().is_empty() => ScriptSource::Src(src.to_owned()),
-        _ => ScriptSource::Inline {
+        Some(src) if !src.trim().is_empty() => ScriptElementSource::Src(src.to_owned()),
+        _ => ScriptElementSource::Inline {
             source: crate::dom::text::child_text_content(base, id.node),
             // Known gap: Blitz stores no script line numbers.
             line: 0,

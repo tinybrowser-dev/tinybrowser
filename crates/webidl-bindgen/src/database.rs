@@ -23,6 +23,7 @@ pub(crate) struct Interface<'idl> {
     pub(crate) members: Vec<Member<'idl>>,
 }
 
+#[derive(Clone)]
 pub(crate) struct Member<'idl> {
     pub(crate) declaration: InterfaceMember<'idl>,
     scopes: Vec<ExtendedAttributeList<'idl>>,
@@ -39,15 +40,6 @@ pub(crate) struct Member<'idl> {
 #[derive(Clone, Copy)]
 pub(crate) struct Exposure {
     pub(crate) secure_context: bool,
-}
-
-impl Clone for Member<'_> {
-    fn clone(&self) -> Self {
-        Self {
-            declaration: self.declaration.clone(),
-            scopes: self.scopes.clone(),
-        }
-    }
 }
 
 impl Member<'_> {

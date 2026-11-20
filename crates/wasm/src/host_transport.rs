@@ -86,14 +86,11 @@ impl HostTransport {
         lock(&self.polled).take().and_then(|context| context.opened)
     }
 
-    /// Deposits the host's answer. Returns whether an exchange was waiting:
-    /// `false` means the request was cancelled or its tab went away.
-    pub(crate) fn complete(&self, id: u64, answer: Answer) -> bool {
-        let Some(exchange) = lock(&self.exchanges).remove(&id) else {
-            return false;
-        };
-        *lock(&exchange.answer) = Some(answer);
-        true
+    /// Deposits the host's answer for a waiting exchange.
+    pub(crate) fn complete(&self, id: u64, answer: Answer) {
+        if let Some(exchange) = lock(&self.exchanges).remove(&id) {
+            *lock(&exchange.answer) = Some(answer);
+        }
     }
 
     /// Drops an exchange nobody will resume, because its dial was cancelled.

@@ -273,7 +273,7 @@ impl TabNetworkHandle {
             .collect()
     }
 
-    /// Stores one `CookieStore` line and reports whether the jar accepted it
+    /// Stores one typed `CookieStore` write
     /// (<https://cookiestore.spec.whatwg.org/#set-a-cookie>).
     pub(crate) fn cookie_store_store(
         &self,
@@ -281,8 +281,7 @@ impl TabNetworkHandle {
         url: &Url,
         partition_key: Option<&str>,
     ) {
-        let _stored = self
-            .agent
+        self.agent
             .set_script_cookie_partition(write, url, partition_key);
     }
 
@@ -325,7 +324,7 @@ impl TabNetworkHandle {
         let deadline = started + dial::PAGE_FETCH_TIMEOUT;
         let permits = Self::acquire(&self.permits.navigation, deadline).await?;
         let mut request = Request::new(Method::GET, url.clone());
-        chrome_navigation_request(&mut request, url);
+        dial::apply_navigation_headers(&mut request, url);
         request.initiator_kind = InitiatorKind::Navigation;
         // One initiator origin feeds `Sec-Fetch-Site`, the cookie context, and
         // the request origin. `None` means a fresh opaque origin: no document
@@ -882,49 +881,6 @@ fn trace_dial_result(
 /// URL, and every mint is distinct, which is exactly "no principal".
 fn opaque_origin() -> url::Origin {
     net::about_blank().origin()
-}
-
-/// The browser's default headers for one top-level (or popup) document
-/// request, matching Chrome's document navigation.
-///
-/// `Upgrade-Insecure-Requests` is the document navigation preference
-/// (<https://www.w3.org/TR/upgrade-insecure-requests/#preference>), and
-/// `Accept` and the other Fetch Metadata headers match Chrome's document
-/// navigation request
-/// (<https://w3c.github.io/webappsec-fetch-metadata/>). `Sec-Fetch-Site` is
-/// the net client's: it reads the request's one initiator origin and widens it
-/// across redirects, for navigations and subresources alike.
-///
-/// Low-entropy UA client hints are sent only to potentially trustworthy URLs
-/// (<https://wicg.github.io/ua-client-hints/#sec-ch-ua>,
-/// <https://w3c.github.io/webappsec-secure-contexts/#is-url-trustworthy>).
-fn chrome_navigation_request(request: &mut Request, url: &Url) {
-    static_header(request, "Upgrade-Insecure-Requests", "1");
-    static_header(
-        request,
-        "Accept",
-        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-    );
-    static_header(request, "Sec-Fetch-Mode", "navigate");
-    static_header(request, "Sec-Fetch-User", "?1");
-    static_header(request, "Sec-Fetch-Dest", "document");
-    if secure_context::is_potentially_trustworthy(url) {
-        static_header(
-            request,
-            "Sec-CH-Prefers-Color-Scheme",
-            crate::SEC_CH_PREFERS_COLOR_SCHEME,
-        );
-    }
-}
-
-/// Sets a request header this process chose, not the page. The value is a
-/// static HTTP token, so a rejected one is a programming error, and the panic
-/// names the header that has none.
-fn static_header(request: &mut Request, name: &str, value: &str) {
-    request
-        .headers
-        .insert(name, value)
-        .unwrap_or_else(|_| panic!("{name}: {value:?} is not a header value"));
 }
 
 #[cfg(test)]
@@ -1614,7 +1570,7 @@ mod tests {
     fn chrome_navigation_headers_are_limited_to_trustworthy_urls() {
         let secure = Url::parse("https://example.com/").expect("https url");
         let mut secure_request = net::Request::new(net::Method::GET, secure.clone());
-        chrome_navigation_request(&mut secure_request, &secure);
+        dial::apply_navigation_headers(&mut secure_request, &secure);
         assert!(
             secure_request
                 .headers
@@ -1625,7 +1581,7 @@ mod tests {
 
         let insecure = Url::parse("http://example.com/").expect("http url");
         let mut insecure_request = net::Request::new(net::Method::GET, insecure.clone());
-        chrome_navigation_request(&mut insecure_request, &insecure);
+        dial::apply_navigation_headers(&mut insecure_request, &insecure);
         assert!(
             insecure_request
                 .headers

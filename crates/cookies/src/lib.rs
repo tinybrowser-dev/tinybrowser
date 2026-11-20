@@ -163,8 +163,8 @@ impl CookieJar {
     /// when the value holds U+003B (;): the line parser would read it as the
     /// start of the next attribute
     /// (<https://cookiestore.spec.whatwg.org/#set-a-cookie>).
-    pub fn store_script(&mut self, write: &ScriptCookieWrite, op: CookieOp<'_>) -> bool {
-        self.store_parsed(
+    pub fn store_script(&mut self, write: &ScriptCookieWrite, op: CookieOp<'_>) {
+        let _ = self.store_parsed(
             ParsedSetCookie {
                 name: write.name.clone(),
                 value: write.value.clone(),
@@ -178,7 +178,7 @@ impl CookieJar {
                 partitioned: write.partitioned,
             },
             op,
-        )
+        );
     }
 
     fn store_parsed(&mut self, parsed: ParsedSetCookie, op: CookieOp<'_>) -> bool {

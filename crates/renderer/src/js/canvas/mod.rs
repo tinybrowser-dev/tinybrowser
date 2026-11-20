@@ -37,9 +37,9 @@ use state::serialize_color;
 
 /// A `WebIDL` `DOMString` argument: coerces like `ToString`, then owns the
 /// UTF-8 bytes for the duration of the call.
-pub(crate) struct DomString(std::string::String);
+pub(crate) struct CanvasString(std::string::String);
 
-impl std::ops::Deref for DomString {
+impl std::ops::Deref for CanvasString {
     type Target = str;
 
     fn deref(&self) -> &Self::Target {
@@ -81,7 +81,7 @@ impl<'js> rquickjs::class::Trace<'js> for JsTextMetrics {
     fn trace<'a>(&self, _tracer: rquickjs::class::Tracer<'a, 'js>) {}
 }
 
-impl<'js> FromJs<'js> for DomString {
+impl<'js> FromJs<'js> for CanvasString {
     fn from_js(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Self> {
         Ok(Self(
             Coerced::<rquickjs::String>::from_js(ctx, value)?.to_string()?,
@@ -661,7 +661,7 @@ macro_rules! string_prop {
                 |this: This<Object<'_>>| {
                     with_canvas(this.0.ctx(), &this.0, |canvas| canvas.$get().to_owned())
                 },
-                |this: This<Object<'_>>, value: DomString| {
+                |this: This<Object<'_>>, value: CanvasString| {
                     with_canvas(this.0.ctx(), &this.0, |canvas| canvas.$set(&value))
                 },
             ),
@@ -732,7 +732,7 @@ fn install_paint_accessors(prototype: &Object<'_>) -> Result<()> {
                     }
                 })
             },
-            |this: This<Object<'_>>, value: DomString| {
+            |this: This<Object<'_>>, value: CanvasString| {
                 let color = css_color_exact(this.0.ctx(), &this.0, &value)?;
                 with_canvas(this.0.ctx(), &this.0, |canvas| {
                     if let Some((color, text)) = color {
@@ -1502,7 +1502,7 @@ fn round_rect_radius(value: &Value<'_>) -> Result<Option<(f32, f32)>> {
 /// `CanvasFillRule`: an absent rule is nonzero, and any other string is a
 /// `TypeError`
 /// (<https://html.spec.whatwg.org/multipage/canvas.html#canvasfillrule>).
-fn fill_rule(ctx: &Ctx<'_>, rule: Option<&DomString>) -> Result<bool> {
+fn fill_rule(ctx: &Ctx<'_>, rule: Option<&CanvasString>) -> Result<bool> {
     match rule {
         None => Ok(false),
         Some(rule) => match &**rule {
@@ -1516,7 +1516,7 @@ fn fill_rule(ctx: &Ctx<'_>, rule: Option<&DomString>) -> Result<bool> {
 fn fill<'js>(
     this: This<Object<'js>>,
     first: Opt<Value<'js>>,
-    second: Opt<DomString>,
+    second: Opt<CanvasString>,
 ) -> Result<()> {
     let ctx = this.0.ctx();
     if let Some(value) = first.0 {
@@ -1537,7 +1537,7 @@ fn fill<'js>(
         if second.0.is_some() {
             return Err(Exception::throw_type(ctx, "fill expects a Path2D"));
         }
-        let rule = DomString::from_js(ctx, value)?;
+        let rule = CanvasString::from_js(ctx, value)?;
         let even_odd = fill_rule(ctx, Some(&rule))?;
         return with_canvas(ctx, &this.0, |canvas| canvas.fill(even_odd));
     }
@@ -1564,7 +1564,7 @@ fn stroke<'js>(this: This<Object<'js>>, path: Opt<Value<'js>>) -> Result<()> {
 fn clip<'js>(
     this: This<Object<'js>>,
     first: Opt<Value<'js>>,
-    second: Opt<DomString>,
+    second: Opt<CanvasString>,
 ) -> Result<()> {
     let ctx = this.0.ctx();
     if let Some(value) = first.0 {
@@ -1584,7 +1584,7 @@ fn clip<'js>(
         if second.0.is_some() {
             return Err(Exception::throw_type(ctx, "clip expects a Path2D"));
         }
-        let rule = DomString::from_js(ctx, value)?;
+        let rule = CanvasString::from_js(ctx, value)?;
         let even_odd = fill_rule(ctx, Some(&rule))?;
         return with_canvas(ctx, &this.0, |canvas| canvas.clip(even_odd));
     }
@@ -1616,7 +1616,7 @@ fn is_point_in_path<'js>(
     let rule = args
         .0
         .get(offset + 2)
-        .map(|value| DomString::from_js(ctx, value.clone()))
+        .map(|value| CanvasString::from_js(ctx, value.clone()))
         .transpose()?;
     let even_odd = fill_rule(ctx, rule.as_ref())?;
     let Some(path) = path else {
@@ -1818,7 +1818,7 @@ fn create_pattern<'js>(
         "repeat".to_owned()
     } else {
         let ctx = repetition.ctx().clone();
-        DomString::from_js(&ctx, repetition)?.to_string()
+        CanvasString::from_js(&ctx, repetition)?.to_string()
     };
     if !matches!(
         repetition.as_str(),
@@ -1895,7 +1895,7 @@ fn resource_object<'js>(this: &Object<'js>, kind: &str, id: u32) -> Result<Value
     Ok(object.into_value())
 }
 
-fn add_color_stop(this: This<Object<'_>>, offset: Coerced<f64>, color: DomString) -> Result<()> {
+fn add_color_stop(this: This<Object<'_>>, offset: Coerced<f64>, color: CanvasString) -> Result<()> {
     let id: u32 = this.0.get("__tbGradient")?;
     if !offset.is_finite() {
         return Err(Exception::throw_type(
@@ -2718,7 +2718,7 @@ fn bitmap_options(options: Option<&Object<'_>>) -> Result<BitmapOptions> {
     let quality = read("resizeQuality")
         .map(|value| {
             let ctx = value.ctx().clone();
-            DomString::from_js(&ctx, value)
+            CanvasString::from_js(&ctx, value)
         })
         .transpose()?
         .map_or(
@@ -2733,7 +2733,7 @@ fn bitmap_options(options: Option<&Object<'_>>) -> Result<BitmapOptions> {
     let flip_y = read("imageOrientation")
         .map(|value| {
             let ctx = value.ctx().clone();
-            DomString::from_js(&ctx, value)
+            CanvasString::from_js(&ctx, value)
         })
         .transpose()?
         .is_some_and(|value| &*value == "flipY");
@@ -3363,7 +3363,7 @@ fn to_f32(value: u32) -> f32 {
 
 fn fill_text(
     this: This<Object<'_>>,
-    text: DomString,
+    text: CanvasString,
     x: Coerced<f64>,
     y: Coerced<f64>,
     max_width: Opt<Coerced<f64>>,
@@ -3373,7 +3373,7 @@ fn fill_text(
 
 fn stroke_text(
     this: This<Object<'_>>,
-    text: DomString,
+    text: CanvasString,
     x: Coerced<f64>,
     y: Coerced<f64>,
     max_width: Opt<Coerced<f64>>,
@@ -3916,7 +3916,7 @@ fn get_index_from_offset(this: This<Object<'_>>, offset: Coerced<f64>) -> Result
     Ok(best)
 }
 
-fn measure_text(this: This<Object<'_>>, text: DomString) -> Result<Value<'_>> {
+fn measure_text(this: This<Object<'_>>, text: CanvasString) -> Result<Value<'_>> {
     let ctx = this.0.ctx();
     let (font, align, baseline, direction, letter_spacing, word_spacing, lang, kerning) =
         with_canvas(ctx, &this.0, |canvas| {
@@ -4142,7 +4142,7 @@ fn set_filter_binding<'js>(this: This<Object<'js>>, value: Value<'js>) -> Result
             canvas.set_filter_matrix(matrix);
         });
     }
-    let text = DomString::from_js(ctx, value)?.to_string();
+    let text = CanvasString::from_js(ctx, value)?.to_string();
     if !valid_filter(&text) {
         return Ok(());
     }
@@ -4507,7 +4507,7 @@ fn get_font(this: This<Object<'_>>) -> Result<Value<'_>> {
     Ok(rquickjs::String::from_str(this.0.ctx().clone(), &font)?.into_value())
 }
 
-fn set_font_binding(this: This<Object<'_>>, value: DomString) -> Result<()> {
+fn set_font_binding(this: This<Object<'_>>, value: CanvasString) -> Result<()> {
     let ctx = this.0.ctx();
     let style = context_canvas_node(ctx, &this.0)?
         .and_then(|id| attribute_value(ctx, id, "style").ok())

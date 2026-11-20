@@ -81,7 +81,7 @@ rquickjs-sys = { path = "third_party/rquickjs/sys" }
 
 [package]
 name = "tinybrowser"
-version = "0.1.0"
+version.workspace = true
 edition = "2024"
 license.workspace = true
 authors.workspace = true

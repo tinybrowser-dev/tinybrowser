@@ -560,7 +560,7 @@ impl Document {
             }
             return;
         }
-        let crate::js::Script::Classic(crate::js::ScriptSource::Src(src)) = script else {
+        let crate::js::Script::Classic(crate::js::ScriptElementSource::Src(src)) = script else {
             return;
         };
         let Ok(url) = self.resolve_dial_url(&src) else {
@@ -615,10 +615,10 @@ impl Document {
     pub(super) fn run_module_body(
         &mut self,
         element: crate::dom::tree::NodeId,
-        source: crate::js::ScriptSource,
+        source: crate::js::ScriptElementSource,
     ) -> Option<Result<(), crate::js::JsError>> {
         let result = match source {
-            crate::js::ScriptSource::Inline { source, .. } => {
+            crate::js::ScriptElementSource::Inline { source, .. } => {
                 let violations = self.inline_script_violations(&source, element);
                 if !violations.is_empty() {
                     self.fire_csp_violations(element, &violations);
@@ -633,7 +633,7 @@ impl Document {
                         .map_or(Ok(()), |js| js.eval_inline_module(&name, &source))
                 })
             }
-            crate::js::ScriptSource::Src(src) => match self.resolve_dial_url(&src) {
+            crate::js::ScriptElementSource::Src(src) => match self.resolve_dial_url(&src) {
                 Ok(url) => {
                     let violations = self.script_url_violations(&url, element);
                     if !violations.is_empty() {
