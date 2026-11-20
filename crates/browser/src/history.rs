@@ -215,20 +215,7 @@ impl SessionHistory {
     /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#getting-the-history-object-length-and-index>).
     pub(crate) fn renderer_snapshot_for(&self, frame: FrameId) -> Option<RendererHistorySnapshot> {
         self.frames.get(&frame)?;
-        let active = self.active_entry(frame);
-        let state = active
-            .and_then(|entry| self.locate(entry))
-            .and_then(|entry| entry.state.clone());
-        let steps = self.used_steps();
-        Some(RendererHistorySnapshot {
-            length: steps.len(),
-            index: self.current_step_index(&steps),
-            local_length: self.frame_len(frame),
-            local_index: active
-                .and_then(|entry| self.frame_position(frame, entry))
-                .unwrap_or(0),
-            state,
-        })
+        Some(self.build_snapshot(frame, self.active_entry(frame), None))
     }
 
     /// The mirror for one particular entry.
@@ -245,31 +232,36 @@ impl SessionHistory {
         let found = self.locate(entry)?;
         let frame = self.frame_of(entry)?;
         let steps = self.used_steps();
-        Some(RendererHistorySnapshot {
-            length: steps.len(),
-            index: steps.iter().position(|step| *step == found.step)?,
-            local_length: self.frame_len(frame),
-            local_index: self
-                .frame_position(frame, entry)
-                .unwrap_or(found.local_index),
-            state: found.state.clone(),
-        })
+        let index = steps.iter().position(|step| *step == found.step)?;
+        Some(self.build_snapshot(frame, Some(entry), Some((steps.len(), index))))
     }
 
     /// The main frame's mirror, for a tab with no renderer yet.
     pub(crate) fn renderer_snapshot(&self) -> RendererHistorySnapshot {
-        let steps = self.used_steps();
-        let entry = self.active_entry(FrameId::MAIN);
+        self.build_snapshot(FrameId::MAIN, self.active_entry(FrameId::MAIN), None)
+    }
+
+    fn build_snapshot(
+        &self,
+        frame: FrameId,
+        entry: Option<EntryId>,
+        joint: Option<(usize, usize)>,
+    ) -> RendererHistorySnapshot {
+        let (length, index) = joint.unwrap_or_else(|| {
+            let steps = self.used_steps();
+            (steps.len(), self.current_step_index(&steps))
+        });
+        let located = entry.and_then(|id| self.locate(id));
+        let local_index = entry
+            .and_then(|id| self.frame_position(frame, id))
+            .or_else(|| located.map(|found| found.local_index))
+            .unwrap_or(0);
         RendererHistorySnapshot {
-            length: steps.len(),
-            index: self.current_step_index(&steps),
-            local_length: self.frame_len(FrameId::MAIN),
-            local_index: entry
-                .and_then(|id| self.frame_position(FrameId::MAIN, id))
-                .unwrap_or(0),
-            state: entry
-                .and_then(|id| self.locate(id))
-                .and_then(|entry| entry.state.clone()),
+            length,
+            index,
+            local_length: self.frame_len(frame),
+            local_index,
+            state: located.and_then(|found| found.state.clone()),
         }
     }
 

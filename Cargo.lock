@@ -292,7 +292,6 @@ name = "browser"
 version = "0.1.0"
 dependencies = [
  "dial",
- "httpdate",
  "logging",
  "net",
  "postcard",

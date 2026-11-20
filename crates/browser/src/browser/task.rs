@@ -1,5 +1,5 @@
-use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use tokio::sync::mpsc;
 
@@ -9,9 +9,7 @@ use crate::exchange::ServerInput;
 use crate::manager::RendererProcessManager;
 
 use super::{
-    AddCookie, BrowserError, BrowserHandle, BrowserOperation, BrowserServer, ClearCookies,
-    CloseTab, Command, CookieRecords, CreateTab, GetTab, ListTabs, Notice, OpenWindowOptions,
-    Reply,
+    BrowserError, BrowserHandle, BrowserServer, Command, Notice, OpenWindowOptions, Reply,
 };
 
 /// One tab's target names.
@@ -46,6 +44,32 @@ impl TabNames {
     }
 }
 
+/// All browser-owned state for one tab, kept under a single lock so creation,
+/// renames, sandbox updates, and close cleanup are always atomic.
+#[derive(Default)]
+struct TabRecord {
+    task: Option<TabTask>,
+    opener: Option<TabId>,
+    opener_frame: Option<renderer::FrameId>,
+    names: TabNames,
+    /// Popup sandboxing flag set inherited by this tab's documents.
+    sandbox: renderer::SandboxFlags,
+    /// Enforced CSP `sandbox` flags of the tab's committed main document.
+    main_csp: renderer::SandboxFlags,
+    /// Active sandboxing flag set of each child frame the browser routes.
+    /// Cleared on renderer replacement without touching `main_csp`.
+    frames: HashMap<renderer::FrameId, FrameSandbox>,
+    /// Whether `window.open` created this tab (script-closable even with
+    /// `noopener` and before its first navigation).
+    script_created: bool,
+}
+
+impl TabRecord {
+    fn is_live(&self) -> bool {
+        self.task.is_some()
+    }
+}
+
 /// The browser's tab table, shared with renderer service tasks.
 ///
 /// Service tasks resolve cross-tab calls through this registry, so the browser
@@ -54,43 +78,7 @@ impl TabNames {
 /// returns; a busy target cannot block the sender's renderer.
 #[derive(Clone)]
 pub(crate) struct TabRegistry {
-    tabs: Arc<Mutex<HashMap<TabId, TabTask>>>,
-    openers: Arc<Mutex<HashMap<TabId, TabId>>>,
-    /// The frame inside the opener that created each tab; see
-    /// [`Self::opener_frame`].
-    opener_frames: Arc<Mutex<HashMap<TabId, renderer::FrameId>>>,
-    /// Target names of tabs. The browsing context group is what
-    /// `window.open`'s name lookup searches, so the names are keyed by tab and
-    /// resolved through the opener chain; a tab with no name has no entry
-    /// (<https://html.spec.whatwg.org/multipage/document-sequences.html#the-rules-for-choosing-a-navigable>).
-    names: Arc<Mutex<HashMap<TabId, TabNames>>>,
-    /// The popup sandboxing flag set each tab's documents inherit. The browser
-    /// owns the copy a `window.open` is checked against and the copy a new
-    /// tab inherits, so the renderer's claim can only ever add flags
-    /// (<https://html.spec.whatwg.org/multipage/browsers.html#popup-sandboxing-flag-set>).
-    sandboxes: Arc<Mutex<HashMap<TabId, renderer::SandboxFlags>>>,
-    /// The active sandboxing flag set of each child frame the browser routes,
-    /// keyed by its tab and the renderer's frame id.
-    ///
-    /// The renderer reports an `iframe`'s `sandbox` attribute once, at frame
-    /// creation, and the browser unions it with its own parent record, so a
-    /// later call cannot widen the set. An auxiliary context's set is derived
-    /// from the opener's own record. Frame ids restart when a tab acquires a
-    /// new renderer, so the map is cleared on replacement.
-    ///
-    /// The main frame is not here: its creation flags are the tab popup set
-    /// and its document adds `main_csp`, which must survive the renderer swap
-    /// that a commit performs.
-    frames: Arc<Mutex<HashMap<(TabId, renderer::FrameId), FrameSandbox>>>,
-    /// The enforced CSP `sandbox` flags of each tab's committed main
-    /// document. Kept apart from `frames` because a commit acquires its
-    /// renderer (and clears the child records) *before* it mounts, so a main
-    /// record inside `frames` would be erased by its own commit.
-    main_csp: Arc<Mutex<HashMap<TabId, renderer::SandboxFlags>>>,
-    /// Tabs `window.open` created. A script-created tab is script-closable
-    /// even without an opener (`noopener`) and before its first navigation
-    /// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#script-closable>).
-    script_created: Arc<Mutex<HashSet<TabId>>>,
+    records: Arc<Mutex<HashMap<TabId, TabRecord>>>,
 }
 
 /// One frame's sandbox flags, as the browser owns them.
@@ -108,15 +96,12 @@ struct FrameSandbox {
 impl TabRegistry {
     fn new() -> Self {
         Self {
-            tabs: Arc::new(Mutex::new(HashMap::new())),
-            openers: Arc::new(Mutex::new(HashMap::new())),
-            opener_frames: Arc::new(Mutex::new(HashMap::new())),
-            names: Arc::new(Mutex::new(HashMap::new())),
-            sandboxes: Arc::new(Mutex::new(HashMap::new())),
-            frames: Arc::new(Mutex::new(HashMap::new())),
-            main_csp: Arc::new(Mutex::new(HashMap::new())),
-            script_created: Arc::new(Mutex::new(HashSet::new())),
+            records: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    fn lock(&self) -> MutexGuard<'_, HashMap<TabId, TabRecord>> {
+        self.records.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// The tab `caller`'s browsing context group holds under `name`, when one
@@ -127,116 +112,75 @@ impl TabRegistry {
         caller: TabId,
         name: &renderer::ContextName,
     ) -> Option<TabId> {
-        let openers = self.openers.lock().unwrap_or_else(PoisonError::into_inner);
-        let root = group_root(&openers, caller);
-        self.names
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+        let records = self.lock();
+        let root = group_root(&records, caller);
+        records
             .iter()
-            .find(|(id, named)| {
-                named
+            .find(|(id, record)| {
+                record
+                    .names
                     .live
                     .as_ref()
                     .is_some_and(|live| live.as_str() == name.as_str())
-                    && group_root(&openers, **id) == root
+                    && group_root(&records, **id) == root
             })
             .map(|(id, _)| *id)
     }
 
     /// Records the target name of a tab that is not in the table yet.
-    ///
-    /// This is creation, not a later change: a live tab's names move through
-    /// [`Self::install_commit`], [`Self::settle_document_name`], and
-    /// [`Self::rename`], which all skip a tab that closed. A tab id is never
-    /// reused, so a name written here can only belong to the tab being built.
-    pub(crate) fn insert_name(&self, id: TabId, name: Option<renderer::ContextName>) {
-        let mut names = self.names.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(name) = name {
-            names.insert(id, TabNames::from_name(Some(&name)));
-        } else {
-            names.remove(&id);
-        }
+    pub(crate) fn insert_name(&self, id: TabId, name: Option<&renderer::ContextName>) {
+        let mut records = self.lock();
+        records.entry(id).or_default().names = TabNames::from_name(name);
     }
 
     /// Applies a name change the renderer reported, unless its tab has closed.
-    ///
-    /// The tab table and the names share one critical section: a close that
-    /// landed between a separate liveness check and this write would leave a
-    /// name pointing at a dead tab, and the next `window.open` would answer a
-    /// `WindowProxy` for it instead of opening a new context.
     pub(crate) fn rename(&self, id: TabId, change: renderer::NameChange) {
-        let tabs = self.tabs.lock().unwrap_or_else(PoisonError::into_inner);
-        if !tabs.contains_key(&id) {
+        let mut records = self.lock();
+        let Some(record) = records.get_mut(&id).filter(|r| r.is_live()) else {
             return;
-        }
-        let mut names = self.names.lock().unwrap_or_else(PoisonError::into_inner);
+        };
         match change {
             renderer::NameChange::Assigned(name) => {
-                set_names(&mut names, id, TabNames::from_name(name.as_ref()));
+                record.names = TabNames::from_name(name.as_ref());
             }
             // The renderer's cross-origin reset lands before the browser
             // commits the new document. The name belongs to the document being
             // left, so its entry still takes it when the browser commits
             // (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#resetBCName>).
             renderer::NameChange::Reset => {
-                if let Some(entry) = names.get_mut(&id) {
-                    entry.live = None;
-                }
+                record.names.live = None;
             }
         }
     }
 
     /// Installs the document-state name a renderer-driven commit settled.
-    ///
-    /// The commit event travels behind the renderer's own `Assigned` calls, so
-    /// a name set by the new document may already be in the registry. The
-    /// write is a compare-and-set on the outgoing name: only when nothing has
-    /// renamed the tab since the commit does the new value apply, and a later
-    /// assignment always wins.
     pub(crate) fn settle_document_name(
         &self,
         id: TabId,
         outgoing: Option<&renderer::ContextName>,
         name: Option<renderer::ContextName>,
     ) {
-        let tabs = self.tabs.lock().unwrap_or_else(PoisonError::into_inner);
-        if !tabs.contains_key(&id) {
+        let mut records = self.lock();
+        let Some(record) = records.get_mut(&id).filter(|r| r.is_live()) else {
+            return;
+        };
+        if record.names.document.as_ref() != outgoing {
             return;
         }
-        let mut names = self.names.lock().unwrap_or_else(PoisonError::into_inner);
-        if names.get(&id).and_then(|entry| entry.document.as_ref()) != outgoing {
-            return;
-        }
-        if let Some(name) = name {
-            names.entry(id).or_default().document = Some(name);
-        } else {
-            if let Some(entry) = names.get_mut(&id) {
-                entry.document = None;
-            }
-            if names.get(&id).is_some_and(|entry| entry.live.is_none()) {
-                names.remove(&id);
-            }
-        }
+        record.names.document = name;
     }
 
     /// Installs the names a browser-driven commit settled, returning the pair
-    /// it replaced.
-    ///
-    /// A read followed by a write would race a script that renames the tab
-    /// between them, so both happen under one lock. `None` means the tab
-    /// closed while the navigation was in flight.
+    /// it replaced. `None` means the tab closed while the navigation was in
+    /// flight.
     pub(crate) fn install_commit(
         &self,
         id: TabId,
         name: Option<&renderer::ContextName>,
     ) -> Option<TabNames> {
-        let tabs = self.tabs.lock().unwrap_or_else(PoisonError::into_inner);
-        if !tabs.contains_key(&id) {
-            return None;
-        }
-        let mut map = self.names.lock().unwrap_or_else(PoisonError::into_inner);
-        let previous = map.get(&id).cloned().unwrap_or_default();
-        set_names(&mut map, id, TabNames::from_name(name));
+        let mut records = self.lock();
+        let record = records.get_mut(&id).filter(|r| r.is_live())?;
+        let previous = std::mem::replace(&mut record.names, TabNames::from_name(name));
         Some(previous)
     }
 
@@ -251,38 +195,28 @@ impl TabRegistry {
         let Some(previous) = previous else {
             return;
         };
-        let tabs = self.tabs.lock().unwrap_or_else(PoisonError::into_inner);
-        if !tabs.contains_key(&id) {
+        let mut records = self.lock();
+        let Some(record) = records.get_mut(&id).filter(|r| r.is_live()) else {
             return;
-        }
-        let mut map = self.names.lock().unwrap_or_else(PoisonError::into_inner);
-        let current = map.get(&id).cloned().unwrap_or_default();
-        if &current == installed {
-            set_names(&mut map, id, previous);
+        };
+        if &record.names == installed {
+            record.names = previous;
         }
     }
 
     /// The target name of one tab, when it has one.
     pub(crate) fn name(&self, id: TabId) -> Option<renderer::ContextName> {
-        self.names
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+        self.lock()
             .get(&id)
-            .and_then(|entry| entry.live.clone())
+            .and_then(|record| record.names.live.clone())
     }
 
-    /// The active document state's navigable target name: the value a
-    /// `window.name` assignment writes and the entry the document leaves takes.
-    ///
-    /// It outlives the browsing context's name so a reset that arrives before
-    /// the commit cannot erase what the outgoing document stored
+    /// The active document state's navigable target name
     /// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-name>).
     pub(crate) fn document_name(&self, id: TabId) -> Option<renderer::ContextName> {
-        self.names
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+        self.lock()
             .get(&id)
-            .and_then(|entry| entry.document.clone())
+            .and_then(|record| record.names.document.clone())
     }
 
     /// Registers a tab id with no coordinator behind it, for unit tests that
@@ -294,71 +228,40 @@ impl TabRegistry {
 
     /// The handle of one live tab.
     pub(crate) fn tab(&self, id: TabId) -> Option<TabHandle> {
-        self.tabs
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+        self.lock()
             .get(&id)
+            .and_then(|record| record.task.as_ref())
             .map(|task| task.handle.clone())
     }
 
     /// The opener of one live tab.
     pub(crate) fn opener(&self, id: TabId) -> Option<TabId> {
-        self.openers
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(&id)
-            .copied()
+        self.lock().get(&id).and_then(|record| record.opener)
     }
 
-    /// Records the popup sandboxing flag set a tab's documents inherit.
-    ///
-    /// The browser keeps its own copy because the set is what it checks a
-    /// `window.open` against: a renderer that claims its document may open a
-    /// popup cannot widen what the browser already knows, and a tab the
-    /// browser created itself starts empty
+    /// Records the popup sandboxing flag set a tab's documents inherit
     /// (<https://html.spec.whatwg.org/multipage/browsers.html#popup-sandboxing-flag-set>).
     pub(crate) fn set_sandbox(&self, id: TabId, sandbox: renderer::SandboxFlags) {
-        self.sandboxes
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(id, sandbox);
+        self.lock().entry(id).or_default().sandbox = sandbox;
     }
 
     /// The popup sandboxing flag set of one live tab; empty when it has none.
+    #[cfg(test)]
     pub(crate) fn sandbox(&self, id: TabId) -> renderer::SandboxFlags {
-        self.sandboxes
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(&id)
-            .copied()
-            .unwrap_or_default()
+        self.lock().get(&id).map_or_default(|record| record.sandbox)
     }
 
     /// The enforced CSP `sandbox` flags of the tab's committed main document.
     pub(crate) fn main_csp(&self, id: TabId) -> renderer::SandboxFlags {
-        self.main_csp
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+        self.lock()
             .get(&id)
-            .copied()
-            .unwrap_or_default()
+            .map_or_default(|record| record.main_csp)
     }
 
     /// Records a frame the renderer created, before its document can run
-    /// script.
-    ///
-    /// A child's reported `sandbox` attribute is unioned with the parent's
-    /// active set, so a renderer that under-reports the attribute still cannot
-    /// make the child less restricted than its embedder. An auxiliary context
-    /// takes exactly the opener's popup set: `allow-popups-to-escape-sandbox`
-    /// must be able to empty it, so the browser does not union the parent here
+    /// script
     /// (<https://html.spec.whatwg.org/multipage/browsers.html#determining-the-creation-sandboxing-flags>,
     /// <https://html.spec.whatwg.org/multipage/browsers.html#popup-sandboxing-flag-set>).
-    ///
-    /// Returns false when the id is the main frame or already in the table.
-    /// Renderer ids are minted monotonically, so a repeat is a forged or
-    /// confused report: accepting it would let a frame replace a stricter
-    /// record with a looser one.
     pub(crate) fn register_frame(
         &self,
         tab: TabId,
@@ -370,14 +273,14 @@ impl TabRegistry {
         if frame == renderer::FrameId::MAIN {
             return false;
         }
-        let tab_sandbox = self.sandbox(tab);
-        let mut frames = self.frames.lock().unwrap_or_else(PoisonError::into_inner);
-        if frames.contains_key(&(tab, frame)) {
+        let mut records = self.lock();
+        let record = records.entry(tab).or_default();
+        if record.frames.contains_key(&frame) {
             return false;
         }
-        let parent_active = match frames.get(&(tab, parent)) {
-            Some(record) => record.active,
-            None if parent == renderer::FrameId::MAIN => tab_sandbox,
+        let parent_active = match record.frames.get(&parent) {
+            Some(parent_record) => parent_record.active,
+            None if parent == renderer::FrameId::MAIN => record.sandbox,
             // An honest renderer reports a parent before the child that it
             // embeds; a missing record is a bug or a forgery, and the full set
             // is the only safe answer.
@@ -387,8 +290,8 @@ impl TabRegistry {
             renderer::FrameKind::Child => parent_active.union(reported),
             renderer::FrameKind::Auxiliary => parent_active.auxiliary_flags(),
         };
-        frames.insert(
-            (tab, frame),
+        record.frames.insert(
+            frame,
             FrameSandbox {
                 creation,
                 active: creation,
@@ -398,106 +301,75 @@ impl TabRegistry {
     }
 
     /// The active sandboxing flag set of `frame` in `tab`.
-    ///
-    /// The main frame is the tab popup set unioned with the committed
-    /// document's CSP `sandbox`. `None` means the renderer named a child frame
-    /// the browser never saw created, which an honest renderer cannot do.
     pub(crate) fn frame_sandbox(
         &self,
         tab: TabId,
         frame: renderer::FrameId,
     ) -> Option<renderer::SandboxFlags> {
+        let records = self.lock();
         if frame == renderer::FrameId::MAIN {
-            return Some(self.sandbox(tab).union(self.main_csp(tab)));
+            let (sandbox, main_csp) = records
+                .get(&tab)
+                .map_or_default(|r| (r.sandbox, r.main_csp));
+            return Some(sandbox.union(main_csp));
         }
-        self.frames
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(&(tab, frame))
-            .map(|record| record.active)
+        records
+            .get(&tab)
+            .and_then(|record| record.frames.get(&frame))
+            .map(|entry| entry.active)
     }
 
-    /// Replaces the main frame's CSP `sandbox` for a commit. Kept apart from
-    /// the child records because a commit acquires its renderer, which clears
-    /// those records, after this is installed.
+    /// Replaces the main frame's CSP `sandbox` for a commit.
     pub(crate) fn reset_main_sandbox(&self, tab: TabId, csp: renderer::SandboxFlags) {
-        self.main_csp
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(tab, csp);
+        self.lock().entry(tab).or_default().main_csp = csp;
     }
 
-    /// Narrows a frame's active set for the response it just navigated to:
-    /// the creation flags unioned with the response's CSP `sandbox`
-    /// directives. A child the browser never saw created is ignored; the
-    /// renderer already applied the flags, and the browser has no creation set
-    /// to rebuild from.
+    /// Narrows a frame's active set for the response it just navigated to.
     pub(crate) fn commit_frame_sandbox(
         &self,
         tab: TabId,
         frame: renderer::FrameId,
         csp: renderer::SandboxFlags,
     ) {
+        let mut records = self.lock();
         if frame == renderer::FrameId::MAIN {
-            self.reset_main_sandbox(tab, csp);
+            records.entry(tab).or_default().main_csp = csp;
             return;
         }
-        let mut frames = self.frames.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(record) = frames.get_mut(&(tab, frame)) {
-            record.active = record.creation.union(csp);
+        if let Some(entry) = records
+            .get_mut(&tab)
+            .and_then(|record| record.frames.get_mut(&frame))
+        {
+            entry.active = entry.creation.union(csp);
         }
     }
 
     /// Drops a child frame the renderer tore down. Returns false only for the
-    /// main frame, whose CSP belongs to the tab and must outlive any one
-    /// document. An unknown child is an idempotent no-op: the renderer can
-    /// report the same teardown from more than one path, and dropping a record
-    /// that is already gone cannot widen anything.
+    /// main frame.
     pub(crate) fn remove_frame(&self, tab: TabId, frame: renderer::FrameId) -> bool {
         if frame == renderer::FrameId::MAIN {
             return false;
         }
-        self.frames
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&(tab, frame));
+        if let Some(record) = self.lock().get_mut(&tab) {
+            record.frames.remove(&frame);
+        }
         true
     }
 
     /// Drops every child frame record for a tab whose renderer is being
-    /// replaced. Frame ids restart with the new process, so keeping the old
-    /// records would let a reused id inherit another document's flags. The
-    /// main frame's CSP is the commit's own and survives.
+    /// replaced; the main frame's CSP survives.
     pub(crate) fn clear_frames(&self, tab: TabId) {
-        self.frames
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .retain(|(id, _), _| *id != tab);
+        if let Some(record) = self.lock().get_mut(&tab) {
+            record.frames.clear();
+        }
     }
 
-    fn remove_sandbox(&self, id: TabId) {
-        self.sandboxes
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&id);
-        self.main_csp
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&id);
-        self.clear_frames(id);
-    }
-
-    /// Queues one `postMessage` delivery on the target tab's mailbox. Returns
-    /// false when the tab is gone, its coordinator stopped, or the mailbox is
-    /// full. A full mailbox drops the message instead of blocking: the caller
-    /// is the sender's renderer service task, and waiting there would stall
-    /// every service call for that renderer until the target drains.
+    /// Queues one `postMessage` delivery on the target tab's mailbox.
     pub(crate) fn deliver(&self, id: TabId, message: RemoteWindowMessage) -> bool {
         let sender = self
-            .tabs
             .lock()
-            .unwrap_or_else(PoisonError::into_inner)
             .get(&id)
+            .and_then(|record| record.task.as_ref())
             .map(TabTask::deliveries);
         match sender {
             Some(sender) => match sender.try_send(message) {
@@ -522,118 +394,68 @@ impl TabRegistry {
     }
 
     fn ids(&self) -> Vec<TabId> {
-        self.tabs
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .keys()
-            .copied()
+        self.lock()
+            .iter()
+            .filter(|(_, record)| record.is_live())
+            .map(|(id, _)| *id)
             .collect()
     }
 
     fn insert(&self, id: TabId, task: TabTask) {
-        self.tabs
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(id, task);
+        self.lock().entry(id).or_default().task = Some(task);
     }
 
-    /// Takes a tab out of the table, with its names, in one critical section.
-    ///
-    /// A name that outlived its tab would make the next `window.open` answer a
-    /// `WindowProxy` for a closed context instead of opening a new one.
+    /// Atomically removes a tab and all of its associated state (names,
+    /// opener, sandboxes, child frames, and script-created flag).
     fn remove(&self, id: TabId) -> Option<TabTask> {
-        let mut tabs = self.tabs.lock().unwrap_or_else(PoisonError::into_inner);
-        let task = tabs.remove(&id)?;
-        self.names
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&id);
-        Some(task)
+        self.lock().remove(&id)?.task
     }
 
     fn drain(&self) -> Vec<TabTask> {
-        let mut tabs = self.tabs.lock().unwrap_or_else(PoisonError::into_inner);
-        let tasks: Vec<TabTask> = tabs.drain().map(|(_, task)| task).collect();
-        drop(tabs);
-        self.names
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clear();
-        self.script_created
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clear();
-        tasks
+        self.lock()
+            .drain()
+            .filter_map(|(_, record)| record.task)
+            .collect()
     }
 
     /// Records that `id` was opened by `opener`'s frame `frame`.
     fn set_opener(&self, id: TabId, opener: TabId, frame: renderer::FrameId) {
-        self.openers
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(id, opener);
-        self.opener_frames
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(id, frame);
+        let mut records = self.lock();
+        let record = records.entry(id).or_default();
+        record.opener = Some(opener);
+        record.opener_frame = Some(frame);
     }
 
-    /// The frame inside `id`'s opener that opened it. Together with
-    /// [`Self::opener`] this is "the auxiliary contexts it created" for the
-    /// sandboxed navigation check.
+    /// The frame inside `id`'s opener that opened it.
     pub(crate) fn opener_frame(&self, id: TabId) -> Option<renderer::FrameId> {
-        self.opener_frames
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(&id)
-            .copied()
+        self.lock().get(&id).and_then(|record| record.opener_frame)
     }
 
-    fn remove_opener(&self, id: TabId) {
-        self.openers
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&id);
-        self.opener_frames
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&id);
-        self.script_created
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&id);
-    }
-
-    /// Records that `window.open` created `id`, which makes it script-closable
-    /// even with `noopener` and before it has a second history entry
+    /// Records that `window.open` created `id`
     /// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#script-closable>).
     fn mark_script_created(&self, id: TabId) {
-        self.script_created
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(id);
+        self.lock().entry(id).or_default().script_created = true;
     }
 
     /// Whether script created `id`, rather than a form, a link, or the browser
     /// itself.
     pub(crate) fn is_script_created(&self, id: TabId) -> bool {
-        self.script_created
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .contains(&id)
+        self.lock()
+            .get(&id)
+            .is_some_and(|record| record.script_created)
     }
 }
 
 /// The top-level tab of the browsing context group `tab` belongs to: the end
 /// of its opener chain. Tab ids are never reused, so a group whose root has
 /// closed keeps its identity until the last member closes.
-fn group_root(openers: &HashMap<TabId, TabId>, tab: TabId) -> TabId {
+fn group_root(records: &HashMap<TabId, TabRecord>, tab: TabId) -> TabId {
     let mut root = tab;
     // A chain longer than the table is a cycle, which cannot be built; stop
     // rather than loop if one ever is.
-    for _ in 0..=openers.len() {
-        match openers.get(&root) {
-            Some(opener) => root = *opener,
+    for _ in 0..=records.len() {
+        match records.get(&root).and_then(|record| record.opener) {
+            Some(opener) => root = opener,
             None => break,
         }
     }
@@ -705,14 +527,21 @@ impl BrowserTask {
 
     async fn dispatch(&mut self, command: Command) -> DispatchOutcome {
         let reply = match command {
-            Command::CreateTab => CreateTab.serve(self),
-            Command::Tabs => ListTabs.serve(self),
-            Command::Tab { id } => GetTab { id }.serve(self),
-            Command::CloseTab { id } => CloseTab { id }.serve(self),
-            Command::CookieRecords { url } => CookieRecords { url }.serve(self),
-            Command::ClearCookies => ClearCookies.serve(self),
-            Command::AddCookie { cookie, url } => AddCookie { cookie, url }.serve(self),
-            Command::OpenWindow(request) => request.serve(self),
+            Command::CreateTab => Reply::CreateTab(self.create_tab(NewTab::browser_created())),
+            Command::Tabs => Reply::Tabs(self.tabs.ids()),
+            Command::Tab { id } => Reply::Tab(self.tabs.tab(id).ok_or(BrowserError::UnknownTab)),
+            Command::CloseTab { id } => Reply::CloseTab(self.close_tab(id)),
+            Command::CookieRecords { url } => {
+                Reply::CookieRecords(self.context.cookie_records(&url))
+            }
+            Command::ClearCookies => {
+                self.context.clear_cookies();
+                Reply::ClearCookies
+            }
+            Command::AddCookie { cookie, url } => {
+                Reply::AddCookie(self.context.add_cookie(&cookie, &url))
+            }
+            Command::OpenWindow(request) => Reply::OpenWindow(self.open_window(request)),
             Command::Close => {
                 let result = self.shutdown().await;
                 return DispatchOutcome::Stop(Reply::Close(result));
@@ -726,7 +555,7 @@ impl BrowserTask {
         self.next_tab = raw.checked_add(1);
         let id = TabId::new(raw);
         self.context.create_tab(id);
-        self.tabs.insert_name(id, tab.name.clone());
+        self.tabs.insert_name(id, tab.name.as_ref());
         self.tabs.set_sandbox(id, tab.popup_sandbox);
         if let (Some(opener), Some(frame)) = (tab.opener, tab.opener_frame) {
             self.tabs.set_opener(id, opener, frame);
@@ -747,8 +576,6 @@ impl BrowserTask {
         let Some(mut task) = self.tabs.remove(id) else {
             return Err(BrowserError::UnknownTab);
         };
-        self.tabs.remove_opener(id);
-        self.tabs.remove_sandbox(id);
         // Never wait on the tab coordinator here: the browser owner task must
         // not join a wait-for cycle with a renderer that needs it. The task
         // keeps its own lifecycle and reaps itself.
@@ -808,171 +635,6 @@ impl BrowserTask {
     }
 }
 
-impl BrowserOperation for CreateTab {
-    type Output = Result<TabHandle, BrowserError>;
-
-    fn into_command(self) -> Command {
-        Command::CreateTab
-    }
-
-    fn unwrap(reply: Reply) -> Option<Self::Output> {
-        match reply {
-            Reply::CreateTab(result) => Some(result),
-            _ => None,
-        }
-    }
-
-    fn serve(self, task: &mut BrowserTask) -> Reply {
-        Reply::CreateTab(task.create_tab(NewTab::browser_created()))
-    }
-}
-
-impl BrowserOperation for ListTabs {
-    type Output = Vec<TabId>;
-
-    fn into_command(self) -> Command {
-        Command::Tabs
-    }
-
-    fn unwrap(reply: Reply) -> Option<Self::Output> {
-        match reply {
-            Reply::Tabs(tabs) => Some(tabs),
-            _ => None,
-        }
-    }
-
-    fn serve(self, task: &mut BrowserTask) -> Reply {
-        Reply::Tabs(task.tabs.ids())
-    }
-}
-
-impl BrowserOperation for GetTab {
-    type Output = Result<TabHandle, BrowserError>;
-
-    fn into_command(self) -> Command {
-        Command::Tab { id: self.id }
-    }
-
-    fn unwrap(reply: Reply) -> Option<Self::Output> {
-        match reply {
-            Reply::Tab(result) => Some(result),
-            _ => None,
-        }
-    }
-
-    fn serve(self, task: &mut BrowserTask) -> Reply {
-        Reply::Tab(task.tabs.tab(self.id).ok_or(BrowserError::UnknownTab))
-    }
-}
-
-impl BrowserOperation for CloseTab {
-    type Output = Result<(), BrowserError>;
-
-    fn into_command(self) -> Command {
-        Command::CloseTab { id: self.id }
-    }
-
-    fn unwrap(reply: Reply) -> Option<Self::Output> {
-        match reply {
-            Reply::CloseTab(result) => Some(result),
-            _ => None,
-        }
-    }
-
-    fn serve(self, task: &mut BrowserTask) -> Reply {
-        Reply::CloseTab(task.close_tab(self.id))
-    }
-}
-
-impl BrowserOperation for CookieRecords {
-    type Output = Vec<net::CookieRecord>;
-
-    fn into_command(self) -> Command {
-        Command::CookieRecords { url: self.url }
-    }
-
-    fn unwrap(reply: Reply) -> Option<Self::Output> {
-        match reply {
-            Reply::CookieRecords(records) => Some(records),
-            _ => None,
-        }
-    }
-
-    fn serve(self, task: &mut BrowserTask) -> Reply {
-        Reply::CookieRecords(task.context.cookie_records(&self.url))
-    }
-}
-
-impl BrowserOperation for ClearCookies {
-    type Output = ();
-
-    fn into_command(self) -> Command {
-        Command::ClearCookies
-    }
-
-    fn unwrap(reply: Reply) -> Option<Self::Output> {
-        match reply {
-            Reply::ClearCookies => Some(()),
-            _ => None,
-        }
-    }
-
-    fn serve(self, task: &mut BrowserTask) -> Reply {
-        task.context.clear_cookies();
-        Reply::ClearCookies
-    }
-}
-
-impl BrowserOperation for AddCookie {
-    type Output = bool;
-
-    fn into_command(self) -> Command {
-        Command::AddCookie {
-            cookie: self.cookie,
-            url: self.url,
-        }
-    }
-
-    fn unwrap(reply: Reply) -> Option<Self::Output> {
-        match reply {
-            Reply::AddCookie(stored) => Some(stored),
-            _ => None,
-        }
-    }
-
-    fn serve(self, task: &mut BrowserTask) -> Reply {
-        Reply::AddCookie(task.context.add_cookie(&self.cookie, &self.url))
-    }
-}
-
-impl BrowserOperation for OpenWindowOptions {
-    type Output = Result<TabId, BrowserError>;
-
-    fn into_command(self) -> Command {
-        Command::OpenWindow(self)
-    }
-
-    fn unwrap(reply: Reply) -> Option<Self::Output> {
-        match reply {
-            Reply::OpenWindow(result) => Some(result),
-            _ => None,
-        }
-    }
-
-    fn serve(self, task: &mut BrowserTask) -> Reply {
-        Reply::OpenWindow(task.open_window(self))
-    }
-}
-
-/// Writes a name pair, dropping the entry when the tab has no names at all.
-fn set_names(map: &mut HashMap<TabId, TabNames>, id: TabId, names: TabNames) {
-    if names.live.is_none() && names.document.is_none() {
-        map.remove(&id);
-    } else {
-        map.insert(id, names);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::TabRegistry;
@@ -992,7 +654,7 @@ mod tests {
         let opener = TabId::new(1);
         let popup = TabId::new(2);
         tabs.set_opener(popup, opener, renderer::FrameId::MAIN);
-        tabs.insert_name(popup, Some(name("peer")));
+        tabs.insert_name(popup, Some(&name("peer")));
         assert_eq!(tabs.name(popup), Some(name("peer")));
         assert_eq!(tabs.find_by_name(opener, &name("peer")), Some(popup));
         tabs.insert_name(popup, None);
@@ -1080,7 +742,7 @@ mod tests {
         tabs.add_fixture(opener);
         tabs.add_fixture(popup);
         tabs.set_opener(popup, opener, renderer::FrameId::MAIN);
-        tabs.insert_name(popup, Some(name("peer")));
+        tabs.insert_name(popup, Some(&name("peer")));
         assert_eq!(tabs.find_by_name(opener, &name("peer")), Some(popup));
 
         let _task = tabs.remove(popup).expect("live tab");
@@ -1103,7 +765,7 @@ mod tests {
         let stranger = TabId::new(2);
         let popup = TabId::new(3);
         tabs.set_opener(popup, opener, renderer::FrameId::MAIN);
-        tabs.insert_name(popup, Some(name("peer")));
+        tabs.insert_name(popup, Some(&name("peer")));
         assert_eq!(tabs.find_by_name(opener, &name("peer")), Some(popup));
         assert_eq!(tabs.find_by_name(popup, &name("peer")), Some(popup));
         assert_eq!(tabs.find_by_name(stranger, &name("peer")), None);
@@ -1126,7 +788,7 @@ mod tests {
         assert!(tabs.sandbox(sandboxed).blocks_navigation());
         assert!(tabs.sandbox(sandboxed).origin_is_opaque());
         assert!(!tabs.sandbox(plain).blocks_navigation());
-        tabs.remove_sandbox(sandboxed);
+        tabs.remove(sandboxed);
         assert!(!tabs.sandbox(sandboxed).blocks_navigation());
     }
 

@@ -24,9 +24,7 @@ pub(crate) struct PartitionServices {
 /// Network and site data shared by documents in one partition.
 struct StoragePartition {
     network: NetworkContext,
-    local_storage: Arc<StorageAreas>,
-    indexed_db: Arc<StorageAreas>,
-    events: Arc<RendererEventHub>,
+    services: PartitionServices,
 }
 
 /// One live profile and its default storage partition.
@@ -58,9 +56,11 @@ impl BrowserContext {
             store: Arc::new(store),
             partition: StoragePartition {
                 network,
-                local_storage,
-                indexed_db,
-                events: Arc::new(RendererEventHub::default()),
+                services: PartitionServices {
+                    local_storage,
+                    indexed_db,
+                    events: Arc::new(RendererEventHub::default()),
+                },
             },
             sessions: Arc::new(SessionStorage::default()),
         })
@@ -73,11 +73,7 @@ impl BrowserContext {
 
     #[must_use]
     pub(crate) fn partition_services(&self) -> PartitionServices {
-        PartitionServices {
-            local_storage: Arc::clone(&self.partition.local_storage),
-            indexed_db: Arc::clone(&self.partition.indexed_db),
-            events: Arc::clone(&self.partition.events),
-        }
+        self.partition.services.clone()
     }
 
     #[must_use]
@@ -100,8 +96,8 @@ impl BrowserContext {
     pub(crate) async fn persist(&self) -> io::Result<()> {
         let store = Arc::clone(&self.store);
         let agent = self.partition.network.agent();
-        let local_storage = Arc::clone(&self.partition.local_storage);
-        let indexed_db = Arc::clone(&self.partition.indexed_db);
+        let local_storage = Arc::clone(&self.partition.services.local_storage);
+        let indexed_db = Arc::clone(&self.partition.services.indexed_db);
         tokio::task::spawn_blocking(move || {
             store.save_from(&agent)?;
             store.save_local_storage(&local_storage)?;

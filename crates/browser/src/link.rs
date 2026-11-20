@@ -1166,9 +1166,7 @@ async fn route_window_call(
                 .storage_key(&origin)
                 .ok_or(RendererViolation)?;
             let target = TabId::new(window.get());
-            let related = target == assignment.tab
-                || context.tabs.opener(target) == Some(assignment.tab)
-                || context.tabs.opener(assignment.tab) == Some(target);
+            let related = message_related(context, assignment, target);
             let value = related
                 .then(|| context.sessions.get(target, &origin, &key))
                 .flatten();

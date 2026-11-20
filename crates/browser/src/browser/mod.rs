@@ -145,60 +145,6 @@ pub(super) enum Notice {
 pub(super) type BrowserClient = exchange::Client<Command, Infallible, Notice, Reply, Infallible>;
 pub(super) type BrowserServer = exchange::Server<Infallible, Reply, Infallible, Command, Notice>;
 
-/// One browser operation: its input, command mapping, reply extraction, and
-/// owner execution.
-///
-/// Each [`BrowserHandle`] method builds one of these structs and passes it to
-/// [`BrowserHandle::ask`]; [`dispatch`](BrowserTask::dispatch) routes the
-/// [`Command`] back into [`serve`](Self::serve). The trait impls live in
-/// `task.rs` beside [`BrowserTask`] state, so adding an operation touches the
-/// struct here plus one impl and one dispatch arm there.
-pub(super) trait BrowserOperation {
-    /// Value [`ask`](BrowserHandle::ask) resolves on a matching [`Reply`].
-    type Output;
-    /// Command sent through the browser exchange.
-    fn into_command(self) -> Command;
-    /// Reply extraction; `None` means the owner answered for another operation.
-    fn unwrap(reply: Reply) -> Option<Self::Output>;
-    /// Owner-side execution.
-    fn serve(self, task: &mut BrowserTask) -> Reply;
-}
-
-/// Starts a tab coordinator and returns its handle.
-pub(super) struct CreateTab;
-
-/// Lists the identities of every live tab.
-pub(super) struct ListTabs;
-
-/// Returns the command handle for one live tab.
-pub(super) struct GetTab {
-    /// Tab to look up.
-    pub(super) id: TabId,
-}
-
-/// Stops and unregisters one tab.
-pub(super) struct CloseTab {
-    /// Tab to stop.
-    pub(super) id: TabId,
-}
-
-/// Returns cookies visible to `url`.
-pub(super) struct CookieRecords {
-    /// URL whose cookies to return.
-    pub(super) url: Url,
-}
-
-/// Removes every cookie from the live profile.
-pub(super) struct ClearCookies;
-
-/// Stores one `Set-Cookie` line for `url`.
-pub(super) struct AddCookie {
-    /// Raw `Set-Cookie` line.
-    pub(super) cookie: String,
-    /// URL the cookie belongs to.
-    pub(super) url: Url,
-}
-
 impl Browser {
     /// Opens the selected profile and starts its browser owner task.
     ///
@@ -316,7 +262,10 @@ impl BrowserHandle {
     /// [`BrowserError::TabIdExhausted`] after every supported tab identity is
     /// consumed.
     pub async fn create_tab(&self) -> Result<TabHandle, BrowserError> {
-        self.ask(CreateTab).await?
+        match self.call(Command::CreateTab).await? {
+            Reply::CreateTab(result) => result,
+            _ => Err(BrowserError::Protocol),
+        }
     }
 
     /// Returns the identities of every live tab.
@@ -325,7 +274,10 @@ impl BrowserHandle {
     ///
     /// [`BrowserError::Stopped`] when the browser task has stopped.
     pub async fn tabs(&self) -> Result<Vec<TabId>, BrowserError> {
-        self.ask(ListTabs).await
+        match self.call(Command::Tabs).await? {
+            Reply::Tabs(tabs) => Ok(tabs),
+            _ => Err(BrowserError::Protocol),
+        }
     }
 
     /// Returns the command handle for live tab `id`.
@@ -335,7 +287,10 @@ impl BrowserHandle {
     /// [`BrowserError::UnknownTab`] when `id` is not live, or
     /// [`BrowserError::Stopped`] when the browser task has stopped.
     pub async fn tab(&self, id: TabId) -> Result<TabHandle, BrowserError> {
-        self.ask(GetTab { id }).await?
+        match self.call(Command::Tab { id }).await? {
+            Reply::Tab(result) => result,
+            _ => Err(BrowserError::Protocol),
+        }
     }
 
     /// Stops and unregisters tab `id`.
@@ -345,7 +300,10 @@ impl BrowserHandle {
     /// [`BrowserError::UnknownTab`] when `id` is not live, or
     /// [`BrowserError::Stopped`] when the browser task has stopped.
     pub async fn close_tab(&self, id: TabId) -> Result<(), BrowserError> {
-        self.ask(CloseTab { id }).await?
+        match self.call(Command::CloseTab { id }).await? {
+            Reply::CloseTab(result) => result,
+            _ => Err(BrowserError::Protocol),
+        }
     }
 
     /// Returns whether the browser exchange has disconnected.
@@ -365,7 +323,13 @@ impl BrowserHandle {
     ///
     /// [`BrowserError::Stopped`] when the browser task has stopped.
     pub async fn cookie_records(&self, url: &Url) -> Result<Vec<net::CookieRecord>, BrowserError> {
-        self.ask(CookieRecords { url: url.clone() }).await
+        match self
+            .call(Command::CookieRecords { url: url.clone() })
+            .await?
+        {
+            Reply::CookieRecords(records) => Ok(records),
+            _ => Err(BrowserError::Protocol),
+        }
     }
 
     /// Removes every cookie from the live profile.
@@ -374,7 +338,10 @@ impl BrowserHandle {
     ///
     /// [`BrowserError::Stopped`] when the browser task has stopped.
     pub async fn clear_cookies(&self) -> Result<(), BrowserError> {
-        self.ask(ClearCookies).await
+        match self.call(Command::ClearCookies).await? {
+            Reply::ClearCookies => Ok(()),
+            _ => Err(BrowserError::Protocol),
+        }
     }
 
     /// Stores one `Set-Cookie` line for `url` using HTTP cookie rules.
@@ -386,18 +353,26 @@ impl BrowserHandle {
     ///
     /// [`BrowserError::Stopped`] when the browser task has stopped.
     pub async fn add_cookie(&self, cookie: &str, url: &Url) -> Result<bool, BrowserError> {
-        self.ask(AddCookie {
-            cookie: cookie.to_owned(),
-            url: url.clone(),
-        })
-        .await
+        match self
+            .call(Command::AddCookie {
+                cookie: cookie.to_owned(),
+                url: url.clone(),
+            })
+            .await?
+        {
+            Reply::AddCookie(stored) => Ok(stored),
+            _ => Err(BrowserError::Protocol),
+        }
     }
 
     pub(crate) async fn open_window(
         &self,
         request: OpenWindowOptions,
     ) -> Result<TabId, BrowserError> {
-        self.ask(request).await?
+        match self.call(Command::OpenWindow(request)).await? {
+            Reply::OpenWindow(result) => result,
+            _ => Err(BrowserError::Protocol),
+        }
     }
 
     /// Stops every tab and persists profile state.
@@ -425,10 +400,6 @@ impl BrowserHandle {
             .call(command)
             .await
             .map_err(|_| BrowserError::Stopped)
-    }
-
-    async fn ask<Op: BrowserOperation>(&self, op: Op) -> Result<Op::Output, BrowserError> {
-        Op::unwrap(self.call(op.into_command()).await?).ok_or(BrowserError::Protocol)
     }
 
     fn request_close(&self) {
