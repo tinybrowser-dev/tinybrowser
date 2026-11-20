@@ -85,3 +85,13 @@ jobs:
           SCCACHE_GHA_ENABLED: "true"
           RUSTC_WRAPPER: "sccache"
         run: cargo check -p tinybrowser-wasm --target wasm32-wasip2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: tools/playwright/package-lock.json
+      - name: Playwright smoke
+        env:
+          SCCACHE_GHA_ENABLED: "true"
+          RUSTC_WRAPPER: "sccache"
+        run: tools/playwright/run smoke.spec.ts

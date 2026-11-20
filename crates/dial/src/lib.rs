@@ -446,9 +446,43 @@ fn cache_mode_headers(request: &DialRequest, outbound: &mut Request) {
     }
 }
 
-/// Sets a request header this process chose, not the page. The value is a
-/// static HTTP token, so a rejected one is a programming error, and the panic
-/// names the header that has none.
+/// Dark `Sec-CH-Prefers-Color-Scheme`, kept in lockstep with Stylo and `matchMedia`
+/// (<https://wicg.github.io/user-preference-media-features-headers/#sec-ch-prefers-color-scheme>).
+pub const SEC_CH_PREFERS_COLOR_SCHEME: &str = "dark";
+
+/// Applies the browser's default headers for one top-level (or popup) document
+/// request, matching Chrome's document navigation.
+///
+/// `Upgrade-Insecure-Requests` is the document navigation preference
+/// (<https://www.w3.org/TR/upgrade-insecure-requests/#preference>), and
+/// `Accept` and the other Fetch Metadata headers match Chrome's document
+/// navigation request
+/// (<https://w3c.github.io/webappsec-fetch-metadata/>). `Sec-Fetch-Site` is
+/// the net client's: it reads the request's one initiator origin and widens it
+/// across redirects, for navigations and subresources alike.
+///
+/// Low-entropy UA client hints are sent only to potentially trustworthy URLs
+/// (<https://wicg.github.io/ua-client-hints/#sec-ch-ua>,
+/// <https://w3c.github.io/webappsec-secure-contexts/#is-url-trustworthy>).
+pub fn apply_navigation_headers(request: &mut Request, url: &Url) {
+    static_header(request, "Upgrade-Insecure-Requests", "1");
+    static_header(
+        request,
+        "Accept",
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    );
+    static_header(request, "Sec-Fetch-Mode", "navigate");
+    static_header(request, "Sec-Fetch-User", "?1");
+    static_header(request, "Sec-Fetch-Dest", "document");
+    if secure_context::is_potentially_trustworthy(url) {
+        static_header(
+            request,
+            "Sec-CH-Prefers-Color-Scheme",
+            SEC_CH_PREFERS_COLOR_SCHEME,
+        );
+    }
+}
+
 /// Whether `outcome`'s body satisfies the request's integrity metadata
 /// (<https://fetch.spec.whatwg.org/#concept-main-fetch>).
 ///
@@ -485,6 +519,9 @@ pub fn sent_headers(request: &Request) -> Vec<(String, String)> {
         .collect()
 }
 
+/// Sets a request header this process chose, not the page. The value is a
+/// static HTTP token, so a rejected one is a programming error, and the panic
+/// names the header that has none.
 fn static_header(request: &mut Request, name: &str, value: &str) {
     request
         .headers

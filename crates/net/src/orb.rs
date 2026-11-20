@@ -297,20 +297,28 @@ fn skip_html_comment(data: &[u8]) -> Option<&[u8]> {
     let rest = data.strip_prefix(b"<!--")?;
     let end = find(rest, b"-->")? + 3;
     let after = &rest[end..];
-    Some(match line_end(after) {
-        Some(end) => &after[end..],
+    Some(match after_line_end(after) {
+        Some(next) => &after[next..],
         None => &[],
     })
 }
 
-/// The index of the first LF, CR, or JavaScript line separator.
-fn line_end(data: &[u8]) -> Option<usize> {
-    data.iter().position(|&byte| {
-        byte == b'\n' || byte == b'\r' || {
-            // U+2028 and U+2029 encode as E2 80 A8 and E2 80 A9.
-            byte == 0xe2 && data.len() > 2
+/// The index immediately after the first LF, CR, or JavaScript line separator
+/// (U+2028 / U+2029).
+fn after_line_end(data: &[u8]) -> Option<usize> {
+    for (index, &byte) in data.iter().enumerate() {
+        if byte == b'\n' || byte == b'\r' {
+            return Some(index + 1);
         }
-    })
+        if byte == 0xe2
+            && data
+                .get(index + 1..index + 3)
+                .is_some_and(|tail| tail == [0x80, 0xa8] || tail == [0x80, 0xa9])
+        {
+            return Some(index + 3);
+        }
+    }
+    None
 }
 
 /// The first index of `needle` in `haystack`.
@@ -515,6 +523,21 @@ mod tests {
             Some("text/plain"),
             false,
             Some(b"<!-- c -->\n<script>alert(1)</script>")
+        ));
+        // U+2028 (E2 80 A8) is a real JS line terminator, whereas an em-dash
+        // U+2014 (E2 80 94) shares the 0xE2 lead byte and must not end the
+        // comment line (mutation: checking `byte == 0xe2 && data.len() > 2`
+        // treats the em-dash as a line break and mis-sniffs the rest of the
+        // comment line).
+        assert!(blocks(
+            Some("text/plain"),
+            false,
+            Some("<!-- c -->\u{2028}<script>alert(1)</script>".as_bytes())
+        ));
+        assert!(!blocks(
+            Some("text/plain"),
+            false,
+            Some("<!-- c -->\u{2014}<script>alert(1)</script>".as_bytes())
         ));
     }
 

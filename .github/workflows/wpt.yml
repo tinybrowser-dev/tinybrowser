@@ -64,7 +64,7 @@ on:
       exclude:
         description: Space-separated upstream --exclude values.
         type: string
-        default: "worker"
+        default: ""
 
 permissions:
   contents: read
@@ -88,7 +88,7 @@ env:
   WPT_HARNESS_CHUNKS: ${{ inputs.harness-chunks || '14' }}
   WPT_WEBDRIVER_CHUNKS: ${{ inputs.webdriver-chunks || '6' }}
   WPT_TEST_TYPES: ${{ inputs.test-types || 'testharness crashtest reftest' }}
-  WPT_EXCLUDE: ${{ inputs.exclude || 'worker' }}
+  WPT_EXCLUDE: ${{ inputs.exclude || '' }}
 
 jobs:
   plan:
@@ -453,7 +453,7 @@ jobs:
         run: |
           {
             printf '## WPT — %s (harness %s + webdriver %s chunks, exclude: %s)\n' \
-              "$WPT_TEST_TYPES" "$WPT_HARNESS_CHUNKS" "$WPT_WEBDRIVER_CHUNKS" "$WPT_EXCLUDE"
+              "$WPT_TEST_TYPES" "$WPT_HARNESS_CHUNKS" "$WPT_WEBDRIVER_CHUNKS" "${WPT_EXCLUDE:-none}"
             echo
             echo '```'
             cat summary.txt

@@ -106,6 +106,15 @@ function handleDemoFixture(pathname: string, cookieHeader: string | null): Respo
 }
 
 async function handleHop(request: Request, requestUrl: URL): Promise<Response> {
+  if (request.headers.get("origin") !== requestUrl.origin) {
+    return new Response("forbidden", { status: 403 })
+  }
+  const contentType = request.headers.get("content-type") ?? ""
+  const mediaType = contentType.split(";", 1)[0]?.trim().toLowerCase() ?? ""
+  if (mediaType !== "application/json") {
+    return new Response("unsupported media type", { status: 415 })
+  }
+
   let hop: HopRequest
   try {
     hop = (await request.json()) as HopRequest
@@ -152,8 +161,24 @@ async function handleHop(request: Request, requestUrl: URL): Promise<Response> {
     }
   }
 
-  const body =
-    hop.body === null || method === "GET" || method === "HEAD" ? undefined : fromBase64(hop.body)
+  const maxEncodedBodyChars = Math.ceil((MAX_WORKER_BODY_BYTES * 4) / 3) + 4
+  let body: Uint8Array<ArrayBuffer> | undefined
+  if (hop.body !== null && method !== "GET" && method !== "HEAD") {
+    if (typeof hop.body !== "string") {
+      return new Response("bad hop request", { status: 400 })
+    }
+    if (hop.body.length > maxEncodedBodyChars) {
+      return json({ error: "limit" })
+    }
+    try {
+      body = fromBase64(hop.body)
+    } catch {
+      return new Response("bad hop request", { status: 400 })
+    }
+    if (body.byteLength > MAX_WORKER_BODY_BYTES) {
+      return json({ error: "limit" })
+    }
+  }
   const limit = Math.min(
     Number.isFinite(hop.maxBodyBytes) && hop.maxBodyBytes > 0
       ? hop.maxBodyBytes
@@ -281,6 +306,7 @@ function isBlockedHost(target: URL): boolean {
       inner.startsWith("fe9") ||
       inner.startsWith("fea") ||
       inner.startsWith("feb") ||
+      inner.startsWith("ff") ||
       inner.startsWith("::ffff:")
     ) {
       return true
@@ -292,11 +318,18 @@ function isBlockedHost(target: URL): boolean {
   if (ipv4) {
     const a = Number(ipv4[1])
     const b = Number(ipv4[2])
-    if (a === 0 || a === 10 || a === 127) return true
+    const c = Number(ipv4[3])
+    const d = Number(ipv4[4])
+    if (a > 255 || b > 255 || c > 255 || d > 255) return true
+    if (a === 0 || a === 10 || a === 127 || a >= 224) return true
     if (a === 169 && b === 254) return true
     if (a === 172 && b >= 16 && b <= 31) return true
     if (a === 192 && b === 168) return true
     if (a === 100 && b >= 64 && b <= 127) return true
+    if (a === 192 && b === 0 && (c === 0 || c === 2)) return true
+    if (a === 198 && (b === 18 || b === 19)) return true
+    if (a === 198 && b === 51 && c === 100) return true
+    if (a === 203 && b === 0 && c === 113) return true
   }
 
   return false

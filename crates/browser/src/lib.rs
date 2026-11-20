@@ -40,6 +40,4 @@ pub use renderer::{
     TabError,
 };
 
-/// Dark `Sec-CH-Prefers-Color-Scheme`, kept in lockstep with Stylo and `matchMedia`
-/// (<https://wicg.github.io/user-preference-media-features-headers/#sec-ch-prefers-color-scheme>).
-pub const SEC_CH_PREFERS_COLOR_SCHEME: &str = "dark";
+pub use dial::SEC_CH_PREFERS_COLOR_SCHEME;

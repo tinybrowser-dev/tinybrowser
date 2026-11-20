@@ -22,6 +22,10 @@ const shimSrc = join(websiteDir, "node_modules/@bytecodealliance/preview2-shim/d
 const jcoBin = join(websiteDir, "node_modules/.bin/jco")
 
 if (!existsSync(component)) {
+  if (process.env.CI) {
+    console.error(`build-wasm: missing ${component} in CI`)
+    process.exit(1)
+  }
   console.warn(`build-wasm: missing ${component}; skipping Wasm bundle for /demo`)
   console.warn("  build with: cargo build -p tinybrowser-wasm --target wasm32-wasip2 --release")
   process.exit(0)

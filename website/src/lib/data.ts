@@ -22,5 +22,3 @@ export function loadSnapshot(): Snapshot {
     regressions: read<Regression>("regressions.json"),
   }
 }
-
-export const dataDir = dir

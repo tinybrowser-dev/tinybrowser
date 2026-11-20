@@ -175,6 +175,7 @@ run_py() {
   fi
   uvx "$RUFF_PIN" check tools/wpt
   uvx "$RUFF_PIN" format --check tools/wpt
+  run_tool python3 tools/wpt/cli.py selftest
   if [[ ! -f third_party/wpt/wpt ]]; then
     # ty resolves upstream modules through extra-paths into the checkout
     # (see tools/wpt/pyproject.toml); without it only ruff can run.

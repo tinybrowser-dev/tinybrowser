@@ -20,15 +20,8 @@ use url::Url;
 /// into a [`Mount`] ready for the renderer.
 pub(crate) async fn navigate(agent: Agent, url: Url) -> Result<Mount, String> {
     let deadline = Instant::now() + dial::PAGE_FETCH_TIMEOUT;
-    let mut request = Request::new(Method::GET, url);
-    let _ = request.headers.insert("Upgrade-Insecure-Requests", "1");
-    let _ = request.headers.insert(
-        "Accept",
-        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-    );
-    let _ = request.headers.insert("Sec-Fetch-Mode", "navigate");
-    let _ = request.headers.insert("Sec-Fetch-User", "?1");
-    let _ = request.headers.insert("Sec-Fetch-Dest", "document");
+    let mut request = Request::new(Method::GET, url.clone());
+    dial::apply_navigation_headers(&mut request, &url);
     request.initiator_kind = InitiatorKind::Navigation;
     request.cors = net::cors::CorsSettings {
         mode: net::cors::RequestMode::Navigate,

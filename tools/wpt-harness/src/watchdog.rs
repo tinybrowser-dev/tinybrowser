@@ -8,7 +8,7 @@
 //! resumes from the journal. This is what notices, and it has to notice before
 //! the recursion overflows the stack and aborts with no verdict at all.
 
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 /// How long a file may run past its budget before the watchdog gives up on it.
@@ -20,11 +20,11 @@ use std::time::{Duration, Instant};
 pub const GRACE: Duration = Duration::from_secs(30);
 
 /// One worker's current file and when to give up on it.
+///
+/// Holding both fields behind one lock prevents a reader from observing an
+/// expired deadline paired with a stale or cleared case index.
 struct Slot {
-    /// Index into the selection, or [`usize::MAX`] when the worker is idle.
-    case: AtomicUsize,
-    /// Milliseconds since the watchdog's epoch; zero means idle.
-    expires_ms: AtomicU64,
+    active: Mutex<Option<(usize, u64)>>,
 }
 
 /// The deadline of every worker's current file.
@@ -41,8 +41,7 @@ impl Watchdog {
             epoch: Instant::now(),
             slots: (0..workers)
                 .map(|_| Slot {
-                    case: AtomicUsize::new(usize::MAX),
-                    expires_ms: AtomicU64::new(0),
+                    active: Mutex::new(None),
                 })
                 .collect(),
         }
@@ -51,19 +50,19 @@ impl Watchdog {
     /// Starts the clock for `case` on `worker`, which may run for `budget` plus
     /// [`GRACE`].
     pub fn enter(&self, worker: usize, case: usize, budget: Duration) {
-        let slot = &self.slots[worker];
-        slot.case.store(case, Ordering::Relaxed);
-        slot.expires_ms.store(
-            self.millis(Instant::now() + budget + GRACE),
-            Ordering::Relaxed,
-        );
+        let expires = self.millis(Instant::now() + budget + GRACE);
+        *self.slots[worker]
+            .active
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some((case, expires));
     }
 
     /// Marks `worker` idle again.
     pub fn leave(&self, worker: usize) {
-        let slot = &self.slots[worker];
-        slot.expires_ms.store(0, Ordering::Relaxed);
-        slot.case.store(usize::MAX, Ordering::Relaxed);
+        *self.slots[worker]
+            .active
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = None;
     }
 
     /// The case that has been running past its deadline, if any.
@@ -74,13 +73,10 @@ impl Watchdog {
     /// The body of [`Self::expired`], with the clock injected for the tests.
     fn expired_at(&self, now: Instant) -> Option<usize> {
         let now = self.millis(now);
-        self.slots
-            .iter()
-            .find(|slot| {
-                let expires = slot.expires_ms.load(Ordering::Relaxed);
-                expires != 0 && now > expires
-            })
-            .map(|slot| slot.case.load(Ordering::Relaxed))
+        self.slots.iter().find_map(|slot| {
+            let (case, expires) = (*slot.active.lock().unwrap_or_else(PoisonError::into_inner))?;
+            (now > expires).then_some(case)
+        })
     }
 
     fn millis(&self, at: Instant) -> u64 {

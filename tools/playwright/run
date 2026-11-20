@@ -25,6 +25,6 @@ export TINYBROWSER_BINARY="$(realpath "$TINYBROWSER_BINARY")"
 
 cd "$ROOT/tools/playwright"
 if [ ! -d node_modules ]; then
-  npm install --no-audit --no-fund
+  npm ci --no-audit --no-fund
 fi
 exec npx playwright test "$@"

@@ -93,6 +93,10 @@ jobs:
         working-directory: website
         run: bun install --frozen-lockfile
 
+      - name: Check
+        working-directory: website
+        run: bun run check
+
       - name: Deploy to Cloudflare
         if: env.CLOUDFLARE_API_TOKEN != ''
         working-directory: website
