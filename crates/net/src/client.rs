@@ -1,5 +1,4 @@
 use std::borrow::Cow;
-use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -8,18 +7,18 @@ use std::time::{Duration, Instant, SystemTime};
 
 use crate::InitiatorKind;
 use crate::error::{NetError, TimeoutKind, TransportError};
-use crate::protocol::{HeaderMap, Method};
+use crate::protocol::{HeaderMap, Method, basic_authorization};
 use crate::referrer::{Referrer, ReferrerPolicy, determine_referrer};
+#[cfg(feature = "native")]
 use crate::resolve::ResolveRule;
-use crate::transport::{
-    CallBudget, HopBudget, HttpEngine, Proxy, Transport, TrustedCa, WireBody, WireRequest,
-    WireResponse, basic_authorization,
-};
+#[cfg(feature = "native")]
+use crate::transport::native::{HttpEngine, Proxy, TrustedCa};
+use crate::transport::{CallBudget, HopBudget, Transport, WireBody, WireRequest, WireResponse};
 use async_compression::tokio::bufread::{BrotliDecoder, DeflateDecoder, GzipDecoder, ZlibDecoder};
 use bytes::Bytes;
 use cookies::{CookieJar, CookieOp, RetrievalKind, SameSiteCookiePolicy};
-use hyper::body::Body as HttpBody;
-use hyper::header::{self, HeaderValue};
+use http::header::{self, HeaderValue};
+use http_body::Body as _;
 use percent_encoding::percent_decode_str;
 use tokio::io::{AsyncBufReadExt as _, AsyncRead, AsyncReadExt as _, BufReader, ReadBuf};
 use url::Url;
@@ -119,27 +118,33 @@ pub struct AgentOptions {
     pub timeout_per_call: Option<Duration>,
     /// Maximum redirect hops. `0` returns the redirect response without following.
     pub max_redirects: u32,
-    /// HTTP CONNECT proxy, parsed at the CLI or embedding boundary.
-    pub proxy: Option<Proxy>,
     /// Wall and monotonic clock reads.
     pub clock: Clock,
+    /// HTTP CONNECT proxy, parsed at the CLI or embedding boundary.
+    #[cfg(feature = "native")]
+    pub proxy: Option<Proxy>,
     /// Parsed `--resolve=PATTERN=ADDR` rewrites, first match wins.
+    #[cfg(feature = "native")]
     pub resolve: Vec<ResolveRule>,
     /// Certificate authorities to trust in addition to the platform's, e.g. a
     /// private test CA. Repeatable.
+    #[cfg(feature = "native")]
     pub tls_cas: Vec<TrustedCa>,
 }
 
 impl std::fmt::Debug for AgentOptions {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AgentOptions")
-            .field("has_proxy", &self.proxy.is_some())
+        let mut debug = f.debug_struct("AgentOptions");
+        debug
             .field("timeout_global", &self.timeout_global)
             .field("timeout_per_call", &self.timeout_per_call)
-            .field("max_redirects", &self.max_redirects)
+            .field("max_redirects", &self.max_redirects);
+        #[cfg(feature = "native")]
+        debug
+            .field("has_proxy", &self.proxy.is_some())
             .field("has_resolve", &!self.resolve.is_empty())
-            .field("extra_tls_cas", &self.tls_cas.len())
-            .finish_non_exhaustive()
+            .field("extra_tls_cas", &self.tls_cas.len());
+        debug.finish_non_exhaustive()
     }
 }
 
@@ -150,9 +155,12 @@ impl Default for AgentOptions {
             timeout_global: None,
             timeout_per_call: None,
             max_redirects: DEFAULT_MAX_REDIRECTS,
-            proxy: None,
             clock: Clock::default(),
+            #[cfg(feature = "native")]
+            proxy: None,
+            #[cfg(feature = "native")]
             resolve: Vec::new(),
+            #[cfg(feature = "native")]
             tls_cas: Vec::new(),
         }
     }
@@ -187,6 +195,7 @@ impl Agent {
     /// Builds an agent from `options`, the only constructor. Nothing fails
     /// here: the boundary that read the configuration already parsed every
     /// value.
+    #[cfg(feature = "native")]
     #[must_use]
     pub fn new(options: AgentOptions) -> Agent {
         let AgentOptions {
@@ -790,12 +799,10 @@ impl Agent {
             final_url: url.clone(),
             body: RawBody {
                 inner: reader,
-                budget,
                 current: None,
                 offset: 0,
                 shared_error: Arc::new(Mutex::new(None)),
                 shared_input: Arc::new(AtomicBool::new(false)),
-                timer: None,
             },
             content_encoding,
             redirect_count: 0,
@@ -1453,7 +1460,7 @@ fn reason_phrase(status: u16, http2: bool) -> String {
     if http2 {
         return String::new();
     }
-    hyper::StatusCode::from_u16(status)
+    http::StatusCode::from_u16(status)
         .ok()
         .and_then(|status| status.canonical_reason())
         .unwrap_or("")
@@ -1586,12 +1593,10 @@ impl Body {
 /// Raw socket body before content decoders.
 struct RawBody {
     inner: WireBody,
-    budget: HopBudget,
     current: Option<Bytes>,
     offset: usize,
     shared_error: Arc<Mutex<Option<NetError>>>,
     shared_input: Arc<AtomicBool>,
-    timer: Option<Pin<Box<tokio::time::Sleep>>>,
 }
 
 impl std::fmt::Debug for RawBody {
@@ -1607,23 +1612,6 @@ impl AsyncRead for RawBody {
         buffer: &mut ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
         let this = self.get_mut();
-        if let Some(deadline) = this.budget.deadline() {
-            let timer = this
-                .timer
-                .get_or_insert_with(|| Box::pin(tokio::time::sleep_until(deadline.into())));
-            if timer.as_mut().poll(cx).is_ready() {
-                set_body_error(
-                    &this.shared_error,
-                    NetError::Transport(TransportError::Timeout(
-                        this.budget.timeout_kind(TimeoutKind::RecvBody),
-                    )),
-                );
-                return Poll::Ready(Err(std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    "body read timed out",
-                )));
-            }
-        }
         loop {
             if let Some(current) = this.current.as_ref() {
                 if this.offset < current.len() {
@@ -2026,7 +2014,6 @@ mod transport_port_tests {
     //! The fetch core must not depend on hyper: a host supplies only the one
     //! exchange, and every policy step still runs above it (#233).
 
-    use std::future::Future;
     use std::pin::Pin;
     use std::sync::{Arc, Mutex, PoisonError};
 

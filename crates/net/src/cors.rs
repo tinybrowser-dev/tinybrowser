@@ -11,7 +11,7 @@
 //! sniffing is tracked in #190.
 
 use enumerated::Enumerated;
-use hyper::header::{self, HeaderValue};
+use http::header::{self, HeaderValue};
 
 use crate::protocol::{HeaderMap, Method};
 
@@ -550,10 +550,10 @@ fn list_items(headers: &HeaderMap, name: &str) -> Vec<String> {
 
 /// Extracts a `#method` list header, `None` on an item that is not an HTTP
 /// token.
-fn list_methods(headers: &HeaderMap, name: &str) -> Option<Vec<hyper::Method>> {
+fn list_methods(headers: &HeaderMap, name: &str) -> Option<Vec<http::Method>> {
     list_items(headers, name)
         .into_iter()
-        .map(|item| hyper::Method::from_bytes(item.as_bytes()).ok())
+        .map(|item| http::Method::from_bytes(item.as_bytes()).ok())
         .collect()
 }
 

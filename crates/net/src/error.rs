@@ -23,6 +23,15 @@ pub enum TransportError {
     Tls(Box<str>),
     #[error("{0} timeout exceeded")]
     Timeout(TimeoutKind),
+    /// The exchange was refused because the transport is at capacity. A host
+    /// with its own admission control reports this instead of stalling.
+    #[error("transport at capacity")]
+    Capacity,
+    /// The response body was larger than the cap the hop carried
+    /// ([`crate::WireRequest`] has no such field: the cap travels on the
+    /// exchange the caller framed, as `max-body-bytes` on the host contract).
+    #[error("response body exceeds the hop's cap")]
+    BodyTooLarge,
     #[error("io error: {0}")]
     Io(#[source] std::io::Error),
 }

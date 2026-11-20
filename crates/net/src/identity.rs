@@ -10,7 +10,7 @@
 
 use std::fmt::Write as _;
 
-use hyper::header::{HeaderName, HeaderValue};
+use http::header::{HeaderName, HeaderValue};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use url::Url;
 

@@ -41,7 +41,9 @@ cookies = { path = "crates/cookies" }
 dial = { path = "crates/dial" }
 enumerated = { path = "crates/enumerated" }
 logging = { path = "crates/logging" }
-net = { path = "crates/net" }
+# The fetch core. `native` adds the hyper/native-tls socket transport; only a
+# host with sockets enables it, so the core alone builds for wasm.
+net = { path = "crates/net", default-features = false }
 renderer = { path = "crates/renderer" }
 wpt-report = { path = "tools/wpt-report" }
 secure-context = { path = "crates/secure-context" }
@@ -100,7 +102,7 @@ tokio = { version = "1.53", default-features = false, features = ["rt-multi-thre
 base64 = "0.23"
 # The process-level tests read the built-in identity so a version bump does not
 # leave an assertion naming the old build.
-net = { workspace = true }
+net = { workspace = true, features = ["native"] }
 # The TLS tests serve a real certificate, so `--tls-ca` has something to trust.
 native-tls = "0.2"
 

@@ -9,7 +9,7 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
-net = { workspace = true }
+net = { workspace = true, features = ["native"] }
 dial = { workspace = true }
 secure-context = { workspace = true }
 renderer = { workspace = true }

@@ -10,6 +10,7 @@ mod identity;
 pub mod orb;
 mod protocol;
 pub mod referrer;
+#[cfg(feature = "native")]
 mod resolve;
 mod transport;
 
@@ -28,11 +29,11 @@ pub use protocol::{
     split_header_value,
 };
 pub use referrer::{Referrer, ReferrerClient, ReferrerPolicy, determine_referrer};
+#[cfg(feature = "native")]
 pub use resolve::{InvalidResolveRule, ResolveRule};
-pub use transport::{
-    HopBudget, InvalidCa, InvalidProxy, Proxy, Transport, TrustedCa, WireBody, WireRequest,
-    WireResponse,
-};
+#[cfg(feature = "native")]
+pub use transport::native::{InvalidCa, InvalidProxy, Proxy, TrustedCa};
+pub use transport::{HopBudget, Transport, WireBody, WireRequest, WireResponse, buffered_body};
 
 /// The URL a tuple origin serializes to; `None` for an opaque origin.
 ///

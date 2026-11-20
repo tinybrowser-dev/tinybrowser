@@ -8,6 +8,7 @@
 //! (<https://fetch.spec.whatwg.org/#concept-request>,
 //! <https://fetch.spec.whatwg.org/#concept-response>).
 
+pub mod body;
 pub mod cache;
 
 /// The URL a dial's CSP reports name as their document.
@@ -74,7 +75,7 @@ pub use cache::{CacheDecision, HttpCache, Validators};
 use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasher;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use net::{InitiatorKind, Request, isomorphic_decode, isomorphic_encode};
 use renderer::{DialFailure, DialKind, DialOutcome, DialRequest, ResponseBody, ResponseHead};
@@ -359,15 +360,38 @@ pub fn outbound_request<S: BuildHasher>(
     Ok(outbound)
 }
 
+/// The longest one page dial may take before the caller's own `timeout_ms`
+/// lowers it.
+///
+/// A page must not be able to hold a tab's dial slot forever, and a navigation
+/// waits on the same cap, so the number lives here where every carrier reads
+/// it.
+pub const PAGE_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The deadline budget one page dial gets: [`PAGE_FETCH_TIMEOUT`], lowered by
+/// the request's own `timeout_ms` when it set one
+/// (<https://fetch.spec.whatwg.org/#concept-request>).
+#[must_use]
+pub fn budget(request: &DialRequest) -> Duration {
+    if request.timeout_ms == 0 {
+        PAGE_FETCH_TIMEOUT
+    } else {
+        PAGE_FETCH_TIMEOUT.min(Duration::from_millis(request.timeout_ms))
+    }
+}
+
 /// The `DialFailure` one fetch error reports to the page engine.
 #[must_use]
 pub fn dial_failure(error: &net::NetError) -> DialFailure {
     use net::{NetError, TransportError};
     match error {
         NetError::Transport(TransportError::Dns(_)) => DialFailure::Dns,
+        NetError::Transport(TransportError::Capacity) => DialFailure::QueueFull,
         NetError::Transport(TransportError::Tls(_)) => DialFailure::Tls,
         NetError::Transport(TransportError::Timeout(_)) => DialFailure::Timeout,
-        NetError::RedirectLimit => DialFailure::Limit,
+        NetError::Transport(TransportError::BodyTooLarge) | NetError::RedirectLimit => {
+            DialFailure::Limit
+        }
         NetError::Transport(TransportError::Connect(_) | TransportError::Io(_))
         | NetError::RejectedRequest
         | NetError::Decode(_) => DialFailure::Connect,

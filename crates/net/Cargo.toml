@@ -8,20 +8,42 @@ authors.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Kept on so `cargo test -p net` exercises the socket transport it tests and a
+# standalone consumer gets the working engine. A crate that must build for a
+# host without sockets depends on this crate with `default-features = false`.
+default = ["native"]
+# The hyper + native-tls transport, system DNS with `--resolve` rewrites, and
+# the proxy/TLS configuration types it consumes. The fetch core compiles
+# without this feature: a host without sockets supplies its own `Transport`
+# (the wasm component's host contract, an in-memory conformance origin).
+native = [
+    "dep:hyper",
+    "dep:hyper-tls",
+    "dep:hyper-util",
+    "dep:native-tls",
+    "dep:tokio-native-tls",
+    "dep:tower-service",
+    "tokio/net",
+    "tokio/time",
+]
+
 [dependencies]
 base64 = "0.23"
 bytes = "1"
+http = "1"
+http-body = "1"
 http-body-util = "0.1"
-hyper = { version = "1", features = ["client", "http1", "http2"] }
-hyper-tls = { version = "0.6", features = ["alpn"] }
-hyper-util = { version = "0.1", features = ["client-legacy", "client-proxy", "http1", "http2", "tokio"] }
-native-tls = { version = "0.2", features = ["alpn"] }
+hyper = { version = "1", features = ["client", "http1", "http2"], optional = true }
+hyper-tls = { version = "0.6", features = ["alpn"], optional = true }
+hyper-util = { version = "0.1", features = ["client-legacy", "client-proxy", "http1", "http2", "tokio"], optional = true }
+native-tls = { version = "0.2", features = ["alpn"], optional = true }
 percent-encoding = "2"
 serde = { version = "1", features = ["derive"] }
-tokio-native-tls = "0.3"
+tokio-native-tls = { version = "0.3", optional = true }
 thiserror = "2"
-tokio = { version = "1.53", default-features = false, features = ["net", "time", "io-util", "rt"] }
-tower-service = "0.3"
+tokio = { version = "1.53", default-features = false, features = ["io-util"] }
+tower-service = { version = "0.3", optional = true }
 async-compression = { version = "0.4", features = ["tokio", "gzip", "deflate", "zlib", "brotli"] }
 cookies = { workspace = true }
 enumerated = { workspace = true }

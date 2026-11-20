@@ -1,10 +1,10 @@
-//! Async HTTP transport: hyper client, native-tls (OpenSSL) TLS, tinybrowser deadlines.
+//! The native transport: hyper client, native-tls (OpenSSL) TLS, and system
+//! DNS with `--resolve` rewrites ahead of it.
 //!
 //! The browser process owns one Tokio runtime. `net` never implements HTTP
 //! framing; `hyper-util` supplies HTTP/1.1, HTTP/2, pooling, and the connector
-//! stack, while this module keeps tinybrowser's redirect, cookie, header,
-//! timeout, and error policy and applies `--resolve` rules ahead of system
-//! DNS.
+//! stack, while this module enforces the hop's deadline and maps transport
+//! failures. Every fetch rule stays in the fetch core above the port.
 
 use std::convert::Infallible;
 use std::fmt;
@@ -13,9 +13,7 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::str::FromStr;
 use std::task::{Context, Poll};
-use std::time::{Duration, Instant};
 
-use base64::Engine as _;
 use bytes::Bytes;
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Empty, Full};
@@ -30,168 +28,10 @@ use percent_encoding::percent_decode_str;
 use tower_service::Service;
 use url::Url;
 
-use crate::client::Clock;
+use super::{HopBudget, Transport, WireBody, WireRequest, WireResponse};
 use crate::error::{NetError, TimeoutKind, TransportError};
-use crate::protocol::{HeaderMap, Method};
+use crate::protocol::{HeaderMap, basic_authorization};
 use crate::resolve::{HostMap, ResolveFailure, Target};
-
-/// The deadlines for one `send` call: the global limit covering every
-/// redirect hop plus the per-hop limit captured once at call start.
-#[derive(Clone, Debug)]
-pub(crate) struct CallBudget {
-    global: Option<Instant>,
-    per_call: Option<Duration>,
-    clock: Clock,
-}
-
-impl CallBudget {
-    /// Starts the budget for one fetch call from the agent's timeouts.
-    pub(crate) fn new(
-        timeout_global: Option<Duration>,
-        timeout_per_call: Option<Duration>,
-        clock: Clock,
-    ) -> Self {
-        Self {
-            global: timeout_global.map(|limit| clock.monotonic() + limit),
-            per_call: timeout_per_call,
-            clock,
-        }
-    }
-
-    /// A request deadline may only tighten the global timeout, never stretch
-    /// it past what the engine configured.
-    pub(crate) fn tighten_global(&mut self, deadline: Instant) {
-        self.global = Some(self.global.map_or(deadline, |global| global.min(deadline)));
-    }
-
-    /// Mints the budget for one hop: the global deadline plus the per-call
-    /// deadline measured from now.
-    pub(crate) fn start_hop(&self) -> HopBudget {
-        HopBudget {
-            global: self.global,
-            hop: self.per_call.map(|limit| self.clock.monotonic() + limit),
-            clock: self.clock.clone(),
-        }
-    }
-
-    pub(crate) fn is_expired(&self) -> bool {
-        self.global.is_some_and(|end| self.clock.monotonic() >= end)
-    }
-}
-
-/// One HTTP exchange handed to a [`Transport`]: the request the fetch core has
-/// already shaped, with no policy left for the transport to apply.
-///
-/// Redirects, cookies, CORS, `Sec-Fetch-*`, and referrers are decided above the
-/// port; a transport only moves bytes for one URL
-/// (<https://fetch.spec.whatwg.org/#concept-http-network-fetch>).
-pub struct WireRequest {
-    /// Request method.
-    pub method: Method,
-    /// Absolute URL. The fragment is already stripped.
-    pub url: Url,
-    /// Headers in wire order, with every policy header already applied.
-    pub headers: HeaderMap,
-    /// Body bytes, empty for `GET` and `HEAD`.
-    pub body: Option<Bytes>,
-}
-
-impl std::fmt::Debug for WireRequest {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("WireRequest")
-            .field("method", &self.method)
-            .field("url", &self.url)
-            .field("headers", &self.headers)
-            .field("has_body", &self.body.is_some())
-            .finish()
-    }
-}
-
-/// The body a transport returns. It is a `http_body` stream so the fetch core
-/// can apply content decoders and the caller can read it chunk by chunk.
-pub type WireBody = http_body_util::combinators::UnsyncBoxBody<Bytes, NetError>;
-
-/// One HTTP exchange's answer: status, headers, and the body stream.
-pub struct WireResponse {
-    /// Status code.
-    pub status: u16,
-    /// Response headers, including `Set-Cookie`, before filtering.
-    pub headers: HeaderMap,
-    /// The body stream.
-    pub body: WireBody,
-    /// Whether the exchange ran over HTTP/2, which has no reason phrase
-    /// (<https://www.rfc-editor.org/rfc/rfc9113#section-8.3.2>).
-    pub http2: bool,
-}
-
-impl std::fmt::Debug for WireResponse {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("WireResponse")
-            .field("status", &self.status)
-            .field("headers", &self.headers)
-            .field("http2", &self.http2)
-            .finish_non_exhaustive()
-    }
-}
-
-/// The one seam between fetch policy and a byte mover.
-///
-/// The fetch core calls this once per hop with a [`WireRequest`] and a
-/// [`HopBudget`]; the implementation performs one HTTP exchange and nothing
-/// else. Hyper, an embedder's own client, and an in-memory test origin all
-/// implement the same port, so every host runs the same fetch algorithm
-/// (<https://fetch.spec.whatwg.org/#concept-http-network-fetch>).
-pub trait Transport: Send + Sync + 'static {
-    /// Performs one exchange. The future is boxed so the port stays
-    /// object-safe without an async-trait dependency.
-    fn exchange(
-        &self,
-        request: WireRequest,
-        budget: HopBudget,
-    ) -> Pin<Box<dyn Future<Output = Result<WireResponse, NetError>> + Send + '_>>;
-}
-
-/// The deadlines for one hop of a `send` call: the call's global deadline
-/// plus the hop's own `timeout_per_call` deadline.
-#[derive(Clone, Debug)]
-pub struct HopBudget {
-    global: Option<Instant>,
-    hop: Option<Instant>,
-    clock: Clock,
-}
-
-impl HopBudget {
-    /// The tighter of the call's global deadline and this hop's own deadline.
-    #[must_use]
-    pub fn deadline(&self) -> Option<Instant> {
-        match (self.global, self.hop) {
-            (Some(global), Some(hop)) => Some(global.min(hop)),
-            (global, hop) => global.or(hop),
-        }
-    }
-
-    pub(crate) fn is_expired(&self) -> bool {
-        self.remaining() == Some(Duration::ZERO)
-    }
-
-    fn remaining(&self) -> Option<Duration> {
-        self.deadline()
-            .map(|end| end.saturating_duration_since(self.clock.monotonic()))
-    }
-
-    pub(crate) fn timeout_kind(&self, fallback: TimeoutKind) -> TimeoutKind {
-        let now = self.clock.monotonic();
-        if self.global.is_some_and(|end| now >= end) {
-            TimeoutKind::Global
-        } else if self.hop.is_some_and(|end| now >= end) {
-            TimeoutKind::PerCall
-        } else {
-            fallback
-        }
-    }
-}
 
 /// Resolver that applies ordered `--resolve` rules before system DNS.
 #[derive(Clone)]
@@ -444,7 +284,7 @@ impl Transport for HttpEngine {
                 Some(proxied) => proxied.request(request),
                 None => self.client.request(request),
             };
-            let response = match within(budget, TimeoutKind::Global, request_future).await {
+            let response = match within(budget.clone(), TimeoutKind::Global, request_future).await {
                 Ok(Ok(response)) => response,
                 Ok(Err(error)) => return Err(map_client_error(error, &host)),
                 Err(error) => return Err(error),
@@ -460,12 +300,15 @@ impl Transport for HttpEngine {
             // The port's body is a `http_body` stream so the fetch core decodes
             // it uniformly, whether the bytes come from a socket or from an
             // embedder's in-memory origin.
-            let body = response
-                .into_body()
-                .map_err(|error| {
-                    NetError::Transport(TransportError::Io(std::io::Error::other(error)))
-                })
-                .boxed_unsync();
+            let body = response.into_body().map_err(|error| {
+                NetError::Transport(TransportError::Io(std::io::Error::other(error)))
+            });
+            let body = BodyDeadline {
+                inner: body.boxed_unsync(),
+                budget,
+                timer: None,
+            }
+            .boxed_unsync();
             Ok(WireResponse {
                 status,
                 headers: mapped,
@@ -473,6 +316,42 @@ impl Transport for HttpEngine {
                 http2,
             })
         })
+    }
+}
+
+/// The hop deadline applied to a response body.
+///
+/// A body is read after [`Transport::exchange`] returns, and only the transport
+/// can interrupt a read that has not produced a byte yet. Expiry surfaces as
+/// [`TransportError::Timeout`] carrying the kind that ran out, because the fetch
+/// core reports a stalled body and a stalled socket the same way
+/// (<https://fetch.spec.whatwg.org/#concept-http-network-fetch>).
+struct BodyDeadline {
+    inner: WireBody,
+    budget: HopBudget,
+    timer: Option<Pin<Box<tokio::time::Sleep>>>,
+}
+
+impl http_body::Body for BodyDeadline {
+    type Data = Bytes;
+    type Error = NetError;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<http_body::Frame<Bytes>, NetError>>> {
+        let this = self.get_mut();
+        if let Some(deadline) = this.budget.deadline() {
+            let timer = this
+                .timer
+                .get_or_insert_with(|| Box::pin(tokio::time::sleep_until(deadline.into())));
+            if timer.as_mut().poll(cx).is_ready() {
+                return Poll::Ready(Some(Err(timed_out(
+                    this.budget.timeout_kind(TimeoutKind::RecvBody),
+                ))));
+            }
+        }
+        Pin::new(&mut this.inner).poll_frame(cx)
     }
 }
 
@@ -541,11 +420,4 @@ fn map_client_error(error: hyper_util::client::legacy::Error, host: &str) -> Net
         return NetError::Transport(TransportError::Connect(error.to_string().into()));
     }
     NetError::Transport(TransportError::Io(std::io::Error::other(error)))
-}
-
-pub(crate) fn basic_authorization(username: &str, password: &str) -> String {
-    format!(
-        "Basic {}",
-        base64::engine::general_purpose::STANDARD.encode(format!("{username}:{password}"))
-    )
 }

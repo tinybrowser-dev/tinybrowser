@@ -1895,6 +1895,8 @@ dependencies = [
  "cookies",
  "enumerated",
  "flate2",
+ "http",
+ "http-body",
  "http-body-util",
  "hyper",
  "hyper-tls",
@@ -3532,7 +3534,8 @@ dependencies = [
 name = "tinybrowser-wasm"
 version = "0.1.0"
 dependencies = [
- "cookies",
+ "bytes",
+ "dial",
  "net",
  "renderer",
  "url",

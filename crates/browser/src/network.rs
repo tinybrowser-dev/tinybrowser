@@ -6,8 +6,9 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
+use dial::body::{BodyEvent, BodyReader};
 use dial::{CacheDecision, HttpCache, Validators, refused_redirect, watch_redirects};
 use net::{Agent, AgentOptions, InitiatorKind, Method, Request};
 use renderer::{
@@ -19,9 +20,6 @@ use url::Url;
 
 use crate::actor::NavigationInitiator;
 use crate::wire::RendererAssignmentId;
-
-/// Default per-call fetch timeout on a [`TabNetworkHandle`].
-pub(crate) const PAGE_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// In-flight keepalive request bytes across every realm in this process
 /// (<https://fetch.spec.whatwg.org/#keepalive-flag>).
@@ -151,7 +149,7 @@ impl NetworkContext {
     /// is the built-in one.
     pub(crate) fn new(mut options: AgentOptions) -> Self {
         if options.timeout_per_call.is_none() {
-            options.timeout_per_call = Some(PAGE_FETCH_TIMEOUT);
+            options.timeout_per_call = Some(dial::PAGE_FETCH_TIMEOUT);
         }
         let clock = options.clock.clone();
         Self {
@@ -324,7 +322,7 @@ impl TabNetworkHandle {
         // anything, so an off level costs one check and the clock read below.
         let started = Instant::now();
         logging::trace!(target: "browser::net", "nav start {url}");
-        let deadline = started + PAGE_FETCH_TIMEOUT;
+        let deadline = started + dial::PAGE_FETCH_TIMEOUT;
         let permits = Self::acquire(&self.permits.navigation, deadline).await?;
         let mut request = Request::new(Method::GET, url.clone());
         chrome_navigation_request(&mut request, url);
@@ -410,7 +408,7 @@ impl TabNetworkHandle {
     ) -> Result<DialOutcome, DialFailure> {
         let started = Instant::now();
         let _keepalive = KeepaliveReservation::acquire(request)?;
-        let deadline = Instant::now() + Self::dial_budget(request);
+        let deadline = Instant::now() + dial::budget(request);
         let outbound = self.build_outbound(request, initiator, deadline)?;
         // `Vary` names headers this host adds below the renderer, so the cache
         // compares the list that is about to be sent, not the page's
@@ -491,7 +489,7 @@ impl TabNetworkHandle {
         validators: &Validators,
         mut outbound: Request,
     ) -> Result<DialProgress, DialFailure> {
-        let deadline = Instant::now() + Self::dial_budget(request);
+        let deadline = Instant::now() + dial::budget(request);
         let global = Self::acquire(&self.permits.global, deadline).await?;
         let tab = Self::acquire(&self.tab, deadline).await?;
         validators.apply(&mut outbound)?;
@@ -655,16 +653,6 @@ impl TabNetworkHandle {
         }
     }
 
-    /// The deadline budget one page dial gets: the per-call cap, lowered by
-    /// the request's own `timeout_ms` when it set one.
-    fn dial_budget(request: &DialRequest) -> Duration {
-        if request.timeout_ms == 0 {
-            PAGE_FETCH_TIMEOUT
-        } else {
-            PAGE_FETCH_TIMEOUT.min(Duration::from_millis(request.timeout_ms))
-        }
-    }
-
     /// Records a successful style sheet response's URLs, so a later explicit
     /// referrer naming the sheet can be authorized. A sheet that failed or
     /// never arrived is not recorded: nothing it contained can issue a request
@@ -795,66 +783,6 @@ struct PendingStore {
     sent: Vec<(String, String)>,
     initiator: url::Origin,
     partition: u64,
-}
-
-/// One event from [`BodyReader`].
-enum BodyEvent {
-    /// A decoded chunk. The reader has already collected it when the delivery
-    /// mode needs the whole body.
-    Chunk(Vec<u8>),
-    /// The body ended; the collected bytes are what integrity checked.
-    Done(Vec<u8>),
-    /// The body could not be decoded for its `Content-Encoding`.
-    DecodeError,
-    /// The transfer failed before the body ended.
-    Failed(DialFailure),
-}
-
-/// Reads one decoded response body. Both delivery modes drive this reader, so
-/// the size cap, integrity check, and error mapping exist once.
-struct BodyReader {
-    body: net::Body,
-    integrity: Option<String>,
-    collect: bool,
-    collected: Vec<u8>,
-    total: usize,
-}
-
-impl BodyReader {
-    async fn new(response: net::Response, integrity: Option<String>, collect: bool) -> Self {
-        Self {
-            body: response.into_body().await,
-            integrity,
-            collect,
-            collected: Vec::new(),
-            total: 0,
-        }
-    }
-
-    async fn next(&mut self) -> BodyEvent {
-        match self.body.read_chunk().await {
-            Ok(Some(chunk)) => {
-                self.total = self.total.saturating_add(chunk.len());
-                if self.total > renderer::MAX_RESPONSE_BODY_BYTES {
-                    return BodyEvent::Failed(DialFailure::Limit);
-                }
-                if self.collect {
-                    self.collected.extend_from_slice(&chunk);
-                }
-                BodyEvent::Chunk(chunk)
-            }
-            Ok(None) => {
-                if let Some(integrity) = self.integrity.as_deref()
-                    && !renderer::integrity_verifies(integrity, &self.collected)
-                {
-                    return BodyEvent::Failed(DialFailure::Connect);
-                }
-                BodyEvent::Done(std::mem::take(&mut self.collected))
-            }
-            Err(net::NetError::Decode(_)) => BodyEvent::DecodeError,
-            Err(error) => BodyEvent::Failed(dial_failure(&error)),
-        }
-    }
 }
 
 /// Everything one streamed body task owns until its bytes are done: the

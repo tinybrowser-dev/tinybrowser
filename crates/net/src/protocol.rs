@@ -1,6 +1,6 @@
 use std::fmt;
 
-use hyper::header::{HeaderName, HeaderValue};
+use http::header::{HeaderName, HeaderValue};
 
 /// Joins every occurrence of a list header's values with `", "`, the way
 /// combining a header does
@@ -168,7 +168,7 @@ impl HeaderMap {
     /// [`HeaderError::InvalidName`] when `name` is empty or not an HTTP token.
     /// [`HeaderError::InvalidValue`] when `value` contains a CTL byte other than TAB.
     ///
-    /// Validation uses `hyper`'s `HeaderName` / `HeaderValue` parsers, the same
+    /// Validation uses `http`'s `HeaderName` / `HeaderValue` parsers, the same
     /// checks already applied when the map is written to the wire
     /// (<https://httpwg.org/specs/rfc9110.html#field.names>).
     pub fn insert(&mut self, name: &str, value: impl Into<Vec<u8>>) -> Result<(), HeaderError> {
@@ -183,7 +183,7 @@ impl HeaderMap {
     }
 
     /// Appends an already-parsed field. Cannot fail because both halves came
-    /// from `hyper`'s parsers.
+    /// from `http`'s parsers.
     pub(crate) fn append(&mut self, name: HeaderName, value: HeaderValue) {
         self.entries.push((name, value));
     }
@@ -210,8 +210,8 @@ impl HeaderMap {
         }
     }
 
-    /// Appends a field that came off the network. `hyper` parsed both halves
-    /// while reading the response.
+    /// Appends a field that came off the network, already parsed by the
+    /// transport.
     pub(crate) fn insert_wire(&mut self, name: HeaderName, value: HeaderValue) {
         self.entries.push((name, value));
     }
@@ -245,6 +245,7 @@ impl HeaderMap {
     }
 
     /// All fields in insertion order, with typed names and values.
+    #[cfg(feature = "native")]
     pub(crate) fn typed_iter(&self) -> impl Iterator<Item = (&HeaderName, &HeaderValue)> {
         self.entries.iter().map(|(name, value)| (name, value))
     }
@@ -274,6 +275,15 @@ impl HeaderMap {
 #[error("invalid HTTP method: {0:?}")]
 pub struct InvalidMethod(Box<str>);
 
+/// A `Basic` credential header value for one username and password.
+pub(crate) fn basic_authorization(username: &str, password: &str) -> String {
+    use base64::Engine as _;
+    format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode(format!("{username}:{password}"))
+    )
+}
+
 /// HTTP request method.
 ///
 /// `http::Method` owns the token grammar and the RFC 9110 predicates
@@ -287,16 +297,16 @@ pub struct InvalidMethod(Box<str>);
 /// method is always a parsed method and neither side re-checks the grammar.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(try_from = "String", into = "String")]
-pub struct Method(hyper::Method);
+pub struct Method(http::Method);
 
 impl Method {
-    pub const GET: Self = Self(hyper::Method::GET);
-    pub const HEAD: Self = Self(hyper::Method::HEAD);
-    pub const POST: Self = Self(hyper::Method::POST);
-    pub const PUT: Self = Self(hyper::Method::PUT);
-    pub const DELETE: Self = Self(hyper::Method::DELETE);
-    pub const OPTIONS: Self = Self(hyper::Method::OPTIONS);
-    pub const PATCH: Self = Self(hyper::Method::PATCH);
+    pub const GET: Self = Self(http::Method::GET);
+    pub const HEAD: Self = Self(http::Method::HEAD);
+    pub const POST: Self = Self(http::Method::POST);
+    pub const PUT: Self = Self(http::Method::PUT);
+    pub const DELETE: Self = Self(http::Method::DELETE);
+    pub const OPTIONS: Self = Self(http::Method::OPTIONS);
+    pub const PATCH: Self = Self(http::Method::PATCH);
 
     /// Parses an HTTP method token per [Fetch methods](https://fetch.spec.whatwg.org/#methods).
     ///
@@ -317,7 +327,7 @@ impl Method {
         if let Some(method) = standard {
             return Ok(method);
         }
-        hyper::Method::from_bytes(token.as_bytes())
+        http::Method::from_bytes(token.as_bytes())
             .map(Self)
             .map_err(|_| InvalidMethod(token.into()))
     }
@@ -382,7 +392,7 @@ impl Method {
 
     /// The same method as the HTTP crate's type, for the carrier's builder.
     #[must_use]
-    pub(crate) fn as_http(&self) -> &hyper::Method {
+    pub(crate) fn as_http(&self) -> &http::Method {
         &self.0
     }
 }
@@ -409,7 +419,7 @@ impl From<Method> for String {
 
 #[cfg(test)]
 mod tests {
-    use hyper::header::{HeaderName, HeaderValue};
+    use http::header::{HeaderName, HeaderValue};
 
     use super::HeaderMap;
 
