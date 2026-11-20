@@ -1,9 +1,3 @@
-//! Shared safe entry point and descriptor installation for generated bindings.
-//!
-//! Every member enters rquickjs with the same `HostCall` type. Interface-specific
-//! behavior is a function pointer plus an operation tag, not a closure type per
-//! member. `QuickJS` retains distinct JS function objects and original arguments.
-
 use rquickjs::atom::PredefinedAtom;
 use rquickjs::class::JsClass;
 use rquickjs::function::{Constructor, NativeFunc, Params};
@@ -18,7 +12,6 @@ pub(crate) use crate::js::world::NodeReference;
 
 pub(crate) type Dispatch = for<'a, 'js> fn(Operation, &Params<'a, 'js>) -> Result<Value<'js>>;
 
-/// A tag local to one generated interface's dispatch function.
 #[derive(Clone, Copy)]
 pub(crate) struct Operation(usize);
 
@@ -34,8 +27,7 @@ impl Operation {
 
 pub(crate) struct Member {
     pub(crate) name: &'static str,
-    /// `[SecureContext]`: the member is absent outside a secure context
-    /// (<https://webidl.spec.whatwg.org/#SecureContext>).
+    // https://webidl.spec.whatwg.org/#SecureContext
     pub(crate) secure_context: bool,
     pub(crate) kind: MemberKind,
 }
@@ -55,8 +47,7 @@ pub(crate) enum MemberKind {
 pub(crate) struct Constant {
     pub(crate) name: &'static str,
     pub(crate) value: u16,
-    /// `[SecureContext]`: the constant is absent outside a secure context
-    /// (<https://webidl.spec.whatwg.org/#SecureContext>).
+    // https://webidl.spec.whatwg.org/#SecureContext
     pub(crate) secure_context: bool,
 }
 
@@ -81,16 +72,11 @@ impl NativeFunc for HostCall {
     }
 }
 
-/// Whether the realm's environment is a secure context.
-///
-/// One read per install: every `[SecureContext]` member of the interface is
-/// decided by this value
-/// (<https://w3c.github.io/webappsec-secure-contexts/#is-settings-object-contextually-secure>).
+// https://w3c.github.io/webappsec-secure-contexts/#is-settings-object-contextually-secure
 pub(crate) fn is_secure_context(ctx: &Ctx<'_>) -> Result<bool> {
     Ok(world(ctx)?.borrow().is_secure_context())
 }
 
-/// Install regular readonly attributes, constants, and the interface's tag.
 pub(crate) fn prototype<'js>(
     ctx: &Ctx<'js>,
     name: &'static str,
@@ -122,18 +108,7 @@ pub(crate) fn prototype<'js>(
     Ok(prototype)
 }
 
-/// Adds one interface's members to the prototype its constructor already has.
-///
-/// Every generated interface installs the same way: look up the constructor the
-/// web shims created, take its prototype, add members, then add constants to the
-/// interface object as well as the prototype
-/// (<https://webidl.spec.whatwg.org/#es-constants>) and mark the unscopables.
-/// Emitting that body per interface inlined ~590 B of identical code into each
-/// caller, so it lives here once.
-///
-/// # Errors
-///
-/// The constructor or its prototype is missing, or member installation fails.
+// https://webidl.spec.whatwg.org/#es-constants
 #[inline(never)]
 pub(crate) fn install_interface(
     ctx: &Ctx<'_>,
@@ -195,10 +170,7 @@ pub(crate) fn install_members(
     install_constants(prototype, constants)
 }
 
-/// Define `@@unscopables` on the prototype, listing the `[Unscopable]`
-/// members. Later installers on the same prototype merge rather than
-/// replace, so two mixins can share one prototype
-/// (<https://webidl.spec.whatwg.org/#es-operations>).
+// https://webidl.spec.whatwg.org/#es-operations
 pub(crate) fn install_unscopables(prototype: &Object<'_>, names: &[&str]) -> Result<()> {
     if names.is_empty() {
         return Ok(());
@@ -221,9 +193,7 @@ pub(crate) fn install_unscopables(prototype: &Object<'_>, names: &[&str]) -> Res
     )
 }
 
-/// Read a reflected `DOMString` attribute: the content attribute value,
-/// or the empty string when missing
-/// (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflect>).
+// https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflect
 #[inline(never)]
 pub(crate) fn reflect_string<'js>(
     ctx: &Ctx<'js>,
@@ -241,10 +211,7 @@ pub(crate) fn reflect_string<'js>(
     rquickjs::String::from_str(ctx.clone(), &value)
 }
 
-/// Read a reflected enumerated attribute: the content attribute mapped
-/// through its keyword set, the missing-value default when the attribute is
-/// absent, or the invalid-value default when it names no keyword
-/// (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#limited-to-only-known-values>).
+// https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#limited-to-only-known-values
 #[inline(never)]
 pub(crate) fn reflect_enumerated_attribute<'js, T: crate::js::bindings::enumerated::Enumerated>(
     ctx: &Ctx<'js>,
@@ -257,8 +224,6 @@ pub(crate) fn reflect_enumerated_attribute<'js, T: crate::js::bindings::enumerat
     rquickjs::String::from_str(ctx.clone(), value)
 }
 
-/// The raw value of the content attribute `name` on `element`, for the
-/// reflected-enumerated getters.
 fn reflected_attribute_value(ctx: &Ctx<'_>, element: NodeId, name: &str) -> Option<String> {
     let world = super::world(ctx).ok()?;
     let parsed = world.borrow();
@@ -267,9 +232,7 @@ fn reflected_attribute_value(ctx: &Ctx<'_>, element: NodeId, name: &str) -> Opti
     })
 }
 
-/// Nullable enumerated reflection: `None` is the spec's "no state", reported
-/// as JS `null` (`DOMString?`)
-/// (<https://w3c.github.io/aria/#enumerated-attribute-values-html>).
+// https://w3c.github.io/aria/#enumerated-attribute-values-html
 pub(crate) fn reflect_enumerated_attribute_nullable<
     'js,
     T: crate::js::bindings::enumerated::Enumerated,
@@ -284,10 +247,7 @@ pub(crate) fn reflect_enumerated_attribute_nullable<
         crate::dom::tree::attr(&parsed.document.base, element.node, name).map(str::to_owned)
     });
     if raw.is_none() {
-        // Setting the IDL attribute to null reads back as null even when the
-        // attribute's missing-value default is a keyword, until a content
-        // attribute write replaces that state
-        // (<https://w3c.github.io/aria/#enumerated-attribute-values-html>).
+        // https://w3c.github.io/aria/#enumerated-attribute-values-html
         let nulled = world
             .borrow()
             .document(element)
@@ -302,10 +262,7 @@ pub(crate) fn reflect_enumerated_attribute_nullable<
     }
 }
 
-/// Write a nullable enumerated `DOMString?` attribute: null removes the
-/// content attribute and marks the property as explicitly null, so the getter
-/// does not fall back to the attribute's missing-value default
-/// (<https://w3c.github.io/aria/#enumerated-attribute-values-html>).
+// https://w3c.github.io/aria/#enumerated-attribute-values-html
 pub(crate) fn reflect_set_enumerated_nullable(
     ctx: &Ctx<'_>,
     element: NodeId,
@@ -324,8 +281,7 @@ pub(crate) fn reflect_set_enumerated_nullable(
     }
 }
 
-/// Read a reflected `boolean` attribute: presence of the content attribute
-/// (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflect>).
+// https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflect
 pub(crate) fn reflect_bool(ctx: &Ctx<'_>, element: NodeId, name: &str) -> Result<bool> {
     let world = super::world(ctx)?;
     Ok(world.borrow().document(element).is_some_and(|parsed| {
@@ -333,8 +289,6 @@ pub(crate) fn reflect_bool(ctx: &Ctx<'_>, element: NodeId, name: &str) -> Result
     }))
 }
 
-/// Write a reflected `DOMString` attribute: set the content attribute and
-/// notify mutation observers, mirroring the `setAttribute` algorithm.
 pub(crate) fn reflect_set_string(
     ctx: &Ctx<'_>,
     element: NodeId,
@@ -345,8 +299,6 @@ pub(crate) fn reflect_set_string(
     super::set_attribute_sync(ctx, element, name, &value)
 }
 
-/// Write a reflected `boolean` attribute: present with the empty string
-/// when true, removed when false.
 pub(crate) fn reflect_set_bool(
     ctx: &Ctx<'_>,
     element: NodeId,
@@ -361,9 +313,7 @@ pub(crate) fn reflect_set_bool(
     }
 }
 
-/// Write a reflected `long` attribute: the decimal form of the converted
-/// value becomes the content attribute
-/// (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes>).
+// https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes — values above i32::MAX write 0 to match WPT reflection.js idlDomExpected, whereas Chromium writes shortest-string
 pub(crate) fn reflect_set_long(
     ctx: &Ctx<'_>,
     element: NodeId,
@@ -373,14 +323,7 @@ pub(crate) fn reflect_set_long(
     super::set_attribute_sync(ctx, element, name, &value.to_string())
 }
 
-/// Write a reflected `unsigned long` attribute: the decimal form of the
-/// converted value becomes the content attribute. Values above
-/// `i32::MAX` write zero instead: the reflection suite maps out-of-range
-/// IDL sets to the default on read-back (`reflection.js` unsigned-long
-/// `idlDomExpected`), even though the spec prose says shortest-string.
-/// Chromium follows the prose and fails those subtests; we follow the
-/// suite and pass them
-/// (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes>).
+// https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes — values above i32::MAX write 0 to match WPT reflection.js idlDomExpected, whereas Chromium writes shortest-string
 pub(crate) fn reflect_set_ulong(
     ctx: &Ctx<'_>,
     element: NodeId,
@@ -390,10 +333,7 @@ pub(crate) fn reflect_set_ulong(
     reflect_set_ulong_defaulting(ctx, element, name, value, 0)
 }
 
-/// Write a reflected `unsigned long` attribute with an IDL default: values
-/// above `i32::MAX` write the default instead of the converted value, for
-/// the same suite reason as `reflect_set_ulong`
-/// (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes>).
+// https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes — values above i32::MAX write 0 to match WPT reflection.js idlDomExpected, whereas Chromium writes shortest-string
 pub(crate) fn reflect_set_ulong_defaulting(
     ctx: &Ctx<'_>,
     element: NodeId,
@@ -409,10 +349,7 @@ pub(crate) fn reflect_set_ulong_defaulting(
     super::set_attribute_sync(ctx, element, name, &value.to_string())
 }
 
-/// Write a reflected `double` attribute: the number stringified with JS
-/// semantics, so `1e25` writes `1e+25` like `String(1e25)` rather than
-/// Rust's full digits
-/// (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes>).
+// https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes — values above i32::MAX write 0 to match WPT reflection.js idlDomExpected, whereas Chromium writes shortest-string
 pub(crate) fn reflect_set_double(
     ctx: &Ctx<'_>,
     element: NodeId,
@@ -424,19 +361,14 @@ pub(crate) fn reflect_set_double(
     super::set_attribute_sync(ctx, element, name, &js.to_string()?)
 }
 
-/// Create a platform wrapper with the interface prototype from `ctx`'s realm
-/// (<https://webidl.spec.whatwg.org/#dfn-platform-object>).
-/// The rquickjs `Class::instance` prototype cache is shared across a runtime's
-/// realms. Generated interface prototypes belong to one realm.
+// https://webidl.spec.whatwg.org/#dfn-platform-object
 pub(crate) fn instance<'js, T: JsClass<'js>>(ctx: &Ctx<'js>, value: T) -> Result<Class<'js, T>> {
     let prototype = T::prototype(ctx)?
         .ok_or_else(|| Exception::throw_internal(ctx, "native interface has no prototype"))?;
     instance_proto(value, prototype)
 }
 
-/// Create a platform object bound to `prototype`: the one construction point
-/// for native wrappers
-/// (<https://webidl.spec.whatwg.org/#dfn-platform-object>).
+// https://webidl.spec.whatwg.org/#dfn-platform-object
 pub(crate) fn instance_proto<'js, T: JsClass<'js>>(
     value: T,
     prototype: Object<'js>,
@@ -444,8 +376,7 @@ pub(crate) fn instance_proto<'js, T: JsClass<'js>>(
     Class::instance_proto(value, prototype)
 }
 
-/// Create a node-associated platform wrapper with its document owner's
-/// interface prototype (<https://dom.spec.whatwg.org/#concept-node>).
+// https://dom.spec.whatwg.org/#concept-node
 pub(crate) fn instance_for_node<'js, T: JsClass<'js>>(
     ctx: &Ctx<'js>,
     node: NodeId,
@@ -486,9 +417,7 @@ pub(crate) fn constructor<'js>(
 pub(crate) fn constructor_prototype<'js, T: JsClass<'js>>(
     params: &Params<'_, 'js>,
 ) -> Result<Object<'js>> {
-    // https://webidl.spec.whatwg.org/#internally-create-a-new-object-implementing-the-interface
-    // Chromium/V8 and Firefox look up new.target's prototype before argument
-    // conversion. This runs after conversion, in the order WebIDL specifies.
+    // https://webidl.spec.whatwg.org/#internally-create-a-new-object-implementing-the-interface — looks up new.target prototype after argument conversion per WebIDL, unlike Chromium and Firefox
     let target = params
         .this()
         .into_function()
@@ -513,8 +442,6 @@ pub(crate) fn install_constants(target: &Object<'_>, constants: &[Constant]) -> 
     Ok(())
 }
 
-/// rquickjs's `Accessor` takes a generic Rust callback, not an existing JS
-/// function. Supply that descriptor through its safe property trait instead.
 struct Attribute<'js> {
     getter: Function<'js>,
     setter: Option<Function<'js>>,
@@ -602,13 +529,8 @@ pub(crate) fn nullable_node_argument<'js>(
     }
 }
 
-/// A URL-reflected content attribute: absent reflects as the empty string,
-/// otherwise the value resolves against the document base URL with the
-/// document's character encoding as the URL parser's encoding override, and
-/// serializes, falling back to the raw value when parsing fails. A present
-/// but empty attribute still resolves (to the base URL itself)
-/// (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#reflecting-content-attributes-in-idl-attributes>,
-/// <https://html.spec.whatwg.org/multipage/urls-and-fetching.html#parse-a-url>).
+// https://html.spec.whatwg.org/multipage/urls-and-fetching.html#reflecting-content-attributes-in-idl-attributes — values above i32::MAX write 0 to match WPT reflection.js idlDomExpected, whereas Chromium writes shortest-string
+// https://html.spec.whatwg.org/multipage/urls-and-fetching.html#parse-a-url
 #[inline(never)]
 pub(crate) fn reflect_url_string(
     ctx: &Ctx<'_>,
@@ -638,14 +560,10 @@ pub(crate) fn reflect_url_string(
         .into())
 }
 
-/// Validates an interface against native state on a shared payload.
-/// Page-controlled prototypes must not grant an interface brand.
 pub(crate) trait SharedClass {
     fn require_interface(&self, ctx: &Ctx<'_>, interface: &str) -> Result<()>;
 }
 
-/// Whether `data` implements the named node interface, or `None` when the
-/// name is not one the shared payload can represent.
 fn node_interface_matches(
     data: Option<&blitz_dom::NodeData>,
     xml_document: bool,
@@ -663,14 +581,12 @@ fn node_interface_matches(
         )
     );
     Some(match interface {
-        // Every node is also an `EventTarget`
-        // (<https://dom.spec.whatwg.org/#interface-eventtarget>).
+        // https://dom.spec.whatwg.org/#interface-eventtarget
         "Node" | "EventTarget" => data.is_some(),
         "Document" => matches!(data, Some(NodeData::Document(_))),
         "HTMLDocument" => matches!(data, Some(NodeData::Document(_))) && html_document,
         "XMLDocument" => matches!(data, Some(NodeData::Document(_))) && xml_document,
-        // A shadow root is a document fragment
-        // (<https://dom.spec.whatwg.org/#interface-shadowroot>).
+        // https://dom.spec.whatwg.org/#interface-shadowroot
         "DocumentFragment" => {
             matches!(
                 data,
@@ -678,12 +594,8 @@ fn node_interface_matches(
             )
         }
         "ShadowRoot" => matches!(data, Some(NodeData::ShadowRoot { .. })),
-        // `DocumentFragment` implements neither `Element` nor `ChildNode`
-        // (<https://dom.spec.whatwg.org/#interface-documentfragment>).
-        // `ARIAMixin` is included by `Element`, so every element answers it.
+        // https://dom.spec.whatwg.org/#interface-documentfragment
         "Element" | "ARIAMixin" => matches!(data, Some(NodeData::Element(_))),
-        // `ElementContentEditable` is included by `HTMLElement` only, so any
-        // HTML element (including unknown elements) answers it.
         "HTMLElement" | "ElementContentEditable" => {
             matches!(data, Some(NodeData::Element(element)) if element.name.ns == crate::dom::tree::html_namespace())
         }
@@ -694,8 +606,7 @@ fn node_interface_matches(
             matches!(data, Some(NodeData::Element(element)) if element.name.ns == crate::dom::tree::mathml_namespace())
         }
         "CharacterData" => is_character_data,
-        // A CDATA section implements `Text`
-        // (<https://dom.spec.whatwg.org/#interface-cdatasection>).
+        // https://dom.spec.whatwg.org/#interface-cdatasection
         "Text" => matches!(
             data,
             Some(NodeData::Text(_) | NodeData::CDataSection { .. })
@@ -704,10 +615,6 @@ fn node_interface_matches(
         "Comment" => matches!(data, Some(NodeData::Comment { .. })),
         "DocumentType" => matches!(data, Some(NodeData::Doctype { .. })),
         "ProcessingInstruction" => matches!(data, Some(NodeData::ProcessingInstruction { .. })),
-        // Spec mixins: their members are installed on every including
-        // interface, so the receiver check accepts the union of those kinds.
-        // `ElementCSSInlineStyle` is included by the HTML, SVG, and MathML
-        // element interfaces.
         "ElementCSSInlineStyle" => {
             matches!(
                 data,
@@ -726,27 +633,18 @@ fn node_interface_matches(
                     | NodeData::ShadowRoot { .. }
             )
         ),
-        // `ChildNode` includes `DocumentType`, `Element`, and `CharacterData`
-        // (<https://dom.spec.whatwg.org/#interface-childnode>), but never a
-        // `DocumentFragment`.
+        // https://dom.spec.whatwg.org/#interface-childnode
         "ChildNode" => {
             is_character_data
                 || matches!(data, Some(NodeData::Element(_) | NodeData::Doctype { .. }))
         }
-        // `NonDocumentTypeChildNode` includes `Element` and `CharacterData`,
-        // not a doctype or a fragment
-        // (<https://dom.spec.whatwg.org/#interface-nondocumenttypechildnode>).
+        // https://dom.spec.whatwg.org/#interface-nondocumenttypechildnode
         "NonDocumentTypeChildNode" => {
             is_character_data || matches!(data, Some(NodeData::Element(_)))
         }
-        // Per-element contracts check the element's local name. The hyperlink
-        // mixin is included by the anchor and area interfaces.
         "HTMLHyperlinkElementUtils" => {
             crate::dom::tree::is_html_tag(data, "a") || crate::dom::tree::is_html_tag(data, "area")
         }
-        // Every remaining name is an HTML element interface, checked against
-        // the DOM interface the element table derives for the tag. A name
-        // outside that family cannot name a node interface here at all.
         _ => {
             return interface
                 .starts_with("HTML")
@@ -755,16 +653,8 @@ fn node_interface_matches(
     })
 }
 
-/// Whether an HTML element's DOM interface is `interface`, per the one
-/// element table ([`super::ELEMENT_INTERFACES`]): tag names map to
-/// interfaces once, and this receiver check derives from that mapping
-/// instead of re-listing tags per interface
-/// (<https://html.spec.whatwg.org/multipage/dom.html#elements-in-the-dom>).
-/// A tag the table does not map is an `HTMLUnknownElement`
-/// (<https://html.spec.whatwg.org/multipage/dom.html#html-unknown-element>),
-/// and an audio or video element also implements the `HTMLMediaElement` its
-/// prototype chains to; nothing else in the table has an intermediate
-/// parent.
+// https://html.spec.whatwg.org/multipage/dom.html#elements-in-the-dom
+// https://html.spec.whatwg.org/multipage/dom.html#html-unknown-element
 fn html_element_interface_matches(data: Option<&blitz_dom::NodeData>, interface: &str) -> bool {
     let element = match data {
         Some(blitz_dom::NodeData::Element(element))
@@ -806,9 +696,6 @@ pub(crate) fn require_node_interface(ctx: &Ctx<'_>, id: NodeId, interface: &str)
     }
 }
 
-/// Whether the JS value is a platform object implementing `interface`. The
-/// non-throwing counterpart `require_node_interface` needs, used by union
-/// conversion to try members in order.
 pub(crate) fn is_interface<'js>(ctx: &Ctx<'js>, value: &Value<'js>, interface: &str) -> bool {
     let Some(id) = super::host_node_id(ctx, value) else {
         return false;
@@ -833,9 +720,6 @@ pub(crate) fn is_interface<'js>(ctx: &Ctx<'js>, value: &Value<'js>, interface: &
     ) == Some(true)
 }
 
-/// The receiver JS object for hand methods that keep it (observer identity
-/// for callback delivery). The receiver check already passed, so a missing
-/// object is an internal error, never a user throw.
 #[inline(never)]
 pub(crate) fn this_object<'js>(params: &Params<'_, 'js>) -> Result<Object<'js>> {
     params
@@ -855,9 +739,7 @@ pub(crate) fn put_forwards<'js>(
     let ctx = params.ctx();
     let object = this_object(params)?;
     let forwarded: Value = object.get(name)?;
-    // A nullable `[PutForwards]` target (`Document.location` on a detached
-    // document) makes the assignment a no-op
-    // (<https://webidl.spec.whatwg.org/#PutForwards>).
+    // https://webidl.spec.whatwg.org/#PutForwards
     if nullable && (forwarded.is_null() || forwarded.is_undefined()) {
         return Ok(Value::new_undefined(ctx.clone()));
     }
@@ -877,9 +759,7 @@ pub(crate) fn put_forwards<'js>(
     Ok(Value::new_undefined(ctx.clone()))
 }
 
-/// A `USVString` argument: `ToString`, then lone surrogates become U+FFFD
-/// (unlike `DOMString`, this conversion never throws for them)
-/// (<https://webidl.spec.whatwg.org/#es-USVString>).
+// https://webidl.spec.whatwg.org/#es-USVString
 #[inline(never)]
 pub(crate) fn usv_string_argument<'js>(
     params: &Params<'_, 'js>,
@@ -911,13 +791,10 @@ pub(crate) fn string_argument<'js>(
         return rquickjs::String::from_str(params.ctx().clone(), default);
     }
     // https://webidl.spec.whatwg.org/#es-DOMString
-    // Coerced uses the engine's ToString, not the mutable global String function
-    // (whose special Symbol conversion also differs from WebIDL's ToString).
     Coerced::<rquickjs::String>::from_js(params.ctx(), value).map(|string| string.0)
 }
 
-/// A `boolean` argument, converted with the pristine `ToBoolean`
-/// (<https://webidl.spec.whatwg.org/#es-boolean>).
+// https://webidl.spec.whatwg.org/#es-boolean
 #[inline(never)]
 pub(crate) fn boolean_argument(params: &Params<'_, '_>, index: usize) -> Result<bool> {
     let ctx = params.ctx();
@@ -936,8 +813,7 @@ pub(crate) fn callback_argument<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Resu
         .ok_or_else(|| Exception::throw_type(ctx, "argument is not a function"))
 }
 
-/// A `[LegacyNullToEmptyString]` `DOMString` argument: null becomes empty.
-/// (<https://webidl.spec.whatwg.org/#LegacyNullToEmptyString>).
+// https://webidl.spec.whatwg.org/#LegacyNullToEmptyString
 #[inline(never)]
 pub(crate) fn legacy_null_string_argument<'js>(
     params: &Params<'_, 'js>,
@@ -992,9 +868,7 @@ pub(crate) fn nullable_string_argument<'js>(
     Coerced::<rquickjs::String>::from_js(params.ctx(), value).map(|string| Some(string.0))
 }
 
-/// One presence-preserving dictionary flag
-/// (<https://webidl.spec.whatwg.org/#es-dictionary>): absent or `undefined`
-/// is `None`, anything else converts with `ToBoolean` (`null` is false).
+// https://webidl.spec.whatwg.org/#es-dictionary
 pub(crate) fn dict_flag<'js>(
     ctx: &Ctx<'js>,
     object: &Object<'js>,
@@ -1007,9 +881,7 @@ pub(crate) fn dict_flag<'js>(
     Coerced::<bool>::from_js(ctx, value).map(|flag| Some(flag.0))
 }
 
-/// A promise already resolved with `undefined`, for synchronous operations
-/// whose IDL result is `Promise<undefined>`
-/// (<https://webidl.spec.whatwg.org/#es-promise>).
+// https://webidl.spec.whatwg.org/#es-promise
 #[inline(never)]
 pub(crate) fn resolved_promise<'js>(ctx: &Ctx<'js>) -> Result<Value<'js>> {
     let (promise, resolve, _) = ctx.promise()?;
@@ -1017,9 +889,7 @@ pub(crate) fn resolved_promise<'js>(ctx: &Ctx<'js>) -> Result<Value<'js>> {
     Ok(promise.into_value())
 }
 
-/// One presence-preserving non-nullable interface dictionary member: a
-/// present value must be an object; absent, null, and undefined throw
-/// (<https://webidl.spec.whatwg.org/#es-interface>).
+// https://webidl.spec.whatwg.org/#es-interface
 pub(crate) fn dict_required_object<'js>(
     ctx: &Ctx<'js>,
     object: &Object<'js>,
@@ -1035,19 +905,15 @@ pub(crate) fn dict_required_object<'js>(
     Ok(Persistent::save(ctx, object.clone()))
 }
 
-/// One presence-preserving interface-typed dictionary member
-/// (<https://webidl.spec.whatwg.org/#es-dictionary>): absent or `undefined` is
-/// `None`. A present value must be an object
-/// (<https://webidl.spec.whatwg.org/#es-interface>).
+// https://webidl.spec.whatwg.org/#es-dictionary
+// https://webidl.spec.whatwg.org/#es-interface
 pub(crate) fn dict_object<'js>(
     ctx: &Ctx<'js>,
     object: &Object<'js>,
     key: &str,
 ) -> Result<Option<Persistent<Object<'static>>>> {
     let value: Value = object.get(key)?;
-    // Only `undefined` means the member is absent; a present `null` is not an
-    // object and fails the interface conversion
-    // (<https://webidl.spec.whatwg.org/#es-interface>).
+    // https://webidl.spec.whatwg.org/#es-interface
     if value.is_undefined() {
         return Ok(None);
     }
@@ -1060,10 +926,7 @@ pub(crate) fn dict_object<'js>(
     Ok(Some(Persistent::save(ctx, object.clone())))
 }
 
-/// One presence-preserving string sequence
-/// (<https://webidl.spec.whatwg.org/#js-sequence>): absent or `undefined` is
-/// `None`. Present values must be objects with a callable iterator, whose
-/// elements convert to `DOMString` without losing UTF-16 code units.
+// https://webidl.spec.whatwg.org/#js-sequence
 pub(crate) fn dict_string_sequence<'js>(
     ctx: &Ctx<'js>,
     object: &Object<'js>,
@@ -1105,8 +968,7 @@ pub(crate) fn dict_string_sequence<'js>(
     Ok(Some(items))
 }
 
-/// A record sequence result as a fresh JS array
-/// (<https://webidl.spec.whatwg.org/#es-sequence>).
+// https://webidl.spec.whatwg.org/#es-sequence
 #[inline(never)]
 pub(crate) fn sequence<'js>(ctx: &Ctx<'js>, values: Vec<Value<'js>>) -> Result<Value<'js>> {
     let array = rquickjs::Array::new(ctx.clone())?;
@@ -1119,22 +981,13 @@ pub(crate) fn sequence<'js>(ctx: &Ctx<'js>, values: Vec<Value<'js>>) -> Result<V
     Ok(array.into_value())
 }
 
-/// Reports an exception thrown by a host-invoked callback (timer, `fetch`,
-/// mutation observer) through the invoking realm window's `error` event
-/// (<https://html.spec.whatwg.org/multipage/webappapis.html#report-the-error>).
-/// The callback source carries no document line, so only the callback's own
-/// stack location is used.
+// https://html.spec.whatwg.org/multipage/webappapis.html#report-the-error
 pub(crate) fn report_callback_error(ctx: &Ctx<'_>, error: &rquickjs::Error) {
     if error.is_exception() {
         let caught = ctx.catch();
         super::report_exception_value(ctx, caught, 0, "");
     }
 }
-
-// ─── Conversion funnels ───────────────────────────────────────────────────────
-// Generated dispatch arms call these instead of inlining conversion logic.
-// Each is `#[inline(never)]` so the whole graph shares one copy per funnel
-// (one per IDL type for the generic ones), not one copy per member arm.
 
 #[inline(never)]
 pub(crate) fn ret<'js, T: rquickjs::IntoJs<'js>>(result: T, ctx: &Ctx<'js>) -> Result<Value<'js>> {
@@ -1153,8 +1006,7 @@ pub(crate) fn ret_nullable<'js, T: rquickjs::IntoJs<'js>>(
     }
 }
 
-/// A `USVString` return value: lone surrogates become U+FFFD on the way out
-/// (<https://webidl.spec.whatwg.org/#idl-USVString>).
+// https://webidl.spec.whatwg.org/#idl-USVString
 #[inline(never)]
 pub(crate) fn ret_usv<'js>(
     result: &crate::dom_string::DomString,
@@ -1164,7 +1016,6 @@ pub(crate) fn ret_usv<'js>(
     rquickjs::IntoJs::into_js(lossy.as_ref(), ctx)
 }
 
-/// An enumeration return value: the IDL string for the enum value.
 #[inline(never)]
 pub(crate) fn ret_enum<'js>(result: impl AsRef<str>, ctx: &Ctx<'js>) -> Result<Value<'js>> {
     let result = rquickjs::String::from_str(ctx.clone(), result.as_ref())?;
@@ -1176,7 +1027,6 @@ pub(crate) fn ret_undefined<'js>(ctx: &Ctx<'js>) -> Value<'js> {
     Value::new_undefined(ctx.clone())
 }
 
-/// A `sequence<DOMString>` return value.
 #[inline(never)]
 pub(crate) fn ret_string_sequence<'js>(result: Vec<String>, ctx: &Ctx<'js>) -> Result<Value<'js>> {
     let values = result
@@ -1188,8 +1038,6 @@ pub(crate) fn ret_string_sequence<'js>(result: Vec<String>, ctx: &Ctx<'js>) -> R
     sequence(ctx, values)
 }
 
-/// Fetches one argument value, standing in `undefined` for an omitted one.
-/// Shared so arms carry a call, not the fetch-and-default logic.
 #[inline(never)]
 pub(crate) fn fetch<'js>(params: &Params<'_, 'js>, index: usize) -> Value<'js> {
     // https://webidl.spec.whatwg.org/#dfn-overload-resolution-algorithm
@@ -1198,7 +1046,7 @@ pub(crate) fn fetch<'js>(params: &Params<'_, 'js>, index: usize) -> Value<'js> {
         .unwrap_or_else(|| Value::new_undefined(params.ctx().clone()))
 }
 
-/// A required `long` argument (<https://webidl.spec.whatwg.org/#es-long>).
+// https://webidl.spec.whatwg.org/#es-long
 #[inline(never)]
 pub(crate) fn long_argument(params: &Params<'_, '_>, index: usize) -> Result<i32> {
     let value = fetch(params, index);
@@ -1206,7 +1054,7 @@ pub(crate) fn long_argument(params: &Params<'_, '_>, index: usize) -> Result<i32
     Ok(converted.0)
 }
 
-/// A required `unsigned long` argument (<https://webidl.spec.whatwg.org/#es-unsigned-long>).
+// https://webidl.spec.whatwg.org/#es-unsigned-long
 #[inline(never)]
 pub(crate) fn ulong_argument(params: &Params<'_, '_>, index: usize) -> Result<u32> {
     let value = fetch(params, index);
@@ -1214,18 +1062,15 @@ pub(crate) fn ulong_argument(params: &Params<'_, '_>, index: usize) -> Result<u3
     Ok(converted.0.cast_unsigned())
 }
 
-/// A required `unsigned short` argument
-/// (<https://webidl.spec.whatwg.org/#es-unsigned-short>).
+// https://webidl.spec.whatwg.org/#es-unsigned-short
 #[inline(never)]
 pub(crate) fn ushort_argument(params: &Params<'_, '_>, index: usize) -> Result<u16> {
     let value = fetch(params, index);
     let converted: Coerced<i32> = Coerced::from_js(params.ctx(), value)?;
-    // Wrapping arithmetic, like the `cast_unsigned` conversions above: the
-    // remainder always fits, so the fallback is dead.
     Ok(u16::try_from(converted.0.rem_euclid(65536)).unwrap_or(u16::MAX))
 }
 
-/// A required `double` argument (<https://webidl.spec.whatwg.org/#es-double>).
+// https://webidl.spec.whatwg.org/#es-double
 #[inline(never)]
 pub(crate) fn double_argument(params: &Params<'_, '_>, index: usize) -> Result<f64> {
     let value = fetch(params, index);
@@ -1233,7 +1078,6 @@ pub(crate) fn double_argument(params: &Params<'_, '_>, index: usize) -> Result<f
     Ok(converted.0)
 }
 
-/// A restricted `double` argument, rejecting NaN and infinities.
 #[inline(never)]
 pub(crate) fn restricted_double_argument(params: &Params<'_, '_>, index: usize) -> Result<f64> {
     let value = fetch(params, index);
@@ -1247,7 +1091,6 @@ pub(crate) fn restricted_double_argument(params: &Params<'_, '_>, index: usize) 
     Ok(converted.0)
 }
 
-/// An optional `DOMString` argument: omitted (`undefined`) is `None`.
 #[inline(never)]
 pub(crate) fn optional_string_argument<'js>(
     params: &Params<'_, 'js>,
@@ -1260,7 +1103,6 @@ pub(crate) fn optional_string_argument<'js>(
     string_argument(params, index, None).map(Some)
 }
 
-/// A `nullable unsigned long` argument: `null` and `undefined` are `None`.
 #[inline(never)]
 pub(crate) fn nullable_ulong_argument(
     params: &Params<'_, '_>,
@@ -1274,7 +1116,6 @@ pub(crate) fn nullable_ulong_argument(
     ulong_argument(params, index).map(Some)
 }
 
-/// An optional `boolean` argument with no default: `undefined` is `None`.
 #[inline(never)]
 pub(crate) fn optional_boolean_argument(
     params: &Params<'_, '_>,
@@ -1287,8 +1128,7 @@ pub(crate) fn optional_boolean_argument(
     boolean_argument(params, index).map(Some)
 }
 
-/// A `boolean` argument with an IDL default: `undefined` takes the default
-/// (<https://webidl.spec.whatwg.org/#es-boolean>).
+// https://webidl.spec.whatwg.org/#es-boolean
 #[inline(never)]
 pub(crate) fn boolean_argument_with_default(
     params: &Params<'_, '_>,

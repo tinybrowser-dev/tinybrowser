@@ -6,9 +6,7 @@ const __tbProgressData = host.slots('tinybrowser.progress.data');
 const __tbDecoderData = host.slots('tinybrowser.textdecoder.data');
 const __tbStreamData = host.slots('tinybrowser.readablestream.data');
 const __tbToLatin1 = bytes => {
-  // Chunked: per-byte `+=` is quadratic on large inputs (TextDecoder
-  // pending, response bodies). 4096-arg applies stay inside the engine
-  // call stack (<https://tc39.es/ecma262/#sec-apply>).
+  // https://tc39.es/ecma262/#sec-apply
   const parts = __tbPrivateArray();
   for (let start = 0; start < bytes.length; start += 4096) {
     __tbArray.push(parts, __tbApply(__tbIDLFromCharCode, null, __tbBytesCopy(bytes, start, start + 4096)));
@@ -25,11 +23,9 @@ const __tbEncoding = label => {
 };
 const __tbDecodeBytes = (bytes, encoding, fatal, ignoreBOM) =>
   host.__tbDecode(bytes, encoding, fatal, ignoreBOM);
-// https://w3c.github.io/FileAPI/#convert-line-endings-to-native: LF is the
-// native line ending on this platform, so CR and CRLF collapse to LF.
+// https://w3c.github.io/FileAPI/#convert-line-endings-to-native
 const __tbNativeEndings = value => String(value).replace(/\r\n?|\n/g, '\n');
-// https://webidl.spec.whatwg.org/#Clamp: round to the nearest integer with
-// ties going to the even integer.
+// https://webidl.spec.whatwg.org/#Clamp
 const __tbClampRound = value => {
   value = Number(value);
   if (Number.isNaN(value) || value === 0) return 0;
@@ -57,8 +53,6 @@ globalThis.TextEncoder = __tbInstallInterface(class TextEncoder {
     return { read, written };
   }
 });
-// Best-effort session cleanup: entries die with the realm regardless, this
-// only reclaims earlier when the engine runs finalizer callbacks.
 const __tbDecoderFinalizer = (() => {
   try {
     if (typeof FinalizationRegistry === 'function') {
@@ -76,9 +70,7 @@ globalThis.TextDecoder = class TextDecoder {
     if (encoding === null) throw new RangeError('The encoding label is not supported');
     const fatal = optionsObject.fatal !== undefined && Boolean(optionsObject.fatal);
     const ignoreBOM = optionsObject.ignoreBOM !== undefined && Boolean(optionsObject.ignoreBOM);
-    // The session owns the decoder across decode() calls, which is what
-    // buffers a trailing partial sequence
-    // (<https://encoding.spec.whatwg.org/#dom-textdecoder-decode>).
+    // https://encoding.spec.whatwg.org/#dom-textdecoder-decode
     const decoder = host.__tbDecoderInit(encoding, ignoreBOM);
     __tbDecoderData.set(this, { decoder, encoding, fatal, ignoreBOM });
     if (__tbDecoderFinalizer !== null) {
@@ -93,8 +85,6 @@ globalThis.TextDecoder = class TextDecoder {
     let bytes = new __tbUint8Array(0);
     if (input !== undefined && input !== null) {
       if (__tbIsArrayBufferView(input)) {
-        // Snapshot once: a resizable buffer observed through unpinned
-        // getters could change between reads.
         const buffer = input.buffer;
         const offset = input.byteOffset;
         const length = input.byteLength;
@@ -102,8 +92,6 @@ globalThis.TextDecoder = class TextDecoder {
       } else if (input instanceof ArrayBuffer) bytes = new __tbUint8Array(input);
       else throw new TypeError('The input argument must be an ArrayBuffer or ArrayBufferView');
     }
-    // WebIDL dictionary: missing and null options both mean non-streaming,
-    // any other value converts with ToBoolean.
     const stream = options !== undefined && options !== null && Boolean(options.stream);
     return host.__tbDecoderDecode(data.decoder, bytes, data.fatal, stream);
   }

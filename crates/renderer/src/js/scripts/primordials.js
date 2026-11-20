@@ -33,10 +33,6 @@ const __tbPrivateArray = () => {
   __tbSetPrototypeOf(array, null);
   return array;
 };
-// Lazily initializes per-event state for interfaces named by
-// `document.createEvent`: an uninitialized event gets its spec defaults on
-// first getter read. Lives here because `messaging.js` and `ui_events.js`
-// both consume it and any bundle order puts one of them first.
 const __tbEventEntry = (event, data, fresh) => {
   const entry = data.get(event);
   if (entry !== undefined) return entry;
@@ -84,8 +80,6 @@ __tbArray.iterator = array => {
   };
 };
 const __tbUint8Array = Uint8Array;
-// Pinned statics and methods the shims call with attacker-controlled input:
-// the constructors stay reachable for pages to replace.
 const __tbArrayFrom = Array.from;
 const __tbObjectKeys = Object.keys;
 const __tbIsArrayBufferView = ArrayBuffer.isView;
@@ -96,13 +90,9 @@ const __tbStringIncludes = String.prototype.includes;
 const __tbStringStartsWith = String.prototype.startsWith;
 const __tbStringEndsWith = String.prototype.endsWith;
 const __tbStringToLowerCase = String.prototype.toLowerCase;
-// ASCII lowercase: only A-Z fold. Unicode folding would wrongly match
-// Kelvin K to `k` or Turkish İ to `i` in enumerated keywords
-// (<https://infra.spec.whatwg.org/#ascii-lowercase>).
+// https://infra.spec.whatwg.org/#ascii-lowercase
 const __tbAsciiLower = value => __tbStringCtor(value).replace(/[A-Z]/g, c => c.toLowerCase());
-// Web IDL `DOMString` conversion: `ToString`, which throws on Symbols
-// (plain `String()` would stringify them instead)
-// (<https://webidl.spec.whatwg.org/#es-DOMString>).
+// https://webidl.spec.whatwg.org/#es-DOMString
 const __tbToDOMString = value => {
   if (typeof value === 'symbol') {
     throw new TypeError('Cannot convert a Symbol value to a string');
@@ -170,8 +160,6 @@ const __tbPrivateSet = function() {
   return __tbFreeze(facade);
 };
 const __tbBytesCopy = (bytes, start = 0, end = bytes.length) => {
-  // Clamp: an over-long end must not zero-pad (a chunked bridge once turned
-  // a 1-byte tail into 4096 bytes of NULs).
   if (end > bytes.length) end = bytes.length;
   if (start > end) start = end;
   const result = new __tbUint8Array(end - start);

@@ -25,9 +25,7 @@
     forward() { this.go(1); },
   };
   function update(data, url, replace) {
-    // Serialize first; neither the URL nor the current entry changes when
-    // serialization throws.
-    // <https://html.spec.whatwg.org/multipage/nav-history-apis.html#shared-history-push/replace-state-steps>
+    // https://html.spec.whatwg.org/multipage/nav-history-apis.html#shared-history-push/replace-state-steps
     const serialized = __tbEncode(data, undefined, null).payload;
     const next = url === undefined || url === null || String(url) === ''
       ? String(globalThis.location.href)

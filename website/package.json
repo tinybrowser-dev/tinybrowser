@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "astro": "astro",
-    "build": "bun run sync-data && bun run build:wasm",
+    "build": "bun run sync:wpt-results && bun run build:wasm",
     "build:wasm": "bun run scripts/build-wasm.ts",
     "check": "bun run contrast && bun run typecheck && bun run lint && bun run format && bun run build",
     "contrast": "bun scripts/check-contrast.ts",
@@ -17,7 +17,7 @@
     "format:fix": "oxfmt",
     "lint": "oxlint",
     "lint:fix": "oxlint --fix",
-    "sync-data": "bun run scripts/sync-data.ts",
+    "sync:wpt-results": "bun run scripts/sync-wpt-results.ts",
     "typecheck": "astro sync && tsc --noEmit"
   },
   "dependencies": {

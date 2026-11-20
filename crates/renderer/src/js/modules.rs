@@ -18,11 +18,7 @@ impl Resolver for WebModuleResolver {
         name: &str,
         _attributes: Option<ImportAttributes<'js>>,
     ) -> Result<String> {
-        // `QuickJS` labels code it compiles from a string `<input>`, so `eval`
-        // and the engine's own shim have no script URL to resolve against.
-        // The realm's base URL stands in, the way an indirect `eval` uses the
-        // global's base URL
-        // (<https://tc39.es/ecma262/#sec-hostresolveimportedmodule>).
+        // https://tc39.es/ecma262/#sec-hostresolveimportedmodule
         let base = match Url::parse(base) {
             Ok(base) => base,
             Err(_) => super::bindings::world(ctx)
@@ -33,9 +29,7 @@ impl Resolver for WebModuleResolver {
             .or_else(|_| base.join(name))
             .map_err(|_| Error::new_resolving(base.as_str(), name))?;
         match resolved.scheme() {
-            // The schemes this engine's module loader can fetch: `http`/
-            // `https` over the network, and `blob`/`data` locally
-            // (<https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script>).
+            // https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script
             "http" | "https" | "blob" | "data" => Ok(resolved.into()),
             _ => Err(Error::new_resolving(base.as_str(), name)),
         }
@@ -55,11 +49,7 @@ impl Loader for WebModuleLoader {
             return Err(Error::new_loading(name));
         }
         load_module(ctx, name).map_err(|error| match error {
-            // A module whose fetch failed reaches script as a TypeError, the
-            // way Chromium reports it. `QuickJS`'s loader contract turns every
-            // host `Loading` failure into a ReferenceError, so the exception is
-            // built here instead
-            // (<https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script>).
+            // https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script
             Error::Loading { .. } => rquickjs::Exception::throw_type(
                 ctx,
                 &format!("Failed to fetch dynamically imported module: {name}"),
@@ -88,9 +78,6 @@ fn module_request_blocked(
         return Ok(());
     }
     let blocked = crate::csp::blocks(&violations);
-    // The module loader runs inside QuickJS; dispatch later. A worker realm
-    // has no document, so it queues an untargeted violation for the creator's
-    // document.
     let target = super::bindings::main_document(ctx).ok();
     world_rc
         .borrow_mut()
@@ -101,22 +88,13 @@ fn module_request_blocked(
     Ok(())
 }
 
-/// Declares a module and fills its `import.meta`.
-///
-/// `QuickJS` allocates `import.meta` as an empty null-prototype object and
-/// never adds the host-defined `url` member, so the module's own URL is
-/// installed here
-/// (<https://html.spec.whatwg.org/multipage/webappapis.html#hostgetimportmetaproperties>).
+// https://html.spec.whatwg.org/multipage/webappapis.html#hostgetimportmetaproperties
 fn declare_module<'js>(
     ctx: &Ctx<'js>,
     name: &str,
     source: impl Into<Vec<u8>>,
 ) -> Result<Module<'js, Declared>> {
-    // The module's static imports are fetched while it declares, and each
-    // names this module as its referrer. The realm's dynamic-`import()` URL is
-    // reused for that: it already holds the script currently running, and a
-    // static import is the same question asked from the loader
-    // (<https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script>).
+    // https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script
     let world = super::bindings::world(ctx).ok();
     let previous = world.as_ref().map(|world| {
         let mut world = world.borrow_mut();
@@ -139,9 +117,7 @@ fn declare_module<'js>(
     Ok(module)
 }
 
-/// Declares an inline module script, whose `import.meta.url` is the document
-/// URL with the script's unique fragment
-/// (<https://html.spec.whatwg.org/multipage/webappapis.html#hostgetimportmetaproperties>).
+// https://html.spec.whatwg.org/multipage/webappapis.html#hostgetimportmetaproperties
 pub(super) fn declare_inline<'js>(
     ctx: &Ctx<'js>,
     name: &str,
@@ -150,39 +126,25 @@ pub(super) fn declare_inline<'js>(
     declare_module(ctx, name, source)
 }
 
-/// The request inputs for one module fetch: services, initiator, referrer,
-/// policy, and the CSP gate, read under one borrow of the realm.
 struct ModuleFetchInputs {
     services: std::sync::Arc<dyn crate::protocol::BrowserServices>,
     initiator: url::Origin,
     referrer: Url,
     referrer_policy: net::ReferrerPolicy,
     request_policy: crate::protocol::RequestPolicy,
-    /// The policy list this request is checked against.
     csp: crate::csp::List,
-    /// The directive this fetch settles under: a static import in a worker is
-    /// a `worker-src` request, everything else is a script request.
     destination: crate::csp::Destination,
-    /// The cookie partition this fetch belongs to; `None` for a realm with no
-    /// top-level site.
     partition_key: Option<String>,
 }
 
 fn module_fetch_inputs(world: &crate::js::World, name: &str) -> ModuleFetchInputs {
-    // Every fetch in a module graph keeps the graph root's script fetch
-    // options: its `referrerpolicy` and the credentials mode its
-    // `crossorigin` state selects. The document records the root element as
-    // `current_script` while the graph loads, so the same lookup serves the
-    // root and a dynamic `import()` inside a classic script
-    // (<https://html.spec.whatwg.org/multipage/webappapis.html#fetch-the-descendants-of-and-link-a-module-script>).
+    // https://html.spec.whatwg.org/multipage/webappapis.html#fetch-the-descendants-of-and-link-a-module-script
     let options = world
         .state
         .module_fetch_root
         .or(world.state.current_script)
         .map_or_default(|element| world.subresource_options(element));
-    // A worker's top-level module graph uses the outside settings object's
-    // origin; everything else uses this realm's own origin
-    // (<https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script>).
+    // https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script
     let worker_root =
         world.state.module_client_origin.is_some() && name == world.document_url.as_str();
     let initiator = world
@@ -190,19 +152,14 @@ fn module_fetch_inputs(world: &crate::js::World, name: &str) -> ModuleFetchInput
         .module_client_origin
         .clone()
         .unwrap_or_else(|| world.origin.clone());
-    // A module worker's script fetch options carry the worker's
-    // `WorkerOptions.credentials`, which every fetch in its graph keeps; a
-    // document derives the mode from its root element's `crossorigin` state
-    // (<https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script>).
+    // https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script
     let credentials = world.state.module_credentials.unwrap_or_else(|| {
         crate::protocol::cross_origin_credentials(crate::protocol::cross_origin(
             options.crossorigin,
         ))
     });
     let policy = if worker_root {
-        // The worker's own script must stay same-origin, even when the server
-        // sends `Access-Control-Allow-Origin`
-        // (<https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script>).
+        // https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script
         crate::protocol::RequestPolicy::ModuleWorkerScript { credentials }
     } else {
         crate::protocol::RequestPolicy::ModuleScript { credentials }
@@ -212,11 +169,7 @@ fn module_fetch_inputs(world: &crate::js::World, name: &str) -> ModuleFetchInput
         crate::js::world::GlobalKind::DedicatedWorker { .. }
             | crate::js::world::GlobalKind::SharedWorker { .. }
     );
-    // A module graph's fetch names the referencing module as its referrer: the
-    // top-level worker script is requested by the creator, a static import
-    // names the declaring module, and a dynamic `import()` in the worker's
-    // body names the worker's own script
-    // (<https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script>).
+    // https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script
     let referrer_url = if worker && !worker_root {
         if world.state.declaring_module {
             world
@@ -230,10 +183,7 @@ fn module_fetch_inputs(world: &crate::js::World, name: &str) -> ModuleFetchInput
     } else {
         world.referrer_url.clone()
     };
-    // A worker's static imports keep the referrer policy it inherited from its
-    // creator; a dynamic `import()` in its body uses the policy of the worker's
-    // own script response instead
-    // (<https://w3c.github.io/webappsec-referrer-policy/#integration-with-html>).
+    // https://w3c.github.io/webappsec-referrer-policy/#integration-with-html
     let (referrer_policy, csp, destination) =
         if worker && !worker_root && !world.state.declaring_module {
             (
@@ -252,11 +202,7 @@ fn module_fetch_inputs(world: &crate::js::World, name: &str) -> ModuleFetchInput
                     .map(crate::protocol::referrer_policy)
                     .or(world.policy.referrer_policy)
                     .unwrap_or_default(),
-                // The worker's script graph belongs to the outside settings
-                // object, so the creator's policy decides it; the worker
-                // global scope's own policy (from its script response) decides
-                // everything the body starts later
-                // (<https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script>).
+                // https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script
                 if worker {
                     world
                         .state
@@ -266,10 +212,7 @@ fn module_fetch_inputs(world: &crate::js::World, name: &str) -> ModuleFetchInput
                 } else {
                     world.policy.csp.clone()
                 },
-                // A static import in a worker is a worker request: `worker-src`
-                // decides it, falling back to `child-src` and `script-src`, and
-                // `script-src-elem` never applies
-                // (<https://w3c.github.io/webappsec-csp/#effective-directive-for-a-request>).
+                // https://w3c.github.io/webappsec-csp/#effective-directive-for-a-request
                 if worker && !worker_root {
                     crate::csp::Destination::Worker
                 } else {
@@ -289,14 +232,8 @@ fn module_fetch_inputs(world: &crate::js::World, name: &str) -> ModuleFetchInput
     }
 }
 
-/// Records what a worker's own script response adds to the realm: the referrer
-/// policy and the content security policies its dynamic imports run under.
-///
-/// Static imports resolve while the graph is fetched, before the body runs, so
-/// they keep the policy the worker inherited from its creator; a dynamic
-/// `import()` in the body uses the script response's own values
-/// (<https://w3c.github.io/webappsec-referrer-policy/#integration-with-html>,
-/// <https://html.spec.whatwg.org/multipage/browsers.html#initialize-a-policy-container-from-a-fetch-response>).
+// https://w3c.github.io/webappsec-referrer-policy/#integration-with-html
+// https://html.spec.whatwg.org/multipage/browsers.html#initialize-a-policy-container-from-a-fetch-response
 fn record_worker_script_response(
     world_rc: &std::rc::Rc<std::cell::RefCell<super::World>>,
     name: &str,
@@ -326,18 +263,12 @@ fn record_worker_script_response(
 }
 
 pub(super) fn load_module<'js>(ctx: &Ctx<'js>, name: &str) -> Result<Module<'js, Declared>> {
-    // A JavaScript module graph is fetched before evaluation
-    // (<https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script>).
-    // QuickJS's host loader is synchronous, so the renderer waits here while
-    // the browser process performs the network operation on its I/O runtime.
+    // https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script
     let world_rc = super::bindings::world(ctx)?;
     let Ok(url) = Url::parse(name) else {
         return Err(Error::new_loading(name));
     };
-    // A local-scheme module needs no network fetch: `blob:` reads the Blob URL
-    // Store and `data:` decodes itself. Neither is MIME-gated; a module script
-    // is created from the UTF-8 decoded body
-    // (<https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script>).
+    // https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script
     if url.scheme() == "blob" || url.scheme() == "data" {
         let source = if url.scheme() == "blob" {
             world_rc
@@ -357,9 +288,7 @@ pub(super) fn load_module<'js>(ctx: &Ctx<'js>, name: &str) -> Result<Module<'js,
         let world = world_rc.borrow();
         module_fetch_inputs(&world, name)
     };
-    // A module graph fetch is a script request; check it before the renderer
-    // waits on the dial
-    // (<https://w3c.github.io/webappsec-csp/#should-block-request>).
+    // https://w3c.github.io/webappsec-csp/#should-block-request
     module_request_blocked(
         &world_rc,
         ctx,
@@ -394,9 +323,6 @@ pub(super) fn load_module<'js>(ctx: &Ctx<'js>, name: &str) -> Result<Module<'js,
         cancel();
         return Err(Error::new_loading(name));
     };
-    // A worker's own script response supplies the referrer policy and the
-    // content security policies for the dynamic imports its body runs; its
-    // static imports keep what it inherited from the creator.
     record_worker_script_response(&world_rc, name, &outcome.headers);
     let final_url = &outcome.final_url;
     if final_url != &url {
@@ -429,8 +355,6 @@ pub(super) fn load_module<'js>(ctx: &Ctx<'js>, name: &str) -> Result<Module<'js,
     let crate::protocol::ResponseBody::Bytes(body) = outcome.body else {
         return Err(Error::new_loading(name));
     };
-    // A module script is registered under the URL its response came from, so
-    // relative imports in a redirected graph resolve against the final URL
-    // (<https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script>).
+    // https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script
     declare_module(ctx, outcome.final_url.as_str(), body)
 }

@@ -1,9 +1,4 @@
-
-// The WebDriver Perform Actions sequence
-// (<https://w3c.github.io/webdriver/#perform-actions>). Element origins arrive
-// rewritten by the WebDriver crate as `{__tbRemote: <number>}`; ticks from
-// every source run in order. Durations are treated as zero: the engine has no
-// per-frame interpolation yet.
+// https://w3c.github.io/webdriver/#perform-actions
 (function() {
   const { Event, MouseEvent, PointerEvent, KeyboardEvent, InputEvent, WheelEvent } = globalThis;
   const addEventListener = Node.prototype.addEventListener;
@@ -30,9 +25,6 @@
     bubbles: true, cancelable: true, composed: true, view: globalThis,
     clientX: x, clientY: y, screenX: x, screenY: y, buttons: buttons || 0,
   }, extra || {});
-  // Pointer events carry the source's pointer type; the extra argument can be
-  // either a buttons value (ignored) or an init object, matching how the
-  // mouse init is called above.
   const pointerInit = (state, x, y, buttonsOrExtra, maybeExtra) => {
     const extra = maybeExtra === undefined ? null : maybeExtra;
     return Object.assign(mouseInit(x, y, state.buttons, extra), {
@@ -64,9 +56,7 @@
       if (center) { x = center.x + (item.x || 0); y = center.y + (item.y || 0); }
       else if (item.origin === 'pointer') { x = state.x + (item.x || 0); y = state.y + (item.y || 0); }
       else if (item.origin === undefined || item.origin === 'viewport') { x = item.x || 0; y = item.y || 0; }
-      // An element origin that resolves to nothing is gone: the WebDriver
-      // behavior is a stale element error, never a silent viewport move
-      // (<https://w3c.github.io/webdriver/#dfn-pointer-move>).
+      // https://w3c.github.io/webdriver/#dfn-pointer-move
       else throw new Error('stale element reference: pointer origin did not resolve');
       const next = at(x, y);
       if (state.target && state.target !== next) {
@@ -93,17 +83,14 @@
       fire(node, new MouseEvent('mousedown', mouseInit(state.x, state.y, state.buttons, { button: button })));
     } else if (item.type === 'pointerUp') {
       const button = item.button || 0;
-      // The released button clears before the events fire: `mouseup` and
-      // `pointerup` report the buttons still held
-      // (<https://w3c.github.io/uievents/#dom-mouseevent-buttons>).
+      // https://w3c.github.io/uievents/#dom-mouseevent-buttons
       state.buttons &= ~(1 << button);
       clearActive();
       const node = at(state.x, state.y);
       fire(node, new PointerEvent('pointerup', pointerInit(state, state.x, state.y, state.buttons, { button: button })));
       fire(node, new MouseEvent('mouseup', mouseInit(state.x, state.y, state.buttons, { button: button })));
       if (button === 0) {
-        // Events dispatch runs the activation behavior for a non-canceled
-        // click (<https://html.spec.whatwg.org/multipage/interaction.html#activation-behavior>).
+        // https://html.spec.whatwg.org/multipage/interaction.html#activation-behavior
         fire(node, new MouseEvent('click', mouseInit(state.x, state.y, 0, { button: 0 })));
       }
     } else if (item.type === 'pointerCancel') {
@@ -112,8 +99,6 @@
     } else throw new TypeError('unknown pointer action type: ' + item.type);
   };
   const specialKeys = {
-    // No key state is tracked, so NULL has no keys to release; it fires like
-    // any other non-printable key instead of leaking the PUA codepoint.
     '\uE000': ['Unidentified', ''], '\uE003': ['Backspace', 'Backspace'], '\uE004': ['Tab', 'Tab'],
     '\uE006': ['Enter', 'Enter'], '\uE007': ['Enter', 'Enter'],
     '\uE008': ['Shift', 'ShiftLeft'], '\uE009': ['Control', 'ControlLeft'],
@@ -135,9 +120,7 @@
     }
     return { key: value, code: value };
   };
-  // The input states that accept typed text. The selection APIs do not apply to
-  // the email, number, and date-like states, but those are still editable
-  // (<https://html.spec.whatwg.org/multipage/input.html#common-input-element-attributes>).
+  // https://html.spec.whatwg.org/multipage/input.html#common-input-element-attributes
   const EDITABLE_TYPES = new Set([
     'text', 'search', 'tel', 'url', 'email', 'password',
     'date', 'month', 'week', 'time', 'datetime-local', 'number',
@@ -150,19 +133,10 @@
     if (!editable || element.disabled || element.readOnly) return null;
     return element;
   };
-  // A control exposes the selection APIs when `selectionStart` is not null; the
-  // email, number, and date-like states return null and reject `setRangeText`
-  // and `setSelectionRange`
-  // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#do-not-apply>).
+  // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#do-not-apply
   const supportsSelection = element =>
     element.tagName === 'TEXTAREA' || element.selectionStart !== null;
-  // The number and date-like states reject the selection APIs, but typing
-  // still needs a caret. The engine keeps one per control in its control
-  // state; it starts at the end and follows edits.
-  // A number control's exposed value is sanitized to empty while the user has
-  // typed only a partial number (`1e`), but the editor must remember that
-  // partial text so the next keystroke can complete it
-  // (<https://html.spec.whatwg.org/multipage/input.html#number-state-(type=number)>).
+  // https://html.spec.whatwg.org/multipage/input.html#number-state-(type=number
   const editText = element =>
     element.tagName === 'INPUT' && element.type === 'number'
       ? (host.__tbNumberBuffer(element) ?? element.value)
@@ -189,11 +163,7 @@
     if (supportsSelection(element)) element.setSelectionRange(position, position);
     else host.__tbSetCaret(element, position);
   };
-  // A number control may hold a partial number while the user types
-  // (`-`, `1.`, `1e+`). The engine classifies the edit buffer against its one
-  // floating-point grammar; anything else is rejected instead of corrupting
-  // the value into something `valueAsNumber` cannot read
-  // (<https://html.spec.whatwg.org/multipage/input.html#number-state-(type=number)>).
+  // https://html.spec.whatwg.org/multipage/input.html#number-state-(type=number
   const NUMBER_INVALID = 0;
   const NUMBER_EMPTY = 1;
   const NUMBER_COMPLETE = 3;
@@ -203,9 +173,7 @@
       bubbles: true, composed: true, inputType: inputType, data: data,
     }));
   };
-  // Replaces the inclusive range with `text`, gating on the cancelable
-  // `beforeinput` event first
-  // (<https://w3c.github.io/uievents/#events-inputevents>).
+  // https://w3c.github.io/uievents/#events-inputevents
   const replaceRange = (element, text, start, end, inputType, data) => {
     const before = new InputEvent('beforeinput', {
       bubbles: true, cancelable: true, composed: true, inputType: inputType, data: data,
@@ -218,12 +186,7 @@
       const state = host.__tbNumberBufferState(value);
       if (state === NUMBER_INVALID) return;
       host.__tbSetNumberBuffer(element, value);
-      // A trailing dot parses as the integer before it, so `1.` exposes `1`
-      // rather than bad input. Other incomplete buffers expose the empty
-      // string and set `badInput`. A leading `+` stays in the edit buffer but
-      // is dropped from the sanitized value, which the number state does not
-      // accept
-      // (<https://html.spec.whatwg.org/multipage/input.html#number-state-(type=number)>).
+      // https://html.spec.whatwg.org/multipage/input.html#number-state-(type=number
       let exposed = '';
       if (state === NUMBER_COMPLETE) {
         exposed = value.startsWith('+') ? value.slice(1) : value;
@@ -242,10 +205,7 @@
       return;
     }
     const value = element.value.slice(0, start) + text + element.value.slice(end);
-    // Native user editing changes the control's internal value without
-    // invoking an author-defined own `value` setter. React observes the
-    // subsequent input event against its previous tracked value.
-    // <https://html.spec.whatwg.org/multipage/interaction.html#input-events>
+    // https://html.spec.whatwg.org/multipage/interaction.html#input-events
     host.__tbSetNativeValue(element, value);
     setCaret(element, start + text.length);
     fireInput(element, inputType, data);
@@ -287,9 +247,7 @@
     setCaret(element, position);
   };
   let shiftDown = false;
-  // Arrow keys inside a radio group move focus and checkedness together,
-  // skipping other controls between the radios
-  // (<https://html.spec.whatwg.org/multipage/form-elements.html#the-input-element:radio-button-group>).
+  // https://html.spec.whatwg.org/multipage/form-elements.html#the-input-element:radio-button-group
   const radioArrow = direction => {
     const current = document.activeElement;
     if (!current || current.localName !== 'input' || current.type !== 'radio') return false;
@@ -350,17 +308,13 @@
     const y = item.y || 0;
     const node = at(x, y);
     if (!node) return;
-    // A canceled `wheel` event performs no scroll
-    // (<https://w3c.github.io/uievents/#events-wheel>).
+    // https://w3c.github.io/uievents/#events-wheel
     const accepted = fire(node, new WheelEvent('wheel', mouseInit(x, y, 0, {
       deltaX: item.deltaX || 0, deltaY: item.deltaY || 0,
     })));
     if (accepted && typeof node.scrollBy === 'function') node.scrollBy(item.deltaX || 0, item.deltaY || 0);
   };
-  // The WebDriver "element send keys" command: focus the element and feed each
-  // character through the same editing path as Perform Actions, so special
-  // keys like Backspace edit instead of appending their private-use codepoint
-  // (<https://w3c.github.io/webdriver/#element-send-keys>).
+  // https://w3c.github.io/webdriver/#element-send-keys
   const hookChangeOnBlur = element => {
     if (changeState.has(element)) return;
     changeState.set(element, { baseline: element.value });

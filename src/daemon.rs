@@ -1,44 +1,46 @@
-//! Named profile daemon: loopback CDP, runtime-dir registration, startup lock.
-
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 
-use browser::{Browser, BrowserOptions, Profile, ProfileName};
+use browser::{AgentOptions, Browser, BrowserHandle, BrowserOptions, Profile, ProfileName};
 use serde_json::json;
+use server::{Request, Response, Shutdown};
 
-/// Registration recorded at `$XDG_RUNTIME_DIR/tinybrowser/<profile>/daemon.json`.
 #[derive(Clone, Debug)]
 pub struct DaemonEndpoint {
-    /// Process id of the daemon.
     pub pid: u32,
-    /// Loopback host, always `127.0.0.1`.
     pub host: String,
-    /// Bound port.
     pub port: u16,
 }
 
-/// Runs the profile daemon until the process exits.
-///
-/// # Errors
-///
-/// Bind, registration, or serve failure.
-pub async fn run(profile: &Profile, data_home: &Path) -> io::Result<()> {
-    let runtime = profile_runtime_dir(profile.name())?;
-    fs::create_dir_all(&runtime)?;
-    restrict_dir(&runtime)?;
-    let Some(_lock) = acquire_lock(&runtime)? else {
-        logging::info!(
-            target: "daemon",
-            "profile {} already has a running daemon",
-            profile.name().as_str()
-        );
-        return Ok(());
+pub async fn run(
+    profile: &Profile,
+    data_home: &Path,
+    port: Option<u16>,
+    network: AgentOptions,
+) -> io::Result<()> {
+    let registration = match port {
+        None => {
+            let runtime = profile_runtime_dir(profile.name())?;
+            fs::create_dir_all(&runtime)?;
+            restrict_dir(&runtime)?;
+            let Some(lock) = acquire_lock(&runtime)? else {
+                logging::info!(
+                    target: "daemon",
+                    "profile {} already has a running daemon",
+                    profile.name().as_str()
+                );
+                return Ok(());
+            };
+            logging::debug!(target: "daemon", "runtime dir {}", runtime.display());
+            Some((runtime, lock))
+        }
+        Some(_) => try_optional_registration(profile.name()),
     };
-    let listener = TcpListener::bind(("127.0.0.1", 0))?;
+    let listener = TcpListener::bind(("127.0.0.1", port.unwrap_or(0)))
+        .map_err(|error| io::Error::new(error.kind(), format!("bind failed: {error}")))?;
     let addr = listener.local_addr()?;
-    logging::debug!(target: "daemon", "runtime dir {}", runtime.display());
     logging::info!(
         target: "daemon",
         "serving profile {} on 127.0.0.1:{}",
@@ -48,11 +50,9 @@ pub async fn run(profile: &Profile, data_home: &Path) -> io::Result<()> {
     let browser = Browser::new(BrowserOptions {
         data_home: Some(data_home.to_path_buf()),
         profile: profile.clone(),
-        ..BrowserOptions::default()
+        network,
     })
     .map_err(io::Error::from)?;
-    // Real browsers start with one page target; clients (Playwright included)
-    // assume at least one top-level traversable exists.
     let initial = browser
         .handle()
         .create_tab()
@@ -62,21 +62,59 @@ pub async fn run(profile: &Profile, data_home: &Path) -> io::Result<()> {
         .load_html("<!doctype html><title></title>")
         .await
         .map_err(|error| io::Error::other(error.to_string()))?;
-    // Publish only once the browser can actually serve; a start-up failure
-    // must not leave an endpoint pointing at a dead port.
-    write_endpoint(
-        &runtime,
-        &DaemonEndpoint {
-            pid: std::process::id(),
-            host: "127.0.0.1".into(),
-            port: addr.port(),
-        },
-    )?;
-    let result = cdp::serve(&listener, browser.handle()).await;
-    if result.is_err() {
-        let _close_result = browser.close().await;
+    if let Some((runtime, _lock)) = &registration {
+        write_endpoint(
+            runtime,
+            &DaemonEndpoint {
+                pid: std::process::id(),
+                host: "127.0.0.1".into(),
+                port: addr.port(),
+            },
+        )?;
     }
-    result
+    let result = serve(&listener, browser.handle()).await;
+    let close = browser.close().await;
+    result.and(close)
+}
+
+#[derive(Clone)]
+struct CombinedRouter {
+    cdp: cdp::Router,
+    webdriver: webdriver::Router,
+}
+
+async fn serve(listener: &TcpListener, browser: &BrowserHandle) -> io::Result<()> {
+    let bound = listener.local_addr()?;
+    let shutdown = Shutdown::new();
+    let router = CombinedRouter {
+        cdp: cdp::Router::new(browser.clone(), bound, shutdown.clone()),
+        webdriver: webdriver::Router::new(browser.clone()),
+    };
+    server::serve(listener, shutdown, router, serve_request).await
+}
+
+async fn serve_request(request: Request, router: CombinedRouter) -> Response {
+    if is_webdriver_path(request.uri().path()) {
+        router.webdriver.handle(request).await
+    } else {
+        router.cdp.handle(request).await
+    }
+}
+
+fn is_webdriver_path(path: &str) -> bool {
+    matches!(
+        path.split('/').find(|segment| !segment.is_empty()),
+        Some("status" | "session")
+    )
+}
+
+fn try_optional_registration(name: &ProfileName) -> Option<(PathBuf, File)> {
+    let runtime = profile_runtime_dir(name).ok()?;
+    fs::create_dir_all(&runtime).ok()?;
+    restrict_dir(&runtime).ok()?;
+    let lock = acquire_lock(&runtime).ok()??;
+    logging::debug!(target: "daemon", "runtime dir {}", runtime.display());
+    Some((runtime, lock))
 }
 
 fn profile_runtime_dir(name: &ProfileName) -> io::Result<PathBuf> {
@@ -99,13 +137,6 @@ fn env_runtime_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// Takes the profile's daemon lock, or answers `None` when a daemon holds it.
-///
-/// The lock is an `flock` on the lock file's open description; the file's
-/// contents are nothing (the pid clients read is in `daemon.json`). The open
-/// is read-write only because creating the file requires write access. The
-/// file is never unlinked on exit, because a third process could then create
-/// a second lock file while the old description is still owned.
 fn acquire_lock(runtime: &Path) -> io::Result<Option<File>> {
     let path = runtime.join("lock");
     let file = OpenOptions::new()

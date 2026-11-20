@@ -1,6 +1,6 @@
 # tinybrowser
 
-A small, fast, spec-first headless browser for AI agents.
+A small, spec-first headless browser for AI agents.
 
 One ~12 MiB Rust binary (Blitz, Stylo, html5ever, Taffy, QuickJS) with no sidecars or browser download — also embeddable as a WASI Preview 2 component.
 
@@ -36,23 +36,26 @@ Or download an archive directly from [GitHub Releases](https://github.com/tinybr
 
 ## Usage
 
-### CDP daemon (Playwright / CDP clients)
-
-Start a profile daemon:
+`tinybrowser` runs a unified loopback daemon serving both **Chrome DevTools Protocol (CDP)** and **W3C Classic WebDriver** on the same port.
 
 ```sh
-tinybrowser daemon
-# or with a named profile:
-tinybrowser daemon --profile agent
+# Profile-locked ephemeral port (writes $XDG_RUNTIME_DIR/tinybrowser/<profile>/daemon.json):
+tinybrowser
+
+# Named profile:
+tinybrowser --profile agent
+
+# Explicit port:
+tinybrowser --port 4444
 ```
 
-The daemon binds a loopback port and writes its endpoint to `$XDG_RUNTIME_DIR/tinybrowser/<profile>/daemon.json`:
+When started without `--port`, the daemon acquires `$XDG_RUNTIME_DIR/tinybrowser/<profile>/lock`, binds a loopback port, and writes its endpoint to `$XDG_RUNTIME_DIR/tinybrowser/<profile>/daemon.json`:
 
 ```json
 { "pid": 12345, "host": "127.0.0.1", "port": 41234 }
 ```
 
-Connect from Playwright:
+Connect from Playwright over CDP:
 
 ```js
 import { chromium } from "playwright-core";
@@ -64,13 +67,9 @@ console.log(await page.title());
 await page.screenshot({ path: "example.png" });
 ```
 
-### Classic WebDriver
+Or connect any W3C WebDriver client to `http://127.0.0.1:<port>` (`GET /status`, `POST /session`).
 
-```sh
-tinybrowser webdriver --port 4444
-```
-
-Optional flags for `webdriver`: `--profile <NAME>`, `--proxy <URI>`, `--resolve <PATTERN=ADDR>`, `--tls-ca <PATH>`.
+Optional network and logging flags: `--port <PORT>`, `--profile <NAME>`, `--proxy <URI>`, `--resolve <PATTERN=ADDR>`, `--tls-ca <PATH>`, `--log-level <LEVEL>`, `--log-file <PATH>`, `--verbose`. Run `tinybrowser --help` for full endpoint and path documentation.
 
 ### Embedded Wasm component
 

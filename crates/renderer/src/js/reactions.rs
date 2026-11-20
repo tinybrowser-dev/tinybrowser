@@ -1,5 +1,3 @@
-//! Agent-owned custom-element reaction scopes and the retained shim bridge.
-
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::rc::Rc;
@@ -28,9 +26,6 @@ pub(crate) struct CustomElementReactions {
     backup_scheduled: bool,
     collecting: bool,
     hooks: BTreeMap<FrameId, Persistent<Function<'static>>>,
-    /// Frames with at least one custom element definition. Collection calls
-    /// a frame's hook only then: with no definitions every upgrade, notify,
-    /// and attribute path inside is a no-op walk over mutation records.
     defined: BTreeSet<FrameId>,
 }
 
@@ -50,12 +45,6 @@ impl CustomElementReactions {
 }
 
 // https://html.spec.whatwg.org/multipage/custom-elements.html#cereactions
-// Chromium's CEReactionsScope also preserves the original exception while
-// invoking reactions on exceptional exits.
-//
-// The typed shell lets generated setters keep their `(value)` closure while
-// the scaffolding lives in one shared copy, reached through a `dyn FnMut`
-// call instead of a per-closure LLVM clone of this whole body.
 #[inline(never)]
 pub(crate) fn with_reactions<'js>(
     ctx: &Ctx<'js>,
@@ -63,7 +52,6 @@ pub(crate) fn with_reactions<'js>(
 ) -> Result<Value<'js>> {
     let mut operation = Some(operation);
     with_reactions_core(ctx, &mut || {
-        // Never `None`: the core calls the closure exactly once.
         let operation = operation.take().expect("reactions closure reused");
         operation()
     })
@@ -103,8 +91,6 @@ fn collect(ctx: &Ctx<'_>) -> Result<()> {
             return Ok(());
         }
         registry.reactions.collecting = true;
-        // Frames without a definition have nothing to collect: every
-        // reaction source is gated on one.
         registry
             .reactions
             .hooks
@@ -124,8 +110,6 @@ fn collect(ctx: &Ctx<'_>) -> Result<()> {
     result
 }
 
-/// Marks the current frame as having a custom element definition, opening
-/// the collection gate in `collect`.
 fn note_defined(ctx: &Ctx<'_>) -> Result<()> {
     let world = world(ctx)?;
     let frame = world.borrow().frame();

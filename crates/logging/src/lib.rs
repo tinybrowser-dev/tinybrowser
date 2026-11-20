@@ -1,33 +1,3 @@
-//! Process logging: a stderr console plus an optional background file sink.
-//!
-//! Nothing is logged until [`install`] is called, so libraries and tests stay
-//! quiet by default. The console is **stderr only**: the CLI prints command
-//! results to stdout, on platforms without a socket transport the renderer
-//! protocol rides stdout, and on Unix a renderer's stdout is `/dev/null` (its
-//! transport is the socket on stdin). stderr is the stream the daemon can
-//! read, forward, and persist.
-//!
-//! One record is one line:
-//!
-//! ```text
-//! 2026-10-05T00:00:00.123Z INFO browser::tab created tab
-//! ```
-//!
-//! The file sink is best-effort and never blocks a logging thread. A full
-//! queue drops lines. Release builds abort on panic (`panic = "abort"`), so
-//! within the panic path the queue is bypassed: [`install`] also sets a panic
-//! hook that appends the panic record straight to the log file and stderr.
-//!
-//! ```
-//! logging::install(
-//!     logging::Level::Debug,
-//!     None,
-//!     std::time::SystemTime::now,
-//! )
-//! .expect("logger");
-//! logging::info!(target: "example", "ready");
-//! ```
-
 mod crash;
 mod file;
 mod format;
@@ -39,27 +9,16 @@ use std::str::FromStr;
 use std::sync::OnceLock;
 use std::time::SystemTime;
 
-/// Severity of one record, ordered from most to least severe.
-///
-/// A logger emits a record when its level is at or above the configured
-/// minimum: with a minimum of [`Level::Info`], `Debug` and `Trace` are
-/// filtered out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Level {
-    /// A failure callers must act on.
     Error,
-    /// A recoverable problem worth attention.
     Warn,
-    /// Normal lifecycle events.
     Info,
-    /// Developer detail for diagnosing behavior.
     Debug,
-    /// Very detailed tracing.
     Trace,
 }
 
 impl Level {
-    /// Upper-case name as it appears in a log line.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -93,7 +52,6 @@ impl FromStr for Level {
     }
 }
 
-/// Error returned when a level name is not recognized.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ParseLevelError;
 
@@ -105,19 +63,10 @@ impl fmt::Display for ParseLevelError {
 
 impl std::error::Error for ParseLevelError {}
 
-/// Why the process logger could not be installed.
 #[derive(Debug)]
 pub enum InstallError {
-    /// A logger is already installed in this process.
     AlreadyInstalled,
-    /// The log file could not be opened.
-    Open {
-        /// The path the logger tried to open.
-        path: PathBuf,
-        /// The operating-system failure.
-        source: io::Error,
-    },
-    /// The log file opened, but its writer thread could not start.
+    Open { path: PathBuf, source: io::Error },
     SpawnWriter(io::Error),
 }
 
@@ -142,18 +91,6 @@ impl std::error::Error for InstallError {
     }
 }
 
-/// Installs the process logger: records at or above `level` go to stderr and,
-/// when `file` is given, to that file from one background writer thread. Also
-/// installs the panic hook, which writes its record synchronously instead of
-/// through the queue.
-///
-/// `clock` supplies the wall time for every record, including the panic
-/// record.
-///
-/// # Errors
-/// Returns [`InstallError`] when this process already has a logger or when the
-/// file sink cannot be opened or started. The composition root decides whether
-/// that is fatal.
 pub fn install(
     level: Level,
     file: Option<PathBuf>,
@@ -189,24 +126,20 @@ impl Logger {
         Ok(Self { level, clock, file })
     }
 
-    /// Whether a record at `level` passes the threshold.
     fn enabled(&self, level: Level) -> bool {
         level <= self.level
     }
 
-    /// Writes one record when `level` is enabled.
     fn log(&self, level: Level, target: &str, args: fmt::Arguments<'_>) {
         if self.enabled(level) {
             self.emit(format::record((self.clock)(), level, target, args));
         }
     }
 
-    /// Forwards one already-formatted line (a renderer child's stderr).
     fn log_forwarded(&self, line: &str) {
         self.emit(format::forwarded(line));
     }
 
-    /// Writes one full line to the console and queues it for the file.
     fn emit(&self, line: String) {
         write_console(&line);
         if let Some(file) = &self.file {
@@ -214,14 +147,11 @@ impl Logger {
         }
     }
 
-    /// Flushes pending records; `false` when the file writer did not catch up
-    /// within its bound, or is gone. True when there is no file sink.
     fn flush(&self) -> bool {
         self.file.as_ref().is_none_or(file::FileSink::flush)
     }
 }
 
-/// Writes one line to stderr; failures are ignored by design.
 fn write_console(line: &str) {
     let stderr = io::stderr();
     let mut out = stderr.lock();
@@ -231,43 +161,33 @@ fn write_console(line: &str) {
 static LOGGER: OnceLock<Logger> = OnceLock::new();
 static INSTALL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Whether the installed logger accepts `level`; `false` when none is installed.
 #[must_use]
 pub fn enabled(level: Level) -> bool {
     LOGGER.get().is_some_and(|logger| logger.enabled(level))
 }
 
-/// The installed logger's minimum level, or [`Level::Info`] when none is
-/// installed.
 #[must_use]
 pub fn level() -> Level {
     LOGGER.get().map_or(Level::Info, |logger| logger.level)
 }
 
-/// Writes one record through the installed logger; no-op when none is installed.
 pub fn log(level: Level, target: &str, args: fmt::Arguments<'_>) {
     if let Some(logger) = LOGGER.get() {
         logger.log(level, target, args);
     }
 }
 
-/// Forwards an already-formatted line through the installed logger.
 pub fn log_forwarded(line: &str) {
     if let Some(logger) = LOGGER.get() {
         logger.log_forwarded(line);
     }
 }
 
-/// Flushes the installed logger's pending records; `false` when its file
-/// writer did not catch up in time. True when no logger is installed.
 #[must_use]
 pub fn flush() -> bool {
     LOGGER.get().is_none_or(Logger::flush)
 }
 
-/// Logs at [`Level::Error`] when the threshold enables it.
-///
-/// Arguments are evaluated only when the record is enabled.
 #[macro_export]
 macro_rules! error {
     (target: $target:expr, $($arg:tt)*) => {
@@ -282,9 +202,6 @@ macro_rules! error {
     };
 }
 
-/// Logs at [`Level::Warn`] when the threshold enables it.
-///
-/// Arguments are evaluated only when the record is enabled.
 #[macro_export]
 macro_rules! warn {
     (target: $target:expr, $($arg:tt)*) => {
@@ -299,9 +216,6 @@ macro_rules! warn {
     };
 }
 
-/// Logs at [`Level::Info`] when the threshold enables it.
-///
-/// Arguments are evaluated only when the record is enabled.
 #[macro_export]
 macro_rules! info {
     (target: $target:expr, $($arg:tt)*) => {
@@ -316,9 +230,6 @@ macro_rules! info {
     };
 }
 
-/// Logs at [`Level::Debug`] when the threshold enables it.
-///
-/// Arguments are evaluated only when the record is enabled.
 #[macro_export]
 macro_rules! debug {
     (target: $target:expr, $($arg:tt)*) => {
@@ -333,9 +244,6 @@ macro_rules! debug {
     };
 }
 
-/// Logs at [`Level::Trace`] when the threshold enables it.
-///
-/// Arguments are evaluated only when the record is enabled.
 #[macro_export]
 macro_rules! trace {
     (target: $target:expr, $($arg:tt)*) => {

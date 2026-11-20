@@ -1,14 +1,5 @@
-//! Host calls behind the CSSOM bindings: a document's parsed stylesheets as
-//! rule lists, its inline declaration block, and the `CSS` namespace's
-//! parsers.
-//!
-//! The style engine already keeps a `CSSRuleList` per `<style>` and
-//! `<link rel=stylesheet>` owner
-//! (<https://drafts.csswg.org/cssom/#concept-css-rule-list>). These functions
-//! are the only bridge: `cssom.js` builds the live list objects on top.
-//! Each call addresses a CSSOM sheet id, not the owner element, so a sheet
-//! that has been replaced or removed stays readable
-//! (<https://drafts.csswg.org/cssom/#remove-a-css-style-sheet>).
+// https://drafts.csswg.org/cssom/#concept-css-rule-list
+// https://drafts.csswg.org/cssom/#remove-a-css-style-sheet
 
 use blitz_dom::{CssRuleInfo, CssomError};
 use rquickjs::{Array, Ctx, Exception, Object, Result, Value};
@@ -22,7 +13,6 @@ pub(super) fn install(ctx: &Ctx<'_>) -> Result<()> {
     install_sheet_functions(&bridge)
 }
 
-/// The `CSS` namespace's parsers and the inline declaration block.
 fn install_style_functions(bridge: &Object<'_>) -> Result<()> {
     bridge.set(
         "__tb_css_supports_declaration",
@@ -63,8 +53,6 @@ fn install_style_functions(bridge: &Object<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Stylesheet and rule-list access behind `document.styleSheets` and
-/// `CSSRule`.
 fn install_sheet_functions(bridge: &Object<'_>) -> Result<()> {
     bridge.set(
         "__tb_sheet_owner_nodes",
@@ -153,9 +141,7 @@ fn install_sheet_functions(bridge: &Object<'_>) -> Result<()> {
     install_constructable_sheet_functions(bridge)
 }
 
-/// The constructable-sheet operations: `CSSStyleSheet` construction,
-/// `replaceSync`, and the sheet-level `media`/`disabled` accessors
-/// (<https://drafts.csswg.org/cssom/#the-cssstylesheet-interface>).
+// https://drafts.csswg.org/cssom/#the-cssstylesheet-interface
 fn install_constructable_sheet_functions(bridge: &Object<'_>) -> Result<()> {
     bridge.set(
         "__tb_create_sheet",
@@ -188,9 +174,7 @@ fn install_constructable_sheet_functions(bridge: &Object<'_>) -> Result<()> {
     Ok(())
 }
 
-/// `path` is a comma-separated list of rule-list indexes, empty for the
-/// stylesheet's own list. A segment that is not an index fails the whole path
-/// (<https://drafts.csswg.org/cssom/#concept-css-rule-list>).
+// https://drafts.csswg.org/cssom/#concept-css-rule-list
 fn rule_path(path: &str) -> Option<Vec<usize>> {
     if path.is_empty() {
         return Some(Vec::new());
@@ -210,10 +194,7 @@ fn sheet_id(id: f64) -> Option<u64> {
     crate::js::bridge::enforce_range_u64(id).filter(|id| *id >= 1)
 }
 
-/// Web IDL `unsigned long` already applied on the JS side (`index >>> 0`), so
-/// the number names a `usize` here. A value outside that range is a caller bug,
-/// not index 0
-/// (<https://webidl.spec.whatwg.org/#idl-unsigned-long>).
+// https://webidl.spec.whatwg.org/#idl-unsigned-long
 fn rule_index(ctx: &Ctx<'_>, index: f64) -> Result<usize> {
     crate::js::bridge::enforce_range_u32(index)
         .and_then(|index| usize::try_from(index).ok())
@@ -224,9 +205,7 @@ fn cssom_throw(ctx: &Ctx<'_>, err: CssomError) -> rquickjs::Error {
     throw_dom(ctx, err.dom_exception_name(), "CSSOM operation failed")
 }
 
-/// The owner nodes of `document`'s author sheets, in tree order. The JS
-/// `StyleSheetList` reads each owner's `.sheet`, so the list itself stays live
-/// (<https://drafts.csswg.org/cssom/#dom-document-stylesheets>).
+// https://drafts.csswg.org/cssom/#dom-document-stylesheets
 fn sheet_owner_nodes<'js>(ctx: Ctx<'js>, document: Value<'js>) -> Result<Array<'js>> {
     let array = Array::new(ctx.clone())?;
     let Ok(world) = world(&ctx) else {
@@ -282,9 +261,6 @@ fn node_sheet_id<'js>(ctx: Ctx<'js>, element: Value<'js>) -> f64 {
         })
 }
 
-/// The document's stylesheet generation: a counter that changes whenever the
-/// sheet set or a sheet's rules change, so a cached walk of them knows when it
-/// is stale.
 fn sheet_generation(ctx: Ctx<'_>) -> f64 {
     let Ok(world) = world(&ctx) else {
         return -1.0;
@@ -328,9 +304,7 @@ fn with_path(path: &str) -> Option<Vec<usize>> {
     rule_path(path)
 }
 
-/// Whether the stylesheet associated with `element` is disabled
-/// (<https://drafts.csswg.org/cssom/#dom-stylesheet-disabled>). A constructable
-/// sheet never reaches this call.
+// https://drafts.csswg.org/cssom/#dom-stylesheet-disabled
 fn sheet_disabled<'js>(ctx: Ctx<'js>, element: Value<'js>, id: f64) -> bool {
     let Ok(world) = world(&ctx) else {
         return false;
@@ -345,18 +319,14 @@ fn sheet_disabled<'js>(ctx: Ctx<'js>, element: Value<'js>, id: f64) -> bool {
     let Some(parsed) = world.document(node) else {
         return false;
     };
-    // A sheet object outlives its element's association; a stale id belongs to
-    // a sheet that was already removed, which reads as enabled
-    // (<https://drafts.csswg.org/cssom/#remove-a-css-style-sheet>).
+    // https://drafts.csswg.org/cssom/#remove-a-css-style-sheet
     if parsed.document.base.node_cssom_sheet_id(node.node) != Some(sheet) {
         return false;
     }
     parsed.document.base.stylesheet_disabled(node.node)
 }
 
-/// Set the disabled flag of the stylesheet associated with `element`. A
-/// disabled sheet keeps its owner but stops applying its rules
-/// (<https://drafts.csswg.org/cssom/#dom-stylesheet-disabled>).
+// https://drafts.csswg.org/cssom/#dom-stylesheet-disabled
 fn set_sheet_disabled<'js>(ctx: Ctx<'js>, element: Value<'js>, id: f64, disabled: bool) -> bool {
     let Ok(world) = world(&ctx) else {
         return false;
@@ -445,11 +415,7 @@ fn rule_info_object<'js>(ctx: &Ctx<'js>, info: CssRuleInfo) -> Result<Object<'js
     Ok(object)
 }
 
-/// `CSSRule.type` reports the constant CSSOM defines for the rule's
-/// interface, and 0 for any rule without one. The style engine's own
-/// discriminant is larger (it numbers every rule kind, `@layer` included), so
-/// it cannot answer this
-/// (<https://drafts.csswg.org/cssom/#dom-cssrule-type>).
+// https://drafts.csswg.org/cssom/#dom-cssrule-type
 fn cssom_rule_type(interface: &str, engine_type: u16) -> u16 {
     match interface {
         "CSSStyleRule" => 1,
@@ -463,9 +429,6 @@ fn cssom_rule_type(interface: &str, engine_type: u16) -> u16 {
         "CSSCounterStyleRule" => 11,
         "CSSSupportsRule" => 12,
         "CSSFontFeatureValuesRule" => 14,
-        // Every other rule reports 0. The engine's value is used only when
-        // it already matches a defined constant, which keeps this table from
-        // having to name rules whose interface string changes upstream
         _ if matches!(engine_type, 1 | 3..=8 | 10..=12 | 14) => engine_type,
         _ => 0,
     }
@@ -495,10 +458,7 @@ fn sheet_style_css_text<'js>(ctx: Ctx<'js>, element: Value<'js>, id: f64, path: 
         .unwrap_or_default()
 }
 
-/// Replaces a rule's declaration block with the declarations parsed from
-/// `text` (`CSSStyleDeclaration.cssText` setter, reached through a rule's
-/// `[PutForwards=cssText]` `style` attribute)
-/// (<https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-csstext>).
+// https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-csstext
 fn sheet_style_set_css_text<'js>(
     ctx: Ctx<'js>,
     element: Value<'js>,
@@ -520,11 +480,7 @@ fn sheet_style_set_css_text<'js>(
     let Some(mut parsed) = world.document_mut(node) else {
         return Ok(());
     };
-    // The sheet id addresses the rule list directly, so a constructable sheet
-    // (which no element owns) can replace a rule's declarations too. The
-    // engine reports a font-face descriptor block as unsupported; the JS side
-    // answers those through `setProperty` instead
-    // (<https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-csstext>).
+    // https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-csstext
     let _ = parsed
         .document
         .base
@@ -630,9 +586,7 @@ fn sheet_style_set_property<'js>(
         .map_err(|err| cssom_throw(&ctx, err))
 }
 
-/// Replaces a style rule's selectors (`CSSStyleRule.selectorText` setter). An
-/// invalid selector list leaves the rule unchanged and throws nothing
-/// (<https://drafts.csswg.org/cssom/#dom-cssstylerule-selectortext>).
+// https://drafts.csswg.org/cssom/#dom-cssstylerule-selectortext
 fn sheet_rule_set_selector_text<'js>(
     ctx: Ctx<'js>,
     element: Value<'js>,
@@ -667,10 +621,7 @@ fn sheet_rule_set_selector_text<'js>(
         .map_err(|err| cssom_throw(&ctx, err))
 }
 
-/// Replaces a rule's media query list
-/// (`MediaList.mediaText` setter through `CSSMediaRule.media` or
-/// `CSSImportRule.media`)
-/// (<https://drafts.csswg.org/cssom/#dom-medialist-mediatext>).
+// https://drafts.csswg.org/cssom/#dom-medialist-mediatext
 fn sheet_rule_set_media<'js>(
     ctx: Ctx<'js>,
     element: Value<'js>,
@@ -699,9 +650,7 @@ fn sheet_rule_set_media<'js>(
     Ok(())
 }
 
-/// Replaces a keyframe's selector list (`CSSKeyframeRule.keyText` setter). An
-/// unparsable list throws `SyntaxError`, and the rule keeps its old selectors
-/// (<https://drafts.csswg.org/css-animations-1/#dom-csskeyframerule-keytext>).
+// https://drafts.csswg.org/css-animations-1/#dom-csskeyframerule-keytext
 fn sheet_rule_set_key_text<'js>(
     ctx: Ctx<'js>,
     element: Value<'js>,
@@ -730,9 +679,7 @@ fn sheet_rule_set_key_text<'js>(
         .map_err(|err| cssom_throw(&ctx, err))
 }
 
-/// Renames a `@keyframes` rule (`CSSKeyframesRule.name` setter). An invalid
-/// name leaves the rule unchanged
-/// (<https://drafts.csswg.org/css-animations-1/#dom-csskeyframesrule-name>).
+// https://drafts.csswg.org/css-animations-1/#dom-csskeyframesrule-name
 fn sheet_rule_set_name<'js>(
     ctx: Ctx<'js>,
     element: Value<'js>,
@@ -761,9 +708,7 @@ fn sheet_rule_set_name<'js>(
     Ok(())
 }
 
-/// The index of the last keyframe that matches `select`
-/// (`CSSKeyframesRule.findRule`), or -1 when nothing matches
-/// (<https://drafts.csswg.org/css-animations-1/#dom-csskeyframesrule-findrule>).
+// https://drafts.csswg.org/css-animations-1/#dom-csskeyframesrule-findrule
 fn sheet_find_keyframe<'js>(
     ctx: Ctx<'js>,
     element: Value<'js>,
@@ -797,9 +742,7 @@ fn sheet_find_keyframe<'js>(
     }
 }
 
-/// Replaces the document's adopted stylesheet list with the sheets named by
-/// `ids`, in cascade order
-/// (<https://drafts.csswg.org/cssom/#dom-document-adoptedstylesheets>).
+// https://drafts.csswg.org/cssom/#dom-document-adoptedstylesheets
 fn set_adopted_sheets<'js>(ctx: Ctx<'js>, address: Value<'js>, ids: Array<'js>) -> bool {
     let Ok(world) = world(&ctx) else {
         return false;
@@ -824,9 +767,7 @@ fn set_adopted_sheets<'js>(ctx: Ctx<'js>, address: Value<'js>, ids: Array<'js>) 
     parsed.document.base.set_adopted_stylesheets(&sheets)
 }
 
-/// Creates a constructable sheet and answers its CSSOM sheet id, or -1 when
-/// the document is gone or `base_url` does not parse
-/// (<https://drafts.csswg.org/cssom/#dom-cssstylesheet-cssstylesheet>).
+// https://drafts.csswg.org/cssom/#dom-cssstylesheet-cssstylesheet
 fn create_sheet<'js>(
     ctx: Ctx<'js>,
     address: Value<'js>,
@@ -868,8 +809,7 @@ fn create_sheet<'js>(
     }
 }
 
-/// Replaces the rules of constructable sheet `id` (`CSSStyleSheet.replaceSync`)
-/// (<https://drafts.csswg.org/cssom/#dom-cssstylesheet-replacesync>).
+// https://drafts.csswg.org/cssom/#dom-cssstylesheet-replacesync
 fn replace_sheet<'js>(
     ctx: Ctx<'js>,
     address: Value<'js>,
@@ -903,8 +843,7 @@ fn replace_sheet<'js>(
         .cssom_replace_sheet(sheet, &css, base_url.as_ref())
 }
 
-/// The media query list text of CSSOM sheet `id`
-/// (<https://drafts.csswg.org/cssom/#dom-stylesheet-media>).
+// https://drafts.csswg.org/cssom/#dom-stylesheet-media
 fn sheet_media_text<'js>(ctx: Ctx<'js>, address: Value<'js>, id: f64) -> String {
     let Ok(world) = world(&ctx) else {
         return String::new();
@@ -926,8 +865,7 @@ fn sheet_media_text<'js>(ctx: Ctx<'js>, address: Value<'js>, id: f64) -> String 
         .unwrap_or_default()
 }
 
-/// Replaces the media query list of CSSOM sheet `id`
-/// (<https://drafts.csswg.org/cssom/#dom-medialist-mediatext>).
+// https://drafts.csswg.org/cssom/#dom-medialist-mediatext
 fn set_sheet_media_text<'js>(ctx: Ctx<'js>, address: Value<'js>, id: f64, text: String) -> bool {
     let Ok(world) = world(&ctx) else {
         return false;
@@ -948,8 +886,7 @@ fn set_sheet_media_text<'js>(ctx: Ctx<'js>, address: Value<'js>, id: f64, text: 
         .set_cssom_sheet_media_text(sheet, &text)
 }
 
-/// Whether CSSOM sheet `id` is disabled
-/// (<https://drafts.csswg.org/cssom/#dom-stylesheet-disabled>).
+// https://drafts.csswg.org/cssom/#dom-stylesheet-disabled
 fn cssom_sheet_disabled<'js>(ctx: Ctx<'js>, address: Value<'js>, id: f64) -> bool {
     let Ok(world) = world(&ctx) else {
         return false;
@@ -971,8 +908,7 @@ fn cssom_sheet_disabled<'js>(ctx: Ctx<'js>, address: Value<'js>, id: f64) -> boo
         .unwrap_or(false)
 }
 
-/// Sets the disabled flag of CSSOM sheet `id`
-/// (<https://drafts.csswg.org/cssom/#dom-stylesheet-disabled>).
+// https://drafts.csswg.org/cssom/#dom-stylesheet-disabled
 fn set_cssom_sheet_disabled<'js>(
     ctx: Ctx<'js>,
     address: Value<'js>,
@@ -998,9 +934,7 @@ fn set_cssom_sheet_disabled<'js>(
         .set_cssom_sheet_disabled(sheet, disabled)
 }
 
-/// The CSSOM sheet id of the sheet an `@import` rule imports, or -1 when the
-/// rule is not an import or the sheet has not loaded
-/// (<https://drafts.csswg.org/cssom/#dom-cssimportrule-stylesheet>).
+// https://drafts.csswg.org/cssom/#dom-cssimportrule-stylesheet
 fn sheet_import_sheet<'js>(ctx: Ctx<'js>, element: Value<'js>, id: f64, path: String) -> f64 {
     let Ok(world) = world(&ctx) else {
         return -1.0;
@@ -1033,10 +967,7 @@ fn sheet_import_sheet<'js>(ctx: Ctx<'js>, element: Value<'js>, id: f64, path: St
         })
 }
 
-/// The element's inline declaration block, serialized
-/// (`CSSStyleDeclaration.cssText` getter). `null` when the element carries no
-/// `style` attribute
-/// (<https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-csstext>).
+// https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-csstext
 fn inline_style_css_text<'js>(ctx: Ctx<'js>, element: Value<'js>) -> Result<Value<'js>> {
     let world = world(&ctx)?;
     let Some(node) = host_node_id(&ctx, &element) else {
@@ -1052,10 +983,7 @@ fn inline_style_css_text<'js>(ctx: Ctx<'js>, element: Value<'js>) -> Result<Valu
     }
 }
 
-/// The declaration names of the inline block, in specified order
-/// (`CSSStyleDeclaration.item()` and the indexed getter). `null` when the
-/// element carries no `style` attribute
-/// (<https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-item>).
+// https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-item
 fn inline_style_property_names<'js>(ctx: Ctx<'js>, element: Value<'js>) -> Result<Value<'js>> {
     let world = world(&ctx)?;
     let Some(node) = host_node_id(&ctx, &element) else {
@@ -1075,9 +1003,7 @@ fn inline_style_property_names<'js>(ctx: Ctx<'js>, element: Value<'js>) -> Resul
     Ok(Value::from(array))
 }
 
-/// The serialized value and `!important` flag of `name` in the inline block
-/// (`getPropertyValue()` / `getPropertyPriority()`)
-/// (<https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-getpropertyvalue>).
+// https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-getpropertyvalue
 fn inline_style_get_property<'js>(
     ctx: Ctx<'js>,
     element: Value<'js>,
@@ -1104,9 +1030,7 @@ fn inline_style_get_property<'js>(
     Ok(Value::from(object))
 }
 
-/// Replace the inline declarations with those parsed from `text`
-/// (`cssText` setter). The caller writes the attribute back afterwards
-/// (<https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-csstext>).
+// https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-csstext
 fn inline_style_set_css_text<'js>(ctx: Ctx<'js>, element: Value<'js>, text: String) -> Result<()> {
     let world = world(&ctx)?;
     let Some(node) = host_node_id(&ctx, &element) else {
@@ -1123,10 +1047,7 @@ fn inline_style_set_css_text<'js>(ctx: Ctx<'js>, element: Value<'js>, text: Stri
     Ok(())
 }
 
-/// Set one declaration in the inline block, returning whether the block
-/// changed so the caller can skip the attribute write when it did not. An
-/// invalid value leaves the block unchanged
-/// (<https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-setproperty>).
+// https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-setproperty
 fn inline_style_set_property<'js>(
     ctx: Ctx<'js>,
     element: Value<'js>,
@@ -1148,8 +1069,7 @@ fn inline_style_set_property<'js>(
     Ok(before != base.inline_style_css_text(node.node))
 }
 
-/// Remove one declaration from the inline block, returning whether the block
-/// changed (<https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-removeproperty>).
+// https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-removeproperty
 fn inline_style_remove_property<'js>(
     ctx: Ctx<'js>,
     element: Value<'js>,
@@ -1231,20 +1151,17 @@ fn sheet_delete_rule<'js>(
         .map_err(|err| cssom_throw(&ctx, err))
 }
 
-/// `CSS.supports(property, value)`
-/// (<https://drafts.csswg.org/css-conditional-3/#dom-css-supports>).
+// https://drafts.csswg.org/css-conditional-3/#dom-css-supports
 fn css_supports_declaration(property: String, value: String) -> bool {
     crate::css::supports::supports_declaration(&property, &value)
 }
 
-/// `CSS.supports(conditionText)`
-/// (<https://drafts.csswg.org/css-conditional-3/#dom-css-supports>).
+// https://drafts.csswg.org/css-conditional-3/#dom-css-supports
 fn css_supports_condition(text: String) -> bool {
     crate::css::supports::supports_condition(&text)
 }
 
-/// Whether a declaration block exposes an IDL attribute for this property
-/// (<https://drafts.csswg.org/cssom/#css-property-to-idl-attribute>).
+// https://drafts.csswg.org/cssom/#css-property-to-idl-attribute
 fn style_property_supported(name: String) -> bool {
     crate::css::supports::property_supported(&name)
 }

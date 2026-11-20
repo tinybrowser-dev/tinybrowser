@@ -1,5 +1,3 @@
-//! Window-level listeners, location, and load events.
-
 use super::{events, main_document, world};
 use rquickjs::function::{Opt, This};
 use rquickjs::object::Accessor;
@@ -41,7 +39,6 @@ fn world_for_window_this<'js>(ctx: &Ctx<'js>, this: &Object<'js>) -> Result<Rc<R
     if same_origin { Ok(target) } else { Ok(current) }
 }
 
-/// The URL components `Location` exposes.
 #[derive(Clone, Copy)]
 enum Component {
     Pathname,
@@ -56,7 +53,6 @@ enum Component {
 }
 
 impl Component {
-    /// The component's value with the shape the IDL getters return.
     fn read(self, world: &World) -> String {
         let url = &world.document_url;
         match self {
@@ -70,12 +66,7 @@ impl Component {
                 .fragment()
                 .filter(|fragment| !fragment.is_empty())
                 .map_or_else(String::new, |fragment| format!("#{fragment}")),
-            // The URL's origin, not the settings object's: `about:blank`,
-            // `about:srcdoc`, and `javascript:` documents carry a captured
-            // origin that `window.origin` reports, but `Location.origin`
-            // serializes its own URL's origin, which is opaque for those
-            // schemes
-            // (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-origin>).
+            // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-origin
             Self::Origin => url.origin().ascii_serialization(),
             Self::Protocol => format!("{}:", url.scheme()),
             Self::Host => match url.port() {
@@ -87,23 +78,15 @@ impl Component {
         }
     }
 
-    /// Replaces this component of `url` with `value`, using the URL Standard's
-    /// quirks setters, which are the algorithms the IDL setters name
-    /// (<https://url.spec.whatwg.org/#example-635b7a2a>). Returns whether the
-    /// URL changed, so assigning the value the document already has does not
-    /// reload it
-    /// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#the-location-interface>).
+    // https://url.spec.whatwg.org/#example-635b7a2a
+    // https://html.spec.whatwg.org/multipage/nav-history-apis.html#the-location-interface
     fn replace(self, url: &mut url::Url, value: &str) -> std::result::Result<bool, ()> {
         let before = url.as_str().to_owned();
         match self {
             Self::Pathname => url::quirks::set_pathname(url, value),
             Self::Search => url::quirks::set_search(url, value),
             Self::Protocol => {
-                // Basic URL parse `value` followed by ":" with the scheme
-                // start state override. A failure is a SyntaxError; a scheme
-                // change the parser refuses (special to non-special, or file
-                // with credentials) terminates without navigating
-                // (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-protocol>).
+                // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-protocol
                 let Some(scheme) = protocol_scheme(value) else {
                     return Err(());
                 };
@@ -121,13 +104,7 @@ impl Component {
             Self::Port => {
                 let _ = url::quirks::set_port(url, value);
             }
-            // `Location.hash` is not the URL interface's `hash`: it strips one
-            // leading `#`, sets the fragment to the empty string, then parses
-            // the rest into it, so `location.hash = ""` leaves a bare `#`
-            // instead of removing the fragment. A redundant write bails out
-            // before navigating, which is what keeps a page's scroll handler
-            // from appending history entries
-            // (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-hash>).
+            // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-hash
             Self::Hash => {
                 let input = value.strip_prefix('#').unwrap_or(value);
                 let previous = url.fragment().unwrap_or_default().to_owned();
@@ -136,23 +113,14 @@ impl Component {
                     return Ok(false);
                 }
             }
-            // `href` names a whole URL; `origin` is read-only.
             Self::Href | Self::Origin => return Ok(false),
         }
         Ok(url.as_str() != before)
     }
 }
 
-/// The scheme `location.protocol = value` names.
-///
-/// The setter parses `value` followed by ":" with the scheme start state as a
-/// state override. With an override the basic URL parser does not trim leading
-/// or trailing C0 controls or spaces, but it still removes ASCII tab and
-/// newline; the scheme is one ASCII alpha followed by ASCII alphanumerics,
-/// "+", "-", or ".". `None` is the parser's failure, which the setter reports
-/// as a `SyntaxError`
-/// (<https://url.spec.whatwg.org/#scheme-start-state>,
-/// <https://url.spec.whatwg.org/#scheme-state>).
+// https://url.spec.whatwg.org/#scheme-start-state
+// https://url.spec.whatwg.org/#scheme-state
 fn protocol_scheme(value: &str) -> Option<String> {
     let mut scheme = String::with_capacity(value.len());
     for c in value.chars() {
@@ -180,10 +148,7 @@ fn protocol_scheme(value: &str) -> Option<String> {
     Some(normalized)
 }
 
-/// Queues a navigation of `owner`'s frame to `spec`, which is what assigning
-/// to `Location.href`, to any other navigating `Location` component, and to a
-/// window's `location` does
-/// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-href>).
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-href
 fn navigate_location(owner: &Rc<RefCell<World>>, spec: String, source: Option<FrameId>) {
     let mut navigation = crate::js::world::FrameNavigation::get(
         crate::js::world::NavigationTarget::Target(crate::protocol::TargetName::Current),
@@ -195,14 +160,7 @@ fn navigate_location(owner: &Rc<RefCell<World>>, spec: String, source: Option<Fr
     owner.borrow_mut().queue_frame_navigation(navigation);
 }
 
-/// Parses `value` the way the `href` setter does, relative to the entry
-/// settings object's API base URL, and throws the `SyntaxError` the setter
-/// requires when it is not a valid URL
-/// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-href>).
-///
-/// The parsed absolute URL is what the navigation uses, so a `<base>` in the
-/// target document cannot re-resolve a relative assignment against a different
-/// base than the one that was checked.
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-href
 fn parse_location(ctx: &Ctx<'_>, caller: &Rc<RefCell<World>>, value: &str) -> Result<url::Url> {
     let caller = caller.borrow();
     let base = caller
@@ -213,25 +171,14 @@ fn parse_location(ctx: &Ctx<'_>, caller: &Rc<RefCell<World>>, value: &str) -> Re
         .map_err(|_| super::throw_dom(ctx, "SyntaxError", "invalid URL"))
 }
 
-/// The `Location` setter shared by every component that navigates.
-///
-/// `href` names a whole URL; every other component replaces itself in the
-/// current URL and navigates only when that changed something.
 fn set_component(owner: &Rc<RefCell<World>>, component: Component, value: Value<'_>) -> Result<()> {
     let ctx = value.ctx().clone();
-    // Web IDL converts the assigned value before the setter steps run, so a
-    // throwing `toString` still throws on a `Location` with no browsing
-    // context. The steps' first branch is "if this's relevant Document is
-    // null, then return"
-    // (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-href>).
+    // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-href
     let value = super::webidl::webidl_to_string(&ctx, value)?;
     if !owner.borrow().has_browsing_context() {
         return Ok(());
     }
-    // The entry settings object supplies the resolution base; the incumbent
-    // document supplies the referrer, policy, and sandbox rules when a script
-    // in one frame assigns another frame's `location`
-    // (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-href>).
+    // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-href
     let caller = world(&ctx)?;
     let source = caller.borrow().frame();
     if matches!(component, Component::Href) {
@@ -257,10 +204,7 @@ fn set_component(owner: &Rc<RefCell<World>>, component: Component, value: Value<
     Ok(())
 }
 
-/// Whether `url` differs from `owner`'s document URL only in its fragment and
-/// names one. That is the condition "navigate" uses to take the same-document
-/// branch instead of loading a document
-/// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#beginning-navigation>).
+// https://html.spec.whatwg.org/multipage/browsing-the-web.html#beginning-navigation
 fn only_fragment_changed(owner: &Rc<RefCell<World>>, url: &url::Url) -> bool {
     url.fragment().is_some() && {
         let world = owner.borrow();
@@ -268,10 +212,7 @@ fn only_fragment_changed(owner: &Rc<RefCell<World>>, url: &url::Url) -> bool {
     }
 }
 
-/// "Navigate to a fragment": the URL and the session history entry change now,
-/// the owner realm observes `popstate` and the new `history` state in this
-/// turn, and the document delivers `hashchange` in its next turn
-/// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate-to-a-fragment>).
+// https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate-to-a-fragment
 fn navigate_to_fragment(
     ctx: &Ctx<'_>,
     caller: &Rc<RefCell<World>>,
@@ -281,15 +222,12 @@ fn navigate_to_fragment(
     let (old_url, handling) = {
         let mut world = owner.borrow_mut();
         let old_url = world.document_url.as_str().to_owned();
-        // "auto" resolves to replace when the assignment names the current
-        // URL, and to push otherwise.
         let handling = if world.document_url == *url {
             crate::protocol::HistoryHandling::Replace
         } else {
             crate::protocol::HistoryHandling::Push
         };
         world.document_url = url.clone();
-        // A fragment navigation never carries classic history state.
         world.history.apply("null".to_owned(), handling);
         (old_url, handling)
     };
@@ -303,11 +241,8 @@ fn navigate_to_fragment(
     );
 }
 
-/// Updates the owner realm's live `history.length` and `history.state`, then
-/// fires the synchronous `popstate` the entry activation owes. A caller in
-/// another frame runs this through the owner's realm context
-/// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate-to-a-fragment>,
-/// <https://html.spec.whatwg.org/multipage/browsing-the-web.html#update-document-for-history-step-application>).
+// https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate-to-a-fragment
+// https://html.spec.whatwg.org/multipage/browsing-the-web.html#update-document-for-history-step-application
 fn sync_fragment_state(ctx: &Ctx<'_>, caller: &Rc<RefCell<World>>, owner: &Rc<RefCell<World>>) {
     let update = |ctx: &Ctx<'_>| -> Result<()> {
         let length = owner.borrow().history.length;
@@ -321,9 +256,6 @@ fn sync_fragment_state(ctx: &Ctx<'_>, caller: &Rc<RefCell<World>>, owner: &Rc<Re
     } else if let Some(owner_context) = owner.borrow().realm_context.clone() {
         owner_context.with(|owner_ctx| update(&owner_ctx))
     } else {
-        // The owner has no realm yet, so it has no `history` object to move.
-        // The document drain still records the joint entry, and the realm
-        // reads the mirror when it is created.
         return;
     };
     if let Err(error) = result {
@@ -331,17 +263,10 @@ fn sync_fragment_state(ctx: &Ctx<'_>, caller: &Rc<RefCell<World>>, owner: &Rc<Re
     }
 }
 
-/// Installs the `Location` object
-/// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#the-location-interface>).
-///
-/// Empty components return empty strings, as specified by
-/// <https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-search>
-/// and <https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-hash>.
-///
-/// Assigning to a window's `location` navigates, like `Location.href`. A
-/// change that touches only the fragment is the same-document "navigate to a
-/// fragment" case, not a reload
-/// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate-to-a-fragment>).
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#the-location-interface
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-search
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-hash
+// https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate-to-a-fragment
 pub(crate) fn install_location<'js>(
     ctx: &Ctx<'js>,
     globals: &Object<'js>,
@@ -368,11 +293,7 @@ pub(crate) fn install_location<'js>(
     Ok(())
 }
 
-/// The `Location` object for `world`, built in the calling realm's context but
-/// bound to `world`, so its setters navigate that world's frame. `install_location`
-/// stores it on the world; a child window whose realm has not started yet gets
-/// one through its `WindowProxy` instead
-/// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#the-location-interface>).
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#the-location-interface
 pub(crate) fn build_location<'js>(
     ctx: &Ctx<'js>,
     world: &Rc<RefCell<World>>,
@@ -407,21 +328,11 @@ pub(crate) fn build_location<'js>(
     Ok(location)
 }
 
-/// The `Window.location` setter for a frame whose realm is not running: it
-/// throws the same `SyntaxError` and queues the same navigation as the
-/// accessor `install_location` installs.
 pub(crate) fn set_location_href(owner: &Rc<RefCell<World>>, value: Value<'_>) -> Result<()> {
     set_component(owner, Component::Href, value)
 }
 
-/// The window a `Window` method call targets, resolving a sloppy bare call.
-///
-/// A host function invoked as a bare global (`addEventListener(type, fn)`)
-/// receives `undefined` for `this`: host functions do not get the sloppy-mode
-/// global substitution a page function does. A missing receiver means the
-/// current realm's window; any other non-object receiver is an illegal
-/// invocation
-/// (<https://webidl.spec.whatwg.org/#es-operations>).
+// https://webidl.spec.whatwg.org/#es-operations
 fn window_world_for_call<'js>(ctx: &Ctx<'js>, this: &Value<'js>) -> Result<Rc<RefCell<World>>> {
     if this.is_undefined() || this.is_null() {
         return world(ctx);
@@ -496,8 +407,7 @@ pub(crate) fn fire_dom_content_loaded(ctx: &Ctx<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Fires `readystatechange` at the document after its readiness changed
-/// (<https://html.spec.whatwg.org/multipage/dom.html#current-document-readiness>).
+// https://html.spec.whatwg.org/multipage/dom.html#current-document-readiness
 pub(crate) fn fire_ready_state_change(ctx: &Ctx<'_>) -> Result<()> {
     let document = main_document(ctx)?;
     events::fire_trusted(
@@ -522,14 +432,7 @@ pub(crate) fn fire_node_error(ctx: &Ctx<'_>, id: NodeId) -> Result<()> {
     events::fire_trusted(ctx, EventTargetKey::Node(id), "error", false, false)
 }
 
-/// Settles the CSS-connected `FontFace` of one `@font-face` rule the engine
-/// finished loading, by the rule's CSSOM address. The rule's load belongs to
-/// the engine, so the set cannot learn the outcome from a page-side `fetch`;
-/// the hook resolves the rule's face and settles its `loaded` promise, which
-/// is what `document.fonts.ready` waits for
-/// (<https://drafts.csswg.org/css-font-loading/#font-face-set-ready>). The
-/// hook lives on the realm's bridge: the page cannot call, replace, or delete
-/// it, and a realm without one has no fonts to settle.
+// https://drafts.csswg.org/css-font-loading/#font-face-set-ready
 pub(crate) fn font_face_settled(
     ctx: &Ctx<'_>,
     sheet: u64,
@@ -550,20 +453,13 @@ pub(crate) fn font_face_settled(
     }
 }
 
-/// Fires the asynchronous `select` event of a text control whose selection
-/// changed. The event bubbles and is not cancelable
-/// (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#set-the-selection-range>).
+// https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#set-the-selection-range
 pub(crate) fn fire_selection_changed(ctx: &Ctx<'_>, id: NodeId) -> Result<()> {
     events::fire_trusted(ctx, EventTargetKey::Node(id), "select", true, false)
 }
 
-/// Fires the queued `toggle` event of a `details` element whose `open`
-/// attribute changed, or of a dialog that showed or closed. The event is a
-/// `ToggleEvent` that reports the state the burst started from and the state
-/// it ended at, does not bubble, and is not cancelable; a dialog's `toggle`
-/// carries the invoker in `source`, which is null for a direct method call
-/// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-details-toggle-event-task>,
-/// <https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-dialog-toggle-event-task>).
+// https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-details-toggle-event-task
+// https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-dialog-toggle-event-task
 pub(crate) fn fire_toggle_task(
     ctx: &Ctx<'_>,
     id: NodeId,
@@ -573,17 +469,12 @@ pub(crate) fn fire_toggle_task(
     events::fire_toggle(ctx, EventTargetKey::Node(id), old_state, new_state)
 }
 
-/// Fires the `close` event a closed dialog queued on the user interaction task
-/// source. It does not bubble and is not cancelable
-/// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:close-event>).
+// https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:close-event
 pub(crate) fn fire_dialog_close(ctx: &Ctx<'_>, id: NodeId) -> Result<()> {
     events::fire_trusted(ctx, EventTargetKey::Node(id), "close", false, false)
 }
 
-/// Fires one queued scroll event. A viewport scroll reports at the Document
-/// and bubbles; an element's own scrolling box reports at that element and
-/// does not. Neither is cancelable
-/// (<https://drafts.csswg.org/cssom-view/#scrolling-events>).
+// https://drafts.csswg.org/cssom-view/#scrolling-events
 pub(crate) fn fire_scroll_event(ctx: &Ctx<'_>, event: blitz_dom::PendingScrollEvent) -> Result<()> {
     let typ = match event.kind {
         blitz_dom::ScrollEventKind::Scroll => "scroll",
@@ -593,10 +484,7 @@ pub(crate) fn fire_scroll_event(ctx: &Ctx<'_>, event: blitz_dom::PendingScrollEv
         blitz_dom::ScrollEventTarget::Viewport => {
             let document = main_document(ctx)?;
             events::fire_trusted(ctx, EventTargetKey::Node(document), typ, true, false)?;
-            // The visual viewport scrolls with the layout viewport, so it
-            // reports the same event at its own target after the window's
-            // handlers ran
-            // (<https://drafts.csswg.org/cssom-view/#scrolling-events>).
+            // https://drafts.csswg.org/cssom-view/#scrolling-events
             let host = crate::js::bridge::object(ctx)?;
             let Some(func) =
                 host.get::<_, Option<rquickjs::Function>>("__tbVisualViewportScroll")?
@@ -622,9 +510,7 @@ pub(crate) fn fire_scroll_event(ctx: &Ctx<'_>, event: blitz_dom::PendingScrollEv
     }
 }
 
-/// Fires one CSS animation or transition lifecycle event at the element Blitz
-/// recorded it for, in the calling realm
-/// (<https://drafts.csswg.org/css-animations-1/#events>).
+// https://drafts.csswg.org/css-animations-1/#events
 pub(crate) fn fire_animation_event(
     ctx: &Ctx<'_>,
     event: &blitz_dom::animation_events::PendingAnimationEvent,
@@ -643,8 +529,7 @@ pub(crate) fn fire_animation_event(
     )
 }
 
-/// Dispatches one trusted `securitypolicyviolation` event per blocked policy
-/// at `target` (<https://w3c.github.io/webappsec-csp/#report-violation>).
+// https://w3c.github.io/webappsec-csp/#report-violation
 pub(crate) fn fire_csp_violations(
     ctx: &Ctx<'_>,
     target: NodeId,
@@ -660,11 +545,7 @@ pub(crate) fn fire_csp_violations(
 mod tests {
     use super::protocol_scheme;
 
-    /// `Location.protocol`'s scheme parse is the scheme start state with a
-    /// state override: ASCII tab and newline are removed, other leading and
-    /// trailing C0 controls and spaces are kept (and fail), and the scheme is
-    /// one ASCII alpha followed by ASCII alphanumerics, `+`, `-`, or `.`
-    /// (<https://url.spec.whatwg.org/#scheme-start-state>).
+    // https://url.spec.whatwg.org/#scheme-start-state
     #[test]
     fn protocol_scheme_follows_the_scheme_start_state() {
         assert_eq!(protocol_scheme("https").as_deref(), Some("https"));

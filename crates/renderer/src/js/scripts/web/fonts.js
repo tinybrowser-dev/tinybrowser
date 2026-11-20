@@ -1,12 +1,4 @@
 // https://drafts.csswg.org/css-font-loading/#fontfaceset
-//
-// A `FontFace` is one source of one font face. CSS `@font-face` rules and
-// script-constructed faces are the same object: a CSS-connected face reads its
-// descriptors from the rule, a script face stores them, and both register
-// through `__tbRegisterFont` into the document's one font table.
-//
-// Internal slots stay in private maps so page code cannot rewrite the bytes or
-// state a load is using.
 const __tbFontFaceSlots = new WeakMap();
 const __tbFontSetSlots = new WeakMap();
 const __tbCssFontFaces = new WeakMap();
@@ -40,9 +32,7 @@ function __tbFontIsKeyword(value, list) {
   return __tbArray.indexOf(list, lower) !== -1;
 }
 
-/// Whether `name` is a sequence of CSS identifiers separated by single
-/// spaces, so it can be serialized unquoted
-/// (<https://drafts.csswg.org/css-fonts-4/#family-name-syntax>).
+// https://drafts.csswg.org/css-fonts-4/#family-name-syntax
 function __tbFontIsFamilyName(name) {
   if (name.length === 0) return false;
   if (name !== __tbApply(__tbStringTrim, name, [])) return false;
@@ -251,9 +241,7 @@ function __tbFontDescriptor(descriptors, key, lower) {
   return __tbApply(lower ? __tbStringToLowerCase : __tbStringTrim, __tbStringCtor(value), []);
 }
 
-/// Parse the descriptor dictionary. An invalid value is recorded rather than
-/// thrown: the constructor stays usable, and `load()` rejects with the error
-/// (<https://drafts.csswg.org/css-font-loading/#font-face-constructor>).
+// https://drafts.csswg.org/css-font-loading/#font-face-constructor
 function __tbFontDescriptors(descriptors) {
   const state = {
     style: 'normal',
@@ -281,8 +269,7 @@ function __tbFontDescriptors(descriptors) {
   };
   apply('style', __tbFontNormalizeStyle);
   apply('weight', __tbFontNormalizeWeight);
-  // `width` is an alias for `stretch`, and the width spelling wins when both
-  // are present (<https://drafts.csswg.org/css-fonts-4/#font-width-prop>).
+  // https://drafts.csswg.org/css-fonts-4/#font-width-prop
   try {
     const width = descriptors.width;
     const stretch = descriptors.stretch;
@@ -322,8 +309,7 @@ function __tbFontParseSource(source) {
   let match;
   while ((match = pattern.exec(text)) !== null) {
     const value = match[2] !== undefined ? match[2] : (match[3] !== undefined ? match[3] : match[4]);
-    // A `src` list is tried in order: the first source that loads wins
-    // (<https://drafts.csswg.org/css-fonts-4/#src-desc>).
+    // https://drafts.csswg.org/css-fonts-4/#src-desc
     sources.push({
       local: match[1].toLowerCase() === 'local',
       value: __tbApply(__tbStringTrim, value, []),
@@ -338,8 +324,6 @@ function __tbFontFaceState(face) {
   return state;
 }
 
-/// A descriptor that participates in font matching changed; re-register the
-/// face so the table matches the object a page can read back.
 function __tbFontFaceRefresh(face) {
   const state = __tbFontFaceState(face);
   if (!state.attached || state.token === 0) return;
@@ -368,8 +352,6 @@ class FontFace {
       state.resolveLoaded = resolve;
       state.rejectLoaded = reject;
     });
-    // A page may never await `loaded`; keep the rejection handled without
-    // hiding it from `load()`.
     state.loadedPromise.catch(() => {});
     __tbFontFaceSlots.set(this, state);
   }
@@ -408,7 +390,6 @@ class FontFace {
     __tbFontFaceRefresh(this);
   }
 
-  // `width` and `stretch` are two names for one descriptor.
   get width() { return this.stretch; }
   set width(value) { this.stretch = value; }
 
@@ -473,8 +454,7 @@ class FontFace {
       return state.loadedPromise;
     }
     state.status = 'loading';
-    // The `loading` event and the set's window are the set's transition, not
-    // this face's (<https://drafts.csswg.org/css-font-loading/#dom-fontfaceset-onloading>).
+    // https://drafts.csswg.org/css-font-loading/#dom-fontfaceset-onloading
     __tbFontSetTrack(__tbFontFaceSet);
     if (state.error !== null) {
       this._fail(state.error);
@@ -482,7 +462,6 @@ class FontFace {
       return state.loadPromise;
     }
     if (state.bytes !== null) {
-      // A binary source is validated before it can become the loaded face.
       if (!__tbValidateFont(state.bytes)) {
         this._fail(__tbFontError('invalid font data', 'SyntaxError'));
       } else {
@@ -491,8 +470,7 @@ class FontFace {
       state.loadPromise = state.loadedPromise;
       return state.loadPromise;
     }
-    // A `src` list tries each source in order; the first one that loads wins
-    // (<https://drafts.csswg.org/css-fonts-4/#src-desc>).
+    // https://drafts.csswg.org/css-fonts-4/#src-desc
     let chain = Promise.resolve(false);
     for (let index = 0; index < state.sources.length; index++) {
       const source = state.sources[index];
@@ -615,9 +593,6 @@ function __tbFontFire(set, type, faces) {
   __tbApply(__tbFontDispatch, set, [new FontFaceSetLoadEvent(type, { fontfaces: faces })]);
 }
 
-/// Every `@font-face` rule in the document's style sheets, depth-first through
-/// grouping rules. Reading the list live is what makes a sheet inserted or
-/// removed after `document.fonts` was first observed visible to it.
 function __tbFontCollectRules(list, output) {
   if (list === undefined || list === null) return;
   const length = list.length;
@@ -631,7 +606,6 @@ function __tbFontCollectRules(list, output) {
     try {
       __tbFontCollectRules(rule.cssRules, output);
     } catch (error) {
-      // A rule without child rules has no `cssRules` getter to follow.
     }
   }
 }
@@ -639,10 +613,7 @@ function __tbFontCollectRules(list, output) {
 function __tbFontCssFaces() {
   const document = globalThis.document;
   if (document === undefined || document.styleSheets === undefined) return [];
-  // The stylesheet generation names the sheet state a walk saw: a read that
-  // arrives with the same generation reuses the list instead of re-walking
-  // every sheet and rule
-  // (<https://drafts.csswg.org/css-font-loading/#fontfaceset-iteration).
+  // https://drafts.csswg.org/css-font-loading/#fontfaceset-iteration
   const generation = host.__tb_sheet_generation();
   if (__tbFontFacesWalk.generation === generation) return __tbFontFacesWalk.faces;
   const output = [];
@@ -653,13 +624,8 @@ function __tbFontCssFaces() {
     try {
       __tbFontCollectRules(sheet.cssRules, output);
     } catch (error) {
-      // A cross-origin sheet has no readable rules.
     }
   }
-  // Creating a face settles the rules the last engine report already
-  // settled, whose handlers track the set again: while this walk is creating,
-  // those tracks are deferred so they do not re-enter the walk; the walk's
-  // own caller observes the final state once it returns.
   __tbFontWalkDepth += 1;
   let faces;
   try {
@@ -679,7 +645,6 @@ function __tbFontCssFaces() {
   return faces;
 }
 
-// The cached walk and the depth of the walk creating it.
 let __tbFontFacesWalk = { generation: -1, faces: [] };
 let __tbFontWalkDepth = 0;
 
@@ -705,19 +670,10 @@ function __tbFontFromRule(rule) {
   const face = new FontFace(read('font-family'), source, descriptors);
   const state = __tbFontFaceState(face);
   state.cssConnected = true;
-  // The face joins the set's memo before anything can settle it: a settle
-  // re-enters the set's tracker, whose walk must find this same face instead
-  // of creating a second one that no report will ever settle.
   __tbCssFontFaces.set(rule, face);
-  // The engine owns this face's load: it walks the rule's own `src` list and
-  // reports the outcome by the rule's CSSOM address, so the face waits for
-  // that report instead of re-parsing the `src` it read
-  // (<https://drafts.csswg.org/css-font-loading/#font-face-constructor>).
+  // https://drafts.csswg.org/css-font-loading/#font-face-constructor
   const address = __tbCssomRuleAddress(rule);
   state.status = 'loading';
-  // The rule may have settled before any walk created this face; the recorded
-  // outcome settles it. The enclosing `FontFaceSet` transition is the
-  // caller's to observe: this face was loading only inside one walk.
   if (address !== null) {
     const key = address.sheetId + '/' + address.path.join('/');
     const settled = __tbSettledFontRules.get(key);
@@ -730,18 +686,10 @@ function __tbFontFromRule(rule) {
   return face;
 }
 
-// Settle outcomes of @font-face rules whose face has not been created yet,
-// keyed by the rule's CSSOM address (`sheetId/path`). The engine reports each
-// rule's terminal status once; a face created after that reads its entry here
-// instead of waiting for a second report.
 const __tbSettledFontRules = new Map();
 
-/// Settles the CSS-connected face of the `@font-face` rule the engine just
-/// finished: the CSSOM address names the rule, and the outcome is the
-/// engine's own load result — a source that yields no face moved the rule's
-/// list to the next source, and a list that runs out is an error
-/// (<https://drafts.csswg.org/css-fonts-4/#src-desc>,
-/// <https://drafts.csswg.org/css-font-loading/#dom-fontface-status>).
+// https://drafts.csswg.org/css-fonts-4/#src-desc
+// https://drafts.csswg.org/css-font-loading/#dom-fontface-status
 host.__tbFontFaceSettled = function (sheetId, path, loaded) {
   const address = sheetId + '/' + path.join('/');
   const rule = __tbCssomRuleAt(sheetId, path);
@@ -780,22 +728,13 @@ function __tbFontSetAll(set) {
   return all;
 }
 
-/// Observes one `FontFaceSet` transition: the set is loading while any of its
-/// faces is, and its `[[ReadyPromise]]` is replaced exactly when it goes back
-/// to loading, resolved when the last face settles
-/// (<https://drafts.csswg.org/css-font-loading/#font-face-set-ready>).
-/// `loading`, `loadingdone`, and `loadingerror` fire on those transitions with
-/// the faces the window covered, split by outcome
-/// (<https://drafts.csswg.org/css-font-loading/#dom-fontfaceset-onloading>).
+// https://drafts.csswg.org/css-font-loading/#font-face-set-ready
+// https://drafts.csswg.org/css-font-loading/#dom-fontfaceset-onloading
 function __tbFontSetTrack(set) {
   const state = __tbFontSetState(set);
   if (__tbFontWalkDepth > 0) {
-    // A face-creating walk is on the stack: the transitions it triggers are
-    // observed by the track that started the walk, when it returns.
     return;
   }
-  // The walk that materializes a rule's face happens inside this read, so a
-  // face created by it is part of the same transition.
   const all = __tbFontSetAll(set);
   let loading = false;
   for (let index = 0; index < all.length; index++) {
@@ -829,7 +768,6 @@ function __tbFontSetTrack(set) {
   __tbFontFire(set, 'loading', state.loadingFaces.slice());
 }
 
-/// Split a comma-separated value at top level, keeping quoted commas.
 function __tbFontSplitCommas(text) {
   const parts = [];
   let current = '';
@@ -880,8 +818,7 @@ function __tbFontParseFamilyPart(part) {
   return { name: text, quoted: false };
 }
 
-/// The families a `font` shorthand names
-/// (<https://drafts.csswg.org/css-fonts-4/#font-prop>).
+// https://drafts.csswg.org/css-fonts-4/#font-prop
 function __tbFontFamilies(value) {
   const text = __tbApply(__tbStringTrim, __tbStringCtor(value), []);
   if (text.length === 0) {
@@ -962,9 +899,6 @@ class FontFaceSet extends __tbFontEventTarget {
   }
 
   get ready() {
-    // A rule whose face no walk created yet (a settle the engine reported
-    // before anything read the set) is materialized here, so a late read
-    // still observes the window it opens.
     const state = __tbFontSetState(this);
     __tbFontSetTrack(this);
     return state.ready;
@@ -980,7 +914,6 @@ class FontFaceSet extends __tbFontEventTarget {
   add(face) {
     const faceState = __tbFontFaceState(face);
     const state = __tbFontSetState(this);
-    // A CSS-connected face already belongs to the set through its rule.
     if (faceState.cssConnected) return this;
     if (__tbArray.indexOf(state.faces, face) !== -1) return this;
     state.faces.push(face);
@@ -1071,9 +1004,7 @@ class FontFaceSet extends __tbFontEventTarget {
         if (!loaded) return false;
         continue;
       }
-      // No face for this family means the fallback list answers it without a
-      // load, so the check passes
-      // (<https://drafts.csswg.org/css-font-loading/#font-face-set-check>).
+      // https://drafts.csswg.org/css-font-loading/#font-face-set-check
     }
     return true;
   }

@@ -1,11 +1,4 @@
-//! Form-control algorithms over the control slots in the tree.
-//!
-//! Inputs keep the sanitized current value in Blitz's value slot, and options
-//! keep their selectedness in the sibling slot of the same state struct; the
-//! dirty flags decide whether a content attribute still drives a slot. The
-//! IDL getters, collections, submission, and insertion fixups all read those
-//! slots through the helpers here
-//! (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html>).
+// https://html.spec.whatwg.org/multipage/form-control-infrastructure.html
 
 use blitz_dom::{BaseDocument, Dirtiness, NodeData};
 
@@ -14,16 +7,12 @@ use crate::dom::tree::{
     BlitzId, NodeId, attr, form_owner_of, html_namespace, is_connected, is_html_element,
 };
 
-/// A control's contribution to the entry list, resolved inside one world
-/// borrow; file controls read their JS `files` after the borrow ends.
 pub(crate) enum PendingEntry {
     Text(String, String),
     Files(String, NodeId),
 }
 
-/// Form controls in a subtree, in tree order, for insertion fixups after a
-/// whole-subtree replacement such as `innerHTML`
-/// (<https://html.spec.whatwg.org/multipage/form-elements.html#the-select-element>).
+// https://html.spec.whatwg.org/multipage/form-elements.html#the-select-element
 pub(crate) fn descendant_controls(
     base: &BaseDocument,
     document: u32,
@@ -48,11 +37,8 @@ pub(crate) fn descendant_controls(
     controls
 }
 
-/// Materializes each input's sanitized value and each select's selectedness
-/// once after parsing, so layout and `:checked` see the same state as the IDL
-/// getters before any script runs
-/// (<https://html.spec.whatwg.org/multipage/input.html#the-input-element>,
-/// <https://html.spec.whatwg.org/multipage/form-elements.html#selectedness-setting-algorithm>).
+// https://html.spec.whatwg.org/multipage/input.html#the-input-element
+// https://html.spec.whatwg.org/multipage/form-elements.html#selectedness-setting-algorithm
 pub(crate) fn initialize_controls(parsed: &mut Parsed) {
     let Some(root) = parsed.document.base.try_root_element() else {
         return;
@@ -68,9 +54,7 @@ pub(crate) fn initialize_controls(parsed: &mut Parsed) {
         let Some(element) = target.data.downcast_element() else {
             continue;
         };
-        // Template contents are a separate fragment, not children: their
-        // controls still need the same initial state
-        // (<https://html.spec.whatwg.org/multipage/scripting.html#template-contents>).
+        // https://html.spec.whatwg.org/multipage/scripting.html#template-contents
         if let Some(contents) = element.template_contents {
             stack.push(contents);
         }
@@ -89,17 +73,12 @@ pub(crate) fn initialize_controls(parsed: &mut Parsed) {
     for select in selects {
         parsed.document.invalidate_selectedness(select);
         run_selectedness_setting(parsed, select);
-        // The parse-time insertion steps of a selectedcontent element queue an
-        // update, so a freshly parsed select keeps its element in step
-        // (<https://html.spec.whatwg.org/multipage/form-elements.html#the-selectedcontent-element>).
+        // https://html.spec.whatwg.org/multipage/form-elements.html#the-selectedcontent-element
         update_selectedcontent(parsed, select);
     }
 }
 
-/// Collects a form's entry list: every submittable control whose form owner is
-/// the form, in tree order, that carries a name and is not disabled or inside a
-/// `datalist`
-/// (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#constructing-form-data-set>).
+// https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#constructing-form-data-set
 pub(crate) fn collect_pending_entries(
     parsed: &mut Parsed,
     form: NodeId,
@@ -107,12 +86,10 @@ pub(crate) fn collect_pending_entries(
 ) -> Vec<PendingEntry> {
     let base = &parsed.document.base;
     let document = parsed.id;
-    // The tree `form` participates in; form owners never cross trees.
     let mut root = form.node;
     while let Some(parent) = base.get_node(root).and_then(|node| node.parent) {
         root = parent;
     }
-    // A pre-order walk visits nodes in tree order.
     let mut pending = Vec::new();
     let mut controls = Vec::new();
     let mut stack = vec![root];
@@ -140,9 +117,7 @@ pub(crate) fn collect_pending_entries(
                 document,
                 node: current,
             });
-        // An image button contributes `x`/`y` even with no name; every other
-        // control needs a non-empty name
-        // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#constructing-form-data-set>).
+        // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#constructing-form-data-set
         let is_image_submitter = is_submitter
             && local == "input"
             && crate::dom::input::input_type(base, current)
@@ -153,8 +128,7 @@ pub(crate) fn collect_pending_entries(
         {
             continue;
         }
-        // A hidden input named `_charset_` carries the encoding name
-        // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#attr-fe-name-charset>).
+        // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#attr-fe-name-charset
         if local == "input"
             && crate::dom::input::input_type(base, current)
                 == Some(crate::dom::input::InputType::Hidden)
@@ -186,10 +160,7 @@ pub(crate) fn collect_pending_entries(
     pending
 }
 
-/// Whether `node` is disabled: its own `disabled` attribute, or for an
-/// `option` a `disabled` ancestor `optgroup` or owning `select`. Inheritance
-/// through an ancestor `fieldset` (outside its first `legend`) is a known gap
-/// (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#concept-fe-disabled>).
+// https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#concept-fe-disabled
 pub(crate) fn is_disabled(base: &BaseDocument, node: BlitzId) -> bool {
     if attr(base, node, "disabled").is_some() || base.disabled_by_fieldset(node) {
         return true;
@@ -220,8 +191,7 @@ pub(crate) fn is_disabled(base: &BaseDocument, node: BlitzId) -> bool {
     false
 }
 
-/// Whether `node` has a `datalist` ancestor, which bars it from the entry list
-/// (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#constructing-form-data-set>).
+// https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#constructing-form-data-set
 pub(crate) fn has_datalist_ancestor(base: &BaseDocument, node: BlitzId) -> bool {
     let mut cursor = base.get_node(node).and_then(|target| target.parent);
     while let Some(current) = cursor {
@@ -233,9 +203,7 @@ pub(crate) fn has_datalist_ancestor(base: &BaseDocument, node: BlitzId) -> bool 
     false
 }
 
-/// One named, enabled control's contribution: nothing, one entry, or (for a
-/// multiple `select`) several
-/// (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#constructing-form-data-set>).
+// https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#constructing-form-data-set
 pub(crate) fn pending_entry(
     parsed: &mut Parsed,
     document: u32,
@@ -246,8 +214,6 @@ pub(crate) fn pending_entry(
 ) -> Vec<PendingEntry> {
     let id = NodeId { document, node };
     let base = &parsed.document.base;
-    // A dirty value wins. Otherwise the submission value is the `value`
-    // content attribute (the default value), or empty when absent.
     let value_attr = || attr(base, node, "value").unwrap_or_default().to_owned();
     let mut entries = match local {
         "textarea" => {
@@ -259,8 +225,7 @@ pub(crate) fn pending_entry(
             vec![PendingEntry::Text(control_name.to_owned(), value)]
         }
         "button" => {
-            // A button contributes only when it is the submitter
-            // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#constructing-form-data-set>).
+            // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#constructing-form-data-set
             if !is_submitter {
                 return Vec::new();
             }
@@ -276,10 +241,6 @@ pub(crate) fn pending_entry(
                     if !is_submitter {
                         return Vec::new();
                     }
-                    // The image button's entries are `<name>.x` / `<name>.y`
-                    // (or bare `x` / `y` with no name). The selected
-                    // coordinate is (0, 0) when no activation point is
-                    // carried.
                     let prefix = if control_name.is_empty() {
                         String::new()
                     } else {
@@ -292,9 +253,7 @@ pub(crate) fn pending_entry(
                 }
                 InputType::File => vec![PendingEntry::Files(control_name.to_owned(), id)],
                 InputType::Checkbox | InputType::Radio => {
-                    // Checkable controls contribute only when checked; their
-                    // current value is the attribute or "on"
-                    // (<https://html.spec.whatwg.org/multipage/input.html#dom-input-value-default-on>).
+                    // https://html.spec.whatwg.org/multipage/input.html#dom-input-value-default-on
                     let checked = base
                         .get_node(node)
                         .and_then(|target| target.data.downcast_element())
@@ -342,9 +301,7 @@ pub(crate) fn pending_entry(
     entries
 }
 
-/// The `dirname` entry for a control whose directionality applies to form
-/// submission
-/// (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#submitting-element-directionality:-the-dirname-attribute>).
+// https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#submitting-element-directionality:-the-dirname-attribute
 fn dirname_entry(parsed: &Parsed, node: BlitzId, local: &str) -> Option<PendingEntry> {
     use crate::dom::input::InputType;
     let base = &parsed.document.base;
@@ -373,9 +330,7 @@ fn dirname_entry(parsed: &Parsed, node: BlitzId, local: &str) -> Option<PendingE
     ))
 }
 
-/// The element's directionality: its `dir` attribute, the nearest ancestor's,
-/// or `auto` heuristics over the control's value
-/// (<https://html.spec.whatwg.org/multipage/dom.html#the-dir-attribute>).
+// https://html.spec.whatwg.org/multipage/dom.html#the-dir-attribute
 fn directionality(base: &BaseDocument, node: BlitzId, value: &str) -> String {
     let mut cursor = Some(node);
     while let Some(current) = cursor {
@@ -397,8 +352,6 @@ fn directionality(base: &BaseDocument, node: BlitzId, value: &str) -> String {
     "ltr".to_owned()
 }
 
-/// The first strong directional character: Hebrew and Arabic blocks are RTL,
-/// Latin letters are LTR; no strong character defaults to LTR.
 fn first_strong_is_rtl(value: &str) -> bool {
     for character in value.chars() {
         if character.is_ascii_alphabetic() {
@@ -418,11 +371,7 @@ fn first_strong_is_rtl(value: &str) -> bool {
     false
 }
 
-/// The `option` elements in a `select`'s list of options, in tree order:
-/// descendant options whose nearest ancestor `select` is this one. The walk
-/// stops descending at a nested `select`, so its options belong to the inner
-/// select and never to this one, and no per-option owner lookup is needed
-/// (<https://html.spec.whatwg.org/multipage/form-elements.html#concept-select-option-list>).
+// https://html.spec.whatwg.org/multipage/form-elements.html#concept-select-option-list
 pub(crate) fn select_options(base: &BaseDocument, document: u32, select: BlitzId) -> Vec<NodeId> {
     let mut options = Vec::new();
     let mut stack: Vec<BlitzId> = base
@@ -441,9 +390,7 @@ pub(crate) fn select_options(base: &BaseDocument, document: u32, select: BlitzId
             continue;
         }
         match element.name.local.as_str() {
-            // The option list does not descend into another select, an
-            // option, or an `hr`
-            // (<https://html.spec.whatwg.org/multipage/form-elements.html#concept-select-option-list>).
+            // https://html.spec.whatwg.org/multipage/form-elements.html#concept-select-option-list
             "select" | "hr" | "datalist" => continue,
             "option" => {
                 options.push(NodeId {
@@ -452,7 +399,6 @@ pub(crate) fn select_options(base: &BaseDocument, document: u32, select: BlitzId
                 });
                 continue;
             }
-            // A nested optgroup is not part of the option list either.
             "optgroup" if has_optgroup_ancestor(base, current) => continue,
             _ => {}
         }
@@ -461,7 +407,6 @@ pub(crate) fn select_options(base: &BaseDocument, document: u32, select: BlitzId
     options
 }
 
-/// Whether `node` has an ancestor `optgroup` before its owning `select`.
 fn has_optgroup_ancestor(base: &BaseDocument, node: BlitzId) -> bool {
     let mut cursor = base.get_node(node).and_then(|target| target.parent);
     while let Some(current) = cursor {
@@ -476,12 +421,7 @@ fn has_optgroup_ancestor(base: &BaseDocument, node: BlitzId) -> bool {
     false
 }
 
-/// The `select` whose list of options contains `node`: the option's nearest
-/// ancestor `select`, found by the spec's algorithm.
-///
-/// A `datalist`, `hr`, or `option` ancestor, or a second `optgroup`, ends the
-/// search at null: those elements break the option's connection to a select
-/// (<https://html.spec.whatwg.org/multipage/form-elements.html#get-the-nearest-ancestor-select>).
+// https://html.spec.whatwg.org/multipage/form-elements.html#get-the-nearest-ancestor-select
 pub(crate) fn option_select_owner(base: &BaseDocument, node: BlitzId) -> Option<BlitzId> {
     let mut ancestor_optgroup = false;
     let mut cursor = base.get_node(node).and_then(|target| target.parent);
@@ -506,8 +446,7 @@ pub(crate) fn option_select_owner(base: &BaseDocument, node: BlitzId) -> Option<
     None
 }
 
-/// Whether `node` is a labelable element
-/// (<https://html.spec.whatwg.org/multipage/forms.html#category-label>).
+// https://html.spec.whatwg.org/multipage/forms.html#category-label
 fn is_labelable(base: &BaseDocument, node: BlitzId) -> bool {
     let Some(element) = base
         .get_node(node)
@@ -519,8 +458,7 @@ fn is_labelable(base: &BaseDocument, node: BlitzId) -> bool {
         return false;
     }
     match element.name.local.as_str() {
-        // A hidden input is not labelable
-        // (<https://html.spec.whatwg.org/multipage/input.html#hidden-state-(type=hidden)>).
+        // https://html.spec.whatwg.org/multipage/input.html#hidden-state-(type=hidden
         "input" => {
             !attr(base, node, "type").is_some_and(|kind| kind.eq_ignore_ascii_case("hidden"))
         }
@@ -529,12 +467,7 @@ fn is_labelable(base: &BaseDocument, node: BlitzId) -> bool {
     }
 }
 
-/// A label element's labeled control.
-///
-/// With a `for` attribute, the control is the first element in the label's
-/// tree whose ID is that value, when it is a labelable element. Without one,
-/// it is the first labelable element descendant in tree order
-/// (<https://html.spec.whatwg.org/multipage/forms.html#labeled-control>).
+// https://html.spec.whatwg.org/multipage/forms.html#labeled-control
 pub(crate) fn labeled_control(
     base: &BaseDocument,
     document: u32,
@@ -566,9 +499,7 @@ pub(crate) fn labeled_control(
     None
 }
 
-/// Whether an option is disabled: the option itself or its parent optgroup.
-/// A disabled select does not disable its options
-/// (<https://html.spec.whatwg.org/multipage/form-elements.html#concept-option-disabled>).
+// https://html.spec.whatwg.org/multipage/form-elements.html#concept-option-disabled
 fn option_disabled(base: &BaseDocument, option: BlitzId) -> bool {
     if attr(base, option, "disabled").is_some() {
         return true;
@@ -586,9 +517,7 @@ fn option_disabled(base: &BaseDocument, option: BlitzId) -> bool {
     false
 }
 
-/// The select's display size. The `size` attribute wins even when it parses
-/// to zero; otherwise a multiple select shows four rows and a single select
-/// one (<https://html.spec.whatwg.org/multipage/form-elements.html#concept-select-size>).
+// https://html.spec.whatwg.org/multipage/form-elements.html#concept-select-size
 fn select_display_size(base: &BaseDocument, select: BlitzId) -> u32 {
     if let Some(size) =
         attr(base, select, "size").and_then(crate::dom::parse::parse_non_negative_integer)
@@ -602,18 +531,14 @@ fn select_display_size(base: &BaseDocument, select: BlitzId) -> u32 {
     }
 }
 
-/// An option's selectedness slot. The slot is authoritative; the tree keeps
-/// it in step with the `selected` attribute while the dirtiness flag is clear
-/// (<https://html.spec.whatwg.org/multipage/form-elements.html#concept-option-selectedness>).
+// https://html.spec.whatwg.org/multipage/form-elements.html#concept-option-selectedness
 fn option_selectedness(base: &BaseDocument, option: BlitzId) -> bool {
     base.get_node(option)
         .and_then(|node| node.data.downcast_element())
         .is_some_and(blitz_dom::ElementData::selectedness)
 }
 
-/// Writes an option's selectedness slot without touching its dirtiness: this
-/// is the selectedness setting algorithm's write
-/// (<https://html.spec.whatwg.org/multipage/form-elements.html#selectedness-setting-algorithm>).
+// https://html.spec.whatwg.org/multipage/form-elements.html#selectedness-setting-algorithm
 pub(crate) fn set_option_selectedness(parsed: &mut Parsed, option: BlitzId, selected: bool) {
     parsed
         .document
@@ -622,10 +547,7 @@ pub(crate) fn set_option_selectedness(parsed: &mut Parsed, option: BlitzId, sele
         .set_selectedness(option, selected, Dirtiness::Keep);
 }
 
-/// Clears selectedness on every option except `keep`. Setting an option's
-/// selectedness to true in a single select deselects the previous option
-/// before the selectedness setting algorithm runs
-/// (<https://html.spec.whatwg.org/multipage/form-elements.html#concept-option-selectedness>).
+// https://html.spec.whatwg.org/multipage/form-elements.html#concept-option-selectedness
 fn clear_other_options(parsed: &mut Parsed, select: BlitzId, keep: BlitzId) {
     for option in select_options(&parsed.document.base, parsed.id, select) {
         if option.node != keep && option_selectedness(&parsed.document.base, option.node) {
@@ -634,17 +556,9 @@ fn clear_other_options(parsed: &mut Parsed, select: BlitzId, keep: BlitzId) {
     }
 }
 
-/// Runs the option insertion steps for a batch of inserted nodes, in insertion
-/// order. Adding an option whose selectedness is true clears every other
-/// option in a single select, so the last inserted selected option wins
-/// (<https://html.spec.whatwg.org/multipage/form-elements.html#the-select-element>).
-/// The select's selectedness setting algorithm then supplies the default
-/// selection once per affected select.
+// https://html.spec.whatwg.org/multipage/form-elements.html#the-select-element
 pub(crate) fn options_inserted(parsed: &mut Parsed, options: impl IntoIterator<Item = BlitzId>) {
-    // Snapshot what the batch arrived with first: an insertion step clears the
-    // other options in the select, including an option from the same batch
-    // that has not been processed yet
-    // (<https://html.spec.whatwg.org/multipage/form-elements.html#the-select-element>).
+    // https://html.spec.whatwg.org/multipage/form-elements.html#the-select-element
     let mut inserted = Vec::new();
     let mut selects = Vec::new();
     for option in options {
@@ -671,20 +585,14 @@ pub(crate) fn options_inserted(parsed: &mut Parsed, options: impl IntoIterator<I
     for select in selects {
         parsed.document.invalidate_selectedness(select);
         let changed = run_selectedness_setting(parsed, select);
-        // A newly inserted option's post-connection steps update the select's
-        // selectedcontent elements only when the insertion changes the
-        // selection, and only while the select is connected
-        // (<https://html.spec.whatwg.org/multipage/form-elements.html#the-option-element>).
+        // https://html.spec.whatwg.org/multipage/form-elements.html#the-option-element
         if changed && is_connected(&parsed.document.base, select) {
             update_selectedcontent(parsed, select);
         }
     }
 }
 
-/// The selectedness setting algorithm
-/// (<https://html.spec.whatwg.org/multipage/form-elements.html#selectedness-setting-algorithm>).
-/// Materializes every option's selectedness and returns whether anything
-/// changed. A select is normalized once; DOM mutations invalidate the cache.
+// https://html.spec.whatwg.org/multipage/form-elements.html#selectedness-setting-algorithm
 pub(crate) fn run_selectedness_setting(parsed: &mut Parsed, select: BlitzId) -> bool {
     if parsed.document.selectedness_normalized(select) {
         return false;
@@ -721,8 +629,6 @@ pub(crate) fn run_selectedness_setting(parsed: &mut Parsed, select: BlitzId) -> 
     changed
 }
 
-/// The options a select has selected, in tree order, after materializing the
-/// selectedness setting algorithm.
 pub(crate) fn effective_selected_options(parsed: &mut Parsed, select: BlitzId) -> Vec<NodeId> {
     run_selectedness_setting(parsed, select);
     let base = &parsed.document.base;
@@ -732,8 +638,7 @@ pub(crate) fn effective_selected_options(parsed: &mut Parsed, select: BlitzId) -
         .collect()
 }
 
-/// An option's selectedness, including the reset behavior for a single select
-/// (<https://html.spec.whatwg.org/multipage/form-elements.html#ask-for-a-reset>).
+// https://html.spec.whatwg.org/multipage/form-elements.html#ask-for-a-reset
 pub(crate) fn option_effective_selected(parsed: &mut Parsed, option: BlitzId) -> bool {
     let Some(select) = option_select_owner(&parsed.document.base, option) else {
         return option_selectedness(&parsed.document.base, option);
@@ -742,16 +647,13 @@ pub(crate) fn option_effective_selected(parsed: &mut Parsed, option: BlitzId) ->
     option_selectedness(&parsed.document.base, option)
 }
 
-/// An `option`'s value: its `value` attribute, else its text
-/// (<https://html.spec.whatwg.org/multipage/form-elements.html#dom-option-value>).
+// https://html.spec.whatwg.org/multipage/form-elements.html#dom-option-value
 pub(crate) fn option_value(base: &BaseDocument, option: BlitzId) -> String {
     crate::dom::tree::attr(base, option, "value")
         .map_or_else(|| option_text(base, option), str::to_owned)
 }
 
-/// An `option`'s text: its descendant text with ASCII whitespace stripped and
-/// collapsed, skipping HTML and SVG `script` subtrees
-/// (<https://html.spec.whatwg.org/multipage/form-elements.html#dom-option-text>).
+// https://html.spec.whatwg.org/multipage/form-elements.html#dom-option-text
 pub(crate) fn option_text(base: &BaseDocument, option: BlitzId) -> String {
     let mut text = String::new();
     let mut stack: Vec<BlitzId> = base
@@ -778,8 +680,7 @@ pub(crate) fn option_text(base: &BaseDocument, option: BlitzId) -> String {
     collapse_whitespace(&text)
 }
 
-/// A `select`'s value: the first selected option's value, else the empty
-/// string (<https://html.spec.whatwg.org/multipage/form-elements.html#dom-select-value>).
+// https://html.spec.whatwg.org/multipage/form-elements.html#dom-select-value
 pub(crate) fn select_value(parsed: &mut Parsed, select: BlitzId) -> String {
     effective_selected_options(parsed, select)
         .first()
@@ -788,8 +689,7 @@ pub(crate) fn select_value(parsed: &mut Parsed, select: BlitzId) -> String {
         })
 }
 
-/// The select's selected index: the first selected option, or `-1`
-/// (<https://html.spec.whatwg.org/multipage/form-elements.html#dom-select-selectedindex>).
+// https://html.spec.whatwg.org/multipage/form-elements.html#dom-select-selectedindex
 pub(crate) fn selected_index_of(parsed: &mut Parsed, select: BlitzId) -> i32 {
     let Some(selected) = effective_selected_options(parsed, select)
         .into_iter()
@@ -803,9 +703,7 @@ pub(crate) fn selected_index_of(parsed: &mut Parsed, select: BlitzId) -> i32 {
         .map_or(-1, |index| i32::try_from(index).unwrap_or(-1))
 }
 
-/// The select reset algorithm: restore selectedness from the `selected`
-/// attributes, clear dirtiness, then run the selectedness setting algorithm
-/// (<https://html.spec.whatwg.org/multipage/form-elements.html#the-select-element>).
+// https://html.spec.whatwg.org/multipage/form-elements.html#the-select-element
 pub(crate) fn reset_select_selectedness(parsed: &mut Parsed, select: BlitzId) {
     for option in select_options(&parsed.document.base, parsed.id, select) {
         let selected = attr(&parsed.document.base, option.node, "selected").is_some();
@@ -820,8 +718,6 @@ pub(crate) fn reset_select_selectedness(parsed: &mut Parsed, select: BlitzId) {
     update_selectedcontent(parsed, select);
 }
 
-/// Strips and collapses ASCII whitespace runs to single spaces, dropping
-/// leading and trailing runs.
 pub(crate) fn collapse_whitespace(text: &str) -> String {
     let mut result = String::new();
     let mut pending_space = false;
@@ -839,42 +735,29 @@ pub(crate) fn collapse_whitespace(text: &str) -> String {
     result
 }
 
-/// The submission encoding for a resolved label: the same ASCII-trimmed,
-/// `replacement`-rejecting resolution as every other label entry, falling
-/// back to UTF-8 because the caller passes an already-resolved name.
 pub(crate) fn submission_encoding(label: &str) -> &'static encoding_rs::Encoding {
     encoding_rs::Encoding::for_label(trim_label(label).as_bytes())
         .filter(|encoding| *encoding != encoding_rs::REPLACEMENT)
         .unwrap_or(encoding_rs::UTF_8)
 }
 
-/// Encodes `text` in the form's submission encoding as raw bytes. The caller
-/// builds the multipart or text/plain framing around them
-/// (<https://encoding.spec.whatwg.org/#encode>).
+// https://encoding.spec.whatwg.org/#encode
 pub(crate) fn encode_form_bytes(text: &str, label: &str) -> Vec<u8> {
     submission_encoding(label).encode(text).0.into_owned()
 }
 
-/// Percent-encodes `text` for form submission: Encoding Standard `encode`
-/// in `label`, then the urlencoded byte serializer over those bytes
-/// (<https://url.spec.whatwg.org/#concept-urlencoded-byte-serializer>).
+// https://url.spec.whatwg.org/#concept-urlencoded-byte-serializer
 pub(crate) fn urlencode_form(text: &str, label: &str) -> String {
     let (bytes, _, _) = submission_encoding(label).encode(text);
     url::form_urlencoded::byte_serialize(bytes.as_ref()).collect()
 }
 
-/// Whether a `textarea`'s `wrap` attribute is in the Hard state
-/// (<https://html.spec.whatwg.org/multipage/form-elements.html#attr-textarea-wrap>):
-/// an enumerated attribute, ASCII case-insensitive.
+// https://html.spec.whatwg.org/multipage/form-elements.html#attr-textarea-wrap
 pub(crate) fn wrap_is_hard(wrap: Option<&str>) -> bool {
     wrap.is_some_and(|wrap| wrap.trim().eq_ignore_ascii_case("hard"))
 }
 
-/// The positive integer in `value`, or `None` for an absent, invalid, or
-/// zero value. HTML's parsing rules for non-negative integers accept zero;
-/// callers of this helper (a `textarea`'s `cols`) require a value greater
-/// than zero
-/// (<https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#rules-for-parsing-non-negative-integers>).
+// https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#rules-for-parsing-non-negative-integers
 pub(crate) fn parse_positive(value: Option<&str>) -> Option<usize> {
     let parsed = crate::dom::parse::parse_non_negative_integer(value?)?;
     if parsed == 0 {
@@ -883,10 +766,7 @@ pub(crate) fn parse_positive(value: Option<&str>) -> Option<usize> {
     Some(usize::try_from(parsed).unwrap_or(usize::MAX))
 }
 
-/// The textarea hard-wrapping transformation: break each line at `cols`
-/// characters and join with LF. The submitted value normalizes to LF here; the
-/// urlencoded serializer turns those into CRLF pairs
-/// (<https://html.spec.whatwg.org/multipage/form-elements.html#textarea-wrapping-transformation>).
+// https://html.spec.whatwg.org/multipage/form-elements.html#textarea-wrapping-transformation
 pub(crate) fn hard_wrap(value: &str, cols: usize) -> String {
     let cols = cols.max(1);
     let mut out = String::with_capacity(value.len());
@@ -908,33 +788,23 @@ pub(crate) fn hard_wrap(value: &str, cols: usize) -> String {
     out
 }
 
-/// Strips ASCII whitespace, the only whitespace the Encoding Standard's
-/// label matching removes
-/// (<https://encoding.spec.whatwg.org/#concept-encoding-get>).
+// https://encoding.spec.whatwg.org/#concept-encoding-get
 pub(crate) fn trim_label(label: &str) -> &str {
     label.trim_matches(['\t', '\n', '\x0C', '\r', ' '])
 }
 
-/// Radios sharing a non-empty `name` in the same document, in tree order,
-/// excluding `except`. An empty or missing name forms no group, so a nameless
-/// radio never unchecks another
-/// (<https://html.spec.whatwg.org/multipage/input.html#radio-button-group>).
-/// Blitz keeps no form-owner model, so the group spans the document instead
-/// of the form (a known cutover gap).
+// https://html.spec.whatwg.org/multipage/input.html#radio-button-group
 pub(crate) fn radio_group_members(
     base: &blitz_dom::BaseDocument,
     document: u32,
     name: &str,
     except: BlitzId,
 ) -> Vec<NodeId> {
-    // A radio button whose name is missing or empty belongs to no group
-    // (<https://html.spec.whatwg.org/multipage/input.html#radio-button-group>).
+    // https://html.spec.whatwg.org/multipage/input.html#radio-button-group
     if name.is_empty() || attr(base, except, "name").is_none() {
         return Vec::new();
     }
-    // A radio button group lives in one tree and shares the form owner, so a
-    // disconnected tree's root, not the document root, is the search root
-    // (<https://html.spec.whatwg.org/multipage/input.html#radio-button-group>).
+    // https://html.spec.whatwg.org/multipage/input.html#radio-button-group
     let mut root = except;
     while let Some(parent) = base.get_node(root).and_then(|node| node.parent) {
         root = parent;
@@ -942,7 +812,6 @@ pub(crate) fn radio_group_members(
     let owner = form_owner_of(base, document, except);
     let mut group = Vec::new();
     let mut stack = vec![root];
-    // Reverse-push keeps the pop order in tree order.
     while let Some(id) = stack.pop() {
         let Some(node) = base.get_node(id) else {
             continue;
@@ -966,9 +835,6 @@ pub(crate) fn radio_group_members(
     group
 }
 
-/// A control's value length in UTF-16 code units, the basis selection
-/// offsets clamp against: the `value` attribute for inputs, descendant text
-/// for textareas.
 pub(crate) fn control_value_len(parsed: &Parsed, node: BlitzId) -> usize {
     let base = &parsed.document.base;
     let Some(element) = base
@@ -989,9 +855,7 @@ pub(crate) fn control_value_len(parsed: &Parsed, node: BlitzId) -> usize {
     }
 }
 
-/// The textarea API value: the raw value (dirty slot or child text content)
-/// with newlines normalized to LF
-/// (<https://html.spec.whatwg.org/multipage/form-elements.html#concept-textarea-api-value>).
+// https://html.spec.whatwg.org/multipage/form-elements.html#concept-textarea-api-value
 pub(crate) fn textarea_api_value(base: &blitz_dom::BaseDocument, node: BlitzId) -> String {
     let raw = base
         .get_node(node)
@@ -1004,8 +868,6 @@ pub(crate) fn textarea_api_value(base: &blitz_dom::BaseDocument, node: BlitzId) 
     crate::dom::text::normalize_newlines(&raw)
 }
 
-/// Whether text selection applies to a control: textareas always, text-like
-/// inputs only.
 pub(crate) fn selection_applies(base: &blitz_dom::BaseDocument, node: BlitzId) -> bool {
     let Some(element) = base
         .get_node(node)
@@ -1024,8 +886,6 @@ pub(crate) fn selection_applies(base: &blitz_dom::BaseDocument, node: BlitzId) -
     }
 }
 
-/// Radios to uncheck when checked `input` joins a named group: the other
-/// group members.
 pub(crate) fn radios_to_uncheck(base: &BaseDocument, document: u32, input: BlitzId) -> Vec<NodeId> {
     let Some(element) = base
         .get_node(input)
@@ -1050,9 +910,7 @@ pub(crate) fn radios_to_uncheck(base: &BaseDocument, document: u32, input: Blitz
     }
 }
 
-/// The `option.selected` setter: set selectedness and dirtiness, then ask the
-/// owning select for a reset
-/// (<https://html.spec.whatwg.org/multipage/form-elements.html#dom-option-selected>).
+// https://html.spec.whatwg.org/multipage/form-elements.html#dom-option-selected
 pub(crate) fn set_option_selected(parsed: &mut Parsed, option: BlitzId, selected: bool) {
     if let Some(select) = option_select_owner(&parsed.document.base, option)
         && selected
@@ -1068,16 +926,12 @@ pub(crate) fn set_option_selected(parsed: &mut Parsed, option: BlitzId, selected
     if let Some(select) = option_select_owner(&parsed.document.base, option) {
         parsed.document.invalidate_selectedness(select);
         run_selectedness_setting(parsed, select);
-        // Setting selectedness runs "ask for a reset", which refreshes the
-        // select's selectedcontent elements
-        // (<https://html.spec.whatwg.org/multipage/form-elements.html#dom-option-selected>).
+        // https://html.spec.whatwg.org/multipage/form-elements.html#dom-option-selected
         update_selectedcontent(parsed, select);
     }
 }
 
-/// The `select.selectedIndex` setter: clear every selectedness, then select
-/// the requested index and mark it dirty. No default is applied afterwards
-/// (<https://html.spec.whatwg.org/multipage/form-elements.html#dom-select-selectedindex>).
+// https://html.spec.whatwg.org/multipage/form-elements.html#dom-select-selectedindex
 pub(crate) fn set_select_selected_index_value(parsed: &mut Parsed, select: BlitzId, value: i32) {
     let wanted = usize::try_from(value).ok().and_then(|index| {
         select_options(&parsed.document.base, parsed.id, select)
@@ -1087,9 +941,7 @@ pub(crate) fn set_select_selected_index_value(parsed: &mut Parsed, select: Blitz
     select_only_option(parsed, select, wanted);
 }
 
-/// The `select.value` setter: clear every selectedness, select the first
-/// matching option, and mark it dirty. No default is applied when nothing
-/// matches (<https://html.spec.whatwg.org/multipage/form-elements.html#dom-select-value>).
+// https://html.spec.whatwg.org/multipage/form-elements.html#dom-select-value
 pub(crate) fn set_select_value_selectedness(parsed: &mut Parsed, select: BlitzId, value: &str) {
     let options = select_options(&parsed.document.base, parsed.id, select);
     let mut first_matching = None;
@@ -1101,11 +953,8 @@ pub(crate) fn set_select_value_selectedness(parsed: &mut Parsed, select: BlitzId
     select_only_option(parsed, select, first_matching);
 }
 
-/// Selects `keep` alone and marks it dirty; every other option is cleared
-/// without dirtying. Both `select` setters define the whole selection and skip
-/// the default
-/// (<https://html.spec.whatwg.org/multipage/form-elements.html#dom-select-selectedindex>,
-/// <https://html.spec.whatwg.org/multipage/form-elements.html#dom-select-value>).
+// https://html.spec.whatwg.org/multipage/form-elements.html#dom-select-selectedindex
+// https://html.spec.whatwg.org/multipage/form-elements.html#dom-select-value
 fn select_only_option(parsed: &mut Parsed, select: BlitzId, keep: Option<BlitzId>) {
     let options = select_options(&parsed.document.base, parsed.id, select);
     let mut mutator = parsed.document.base.mutate();
@@ -1123,23 +972,16 @@ fn select_only_option(parsed: &mut Parsed, select: BlitzId, keep: Option<BlitzId
     }
     drop(mutator);
     parsed.document.mark_selectedness_normalized(select);
-    // Both `select` setters define the whole selection, so the selectedcontent
-    // elements follow afterwards
-    // (<https://html.spec.whatwg.org/multipage/form-elements.html#dom-select-value>).
+    // https://html.spec.whatwg.org/multipage/form-elements.html#dom-select-value
     update_selectedcontent(parsed, select);
 }
 
-/// Runs the selectedness rules after an option's `selected` attribute
-/// changed. The tree already wrote the slot while the dirtiness flag was
-/// clear; the owning select then asks for a reset
-/// (<https://html.spec.whatwg.org/multipage/form-elements.html#attr-option-selected>).
+// https://html.spec.whatwg.org/multipage/form-elements.html#attr-option-selected
 pub(crate) fn option_selected_attribute_changed(parsed: &mut Parsed, option: BlitzId) {
     let Some(select) = option_select_owner(&parsed.document.base, option) else {
         return;
     };
-    // A selected option in a single select deselects the others, wherever it
-    // sits in tree order
-    // (<https://html.spec.whatwg.org/multipage/form-elements.html#the-option-element>).
+    // https://html.spec.whatwg.org/multipage/form-elements.html#the-option-element
     let selected = parsed
         .document
         .base
@@ -1151,15 +993,11 @@ pub(crate) fn option_selected_attribute_changed(parsed: &mut Parsed, option: Bli
     }
     parsed.document.invalidate_selectedness(select);
     run_selectedness_setting(parsed, select);
-    // The attribute write runs the selectedness setting algorithm followed by
-    // an update of the select's selectedcontent elements
-    // (<https://html.spec.whatwg.org/multipage/form-elements.html#the-select-element>).
+    // https://html.spec.whatwg.org/multipage/form-elements.html#the-select-element
     update_selectedcontent(parsed, select);
 }
 
-/// Runs the selectedness rules after a select's `multiple`, `size`, or an
-/// option's `disabled` attribute changed
-/// (<https://html.spec.whatwg.org/multipage/form-elements.html#the-select-element>).
+// https://html.spec.whatwg.org/multipage/form-elements.html#the-select-element
 pub(crate) fn select_attribute_changed(parsed: &mut Parsed, select: BlitzId, attribute: &str) {
     if attribute == "multiple" && attr(&parsed.document.base, select, "multiple").is_none() {
         let mut seen = false;
@@ -1175,19 +1013,13 @@ pub(crate) fn select_attribute_changed(parsed: &mut Parsed, select: BlitzId, att
     }
     parsed.document.invalidate_selectedness(select);
     let changed = run_selectedness_setting(parsed, select);
-    // Removing `multiple` always refreshes the selectedcontent elements, since
-    // they are not kept up to date while it is present. A `size` or `disabled`
-    // change only refreshes them when the selectedness actually changed
-    // (<https://html.spec.whatwg.org/multipage/form-elements.html#the-select-element>).
+    // https://html.spec.whatwg.org/multipage/form-elements.html#the-select-element
     if changed || attribute == "multiple" {
         update_selectedcontent(parsed, select);
     }
 }
 
-/// A `selectedcontent` element's nearest ancestor `select`, when it reflects
-/// one: an `option` or another `selectedcontent` in between disables it, and so
-/// does a second nested `select`
-/// (<https://html.spec.whatwg.org/multipage/form-elements.html#the-selectedcontent-element>).
+// https://html.spec.whatwg.org/multipage/form-elements.html#the-selectedcontent-element
 fn selectedcontent_select(base: &BaseDocument, node: BlitzId) -> Option<BlitzId> {
     let mut nearest = None;
     let mut cursor = base.get_node(node).and_then(|tree| tree.parent);
@@ -1207,9 +1039,7 @@ fn selectedcontent_select(base: &BaseDocument, node: BlitzId) -> Option<BlitzId>
     nearest
 }
 
-/// The `selectedcontent` descendants of `select`, in tree order, that are
-/// enabled and reflect that select
-/// (<https://html.spec.whatwg.org/multipage/form-elements.html#the-selectedcontent-element>).
+// https://html.spec.whatwg.org/multipage/form-elements.html#the-selectedcontent-element
 fn enabled_selectedcontents(base: &BaseDocument, select: BlitzId) -> Vec<BlitzId> {
     let mut found = Vec::new();
     let mut stack: Vec<BlitzId> = base.get_node(select).map_or_else(Vec::new, |tree| {
@@ -1228,13 +1058,8 @@ fn enabled_selectedcontents(base: &BaseDocument, select: BlitzId) -> Vec<BlitzId
     found
 }
 
-/// Updates a select's descendant `selectedcontent` elements to reflect its
-/// first selected option: each gets a clone of the option's children, with the
-/// elements the algorithm removes dropped, or is emptied when nothing is
-/// selected (<https://html.spec.whatwg.org/multipage/form-elements.html#the-selectedcontent-element>).
+// https://html.spec.whatwg.org/multipage/form-elements.html#the-selectedcontent-element
 pub(crate) fn update_selectedcontent(parsed: &mut Parsed, select: BlitzId) {
-    // The selectedcontent elements of a select with `multiple` are not kept up
-    // to date.
     if attr(&parsed.document.base, select, "multiple").is_some() {
         return;
     }
@@ -1247,9 +1072,7 @@ pub(crate) fn update_selectedcontent(parsed: &mut Parsed, select: BlitzId) {
         .find(|option| option_selectedness(&parsed.document.base, option.node));
     let document = parsed.id;
     for selectedcontent in targets {
-        // Each selectedcontent needs its own clone set: inserting one set
-        // would move it away from the previous element
-        // (<https://dom.spec.whatwg.org/#concept-node-replace-all>).
+        // https://dom.spec.whatwg.org/#concept-node-replace-all
         let children = option.map_or_else(Vec::new, |option| {
             cloned_option_contents(parsed, option.node)
         });
@@ -1259,15 +1082,11 @@ pub(crate) fn update_selectedcontent(parsed: &mut Parsed, select: BlitzId) {
         };
         let iframes =
             crate::dom::insertion::replace_all_journaled(parsed, selectedcontent, children);
-        // The clones drop iframe, frame, embed, and object, so the replacement
-        // never carries a child navigable.
         debug_assert_eq!(iframes.len(), 0);
     }
 }
 
-/// A clone of an option's children for one `selectedcontent` element, with
-/// HTML and SVG `script`, `frame`, `iframe`, `embed`, and `object` elements
-/// removed (<https://html.spec.whatwg.org/multipage/form-elements.html#the-selectedcontent-element>).
+// https://html.spec.whatwg.org/multipage/form-elements.html#the-selectedcontent-element
 fn cloned_option_contents(parsed: &mut Parsed, option: BlitzId) -> Vec<NodeId> {
     let children: Vec<BlitzId> = parsed
         .document
@@ -1291,10 +1110,7 @@ fn cloned_option_contents(parsed: &mut Parsed, option: BlitzId) -> Vec<NodeId> {
     clones
 }
 
-/// Removes the elements a cloned option's contents must not carry. Collecting
-/// in tree order means an element removed with its parent is already detached
-/// when its own turn comes, which the removal tolerates
-/// (<https://dom.spec.whatwg.org/#concept-node-remove>).
+// https://dom.spec.whatwg.org/#concept-node-remove
 fn remove_unclonable(doc: &mut crate::documents::BlitzDocument, roots: &[NodeId]) {
     let mut doomed = Vec::new();
     let mut stack: Vec<BlitzId> = roots.iter().rev().map(|root| root.node).collect();

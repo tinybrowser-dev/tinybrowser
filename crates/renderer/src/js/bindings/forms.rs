@@ -1,15 +1,6 @@
-//! Constructing a form's entry list for `FormData` and form submission.
-//!
-//! [Constructing the entry list](https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#constructing-form-data-set)
-//! walks a form's controls in tree order, keeping the ones that carry a name
-//! and contribute a value. The list is returned to the `FormData` shim as a
-//! flat `[name, value, ...]` array.
-//!
-//! Values come from the form-control slots in the tree: an input's current
-//! value, an option's selectedness, and a textarea's dirty value or descendant
-//! text. The dirty flags decide whether a content attribute still drives a
-//! slot (<https://html.spec.whatwg.org/multipage/input.html#concept-fe-value>,
-//! <https://html.spec.whatwg.org/multipage/form-elements.html#concept-option-selectedness>).
+// https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#constructing-form-data-set
+// https://html.spec.whatwg.org/multipage/input.html#concept-fe-value
+// https://html.spec.whatwg.org/multipage/form-elements.html#concept-option-selectedness
 
 use super::{focus, host_node_id, owning_world, world, world_for_node};
 use crate::dom::forms::{self, PendingEntry, encode_form_bytes, urlencode_form};
@@ -24,9 +15,6 @@ use rquickjs::{Array, Ctx, Exception, IntoJs, Object, Persistent, Result, TypedA
 use std::cell::RefCell;
 use std::rc::Rc;
 
-/// A host result where `None` is JS `null`. rquickjs maps a bare `Option::None`
-/// to `undefined`, but the shims use `null` for "no value" and compare with
-/// `=== null`.
 fn optional<'js, T: IntoJs<'js>>(value: Option<T>, ctx: &Ctx<'js>) -> Result<Value<'js>> {
     match value {
         Some(value) => value.into_js(ctx),
@@ -34,7 +22,6 @@ fn optional<'js, T: IntoJs<'js>>(value: Option<T>, ctx: &Ctx<'js>) -> Result<Val
     }
 }
 
-/// Host functions the `FormData` and form-submission shims call.
 pub(super) fn install(_ctx: &Ctx<'_>, globals: &Object<'_>) -> Result<()> {
     globals.set(
         "__tbFormEntries",
@@ -106,8 +93,6 @@ pub(super) fn install(_ctx: &Ctx<'_>, globals: &Object<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Registers the per-control state shims: the edit state the validity and
-/// editing algorithms maintain beside Blitz's value slot.
 fn install_control_state(globals: &Object<'_>) -> Result<()> {
     globals.set("__tbUserEdited", rquickjs::prelude::Func::from(user_edited))?;
     globals.set(
@@ -156,9 +141,6 @@ fn install_control_state(globals: &Object<'_>) -> Result<()> {
     Ok(())
 }
 
-/// The owning world and node for a form-associated element argument. A stale
-/// wrapper or a node from a dead document answers `None`, and that is a no-op
-/// rather than a throw: these are internal shims.
 fn control_of<'js>(ctx: &Ctx<'js>, element: &Value<'js>) -> Option<(NodeId, Rc<RefCell<World>>)> {
     let node = host_node_id(ctx, element)?;
     let world = owning_world(ctx, node)?;
@@ -205,8 +187,6 @@ fn custom_validity<'js>(ctx: Ctx<'js>, element: Value<'js>) -> Result<Value<'js>
     Ok(rquickjs::String::from_utf16(ctx, &units)?.into_value())
 }
 
-/// `setCustomValidity` normalizes CR and CRLF to LF, on UTF-16 units so a
-/// lone surrogate is preserved.
 fn set_custom_validity<'js>(ctx: Ctx<'js>, element: Value<'js>, message: rquickjs::String<'js>) {
     let Ok(units) = message.to_utf16() else {
         return;
@@ -298,26 +278,19 @@ fn set_output_default_value<'js>(ctx: Ctx<'js>, element: Value<'js>, value: rqui
     }
 }
 
-/// Encodes form text in the submission encoding, as the raw bytes the
-/// multipart and text/plain serializers frame
-/// (<https://encoding.spec.whatwg.org/#encode>).
+// https://encoding.spec.whatwg.org/#encode
 fn encode_form_bytes_js(ctx: Ctx<'_>, text: String, label: String) -> Result<TypedArray<'_, u8>> {
     TypedArray::new(ctx, encode_form_bytes(&text, &label))
 }
 
-/// The floating-point grammar over an owned string, with `null` for a parse
-/// failure.
 fn parse_float(ctx: Ctx<'_>, value: String) -> Result<Value<'_>> {
     optional(crate::dom::parse::parse_double(&value), &ctx)
 }
 
-/// The non-negative integer rules over an owned string, with `null` for a parse
-/// failure.
 fn parse_non_negative_integer_js(ctx: Ctx<'_>, value: String) -> Result<Value<'_>> {
     optional(crate::dom::parse::parse_non_negative_integer(&value), &ctx)
 }
 
-/// The authored decimal scale of a step literal, or `null` when it is not one.
 fn decimal_scale_js(ctx: Ctx<'_>, value: String) -> Result<Value<'_>> {
     optional(
         crate::dom::microsyntaxes::authored_decimal_scale(&value),
@@ -325,8 +298,6 @@ fn decimal_scale_js(ctx: Ctx<'_>, value: String) -> Result<Value<'_>> {
     )
 }
 
-/// The state's default step in its step unit, or `null` when the state does
-/// not step.
 fn default_step_js(ctx: Ctx<'_>, type_name: String) -> Result<Value<'_>> {
     optional(
         crate::dom::input::default_step(InputType::from_attribute(Some(&type_name))),
@@ -334,26 +305,18 @@ fn default_step_js(ctx: Ctx<'_>, type_name: String) -> Result<Value<'_>> {
     )
 }
 
-/// The input state for a `type` keyword, as the IDL `type` attribute spells
-/// it. An unknown keyword is the Text state, which has no value in any
-/// stepping unit.
 fn input_kind(type_name: &str) -> InputType {
     InputType::from_attribute(Some(type_name))
 }
 
-/// The value interpreted in its state's step unit, or `null` for an invalid
-/// value or a state that does not step.
 fn value_in_units_js(ctx: Ctx<'_>, type_name: String, text: String) -> Result<Value<'_>> {
     optional(value_in_units(input_kind(&type_name), &text), &ctx)
 }
 
-/// The value as `valueAsNumber` reports it, or `null` for an invalid value or
-/// a state that has no numeric value.
 fn value_as_number_js(ctx: Ctx<'_>, type_name: String, text: String) -> Result<Value<'_>> {
     optional(value_as_number(input_kind(&type_name), &text), &ctx)
 }
 
-/// Whether the input suffers from a step mismatch.
 fn step_mismatch_js<'js>(ctx: Ctx<'js>, element: Value<'js>) -> Result<bool> {
     let Some(id) = host_node_id(&ctx, &element) else {
         return Ok(false);
@@ -366,8 +329,6 @@ fn step_mismatch_js<'js>(ctx: Ctx<'js>, element: Value<'js>) -> Result<bool> {
     Ok(step_mismatch(&parsed.document.base, id.node))
 }
 
-/// The number edit buffer state as `[0, 1, 2, 3, 4]` for invalid, empty,
-/// partial, complete, and trailing-dot, in the order the JS shim reads them.
 fn number_buffer_state_js(text: String) -> u8 {
     match number_buffer_state(&text) {
         NumberBufferState::Invalid => 0,
@@ -378,9 +339,7 @@ fn number_buffer_state_js(text: String) -> u8 {
     }
 }
 
-/// Whether the calling realm is same origin with its top-level traversable.
-/// `showPicker()` requires it, and `document.domain` does not widen it
-/// (<https://html.spec.whatwg.org/multipage/form-elements.html#dom-select-showpicker>).
+// https://html.spec.whatwg.org/multipage/form-elements.html#dom-select-showpicker
 fn same_origin_with_top(ctx: Ctx<'_>) -> Result<bool> {
     let current = world(&ctx)?;
     let frame = current.borrow().frame();
@@ -401,9 +360,7 @@ fn same_origin_with_top(ctx: Ctx<'_>) -> Result<bool> {
     Ok(same)
 }
 
-/// Whether `form` can start a submission: a stale wrapper or a form outside
-/// the main document has no browsing context to navigate
-/// (<https://html.spec.whatwg.org/multipage/forms.html#dom-form-submit>).
+// https://html.spec.whatwg.org/multipage/forms.html#dom-form-submit
 fn form_can_submit<'js>(ctx: Ctx<'js>, form: Value<'js>) -> bool {
     let Some(node) = host_node_id(&ctx, &form) else {
         return false;
@@ -414,11 +371,7 @@ fn form_can_submit<'js>(ctx: Ctx<'js>, form: Value<'js>) -> bool {
     !focus::cannot_navigate(&owner.borrow(), node)
 }
 
-/// Dispatches the `submit` event the shim built at `form` with the trust bit
-/// set, and reports whether it was not canceled. The submission algorithm
-/// around it stays in the shim; only the engine can mark a user-agent event
-/// trusted
-/// (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#form-submission-algorithm>).
+// https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#form-submission-algorithm
 fn fire_submit_event_js<'js>(ctx: Ctx<'js>, form: Value<'js>, event: Value<'js>) -> Result<bool> {
     let Some(form) = host_node_id(&ctx, &form) else {
         return Ok(false);
@@ -430,15 +383,9 @@ fn fire_submit_event_js<'js>(ctx: Ctx<'js>, form: Value<'js>, event: Value<'js>)
     )
 }
 
-/// Resolves an encoding label to its canonical name, or `null`
-/// (<https://encoding.spec.whatwg.org/#names-and-labels>).
-///
-/// The `replacement` encoding is never returned: getting an encoding
-/// rejects it (<https://encoding.spec.whatwg.org/#concept-encoding-get>).
-/// Sets an option's selectedness without the dirtiness flag, as the
-/// `Option()` constructor does, and leaves the `selected` content attribute
-/// driving it
-/// (<https://html.spec.whatwg.org/multipage/form-elements.html#dom-option-option>).
+// https://encoding.spec.whatwg.org/#names-and-labels
+// https://encoding.spec.whatwg.org/#concept-encoding-get
+// https://html.spec.whatwg.org/multipage/form-elements.html#dom-option-option
 fn store_option_selectedness<'js>(
     ctx: Ctx<'js>,
     element: Value<'js>,
@@ -456,7 +403,6 @@ fn store_option_selectedness<'js>(
     Ok(())
 }
 
-/// The form's entry list as `[name, value, ...]`, in tree order.
 pub(super) fn form_entries<'js>(
     ctx: Ctx<'js>,
     form: Value<'js>,
@@ -497,14 +443,7 @@ pub(super) fn form_entries<'js>(
     Ok(entries)
 }
 
-/// The resolved submission plan for a form and an optional submitter, as
-/// `[action, method, enctype, target]`, or `null` when the form cannot submit
-/// (no action that resolves, or `dialog`).
-///
-/// The renderer owns the event half (`submit`, `formdata`) and the encoders;
-/// the method/action/enctype/target resolution and their parsers are the
-/// engine's one copy
-/// (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#form-submission-algorithm>).
+// https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#form-submission-algorithm
 pub(super) fn form_plan<'js>(
     ctx: Ctx<'js>,
     form: Value<'js>,
@@ -519,8 +458,6 @@ pub(super) fn form_plan<'js>(
         return Ok(Value::new_null(ctx));
     };
     let submitter = submitter.0.and_then(|value| host_node_id(&ctx, &value));
-    // A submitter from another document cannot override this form's attributes;
-    // the node id alone would address an unrelated element in this tree.
     let submitter = submitter.filter(|submitter| submitter.document == id.document);
     let Some(plan) = parsed
         .document
@@ -537,9 +474,7 @@ pub(super) fn form_plan<'js>(
     Ok(array.into_value())
 }
 
-/// Appends one `[name, File]` pair per file a script assigned to a `type=file`
-/// input, read from the world so it does not depend on JS wrapper identity
-/// (<https://html.spec.whatwg.org/multipage/input.html#dom-input-files>).
+// https://html.spec.whatwg.org/multipage/input.html#dom-input-files
 fn push_file_entries<'js>(
     ctx: &Ctx<'js>,
     entries: &Array<'js>,
@@ -574,8 +509,6 @@ fn push_file_entries<'js>(
     Ok(())
 }
 
-/// The host half of the `input.files` setter: records the assigned file list so
-/// the form entry list can read it later.
 pub(super) fn set_input_files<'js>(
     ctx: Ctx<'js>,
     element: Value<'js>,
@@ -609,13 +542,8 @@ pub(super) fn set_input_files<'js>(
     Ok(())
 }
 
-/// Queues a form-submission navigation to `url`, to the navigable the form's
-/// `target` chooses
-/// (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#form-submission-algorithm>).
-///
-/// Submission returns without navigating when the form cannot navigate
-/// (<https://html.spec.whatwg.org/multipage/links.html#cannot-navigate>), which
-/// is why the form itself crosses the boundary.
+// https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#form-submission-algorithm
+// https://html.spec.whatwg.org/multipage/links.html#cannot-navigate
 pub(super) fn form_navigate<'js>(
     ctx: Ctx<'js>,
     url: String,
@@ -628,14 +556,10 @@ pub(super) fn form_navigate<'js>(
     let Some(node) = host_node_id(&ctx, &form) else {
         return Ok(());
     };
-    // A form whose document is gone cannot navigate either, and must not throw
-    // on the way to that conclusion.
     let Some(owner) = owning_world(&ctx, node) else {
         return Ok(());
     };
-    // A form submission is GET or POST; `method=dialog` never reaches the
-    // host, and the shim normalizes every other spelling to GET
-    // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#attr-fs-method>).
+    // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#attr-fs-method
     let method = match method.as_str() {
         "GET" => net::Method::GET,
         "POST" => net::Method::POST,
@@ -650,8 +574,7 @@ pub(super) fn form_navigate<'js>(
         return Ok(());
     }
     let world_rc = world(&ctx)?;
-    // A sandboxed document without `allow-forms` blocks form submission
-    // (<https://html.spec.whatwg.org/multipage/browsers.html#sandboxed-forms-browsing-context-flag>).
+    // https://html.spec.whatwg.org/multipage/browsers.html#sandboxed-forms-browsing-context-flag
     if world_rc
         .borrow()
         .sandbox
@@ -666,8 +589,6 @@ pub(super) fn form_navigate<'js>(
     navigation.method = method;
     navigation.body = body.to_vec();
     navigation.content_type = content_type;
-    // A form submission carries no policy of its own yet, so the initiator
-    // document's referrer policy decides.
     world_rc.borrow_mut().queue_frame_navigation(navigation);
     Ok(())
 }

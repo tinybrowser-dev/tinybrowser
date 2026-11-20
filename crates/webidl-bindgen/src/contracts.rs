@@ -16,8 +16,6 @@ use crate::model::{
 use crate::names::snake_case;
 use crate::{Binding, Error, Source};
 
-/// One discovered implementation method: its parameter count after `self` and
-/// `ctx`, and whether the first such parameter is the JS receiver object.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Method {
     has_self: bool,
@@ -72,7 +70,6 @@ fn is_object_type(type_: &syn::Type) -> bool {
             .segments
             .last()
             .is_some_and(|segment| segment.ident == "Object"),
-        // `Object<'js>` inside a reference is not a receiver.
         _ => false,
     }
 }
@@ -81,16 +78,11 @@ struct Implementation {
     interface: String,
     payload: syn::Ident,
     lifetime: bool,
-    /// Additional platform types implementing the same interface, discovered
-    /// in source order after the primary payload.
     payloads: Vec<model::Payload>,
     methods: BTreeMap<String, Method>,
 }
 
 impl Implementation {
-    /// Fold a second implementation of the same interface into this one. Every
-    /// payload must provide the same method signatures, so the merged method
-    /// set is what the generated trait and every `impl` share.
     fn absorb(&mut self, other: Self, source: &str) -> Result<(), Error> {
         if self.payload == other.payload {
             return Err(Error(format!(
@@ -119,13 +111,6 @@ impl Implementation {
         Ok(())
     }
 
-    /// Choose the payload that owns the interface's prototype. A declared
-    /// class named for the interface already provides it (brands.js copies
-    /// the native prototype when defining the global), so it is elected
-    /// however discovery ordered the implementations. Otherwise the single
-    /// class-less payload dedicated to this interface gets a generated
-    /// class; several dedicated class-less payloads with no name match is
-    /// ambiguous and fails the build.
     fn elect(
         &mut self,
         classes: &BTreeMap<String, String>,
@@ -187,7 +172,6 @@ impl Implementation {
     }
 }
 
-/// Parse the reflected-enumerated metadata table.
 pub(crate) fn parse_reflected_enumerated(
     source: &Source<'_>,
 ) -> Result<Vec<crate::ReflectedEnum>, Error> {
@@ -228,8 +212,6 @@ pub(crate) fn parse_reflected_enumerated(
                 index + 1
             )));
         }
-        // Validate the type path the same way; the variant paths stay strings
-        // here and are joined with it by the lowering.
         syn::parse_str::<syn::Path>(type_path).map_err(|error| {
             Error(format!(
                 "{}:{}: invalid type `{type_path}`: {error}",
@@ -271,13 +253,6 @@ pub(crate) fn compile(
         )?;
         declared_modules(&syntax.items, &mut declared);
     }
-    // An interface whose members are all generator-supplied has no hand-written
-    // `impl` block, because there is no trait for it to implement. Its generated
-    // module is still installed, and the `include!` that installs it is the
-    // declaration that the module must exist. Its payload is the nearest
-    // implemented ancestor's: a platform type that implements an interface also
-    // implements everything that interface inherits from, which is why the same
-    // payload is the only sound choice.
     for name in declared {
         if implementations.contains_key(&name) {
             continue;
@@ -334,11 +309,6 @@ pub(crate) fn compile(
         .collect()
 }
 
-/// Collects the interface names whose generated module a source `include!`s.
-///
-/// The include is what actually needs the file: a missing module is a compile
-/// error there, so this set is the complete list of modules the build must
-/// write, including the interfaces that have no hand-written implementation.
 fn declared_modules(items: &[syn::Item], declared: &mut BTreeSet<String>) {
     for item in items {
         match item {
@@ -357,14 +327,10 @@ fn declared_modules(items: &[syn::Item], declared: &mut BTreeSet<String>) {
     }
 }
 
-/// The file stem of the one `*.rs` string in an `include!` invocation, if this
-/// macro is one.
 fn included_module(mac: &syn::Macro) -> Option<String> {
     if !mac.path.is_ident("include") {
         return None;
     }
-    // The file name is nested inside `concat!(env!("OUT_DIR"), "/Name.rs")`,
-    // so the literal search has to walk groups rather than only the top level.
     let literal = module_path(&mac.tokens)?;
     std::path::Path::new(&literal.value())
         .file_stem()
@@ -372,7 +338,6 @@ fn included_module(mac: &syn::Macro) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// The one string literal ending in `.rs` anywhere in a token stream.
 fn module_path(tokens: &proc_macro2::TokenStream) -> Option<syn::LitStr> {
     for token in tokens.clone() {
         match token {
@@ -397,17 +362,6 @@ fn module_path(tokens: &proc_macro2::TokenStream) -> Option<syn::LitStr> {
     None
 }
 
-/// The payload and lifetime of the nearest implemented ancestor of `name`.
-///
-/// Walking `interface.inheritance` is what makes an interface with no
-/// implementation of its own bindable: the engine implements the ancestor, and
-/// every platform type implements a child interface the same way because the
-/// child interface's members are a superset reached through the same object.
-///
-/// A mixin with no implementation of its own is bindable the same way: its
-/// members install on every implemented interface that includes it, so the
-/// payload is the first such includer's. That happens when every mixin member
-/// is generator-supplied and there is no trait to implement.
 fn inherited_payload(
     database: &Database<'_>,
     name: &str,
@@ -484,9 +438,6 @@ fn discover(
     Ok(())
 }
 
-/// The JavaScript name a declared class provides a prototype for: the
-/// `rename` value when present, otherwise the Rust type name. This is the
-/// derived signal that elects a prototype owner, never a mapping table.
 fn class_name(item: &syn::ItemStruct, source: &str) -> Result<String, Error> {
     for attribute in &item.attrs {
         let syn::Meta::List(meta) = &attribute.meta else {
@@ -621,12 +572,6 @@ fn lower(
     implemented: &BTreeSet<String>,
     reflected: &[crate::ReflectedEnum],
 ) -> Result<model::Interface, Error> {
-    // Mixins have no interface object; their members install on every
-    // *implemented* including interface's prototype, derived from the IDL
-    // includes. Included interfaces without an implementation have no
-    // global to install onto, so they are excluded (a JS-only includer
-    // added later needs an implementation to become an install target —
-    // it is silently skipped until then, by design).
     if let Ok(mixin) = database.mixin(&implementation.interface) {
         return lower_mixin(
             database,
@@ -686,12 +631,6 @@ fn lower(
     Ok(interface)
 }
 
-/// Lower a mixin implementation. The mixin itself has no prototype; the
-/// generated installer targets every implemented interface that includes
-/// it, resolved from the imported includes statements rather than a
-/// handwritten list. Included interfaces without an implementation have no
-/// global to install onto, so they are excluded rather than failing the
-/// install at runtime.
 fn lower_mixin(
     database: &Database<'_>,
     implementation: &Implementation,
@@ -754,7 +693,6 @@ fn lower_mixin(
     Ok(interface)
 }
 
-/// The IDL member name for diagnostics.
 fn member_name<'a>(member: &InterfaceMember<'a>) -> &'a str {
     match member {
         InterfaceMember::Const(member) => member.identifier.0,
@@ -786,10 +724,6 @@ fn lower_members(
     let mut remaining = implementation.methods.clone();
     let mut methods = Vec::new();
     let mut getters = Vec::new();
-    // Indexed and named getters inherited through the parent chain lower as
-    // own members: the exotic hooks and direct calls both resolve on this
-    // interface's prototype. This derives the repetition the legacy IDL
-    // used to hand-write, instead of editing the contract.
     let inherited = database.hook_members(declaration.name)?;
     for member in declaration.members.iter().chain(inherited.iter()) {
         let resolved = member;
@@ -845,7 +779,6 @@ fn lower_members(
                 {
                     return Err(Error("multiple stringifiers are not supported".into()));
                 }
-                // Reflected attributes contribute no trait methods.
                 if !signature.is_empty() {
                     methods.push(signature);
                 }
@@ -893,8 +826,6 @@ fn lower_members(
             | InterfaceMember::Maplike(_)
             | InterfaceMember::Setlike(_) => {}
             InterfaceMember::Stringifier(member) => {
-                // An anonymous `stringifier;` lowers to a `toString` method
-                // the implementation provides; anything else stays absent.
                 validate_empty_attributes(member.attributes.as_ref())?;
                 if !implementation.methods.contains_key("stringifier") {
                     continue;
@@ -917,11 +848,6 @@ fn lower_members(
     interface.properties =
         infer_property_hooks(declaration, &getters, &mut remaining, &mut methods)?;
     ensure_no_extra_methods(&remaining)?;
-    // A fully generated contract (such as `[Reflect]`-only members) has no
-    // trait methods: the generator supplies the whole dispatch and there is
-    // nothing an implementation could fill in. An empty trait would be an item
-    // with no reader, so it is not emitted at all, and the implementation has
-    // no trait to name either.
     if methods.is_empty() {
         return Ok(None);
     }
@@ -931,7 +857,6 @@ fn lower_members(
     ))
 }
 
-/// Reject implementation methods that no IDL member consumed.
 fn ensure_no_extra_methods(remaining: &BTreeMap<String, Method>) -> Result<(), Error> {
     if remaining.is_empty() {
         return Ok(());
@@ -942,7 +867,6 @@ fn ensure_no_extra_methods(remaining: &BTreeMap<String, Method>) -> Result<(), E
     )))
 }
 
-/// Emit the dictionaries and enumerations the lowered members reference.
 fn add_referenced_definitions(
     database: &Database<'_>,
     interface: &mut model::Interface,
@@ -967,8 +891,6 @@ fn add_referenced_definitions(
         match database.definition(&name) {
             Some(weedle::Definition::Dictionary(_)) => {
                 let dictionary = lower_dictionary(database, &name)?;
-                // Dictionaries name their own dependencies: enumerations
-                // their fields convert through.
                 for field in &dictionary.fields {
                     if let model::DictionaryFieldType::Enumeration { name, .. } = &field.type_
                         && !interface
@@ -1009,9 +931,6 @@ fn add_referenced_definitions(
     Ok(())
 }
 
-/// Note a union a lowered member references, so its generated enum is
-/// emitted into the same module. The union carries its members inline
-/// because unions have no named declaration to re-lower.
 fn collect_union(type_: &ReturnType, unions: &mut Vec<model::Union>) {
     if let ReturnType::Union(name, members) | ReturnType::NullableUnion(name, members) = type_
         && !unions.iter().any(|union| union.name == *name)
@@ -1023,14 +942,11 @@ fn collect_union(type_: &ReturnType, unions: &mut Vec<model::Union>) {
     }
 }
 
-/// Note a dictionary or enumeration a lowered member references, so its
-/// definition is emitted into the same generated module.
 fn collect_reference(type_: &ReturnType, referenced: &mut BTreeSet<String>) {
     match type_ {
         ReturnType::Dictionary(name) | ReturnType::Enumeration(name) => {
             referenced.insert(name.clone());
         }
-        // Dictionaries a union member references still need their struct.
         ReturnType::Union(_, members) => {
             for member in members {
                 if let model::UnionMemberType::Dictionary(name) = &member.type_ {
@@ -1042,10 +958,6 @@ fn collect_reference(type_: &ReturnType, referenced: &mut BTreeSet<String>) {
     }
 }
 
-/// Lower an unchanged dictionary declaration. Field names are the IDL names
-/// snake-cased; no `Rust` annotations are read.
-/// One dictionary member's Rust representation. Anything without a
-/// generated conversion fails the build.
 fn dictionary_field_type(
     database: &Database<'_>,
     member: &weedle::dictionary::DictionaryMember<'_>,
@@ -1120,8 +1032,6 @@ fn dictionary_field_type(
     }
 }
 
-/// An enumeration-typed dictionary member. Anything else named by the member
-/// fails the build.
 fn dictionary_enum_field(
     database: &Database<'_>,
     member: &weedle::dictionary::DictionaryMember<'_>,
@@ -1141,8 +1051,6 @@ fn dictionary_enum_field(
             member.identifier.0
         )));
     }
-    // A default that is not a keyword would fail conversion at runtime, so
-    // resolve it to a variant at lowering instead.
     let default = match &member.default {
         None => None,
         Some(default) => {
@@ -1162,7 +1070,6 @@ fn dictionary_enum_field(
     })
 }
 
-/// An interface- or callback-interface-typed dictionary member.
 fn dictionary_interface_field(
     database: &Database<'_>,
     member: &weedle::dictionary::DictionaryMember<'_>,
@@ -1186,8 +1093,6 @@ fn dictionary_interface_field(
     Ok(model::DictionaryFieldType::Interface { nullable })
 }
 
-/// Resolve a dictionary default keyword to its enumeration variant, so a
-/// default that is not a keyword fails the build instead of conversion.
 fn dictionary_enum_variant(
     database: &Database<'_>,
     name: &str,
@@ -1253,7 +1158,6 @@ fn lower_dictionary(database: &Database<'_>, name: &str) -> Result<model::Dictio
     })
 }
 
-/// Dictionary-level extended attributes the contract path consumes.
 fn validate_dictionary_attributes(
     attributes: Option<&ExtendedAttributeList<'_>>,
 ) -> Result<(), Error> {
@@ -1266,7 +1170,6 @@ fn validate_dictionary_attributes(
     }
 }
 
-/// Infer legacy platform-object property hooks from declared getters.
 fn infer_property_hooks(
     declaration: &crate::database::Interface<'_>,
     getters: &[PropertyGetter],
@@ -1300,7 +1203,6 @@ fn infer_property_hooks(
     }
 }
 
-/// One constructor member's lowering.
 fn lower_constructor_member(
     database: &Database<'_>,
     member: &weedle::interface::ConstructorInterfaceMember<'_>,
@@ -1330,11 +1232,6 @@ fn lower_constructor_member(
     Ok(())
 }
 
-/// Whether an IDL operation was already consumed by an earlier overload.
-/// Overloads share one implementation method: the first IDL overload in
-/// declaration order consumes it and later same-name overloads are skipped,
-/// matching overload-set order. The implementation fully describes the
-/// shared behavior; unimplemented overloads stay absent.
 fn overload_consumed(
     member: &weedle::interface::OperationInterfaceMember<'_>,
     remaining: &BTreeMap<String, Method>,
@@ -1345,11 +1242,6 @@ fn overload_consumed(
     }
 }
 
-/// An anonymous indexed setter: `setter undefined (unsigned long index, T
-/// value)`. The value passes through as-is for the platform method to
-/// convert, mirroring `[RustValue]`; the trait carries the `set_indexed`
-/// method the exotic hooks call. Anything else anonymous stays absent like
-/// any unimplemented member.
 fn lower_indexed_setter(
     database: &Database<'_>,
     member: &weedle::interface::OperationInterfaceMember<'_>,
@@ -1400,8 +1292,6 @@ fn lower_indexed_setter(
     }
     validate_empty_attributes(value.attributes.as_ref())?;
     validate_empty_attributes(value.type_.attributes.as_ref())?;
-    // The value type must lower so nonsense fails here, but the raw value
-    // passes through for the platform method to convert.
     native_type(database, &value.type_.type_, &mut BTreeSet::new())?;
     let Some(method) = implemented.get("set_indexed") else {
         return Ok(None);
@@ -1578,15 +1468,11 @@ fn lower_argument(
             if matches!(default.value, DefaultValue::Null(_)) => {}
         (ReturnType::Dictionary(_), true, Some(default))
             if matches!(default.value, DefaultValue::EmptyDictionary(_)) => {}
-        // An optional union converts an omitted `{}` or `null` by its own
-        // algorithm; a dictionary member fills the default.
         (ReturnType::Union(_, _) | ReturnType::NullableUnion(_, _), true, Some(default))
             if matches!(
                 default.value,
                 DefaultValue::EmptyDictionary(_) | DefaultValue::Null(_)
             ) => {}
-        // An optional union with a boolean default materializes it before
-        // conversion, mirroring boolean defaults.
         (ReturnType::Union(_, _) | ReturnType::NullableUnion(_, _), true, Some(default))
             if matches!(default.value, DefaultValue::Boolean(_)) => {}
         _ => {
@@ -1626,8 +1512,6 @@ fn lower_argument(
     })
 }
 
-/// An optional union argument's IDL default, if it is a boolean or an empty
-/// dictionary. Anything else fails the build.
 fn union_default(
     type_: &ReturnType,
     argument: &weedle::argument::SingleArgument<'_>,
@@ -1639,8 +1523,6 @@ fn union_default(
     match default.value {
         DefaultValue::Boolean(value) => Ok(Some(model::UnionDefault::Boolean(value.0))),
         DefaultValue::EmptyDictionary(_) => Ok(Some(model::UnionDefault::EmptyDictionary)),
-        // `= null` on a nullable union needs no materialization: the
-        // conversion already maps a missing value to `None`.
         DefaultValue::Null(_) => Ok(None),
         _ => Err(Error(
             "union argument defaults must be boolean, null, or {} for now".into(),
@@ -1648,9 +1530,6 @@ fn union_default(
     }
 }
 
-/// The Rust parameter type for one lowered operation argument. These mirror the
-/// conversions in `emit`, and match the payload signatures the platform
-/// algorithms already use.
 fn argument_parameter(
     type_: &ReturnType,
     arity: ArgumentArity,
@@ -1662,17 +1541,13 @@ fn argument_parameter(
         ReturnType::NullableNode | ReturnType::NullableDocumentType => {
             quote! { Option<host::NodeReference> }
         }
-        // `USVString` arrives as a converted string; only the argument
-        // conversion differs.
         ReturnType::String | ReturnType::UsvString if optional => {
             quote! { Option<rquickjs::String<'js>> }
         }
         ReturnType::String | ReturnType::UsvString => quote! { rquickjs::String<'js> },
         ReturnType::NullableString => quote! { Option<rquickjs::String<'js>> },
         ReturnType::Callback => quote! { rquickjs::Function<'js> },
-        // A platform object or `any` argument arrives as the original value;
-        // the platform algorithm performs any further check
-        // (<https://webidl.spec.whatwg.org/#idl-any>).
+        // https://webidl.spec.whatwg.org/#idl-any
         ReturnType::PlatformObject | ReturnType::Any => quote! { Value<'js> },
         ReturnType::Dictionary(name) | ReturnType::Enumeration(name) => {
             let name = format_ident!("{name}");
@@ -1771,9 +1646,6 @@ fn operation_result(
     }
 }
 
-/// A union in return position: the generated enum converts with `IntoJs`.
-/// Members the conversion cannot emit fail the build instead of shipping a
-/// partial conversion.
 fn union_result(
     lowered: &ReturnType,
     name: &str,
@@ -1812,10 +1684,6 @@ fn union_result(
     Ok((kind, result))
 }
 
-/// Whether a reflected member has a shape that must stay absent rather than
-/// fall through to method installation: `SameObject`/`PutForwards` members
-/// and non-stringifier special attributes lose their semantics as plain
-/// methods.
 fn is_special_reflect_shape(member: &weedle::interface::AttributeInterfaceMember<'_>) -> bool {
     has_no_args(member.attributes.as_ref(), "SameObject")
         || has_no_args(member.attributes.as_ref(), "PutForwards")
@@ -1827,10 +1695,6 @@ fn is_special_reflect_shape(member: &weedle::interface::AttributeInterfaceMember
         })
 }
 
-/// Rejects `[LegacyNullToEmptyString]` on a reflected member whose type is
-/// not plain `DOMString`: anything else reaching the method path is invalid
-/// IDL (like operation arguments). Auto-generated string reflection handled
-/// its own flag before this runs.
 fn reject_legacy_non_string_reflect(
     member: &weedle::interface::AttributeInterfaceMember<'_>,
 ) -> Result<(), Error> {
@@ -1851,7 +1715,6 @@ fn reject_legacy_non_string_reflect(
     Ok(())
 }
 
-/// The table entry for one attribute, lowered when it is listed.
 fn reflected_enumerated_attribute(
     interface: &str,
     member: &weedle::interface::AttributeInterfaceMember<'_>,
@@ -1868,21 +1731,12 @@ fn reflected_enumerated_attribute(
     lower_reflected_enumerated_attribute(member, exposure, entry, implemented).map(Some)
 }
 
-/// Lower one reflected enumerated attribute from the metadata table.
-///
-/// The table names the keyword type, the content attribute, and the two
-/// defaults; the IDL names the interface, the member, and its mutability. The
-/// generated getter and setter are the only definitions, so a hand-written one
-/// for the same member is reported instead of silently winning.
 fn lower_reflected_enumerated_attribute(
     member: &weedle::interface::AttributeInterfaceMember<'_>,
     exposure: Exposure,
     entry: &crate::ReflectedEnum,
     implemented: &BTreeMap<String, Method>,
 ) -> Result<(model::Attribute, TokenStream), Error> {
-    // A nullable `DOMString?` reports the spec's "no state" as `null`; a plain
-    // `DOMString` reports it as the empty string. Both are enumerated
-    // reflection shapes.
     let nullable = match &member.type_.type_ {
         Type::Single(SingleType::NonAny(NonAnyType::DOMString(item))) => item.q_mark.is_some(),
         _ => {
@@ -1912,8 +1766,6 @@ fn lower_reflected_enumerated_attribute(
     let type_path = {
         let raw = syn::parse_str::<syn::Path>(&entry.type_path)
             .map_err(|error| Error(format!("{}: invalid type path: {error}", entry.attribute)))?;
-        // A bare name is a type in the renderer's `enumerated` module; anything
-        // with a path (such as `net::ReferrerPolicy`) is used as written.
         if raw.segments.len() == 1 {
             let name = &raw.segments[0].ident;
             syn::parse_str::<syn::Path>(&format!("crate::js::bindings::enumerated::{name}"))
@@ -1970,32 +1822,16 @@ fn lower_attribute(
     implemented: &BTreeMap<String, Method>,
     reflected: &[crate::ReflectedEnum],
 ) -> Result<Option<(model::Attribute, TokenStream)>, Error> {
-    // A reflected enumerated attribute is listed in tinybrowser's metadata
-    // table, because the IDL extract carries the member but not its keyword
-    // set or its two defaults. The generated getter is the only definition,
-    // so a hand-written one is a mistake the compiler reports.
     if let Some(lowered) =
         reflected_enumerated_attribute(interface, member, exposure, implemented, reflected)?
     {
         return Ok(Some(lowered));
     }
-    // Reflected attributes install without implementation methods, so
-    // resolve them before the implemented-member checks below. Only shapes
-    // the generator auto-generates (plain string/boolean/`USVString`) take
-    // this path; anything else falls through to the normal method path when
-    // implemented, so hand-written getters encode the spec algorithm. Other
-    // members keep skip-if-unimplemented semantics.
     if let Some(content) = reflect_content(member.attributes.as_ref(), member.identifier.0)
         && let Some(lowered) = lower_reflect_attribute(member, exposure, &content, implemented)?
     {
         return Ok(Some(lowered));
     }
-    // Special shapes stay absent rather than falling through: a plain
-    // method installation would lose `SameObject`/`PutForwards` semantics.
-    // This covers both `[Reflect]` and `[ReflectURL]` shapes. An implemented
-    // getter asks for the member explicitly and brings those semantics with
-    // it — `HTMLIFrameElement.sandbox` returns the `DOMTokenList` over its
-    // content attribute, which no generated reflection can build.
     let implemented_getter =
         implemented.contains_key(&format!("get_{}", snake_case(member.identifier.0)));
     if !implemented_getter
@@ -2006,14 +1842,9 @@ fn lower_attribute(
         return Ok(None);
     }
     reject_legacy_non_string_reflect(member)?;
-    // `ReflectSetter` reflects on set while the getter stays custom: the
-    // implementation provides the getter, the generator owns the setter.
     if let Some(content) = reflect_setter_content(member.attributes.as_ref(), member.identifier.0) {
         return lower_reflect_setter_attribute(database, member, exposure, &content, implemented);
     }
-    // `ReflectURL` resolves the content attribute against the document base
-    // on get and reflects plainly on set, fully generated. Non-`USVString`
-    // shapes (like `object.codeBase`) fall through for hand implementation.
     if let Some(content) = reflect_url_content(member.attributes.as_ref(), member.identifier.0)
         && let Some(lowered) = lower_reflect_url_attribute(member, exposure, &content, implemented)?
     {
@@ -2022,7 +1853,6 @@ fn lower_attribute(
     lower_method_attribute(database, member, exposure, implemented)
 }
 
-/// Lower a hand-implemented attribute: the trait method and its signature.
 fn lower_method_attribute(
     database: &Database<'_>,
     member: &weedle::interface::AttributeInterfaceMember<'_>,
@@ -2068,12 +1898,9 @@ fn lower_method_attribute(
             Type::Single(_) => false,
         };
     let type_ = match native_type(database, &member.type_.type_, &mut BTreeSet::new())? {
-        // Getter dispatch hands a platform object or its null directly to JS.
         ReturnType::Node | ReturnType::NullableNode | ReturnType::NullableDocumentType => {
             ReturnType::PlatformObject
         }
-        // A getter returns its value without conversion, so a union of
-        // platform objects passes through as the value or null.
         ReturnType::Union(_, members) | ReturnType::NullableUnion(_, members)
             if members
                 .iter()
@@ -2109,19 +1936,13 @@ fn lower_method_attribute(
     Ok(Some((attribute, signature)))
 }
 
-/// The Rust getter return type for one lowered attribute type.
 fn attribute_result(type_: &ReturnType) -> Result<TokenStream, Error> {
     Ok(match type_ {
         ReturnType::String => quote! { rquickjs::String<'js> },
-        // USVString getters hand a code-unit string to the lossy conversion.
         ReturnType::UsvString => quote! { crate::dom_string::DomString },
         ReturnType::NullableString => quote! { Option<rquickjs::String<'js>> },
         ReturnType::Boolean => quote! { bool },
         ReturnType::UnsignedShort => quote! { u16 },
-        // Plain-method `unsigned long` getters answer `usize` (they convert
-        // fallibly from the parsed `u32`, saturating past the address space),
-        // while `[ReflectSetter]` getters answer the converted `u32`
-        // directly; the setter conversion is identical in both paths.
         ReturnType::UnsignedLong => quote! { usize },
         ReturnType::Long => quote! { i32 },
         ReturnType::NullableUnsignedLong => quote! { Option<u32> },
@@ -2135,11 +1956,7 @@ fn attribute_result(type_: &ReturnType) -> Result<TokenStream, Error> {
     })
 }
 
-/// An attribute's setter: an implemented method, a generated `[PutForwards]`
-/// forwarding assignment, or nothing for readonly attributes. A hand-written
-/// setter alongside `[PutForwards]` fails the build, and forwarding requires
-/// a readonly platform object
-/// (<https://webidl.spec.whatwg.org/#PutForwards>).
+// https://webidl.spec.whatwg.org/#PutForwards
 fn attribute_setter(
     member: &weedle::interface::AttributeInterfaceMember<'_>,
     type_: &ReturnType,
@@ -2178,8 +1995,7 @@ fn attribute_setter(
     }))
 }
 
-/// The `[PutForwards]` member name, if the attribute forwards assignment to
-/// it (<https://webidl.spec.whatwg.org/#PutForwards>).
+// https://webidl.spec.whatwg.org/#PutForwards
 fn put_forwards_target<'a>(attributes: Option<&ExtendedAttributeList<'a>>) -> Option<&'a str> {
     attributes?
         .body
@@ -2193,10 +2009,6 @@ fn put_forwards_target<'a>(attributes: Option<&ExtendedAttributeList<'a>>) -> Op
         })
 }
 
-/// The content attribute a `[ReflectURL]` member mirrors: the `ReflectURL`
-/// value or the lowercase IDL name. Only `USVString` is auto-generated;
-/// other shapes (like `object.codeBase`, a `DOMString`) fall through to
-/// hand implementation in `lower_attribute`.
 fn reflect_url_content(
     attributes: Option<&ExtendedAttributeList<'_>>,
     idl_name: &str,
@@ -2213,10 +2025,6 @@ fn reflect_url_content(
     None
 }
 
-/// The content attribute a `[Reflect]` member mirrors: the `Reflect` value
-/// or the lowercase IDL name, following Chromium's key derivation.
-/// Numeric shapes are not auto-generated (they fall through to hand-written
-/// methods); `ReflectURL` has its own lowering below.
 fn reflect_content(
     attributes: Option<&ExtendedAttributeList<'_>>,
     idl_name: &str,
@@ -2236,9 +2044,6 @@ fn reflect_content(
     None
 }
 
-/// The content attribute a `[ReflectSetter]` member writes: the value or
-/// the lowercase IDL name. Plain `[Reflect]` is handled separately; other
-/// parameterized forms stay unsupported.
 fn reflect_setter_content(
     attributes: Option<&ExtendedAttributeList<'_>>,
     idl_name: &str,
@@ -2258,9 +2063,6 @@ fn reflect_setter_content(
     None
 }
 
-/// Lower a `[ReflectSetter]` attribute: the getter is a normal implemented
-/// method, the setter writes the content attribute through the shared
-/// helper. The implementation must provide the getter but not the setter.
 fn lower_reflect_setter_attribute(
     database: &Database<'_>,
     member: &weedle::interface::AttributeInterfaceMember<'_>,
@@ -2302,10 +2104,6 @@ fn lower_reflect_setter_attribute(
             member.identifier.0
         )));
     }
-    // The setter writes a string, so only string-family getters pair with
-    // it. `long`, `unsigned long`, and `double` pair too: the setter
-    // converts the number and writes its decimal form (used by `tabindex`,
-    // dimension attributes, and meter/progress values).
     let type_ = native_type(database, &member.type_.type_, &mut BTreeSet::new())?;
     if !matches!(
         type_,
@@ -2330,19 +2128,12 @@ fn lower_reflect_setter_attribute(
     let getter = format_ident!("{getter_name}");
     let legacy_null_to_empty = has_no_args(member.attributes.as_ref(), "LegacyNullToEmptyString")
         || has_no_args(member.type_.attributes.as_ref(), "LegacyNullToEmptyString");
-    // Like operation arguments, `[LegacyNullToEmptyString]` requires
-    // `DOMString`: on numerics it would otherwise be silently dropped by
-    // the generated setter.
     if legacy_null_to_empty && !matches!(type_, ReturnType::String) {
         return Err(Error(format!(
             "{}: LegacyNullToEmptyString requires DOMString",
             member.identifier.0
         )));
     }
-    // The generated `unsigned long` setter writes 0 for out-of-range
-    // values, which is only correct for a zero default: a non-zero
-    // `ReflectDefault` would be silently ignored, so fail the build
-    // instead of emitting the wrong fallback.
     if matches!(type_, ReturnType::UnsignedLong)
         && reflect_default(member.attributes.as_ref())?.is_some_and(|default| default != 0.0)
     {
@@ -2368,10 +2159,6 @@ fn lower_reflect_setter_attribute(
     Ok(Some((attribute, signature)))
 }
 
-/// The numeric `ReflectDefault` on a member's extended attributes, if
-/// present. Integer defaults (`ReflectDefault=20`) parse as `Ident`,
-/// floating ones (`ReflectDefault=1.0`) as `Decimal` (see the weedle4 note
-/// in [`validate_attribute_attributes`]).
 fn reflect_default(attributes: Option<&ExtendedAttributeList<'_>>) -> Result<Option<f64>, Error> {
     let Some(attributes) = attributes else {
         return Ok(None);
@@ -2400,8 +2187,6 @@ fn reflect_default(attributes: Option<&ExtendedAttributeList<'_>>) -> Result<Opt
     Ok(None)
 }
 
-/// Reject an implementation method whose receiver or parameter count does
-/// not match the IDL member kind.
 fn check_method_signature(
     implemented: &BTreeMap<String, Method>,
     name: &str,
@@ -2417,9 +2202,6 @@ fn check_method_signature(
     Ok(())
 }
 
-/// The trait signature for a `[ReflectSetter]` getter: the getter stays
-/// hand-written while the setter is generated, so each supported type
-/// names its own return.
 fn reflect_setter_signature(
     attribute: &str,
     getter: &proc_macro2::Ident,
@@ -2440,25 +2222,12 @@ fn reflect_setter_signature(
     Ok(quote! { fn #getter(&self, ctx: &Ctx<'js>) -> Result<#returns>; })
 }
 
-/// Lower a `[Reflect]` attribute to generated content-attribute access.
-/// The trait carries no method and the implementation provides none: like
-/// Chromium's generated reflectors, the binding is complete by itself.
-/// Claiming an auto-generatable reflected name with implementation methods
-/// fails the build, so a custom algorithm cannot silently replace the
-/// reflection. Shapes the generator does not auto-generate (numeric
-/// reflection with spec-prose defaults, `LegacyNullToEmptyString` pairs
-/// handled below) fall through to the normal method path when implemented,
-/// so hand-written getters encode the spec algorithm.
 fn lower_reflect_attribute(
     member: &weedle::interface::AttributeInterfaceMember<'_>,
     exposure: Exposure,
     content: &str,
     implemented: &BTreeMap<String, Method>,
 ) -> Result<Option<(model::Attribute, TokenStream)>, Error> {
-    // Auto-generatable shapes first: plain string/boolean, plus `USVString`
-    // under a plain `[Reflect]` (which reflects the raw value exactly like
-    // `DOMString`: `a.ping`, `img.srcset`). Anything else falls through
-    // for hand implementation instead of erroring here.
     let auto = matches!(
         &member.type_.type_,
         Type::Single(SingleType::NonAny(NonAnyType::DOMString(item))) if item.q_mark.is_none()
@@ -2495,26 +2264,14 @@ fn lower_reflect_attribute(
     {
         return Ok(None);
     }
-    // `[LegacyNullToEmptyString]` reflection is auto-generatable for
-    // strings: the getter is plain reflection and the setter converts null
-    // to the empty string. On booleans it is invalid IDL.
     let legacy_null_to_empty = has_no_args(member.attributes.as_ref(), "LegacyNullToEmptyString")
         || has_no_args(member.type_.attributes.as_ref(), "LegacyNullToEmptyString");
-    // Only plain string, boolean, and `USVString` reflection so far.
-    // `USVString` under a plain `[Reflect]` reads the raw content attribute
-    // exactly like `DOMString` (`a.ping`, `img.srcset`): stored content is
-    // a Rust `String`, which cannot hold lone surrogates, so no scalar
-    // replacement can be hiding in it; only the setter argument still
-    // converts as USV (<https://webidl.spec.whatwg.org/#es-USVString>).
-    // The type needs no database lookup, keeping reflected members
-    // independent of typedefs.
+    // https://webidl.spec.whatwg.org/#es-USVString
     let type_ = match &member.type_.type_ {
         Type::Single(SingleType::NonAny(NonAnyType::DOMString(item))) if item.q_mark.is_none() => {
             ReturnType::String
         }
         Type::Single(SingleType::NonAny(NonAnyType::USVString(item))) if item.q_mark.is_none() => {
-            // Like operation arguments, `[LegacyNullToEmptyString]` requires
-            // `DOMString`.
             if legacy_null_to_empty {
                 return Err(Error(format!(
                     "{}: LegacyNullToEmptyString requires DOMString",
@@ -2534,8 +2291,6 @@ fn lower_reflect_attribute(
         }
         _ => return Ok(None),
     };
-    // The shape is supported and installing, so unknown attributes fail
-    // instead of silently changing the reflection.
     validate_attribute_attributes(member.attributes.as_ref())?;
     let getter = format_ident!("{getter_name}");
     let setter = if writable {
@@ -2561,19 +2316,12 @@ fn lower_reflect_attribute(
     Ok(Some((attribute, quote! {})))
 }
 
-/// Lower a `[ReflectURL]` attribute to generated content-attribute access
-/// with URL resolution. Like `[Reflect]`, the trait carries no method and
-/// the implementation provides none for auto-generatable shapes; other
-/// shapes fall through for hand implementation.
 fn lower_reflect_url_attribute(
     member: &weedle::interface::AttributeInterfaceMember<'_>,
     exposure: Exposure,
     content: &str,
     implemented: &BTreeMap<String, Method>,
 ) -> Result<Option<(model::Attribute, TokenStream)>, Error> {
-    // URL reflection resolves a string against the document base; only
-    // `USVString` is auto-generated. Anything else falls through to hand
-    // implementation (like `object.codeBase`, a `DOMString`).
     let auto = matches!(
         &member.type_.type_,
         Type::Single(SingleType::NonAny(NonAnyType::USVString(item))) if item.q_mark.is_none()
@@ -2631,12 +2379,8 @@ fn lower_reflect_url_attribute(
     Ok(Some((attribute, quote! {})))
 }
 
-/// The Rust parameter type for one lowered attribute setter, mirroring
-/// `emit`'s setter conversions.
 fn setter_parameter(type_: &ReturnType) -> Result<TokenStream, Error> {
     Ok(match type_ {
-        // `USVString` arrives as a converted string; only the argument
-        // conversion differs (see `setter_value_conversion`).
         ReturnType::String | ReturnType::UsvString => quote! { rquickjs::String<'js> },
         ReturnType::NullableString => quote! { Option<rquickjs::String<'js>> },
         ReturnType::Boolean => quote! { bool },
@@ -2644,8 +2388,6 @@ fn setter_parameter(type_: &ReturnType) -> Result<TokenStream, Error> {
         ReturnType::Long => quote! { i32 },
         ReturnType::NullableUnsignedLong => quote! { Option<u32> },
         ReturnType::Double | ReturnType::RestrictedDouble => quote! { f64 },
-        // A platform-object setter takes the value as-is; the method owns
-        // the conversion.
         ReturnType::PlatformObject => quote! { Value<'js> },
         ReturnType::Enumeration(name) => {
             let name = format_ident!("{name}");
@@ -2822,16 +2564,13 @@ pub(crate) fn native_type(
                     weedle::types::FloatingPointType::Double(double) if double.unrestricted.is_some()
                 ) =>
         {
-            // `Coerced<f64>` is `ToNumber`, which admits NaN and infinities:
-            // exactly `unrestricted double`.
             Ok(ReturnType::Double)
         }
         Type::Single(SingleType::NonAny(NonAnyType::FloatingPoint(item)))
             if item.q_mark.is_none()
                 && matches!(item.type_, weedle::types::FloatingPointType::Double(_)) =>
         {
-            // Restricted `double` rejects NaN and infinities on conversion
-            // (<https://webidl.spec.whatwg.org/#es-double>).
+            // https://webidl.spec.whatwg.org/#es-double
             Ok(ReturnType::RestrictedDouble)
         }
         Type::Single(SingleType::NonAny(NonAnyType::Promise(promise)))
@@ -2842,10 +2581,7 @@ pub(crate) fn native_type(
         {
             Ok(ReturnType::PromiseUndefined)
         }
-        // `FrozenArray<T>` is carried as an opaque JS value. Only attributes
-        // use it, and the engine builds and caches the frozen array itself,
-        // so there is no generated element-by-element conversion to apply
-        // (<https://webidl.spec.whatwg.org/#es-frozen-array>).
+        // https://webidl.spec.whatwg.org/#es-frozen-array
         Type::Single(SingleType::NonAny(NonAnyType::FrozenArrayType(_))) => {
             Ok(ReturnType::PlatformObject)
         }
@@ -2860,8 +2596,6 @@ pub(crate) fn native_type(
     }
 }
 
-/// A `sequence<T>` member type. Only the element shapes with a generated
-/// conversion are accepted.
 fn native_sequence(
     database: &Database<'_>,
     item: &weedle::types::MayBeNull<weedle::types::SequenceType<'_>>,
@@ -2889,8 +2623,6 @@ fn native_sequence(
     }
 }
 
-/// A named type: a platform object, a typedef to follow, or a declared
-/// callback, dictionary, or enumeration.
 fn native_named(
     database: &Database<'_>,
     name: &str,
@@ -2908,8 +2640,6 @@ fn native_named(
             validate_empty_attributes(definition.attributes.as_ref())?;
             validate_empty_attributes(definition.type_.attributes.as_ref())?;
             let resolved = native_type(database, &definition.type_.type_, visited)?;
-            // Nullability applies after resolving the typedef, so a nullable
-            // typedef over a union or string keeps its null conversion.
             if nullable {
                 make_nullable(resolved)
             } else {
@@ -2929,14 +2659,11 @@ fn native_named(
     }
 }
 
-/// Apply `?` to a resolved typedef target. Representations that already
-/// carry null absorb it; anything else without a nullable shape fails.
 fn make_nullable(type_: ReturnType) -> Result<ReturnType, Error> {
     match type_ {
         ReturnType::String => Ok(ReturnType::NullableString),
         ReturnType::Node => Ok(ReturnType::NullableNode),
         ReturnType::Union(name, members) => Ok(ReturnType::NullableUnion(name, members)),
-        // A value already carries null, so nullability is absorbed.
         ReturnType::PlatformObject
         | ReturnType::NullableString
         | ReturnType::NullableNode
@@ -2949,16 +2676,7 @@ fn make_nullable(type_: ReturnType) -> Result<ReturnType, Error> {
     }
 }
 
-/// Lower a union to a generated enum. Flattened member order follows the IDL
-/// declaration; conversion order follows the `WebIDL` union algorithm, which
-/// tries platform objects before dictionaries, then primitives, then string
-/// coercion (<https://webidl.spec.whatwg.org/#es-union>).
-/// Chromium groups identical flattened member sets into one union class
-/// (`third_party/blink/renderer/bindings/scripts/web_idl/union.py`);
-/// Firefox tries members in the same order in its generated `Init`
-/// (`dom/bindings/Codegen.py`). Trusted Types interfaces have no implementation
-/// in this runtime, so they collapse to the string member they accompany; a
-/// union that collapses to one member type lowers to that type, not an enum.
+// https://webidl.spec.whatwg.org/#es-union
 fn lower_union(
     database: &Database<'_>,
     union_: &weedle::types::MayBeNull<weedle::types::UnionType<'_>>,
@@ -2975,10 +2693,6 @@ fn lower_union(
     finish_union(members, nullable)
 }
 
-/// Flatten nested unions and typedef'd unions into distinct member types,
-/// mirroring Chromium's `UnionType.flattened_member_types`. Members whose
-/// Rust representation repeats collapse into one; anything without a
-/// generated conversion fails the build.
 fn collect_union_members<'idl>(
     database: &Database<'idl>,
     list: &[UnionMemberType<'idl>],
@@ -3007,9 +2721,6 @@ fn collect_union_members<'idl>(
     Ok(())
 }
 
-/// Reject member attributes the generated conversion cannot honor. A
-/// `[LegacyNullToEmptyString]` member is meaningful only to the attribute
-/// lowering that reads it back, so it is allowed here.
 fn validate_union_member_attributes(
     attributes: Option<&ExtendedAttributeList<'_>>,
 ) -> Result<(), Error> {
@@ -3067,9 +2778,7 @@ fn collect_union_member<'idl>(
         Type::Single(SingleType::NonAny(NonAnyType::Identifier(item))) if item.q_mark.is_none() => {
             let name = item.type_.0;
             match database.definition(name) {
-                // Trusted Types interfaces are uninhabited here, so a union
-                // containing one behaves as its string member
-                // (<https://w3c.github.io/trusted-types/dist/spec/>).
+                // https://w3c.github.io/trusted-types/dist/spec/
                 Some(weedle::Definition::Interface(_))
                     if matches!(name, "TrustedHTML" | "TrustedScript" | "TrustedScriptURL") =>
                 {
@@ -3117,8 +2826,6 @@ fn collect_union_member<'idl>(
     }
 }
 
-/// One variant per distinct Rust representation; duplicates collapse, so
-/// `(TrustedHTML or DOMString)` lowers to the string member alone.
 fn push_union_member(
     members: &mut Vec<model::UnionMember>,
     variant: proc_macro2::Ident,
@@ -3134,15 +2841,11 @@ fn finish_union(members: Vec<model::UnionMember>, nullable: bool) -> Result<Retu
     if members.is_empty() {
         return Err(Error("unions need at least one member type".into()));
     }
-    // A nullable union stays a union even when it collapses to one
-    // representation, so the null conversion stays explicit.
     if let [member] = members.as_slice()
         && !nullable
     {
         return Ok(member_return_type(&member.type_));
     }
-    // Canonical declaration-independent name, like Chromium's sorted union
-    // type names (`UnionType.type_name_without_extended_attributes`).
     let mut names: Vec<String> = members
         .iter()
         .map(|member| member.variant.to_string())
@@ -3157,8 +2860,6 @@ fn finish_union(members: Vec<model::UnionMember>, nullable: bool) -> Result<Retu
     }
 }
 
-/// The `ReturnType` a single union member lowers to when the union collapses
-/// to one representation.
 fn member_return_type(type_: &model::UnionMemberType) -> ReturnType {
     match type_ {
         model::UnionMemberType::Interface { node: true, .. } => ReturnType::Node,
@@ -3170,8 +2871,6 @@ fn member_return_type(type_: &model::UnionMemberType) -> ReturnType {
     }
 }
 
-/// Whether any union member or nested member carries `name`, so attribute
-/// lowering can read `[LegacyNullToEmptyString]` off a collapsed member.
 fn union_member_has_no_args(list: &[UnionMemberType<'_>], name: &str) -> bool {
     list.iter().any(|member| match member {
         UnionMemberType::Single(member) => has_no_args(member.attributes.as_ref(), name),
@@ -3179,35 +2878,25 @@ fn union_member_has_no_args(list: &[UnionMemberType<'_>], name: &str) -> bool {
     })
 }
 
-/// Interface types the contract path carries. Node arguments need the
-/// `NodeReference` conversion; every other DOM interface is a platform object
-/// whose getter or result hands the value to JS directly.
 fn native_interface(database: &Database<'_>, name: &str, nullable: bool) -> Option<ReturnType> {
     match (name, nullable) {
         ("Node", false) => Some(ReturnType::Node),
         ("Node", true) => Some(ReturnType::NullableNode),
         ("DocumentType", true) => Some(ReturnType::NullableDocumentType),
-        // `WindowProxy` is a platform object the HTML Standard defines in
-        // prose, so it has no declaration in the extracts to inspect; it is
-        // carried as an opaque value
-        // (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#windowproxy>).
+        // https://html.spec.whatwg.org/multipage/nav-history-apis.html#windowproxy
         ("WindowProxy", _) => Some(ReturnType::PlatformObject),
         _ if matches!(
             database.definition(name),
             Some(weedle::Definition::Interface(_) | weedle::Definition::CallbackInterface(_))
         ) =>
         {
-            // An interface or callback interface is a platform object carried
-            // as an opaque value; a callback interface is any object whose
-            // methods are looked up on invocation
-            // (<https://webidl.spec.whatwg.org/#es-callback-interface>).
+            // https://webidl.spec.whatwg.org/#es-callback-interface
             Some(ReturnType::PlatformObject)
         }
         _ => None,
     }
 }
 
-/// Attribute extended attributes the contract path consumes or documents.
 fn validate_attribute_attributes(
     attributes: Option<&ExtendedAttributeList<'_>>,
 ) -> Result<(), Error> {
@@ -3227,28 +2916,12 @@ fn validate_attribute_attributes(
                             | "SecureContext"
                             | "Unscopable"
                     ) => {}
-                // Numeric reflection parameters: hand-written getters encode
-                // the spec algorithm, so the normal method path documents
-                // them as consumed here. Only the standardized names and
-                // shapes are accepted, so a typo still fails the build.
-                // Note a weedle4 quirk: `Identifier` accepts leading digits
-                // (`third_party/weedle4/src/common.rs`), so integer defaults
-                // like `ReflectDefault=20` parse as `Ident` with rhs `"20"`,
-                // while `ReflectDefault=1.0` parses as `Decimal`. The value
-                // checks below depend on this split: do not "simplify" the
-                // `Ident` arm without moving integer-default validation.
                 ExtendedAttribute::NoArgs(item)
                     if matches!(
                         item.0.0,
                         "ReflectNonNegative" | "ReflectPositive" | "ReflectPositiveWithFallback"
                     ) => {}
-                // `[PutForwards]` lowers to a generated forwarding setter.
-                // `[LegacyUnforgeable]` shapes the instance property in the
-                // interface's own shim, as the legacy path also accepts it;
-                // the generator installs the prototype accessor.
-                // `[PutForwards]` takes an identifier naming the target.
                 ExtendedAttribute::Ident(item) if item.lhs_identifier.0 == "PutForwards" => {}
-                // An integer reflection default, e.g. `ReflectDefault=20`.
                 ExtendedAttribute::Ident(item) if item.lhs_identifier.0 == "ReflectDefault" => {
                     if item.rhs.0.parse::<i64>().is_err() {
                         return Err(Error(format!(
@@ -3289,7 +2962,6 @@ fn validate_attribute_attributes(
     Ok(())
 }
 
-/// Operation extended attributes the contract path consumes.
 fn validate_operation_attributes(
     attributes: Option<&ExtendedAttributeList<'_>>,
 ) -> Result<(), Error> {
@@ -3312,7 +2984,6 @@ fn validate_operation_attributes(
     Ok(())
 }
 
-/// Argument extended attributes the contract path consumes.
 fn validate_argument_attributes(
     attributes: Option<&ExtendedAttributeList<'_>>,
 ) -> Result<(), Error> {
@@ -3358,8 +3029,6 @@ fn validate_interface_attributes(
                             | "LegacyOverrideBuiltIns"
                             | "SecureContext"
                     ) => {}
-                // A named factory function (`new Option(...)`) is a JS shim
-                // concern; the generator installs no member for it.
                 ExtendedAttribute::NamedArgList(item)
                     if item.lhs_identifier.0 == "LegacyFactoryFunction" => {}
                 _ => {

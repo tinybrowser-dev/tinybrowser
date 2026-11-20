@@ -271,9 +271,6 @@ pub fn scripted(replies: impl IntoIterator<Item = Vec<u8>> + Send + 'static) -> 
     })
 }
 
-/// The whole decoded body of one response. Test support only: production
-/// reads the body in the browser process, which applies its own cap while
-/// streaming.
 pub async fn read_body(mut body: net::Body) -> Result<Vec<u8>, net::NetError> {
     let mut out = Vec::new();
     while let Some(chunk) = body.read_chunk().await? {

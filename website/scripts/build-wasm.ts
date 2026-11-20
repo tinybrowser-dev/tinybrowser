@@ -8,39 +8,33 @@
  */
 import { execFileSync } from "node:child_process"
 import { cpSync, existsSync, mkdirSync, rmSync, statSync } from "node:fs"
-import { dirname, join, resolve } from "node:path"
-import { fileURLToPath } from "node:url"
+import { join } from "node:path"
 
-const here = dirname(fileURLToPath(import.meta.url))
-const websiteDir = resolve(here, "..")
-const repoDir = resolve(websiteDir, "..")
-const component =
-  process.env.TINYBROWSER_WASM_PATH ??
-  join(repoDir, "target/wasm32-wasip2/release/tinybrowser_wasm.wasm")
-const outDir = join(websiteDir, "public/wasm")
-const shimSrc = join(websiteDir, "node_modules/@bytecodealliance/preview2-shim/dist/browser")
-const jcoBin = join(websiteDir, "node_modules/.bin/jco")
+import { IS_CI, TINYBROWSER_WASM_PATH, WASM_PUBLIC_DIR, WEBSITE_DIR } from "../src/lib/env.ts"
 
-if (!existsSync(component)) {
-  if (process.env.CI) {
-    console.error(`build-wasm: missing ${component} in CI`)
+const shimSrc = join(WEBSITE_DIR, "node_modules/@bytecodealliance/preview2-shim/dist/browser")
+const jcoBin = join(WEBSITE_DIR, "node_modules/.bin/jco")
+
+if (!existsSync(TINYBROWSER_WASM_PATH)) {
+  if (IS_CI) {
+    console.error(`build-wasm: missing ${TINYBROWSER_WASM_PATH} in CI`)
     process.exit(1)
   }
-  console.warn(`build-wasm: missing ${component}; skipping Wasm bundle for /demo`)
+  console.warn(`build-wasm: missing ${TINYBROWSER_WASM_PATH}; skipping Wasm bundle for /demo`)
   console.warn("  build with: cargo build -p tinybrowser-wasm --target wasm32-wasip2 --release")
   process.exit(0)
 }
 
-rmSync(outDir, { recursive: true, force: true })
-mkdirSync(outDir, { recursive: true })
+rmSync(WASM_PUBLIC_DIR, { recursive: true, force: true })
+mkdirSync(WASM_PUBLIC_DIR, { recursive: true })
 
 execFileSync(
   jcoBin,
   [
     "transpile",
-    component,
+    TINYBROWSER_WASM_PATH,
     "-o",
-    outDir,
+    WASM_PUBLIC_DIR,
     "--name",
     "tinybrowser",
     "--map",
@@ -53,9 +47,9 @@ execFileSync(
   "bun",
   [
     "build",
-    join(websiteDir, "src/demo/host.ts"),
+    join(WEBSITE_DIR, "src/demo/host.ts"),
     "--outfile",
-    join(outDir, "host.js"),
+    join(WASM_PUBLIC_DIR, "host.js"),
     "--format",
     "esm",
     "--target",
@@ -64,9 +58,9 @@ execFileSync(
   { stdio: "inherit" },
 )
 
-cpSync(shimSrc, join(outDir, "shims"), { recursive: true })
+cpSync(shimSrc, join(WASM_PUBLIC_DIR, "shims"), { recursive: true })
 
-const wasmSize = statSync(join(outDir, "tinybrowser.core.wasm")).size
+const wasmSize = statSync(join(WASM_PUBLIC_DIR, "tinybrowser.core.wasm")).size
 console.log(
   `build-wasm: ready in public/wasm/ (core wasm ${(wasmSize / 1024 / 1024).toFixed(2)} MiB)`,
 )

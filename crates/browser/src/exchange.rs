@@ -1,16 +1,3 @@
-//! Typed conversations over decoded, transport-independent messages.
-//!
-//! Each direction has two bounded queues. Cancellation uses a control lane so
-//! a `Drop` can `try_send` without waiting behind notifications or byte chunks.
-//! Calls, replies, stream bytes, and notifications share the data lane so a
-//! reply cannot overtake its own chunks. Awaiting a lane waits for capacity.
-//! `try_send` never drops a message while the peer stays connected: a full lane
-//! disconnects.
-//!
-//! `recv` prefers the control lane, so a `Cancel` can overtake its own `Call`.
-//! A handler whose call carries its result must therefore skip work whose
-//! caller has gone; the tab coordinator checks the reply receiver at dispatch.
-
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::fmt;
@@ -21,7 +8,6 @@ use std::sync::{Arc, Mutex, PoisonError};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot, watch};
 
-/// Identity of one call within one direction of an exchange.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct RequestId(u64);
 
@@ -35,11 +21,6 @@ impl RequestId {
     }
 }
 
-/// One decoded message moving in either direction over a transport.
-///
-/// A byte transport may encode the two chunk variants outside its control
-/// serializer. The renderer socket does this so document and image bytes stay
-/// off the control lane.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) enum Frame<C, R, N> {
     Call {
@@ -70,7 +51,6 @@ pub(crate) enum Frame<C, R, N> {
     },
 }
 
-/// One call-side failure before a domain reply is available.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Error {
     Closed,
@@ -114,7 +94,6 @@ impl<C, R, N> Lane for Frame<C, R, N> {
     }
 }
 
-/// Outgoing half of one two-lane exchange.
 pub(crate) struct Sender<T> {
     control: mpsc::Sender<T>,
     data: mpsc::Sender<T>,
@@ -191,8 +170,6 @@ impl<T> Sender<T> {
         }
     }
 
-    /// Sends `value`, or drops it when the lane is full. Unlike `try_send`,
-    /// a full lane does not disconnect the peer.
     pub(crate) fn try_send_lossy(&self, value: T) -> Result<(), Error>
     where
         T: Lane,
@@ -221,7 +198,6 @@ impl<T> Sender<T> {
     }
 }
 
-/// Incoming half of one two-lane exchange. `recv` prefers the control lane.
 pub(crate) struct Receiver<T> {
     control: mpsc::Receiver<T>,
     data: mpsc::Receiver<T>,
@@ -265,7 +241,6 @@ async fn wait_closed(closed: &mut watch::Receiver<bool>) {
     }
 }
 
-/// Creates one bounded two-lane direction.
 pub(crate) fn pair<T>(control: usize, data: usize) -> (Sender<T>, Receiver<T>) {
     let (control_tx, control_rx) = mpsc::channel(control);
     let (data_tx, data_rx) = mpsc::channel(data);
@@ -284,7 +259,6 @@ pub(crate) fn pair<T>(control: usize, data: usize) -> (Sender<T>, Receiver<T>) {
     )
 }
 
-/// Blocking outgoing half used by the renderer child writer thread.
 pub(crate) struct BlockingSender<T> {
     control: std_mpsc::SyncSender<T>,
     data: std_mpsc::SyncSender<T>,
@@ -355,7 +329,6 @@ impl<T> BlockingSender<T> {
     }
 }
 
-/// Blocking incoming half that prefers the control lane.
 pub(crate) struct BlockingReceiver<T> {
     control: std_mpsc::Receiver<T>,
     data: std_mpsc::Receiver<T>,
@@ -386,7 +359,6 @@ impl<T> BlockingReceiver<T> {
     }
 }
 
-/// Creates one bounded two-lane direction for a blocking writer thread.
 pub(crate) fn blocking_pair<T>(
     control: usize,
     data: usize,
@@ -423,7 +395,6 @@ enum Pending<R> {
 type PendingMap<R> = Arc<Mutex<HashMap<RequestId, Pending<R>>>>;
 type Subscribers<N> = Arc<Mutex<Vec<mpsc::Sender<N>>>>;
 
-/// Call side of one exchange endpoint.
 pub(crate) struct Client<OC, OR, ON, IR, IN> {
     tx: Sender<Frame<OC, OR, ON>>,
     pending: PendingMap<IR>,
@@ -583,7 +554,6 @@ impl<C, R, N, IR> Drop for CancelOnDrop<C, R, N, IR> {
     }
 }
 
-/// Upload half of a call. Dropping it asks the receiver to cancel the call.
 pub(crate) struct Upload<C, R, N, IR> {
     id: RequestId,
     tx: Sender<Frame<C, R, N>>,
@@ -643,7 +613,6 @@ impl<C, R, N, IR> Drop for Upload<C, R, N, IR> {
     }
 }
 
-/// Server-side input after replies and notifications have been routed.
 #[derive(Debug)]
 pub(crate) enum ServerInput<C, N> {
     Call { id: RequestId, body: C },
@@ -664,7 +633,6 @@ impl<C, N> Lane for ServerInput<C, N> {
     }
 }
 
-/// Handler side of one exchange endpoint.
 pub(crate) struct Server<OC, OR, ON, IC, IN> {
     tx: Sender<Frame<OC, OR, ON>>,
     rx: Receiver<ServerInput<IC, IN>>,
@@ -728,9 +696,6 @@ impl<OC, OR, ON, IC, IN> Server<OC, OR, ON, IC, IN> {
     }
 }
 
-/// Routes decoded incoming frames into pending calls, subscriptions, and the
-/// server input queue. A full server queue is a protocol disconnect rather
-/// than an implicit message drop.
 pub(crate) struct Router<IC, IR, IN> {
     pending: PendingMap<IR>,
     subscribers: Subscribers<IN>,
@@ -795,8 +760,6 @@ type Local<C, R, CN, SN> = (
     Server<Infallible, R, SN, C, CN>,
 );
 
-/// Creates an endpoint over a decoded outgoing channel. A transport feeds its
-/// incoming frames to the returned router.
 pub(crate) fn endpoint<OC, OR, ON, IC, IR, IN>(
     tx: Sender<Frame<OC, OR, ON>>,
     capacity: usize,
@@ -822,7 +785,6 @@ where
     (client, server, router)
 }
 
-/// Binds a decoded transport to one call client and one request server.
 pub(crate) fn bind<OC, OR, ON, IC, IR, IN>(
     tx: Sender<Frame<OC, OR, ON>>,
     mut rx: Receiver<Frame<IC, IR, IN>>,
@@ -853,7 +815,6 @@ where
     (client, server)
 }
 
-/// Creates a bounded local call channel whose server may push notifications.
 pub(crate) fn local<C, R, CN, SN>(capacity: usize) -> Local<C, R, CN, SN>
 where
     C: Send + 'static,
@@ -883,9 +844,6 @@ enum BlockingPending<R> {
     Callback(Box<dyn FnOnce(Result<R, Error>) + Send>),
 }
 
-/// Synchronous call side used by renderer APIs that are synchronous in the web
-/// platform. The socket reader thread delivers replies, so waiting here never
-/// blocks transport progress.
 pub(crate) struct BlockingClient<C, OR, N, IR> {
     tx: BlockingSender<Frame<C, OR, N>>,
     pending: Mutex<HashMap<RequestId, BlockingPending<IR>>>,

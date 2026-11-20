@@ -1,12 +1,3 @@
-//! Async file sink: a bounded queue plus one writer thread.
-//!
-//! Lines are best-effort. A full queue drops the line instead of blocking a
-//! page thread, and write failures are ignored: a full disk must not fail the
-//! process that logs. The file rotates once at a size cap to `<file>.1`.
-//!
-//! The writer owns the file and exits when the queue disconnects, so there is
-//! no shutdown message or join to coordinate.
-
 use std::fs::{self, File};
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
@@ -14,11 +5,8 @@ use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// Lines accepted before further lines are dropped.
 const QUEUE_CAPACITY: usize = 1024;
-/// Size that rotates the file to its single backup.
 pub(crate) const ROTATE_BYTES: u64 = 8 * 1024 * 1024;
-/// Bound on `flush` so a stuck disk cannot hang a process.
 const TIMEOUT: Duration = Duration::from_secs(2);
 
 enum Message {
@@ -32,7 +20,6 @@ pub(crate) struct FileSink {
 }
 
 impl FileSink {
-    /// Opens `path` (creating user-private parents) and starts the writer.
     pub(crate) fn new(path: PathBuf) -> Result<Self, crate::InstallError> {
         let file = open(&path).map_err(|source| crate::InstallError::Open {
             path: path.clone(),
@@ -40,8 +27,6 @@ impl FileSink {
         })?;
         let (tx, rx) = mpsc::sync_channel(QUEUE_CAPACITY);
         let writer_path = path.clone();
-        // The handle is dropped: the writer lives until the process exits or
-        // the sink disconnects, never joined.
         thread::Builder::new()
             .name("logging-file".to_owned())
             .spawn(move || run(&rx, &writer_path, file, ROTATE_BYTES))
@@ -53,13 +38,10 @@ impl FileSink {
         &self.path
     }
 
-    /// Queues one full line; a full queue drops it.
     pub(crate) fn send(&self, line: String) {
         let _ = self.tx.try_send(Message::Line(line));
     }
 
-    /// Waits up to [`TIMEOUT`] until every accepted line is written;
-    /// `false` when the writer did not catch up in time.
     pub(crate) fn flush(&self) -> bool {
         let (ack_tx, ack_rx) = mpsc::channel();
         let mut message = Message::Flush(ack_tx);
@@ -80,14 +62,11 @@ impl FileSink {
     }
 }
 
-/// Writes queued lines until the queue disconnects.
 fn run(rx: &Receiver<Message>, path: &Path, mut file: File, rotate_at: u64) {
     let mut written = file.metadata().map_or(0, |meta| meta.len());
     while let Ok(message) = rx.recv() {
         match message {
             Message::Line(line) => written = append(&mut file, path, &line, written, rotate_at),
-            // Every accepted line was written before this message is read, so
-            // the ack needs no flush of its own.
             Message::Flush(ack) => {
                 let _ = ack.send(());
             }
@@ -95,7 +74,6 @@ fn run(rx: &Receiver<Message>, path: &Path, mut file: File, rotate_at: u64) {
     }
 }
 
-/// Writes one line, rotating first when it would cross the cap.
 fn append(file: &mut File, path: &Path, line: &str, written: u64, rotate_at: u64) -> u64 {
     let written = if crosses_cap(written, line, rotate_at) && rotate(file, path).is_some() {
         0
@@ -114,11 +92,6 @@ fn crosses_cap(written: u64, line: &str, rotate_at: u64) -> bool {
         .is_none_or(|total| total > rotate_at)
 }
 
-/// Renames the live file to `<file>.1` and replaces it with a fresh file.
-///
-/// Returns `None` when rotation failed; the caller keeps appending through
-/// the descriptor that stays open, so a failed rename never loses a line and
-/// the next over-cap line retries.
 fn rotate(file: &mut File, path: &Path) -> Option<()> {
     let backup = backup_path(path);
     let _ = fs::remove_file(&backup);
@@ -127,8 +100,6 @@ fn rotate(file: &mut File, path: &Path) -> Option<()> {
         *file = fresh;
         Some(())
     } else {
-        // The archive holds the only link to the open file; put it back so
-        // the descriptor keeps writing to the live path.
         let _ = fs::rename(&backup, path);
         None
     }
@@ -144,9 +115,6 @@ fn backup_path(path: &Path) -> PathBuf {
     PathBuf::from(backup)
 }
 
-/// Opens `path` for appending with the same permissions policy as the sink
-/// (0600 file, 0700 parent). Shared with the panic hook so a hook-created log
-/// cannot be world-readable.
 pub(crate) fn open(path: &Path) -> io::Result<File> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -258,7 +226,6 @@ mod tests {
 
         assert!(tx.try_send(Message::Line(line("aaaaaaaaaa"))).is_ok());
         flush(&tx);
-        // A non-empty directory at the backup path makes the archive rename fail.
         let backup = backup_path(&path);
         fs::create_dir(&backup).expect("backup dir");
         fs::write(backup.join("keep"), "x").expect("backup file");
@@ -270,7 +237,6 @@ mod tests {
             "a failed archive must not lose lines"
         );
 
-        // Unblock rotation: the next over-cap line archives both prior lines.
         fs::remove_dir_all(&backup).expect("unblock");
         assert!(tx.try_send(Message::Line(line("cccccccccc"))).is_ok());
         flush(&tx);

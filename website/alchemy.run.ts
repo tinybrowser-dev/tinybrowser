@@ -40,9 +40,9 @@ export default Alchemy.Stack(
       },
       domain: "tinybrowser.ericc.ch",
       workersDev: false,
-      dev: { port: 4321 },
+      dev: { host: "0.0.0.0", port: 4321 },
     })
 
-    return { url: site.url }
+    return { url: site.url, urls: site.urls }
   }),
 )

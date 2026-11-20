@@ -1,14 +1,6 @@
-// A ReadableStream with a synchronous chunk queue: enough for Blob.stream()
-// and other producers that push all their chunks up front.
 const __tbStreamBrand = value => __tbBrand(value, __tbStreamData);
 
-/// Wraps a transferred endpoint in a stream that pulls one chunk per message
-/// from its peer.
-///
-/// The sender keeps the original stream locked and reads it on demand, so a
-/// transfer moves the stream rather than draining it. Pulling is a message,
-/// not an eager pump, which is what gives the receiving stream backpressure
-/// (<https://streams.spec.whatwg.org/#readable-stream-transfer>).
+// https://streams.spec.whatwg.org/#readable-stream-transfer
 const __tbStreamFromPort = port => {
   const pulls = [];
   let controller = null;
@@ -57,8 +49,6 @@ const __tbStreamFromPort = port => {
   return stream;
 };
 
-// Reader results use a null prototype so a page-installed
-// `Object.prototype.then` cannot turn them into thenables.
 const __tbStreamResult = (value, done) => {
   const result = __tbObjectCreate(null);
   result.value = value;
@@ -78,9 +68,7 @@ const __tbWritableBrand = value => __tbBrand(value, __tbWritableData);
 globalThis.ReadableStream = class ReadableStream {
   constructor(source, strategy) {
     const sourceObject = source === undefined ? {} : Object(source);
-    // Read source fields only when they are own properties, so a throwing
-    // `Object.prototype.start` (or `type`) cannot affect stream creation
-    // (<https://streams.spec.whatwg.org/#readable-stream-initialize>).
+    // https://streams.spec.whatwg.org/#readable-stream-initialize
     const own = key => __tbGetOwnPropertyDescriptor(sourceObject, key) !== undefined;
     const type = own('type') && sourceObject.type === 'bytes' ? 'bytes' : 'default';
     let resolveClosed;
@@ -89,9 +77,6 @@ globalThis.ReadableStream = class ReadableStream {
       resolveClosed = resolve;
       rejectClosed = reject;
     });
-    // A stream may error before anyone observes `reader.closed`; mark the
-    // internal rejection handled while leaving the promise rejected for later
-    // observers.
     closedPromise.catch(() => {});
     const data = {
       chunks: [], closed: false, closing: false, errored: null, canceled: false, reader: null,
@@ -219,9 +204,7 @@ globalThis.ReadableStream = class ReadableStream {
   cancel(reason) {
     const data = __tbStreamBrand(this);
     data.disturbed = true;
-    // Canceling resets the queue: a later `read()` resolves done, it does
-    // not drain what was queued
-    // (<https://streams.spec.whatwg.org/#readable-stream-cancel>).
+    // https://streams.spec.whatwg.org/#readable-stream-cancel
     data.canceled = true;
     data.chunks.length = 0;
     data.resolveClosed();
@@ -266,8 +249,6 @@ globalThis.ReadableStream = class ReadableStream {
   }
   pipeThrough(transform, options) {
     const promise = this.pipeTo(transform.writable, options);
-    // The pipe promise is observed so a failure is not an unhandled rejection;
-    // the caller observes it through the readable branch.
     promise.catch(() => {});
     return transform.readable;
   }
@@ -289,9 +270,7 @@ globalThis.ReadableStream = class ReadableStream {
           return;
         }
         if (!canceled[0]) __tbArray.push(queues[0], step.value);
-        // `Response.clone()` and `Request.clone()` expose the second branch as
-        // a structured clone, as WPT requires for script-visible chunks
-        // (<https://streams.spec.whatwg.org/#readable-stream-tee>).
+        // https://streams.spec.whatwg.org/#readable-stream-tee
         if (!canceled[1]) __tbArray.push(queues[1], structuredClone(step.value));
       }, reason => {
         pumping = null;
@@ -333,8 +312,6 @@ globalThis.ReadableStream = class ReadableStream {
 };
 Object.defineProperty(globalThis.ReadableStream.prototype, Symbol.toStringTag, { value: 'ReadableStream', writable: false, enumerable: false, configurable: true });
 const __tbStreamDisturbed = stream => __tbStreamBrand(stream).disturbed;
-// A closed stream already holds every chunk; draining it avoids one promise
-// turn per empty chunk.
 const __tbDrainClosedStream = stream => {
   const data = __tbStreamBrand(stream);
   if (!data.closed || data.errored !== null) return null;

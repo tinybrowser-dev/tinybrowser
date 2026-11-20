@@ -1,7 +1,3 @@
-// OffscreenCanvas owns a bitmap in the renderer registry. It has no DOM node:
-// the bitmap id lives in a realm-private map, and only the host functions
-// below can reach it. That makes the interface usable in a realm with no
-// document and leaves no page-visible handle to the bitmap.
 // https://html.spec.whatwg.org/multipage/canvas.html#the-offscreencanvas-interface
 (function () {
   if (typeof globalThis.OffscreenCanvas === 'function') {
@@ -12,7 +8,6 @@
   const states = new __tbPrivateMap();
   const contexts = new __tbPrivateMap();
 
-  // `[EnforceRange] unsigned long long`: finite, integral, in 0..2^53-1.
   function toUnsignedLongLong(value) {
     const number = Number(value);
     if (!Number.isFinite(number)) {
@@ -155,8 +150,6 @@
   });
   globalThis.OffscreenCanvas = OffscreenCanvas;
 
-  // Messaging and serialization use these branded helpers instead of a
-  // writable expando. Neither exposes the bitmap or its id.
   host.__tbOffscreenCanvasId = function (value) {
     const id = value && typeof value === 'object' ? ids.get(value) : undefined;
     return id === undefined ? -1 : id;
@@ -174,8 +167,6 @@
     const id = idOf(canvas);
     state.detached = true;
     state.context = null;
-    // The transfer steps unset the bitmap; the sender keeps its dimensions
-    // only as the zero-sized detached bitmap.
     host.__tbOffscreenCanvasDetach(id);
   };
 })();

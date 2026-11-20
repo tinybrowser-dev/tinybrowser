@@ -92,6 +92,7 @@ workspace = true
 [dependencies]
 browser = { workspace = true }
 cdp = { workspace = true }
+server = { workspace = true }
 webdriver = { workspace = true }
 logging = { workspace = true }
 serde_json = "1"
@@ -144,14 +145,10 @@ all = { level = "deny", priority = -1 }
 pedantic = { level = "deny", priority = -1 }
 cargo = { level = "deny", priority = -1 }
 allow_attributes_without_reason = "deny"
-# Private single-binary repo, never published to crates.io; the metadata
-# requirements (readme/keywords/categories/license) don't apply.
 cargo_common_metadata = { level = "allow", priority = 1 }
-# Duplicate crate versions are upstream transitive splits (syn 2/3,
-# miniz_oxide via png/flate2, synstructure, num-bigint, embedded-io) that no
-# bump removes without breaking a pin. Measured, not guessed, at every size
-# checkpoint; see docs/size.md.
 multiple_crate_versions = { level = "allow", priority = 1 }
+missing_errors_doc = { level = "allow", priority = 1 }
+missing_panics_doc = { level = "allow", priority = 1 }
 
 # restriction: explicit, no blanket
 todo = "deny"

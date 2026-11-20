@@ -1,13 +1,9 @@
-//! Canvas taint across image redirects, and canvas serialization.
-
 use std::time::Duration;
 
 use serde_json::json;
 
 use crate::fixture::{PIXEL, TestServer, evaluate, ok, open_page, redirect, server};
 
-/// Draws each image onto a fresh canvas and reads the pixels back. A tainted
-/// canvas throws `SecurityError` from `getImageData`; a clean one returns.
 const PROBE: &str = r"(async () => {
   const settle = (id) => new Promise((resolve, reject) => {
     const image = document.getElementById(id);
@@ -44,9 +40,6 @@ fn image_origin_follows_the_response_taint() {
         cross_listener,
         vec![
             ("/pixel.png", ok("image/png", PIXEL)),
-            // Bounces back to the page's origin. Fetch's tainting stays
-            // opaque once any hop crossed, so the final URL alone is not
-            // enough to call this clean.
             ("/bounce.png", redirect(&format!("http://{page}/pixel.png"))),
         ],
     );
@@ -110,9 +103,6 @@ fn src_change_draws_nothing_until_the_new_request_settles() {
         r"(async () => {
           try {
             const image = document.getElementById('swap');
-            // Paints the canvas green, then draws the image over it. `red` is
-            // 0 when the draw did nothing, and `error` is set when the readback
-            // reported the canvas as tainted.
             const probe = () => {
               const canvas = document.createElement('canvas');
               canvas.width = 1;
@@ -129,8 +119,6 @@ fn src_change_draws_nothing_until_the_new_request_settles() {
             };
             const before = probe();
             image.src = image.dataset.slow;
-            // The slow server holds the new request open, so this sample lands
-            // while the current request is unavailable.
             await new Promise((resolve) => setTimeout(resolve, 100));
             const during = probe();
             await new Promise((resolve, reject) => {
@@ -144,11 +132,7 @@ fn src_change_draws_nothing_until_the_new_request_settles() {
           }
         })()",
     );
-    // A settled same-origin image draws and leaves the canvas readable; a
-    // pending request is not fully decodable, so the draw is a no-op rather
-    // than a false `SecurityError`; the cross-origin pixels that finally land
-    // taint it
-    // (<https://html.spec.whatwg.org/multipage/canvas.html#check-the-usability-of-the-image-argument>).
+    // https://html.spec.whatwg.org/multipage/canvas.html#check-the-usability-of-the-image-argument
     assert_eq!(result["before"]["error"], json!(null), "{result}");
     assert!(
         result["before"]["red"].as_u64().unwrap_or(0) > 0,

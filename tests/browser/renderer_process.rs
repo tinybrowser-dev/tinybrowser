@@ -1,5 +1,3 @@
-//! Renderer-process lifecycle over CDP: one daemon, one renderer child per site.
-
 use std::time::{Duration, Instant};
 
 use crate::fixture::{Fixture, TestServer, ok, pid_alive};
@@ -62,7 +60,6 @@ fn daemon_pid(fixture: &Fixture) -> u32 {
     u32::try_from(fixture.wait_json()["pid"].as_u64().expect("daemon pid")).expect("pid")
 }
 
-/// `renderer` children of `daemon`, found through `/proc` (Linux).
 fn renderer_children(daemon: u32) -> Vec<u32> {
     let mut children = Vec::new();
     let Ok(entries) = std::fs::read_dir("/proc") else {
@@ -78,7 +75,7 @@ fn renderer_children(daemon: u32) -> Vec<u32> {
         };
         if !cmdline
             .split(|byte| *byte == 0)
-            .any(|arg| arg == b"renderer")
+            .any(|arg| arg == b"--renderer")
         {
             continue;
         }
@@ -167,7 +164,6 @@ fn renderer_process_survives_non_finite_results() {
     assert_eq!(infinity["result"]["unserializableValue"], json!("Infinity"));
     assert!(infinity["result"].get("value").is_none());
 
-    // The renderer must still answer after a non-finite result.
     assert_eq!(eval(&mut client, &created, "2+2").unwrap(), "4");
     close(&mut client, &created);
 }
@@ -236,9 +232,6 @@ fn aborted_tab_releases_its_assignment() {
         assert!(Instant::now() < deadline, "page did not load");
     }
 
-    // Block the coordinator inside a renderer request, then close the tab:
-    // the shutdown ask times out and the coordinator is aborted mid-flight.
-    // Release must still happen (it is owned by the assignment's drop).
     let endpoint = fixture.endpoint();
     let blocked = target.clone();
     let (done_tx, done_rx) = std::sync::mpsc::channel();
@@ -295,8 +288,6 @@ fn a_wedged_renderer_is_interrupted_and_the_tab_recovers() {
         .expect("navigate");
     crate::fixture::wait_for_load(&mut client, &session, Duration::from_secs(5));
 
-    // A blocking script must time out, interrupt the renderer, and return
-    // instead of holding the tab for the full request budget.
     let started = Instant::now();
     let blocked = eval(&mut client, &target, "(() => { while(true){} })()");
     assert!(blocked.is_err(), "wedged eval must fail: {blocked:?}");
@@ -311,8 +302,6 @@ fn a_wedged_renderer_is_interrupted_and_the_tab_recovers() {
         started.elapsed()
     );
 
-    // The tab released the wedged renderer and mounts the next navigation in
-    // a fresh process.
     client
         .call("Page.navigate", &json!({"url": url}), Some(&session))
         .expect("renavigate");
@@ -331,7 +320,6 @@ fn post_message_to_a_busy_tab_does_not_block_the_sender() {
     );
     let address = server.address();
 
-    // The popup must cross an origin boundary to stay a browser tab.
     let (peer_port, _peer_server) = serve_page("peer");
     let mut fixture = Fixture::new("tinybrowser-renderer-messaging");
     fixture.spawn_daemon_with_env("TINYBROWSER_LOG", "debug");
@@ -362,15 +350,11 @@ fn post_message_to_a_busy_tab_does_not_block_the_sender() {
         .unwrap(),
         "true"
     );
-    // A cross-origin popup stays a browser tab, so this test exercises the
-    // inter-tab messaging seam; a same-origin `about:blank` popup now shares
-    // the opener's renderer instead.
     let receiver = target_ids(&mut client)
         .into_iter()
         .find(|target| *target != sender && !initial.contains(target))
         .expect("opened target");
 
-    // Wedge the receiving tab's coordinator inside a renderer request.
     let endpoint = fixture.endpoint();
     let blocked_target = receiver.clone();
     let (done_tx, done_rx) = std::sync::mpsc::channel();
@@ -380,8 +364,6 @@ fn post_message_to_a_busy_tab_does_not_block_the_sender() {
         let _ = done_tx.send(result);
     });
     std::thread::sleep(Duration::from_millis(300));
-    // A second command to the wedged tab must not answer: that is what makes
-    // the sender's postMessage a real test.
     let endpoint = fixture.endpoint();
     let probed_target = receiver.clone();
     let (probe_tx, probe_rx) = std::sync::mpsc::channel();
@@ -395,7 +377,6 @@ fn post_message_to_a_busy_tab_does_not_block_the_sender() {
         "receiver answered while wedged"
     );
 
-    // postMessage is asynchronous: it must return while the receiver is busy.
     let started = Instant::now();
     let sent = eval(&mut client, &sender, "window.__peer.postMessage('ping')");
     assert!(sent.is_ok(), "postMessage failed: {sent:?}");
@@ -405,7 +386,6 @@ fn post_message_to_a_busy_tab_does_not_block_the_sender() {
         started.elapsed()
     );
 
-    // The message reached the target's delivery mailbox.
     let path = fixture.data().join("tinybrowser/logs/default.log");
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
@@ -420,7 +400,6 @@ fn post_message_to_a_busy_tab_does_not_block_the_sender() {
         std::thread::sleep(Duration::from_millis(25));
     }
 
-    // The sender's renderer is still responsive.
     assert_eq!(eval(&mut client, &sender, "2+2").unwrap(), "4");
 
     close(&mut client, &receiver);
@@ -442,7 +421,6 @@ fn window_messages_are_limited_to_related_tabs() {
     );
     let address = server.address();
 
-    // The popup must cross an origin boundary to stay a browser tab.
     let (peer_port, _peer_server) = serve_page("peer");
     let mut fixture = Fixture::new("tinybrowser-renderer-related");
     fixture.spawn_daemon_with_env("TINYBROWSER_LOG", "debug");
@@ -480,7 +458,6 @@ fn window_messages_are_limited_to_related_tabs() {
     );
     assert_eq!(eval(&mut client, &sender, "2+2").unwrap(), "4");
 
-    // Legit: a tab this document opened is related and receives the message.
     assert_eq!(
         eval(
             &mut client,
@@ -536,9 +513,6 @@ fn legal_storage_values_do_not_kill_the_renderer() {
         .expect("navigate");
     crate::fixture::wait_for_load(&mut client, &session, Duration::from_secs(5));
 
-    // 2,500,000 quotes encode to 5,000,002 bytes: inside the 5 MiB storage
-    // quota, but ~10 MiB on the wire once the control JSON escapes the
-    // encoded text. That frame must not stop the renderer.
     assert_eq!(
         eval(
             &mut client,
@@ -551,8 +525,6 @@ fn legal_storage_values_do_not_kill_the_renderer() {
     assert_eq!(eval(&mut client, &target, "2+2").unwrap(), "4");
 }
 
-/// Serves one HTML page on a fresh loopback port, for a popup that must cross
-/// an origin boundary.
 fn serve_page(title: &'static str) -> (u16, TestServer) {
     let body = format!("<!doctype html><title>{title}</title>");
     let server = TestServer::start(vec![("/", ok("text/html", body.as_bytes()))], None);
@@ -589,7 +561,6 @@ fn blank_targets_stay_virtual_and_idle_processes_collapse_to_one_spare() {
     close(&mut client, &created);
     wait_for_renderer_count(daemon, before, Duration::from_secs(5));
 
-    // Closing the virtual initial tab leaves the manager's one unlocked spare.
     close(&mut client, &initial_targets[0]);
     wait_for_renderer_count(daemon, before, Duration::from_secs(5));
 }
@@ -715,8 +686,6 @@ fn same_site_assignments_share_only_after_the_process_budget() {
         eval(&mut client, &second, "typeof window.marker").unwrap(),
         "\"undefined\""
     );
-    // Releasing one assignment must not tear down a process that still hosts
-    // another same-site assignment.
     close(&mut client, &first);
     assert_eq!(eval(&mut client, &second, "2+2").unwrap(), "4");
     assert_eq!(renderer_children(daemon).len(), 1);

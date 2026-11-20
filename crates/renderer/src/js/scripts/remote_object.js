@@ -1,6 +1,3 @@
-// One RemoteObject serializer for Runtime.evaluate, Runtime.callFunctionOn, and
-// Runtime.getProperties. Installed once with the pristine primordials in
-// primordials.js, so page-patched globals cannot answer reflection questions.
 host.__tb_getOwnPropertyNames = __tbGetOwnPropertyNames;
 host.__tb_getOwnPropertySymbols = __tbGetOwnPropertySymbols;
 host.__tb_getOwnPropertyDescriptor = __tbGetOwnPropertyDescriptor;

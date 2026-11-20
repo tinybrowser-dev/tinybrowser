@@ -1,14 +1,3 @@
-# tinybrowser wptrunner product. Install into the WPT venv:
-#   pip install -e tools/wpt
-# then:
-#   third_party/wpt/wpt run --binary /path/to/tinybrowser tinybrowser [tests]
-# or (from the dev shell): python3 tools/wpt/cli.py run webdriver [tests]
-#
-# `cli.py run webdriver` skips the /etc/hosts check, passes --resolve maps, runs
-# testharness + crashtest by default, and enables `--ssl-type=openssl` with
-# the generated wptserve CA handed to the product as `--tls-ca`.
-# Each WebDriver endpoint gets a fresh temporary XDG profile.
-
 from __future__ import annotations
 
 import os
@@ -36,22 +25,12 @@ from timeouts import DEFAULT_TIMEOUT, EXTRA_TIMEOUT, LONG_TIMEOUT
 
 wpttest.Test.default_timeout = DEFAULT_TIMEOUT
 wpttest.Test.long_timeout = LONG_TIMEOUT
-# wdspec/aamtest subclass Test but carry their own budgets upstream (25/180);
-# they run through the upstream PytestExecutor, so its grace moves too.
 wpttest.WdspecTest.default_timeout = DEFAULT_TIMEOUT
 wpttest.WdspecTest.long_timeout = LONG_TIMEOUT
 wpttest.AamSpecTest.default_timeout = DEFAULT_TIMEOUT
 wpttest.AamSpecTest.long_timeout = LONG_TIMEOUT
 PytestExecutor.extra_timeout = EXTRA_TIMEOUT
 
-# Directories whose test code waits longer than DEFAULT_TIMEOUT on its own
-# timers, not on the engine. `css-integration/svg/` sleeps 800 ms per subtest
-# (nine serially) before checking the referrer, so the file cannot finish
-# inside the default budget however fast the fetches are. These get
-# SLOW_TEST_TIMEOUT, which keeps budget + EXTRA_TIMEOUT below the page's own
-# 10 s clock so the runner kill still lands first. Nothing may be added here
-# for a slow engine path: fix the path instead. A stale prefix degrades to the
-# default budget and its files fail visibly, which is when the entry goes.
 SLOW_TEST_PREFIXES = ("referrer-policy/css-integration/svg/",)
 SLOW_TEST_TIMEOUT = 6  # seconds; budget + EXTRA_TIMEOUT = 8 < testharness.js 10
 
@@ -69,8 +48,6 @@ def _with_slow_test_budget(original):
     return classmethod(from_manifest)
 
 
-# TestharnessTest overrides `from_manifest`, so both the base and the harness
-# class need the override; every executor type we run derives from one of them.
 wpttest.Test.from_manifest = _with_slow_test_budget(wpttest.Test.from_manifest.__func__)
 wpttest.TestharnessTest.from_manifest = _with_slow_test_budget(
     wpttest.TestharnessTest.from_manifest.__func__
@@ -84,16 +61,7 @@ __wptrunner__ = {
         "testharness": "TinyBrowserTestharnessExecutor",
         "crashtest": "TinyBrowserCrashtestExecutor",
         "reftest": "TinyBrowserRefTestExecutor",
-        # test262 tests are served as generated .test262.html wrappers that
-        # report through testharness.js; Test262Test subclasses TestharnessTest
-        # (wptrunner/wpttest.py), so the testharness executor drives them too.
         "test262": "TinyBrowserTestharnessExecutor",
-        # Red foundations: registered so the tests run and fail honestly
-        # instead of reporting an unsupported test type and running nothing.
-        # wdspec needs pytest (not yet vendored into the venv, so results are
-        # currently infra ERROR) plus element/frame/actions surface; aamtest
-        # needs platform accessibility hooks. BiDi work is deferred.
-        # End-to-end probe pending an approved run.
         "wdspec": "PytestExecutor",
         "aamtest": "PytestExecutor",
     },
@@ -164,7 +132,6 @@ class TinyBrowser(WebDriverBrowser):
         self._ensure_profile()
         command = [
             self.webdriver_binary,
-            "webdriver",
             f"--port={self.port}",
             "--resolve=nonexistent.*.test=fail",
             "--resolve=*.test=127.0.0.1",

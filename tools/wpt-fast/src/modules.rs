@@ -1,16 +1,9 @@
-//! Module loading for `flags: [module]` test262 files.
-//!
-//! The resolver keeps specifiers relative to the suite root, so an import
-//! like `./fixture_FIXTURE.js` reads the file next to the test. The loader
-//! reads the source and declares it as a module; no file is written.
-
 use std::path::PathBuf;
 
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
 use rquickjs::module::Declared;
 use rquickjs::{Ctx, Error, Module, Result};
 
-/// Resolves test262 module specifiers against the suite root.
 pub struct SuiteResolver;
 
 impl Resolver for SuiteResolver {
@@ -25,9 +18,7 @@ impl Resolver for SuiteResolver {
     }
 }
 
-/// Reads a resolved module from the test262 checkout.
 pub struct SuiteLoader {
-    /// Test262 root; module names are relative to it.
     pub root: PathBuf,
 }
 
@@ -38,9 +29,6 @@ impl Loader for SuiteLoader {
         name: &str,
         attributes: Option<ImportAttributes<'js>>,
     ) -> Result<Module<'js, Declared>> {
-        // The runner has no JSON/text module support. A test that asks for
-        // one gets a resolution error, which is the honest outcome until the
-        // attribute contract is implemented.
         if let Some(kind) = attributes
             .as_ref()
             .and_then(|attributes| attributes.get_type().ok().flatten())
@@ -54,11 +42,6 @@ impl Loader for SuiteLoader {
     }
 }
 
-/// Joins a relative import to its importer, collapsing `.` and `..`.
-///
-/// Bare specifiers are returned unchanged; the loader then fails to find them
-/// under the suite root, which is the same resolution failure a missing file
-/// produces.
 fn normalize(base: &str, name: &str) -> String {
     if let Some(absolute) = name.strip_prefix('/') {
         return absolute.to_owned();

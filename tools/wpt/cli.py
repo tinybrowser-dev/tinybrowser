@@ -70,40 +70,23 @@ from timeouts import DEFAULT_TIMEOUT, EXTRA_TIMEOUT, LONG_TIMEOUT
 ROOT = Path(__file__).resolve().parents[2]
 CLI = Path(__file__).resolve()
 
-# Upstream test types, `wpttest.enabled_tests` sort order. Checked against
-# wptrunner at runtime; a mismatch warns instead of breaking the run.
 KNOWN_TEST_TYPES = "aamtest crashtest print-reftest reftest test262 testharness wdspec"
 KNOWN_TEST_TYPE_SET = set(KNOWN_TEST_TYPES.split())
 
-# HTTP testharness only: extra schemes bind extra loopbacks or start DNS.
 TLS_SCHEMES = ("https", "https-local", "https-public", "wss", "h2")
 HTTP_ONLY = ("http", "ws")
 
-# wptrunner `--exclude` is a URL prefix, so `--exclude=worker` misses
-# `.any.worker.html` variants generated from `.any.js`, the security-features
-# generator's `worker-classic.http.html` / `sharedworker-module.https.html`
-# subresource files, and the canvas generator's `.w.html` variant under
-# `html/canvas/` (the same OffscreenCanvas test run in a Worker).
 WORKER_VARIANT = re.compile(
     r"(?:^|[/.])(any\.)?(sharedworker|serviceworker|worker)(-(classic|module))?"
     r"(\.[a-z0-9]+)*\.html$"
     r"|^/html/canvas/.+\.w\.html$"
 )
 
-# File-level statuses with their own bucket; anything else not-a-pass is
-# classified by the report's `expected` field.
 HARD_STATUSES = ("TIMEOUT", "CRASH", "ERROR")
 TIMEOUT_STATUSES = ("TIMEOUT", "EXTERNAL-TIMEOUT")
-# A file-level row with one of these statuses reported no subtests, so
-# whatever it reports on a later run is newly measured, not a regression.
 UNMEASURED_STATUSES = HARD_STATUSES + ("EXTERNAL-TIMEOUT",)
 MAX_LISTED = 40
 
-# `wpt run`'s requirements (tools/wpt/commands.json), which WPT re-checks on
-# every run, and a setuptools whose pkg_resources works for that check: WPT's
-# tools/localpaths puts its vendored packaging 21 (needs pyparsing) ahead of
-# site-packages, and setuptools >= 71 imports top-level packaging, so only
-# releases that load their own vendored copy import cleanly there.
 WPT_RUN_REQUIREMENTS = (
     "tools/manifest/requirements.txt",
     "tools/wptrunner/requirements.txt",
@@ -152,18 +135,12 @@ def git(args: list[str], cwd: Path | None = None) -> str | None:
     return out.stdout.decode(errors="replace").strip()
 
 
-# --- worker-variant filter (pure; selftested) ---
-
-
 def exclude_skips_worker_variants(exclude: Iterable[str] | None) -> bool:
     return bool(exclude and any(item.strip("/") == "worker" for item in exclude))
 
 
 def is_worker_variant_url(url: str) -> bool:
     return bool(WORKER_VARIANT.search(url.split("?", 1)[0]))
-
-
-# --- option matching (mirrors wpt's allow_abbrev) ---
 
 
 def has_option(option: str, args: list[str]) -> bool:
@@ -194,9 +171,6 @@ def opt_value(args: list[str], option: str) -> str | None:
     return None
 
 
-# --- harness options (every knob is a flag; no harness setting comes from the environment) ---
-
-
 @dataclass(frozen=True)
 class Options:
     """Harness configuration, resolved from argv once at the entry point.
@@ -207,8 +181,6 @@ class Options:
     """
 
     binary: str | None = None
-    # Prebuilt in-process runner (wpt-fast/wpt-harness); CI downloads it
-    # instead of building inside every chunk job.
     fast_binary: str | None = None
     wpt_root: str | None = None
     venv: str | None = None
@@ -240,8 +212,6 @@ class Options:
         return out
 
 
-# flag -> (Options field, kind). `value` takes the next argv item and rejects an
-# empty one, `int` a non-negative whole number, `switch` is bare.
 HARNESS_FLAGS: dict[str, tuple[str, str]] = {
     "--binary": ("binary", "value"),
     "--fast-binary": ("fast_binary", "value"),
@@ -281,8 +251,6 @@ def extract_options(argv: list[str]) -> tuple[Options, list[str], str | None]:
         elif kind == "switch":
             value = ""
         else:
-            # A harness value never starts with `-`, so refusing one keeps
-            # `--binary --log-level=trace` from eating the next flag.
             if index + 1 >= len(argv) or argv[index + 1].startswith("-"):
                 return Options(), [], f"{name} needs a value"
             value = argv[index + 1]
@@ -305,9 +273,6 @@ def extract_options(argv: list[str]) -> tuple[Options, list[str], str | None]:
             values[field] = value
         index += 1
     return Options(**values), rest, None
-
-
-# --- WPT checkout ---
 
 
 def resolve_wpt_root(options: Options) -> Path:
@@ -347,9 +312,6 @@ def check_pin(wpt: Path, options: Options) -> int:
     return 0
 
 
-# --- locks (shared venv + shared manifest) ---
-
-# Seconds to wait for a shared venv/manifest lock when `--lock-timeout` is absent.
 LOCK_TIMEOUT_S = 1800
 
 
@@ -386,9 +348,6 @@ def release_lock(handle) -> None:
             handle.close()
         except OSError:
             pass
-
-
-# --- venv (upstream requirements + editable adapter) ---
 
 
 def venv_python(venv: Path) -> Path:
@@ -441,8 +400,6 @@ def install_venv(wpt: Path, venv: Path, options: Options) -> None:
         subprocess.run(
             ["uv", "venv", "--seed", str(venv), "--python", "3.12"], check=True
         )
-    # uv seeds only pip on Python 3.12; WPT's per-run requirements check
-    # needs pkg_resources, or it shells out to pip for every file.
     requirements = [
         arg for rel in WPT_RUN_REQUIREMENTS for arg in ("-r", str(wpt / rel))
     ]
@@ -481,9 +438,6 @@ def ensure_venv(wpt: Path, venv: Path, options: Options) -> None:
         release_lock(lock)
 
 
-# --- manifest (whole-tree inventory) ---
-
-
 def manifest_parses(exe: Path, manifest: Path) -> bool:
     try:
         out = subprocess.run(
@@ -500,9 +454,6 @@ def manifest_parses(exe: Path, manifest: Path) -> bool:
         return out.returncode == 0
     except OSError:
         return False
-
-
-# --- argument grammars ---
 
 
 def split_run_argv(
@@ -647,8 +598,6 @@ def split_score_argv(
             else:
                 save_report = Path(value)
         elif arg == "--dry-run":
-            # Honored only here, before `--`: past the separator it is a
-            # verbatim upstream flag like any other.
             dry_run = True
         elif arg.startswith("-"):
             extra.extend(argv[i:])
@@ -816,20 +765,13 @@ def parse_merge_argv(argv: list[str]) -> MergeArgs:
     )
 
 
-# --- report primitives (score + rerun share these) ---
-
-
 def group_of(test: str) -> str:
     parts = [p for p in test.split("/") if p]
     if len(parts) <= 1:
         return "(root)"
     if parts[0] == "third_party" and len(parts) > 1 and parts[1] == "test262":
-        # The ECMAScript suite is one thing, not a subtree of third_party/;
-        # it has no expected-status metadata, so it reads as its own card.
         return "test262"
     if "." in parts[1]:
-        # A test directly inside a top-level directory groups under that
-        # directory, not under the file; the table header says "directory".
         return parts[0]
     return "/".join(parts[:2])
 
@@ -878,7 +820,6 @@ def raw_verdict(result: dict) -> str:
     if status in ("OK", "PASS"):
         return "PASS"
     if status is None:
-        # A writer that recorded only the subtests keeps the verdict there.
         return (
             "PASS" if any(sub.get("status") == "PASS" for sub in subtests) else "SKIP"
         )
@@ -1015,9 +956,6 @@ def rerun_status(remaining: int, runner_exit: int) -> tuple[int, bool]:
     return 0, False
 
 
-# --- `merge` (chunk reports of a CI run -> one report, one score) ---
-
-
 def load_report(report: Path) -> tuple[dict | None, str | None]:
     """The parsed chunk report, or why it cannot be used at all.
 
@@ -1068,8 +1006,6 @@ def fold_reports(
             warnings.append(f"{report}: results is not a list; skipped")
             continue
         if not chunk:
-            # A chunk legitimately runs zero tests (narrow test-types, big
-            # chunks value, everything excluded); warn, never fail.
             empty.append(report)
         for result in chunk:
             if not isinstance(result, dict) or not result.get("test"):
@@ -1105,8 +1041,6 @@ def fold_reports(
                 times.append(value)
     if empty:
         warnings.append("no results in " + ", ".join(str(report) for report in empty))
-    # subsuites entries carry their own verdicts upstream; the empty
-    # subsuite is the only one today and says nothing beyond its key.
     merged: dict = {
         "results": sorted(
             results, key=lambda result: (result.get("subsuite") or "", result["test"])
@@ -1123,9 +1057,6 @@ def fold_reports(
     return merged, warnings, None
 
 
-# The compact run record. The merged wptreport is a debug artifact; this is
-# what the history, the site, and the regression diff consume, so it must stay
-# small and stable while the wptreport keeps growing.
 RECORD_SCHEMA = 2
 RECORD_COUNTERS = (
     "tests",
@@ -1342,16 +1273,11 @@ def merge_main(argv: list[str]) -> int:
             )
     code = summarize_results(merged["results"])
     if args.strict and skipped:
-        # The table is out and --out is written; the caller (CI score job)
-        # turns an unusable chunk report into a red run without losing it.
         eprint(
             f"wpt: merge: {skipped} of {len(args.reports)} chunk reports were unusable"
         )
         return code or 2
     return code
-
-
-# --- `corpus` (Chrome's per-test subtest counts) ---
 
 
 CORPUS_USAGE = """corpus (--revision REV | --summary FILE) --out FILE
@@ -1473,9 +1399,6 @@ def corpus_main(argv: list[str]) -> int:
     return 0
 
 
-# --- `publish` (one record into the history repo's data dir) ---
-
-
 PUBLISH_USAGE = """publish --record FILE --data DIR [--sha SHA]
 
 Add one compact run record (from `merge --summary-out`) to the data directory
@@ -1539,8 +1462,6 @@ def diff_failures(previous: list[dict], current: list[dict], comparable: bool) -
     fixes = [
         before[key]
         for key in fixed_keys
-        # A file-level row that disappears while subtests still fail is a
-        # measurement change, not a fixed test.
         if key.subtest or key.test not in failing_tests
     ]
     return {
@@ -1551,12 +1472,6 @@ def diff_failures(previous: list[dict], current: list[dict], comparable: bool) -
     }
 
 
-# The failure list is ~100k rows in a full run, so it stays a gzipped sidecar
-# instead of a JSON member of latest.json: the committed record stays small
-# while the next run still gets every entry to diff against. JSON rather than
-# TSV because a subtest name may contain a tab, a CR, or a newline (a WPT test
-# that asserts on those characters names them), and no escaping rule of ours
-# should be needed to read back what we wrote.
 FAILURES_FILE = "failures.jsonl.gz"
 
 
@@ -1575,7 +1490,6 @@ def read_failures(path: Path) -> list[dict]:
         try:
             entry = json.loads(line)
         except json.JSONDecodeError:
-            # A torn write is the only way here; keep the lines that read.
             continue
         if isinstance(entry, dict) and entry.get("test"):
             out.append(
@@ -1667,9 +1581,6 @@ def publish_main(argv: list[str]) -> int:
     latest_path = data_dir / "latest.json"
     failures_path = data_dir / FAILURES_FILE
 
-    # The failure list leaves the committed JSON here and is re-read from the
-    # sidecar, so `latest.json` is the same shape whether or not a run had any
-    # failures to record.
     current_failures = record.pop("failures", None) or []
     previous_failures = read_failures(failures_path)
     previous: dict | None = None
@@ -1679,8 +1590,6 @@ def publish_main(argv: list[str]) -> int:
         except (OSError, json.JSONDecodeError) as error:
             eprint(f"publish: ignoring unreadable latest.json: {error}")
 
-    # A rerun of the same commit replaces its point in the index instead of
-    # adding one; the diff is against whatever the sidecar last held.
     comparable = previous is not None and (
         previous.get("wpt_revision") == record.get("wpt_revision")
     )
@@ -1710,11 +1619,6 @@ def publish_main(argv: list[str]) -> int:
         except (OSError, json.JSONDecodeError) as error:
             eprint(f"publish: ignoring unreadable index.json: {error}")
     entry = index_entry(record)
-    # The corpus is a property of the WPT revision, not of one run. Entries
-    # published before enrollment carry the smaller reported denominator, so
-    # give every same-revision point the largest known corpus denominator;
-    # otherwise the chart shows a fall that is only a denominator change.
-    # The max also keeps the history stable when a later corpus fetch fails.
     denominator = (record.get("totals") or {}).get("subtests")
     if isinstance(denominator, int) and denominator > 0:
         for item in index:
@@ -1750,8 +1654,6 @@ first, then a subtest sample, then the timeout/newly-measured/fix counts.
 last `publish` wrote. Every key is indexed directly, so a schema change in
 `publish` fails here instead of printing zeros."""
 
-# Truncation keeps the step summary readable: a bad push can regress
-# thousands of subtests.
 SUMMARY_FILES = 50
 SUMMARY_SUBTESTS = 20
 
@@ -1831,13 +1733,8 @@ def summary_main(argv: list[str]) -> int:
     return 0
 
 
-# --- `profile` (wall-time census over a report or a live run) ---
-
-
-# A passing test above this many ms is close to the normal budget's cliff.
 NEAR_BUDGET_MS = 2500
 
-# Browser-timeline records shown per profiled run.
 TIMELINE_LINES = 40
 
 
@@ -1964,8 +1861,6 @@ def profile_main(options: Options, argv: list[str]) -> int:
             flag, value = arg, argv[index + 1]
             index += 1
         elif arg.startswith("-"):
-            # A flag that is not ours opens the runner's verbatim region,
-            # matching the `run` grammar.
             extra = argv[index:]
             break
         else:
@@ -1989,9 +1884,6 @@ def profile_main(options: Options, argv: list[str]) -> int:
     if not paths:
         return die("profile", usage, 2)
     return profile_run(options, paths, extra, top)
-
-
-# --- in-venv runner ---
 
 
 def patch_wpt(wpt_root: Path, lane: str | None = None) -> None:
@@ -2023,7 +1915,6 @@ def patch_wpt(wpt_root: Path, lane: str | None = None) -> None:
                     ports.pop(scheme, None)
         return ports
 
-    # Intentional runtime patch of untyped upstream; verified by every run.
     ConfigBuilder._get_ports = skip_tls_ports_without_ssl
 
     from wptrunner import testloader
@@ -2045,16 +1936,10 @@ def patch_wpt(wpt_root: Path, lane: str | None = None) -> None:
                     if not tests:
                         continue
                 if lane == "testdriver":
-                    # Only files that drive a real browser session.
                     tests = {t for t in tests if getattr(t, "testdriver", None) is True}
                     if not tests:
                         continue
                 elif lane == "in-process-complement":
-                    # Everything `run in-process` does not run: testdriver files
-                    # (except crashtests, which the in-process lane judges by
-                    # whether they survive, no driver needed), plus generated
-                    # wrappers it cannot render (service worker, shared worker,
-                    # module, shadow realm) instead of files.
                     selected = set()
                     for test in tests:
                         if (
@@ -2074,7 +1959,6 @@ def patch_wpt(wpt_root: Path, lane: str | None = None) -> None:
                         continue
                 yield test_type, test_path, tests
 
-    # Intentional runtime patch of untyped upstream; verified by every run.
     testloader.TestFilter = TinybrowserTestFilter  # ty: ignore[invalid-assignment]
 
     from wptrunner.browsers import base as browser_base
@@ -2127,9 +2011,6 @@ def inner_main(options: Options, argv: list[str]) -> int:
     return code if isinstance(code, int) else 0
 
 
-# --- `run` (setup, then exec or spawn the venv python) ---
-
-
 def build_binary(options: Options) -> Path:
     override = options.binary
     if override:
@@ -2161,12 +2042,7 @@ def build_profile_binary(name: str) -> Path:
         check=False,
     )
     binary = Path(out.stdout.decode(errors="replace").strip())
-    # The `wpt` profile (see the root Cargo.toml) keeps dev's assertions but
-    # optimizes the code: file timeouts must measure the engine, not a `-O0`
-    # build spending the budget inside QuickJS.
     eprint(f"wpt: building {name} (cargo no-ops when fresh)")
-    # cargo's fingerprint tracks every compiled input; a failure means the
-    # binary would be stale, so refuse instead of running against it.
     build = ["cargo", "build", "-q"]
     if name != "tinybrowser":
         build.extend(["-p", name])
@@ -2186,9 +2062,6 @@ def finalize_run_args(wpt: Path, extras: list[str]) -> list[str]:
     if not has_option("--metadata", args):
         args = ["--metadata", str(ROOT / "tools" / "wpt" / "metadata"), *args]
     if not has_option("--manifest", args):
-        # Upstream defaults the manifest into ${metadata_root}, which would
-        # land the 40MB walk output in our baselines dir; pin it at the WPT
-        # checkout so the lock tracks the file wpt uses.
         args = ["--manifest", str(wpt / "MANIFEST.json"), *args]
     if not has_option("--pause-after-test", args) and not has_option(
         "--no-pause-after-test", args
@@ -2205,12 +2078,9 @@ def finalize_run_args(wpt: Path, extras: list[str]) -> list[str]:
         and not has_option("--fully-parallel", args)
         and not has_option("-f", args)
     ):
-        # Uncapped: one browser per core. Explicit --processes still wins.
         procs = os.cpu_count() or 1
         args.extend(["--processes", str(procs)])
     if not has_option("--test-types", args):
-        # Last: --test-types is nargs='*', so nothing positional may follow it.
-        # Paths already lead, so appending here is safe.
         args.extend(["--test-types", "testharness", "crashtest"])
     return args
 
@@ -2257,8 +2127,6 @@ def run_wpt(
     options: Options,
     selection: str | None = None,
 ) -> int:
-    # wpt's `--binary-arg` is the only channel that carries an argument into
-    # the product's command line, and the browser owns both of these.
     wpt_args = list(final_args)
     for flag, value in (
         ("log-level", options.log_level),
@@ -2266,8 +2134,6 @@ def run_wpt(
     ):
         if value:
             wpt_args.append(f"--binary-arg=--{flag}={value}")
-    # Everything for the harness goes before `--`; wpt's own `--binary` and the
-    # user's upstream flags stay after it, untouched.
     inner_argv = [*inner_flags(wpt, options)]
     if selection is not None:
         inner_argv.append(selection_flag(selection))
@@ -2307,8 +2173,6 @@ def run_wpt(
             break
 
     if record == 0 and not manifest_locked and venv_lock is None:
-        # Fast path: nothing to record or serialize. exec restores direct
-        # signal delivery to the runner instead of stranding browsers behind us.
         release_lock(manifest_lock)
         try:
             os.execv(str(exe), [str(exe), str(CLI), "_inner", *inner_argv])
@@ -2316,10 +2180,6 @@ def run_wpt(
             return die("run webdriver", f"cannot exec {exe}: {error}")
         raise AssertionError("unreachable")
 
-    # Slow path: a manifest walk and/or venv writes happen under us, so stay
-    # parent and forward signals explicitly. Children must not inherit the
-    # lock fds (the lock belongs to the open file description; one orphaned
-    # browser would block every later run).
     try:
         child = subprocess.Popen(
             [str(exe), str(CLI), "_inner", *inner_argv],
@@ -2340,8 +2200,6 @@ def run_wpt(
     old = {s: signal.signal(s, forward) for s in (signal.SIGTERM, signal.SIGHUP)}
     old_int = signal.signal(signal.SIGINT, forward)
     try:
-        # wait() retries through trapped signals internally (unlike bash
-        # wait, it does not return early), so a single call suffices.
         status = child.wait()
     finally:
         for s, handler in old.items():
@@ -2379,9 +2237,6 @@ def run_main(options: Options, argv: list[str]) -> int:
 
 
 def webdriver_main(options: Options, argv: list[str]) -> int:
-    # Our flags, not upstream's: remove them before the split so a following
-    # literal `--` keeps its meaning, and let `inner_main` consume the copy
-    # that travels to the venv child.
     selection = selection_lane(argv)
     if selection is not None:
         argv = [
@@ -2437,9 +2292,6 @@ def webdriver_main(options: Options, argv: list[str]) -> int:
     check_type_drift(exe)
 
     manifest = Path(opt_value(final, "--manifest") or wpt / "MANIFEST.json")
-    # The manifest is a generated file, not a cache: an explicit
-    # `--no-manifest-update` (CI uses the plan job's artifact) trusts the one
-    # on disk, and every other run updates it.
     record = 0 if has_option_exact("--no-manifest-update", final) else 1
     paths, final, error = hoist_paths_after_test_types(paths, final)
     if error:
@@ -2469,9 +2321,6 @@ def selection_lane(argv: list[str]) -> str | None:
 def selection_flag(selection: str) -> str:
     """The flag that selects `selection`, for a child `run webdriver` command."""
     return "--testdriver-only" if selection == "testdriver" else "--exclude-in-process"
-
-
-# --- `run test262` (native ECMAScript lane) ---
 
 
 def test262_main(options: Options, argv: list[str]) -> int:
@@ -2509,9 +2358,6 @@ def test262_main(options: Options, argv: list[str]) -> int:
         return die("run test262", f"cannot run {binary}: {error}")
 
 
-# --- `manifest` (one walk for a whole chunked CI run) ---
-
-
 def in_process_main(options: Options, argv: list[str]) -> int:
     """`run in-process` — testharness, crashtest, and reftest in this process.
 
@@ -2527,8 +2373,6 @@ def in_process_main(options: Options, argv: list[str]) -> int:
     restarts it until the selection is complete: a finished file is reported
     from the journal, an unfinished one becomes its own ERROR or TIMEOUT.
     """
-    # The lane is defined by what it cannot do, so the exclusion is not a
-    # caller choice; accepting the old flag would only invite the duplicate.
     argv = [arg for arg in argv if arg != "--exclude-testdriver"]
     if "--score" in argv:
         return die(
@@ -2699,13 +2543,6 @@ def wptserve_content_types(wpt: Path, venv: Path) -> str | None:
     return table or None
 
 
-# Files one harness process runs before the driver starts a new one.
-#
-# The engine keeps roughly 5 MB per file it runs alive (docs/upstream.md), so a
-# whole chunk in one process grows past the 16 GB a GitHub runner has: chunk 2
-# of 11 reached 12 GB at file 2762. A window bounds that to a few GB, and the
-# journal carries every verdict across windows, so a window boundary is not a
-# crash and re-runs nothing.
 WINDOW_TESTS = 600
 
 
@@ -2843,10 +2680,6 @@ def run_harness_supervised(
             return die("run in-process", f"cannot run {binary}: {error}")
         if code == 0:
             return 0
-        # Only a signal (the process died under a file) or exit 3 (the
-        # watchdog cut a file that stopped returning) is one file's verdict.
-        # Anything else is the driver's own failure: a bad flag, a baseline
-        # diff, an unwritable report.
         if code > 0 and code != 3:
             return code
         finished, unfinished = read_journal(journal)
@@ -2860,8 +2693,6 @@ def run_harness_supervised(
                 f"files with no progress (exit {code})"
             )
             return code
-        # Exit 3 is the watchdog cutting a file that stopped returning; any
-        # other failure is the process dying under a file.
         stale = "timeout" if code == 3 else "error"
         completed = finished
         eprint(f"wpt: run in-process: attempt {attempt} stopped; resuming")
@@ -2882,8 +2713,6 @@ def read_journal(path: Path) -> tuple[int, list[str]]:
             record = json.loads(line)
         except json.JSONDecodeError:
             continue
-        # A torn write can leave a complete JSON scalar ("12", "null") when the
-        # abort cut between a record and the next one. It names nothing either.
         if not isinstance(record, dict):
             continue
         if record.get("event") == "start":
@@ -2938,8 +2767,6 @@ def manifest_inner_main(options: Options, argv: list[str]) -> int:
     manifest = wpt / "MANIFEST.json"
     try:
         sys.path.insert(0, str(wpt))
-        # Upstream's bootstrap puts tools/third_party (atomicwrites, attrs,
-        # ...) on sys.path; the manifest package imports from there.
         from tools import localpaths  # noqa: F401
         from tools.manifest import manifest as manifest_pkg
     except ImportError as error:
@@ -2950,9 +2777,6 @@ def manifest_inner_main(options: Options, argv: list[str]) -> int:
         return die("manifest", f"{manifest} does not parse", 1)
     eprint(f"wpt: manifest {manifest} ({manifest.stat().st_size} bytes)")
     return 0
-
-
-# --- `score` ---
 
 
 def score_run(
@@ -3047,9 +2871,6 @@ def score_main(options: Options, argv: list[str]) -> int:
     return finish_scored_run(report_path, runner_exit, save_report, started)
 
 
-# --- `rerun` ---
-
-
 def rerun_spawn(
     tests: list[str], extra: list[str], save_report: Path | None, options: Options
 ) -> tuple[Path, int]:
@@ -3116,8 +2937,6 @@ def rerun_main(options: Options, argv: list[str]) -> int:
         return die("rerun", f"could not start the runner: {error}", 2)
     summarize(report_path)
     try:
-        # The report holds only the selected tests, so a TIMEOUT here is a
-        # test the selection gate dropped that now hangs: new information.
         remaining = failing_tests(report_path, include_timeout=True)
     except OSError as error:
         eprint(f"rerun: no usable report at {report_path}: {error}")
@@ -3139,9 +2958,6 @@ def rerun_main(options: Options, argv: list[str]) -> int:
         except OSError:
             pass
     return status
-
-
-# --- `overnight` (full-suite run + score; needs approval per AGENTS.md) ---
 
 
 def overnight_main(options: Options, argv: list[str]) -> int:
@@ -3192,11 +3008,6 @@ def overnight_main(options: Options, argv: list[str]) -> int:
     return finish_scored_run(report_path, runner_exit, save_report, started)
 
 
-# --- `failures` / `baseline` (canonical lists, two-revision diff) ---
-
-# The `▶` blocks the runner prints (mozlog's grouping formatter) are the
-# canonical record: the score table truncates its attention list. Headers are
-# "STATUS [expected ...] PATH" or "Unexpected (subtest )?result in PATH:".
 _FAILURE_BLOCK = "  ▶ "
 _FAILURE_UNEXPECTED = re.compile(r"^Unexpected (subtest )?result in ")
 _FAILURE_EXPECTED = re.compile(r"^[A-Z][A-Z_-]* \[expected[^\]]*\] ")
@@ -3308,8 +3119,6 @@ def build_baseline_binary(worktree: Path, tmp: Path) -> Path | None:
         profile = ["--profile", "wpt"]
         build = ["cargo", "build", "-q", "--profile", "wpt"]
     else:
-        # Older revisions have no `wpt` profile; the override keeps both sides
-        # of the diff at the same opt level.
         profile = []
         env["CARGO_PROFILE_DEV_OPT_LEVEL"] = "2"
         build = ["cargo", "build", "-q"]
@@ -3375,8 +3184,6 @@ def baseline_main(options: Options, argv: list[str]) -> int:
         if git(["worktree", "add", "--detach", str(worktree), rev]) is None:
             return die("baseline", f"cannot create a worktree at {worktree}", 2)
         eprint(f"baseline: {rev} -> {worktree}")
-        # Linked worktrees have no submodule checkouts and the network may be
-        # unavailable, so copy ours in; WPT stays out (the runner falls back).
         for sub in (
             "third_party/rquickjs",
             "third_party/blitz",
@@ -3442,9 +3249,6 @@ def baseline_main(options: Options, argv: list[str]) -> int:
             shutil.rmtree(tmp, ignore_errors=True)
 
 
-# --- selftest ---
-
-
 def _selftest() -> None:
     assert exclude_skips_worker_variants(["worker"])
     assert exclude_skips_worker_variants(["/worker/"])
@@ -3484,7 +3288,6 @@ def _selftest() -> None:
     assert has_option_exact("--manifest", ["--manifest", "x"])
     assert not has_option_exact("--manifest", ["--manif", "x"])
 
-    # Harness flags are ours before `--`, upstream's after it.
     opts, rest, err = extract_options(
         [
             "run",
@@ -3502,14 +3305,12 @@ def _selftest() -> None:
     assert opts.binary == "/x" and opts.no_lock
     assert extract_options(["--binary"])[2] is not None
     assert extract_options(["--binary="])[2] is not None
-    # A value never starts with `-`, so a missing one cannot swallow a flag.
     assert extract_options(["--binary", "--log-level=trace"])[2] is not None
     assert extract_options(["--log-level="])[2] is not None
     assert extract_options(["--no-lock=1"])[2] is not None
     assert extract_options(["--lock-timeout", "soon"])[2] is not None
     assert extract_options(["--lock-timeout", "-1"])[2] is not None
     assert extract_options([])[0] == Options()
-    # Round trip: the flags a parent hands its child rebuild the same options.
     chosen = Options(
         binary="/x",
         wpt_root="/w",
@@ -3522,8 +3323,6 @@ def _selftest() -> None:
     )
     assert extract_options(chosen.flags())[0] == chosen
 
-    # A lane is a command argument, not a flag, and never a default: the
-    # executors disagree, so an accidental lane would be an accidental verdict.
     with contextlib.redirect_stderr(io.StringIO()):
         assert run_main(Options(), []) == 2
         assert run_main(Options(), ["bogus", "dom/"]) == 2
@@ -3554,8 +3353,6 @@ def _selftest() -> None:
     _, _, _, _, err = split_run_argv(["--test-types", "testharnes", "dom/"])
     assert err is not None
 
-    # A positional trailing --test-types values in the verbatim region is
-    # rescued, not swallowed (nargs='*'); a typeless word fails loudly.
     paths, extras, err = hoist_paths_after_test_types(
         [], ["--processes", "4", "--test-types", "reftest", "dom/nodes/"]
     )
@@ -3569,8 +3366,6 @@ def _selftest() -> None:
     _, _, err = hoist_paths_after_test_types([], ["--test-types", "testharnes"])
     assert err is not None
 
-    # Corpus enrollment: only a positive subtest total counts, and a reftest
-    # with 0 subtests must not inflate the denominator.
     assert corpus_counts(
         {
             "/a.any.html": {"s": "P", "c": [2, 3]},
@@ -3641,10 +3436,6 @@ def _selftest() -> None:
         ]
     )
     assert rows["dom"]["pass"] == 1 and attention == []
-    # A report that records an `expected` status per subtest is scored by
-    # comparing the two. The test262 lane writes `expected: PASS` on every
-    # passing subtest, and reading that as "expected something else" made all
-    # 53,640 of its files unexpected failures.
     rows, attention = classify_results(
         [
             {
@@ -3675,8 +3466,6 @@ def _selftest() -> None:
     )
     assert rows["dom"]["expected_fail"] == 1 and attention == []
 
-    # The metadata-free verdict is pinned in one file both readers test:
-    # cli.py here, tools/wpt-report against the same cases.
     pinned = json.loads((ROOT / "tools" / "wpt" / "verdict-cases.json").read_text())
     assert pinned["cases"]
     for case in pinned["cases"]:
@@ -3776,10 +3565,6 @@ def _selftest() -> None:
     )
     assert parse_merge_argv(["a.json", "--corpus"]).error is not None
 
-    # run in-process resume: the driver reads the harness journal to tell the
-    # files that finished from the one an abort left in flight, and ignores a
-    # line a torn write cut in half, including one that cut down to a bare
-    # JSON scalar.
     with tempfile.TemporaryDirectory() as tmp:
         journal = Path(tmp) / "journal.jsonl"
         assert read_journal(journal) == (0, [])
@@ -3825,7 +3610,6 @@ def _selftest_profile() -> None:
         assert "/a.html" not in text  # --top=2 drops it
         assert "1 killed" in text and "1 passing within 2500ms" in text
 
-        # A kept log prints only its browser::net records.
         log = Path(tmp) / "default.log"
         log.write_text(
             "2026-10-17T08:36:48.751Z TRACE browser::net nav start http://x/\n"
@@ -3839,7 +3623,6 @@ def _selftest_profile() -> None:
         assert "nav start" in text and "nav head" in text
         assert "renderer ready" not in text
 
-        # Malformed invocations fail; paths and --report are exclusive.
         for bad in (
             ["--top", "x", "--report", str(report)],
             ["--top=0", "--report", str(report)],
@@ -3879,7 +3662,6 @@ def _selftest_failures() -> None:
         "TIMEOUT /b/timeout.html :: [top-level]",
         "TIMEOUT /e/multi.html :: subtest with status only",
     ]
-    # No block header yet: a stray subtest has no path to belong to.
     assert failure_lines(["noise", "  │ FAIL [expected PASS] x"]) == []
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "score.log"
@@ -4016,8 +3798,6 @@ def _selftest_merge() -> None:
         assert merged["run_info"] == info
         assert merged["time_start"] == 5 and merged["time_end"] == 30
 
-        # The record is the hand-off: same classifier as the table, and the
-        # failure list is a status token per entry, not a diagnostic string.
         record = json.loads(record_path.read_text())
         assert record["schema"] == 2
         assert record["product_revision"] == "abc123"
@@ -4027,8 +3807,6 @@ def _selftest_merge() -> None:
         assert record["areas"]["(root)"]["tests"] == 3
         assert record["failures"] == []
 
-        # With a corpus, subtests the run did not report join the denominator
-        # as not run. /c.html is absent from the corpus and keeps its 0.
         corpus = tmp / "corpus.json.gz"
         write_corpus(corpus, {"/a.html": 4, "/b.html": 2, "/a.worker.html": 3})
         corpus_record = tmp / "run-corpus.json"
@@ -4055,8 +3833,6 @@ def _selftest_merge() -> None:
         assert enrolled["totals"]["pass"] == 3
         assert enrolled["areas"]["(root)"]["subtests"] == 9
         assert enrolled["areas"]["(root)"]["subtest_unreported"] == 9
-        # A bad corpus is an error, not a silent fallback to the small
-        # denominator.
         with (
             contextlib.redirect_stdout(io.StringIO()),
             contextlib.redirect_stderr(io.StringIO()),
@@ -4102,7 +3878,6 @@ def _selftest_merge() -> None:
             {"test": "/dom/x.html", "subtest": "s", "status": "FAIL"}
         ]
 
-        # A dead chunk is skipped, the rest still scores.
         stdout, stderr = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             assert merge_main([str(corrupt), str(empty), str(a)]) == 0
@@ -4110,7 +3885,6 @@ def _selftest_merge() -> None:
         assert "no results in" in stderr.getvalue()
         assert "TOTAL" in stdout.getvalue()
 
-        # --strict-skips: the table still prints, the merge still fails.
         stdout, stderr = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             assert merge_main(["--strict-skips", str(corrupt), str(a)]) == 2
@@ -4121,8 +3895,6 @@ def _selftest_merge() -> None:
         ):
             assert merge_main(["--strict-skips", str(a)]) == 0
 
-        # A duplicate (subsuite, test) is the only hard error; inside one
-        # report it says "twice", across reports it names both.
         dup = tmp / "dup.json"
         dup.write_text(chunk([result("/a.html")]))
         stderr = io.StringIO()
@@ -4147,7 +3919,6 @@ def _selftest_merge() -> None:
         with contextlib.redirect_stdout(io.StringIO()):
             assert merge_main([str(one), str(two)]) == 0
 
-        # Nothing usable is an error; a lone empty report has no table.
         with (
             contextlib.redirect_stderr(io.StringIO()),
             contextlib.redirect_stdout(io.StringIO()),
@@ -4188,7 +3959,6 @@ def _selftest_publish() -> None:
 
         latest = json.loads((data / "latest.json").read_text())
         assert latest["product_revision"] == "aaa"
-        # The sidecar is the failure list now; the record is small.
         assert "failures" not in latest
         assert read_failures(data / "failures.jsonl.gz") == [
             {"status": "TIMEOUT", "test": "/dom/a.html", "subtest": ""},
@@ -4220,15 +3990,10 @@ def _selftest_publish() -> None:
             assert publish_main(["--record", str(second), "--data", str(data)]) == 0
         diff = json.loads((data / "regressions.json").read_text())
         assert diff["previous_sha"] == "aaa" and diff["comparable"]
-        # /dom/c.html is the only genuinely new failure; /dom/b.html changed
-        # from FAIL to TIMEOUT, which is a flipped failure, not a new one.
         assert [(e["test"], e["status"]) for e in diff["regressions"]] == [
             ("/dom/c.html", "FAIL")
         ]
         assert [e["test"] for e in diff["new_timeouts"]] == []
-        # /dom/d.html had no subtests last run because the file timed out, so
-        # its failures are newly measured, not regressions; its vanished
-        # file-level row is not a fix while the file still fails.
         assert [(e["test"], e.get("subtest")) for e in diff["newly_measured"]] == [
             ("/dom/d.html", "x"),
             ("/dom/d.html", "y"),
@@ -4238,16 +4003,11 @@ def _selftest_publish() -> None:
         assert [
             item["sha"] for item in json.loads((data / "index.json").read_text())
         ] == ["bbb", "aaa"]
-        # The corpus denominator belongs to the WPT revision, so the older
-        # point at the same revision is rewritten instead of showing a fall
-        # that only changed the denominator.
         index = json.loads((data / "index.json").read_text())
         assert index[1]["totals"]["subtests"] == 20
 
-        # Same commit: the point is replaced, not added.
         rerun = json.loads(json.dumps(updated))
         rerun["time_end"] = 1_800_000_200
-        # A failed corpus fetch must not shrink the denominator back.
         rerun["totals"]["subtests"] = 15
         path = tmp / "rerun.json"
         path.write_text(json.dumps(rerun))
@@ -4265,7 +4025,6 @@ def _selftest_publish() -> None:
             0
         ].startswith("2027-01-15")
 
-        # A new WPT pin moves the denominator: no claims across it.
         third = json.loads(json.dumps(updated))
         third.update(product_revision="ccc", wpt_revision="w2")
         path = tmp / "third.json"
@@ -4279,7 +4038,6 @@ def _selftest_publish() -> None:
         assert not diff["comparable"]
         assert diff["regressions"] == [] and diff["fixes"] == []
 
-        # A truncated sidecar is ignored, not fatal: the diff restarts.
         (data / "failures.jsonl.gz").write_bytes(b"\x1f\x8b\x08truncated")
         with contextlib.redirect_stderr(io.StringIO()):
             assert read_failures(data / "failures.jsonl.gz") == []
@@ -4313,9 +4071,6 @@ def _selftest_diff() -> None:
     def keys(bucket: str) -> list[tuple[str, str]]:
         return [(entry["test"], entry["subtest"]) for entry in diff[bucket]]
 
-    # A file that reported no subtests because it never finished is measured
-    # for the first time; a file-level FAIL did finish, so its new subtest is
-    # a regression.
     assert keys("newly_measured") == [
         ("/c.html", "x"),
         ("/e.html", "x"),
@@ -4323,8 +4078,6 @@ def _selftest_diff() -> None:
     ], diff
     assert keys("regressions") == [("/f.html", "x")], diff
     assert keys("new_timeouts") == [("/n.html", ""), ("/x.html", "")], diff
-    # A subtest that stopped failing is fixed even while its file still has
-    # another failure; a vanished file-level row is not.
     assert keys("fixes") == [("/s.html", "a")], diff
     assert diff_failures(previous, current, comparable=False) == {
         "regressions": [],

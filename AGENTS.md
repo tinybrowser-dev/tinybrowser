@@ -3,8 +3,9 @@
 We are building the smallest, lightest, and fastest headless browser for AI agents.
 Maximize web spec conformance per byte.
 
-- WHATWG specs are ground truth. Start every implementation and review from the spec. Follow exact algorithm order and cite the spec URL at the implementation site.
-- Heavily reference mature engines. Read Chromium/Firefox source code (see `docs/engines.md`). Never clone the repositories. When the spec and a shipped browser disagree, state the disagreement in a code comment and follow the browser that matches the spec algorithm.
+- WHATWG specs are ground truth. Start every implementation and review from the spec. Follow exact algorithm order and cite the spec URL (`// https://...` or `/// <https://...>`) at the implementation site.
+- Heavily reference mature engines. Read Chromium/Firefox source code (see `docs/engines.md`). Never clone the repositories. When the spec and a shipped browser disagree, state the disagreement in a 1-line comment attached to the spec URL and follow the browser that matches the spec algorithm.
+- No prose comments. Only `// SAFETY:` invariants and spec/RFC URL citations (plus a 1-line spec disagreement or UA-defined constant note attached to the URL) are permitted in code; enforced by `tools/check`.
 - Breaking changes, churn, and rewrites are always welcome. When code fights you, zoom out and fix the architectural design. Do not work or patch around it.
 - Simplicity is not brevity. A naive short version that skips edge cases is simplistic, not simple. Write the obvious version, even when it takes more lines, and never drop a spec branch or an error path to keep a change small.
 - No lint silencing. Fix the underlying design flaw instead of suppressing compiler or lint diagnostics.
@@ -82,8 +83,7 @@ Never open a pull request to upstream for any reason. This is absolute: no upstr
   (`.github/workflows/check.yml`) and is what a local change must pass.
   `tools/check` uses `nix develop` when available and the installed toolchain
   otherwise, so the same script runs in CI.
-- **Web API bindings & IDL**: Read `docs/bindings.md` for JS/Rust ownership, WebIDL contracts, and platform objects.
-- **Workers**: Read `docs/worker-threads.md` before touching worker realms; it records the thread model, what is shared across threads, and the milestone order.
+- **Architecture decisions**: Read `docs/adr/` for hard-to-reverse architectural invariants (IPC boundary, realm-free DOM layer, Rust/JS state ownership, WebIDL codegen funnels, OS-thread dedicated workers, abort-on-panic release profile).
 - **Engine behavior**: Read `docs/engines.md` to search and fetch Chromium/Firefox sources without cloning.
 - **Engine forks & submodules**: Read `third_party/README.md` for submodule maintenance, fork branches, and update workflows.
 - **Linked worktrees**: Run `tools/worktree-init` after `git worktree add`. It shares submodule objects with the canonical checkout and leaves WPT to the harness's canonical-checkout fallback; see `third_party/README.md`. Do not initialize a linked worktree with a bare `git submodule update --init --recursive`; it clones object stores and unused upstream test fixtures again.

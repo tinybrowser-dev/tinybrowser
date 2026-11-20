@@ -1,23 +1,10 @@
-//! Blitz service providers bridged onto carrier dials.
-//!
-//! The renderer owns no network runtime of its own (the carrier runtime has
-//! IO disabled, so our Tokio-based agent cannot run here): subresource
-//! fetches enqueue into the owning document's dial queue through a channel,
-//! and completions deliver Blitz handler bytes on the document's thread.
-
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
-/// One Blitz subresource fetch awaiting a carrier dial.
 pub(crate) struct BlitzFetch {
-    /// Handler id the document files the delivery target under.
     pub id: u64,
-    /// What Blitz asked for: the URL, destination, initiating element, and the
-    /// element state the request was created with.
     pub request: blitz_traits::net::Request,
 }
 
-/// Delivery target for one fetch: Blitz's response handler, counted so the
-/// resolve loop can tell settled from outstanding.
 pub(crate) struct CountingHandler {
     inner: Option<Box<dyn blitz_traits::net::NetHandler>>,
     in_flight: std::sync::Arc<AtomicUsize>,
@@ -47,11 +34,6 @@ impl blitz_traits::net::NetHandler for CountingHandler {
 }
 
 impl CountingHandler {
-    /// The handler the document files, and the fetch record carrying its id.
-    /// Delivery decrements the provider count exactly once: the document
-    /// always calls the filed handler on completion or failure (failures
-    /// deliver empty bytes, which Blitz reports as a failed resource and
-    /// releases its critical hold).
     fn file(
         in_flight: &std::sync::Arc<AtomicUsize>,
         request: blitz_traits::net::Request,
@@ -71,9 +53,6 @@ impl CountingHandler {
     }
 }
 
-/// Fetches Blitz subresources (stylesheets, images, fonts) through carrier
-/// dials: `fetch` files the handler and enqueues the URL; the owning
-/// document dials it and delivers the bytes back.
 pub(crate) struct TinyNetProvider {
     tx: std::sync::mpsc::Sender<(BlitzFetch, CountingHandler)>,
     settle_tx: std::sync::mpsc::Sender<blitz_dom::ImageSettlement>,
@@ -81,7 +60,6 @@ pub(crate) struct TinyNetProvider {
 }
 
 impl TinyNetProvider {
-    /// Builds a provider enqueueing into `tx`, drained by the owning document.
     pub(crate) fn new(
         tx: std::sync::mpsc::Sender<(BlitzFetch, CountingHandler)>,
         settle_tx: std::sync::mpsc::Sender<blitz_dom::ImageSettlement>,
@@ -93,10 +71,6 @@ impl TinyNetProvider {
         }
     }
 
-    /// Count of fetches filed but not yet delivered: the queue plus every
-    /// handler a dial has not answered yet. A host that reports ready work
-    /// reads it so a fetch queued during a settle's microtask continuation
-    /// keeps the engine ticking until the next drain ingests it.
     pub(crate) fn in_flight(&self) -> usize {
         self.in_flight.load(Ordering::SeqCst)
     }
@@ -104,8 +78,6 @@ impl TinyNetProvider {
 
 impl blitz_dom::ImageSettleObserver for TinyNetProvider {
     fn settled(&self, settlement: blitz_dom::ImageSettlement) {
-        // A closed channel means teardown; the settlement is then invisible by
-        // design.
         let _ = self.settle_tx.send(settlement);
     }
 }
@@ -118,28 +90,21 @@ impl blitz_traits::net::NetProvider for TinyNetProvider {
         handler: Box<dyn blitz_traits::net::NetHandler>,
     ) {
         let (counting, fetch) = CountingHandler::file(&self.in_flight, request, handler);
-        // The document drains the queue on its thread; a disconnected
-        // receiver means teardown, and the count already covers the drop.
         let _ = self.tx.send((fetch, counting));
     }
 }
 
-/// No-op shell except for the redraw request: a DOM mutation that changes
-/// rendered output asks for a frame, which is the embedder's cue to resolve
-/// style and layout (and so start the image fetches style references).
 pub(crate) struct TinyShell {
     redraw: AtomicBool,
 }
 
 impl TinyShell {
-    /// A shell whose redraw flag starts clear.
     pub(crate) fn new() -> Self {
         Self {
             redraw: AtomicBool::new(false),
         }
     }
 
-    /// Takes the pending redraw request, clearing it.
     pub(crate) fn take_redraw(&self) -> bool {
         self.redraw.swap(false, Ordering::SeqCst)
     }

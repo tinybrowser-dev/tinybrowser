@@ -1,5 +1,3 @@
-//! Shared fixtures for the browser-level integration suites in this binary.
-
 use std::fmt::Write as _;
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -12,8 +10,6 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::json;
 
-/// Reads one request head, including its blank line, and returns it as text so
-/// a test can inspect the headers the client sent.
 pub(crate) fn read_request_head(stream: &mut impl Read) -> Option<String> {
     let head = read_request_head_bytes(stream)?;
     Some(String::from_utf8_lossy(&head).into_owned())
@@ -30,8 +26,6 @@ fn read_request_head_bytes(stream: &mut impl Read) -> Option<Vec<u8>> {
         match stream.read(&mut chunk) {
             Ok(0) => return None,
             Ok(n) => head.extend_from_slice(&chunk[..n]),
-            // A poll timeout surfaces as `WouldBlock` or `TimedOut` depending
-            // on the platform.
             Err(error)
                 if matches!(
                     error.kind(),
@@ -46,16 +40,12 @@ fn read_request_head_bytes(stream: &mut impl Read) -> Option<Vec<u8>> {
     Some(head)
 }
 
-/// Binds an ephemeral loopback port for a test server. The caller learns the
-/// address before starting the server, so a page it serves can name its own
-/// origin.
 pub(crate) fn server() -> (TcpListener, std::net::SocketAddr) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("server bind");
     let address = listener.local_addr().expect("server addr");
     (listener, address)
 }
 
-/// One canned HTTP response a [`TestServer`] sends.
 #[derive(Clone)]
 pub(crate) struct Response {
     status: u16,
@@ -65,7 +55,6 @@ pub(crate) struct Response {
 }
 
 impl Response {
-    /// The same response with one extra header.
     pub(crate) fn header(mut self, name: &str, value: &str) -> Self {
         self.headers.push((name.to_owned(), value.to_owned()));
         self
@@ -80,8 +69,6 @@ impl Response {
         }
     }
 
-    /// The bytes of this response, echoing the request's `Origin` when `cors`
-    /// is set so a credentialed CORS request passes the CORS check.
     fn render(&self, head: &str, cors: bool) -> Vec<u8> {
         let mut response = format!(
             "HTTP/1.1 {} {}\r\nContent-Length: {}\r\nConnection: close\r\n",
@@ -110,7 +97,6 @@ impl Response {
     }
 }
 
-/// A `200` response with `body` and `content_type`.
 pub(crate) fn ok(content_type: &str, body: &[u8]) -> Response {
     Response {
         status: 200,
@@ -120,7 +106,6 @@ pub(crate) fn ok(content_type: &str, body: &[u8]) -> Response {
     }
 }
 
-/// A `302` response to `location`.
 pub(crate) fn redirect(location: &str) -> Response {
     Response {
         status: 302,
@@ -130,7 +115,6 @@ pub(crate) fn redirect(location: &str) -> Response {
     }
 }
 
-/// One 1x1 red PNG.
 pub(crate) const PIXEL: &[u8] = &[
     0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
     0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
@@ -139,17 +123,11 @@ pub(crate) const PIXEL: &[u8] = &[
     0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
 ];
 
-/// One request a [`TestServer`] accepted: its target and its whole head.
 pub(crate) struct RecordedRequest {
     pub(crate) path: String,
     pub(crate) head: String,
 }
 
-/// A route table plus a recorder: serves the response whose path matches,
-/// records every request head, and holds one path until [`Self::release`].
-/// Each connection runs on its own thread, so a held response does not block
-/// the rest. A response echoes the request's `Origin` and allows credentials,
-/// so a CORS subresource completes; a request without one gets `*`.
 pub(crate) struct TestServer {
     address: std::net::SocketAddr,
     receiver: Mutex<mpsc::Receiver<RecordedRequest>>,
@@ -162,21 +140,15 @@ impl TestServer {
         Self::with_options(routes, hold, true, Duration::ZERO)
     }
 
-    /// A server that sends no CORS headers, so a `cors`-mode request to it
-    /// fails the CORS check
-    /// (<https://fetch.spec.whatwg.org/#cors-check>).
+    // https://fetch.spec.whatwg.org/#cors-check
     pub(crate) fn start_without_cors(routes: Vec<(&'static str, Response)>) -> Self {
         Self::with_options(routes, None, false, Duration::ZERO)
     }
 
-    /// Serves `routes` on an already-bound `listener`, so a test can name the
-    /// server's origin in the routes it serves.
     pub(crate) fn serve_on(listener: TcpListener, routes: Vec<(&'static str, Response)>) -> Self {
         Self::serve(listener, routes, None, true, Duration::ZERO, None)
     }
 
-    /// [`Self::serve_on`] with a delay before every response, so a test can
-    /// observe a request that is still in flight while its own code blocks.
     pub(crate) fn serve_on_after(
         listener: TcpListener,
         routes: Vec<(&'static str, Response)>,
@@ -195,8 +167,6 @@ impl TestServer {
         Self::serve(listener, routes, hold, cors, delay, None)
     }
 
-    /// Serves `routes` over TLS with `identity`, so a test can exercise a
-    /// navigation whose certificate the browser may or may not trust.
     pub(crate) fn start_tls(
         routes: Vec<(&'static str, Response)>,
         identity: native_tls::Identity,
@@ -226,14 +196,8 @@ impl TestServer {
                 let tls = tls.clone();
                 thread::spawn(move || {
                     if let Some(acceptor) = tls {
-                        // The handshake needs a generous deadline; the poll
-                        // loop that follows shortens it once the stream is
-                        // wrapped.
                         let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
                         let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
-                        // A client that does not trust the certificate fails
-                        // its handshake; the accept loop stays up for the next
-                        // dial.
                         let Ok(mut stream) = acceptor.accept(stream) else {
                             return;
                         };
@@ -243,9 +207,6 @@ impl TestServer {
                         answer(&mut stream, &routes, hold, cors, delay, &sender, &flag);
                         return;
                     }
-                    // Short polls instead of one long blocking read: under load
-                    // the request can lag the accept, and a single long read
-                    // hides which side stalled.
                     let _ = stream.set_read_timeout(Some(Duration::from_millis(100)));
                     answer(&mut stream, &routes, hold, cors, delay, &sender, &flag);
                 });
@@ -263,7 +224,6 @@ impl TestServer {
         self.address
     }
 
-    /// Waits for a request whose target is `path` and returns its head.
     pub(crate) fn wait(&self, path: &str) -> String {
         poll_until(&format!("a request for {path}"), || {
             self.drain();
@@ -277,7 +237,6 @@ impl TestServer {
         })
     }
 
-    /// Whether any request for `path` has been accepted.
     pub(crate) fn requested(&self, path: &str) -> bool {
         self.drain();
         self.history
@@ -287,7 +246,6 @@ impl TestServer {
             .any(|request| request.path == path)
     }
 
-    /// Waits until at least `count` requests for `path` have been accepted.
     pub(crate) fn wait_count(&self, path: &str, count: usize) -> Vec<String> {
         poll_until(&format!("{count} requests for {path}"), || {
             let heads = self.history(path);
@@ -295,7 +253,6 @@ impl TestServer {
         })
     }
 
-    /// Every recorded head for `path`, oldest first.
     pub(crate) fn history(&self, path: &str) -> Vec<String> {
         self.drain();
         self.history
@@ -321,9 +278,6 @@ impl TestServer {
     }
 }
 
-/// Answers one accepted connection: reads its head, records it, applies the
-/// hold, delay, and route, and writes the response. Generic over the stream so
-/// the plain and TLS servers share every rule.
 fn answer(
     stream: &mut (impl Read + Write),
     routes: &[(&'static str, Response)],
@@ -336,8 +290,6 @@ fn answer(
     let Some(head) = read_request_head(stream) else {
         return;
     };
-    // A malformed request line is not this server's request to answer, so the
-    // connection is closed without a record.
     let Some(path) = request_target(&head) else {
         return;
     };
@@ -359,12 +311,9 @@ fn answer(
         .iter()
         .find(|(route, _)| *route == path)
         .map_or_else(Response::not_found, |(_, response)| response.clone());
-    // The client may hang up right after its head; a failed write then needs no
-    // retry.
     let _ = stream.write_all(&response.render(&head, cors));
 }
 
-/// Polls `probe` until it answers, failing the test after ten seconds.
 pub(crate) fn poll_until<T>(what: &str, mut probe: impl FnMut() -> Option<T>) -> T {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -376,15 +325,10 @@ pub(crate) fn poll_until<T>(what: &str, mut probe: impl FnMut() -> Option<T>) ->
     }
 }
 
-/// Whether a process id still has a `/proc` entry, the test view of "alive".
 pub(crate) fn pid_alive(pid: u32) -> bool {
     std::path::Path::new("/proc").join(pid.to_string()).exists()
 }
 
-/// The request target of a request head, or `None` when the request line is
-/// malformed. One parser decides both what a server records and what route it
-/// answers: a line with no method, target, or HTTP version is dropped rather
-/// than guessed at as `/`.
 fn request_target(head: &str) -> Option<&str> {
     let line = head.lines().next()?;
     let mut parts = line.split_whitespace();
@@ -394,7 +338,6 @@ fn request_target(head: &str) -> Option<&str> {
     (!method.is_empty() && version.starts_with("HTTP/")).then_some(target)
 }
 
-/// One request header's value, case-insensitively.
 fn request_header<'a>(head: &'a str, name: &str) -> Option<&'a str> {
     head.lines().skip(1).find_map(|line| {
         let (header, value) = line.split_once(':')?;
@@ -402,8 +345,6 @@ fn request_header<'a>(head: &'a str, name: &str) -> Option<&'a str> {
     })
 }
 
-/// Creates a target, attaches to it, and waits for `Page.loadEventFired`
-/// after navigating it to `url`; returns the attached session id.
 pub(crate) fn load_page(client: &mut cdp::Client, url: &str, timeout: Duration) -> String {
     let created = client
         .call("Target.createTarget", &json!({"url": "about:blank"}), None)
@@ -417,8 +358,6 @@ pub(crate) fn load_page(client: &mut cdp::Client, url: &str, timeout: Duration) 
     session
 }
 
-/// Attaches to `target_id` with a flattened session and enables `Page`, so the
-/// caller can drive that target. Returns the session id.
 pub(crate) fn attach(client: &mut cdp::Client, target_id: &str) -> String {
     let attached = client
         .call(
@@ -434,8 +373,6 @@ pub(crate) fn attach(client: &mut cdp::Client, target_id: &str) -> String {
     session
 }
 
-/// Waits for the next `Page.loadEventFired` event for `session`. An event read
-/// that times out is retried until the overall deadline.
 pub(crate) fn wait_for_load(client: &mut cdp::Client, session: &str, timeout: Duration) {
     let deadline = Instant::now() + timeout;
     loop {
@@ -452,8 +389,6 @@ pub(crate) fn wait_for_load(client: &mut cdp::Client, session: &str, timeout: Du
     }
 }
 
-/// Evaluates `expression` in `session`, awaiting a promise and returning the
-/// value through the protocol's JSON projection.
 pub(crate) fn evaluate(
     client: &mut cdp::Client,
     session: &str,
@@ -469,8 +404,6 @@ pub(crate) fn evaluate(
         .clone()
 }
 
-/// Starts the daemon, loads `url` in a new target, and returns the fixture
-/// that owns the daemon plus the attached session.
 pub(crate) fn open_page(prefix: &str, url: &str) -> (Fixture, cdp::Client, String) {
     let mut fixture = Fixture::new(prefix);
     fixture.spawn_daemon();
@@ -487,22 +420,18 @@ pub struct Fixture {
 }
 
 impl Fixture {
-    /// The profile's runtime directory.
     pub fn runtime(&self) -> &std::path::Path {
         &self.runtime
     }
 
-    /// The profile's data directory.
     pub fn data(&self) -> &std::path::Path {
         &self.data
     }
 
-    /// Live daemon children, in spawn order.
     pub fn children(&mut self) -> &mut [Child] {
         &mut self.children
     }
 
-    /// Adopts a child the test spawned itself.
     pub fn append_child(&mut self, child: Child) {
         self.children.push(child);
     }
@@ -534,7 +463,7 @@ impl Fixture {
 
     pub fn spawn_daemon_with(&mut self, env: &[(&str, &str)]) -> u32 {
         let child = Command::new(env!("CARGO_BIN_EXE_tinybrowser"))
-            .args(["daemon", "--profile=default"])
+            .args(["--profile=default"])
             .env("XDG_RUNTIME_DIR", &self.runtime)
             .env("XDG_DATA_HOME", &self.data)
             .envs(env.iter().copied())

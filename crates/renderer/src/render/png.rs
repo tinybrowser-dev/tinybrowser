@@ -1,16 +1,7 @@
-//! PNG encoding for screenshots.
-
 use png::{BitDepth, ColorType, Encoder};
 
 use crate::render::{RenderError, RgbaImage};
 
-/// Encodes one RGBA image as a PNG.
-///
-/// # Errors
-///
-/// `RenderError::Encode` when the encoder rejects the image; the pipeline
-/// only produces 8-bit RGBA, so a failure means the image dimensions
-/// overflow the format limits.
 pub fn encode_png(image: &RgbaImage) -> Result<Vec<u8>, RenderError> {
     let mut out = Vec::new();
     {

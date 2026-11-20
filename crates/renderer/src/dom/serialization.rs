@@ -1,11 +1,5 @@
-//! HTML and XML serialization of a parsed tree.
-//!
-//! The serializers write UTF-16 code units through `HtmlOutput`, so a lone
-//! surrogate in character data survives into the returned string. They take a
-//! `&BlitzDocument` and ids only, which keeps them usable from the binding
-//! layer, `DOMParser`, and `XMLSerializer`
-//! (<https://html.spec.whatwg.org/multipage/parsing.html#serialising-html-fragments>,
-//! <https://w3c.github.io/DOM-Parsing/#xml-serialization>).
+// https://html.spec.whatwg.org/multipage/parsing.html#serialising-html-fragments
+// https://w3c.github.io/DOM-Parsing/#xml-serialization
 
 use blitz_dom::NodeData;
 use blitz_traits::node_id::NodeId as BlitzId;
@@ -15,9 +9,6 @@ use crate::documents::BlitzDocument;
 use crate::dom::tree::{html_namespace, qualified_name, svg_namespace};
 use crate::dom_string::DomString;
 
-/// Serializer output: UTF-16 code units, so a lone surrogate in character
-/// data survives into the returned string. Escaping only ever inserts ASCII,
-/// so tree units append verbatim.
 #[derive(Default)]
 pub(crate) struct HtmlOutput(Vec<u16>);
 
@@ -35,8 +26,7 @@ impl HtmlOutput {
     }
 }
 
-/// Whether an element serializes as void
-/// (<https://html.spec.whatwg.org/multipage/parsing.html#serialises-as-void>).
+// https://html.spec.whatwg.org/multipage/parsing.html#serialises-as-void
 fn serializes_as_void(name: &QualName) -> bool {
     name.ns == html_namespace()
         && matches!(
@@ -63,9 +53,7 @@ fn serializes_as_void(name: &QualName) -> bool {
         )
 }
 
-/// The element's HTML-serialized name: the local name for HTML, `MathML`, and
-/// SVG elements, the qualified name otherwise
-/// (<https://html.spec.whatwg.org/multipage/parsing.html#serialising-html-fragments>).
+// https://html.spec.whatwg.org/multipage/parsing.html#serialising-html-fragments
 fn push_html_element_name(output: &mut HtmlOutput, name: &QualName) {
     if name.ns == html_namespace()
         || name.ns == svg_namespace()
@@ -81,8 +69,7 @@ fn push_html_element_name(output: &mut HtmlOutput, name: &QualName) {
     }
 }
 
-/// The attribute's HTML-serialized name
-/// (<https://html.spec.whatwg.org/multipage/parsing.html#attribute-s-serialized-name>).
+// https://html.spec.whatwg.org/multipage/parsing.html#attribute-s-serialized-name
 fn push_html_attribute_name(output: &mut HtmlOutput, name: &QualName) {
     if name.ns.as_str().is_empty() {
         output.push_str(name.local.as_str());
@@ -131,8 +118,7 @@ fn push_escaped_html_attribute(output: &mut HtmlOutput, value: &str) {
     }
 }
 
-/// Serializes one HTML element with the fragment serialization algorithm
-/// (<https://html.spec.whatwg.org/multipage/parsing.html#serialising-html-fragments>).
+// https://html.spec.whatwg.org/multipage/parsing.html#serialising-html-fragments
 fn serialize_html_element(
     doc: &BlitzDocument,
     id: BlitzId,
@@ -154,9 +140,7 @@ fn serialize_html_element(
     if serializes_as_void(name) {
         return;
     }
-    // A template element serializes its template contents, not its (empty)
-    // children
-    // (<https://html.spec.whatwg.org/multipage/parsing.html#serialising-html-fragments>).
+    // https://html.spec.whatwg.org/multipage/parsing.html#serialising-html-fragments
     let children: Vec<BlitzId> = base.get_node(id).map_or_default(|node| {
         if crate::dom::tree::is_template_tag(name) {
             crate::dom::tree::template_contents(base, id)
@@ -193,7 +177,6 @@ fn serialize_html_node(
             let attributes = element.attrs.iter().cloned().collect::<Vec<_>>();
             serialize_html_element(doc, id, &name, &attributes, output);
         }
-        // A fragment serializes as its children.
         NodeData::AnonymousBlock(_) | NodeData::Fragment { .. } | NodeData::ShadowRoot { .. } => {
             for child in node.children.clone() {
                 serialize_html_node(doc, child, parent, output);
@@ -225,8 +208,7 @@ fn serialize_html_node(
             output.push_str(contents);
             output.push_str("-->");
         }
-        // A CDATA section serializes as its text in HTML
-        // (<https://html.spec.whatwg.org/multipage/parsing.html#serialising-html-fragments>).
+        // https://html.spec.whatwg.org/multipage/parsing.html#serialising-html-fragments
         NodeData::CDataSection { contents } => {
             let raw_text = parent.is_some_and(|name| {
                 name.ns == html_namespace()
@@ -266,8 +248,6 @@ fn serialize_html_node(
     }
 }
 
-/// Serializes the children of `parent` with the HTML fragment serialization
-/// algorithm, keeping every code unit.
 pub(crate) fn serialize_html_children(doc: &BlitzDocument, parent: BlitzId) -> DomString {
     let base = &doc.base;
     let mut output = HtmlOutput(Vec::new());
@@ -279,8 +259,6 @@ pub(crate) fn serialize_html_children(doc: &BlitzDocument, parent: BlitzId) -> D
     output.finish()
 }
 
-/// Serializes one element with the HTML fragment serialization algorithm,
-/// returning its own markup (`outerHTML`).
 pub(crate) fn serialize_html_outer(
     doc: &BlitzDocument,
     id: BlitzId,
@@ -292,9 +270,7 @@ pub(crate) fn serialize_html_outer(
     output.finish()
 }
 
-/// Inserts `children` before the final start of a closing tag. A migrated
-/// template's outer markup is the host element's tags plus the inert contents
-/// (<https://html.spec.whatwg.org/multipage/parsing.html#serialising-html-fragments>).
+// https://html.spec.whatwg.org/multipage/parsing.html#serialising-html-fragments
 pub(crate) fn splice_before_close_tag(shell: DomString, children: &DomString) -> DomString {
     let units = shell.units();
     let Some(end) = units.iter().rposition(|unit| *unit == u16::from(b'<')) else {
@@ -332,10 +308,7 @@ fn push_escaped_xml_attribute(output: &mut HtmlOutput, value: &str) {
     }
 }
 
-/// XML-serializes one element: the qualified name with escaped attributes and
-/// children. Known gap: namespace prefix synthesis is skipped; the stored
-/// qualified name is used as-is
-/// (<https://w3c.github.io/DOM-Parsing/#xml-serialization>).
+// https://w3c.github.io/DOM-Parsing/#xml-serialization
 pub(crate) fn serialize_xml_element(
     doc: &BlitzDocument,
     id: BlitzId,
@@ -400,18 +373,14 @@ pub(crate) fn serialize_xml_node(doc: &BlitzDocument, id: BlitzId, output: &mut 
             output.push_str(contents);
             output.push_str("-->");
         }
-        // (<https://w3c.github.io/DOM-Parsing/#xml-serializing-a-documenttype-node>,
-        // <https://w3c.github.io/DOM-Parsing/#xml-serializing-a-processinginstruction-node>,
-        // <https://w3c.github.io/DOM-Parsing/#xml-serializing-a-cdatasection-node>).
+        // https://w3c.github.io/DOM-Parsing/#xml-serializing-a-documenttype-node
+        // https://w3c.github.io/DOM-Parsing/#xml-serializing-a-processinginstruction-node
+        // https://w3c.github.io/DOM-Parsing/#xml-serializing-a-cdatasection-node
         NodeData::Doctype {
             name,
             public_id,
             system_id,
         } => {
-            // DOM Parsing's "serialization of the ID" quotes with `'` when the
-            // ID contains `"`, but WPT `domparsing/xml-serialization.xhtml`
-            // ("DocumentType: 'QUOTATION MARK' (U+0022)") expects `"`
-            // unconditionally, so the ids keep `"`.
             output.push_str("<!DOCTYPE ");
             output.push_str(name);
             if !public_id.is_empty() {
@@ -452,7 +421,6 @@ pub(crate) fn serialize_xml_node(doc: &BlitzDocument, id: BlitzId, output: &mut 
     }
 }
 
-/// XML-serializes the children of `parent`.
 pub(crate) fn serialize_xml_children(doc: &BlitzDocument, parent: BlitzId) -> DomString {
     let base = &doc.base;
     let mut output = HtmlOutput(Vec::new());

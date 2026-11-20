@@ -1,8 +1,4 @@
-//! Typed devtools DOM reads over the live tree.
-//!
-//! Every operation here is answered from renderer state and keyed by the
-//! renderer's [`NodeId`] map, so no `DOM.*` request evaluates page script
-//! (<https://chromedevtools.github.io/devtools-protocol/tot/DOM/>).
+// https://chromedevtools.github.io/devtools-protocol/tot/DOM/
 
 use std::collections::HashMap;
 
@@ -19,12 +15,7 @@ use crate::dom_string::DomString;
 use crate::js::World;
 use crate::{DomBoxModel, DomNode, DomReply, DomRequest, Parsed, TabError};
 
-/// `Element.outerHTML` for `node`, in the serialization its document selects.
-///
-/// A migrated template's contents live in another document, so its markup is
-/// spliced into the host element's own tags
-/// (<https://html.spec.whatwg.org/multipage/parsing.html#serialising-html-fragments>).
-/// `None` means `node` is not an element.
+// https://html.spec.whatwg.org/multipage/parsing.html#serialising-html-fragments
 pub(crate) fn element_outer_html(world: &World, node: NodeId) -> Option<DomString> {
     let parsed = world.document(node)?;
     let element = parsed
@@ -64,12 +55,6 @@ pub(crate) fn element_outer_html(world: &World, node: NodeId) -> Option<DomStrin
 }
 
 impl Document {
-    /// Answers one typed devtools DOM request from the live renderer tree.
-    ///
-    /// # Errors
-    ///
-    /// [`TabError::Dom`] when the request names a node the tree cannot answer,
-    /// or asks for an operation the node does not support.
     pub(crate) fn dom(&mut self, request: &DomRequest) -> Result<DomReply, TabError> {
         match request {
             DomRequest::GetDocument => self.dom_document(),
@@ -90,12 +75,10 @@ impl Document {
         }
     }
 
-    /// The node a backend node id names, without the document-root default.
     fn node_by_remote(&self, remote: u64) -> Option<NodeId> {
         self.world.borrow().node_for_remote(remote)
     }
 
-    /// The node a backend node id names, where `0` means the document root.
     fn target_node(&self, remote: u64) -> Option<NodeId> {
         if remote == 0 {
             self.world.borrow().main_document_root()
@@ -255,8 +238,6 @@ impl Document {
                 .ok_or_else(Self::missing_node)?
         };
         let Some(Some(element)) = element else {
-            // A document with no document element serializes as the empty
-            // string; any other non-element refuses outerHTML.
             let is_document = {
                 let world = self.world.borrow();
                 world
@@ -348,8 +329,6 @@ impl Document {
             let Some(root) = world.main_document_root() else {
                 return DomReply::NodeForLocation { node_id: 0 };
             };
-            // CDP names a point in page coordinates; CSSOM View's hit test
-            // takes viewport coordinates, so remove the viewport scroll.
             let (scroll_x, scroll_y) = crate::js::viewport_scroll(&world, root);
             crate::js::element_at_point(&world, root, x - scroll_x, y - scroll_y)
         };
@@ -403,7 +382,6 @@ impl Document {
     }
 }
 
-/// Every node under `root`, in tree order.
 fn collect_nodes(parsed: &Parsed, root: NodeId, out: &mut Vec<NodeId>) {
     let Some(node) = parsed.document.base.get_node(root.node) else {
         return;
@@ -447,7 +425,6 @@ fn compatibility_mode(mode: QuirksMode) -> &'static str {
     }
 }
 
-/// One serialized node, with children.
 fn dom_node(
     world: &World,
     parsed: &Parsed,
@@ -521,7 +498,6 @@ fn dom_node(
     })
 }
 
-/// One serialized node without children, the `DOM.describeNode` shape.
 fn describe_node(parsed: &Parsed, node: NodeId, id: u64) -> Option<DomNode> {
     let data = &parsed.document.base.get_node(node.node)?.data;
     let node_type = crate::dom::tree::node_type(Some(data))?;

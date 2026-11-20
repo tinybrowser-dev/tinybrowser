@@ -2,11 +2,7 @@ use super::{CompletedDial, DialContext, QueuedDial};
 use crate::protocol::DialOutcome;
 use crate::sniff::sniff_encoding;
 
-/// Decodes a response body that may arrive in pieces.
-///
-/// The encoding can only be chosen once enough bytes have arrived, so this
-/// buffers until the sniffing rules can decide — see
-/// <https://html.spec.whatwg.org/multipage/parsing.html#encoding-sniffing-algorithm>.
+// https://html.spec.whatwg.org/multipage/parsing.html#encoding-sniffing-algorithm
 pub(crate) struct ResponseDecoder {
     content_type: Option<String>,
     pending: Vec<u8>,
@@ -42,8 +38,6 @@ impl ResponseDecoder {
         output
     }
 
-    /// Flushes the decoder at EOF, returning the remaining text and the
-    /// sniffed charset name for `document.characterSet`.
     pub(crate) fn finish(mut self) -> (String, &'static str) {
         if let Some(decoder) = &mut self.decoder {
             let name = character_set_name(self.encoding.unwrap_or(encoding_rs::UTF_8));
@@ -60,7 +54,6 @@ impl ResponseDecoder {
     }
 }
 
-/// The canonical name `document.characterSet` reports for `encoding`.
 fn character_set_name(encoding: &'static encoding_rs::Encoding) -> &'static str {
     encoding.name()
 }

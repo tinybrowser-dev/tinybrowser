@@ -1,8 +1,4 @@
-//! `document.fonts.ready` against a CSS-connected `@font-face` whose fetch the
-//! engine owns: the promise must not resolve while the face's response is
-//! still in flight, a face whose source fails must settle, and a sheet added
-//! after every notification must still settle its faces
-//! (<https://drafts.csswg.org/css-font-loading/#dom-fontfaceset-ready>).
+// https://drafts.csswg.org/css-font-loading/#dom-fontfaceset-ready
 
 use crate::fixture::{TestServer, evaluate, ok, open_page, poll_until};
 
@@ -60,8 +56,6 @@ fn fonts_ready_waits_for_the_engine_fetch_of_a_css_face() {
         "ready resolves after the face is registered, and a failed source settles too"
     );
 
-    // A sheet added after the fetch settled has no notification left to wait
-    // for, so its face must still settle.
     let late = evaluate(
         &mut client,
         &session,

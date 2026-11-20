@@ -6,13 +6,14 @@ Astro, plain CSS, no client framework. Every page is rendered at build time.
 
     cargo build -p tinybrowser-wasm --target wasm32-wasip2 --release
     bun install
-    WPT_DATA_DIR=../data bun run build
+    WPT_RESULTS_DIR=../wpt-results bun run build
 
-`WPT_DATA_DIR` points at a checkout of
+`WPT_RESULTS_DIR` points at a checkout of
 [`tinybrowser-dev/tinybrowser-wpt-results`](https://github.com/tinybrowser-dev/tinybrowser-wpt-results).
-Without it the dashboard renders its empty state, which is what the first
-deploy looks like. Without a compiled `tinybrowser_wasm.wasm`, `build:wasm`
-skips transpiling and `/demo` shows build instructions.
+When no local checkout exists, `sync:wpt-results` fetches the published JSON
+files from GitHub, or falls back to the dashboard's empty state when offline.
+Without a compiled `tinybrowser_wasm.wasm`, `build:wasm` skips transpiling and
+`/demo` shows build instructions.
 
 ## Local dev
 
@@ -32,23 +33,24 @@ edits.
 commands, then Alchemy builds Astro with its Cloudflare adapter and deploys the
 Worker + static assets.
 
-| script       | what it does                                                     |
-| ------------ | ---------------------------------------------------------------- |
-| `contrast`   | validates the token pairs in `src/styles/themes.css`             |
-| `typecheck`  | `astro sync` + `tsc --noEmit`                                    |
-| `lint`       | oxlint                                                           |
-| `format`     | oxfmt in check mode. `format:fix` writes                         |
-| `build:wasm` | transpiles `tinybrowser_wasm.wasm` with `jco` into `public/wasm` |
-| `build`      | syncs WPT data and builds Wasm assets into `public/`             |
+| script             | what it does                                                     |
+| ------------------ | ---------------------------------------------------------------- |
+| `contrast`         | validates the token pairs in `src/styles/themes.css`             |
+| `typecheck`        | `astro sync` + `tsc --noEmit`                                    |
+| `lint`             | oxlint                                                           |
+| `format`           | oxfmt in check mode. `format:fix` writes                         |
+| `sync:wpt-results` | copies or fetches WPT results into `public/wpt/data`             |
+| `build:wasm`       | transpiles `tinybrowser_wasm.wasm` with `jco` into `public/wasm` |
+| `build`            | syncs WPT results and builds Wasm assets into `public/`          |
 
 `@/` is the only path alias. It points at `src/`. Everything else is a
 relative import.
 
 ## The data the page reads
 
-The dashboard is a static snapshot. `scripts/sync-data.ts` copies the record
-from the results repo into `public/wpt/data` before `astro build`, so the files
-the page reads are also the files a script can fetch:
+The dashboard is a static snapshot. `scripts/sync-wpt-results.ts` copies the
+record from the results repo into `public/wpt/data` before the Astro build, so
+the files the page reads are also the files a script can fetch:
 
 | file                | contents                                               |
 | ------------------- | ------------------------------------------------------ |

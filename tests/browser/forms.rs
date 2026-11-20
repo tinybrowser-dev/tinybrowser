@@ -1,19 +1,11 @@
-//! Form-control state on the paths that build controls from markup: the
-//! value sanitization algorithm, option selectedness, and activation
-//! dirtiness.
-
 use serde_json::json;
 
 use crate::fixture::{TestServer, evaluate, ok, open_page, server};
 
-/// A blank page; every control is built by the script under test.
 const PAGE: &[u8] = b"<!doctype html><meta charset=utf-8><body></body>";
 
-/// A `value` attribute on a parser-created input runs the state's value
-/// sanitization algorithm, whether the markup comes from `innerHTML`, a
-/// template's contents, or an XML document
-/// (<https://html.spec.whatwg.org/multipage/input.html#the-value-attribute>,
-/// <https://html.spec.whatwg.org/multipage/input.html#the-input-element>).
+// https://html.spec.whatwg.org/multipage/input.html#the-value-attribute
+// https://html.spec.whatwg.org/multipage/input.html#the-input-element
 const SANITIZE_FRAGMENT: &str = r#"(() => {
   const host = document.createElement('div');
   host.innerHTML = '<input id=n type=number value=abc>' +
@@ -39,9 +31,7 @@ const SANITIZE_FRAGMENT: &str = r#"(() => {
   ];
 })()"#;
 
-/// Adding `selected` to an earlier option deselects the later one: a single
-/// select keeps only the option the attribute just selected
-/// (<https://html.spec.whatwg.org/multipage/form-elements.html#the-option-element>).
+// https://html.spec.whatwg.org/multipage/form-elements.html#the-option-element
 const SELECT_EARLIER_OPTION: &str = "(() => {
   const select = document.createElement('select');
   select.innerHTML = '<option id=a>A</option><option id=b selected>B</option>';
@@ -51,11 +41,8 @@ const SELECT_EARLIER_OPTION: &str = "(() => {
   return [select.selectedIndex, first.selected, select.querySelector('#b').selected];
 })()";
 
-/// A click sets the dirty checkedness flag, so a later `checked` attribute
-/// write cannot restore the clicked state; a reset reseeds the slot from the
-/// attributes
-/// (<https://html.spec.whatwg.org/multipage/input.html#concept-input-checked-dirty>,
-/// <https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#concept-form-reset-control>).
+// https://html.spec.whatwg.org/multipage/input.html#concept-input-checked-dirty
+// https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#concept-form-reset-control
 const ACTIVATION_AND_RESET: &str = "(() => {
   const form = document.createElement('form');
   form.innerHTML = '<input id=c type=checkbox checked>';
@@ -70,28 +57,20 @@ const ACTIVATION_AND_RESET: &str = "(() => {
   return [afterClick, afterAttribute, checkbox.checked];
 })()";
 
-/// A checkbox that script checks before its first layout keeps that
-/// checkedness when the widget is built: layout reads the slot instead of
-/// re-seeding it from the `checked` attribute
-/// (<https://html.spec.whatwg.org/multipage/input.html#concept-input-checked>).
+// https://html.spec.whatwg.org/multipage/input.html#concept-input-checked
 const CHECKED_BEFORE_LAYOUT: &str = "(() => {
   const box = document.createElement('input');
   box.type = 'checkbox';
   box.checked = true;
   document.body.append(box);
-  // A layout metric read builds the box, including the checkbox widget.
   void box.offsetHeight;
   const afterLayout = box.checked;
   const matchesChecked = box.matches(':checked');
-  // The click's dirty flag still wins over the attribute.
   box.setAttribute('checked', '');
   return [afterLayout, matchesChecked, box.checked, box.matches(':checked')];
 })()";
 
-/// Two checked radios inserted together leave the last one checked: the
-/// insertion step runs per control and clears the group members, so an
-/// earlier insertion must not clear a radio the batch has not processed yet
-/// (<https://html.spec.whatwg.org/multipage/input.html#radio-button-group>).
+// https://html.spec.whatwg.org/multipage/input.html#radio-button-group
 const TWO_CHECKED_RADIOS: &str = "(() => {
   const form = document.createElement('form');
   form.innerHTML = '<input id=a type=radio name=r checked>' +
@@ -100,11 +79,8 @@ const TWO_CHECKED_RADIOS: &str = "(() => {
   return [form.querySelector('#a').checked, form.querySelector('#b').checked];
 })()";
 
-/// A canceled `reset` event leaves every control, including an `<output>` in
-/// value mode, untouched; an uncanceled reset restores the output's default
-/// and replaces its markup with text
-/// (<https://html.spec.whatwg.org/multipage/forms.html#concept-form-reset>,
-/// <https://html.spec.whatwg.org/multipage/form-elements.html#the-output-element>).
+// https://html.spec.whatwg.org/multipage/forms.html#concept-form-reset
+// https://html.spec.whatwg.org/multipage/form-elements.html#the-output-element
 const CANCELED_RESET: &str = "(() => {
   const form = document.createElement('form');
   form.innerHTML = '<output id=o>abc</output><output id=m><b>x</b></output>';

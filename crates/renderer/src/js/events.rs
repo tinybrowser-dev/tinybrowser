@@ -1,9 +1,4 @@
-//! DOM events: the `Event` and `EventTarget` platform objects and the
-//! dispatch algorithm (<https://dom.spec.whatwg.org/#events>).
-//!
-//! One event listener list is keyed per target in the [`World`] that owns the
-//! target, so nodes, the window, and constructible `EventTarget`s all share
-//! the same add/remove/invoke code.
+// https://dom.spec.whatwg.org/#events
 
 use std::cell::{Cell, Ref, RefCell, RefMut};
 use std::rc::Rc;
@@ -22,18 +17,16 @@ use crate::dom::tree::NodeId;
 include!(concat!(env!("OUT_DIR"), "/Event.rs"));
 include!(concat!(env!("OUT_DIR"), "/EventTarget.rs"));
 
-/// `Event.NONE` (<https://dom.spec.whatwg.org/#dom-event-none>).
+// https://dom.spec.whatwg.org/#dom-event-none
 pub(crate) const NONE: u16 = 0;
-/// `Event.CAPTURING_PHASE` (<https://dom.spec.whatwg.org/#dom-event-capturing_phase>).
+// https://dom.spec.whatwg.org/#dom-event-capturing_phase
 pub(crate) const CAPTURING_PHASE: u16 = 1;
-/// `Event.AT_TARGET` (<https://dom.spec.whatwg.org/#dom-event-at_target>).
+// https://dom.spec.whatwg.org/#dom-event-at_target
 pub(crate) const AT_TARGET: u16 = 2;
-/// `Event.BUBBLING_PHASE` (<https://dom.spec.whatwg.org/#dom-event-bubbling_phase>).
+// https://dom.spec.whatwg.org/#dom-event-bubbling_phase
 pub(crate) const BUBBLING_PHASE: u16 = 3;
 
-/// `DOMHighResTimeStamp` for `Event.timeStamp`, measured from the realm's
-/// `performance` time origin
-/// (<https://dom.spec.whatwg.org/#dom-event-timestamp>).
+// https://dom.spec.whatwg.org/#dom-event-timestamp
 fn stamp_event(ctx: &Ctx<'_>, event: &JsEvent) {
     let Ok(world) = bindings::world(ctx) else {
         return;
@@ -47,27 +40,14 @@ fn stamp_event(ctx: &Ctx<'_>, event: &JsEvent) {
     event.state_mut().time_stamp = super::world::clamp_time(now, resolution);
 }
 
-/// One event target together with the world that owns it
-/// (<https://dom.spec.whatwg.org/#concept-event-target>).
-///
-/// The world is needed to resolve a `Window` target from a realm that is not
-/// the target's own: `ctx.globals()` is the caller's window.
+// https://dom.spec.whatwg.org/#concept-event-target
 #[derive(Clone)]
 pub(crate) struct EventTargetRef {
     pub(crate) key: EventTargetKey,
     pub(crate) world: Rc<RefCell<World>>,
 }
 
-/// The mutable state of one `Event` object
-/// (<https://dom.spec.whatwg.org/#concept-event>).
-///
-/// Targets and path entries are [`EventTargetRef`]s, not JS values: a
-/// `Persistent` stored inside a class instance pins the `QuickJS` context
-/// across realm teardown, which aborts the runtime at exit. References resolve
-/// to wrappers on demand and hold no JS reference.
-///
-/// The booleans mirror the specification's event flags one-for-one; a bitmask
-/// would obscure that mapping.
+// https://dom.spec.whatwg.org/#concept-event
 #[expect(
     clippy::struct_excessive_bools,
     reason = "the DOM event flag set is specified as individual flags"
@@ -98,25 +78,17 @@ impl<'js> Trace<'js> for EventStateCell {
     fn trace<'a>(&self, _tracer: Tracer<'a, 'js>) {}
 }
 
-/// The `CustomEvent` platform object.
-///
-/// `detail` is the one `any` attribute of the interface, so it lives as a
-/// symbol-keyed own property on the object (`install_custom_event_js`) rather
-/// than in this struct; every Rust-held JS value would pin the context.
 #[derive(Trace, rquickjs::JsLifetime)]
 pub struct JsEvent {
     pub(crate) state: EventStateCell,
 }
 
 impl JsEvent {
-    /// A user-agent-created event: `isTrusted` true and `initialized` set
-    /// (<https://dom.spec.whatwg.org/#concept-event-create>).
+    // https://dom.spec.whatwg.org/#concept-event-create
     pub(crate) fn trusted(typ: &str, bubbles: bool, cancelable: bool) -> Self {
         Self::trusted_with(typ, bubbles, cancelable, false)
     }
 
-    /// A trusted event whose `composed` flag is set, for the input events that
-    /// cross shadow boundaries.
     pub(crate) fn trusted_composed(typ: &str, bubbles: bool, cancelable: bool) -> Self {
         Self::trusted_with(typ, bubbles, cancelable, true)
     }
@@ -135,9 +107,7 @@ impl JsEvent {
         }
     }
 
-    /// The event `Document.createEvent()` returns: type empty and
-    /// `initialized` unset until `initEvent()`
-    /// (<https://dom.spec.whatwg.org/#dom-document-createevent>).
+    // https://dom.spec.whatwg.org/#dom-document-createevent
     pub(crate) fn uninitialized() -> Self {
         Self {
             state: EventStateCell(RefCell::new(EventState::default())),
@@ -152,8 +122,7 @@ impl JsEvent {
         self.state.0.borrow_mut()
     }
 
-    /// [Initialize](https://dom.spec.whatwg.org/#concept-event-initialize) the
-    /// event. `initEvent()` and `initCustomEvent()` both land here.
+    // https://dom.spec.whatwg.org/#concept-event-initialize
     pub(crate) fn initialize(&self, typ: String, bubbles: bool, cancelable: bool) {
         let mut state = self.state_mut();
         state.initialized = true;
@@ -167,8 +136,7 @@ impl JsEvent {
         state.cancelable = cancelable;
     }
 
-    /// Build an initialized event from an already-converted constructor
-    /// argument set (<https://dom.spec.whatwg.org/#dom-event-event>).
+    // https://dom.spec.whatwg.org/#dom-event-event
     fn from_init(typ: String, init: &event_generated::EventInit) -> Self {
         Self {
             state: EventStateCell(RefCell::new(EventState {
@@ -182,7 +150,7 @@ impl JsEvent {
         }
     }
 
-    /// [Set the canceled flag](https://dom.spec.whatwg.org/#set-the-canceled-flag).
+    // https://dom.spec.whatwg.org/#set-the-canceled-flag
     fn set_canceled_flag(&self) {
         let mut state = self.state_mut();
         if state.canceled || state.in_passive || !state.cancelable {
@@ -323,9 +291,6 @@ impl<'js> event_generated::Event<'js> for JsEvent {
         bubbles: bool,
         cancelable: bool,
     ) -> Result<()> {
-        // Web IDL converts the arguments before the algorithm runs; the
-        // generated dispatch already did, so a dispatch flag returns without
-        // re-initializing.
         if self.state().dispatching {
             return Ok(());
         }
@@ -334,14 +299,7 @@ impl<'js> event_generated::Event<'js> for JsEvent {
     }
 }
 
-/// The constructible `EventTarget` interface
-/// (<https://dom.spec.whatwg.org/#interface-eventtarget>).
-///
-/// Nodes get their own copies of the three methods on the JavaScript `Node`
-/// prototype (the generated `EventTarget` installer wires them from the
-/// `JsNode` implementation), so these methods only ever see `new EventTarget()`
-/// receivers. That matters because rquickjs methods brand-check their receiver
-/// as the defining class.
+// https://dom.spec.whatwg.org/#interface-eventtarget
 #[derive(Trace, rquickjs::JsLifetime)]
 pub struct JsEventTarget {
     id: u64,
@@ -404,8 +362,6 @@ impl<'js> event_target_generated::EventTarget<'js> for JsEventTarget {
     }
 }
 
-/// Every node interface is also an `EventTarget`, so the one contract
-/// dispatches node receivers to the node key.
 impl<'js> event_target_generated::EventTarget<'js> for JsNode {
     fn constructor(ctx: &Ctx<'js>) -> Result<Self> {
         Err(rquickjs::Exception::throw_type(ctx, "Illegal constructor"))
@@ -455,7 +411,6 @@ impl<'js> event_target_generated::EventTarget<'js> for JsNode {
     }
 }
 
-/// The `addEventListener` options union as parsed listener options.
 pub(crate) fn listener_options(
     options: event_target_generated::AddEventListenerOptionsOrBoolean,
 ) -> ListenerOptions {
@@ -479,8 +434,7 @@ pub(crate) fn listener_options(
     }
 }
 
-/// `removeEventListener` reads only `capture`
-/// (<https://dom.spec.whatwg.org/#dom-eventtarget-removeeventlistener>).
+// https://dom.spec.whatwg.org/#dom-eventtarget-removeeventlistener
 pub(crate) fn remove_capture(
     options: event_target_generated::BooleanOrEventListenerOptions,
 ) -> bool {
@@ -497,9 +451,7 @@ pub(crate) fn install_event_target_bridge(ctx: &Ctx<'_>) -> Result<()> {
         "__tbDispatchTargetTrusted",
         rquickjs::prelude::Func::from(dispatch_trusted_bridge),
     )?;
-    // `window.event` reads the realm's current event, which the inner invoke
-    // algorithm updates around each listener
-    // (<https://dom.spec.whatwg.org/#concept-event-listener-inner-invoke>).
+    // https://dom.spec.whatwg.org/#concept-event-listener-inner-invoke
     super::bridge::object(ctx)?.set(
         "__tbCurrentEvent",
         rquickjs::prelude::Func::from(current_event),
@@ -508,10 +460,6 @@ pub(crate) fn install_event_target_bridge(ctx: &Ctx<'_>) -> Result<()> {
         "__tbEventDispatching",
         rquickjs::prelude::Func::from(event_dispatching_bridge),
     )?;
-    // Forge-proof event brand check for the script getters: prototype-chain
-    // walks (`instanceof`) pass for `Object.create(MouseEvent.prototype)`,
-    // but only genuine events (native or constructed through the shared
-    // native prototype) convert to `Class<JsEvent>`.
     super::bridge::object(ctx)?.set(
         "__tbIsEvent",
         rquickjs::prelude::Func::from(is_event_bridge),
@@ -519,9 +467,7 @@ pub(crate) fn install_event_target_bridge(ctx: &Ctx<'_>) -> Result<()> {
     Ok(())
 }
 
-/// The `window.event` getter: this realm's current event, or undefined while
-/// no listener of this realm runs
-/// (<https://dom.spec.whatwg.org/#window-current-event>).
+// https://dom.spec.whatwg.org/#window-current-event
 fn current_event(ctx: Ctx<'_>) -> Result<Value<'_>> {
     let world = bindings::world(&ctx)?;
     let saved = world.borrow().current_event.clone();
@@ -531,9 +477,7 @@ fn current_event(ctx: Ctx<'_>) -> Result<Value<'_>> {
     }
 }
 
-/// Whether an event's dispatch flag is set, for the legacy `init*Event`
-/// operations, which must do nothing while dispatched
-/// (<https://w3c.github.io/uievents/#dom-uievent-inituievent>).
+// https://w3c.github.io/uievents/#dom-uievent-inituievent
 fn event_dispatching_bridge<'js>(_ctx: Ctx<'js>, event: Class<'js, JsEvent>) -> bool {
     event.borrow().state().dispatching
 }
@@ -557,49 +501,36 @@ fn dispatch_trusted_bridge<'js>(
     dispatch_trusted_event(&ctx, EventTargetKey::Standalone(id), &event)
 }
 
-/// Wraps the native `EventTarget` constructor so a call without `new` throws
-/// (<https://webidl.spec.whatwg.org/#interface-object>); the wrapper shares the
-/// native prototype so `Class::<JsEventTarget>` conversions keep working.
-/// Deflated by `build.rs`, inflated once per process.
+// https://webidl.spec.whatwg.org/#interface-object
 pub(crate) const INSTALL_EVENT_TARGET_CTOR_DEFLATE: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
     "/js_blobs/event_target_ctor.deflate"
 ));
 
-/// The `EventTarget` constructor shim, inflated once per process.
 pub(crate) fn install_event_target_ctor_js(ctx: &Ctx<'_>) -> Result<&'static str> {
     static CACHE: std::sync::OnceLock<Box<str>> = std::sync::OnceLock::new();
     super::blob::decompress(ctx, INSTALL_EVENT_TARGET_CTOR_DEFLATE, &CACHE)
 }
 
-/// `AbortController` and `AbortSignal`
-/// (<https://dom.spec.whatwg.org/#interface-abortcontroller>,
-/// <https://dom.spec.whatwg.org/#abortsignal>).
-/// Deflated by `build.rs`, inflated once per process.
+// https://dom.spec.whatwg.org/#interface-abortcontroller
+// https://dom.spec.whatwg.org/#abortsignal
 pub(crate) const INSTALL_ABORT_DEFLATE: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/js_blobs/abort.deflate"));
 
-/// The abort shim, inflated once per process.
 pub(crate) fn install_abort_js(ctx: &Ctx<'_>) -> Result<&'static str> {
     static CACHE: std::sync::OnceLock<Box<str>> = std::sync::OnceLock::new();
     super::blob::decompress(ctx, INSTALL_ABORT_DEFLATE, &CACHE)
 }
 
-/// Wraps the native `Event` constructor so a call without `new` throws
-/// (<https://webidl.spec.whatwg.org/#interface-object>); the wrapper shares the
-/// native prototype so `Class::<JsEvent>` conversions keep working.
-/// Deflated by `build.rs`, inflated once per process.
+// https://webidl.spec.whatwg.org/#interface-object
 pub(crate) const INSTALL_EVENT_CTOR_DEFLATE: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/js_blobs/event_ctor.deflate"));
 
-/// The `Event` constructor shim, inflated once per process.
 pub(crate) fn install_event_ctor_js(ctx: &Ctx<'_>) -> Result<&'static str> {
     static CACHE: std::sync::OnceLock<Box<str>> = std::sync::OnceLock::new();
     super::blob::decompress(ctx, INSTALL_EVENT_CTOR_DEFLATE, &CACHE)
 }
 
-/// Keeps a constructible target's object reachable from its world, so dispatch
-/// can use it as `target`/`currentTarget`.
 fn register_standalone<'js>(ctx: &Ctx<'js>, id: u64, target: &Object<'js>) -> Result<()> {
     bindings::world(ctx)?
         .borrow_mut()
@@ -607,15 +538,12 @@ fn register_standalone<'js>(ctx: &Ctx<'js>, id: u64, target: &Object<'js>) -> Re
     Ok(())
 }
 
-/// An event whose prototype is this realm's, not the runtime's cached one.
 pub(crate) fn realm_event<'js>(ctx: &Ctx<'js>, event: JsEvent) -> Result<Class<'js, JsEvent>> {
     stamp_event(ctx, &event);
     bindings::host::instance(ctx, event)
 }
 
-/// The `click` event `HTMLElement.click()` dispatches: a synthetic pointer
-/// event, which is what makes dispatch treat it as an activation event
-/// (<https://html.spec.whatwg.org/multipage/interaction.html#dom-click>).
+// https://html.spec.whatwg.org/multipage/interaction.html#dom-click
 pub(crate) fn synthetic_click_event<'js>(ctx: &Ctx<'js>) -> Result<Class<'js, JsEvent>> {
     let event = realm_event(ctx, JsEvent::uninitialized())?;
     event.borrow().initialize("click".to_owned(), true, true);
@@ -623,10 +551,7 @@ pub(crate) fn synthetic_click_event<'js>(ctx: &Ctx<'js>) -> Result<Class<'js, Js
     Ok(event)
 }
 
-/// A click the engine synthesizes has no pointing device behind it, so its
-/// interface is `PointerEvent` and its pointer members take the reserved
-/// values: pointer id -1 and an empty `pointerType`
-/// (<https://html.spec.whatwg.org/multipage/interaction.html#dom-click>).
+// https://html.spec.whatwg.org/multipage/interaction.html#dom-click
 fn set_synthetic_click_interface<'js>(ctx: &Ctx<'js>, event: &Class<'js, JsEvent>) -> Result<()> {
     set_exposed_event_prototype(ctx, event, "PointerEvent")?;
     let init: Function = crate::js::bridge::object(ctx)?.get("__tbInitClickPointer")?;
@@ -634,13 +559,7 @@ fn set_synthetic_click_interface<'js>(ctx: &Ctx<'js>, event: &Class<'js, JsEvent
     Ok(())
 }
 
-/// `document.createEvent(interface)`
-/// (<https://dom.spec.whatwg.org/#dom-document-createevent>).
-///
-/// The interface name matches ASCII case-insensitively. An interface that is
-/// not in the table, or that is not exposed on this realm, throws
-/// `NotSupportedError`. The event is created uninitialized; its prototype is
-/// the exposed interface's, not the result of calling that constructor.
+// https://dom.spec.whatwg.org/#dom-document-createevent
 pub(crate) fn create_event<'js>(ctx: &Ctx<'js>, interface: &str) -> Result<Value<'js>> {
     let Some(interface_name) = legacy_event_interface(&interface.to_ascii_lowercase()) else {
         return Err(bindings::throw_dom(
@@ -656,8 +575,7 @@ pub(crate) fn create_event<'js>(ctx: &Ctx<'js>, interface: &str) -> Result<Value
     Ok(Class::into_value(class))
 }
 
-/// The `createEvent` interface table
-/// (<https://dom.spec.whatwg.org/#dom-document-createevent>).
+// https://dom.spec.whatwg.org/#dom-document-createevent
 fn legacy_event_interface(interface: &str) -> Option<&'static str> {
     Some(match interface {
         "beforeunloadevent" => "BeforeUnloadEvent",
@@ -680,13 +598,7 @@ fn legacy_event_interface(interface: &str) -> Option<&'static str> {
     })
 }
 
-/// Sets the event's prototype to the realm's own interface prototype.
-///
-/// The pinned constructor captured at install decides: a page that replaced
-/// `window[interface]` must not stamp its own prototype onto the event. A
-/// missing pin (or a missing `prototype` on it) means the interface is not
-/// exposed on the relevant global
-/// (<https://dom.spec.whatwg.org/#dom-document-createevent>).
+// https://dom.spec.whatwg.org/#dom-document-createevent
 fn set_exposed_event_prototype<'js>(
     ctx: &Ctx<'js>,
     class: &Class<'js, JsEvent>,
@@ -720,11 +632,7 @@ fn set_custom_event_prototype<'js>(ctx: &Ctx<'js>, class: &Class<'js, JsEvent>) 
     set_exposed_event_prototype(ctx, class, "CustomEvent")
 }
 
-/// The `new CustomEvent(type, eventInitDict)` constructor, called from the
-/// JavaScript wrapper so instances can carry `CustomEvent.prototype`
-/// (<https://dom.spec.whatwg.org/#dom-customevent-customevent>).
-///
-/// The wrapper owns arity; this native owns the Web IDL conversions.
+// https://dom.spec.whatwg.org/#dom-customevent-customevent
 pub(crate) fn construct_custom_event<'js>(
     ctx: Ctx<'js>,
     args: Rest<Value<'js>>,
@@ -746,13 +654,8 @@ pub(crate) fn construct_custom_event<'js>(
     Ok(Class::into_value(class))
 }
 
-/// The initialization steps of `initCustomEvent`, without `detail`
-/// (<https://dom.spec.whatwg.org/#dom-customevent-initcustomevent>).
-///
-/// Returns false when the event is being dispatched, in which case the caller
-/// must not set `detail` either.
+// https://dom.spec.whatwg.org/#dom-customevent-initcustomevent
 pub(crate) fn init_custom_event<'js>(ctx: Ctx<'js>, args: Rest<Value<'js>>) -> Result<bool> {
-    // Convert the arguments before the algorithm's dispatch-flag check.
     let mut args = args.0.into_iter();
     let Some(event) = args.next() else {
         return Err(Exception::throw_type(&ctx, "event is required"));
@@ -771,12 +674,9 @@ pub(crate) fn init_custom_event<'js>(ctx: Ctx<'js>, args: Rest<Value<'js>>) -> R
     Ok(true)
 }
 
-/// Registers the `CustomEvent` constructor and its prototype chain.
-/// Deflated by `build.rs`, inflated once per process.
 pub(crate) const INSTALL_CUSTOM_EVENT_DEFLATE: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/js_blobs/custom_event.deflate"));
 
-/// The `CustomEvent` shim, inflated once per process.
 pub(crate) fn install_custom_event_js(ctx: &Ctx<'_>) -> Result<&'static str> {
     static CACHE: std::sync::OnceLock<Box<str>> = std::sync::OnceLock::new();
     super::blob::decompress(ctx, INSTALL_CUSTOM_EVENT_DEFLATE, &CACHE)
@@ -787,19 +687,12 @@ pub(crate) const INSTALL_SECURITY_POLICY_VIOLATION_EVENT_DEFLATE: &[u8] = includ
     "/js_blobs/security_policy_violation_event.deflate"
 ));
 
-/// The `SecurityPolicyViolationEvent` shim, inflated once per process.
 pub(crate) fn install_security_policy_violation_event_js(ctx: &Ctx<'_>) -> Result<&'static str> {
     static CACHE: std::sync::OnceLock<Box<str>> = std::sync::OnceLock::new();
     super::blob::decompress(ctx, INSTALL_SECURITY_POLICY_VIOLATION_EVENT_DEFLATE, &CACHE)
 }
 
-/// The `new SecurityPolicyViolationEvent(type, eventInitDict)` constructor,
-/// called from the JavaScript wrapper so instances can carry
-/// `SecurityPolicyViolationEvent.prototype`
-/// (<https://w3c.github.io/webappsec-csp/#securitypolicyviolationevent>).
-///
-/// The wrapper owns the readonly attributes and arity; this native owns the
-/// `EventInit` conversions.
+// https://w3c.github.io/webappsec-csp/#securitypolicyviolationevent
 pub(crate) fn construct_security_policy_violation_event<'js>(
     ctx: Ctx<'js>,
     args: Rest<Value<'js>>,
@@ -827,10 +720,7 @@ pub(crate) fn construct_security_policy_violation_event<'js>(
     Ok(Class::into_value(class))
 }
 
-/// Fires one trusted `securitypolicyviolation` event at `target` with the
-/// readonly attributes set as own properties, so both constructor-created
-/// (slot-backed getters) and user-agent events read the same values
-/// (<https://w3c.github.io/webappsec-csp/#report-violation>).
+// https://w3c.github.io/webappsec-csp/#report-violation
 pub(crate) fn fire_security_policy_violation(
     ctx: &Ctx<'_>,
     target: EventTargetKey,
@@ -847,20 +737,14 @@ pub(crate) fn fire_security_policy_violation(
     {
         set_exposed_event_prototype(ctx, &event, "SecurityPolicyViolationEvent")?;
     }
-    // Own data properties, because the shim's prototype accessors are
-    // readonly and an assigning set would throw
-    // (<https://webidl.spec.whatwg.org/#idl-read-only-attributes>).
-    // `documentURI` is the stripped document URL from the violation, not
-    // the live document URL: fragment and credentials never report
-    // (<https://w3c.github.io/webappsec-csp/#strip-url-for-use-in-reports>).
+    // https://webidl.spec.whatwg.org/#idl-read-only-attributes
+    // https://w3c.github.io/webappsec-csp/#strip-url-for-use-in-reports
     event.prop("documentURI", violation.document_uri.clone())?;
     event.prop("referrer", String::new())?;
     event.prop("blockedURI", violation.blocked_uri.clone())?;
     event.prop("violatedDirective", violation.effective_directive.clone())?;
     event.prop("effectiveDirective", violation.effective_directive.clone())?;
     event.prop("originalPolicy", violation.original_policy.clone())?;
-    // `sourceFile` strips like the reports: a `data:` or `blob:` trigger
-    // reports just its scheme. Line and column are zero when unknown.
     event.prop(
         "sourceFile",
         violation
@@ -884,11 +768,8 @@ pub(crate) fn fire_security_policy_violation(
     Ok(())
 }
 
-/// Appends one listener to a target's list in a chosen realm, so
-/// `contentWindow.addEventListener` runs in the caller's realm and still
-/// registers on the frame's window
-/// (<https://dom.spec.whatwg.org/#dom-eventtarget-addeventlistener>,
-/// <https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-get>).
+// https://dom.spec.whatwg.org/#dom-eventtarget-addeventlistener
+// https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-get
 pub(crate) fn add_listener_in<'js>(
     ctx: &Ctx<'js>,
     world: &Rc<RefCell<World>>,
@@ -903,8 +784,6 @@ pub(crate) fn add_listener_in<'js>(
     add_listener_parsed_in(ctx, world, target, typ, callback, options)
 }
 
-/// [`add_listener_in`] from an already-converted `EventListener?` and
-/// options, used by the generated `EventTarget` contract.
 pub(crate) fn add_listener_parsed(
     ctx: &Ctx<'_>,
     target: EventTargetKey,
@@ -937,8 +816,7 @@ fn add_listener_parsed_in(
     {
         return Ok(());
     }
-    // A null callback still flattens the options but is never added
-    // (<https://dom.spec.whatwg.org/#add-an-event-listener> step 3).
+    // https://dom.spec.whatwg.org/#add-an-event-listener
     let Some(callback) = callback else {
         return Ok(());
     };
@@ -946,8 +824,7 @@ fn add_listener_parsed_in(
         Some(passive) => passive,
         None => default_passive(ctx, &typ, target)?,
     };
-    // Abort steps run when the list is touched or a listener is about to be
-    // invoked (<https://dom.spec.whatwg.org/#add-an-event-listener>).
+    // https://dom.spec.whatwg.org/#add-an-event-listener
     let existing_listeners = world.borrow().listener_snapshot(target);
     for existing in &existing_listeners {
         if let Some(signal) = &existing.signal
@@ -981,8 +858,7 @@ fn add_listener_parsed_in(
     Ok(())
 }
 
-/// Removes one listener from a target's list
-/// (<https://dom.spec.whatwg.org/#dom-eventtarget-removeeventlistener>).
+// https://dom.spec.whatwg.org/#dom-eventtarget-removeeventlistener
 pub(crate) fn remove_listener_in<'js>(
     ctx: &Ctx<'js>,
     world: &Rc<RefCell<World>>,
@@ -997,8 +873,6 @@ pub(crate) fn remove_listener_in<'js>(
     remove_listener_parsed_in(ctx, world, target, &typ, callback.as_ref(), capture)
 }
 
-/// [`remove_listener_in`] from an already-converted `EventListener?` and
-/// capture, used by the generated `EventTarget` contract.
 pub(crate) fn remove_listener_parsed(
     ctx: &Ctx<'_>,
     target: EventTargetKey,
@@ -1024,8 +898,7 @@ fn remove_listener_parsed_in(
     callback: Option<&Persistent<Value<'static>>>,
     capture: bool,
 ) -> Result<()> {
-    // A null callback removes nothing
-    // (<https://dom.spec.whatwg.org/#dom-eventtarget-removeeventlistener> step 2).
+    // https://dom.spec.whatwg.org/#dom-eventtarget-removeeventlistener
     let Some(callback) = callback else {
         return Ok(());
     };
@@ -1046,8 +919,7 @@ fn remove_listener_parsed_in(
     Ok(())
 }
 
-/// `dispatchEvent()`
-/// (<https://dom.spec.whatwg.org/#dom-eventtarget-dispatchevent>).
+// https://dom.spec.whatwg.org/#dom-eventtarget-dispatchevent
 pub(crate) fn dispatch_event<'js>(
     ctx: &Ctx<'js>,
     target: EventTargetKey,
@@ -1056,9 +928,7 @@ pub(crate) fn dispatch_event<'js>(
     dispatch_checked(ctx, target, event, false, None)
 }
 
-/// `dispatchEvent()` on a chosen realm's window, so a call through another
-/// realm's `WindowProxy` dispatches on the frame's window
-/// (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-get>).
+// https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-get
 pub(crate) fn dispatch_event_for_window<'js>(
     ctx: &Ctx<'js>,
     world: &Rc<RefCell<World>>,
@@ -1067,9 +937,7 @@ pub(crate) fn dispatch_event_for_window<'js>(
     dispatch_checked(ctx, EventTargetKey::Window, event, false, Some(world))
 }
 
-/// Dispatches a user-agent event with the trust bit set, without the
-/// `dispatchEvent()` step that clears `isTrusted`
-/// (<https://dom.spec.whatwg.org/#concept-event-dispatch>).
+// https://dom.spec.whatwg.org/#concept-event-dispatch
 pub(crate) fn dispatch_trusted_event<'js>(
     ctx: &Ctx<'js>,
     target: EventTargetKey,
@@ -1078,8 +946,6 @@ pub(crate) fn dispatch_trusted_event<'js>(
     dispatch_checked(ctx, target, event, true, None)
 }
 
-/// Checks the event's dispatch flags and sets `isTrusted` before dispatch:
-/// script dispatch clears the trust bit, user-agent delivery keeps it.
 fn dispatch_checked<'js>(
     ctx: &Ctx<'js>,
     target: EventTargetKey,
@@ -1102,7 +968,6 @@ fn dispatch_checked<'js>(
     dispatch(ctx, target, event, window)
 }
 
-/// Creates and dispatches a user-agent event.
 pub(crate) fn fire_trusted(
     ctx: &Ctx<'_>,
     target: EventTargetKey,
@@ -1115,10 +980,8 @@ pub(crate) fn fire_trusted(
     Ok(())
 }
 
-/// Fires one CSS animation or transition lifecycle event at its element. The
-/// events bubble and are not cancelable
-/// (<https://drafts.csswg.org/css-animations-1/#events>,
-/// <https://drafts.csswg.org/css-transitions-1/#transition-events>).
+// https://drafts.csswg.org/css-animations-1/#events
+// https://drafts.csswg.org/css-transitions-1/#transition-events
 pub(crate) fn fire_animation_event(
     ctx: &Ctx<'_>,
     target: EventTargetKey,
@@ -1130,11 +993,7 @@ pub(crate) fn fire_animation_event(
         "AnimationEvent"
     };
     let class = realm_event(ctx, JsEvent::trusted(event.kind.event_type(), true, false))?;
-    // A trusted event is not built by the shim's constructor, so its slot has
-    // no entry. Expose the interface prototype when the realm has it and set
-    // the readonly members as own data properties, which shadow the shim's
-    // slot-reading getters
-    // (<https://webidl.spec.whatwg.org/#idl-read-only-attributes>).
+    // https://webidl.spec.whatwg.org/#idl-read-only-attributes
     if bindings::world(ctx)?
         .borrow()
         .event_ctors
@@ -1154,10 +1013,7 @@ pub(crate) fn fire_animation_event(
     Ok(())
 }
 
-/// Fires a trusted `toggle` event carrying the states the element moved
-/// between. The event uses the `ToggleEvent` interface when the realm exposes
-/// it and does not bubble or cancel
-/// (<https://html.spec.whatwg.org/multipage/popover.html#the-toggleevent-interface>).
+// https://html.spec.whatwg.org/multipage/popover.html#the-toggleevent-interface
 pub(crate) fn fire_toggle(
     ctx: &Ctx<'_>,
     target: EventTargetKey,
@@ -1170,10 +1026,8 @@ pub(crate) fn fire_toggle(
     Ok(())
 }
 
-/// Fires one trusted `ToggleEvent` and reports whether it was not canceled, so
-/// `show()` can stop when a `beforetoggle` listener prevents the change
-/// (<https://html.spec.whatwg.org/multipage/popover.html#the-toggleevent-interface>,
-/// <https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:dom-dialog-show>).
+// https://html.spec.whatwg.org/multipage/popover.html#the-toggleevent-interface
+// https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:dom-dialog-show
 #[expect(
     clippy::too_many_arguments,
     reason = "one parameter per ToggleEvent member plus its dispatch flags"
@@ -1206,16 +1060,8 @@ pub(crate) fn fire_toggle_event(
     dispatch(ctx, target, &class, None)
 }
 
-/// Dispatches an event the shim built at `target` with the trust bit set and
-/// reports whether it was not canceled.
-///
-/// A submission an activation behavior starts is a user-agent event, so its
-/// `submit` listener has to see `isTrusted` true, and only the engine can set
-/// that bit. Everything else about the event (the `SubmitEvent` prototype and
-/// its `submitter`) stays with the shim, which is why it builds the object and
-/// the engine only owns the dispatch
-/// (<https://dom.spec.whatwg.org/#concept-event-dispatch>,
-/// <https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#form-submission-algorithm>).
+// https://dom.spec.whatwg.org/#concept-event-dispatch
+// https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#form-submission-algorithm
 pub(crate) fn dispatch_shim_event_trusted<'js>(
     ctx: &Ctx<'js>,
     target: EventTargetKey,
@@ -1225,9 +1071,7 @@ pub(crate) fn dispatch_shim_event_trusted<'js>(
     dispatch_checked(ctx, target, &event, true, None)
 }
 
-/// Fires a trusted event that crosses shadow boundaries. `input` and
-/// `beforeinput` are composed, while `change` is not
-/// (<https://w3c.github.io/uievents/#events-inputevents>).
+// https://w3c.github.io/uievents/#events-inputevents
 pub(crate) fn fire_trusted_composed(
     ctx: &Ctx<'_>,
     target: EventTargetKey,
@@ -1240,8 +1084,7 @@ pub(crate) fn fire_trusted_composed(
     Ok(())
 }
 
-/// Fires `popstate` with the deserialized state for the activated entry.
-/// <https://html.spec.whatwg.org/multipage/nav-history-apis.html#the-popstateevent-interface>
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#the-popstateevent-interface
 pub(crate) fn fire_trusted_popstate<'js>(ctx: &Ctx<'js>, state: Value<'js>) -> Result<()> {
     let event = realm_event(ctx, JsEvent::trusted("popstate", false, false))?;
     if let Some(prototype) = bindings::world(ctx)?.borrow().brand("PopStateEvent") {
@@ -1252,10 +1095,7 @@ pub(crate) fn fire_trusted_popstate<'js>(ctx: &Ctx<'js>, state: Value<'js>) -> R
     Ok(())
 }
 
-/// Fires the trusted `hashchange` of a same-document fragment navigation.
-/// `oldURL` and `newURL` live in the interface's JavaScript slot map, so the
-/// shim writes them while this function owns the trust flag and dispatch
-/// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#the-hashchangeevent-interface>).
+// https://html.spec.whatwg.org/multipage/browsing-the-web.html#the-hashchangeevent-interface
 pub(crate) fn fire_trusted_hashchange(ctx: &Ctx<'_>, old_url: &str, new_url: &str) -> Result<()> {
     let event = realm_event(ctx, JsEvent::trusted("hashchange", false, false))?;
     if let Some(prototype) = bindings::world(ctx)?.borrow().brand("HashChangeEvent") {
@@ -1267,9 +1107,7 @@ pub(crate) fn fire_trusted_hashchange(ctx: &Ctx<'_>, old_url: &str, new_url: &st
     Ok(())
 }
 
-/// Fires the trusted `pagehide` of a document unload step, with `persisted`
-/// false because this engine keeps no page in a back/forward cache
-/// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#the-pagetransitionevent-interface>).
+// https://html.spec.whatwg.org/multipage/browsing-the-web.html#the-pagetransitionevent-interface
 pub(crate) fn fire_trusted_pagehide(ctx: &Ctx<'_>) -> Result<()> {
     let event = realm_event(ctx, JsEvent::trusted("pagehide", false, false))?;
     if let Some(prototype) = bindings::world(ctx)?.borrow().brand("PageTransitionEvent") {
@@ -1279,20 +1117,14 @@ pub(crate) fn fire_trusted_pagehide(ctx: &Ctx<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Runs a document's unload steps in `ctx`'s realm: trusted `pagehide` (this
-/// engine keeps no page in a back/forward cache, so `persisted` is false) then
-/// `unload`, both on the window
-/// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#the-pagetransitionevent-interface>,
-/// <https://html.spec.whatwg.org/multipage/browsing-the-web.html#unload>).
+// https://html.spec.whatwg.org/multipage/browsing-the-web.html#the-pagetransitionevent-interface
+// https://html.spec.whatwg.org/multipage/browsing-the-web.html#unload
 pub(crate) fn fire_document_unload(ctx: &Ctx<'_>) -> Result<()> {
     fire_trusted_pagehide(ctx)?;
     fire_trusted(ctx, EventTargetKey::Window, "unload", false, false)
 }
 
-/// Fires a trusted `FocusEvent` that carries the related target. Dispatch
-/// retargets it for every path struct, so a listener outside a shadow tree sees
-/// the host instead of the inner node
-/// (<https://w3c.github.io/uievents/#events-focusevent>).
+// https://w3c.github.io/uievents/#events-focusevent
 pub(crate) fn fire_trusted_focus(
     ctx: &Ctx<'_>,
     target: EventTargetKey,
@@ -1311,8 +1143,6 @@ pub(crate) fn fire_trusted_focus(
     Ok(())
 }
 
-/// Fires a trusted event and reports whether it was not canceled, for
-/// cancelable events that gate a following action such as `reset`.
 pub(crate) fn fire_trusted_cancelable(
     ctx: &Ctx<'_>,
     target: EventTargetKey,
@@ -1324,23 +1154,16 @@ pub(crate) fn fire_trusted_cancelable(
     dispatch(ctx, target, &event, None)
 }
 
-/// Fires a trusted `click` and reports whether it was not canceled, so the
-/// caller can run the activation behavior
-/// (<https://dom.spec.whatwg.org/#concept-event-dispatch>).
+// https://dom.spec.whatwg.org/#concept-event-dispatch
 pub(crate) fn fire_trusted_click(ctx: &Ctx<'_>, target: EventTargetKey) -> Result<bool> {
     let event = realm_event(ctx, JsEvent::trusted("click", true, true))?;
-    // A user-agent click is a `PointerEvent` (a `MouseEvent` subclass), which
-    // is what makes dispatch treat it as an activation event
-    // (<https://dom.spec.whatwg.org/#concept-event-dispatch>,
-    // <https://html.spec.whatwg.org/multipage/interaction.html#dom-click>).
+    // https://dom.spec.whatwg.org/#concept-event-dispatch
+    // https://html.spec.whatwg.org/multipage/interaction.html#dom-click
     set_synthetic_click_interface(ctx, &event)?;
     dispatch(ctx, target, &event, None)
 }
 
-/// The early return when the retargeted related target is the target itself: no
-/// listener runs, and the targets are reset. The reset is what the WPT test for
-/// this branch asserts
-/// (<https://dom.spec.whatwg.org/#concept-event-dispatch>).
+// https://dom.spec.whatwg.org/#concept-event-dispatch
 fn skip_dispatch<'js>(
     ctx: &Ctx<'js>,
     event: &Class<'js, JsEvent>,
@@ -1365,11 +1188,7 @@ fn skip_dispatch<'js>(
     Ok(!canceled)
 }
 
-/// Whether the event reports no targets after dispatch: the last struct with
-/// its own shadow-adjusted target, or that struct's related target, is a node
-/// whose root is a shadow root. It is decided before any listener runs, so a
-/// listener that moves the target out of the tree cannot change it
-/// (<https://dom.spec.whatwg.org/#concept-event-dispatch>).
+// https://dom.spec.whatwg.org/#concept-event-dispatch
 fn clears_targets<'js>(ctx: &Ctx<'js>, path: &[PathItem<'js>]) -> bool {
     match path
         .iter()
@@ -1389,9 +1208,7 @@ fn clears_targets<'js>(ctx: &Ctx<'js>, path: &[PathItem<'js>]) -> bool {
     }
 }
 
-/// The end-of-dispatch bookkeeping: clears the phase, current target, path, and
-/// stop flags, drops the targets when `clear_targets` is set, and returns the
-/// canceled flag (<https://dom.spec.whatwg.org/#concept-event-dispatch>).
+// https://dom.spec.whatwg.org/#concept-event-dispatch
 fn finish_dispatch<'js>(
     ctx: &Ctx<'js>,
     event: &Class<'js, JsEvent>,
@@ -1419,7 +1236,7 @@ fn finish_dispatch<'js>(
     Ok(canceled)
 }
 
-/// [Dispatch](https://dom.spec.whatwg.org/#concept-event-dispatch) an event.
+// https://dom.spec.whatwg.org/#concept-event-dispatch
 fn dispatch<'js>(
     ctx: &Ctx<'js>,
     target: EventTargetKey,
@@ -1440,22 +1257,13 @@ fn dispatch<'js>(
         state.target = Some(path[0].event_target.clone());
         state.current_target = None;
         state.phase = NONE;
-        // The stop flags are intentionally not cleared here: an event that was
-        // stopped before dispatch must not reach any listener, and the end of
-        // the algorithm unsets the flags
-        // (<https://dom.spec.whatwg.org/#concept-event-dispatch>).
+        // https://dom.spec.whatwg.org/#concept-event-dispatch
         state.path = path.iter().map(|item| item.reference.clone()).collect();
     }
     let bubbles = event.borrow().state().bubbles;
     let typ = event.borrow().state().typ.clone();
-    // A click event runs the element's legacy-pre-activation behavior before
-    // its listeners and completes or rolls it back after dispatch. Only a
-    // `MouseEvent` named `click` is an activation event; the page can
-    // dispatch a plain `Event("click")`, which has no activation behavior.
-    // `click()` owns that sequence itself, so it marks the dispatch to skip
-    // this path
-    // (<https://dom.spec.whatwg.org/#concept-event-dispatch>,
-    // <https://html.spec.whatwg.org/multipage/input.html#the-input-element:legacy-pre-activation-behavior>).
+    // https://dom.spec.whatwg.org/#concept-event-dispatch
+    // https://html.spec.whatwg.org/multipage/input.html#the-input-element:legacy-pre-activation-behavior
     let is_activation_event =
         typ == "click" && is_event_of(ctx, &Class::into_value(event.clone()), "MouseEvent");
     let click_activation = if is_activation_event && let EventTargetKey::Node(node) = target {
@@ -1476,15 +1284,9 @@ fn dispatch<'js>(
     } else {
         None
     };
-    // `clearTargets` is decided before any listener runs, so a listener that
-    // moves the target out of the tree cannot change it
-    // (<https://dom.spec.whatwg.org/#concept-event-dispatch>).
+    // https://dom.spec.whatwg.org/#concept-event-dispatch
     let clear_targets = clears_targets(ctx, &path);
     let result = run_invocations(ctx, event, &path, target, bubbles, &typ);
-    // Handlers on elements, documents, and a document realm's window are
-    // listeners, and their listener already ran with the list. Only the
-    // targets this engine keeps as plain properties run here, after the
-    // list. A stopped event never reaches them.
     let stopped = {
         let class = event.borrow();
         let state = class.state();
@@ -1495,15 +1297,9 @@ fn dispatch<'js>(
     } else {
         Ok(())
     };
-    // Clear the dispatch state on both paths, so a failed invocation cannot
-    // leave the event permanently undispatchable.
     let canceled = finish_dispatch(ctx, event, &event_value, clear_targets, related.is_some())?;
     let outcome = result.and(handler);
-    // The activation target runs its activation behavior after dispatch:
-    // roll back for a canceled event, otherwise complete it. A label or
-    // summary is chosen here like any other activation target, so only one
-    // element activates per click
-    // (<https://dom.spec.whatwg.org/#concept-event-dispatch>).
+    // https://dom.spec.whatwg.org/#concept-event-dispatch
     if let Some((node, previous)) = click_activation {
         if canceled {
             super::bindings::focus::legacy_canceled_activation(ctx, node, &previous)?;
@@ -1511,8 +1307,6 @@ fn dispatch<'js>(
             super::bindings::focus::complete_activation(ctx, node, &previous, event_target)?;
         }
     }
-    // The per-listener current event already restored itself even when a
-    // listener threw, so dispatch only has to surface the first error.
     outcome.map(|()| !canceled)
 }
 
@@ -1524,7 +1318,6 @@ fn run_invocations<'js>(
     bubbles: bool,
     typ: &str,
 ) -> Result<()> {
-    // Capture phase: root to target.
     for item in path.iter().rev() {
         let phase = if item.reference.key == target {
             AT_TARGET
@@ -1536,7 +1329,6 @@ fn run_invocations<'js>(
             invoke_legacy(ctx, event, item, phase, true)?;
         }
     }
-    // Bubble phase: target to root.
     for item in path {
         let phase = if item.reference.key == target {
             AT_TARGET
@@ -1545,12 +1337,8 @@ fn run_invocations<'js>(
         } else {
             continue;
         };
-        // A `submit` or `reset` event stops propagating at an ancestor form
-        // element during the bubble phase; the capture phase still traverses
-        // the whole path. All engines share the quirk, and the HTML Standard
-        // records it as a known deviation from the dispatch algorithm
-        // (<https://github.com/whatwg/html/issues/3599>,
-        // <https://github.com/whatwg/dom/issues/756>).
+        // https://github.com/whatwg/html/issues/3599
+        // https://github.com/whatwg/dom/issues/756
         if phase == BUBBLING_PHASE
             && matches!(typ, "submit" | "reset")
             && is_html_form(&item.reference)
@@ -1565,9 +1353,7 @@ fn run_invocations<'js>(
     Ok(())
 }
 
-/// The legacy event type a trusted CSS animation or transition event is
-/// rewritten to for a listener list that had no unprefixed listener
-/// (<https://dom.spec.whatwg.org/#concept-event-listener-invoke> step 2).
+// https://dom.spec.whatwg.org/#concept-event-listener-invoke
 fn legacy_event_type(typ: &str) -> Option<&'static str> {
     match typ {
         "animationend" => Some("webkitAnimationEnd"),
@@ -1578,10 +1364,7 @@ fn legacy_event_type(typ: &str) -> Option<&'static str> {
     }
 }
 
-/// Runs the legacy-event rewrite for one path item: when the first inner
-/// invoke found no listener and the event is trusted, the event's type becomes
-/// the prefixed legacy name for a second pass, then is restored
-/// (<https://dom.spec.whatwg.org/#concept-event-listener-invoke> step 2).
+// https://dom.spec.whatwg.org/#concept-event-listener-invoke
 fn invoke_legacy<'js>(
     ctx: &Ctx<'js>,
     event: &Class<'js, JsEvent>,
@@ -1608,7 +1391,6 @@ fn invoke_legacy<'js>(
     outcome.map(|_| ())
 }
 
-/// Whether an event path item is an HTML `form` element.
 fn is_html_form(item: &EventTargetRef) -> bool {
     let EventTargetKey::Node(id) = item.key else {
         return false;
@@ -1627,32 +1409,21 @@ fn is_html_form(item: &EventTargetRef) -> bool {
     )
 }
 
-/// One event path item (<https://dom.spec.whatwg.org/#event-path-item>).
+// https://dom.spec.whatwg.org/#event-path-item
 struct PathItem<'js> {
     reference: EventTargetRef,
     target: Value<'js>,
-    /// This struct's shadow-adjusted target, when it has its own. The dispatch
-    /// target and, for a composed event that leaves a shadow tree, the host
-    /// carry one; every other struct reports the nearest preceding one
-    /// (<https://dom.spec.whatwg.org/#concept-event-dispatch>).
+    // https://dom.spec.whatwg.org/#concept-event-dispatch
     shadow_adjusted_target: Option<EventTargetRef>,
-    /// `event.target` while this struct's listeners run: this struct's
-    /// shadow-adjusted target or the nearest preceding non-null one
-    /// (<https://dom.spec.whatwg.org/#concept-event-listener-invoke>).
+    // https://dom.spec.whatwg.org/#concept-event-listener-invoke
     event_target: EventTargetRef,
-    /// `event.relatedTarget` while this struct's listeners run, retargeted
-    /// against the invocation target
-    /// (<https://dom.spec.whatwg.org/#concept-event-dispatch>).
+    // https://dom.spec.whatwg.org/#concept-event-dispatch
     related_target: Option<Value<'js>>,
-    /// Whether the invocation target's root is a shadow root, which suppresses
-    /// the legacy `window.event` for this item's listeners
-    /// (<https://dom.spec.whatwg.org/#concept-event-path-append>).
+    // https://dom.spec.whatwg.org/#concept-event-path-append
     invocation_target_in_shadow_tree: bool,
 }
 
-/// The event's `relatedTarget`, as the interface stores it. `None` when the
-/// value is null or the interface has no `relatedTarget` attribute
-/// (<https://dom.spec.whatwg.org/#concept-event-relatedtarget>).
+// https://dom.spec.whatwg.org/#concept-event-relatedtarget
 fn related_target_value<'js>(ctx: &Ctx<'js>, event: &Value<'js>) -> Result<Option<Value<'js>>> {
     let bridge = crate::js::bridge::object(ctx)?;
     let getter: Function = bridge.get("__tbRelatedTargetGet")?;
@@ -1660,9 +1431,7 @@ fn related_target_value<'js>(ctx: &Ctx<'js>, event: &Value<'js>) -> Result<Optio
     Ok((!value.is_null() && !value.is_undefined()).then_some(value))
 }
 
-/// Stores `relatedTarget` back into the interface's own slot, so a listener
-/// reads the value the current path struct defines
-/// (<https://dom.spec.whatwg.org/#concept-event-listener-invoke>).
+// https://dom.spec.whatwg.org/#concept-event-listener-invoke
 fn store_related_target<'js>(
     ctx: &Ctx<'js>,
     event: &Value<'js>,
@@ -1677,8 +1446,7 @@ fn store_related_target<'js>(
     setter.call::<_, ()>((event.clone(), value))
 }
 
-/// Whether `ancestor` is a shadow-including inclusive ancestor of `node`
-/// (<https://dom.spec.whatwg.org/#concept-shadow-including-inclusive-ancestor>).
+// https://dom.spec.whatwg.org/#concept-shadow-including-inclusive-ancestor
 fn is_shadow_including_inclusive_ancestor(
     world: &Rc<RefCell<World>>,
     ancestor: NodeId,
@@ -1700,11 +1468,7 @@ fn is_shadow_including_inclusive_ancestor(
     }
 }
 
-/// Retargets a related target against the object it is reported to
-/// (<https://dom.spec.whatwg.org/#retarget>).
-///
-/// Only a node can be retargeted: a related target that is not a node, or a
-/// node whose root is not a shadow root, is returned unchanged.
+// https://dom.spec.whatwg.org/#retarget
 fn retarget_related<'js>(
     ctx: &Ctx<'js>,
     value: &Value<'js>,
@@ -1713,9 +1477,7 @@ fn retarget_related<'js>(
     let Some(mut id) = bindings::host_node_id(ctx, value) else {
         return Ok(value.clone());
     };
-    // A related target against a non-node target still retargets: the target
-    // being a node only decides whether a root already contains it
-    // (<https://dom.spec.whatwg.org/#retarget>).
+    // https://dom.spec.whatwg.org/#retarget
     let against_node = match against.key {
         EventTargetKey::Node(id) => {
             Some(bindings::realm_registry(ctx)?.borrow_mut().live_node_id(id))
@@ -1728,7 +1490,6 @@ fn retarget_related<'js>(
             break;
         };
         let root = plain_root(&world, id);
-        // A's root not being a shadow root ends the loop at the current node
         let Some(host) = world.borrow().shadow_root_host(root) else {
             break;
         };
@@ -1753,8 +1514,7 @@ fn retarget_related<'js>(
     )
 }
 
-/// Whether a related target value is a node whose root is a shadow root
-/// (<https://dom.spec.whatwg.org/#concept-tree-root>).
+// https://dom.spec.whatwg.org/#concept-tree-root
 fn value_is_in_shadow_tree<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> bool {
     let Some(id) = bindings::host_node_id(ctx, value) else {
         return false;
@@ -1765,8 +1525,7 @@ fn value_is_in_shadow_tree<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> bool {
     node_root_is_shadow(&world, id)
 }
 
-/// Whether a target reference is a node whose root is a shadow root
-/// (<https://dom.spec.whatwg.org/#concept-tree-root>).
+// https://dom.spec.whatwg.org/#concept-tree-root
 fn reference_is_in_shadow_tree(reference: &EventTargetRef) -> bool {
     let EventTargetKey::Node(id) = reference.key else {
         return false;
@@ -1774,8 +1533,7 @@ fn reference_is_in_shadow_tree(reference: &EventTargetRef) -> bool {
     node_root_is_shadow(&reference.world, id)
 }
 
-/// Whether `id`'s tree root is a shadow root
-/// (<https://dom.spec.whatwg.org/#concept-tree-root>).
+// https://dom.spec.whatwg.org/#concept-tree-root
 fn node_root_is_shadow(world: &Rc<RefCell<World>>, mut id: NodeId) -> bool {
     let world = world.borrow();
     while let Some(parent) = world.node_parent(id) {
@@ -1791,8 +1549,7 @@ fn node_root_is_shadow(world: &Rc<RefCell<World>>, mut id: NodeId) -> bool {
         .is_some_and(|node| matches!(node.data, blitz_dom::NodeData::ShadowRoot { .. }))
 }
 
-/// The event target reference for a dispatch target
-/// (<https://dom.spec.whatwg.org/#concept-event-target>).
+// https://dom.spec.whatwg.org/#concept-event-target
 fn target_reference(
     ctx: &Ctx<'_>,
     target: EventTargetKey,
@@ -1808,8 +1565,7 @@ fn target_reference(
     Ok(EventTargetRef { key: target, world })
 }
 
-/// The root of `id` in its tree
-/// (<https://dom.spec.whatwg.org/#concept-tree-root>).
+// https://dom.spec.whatwg.org/#concept-tree-root
 fn plain_root(world: &Rc<RefCell<World>>, mut id: NodeId) -> NodeId {
     while let Some(parent) = world.borrow().node_parent(id) {
         id = parent;
@@ -1817,9 +1573,7 @@ fn plain_root(world: &Rc<RefCell<World>>, mut id: NodeId) -> NodeId {
     id
 }
 
-/// The one-item path of a target that is not a node: an `Attr`, a `Window`, or
-/// a constructible `EventTarget`
-/// (<https://dom.spec.whatwg.org/#concept-event-path-append>).
+// https://dom.spec.whatwg.org/#concept-event-path-append
 fn single_target_path<'js>(
     ctx: &Ctx<'js>,
     reference: EventTargetRef,
@@ -1835,13 +1589,7 @@ fn single_target_path<'js>(
     }])
 }
 
-/// One ancestor's path item. `Ok(None)` means the ancestor is the related
-/// target, so the path stops before it
-/// (<https://dom.spec.whatwg.org/#concept-event-dispatch>).
-///
-/// `current_root` and `event_target` follow the algorithm's `target` variable:
-/// when the path leaves a shadow tree at its host, the host becomes the target
-/// for the structs above it.
+// https://dom.spec.whatwg.org/#concept-event-dispatch
 fn ancestor_path_item<'js>(
     ctx: &Ctx<'js>,
     world: &Rc<RefCell<World>>,
@@ -1889,12 +1637,8 @@ fn ancestor_path_item<'js>(
     }))
 }
 
-/// Builds the event path: the target, its ancestors, and the window
-/// (<https://dom.spec.whatwg.org/#concept-event-path-append>).
-///
-/// An empty path means the dispatch is skipped: the retargeted related target
-/// is the target itself, so the event never propagates
-/// (<https://dom.spec.whatwg.org/#concept-event-dispatch>).
+// https://dom.spec.whatwg.org/#concept-event-path-append
+// https://dom.spec.whatwg.org/#concept-event-dispatch
 fn build_path<'js>(
     ctx: &Ctx<'js>,
     target: EventTargetKey,
@@ -1907,10 +1651,7 @@ fn build_path<'js>(
         Some(value) => Some(retarget_related(ctx, value, &reference)?),
         None => None,
     };
-    // If the target is the retargeted related target, the event is not
-    // dispatched at all; the exception is an event whose own relatedTarget is
-    // the target, which still runs
-    // (<https://dom.spec.whatwg.org/#concept-event-dispatch>).
+    // https://dom.spec.whatwg.org/#concept-event-dispatch
     if let (Some(value), Some(retargeted)) = (related, &related_against_target) {
         let target_value = resolve_target(ctx, &reference)?;
         if target_value.strict_eq(retargeted) && !target_value.strict_eq(value) {
@@ -1922,8 +1663,6 @@ fn build_path<'js>(
         EventTargetKey::Attribute { .. } | EventTargetKey::Standalone(_) => {
             // https://dom.spec.whatwg.org/#get-the-parent
             // https://dom.spec.whatwg.org/#interface-attr
-            // Attr's owner element is not its parent; Chromium's
-            // EventPath::CalculatePath likewise follows parentNode().
             if let EventTargetKey::Standalone(id) = target
                 && reference.world.borrow().standalone_target(id).is_none()
             {
@@ -1933,10 +1672,7 @@ fn build_path<'js>(
         }
         EventTargetKey::Node(id) => {
             let world = Rc::clone(&reference.world);
-            // The dispatch algorithm's `target` root, which decides whether an
-            // ancestor already contains the target, and which changes when the
-            // path leaves a shadow tree for its host
-            // (<https://dom.spec.whatwg.org/#concept-event-dispatch>).
+            // https://dom.spec.whatwg.org/#concept-event-dispatch
             let mut current_root = plain_root(&world, id);
             let mut event_target = reference.clone();
             let origin_in_shadow_tree = bindings::node_is_shadow_root(ctx, current_root)?;
@@ -1949,9 +1685,7 @@ fn build_path<'js>(
                 invocation_target_in_shadow_tree: origin_in_shadow_tree,
             }];
             let mut cursor = world.borrow().node_parent(id);
-            // The dispatch target is the document itself when it has no
-            // parent: its window is still the last path item
-            // (<https://dom.spec.whatwg.org/#get-the-parent>).
+            // https://dom.spec.whatwg.org/#get-the-parent
             let mut reached_document = world.borrow().node_is_document(id);
             while let Some(node) = cursor {
                 let Some(item) = ancestor_path_item(
@@ -1963,8 +1697,7 @@ fn build_path<'js>(
                     related,
                 )?
                 else {
-                    // The parent is the related target, so the path stops
-                    // before it (<https://dom.spec.whatwg.org/#concept-event-dispatch>).
+                    // https://dom.spec.whatwg.org/#concept-event-dispatch
                     break;
                 };
                 let invocation_target_in_shadow_tree = item.invocation_target_in_shadow_tree;
@@ -1974,8 +1707,7 @@ fn build_path<'js>(
                     cursor = Some(parent);
                 } else {
                     reached_document = world.borrow().node_is_document(node);
-                    // A composed event continues past a shadow root at its
-                    // host (<https://dom.spec.whatwg.org/#get-the-parent>).
+                    // https://dom.spec.whatwg.org/#get-the-parent
                     cursor = if composed && invocation_target_in_shadow_tree {
                         world.borrow().shadow_root_host(node)
                     } else {
@@ -1984,8 +1716,7 @@ fn build_path<'js>(
                 }
             }
             if reached_document {
-                // A document's parent is its own window, not the dispatching
-                // realm's (<https://dom.spec.whatwg.org/#get-the-parent>).
+                // https://dom.spec.whatwg.org/#get-the-parent
                 let window_reference = EventTargetRef {
                     key: EventTargetKey::Window,
                     world,
@@ -2008,16 +1739,7 @@ fn build_path<'js>(
     }
 }
 
-/// The world whose global object is an event target's relevant global object
-/// right now.
-///
-/// The inner invoke algorithm re-reads `targetGlobal` from the current
-/// `event.currentTarget` for every listener, so a node adopted into another
-/// document partway through a dispatch changes which document decides whether
-/// its remaining listeners run. A node key therefore follows the node's
-/// current document; a `Window`, `Attr`, or standalone `EventTarget` belongs to
-/// the realm that created it
-/// (<https://dom.spec.whatwg.org/#concept-event-listener-inner-invoke>).
+// https://dom.spec.whatwg.org/#concept-event-listener-inner-invoke
 fn target_global_world(ctx: &Ctx<'_>, reference: &EventTargetRef) -> Option<Rc<RefCell<World>>> {
     match reference.key {
         EventTargetKey::Node(id) => {
@@ -2033,17 +1755,7 @@ fn target_global_world(ctx: &Ctx<'_>, reference: &EventTargetRef) -> Option<Rc<R
     }
 }
 
-/// Whether an event target's relevant global object can still receive
-/// listeners.
-///
-/// The inner invoke algorithm skips a listener when that global object is a
-/// `Window` whose associated `Document` is not fully active. The engine's
-/// proxy for "fully active" is the realm's frame still being in the browsing
-/// context tree: removing an `iframe` is what makes its document inactive in
-/// practice, and the richer definition (`is_main_document` plus an active
-/// document) is not modelled. A worker global is not a `Window`, so its events
-/// keep running
-/// (<https://dom.spec.whatwg.org/#concept-event-listener-inner-invoke>).
+// https://dom.spec.whatwg.org/#concept-event-listener-inner-invoke
 fn target_is_fully_active(ctx: &Ctx<'_>, reference: &EventTargetRef) -> bool {
     let Some(world) = target_global_world(ctx, reference) else {
         return false;
@@ -2052,13 +1764,7 @@ fn target_is_fully_active(ctx: &Ctx<'_>, reference: &EventTargetRef) -> bool {
     world.kind != GlobalKind::Document || world.has_browsing_context()
 }
 
-/// [Invoke](https://dom.spec.whatwg.org/#concept-event-listener-invoke) the
-/// listeners of one path item.
-///
-/// Returns the inner invoke's `found`: whether the listener list held a
-/// listener whose type matched the event, before the capture-phase filter
-/// skipped it. The caller uses it for the legacy-event rewrite
-/// (<https://dom.spec.whatwg.org/#concept-event-listener-invoke> step 2).
+// https://dom.spec.whatwg.org/#concept-event-listener-invoke
 fn invoke<'js>(
     ctx: &Ctx<'js>,
     event: &Class<'js, JsEvent>,
@@ -2077,9 +1783,7 @@ fn invoke<'js>(
         let mut state = class.state_mut();
         state.phase = phase;
         state.current_target = Some(item.reference.clone());
-        // The target is this struct's shadow-adjusted target or, when it has
-        // none, the nearest preceding one
-        // (<https://dom.spec.whatwg.org/#concept-event-listener-invoke>).
+        // https://dom.spec.whatwg.org/#concept-event-listener-invoke
         state.target = Some(item.event_target.clone());
     }
     let listeners = item
@@ -2093,10 +1797,7 @@ fn invoke<'js>(
     }
     let mut found = false;
     for listener in listeners {
-        // The check is per listener, not per path item: a listener can remove
-        // the target's frame or adopt the node into an inactive document, and
-        // the remaining listeners are skipped one by one
-        // (<https://dom.spec.whatwg.org/#concept-event-listener-inner-invoke>).
+        // https://dom.spec.whatwg.org/#concept-event-listener-inner-invoke
         if !target_is_fully_active(ctx, &item.reference) {
             continue;
         }
@@ -2107,10 +1808,7 @@ fn invoke<'js>(
         if typ != listener.typ {
             continue;
         }
-        // A type match marks the list as found even when the capture-phase
-        // filter skips this listener, which is what suppresses the legacy
-        // rewrite for that path item
-        // (<https://dom.spec.whatwg.org/#concept-event-listener-inner-invoke>).
+        // https://dom.spec.whatwg.org/#concept-event-listener-inner-invoke
         found = true;
         if capturing != listener.capture {
             continue;
@@ -2136,10 +1834,7 @@ fn invoke<'js>(
             event.borrow().state_mut().in_passive = true;
         }
         if let Some(handler_name) = &listener.handler_name {
-            // An event handler's listener has no callback: it runs the HTML
-            // event handler processing algorithm against the handler's
-            // current value
-            // (<https://html.spec.whatwg.org/multipage/webappapis.html#the-event-handler-processing-algorithm>).
+            // https://html.spec.whatwg.org/multipage/webappapis.html#the-event-handler-processing-algorithm
             run_handler_listener(ctx, event, item, handler_name);
         } else if let Some(callback) = &listener.callback {
             let value: Value<'js> = callback.clone().restore(ctx)?;
@@ -2158,17 +1853,7 @@ fn invoke<'js>(
     Ok(found)
 }
 
-/// Runs one listener call with the listener's realm current event set to
-/// `event`, and restores the previous value after reporting any exception in
-/// that same realm
-/// (<https://dom.spec.whatwg.org/#concept-event-listener-inner-invoke> steps
-/// 8–13).
-///
-/// `listenerGlobal` is the callback's own realm, not the dispatching one: a
-/// listener from another frame updates that frame's `window.event`, and a
-/// thrown exception is reported there. A listener whose invocation target sits
-/// in a shadow tree keeps the previous current event, because the legacy
-/// attribute is intentionally inaccurate there.
+// https://dom.spec.whatwg.org/#concept-event-listener-inner-invoke
 fn call_with_current_event<'js>(
     callback: &Value<'js>,
     event: &Value<'js>,
@@ -2187,18 +1872,12 @@ fn call_with_current_event<'js>(
         world.borrow_mut().current_event = Some(Persistent::save(&realm, event.clone()));
     }
     let outcome = call(&realm);
-    // The report runs before the restore, so the listener's own realm still
-    // sees the event as its current event while `onerror` handles the throw.
     if let Err(error) = outcome {
         report_exception(&realm, &error);
     }
     world.borrow_mut().current_event = previous;
 }
 
-/// The realm a listener callback belongs to, which decides whose
-/// `window.event` dispatch updates. A function carries its own realm through
-/// `QuickJS`; a value that crossed a realm boundary keeps only the caller's
-/// context, which is the fallback for callback objects.
 fn listener_realm<'js>(callback: &Value<'js>) -> Ctx<'js> {
     callback
         .as_function()
@@ -2206,9 +1885,7 @@ fn listener_realm<'js>(callback: &Value<'js>) -> Ctx<'js> {
         .unwrap_or_else(|| callback.ctx().clone())
 }
 
-/// The Web IDL "call a user object's operation" step for an event listener:
-/// a callable callback is called directly, any other object through its
-/// `handleEvent` operation (<https://webidl.spec.whatwg.org/#call-a-user-objects-operation>).
+// https://webidl.spec.whatwg.org/#call-a-user-objects-operation
 fn call_listener<'js>(
     ctx: &Ctx<'js>,
     callback: &Value<'js>,
@@ -2229,13 +1906,7 @@ fn call_listener<'js>(
     Err(Exception::throw_type(ctx, "callback is not callable"))
 }
 
-/// [Report the exception](https://html.spec.whatwg.org/multipage/webappapis.html#report-an-exception)
-/// step of the dispatch algorithm.
-///
-/// Fires the window's `error` event (`window.onerror`) for a throwing listener
-/// or handler, then drops the exception so it cannot abort the rest of the
-/// dispatch or leak into a later JavaScript operation. The location is taken
-/// from the exception's own stack; no document line offset is applied.
+// https://html.spec.whatwg.org/multipage/webappapis.html#report-an-exception
 pub(super) fn report_exception(ctx: &Ctx<'_>, error: &rquickjs::Error) {
     if error.is_exception() {
         let caught = ctx.catch();
@@ -2243,9 +1914,7 @@ pub(super) fn report_exception(ctx: &Ctx<'_>, error: &rquickjs::Error) {
     }
 }
 
-/// `EventListener?` conversion: null and undefined become a null callback and
-/// any object is a callback interface value, whose `handleEvent` is looked up
-/// when invoked (<https://webidl.spec.whatwg.org/#es-callback-interface>).
+// https://webidl.spec.whatwg.org/#es-callback-interface
 pub(crate) fn listener_callback<'js>(
     ctx: &Ctx<'js>,
     callback: Value<'js>,
@@ -2262,14 +1931,11 @@ pub(crate) fn listener_callback<'js>(
     Ok(Some(Persistent::save(ctx, callback)))
 }
 
-/// Parsed `AddEventListenerOptions` / `EventListenerOptions`
-/// (<https://dom.spec.whatwg.org/#dictdef-addeventlisteneroptions>).
+// https://dom.spec.whatwg.org/#dictdef-addeventlisteneroptions
 pub(crate) struct ListenerOptions {
     capture: bool,
     once: bool,
-    /// `None` means the member was omitted; the default passive value is
-    /// resolved when the listener is added
-    /// (<https://dom.spec.whatwg.org/#default-passive-value>).
+    // https://dom.spec.whatwg.org/#default-passive-value
     passive: Option<bool>,
     signal: Option<Persistent<Object<'static>>>,
 }
@@ -2285,7 +1951,6 @@ impl ListenerOptions {
         let object = match listener_options_argument(ctx, options)? {
             ListenerOptionsArgument::Absent => return Ok(parsed),
             ListenerOptionsArgument::Boolean(capture) => {
-                // A non-object is the boolean form.
                 parsed.capture = capture;
                 return Ok(parsed);
             }
@@ -2299,9 +1964,8 @@ impl ListenerOptions {
         }
         let signal: Value = object.get("signal")?;
         if !signal.is_undefined() {
-            // `AbortSignal signal` is not nullable
-            // (<https://dom.spec.whatwg.org/#dictdef-addeventlisteneroptions>,
-            // <https://webidl.spec.whatwg.org/#es-interface>).
+            // https://dom.spec.whatwg.org/#dictdef-addeventlisteneroptions
+            // https://webidl.spec.whatwg.org/#es-interface
             let Some(signal) = signal.as_object() else {
                 return Err(Exception::throw_type(
                     ctx,
@@ -2314,9 +1978,7 @@ impl ListenerOptions {
     }
 
     fn read_capture<'js>(ctx: &Ctx<'js>, options: Option<Value<'js>>) -> Result<bool> {
-        // `removeEventListener` reads only `capture`; reading the other
-        // members would run their getters
-        // (<https://dom.spec.whatwg.org/#dom-eventtarget-removeeventlistener>).
+        // https://dom.spec.whatwg.org/#dom-eventtarget-removeeventlistener
         match listener_options_argument(ctx, options)? {
             ListenerOptionsArgument::Absent => Ok(false),
             ListenerOptionsArgument::Boolean(capture) => Ok(capture),
@@ -2327,13 +1989,9 @@ impl ListenerOptions {
     }
 }
 
-/// The options argument of `addEventListener` / `removeEventListener`: a
-/// dictionary, the boolean shorthand, or nothing
-/// (<https://dom.spec.whatwg.org/#dictdef-eventlisteneroptions>).
+// https://dom.spec.whatwg.org/#dictdef-eventlisteneroptions
 enum ListenerOptionsArgument<'js> {
-    /// The argument was absent, `undefined`, or `null`.
     Absent,
-    /// The boolean form, with its converted value.
     Boolean(bool),
     Object(Object<'js>),
 }
@@ -2356,10 +2014,7 @@ fn listener_options_argument<'js>(
     }
 }
 
-/// The default passive value for an event type on a target
-/// (<https://dom.spec.whatwg.org/#default-passive-value>): wheel and
-/// touch-start listeners are passive on the window, the document, its
-/// document element, and its body element.
+// https://dom.spec.whatwg.org/#default-passive-value
 fn default_passive(ctx: &Ctx<'_>, typ: &str, target: EventTargetKey) -> Result<bool> {
     if !matches!(typ, "touchstart" | "touchmove" | "wheel" | "mousewheel") {
         return Ok(false);
@@ -2401,16 +2056,13 @@ fn default_passive(ctx: &Ctx<'_>, typ: &str, target: EventTargetKey) -> Result<b
     }
 }
 
-/// Whether an `AbortSignal` has its aborted flag set
-/// (<https://dom.spec.whatwg.org/#abortsignal-aborted>).
+// https://dom.spec.whatwg.org/#abortsignal-aborted
 fn signal_aborted(ctx: &Ctx<'_>, signal: &Persistent<Object<'static>>) -> bool {
     signal
         .clone()
         .restore(ctx)
         .ok()
         .and_then(|object| object.get::<_, Value>("aborted").ok())
-        // The pristine conversion cannot throw; a broken realm reads as
-        // not-aborted rather than failing the dispatch.
         .is_some_and(|value| bindings::to_boolean(ctx, &value).unwrap_or(false))
 }
 
@@ -2432,9 +2084,7 @@ fn stored_target<'js>(ctx: &Ctx<'js>, reference: Option<&EventTargetRef>) -> Res
     }
 }
 
-/// Resolves an event target back to its platform object, using the world that
-/// owns it rather than the caller's
-/// (<https://dom.spec.whatwg.org/#concept-event-target>).
+// https://dom.spec.whatwg.org/#concept-event-target
 fn resolve_target<'js>(ctx: &Ctx<'js>, reference: &EventTargetRef) -> Result<Value<'js>> {
     match reference.key {
         EventTargetKey::Window => match reference.world.borrow().window_object() {
@@ -2450,11 +2100,8 @@ fn resolve_target<'js>(ctx: &Ctx<'js>, reference: &EventTargetRef) -> Result<Val
     }
 }
 
-/// The violations an event handler content attribute produces under its
-/// element's document policy. The element is the event target while it stays
-/// connected to that document
-/// (<https://w3c.github.io/webappsec-csp/#should-block-inline>,
-/// <https://w3c.github.io/webappsec-csp/#report-violation>).
+// https://w3c.github.io/webappsec-csp/#should-block-inline
+// https://w3c.github.io/webappsec-csp/#report-violation
 pub(crate) fn handler_attribute_violations(
     world: &crate::js::world::World,
     id: crate::dom::tree::NodeId,
@@ -2478,20 +2125,15 @@ pub(crate) fn handler_attribute_violations(
     violations
 }
 
-/// Whether an event handler content attribute may run. `position` is the call
-/// site that set the attribute, which the report carries as `sourceFile`,
-/// `lineNumber`, and `columnNumber`; a handler the parser inserted has none
-/// (<https://w3c.github.io/webappsec-csp/#should-block-inline>,
-/// <https://w3c.github.io/webappsec-csp/#create-violation-for-global>).
+// https://w3c.github.io/webappsec-csp/#should-block-inline
+// https://w3c.github.io/webappsec-csp/#create-violation-for-global
 pub(crate) fn handler_attribute_allowed(
     ctx: &Ctx<'_>,
     id: NodeId,
     source: &str,
     position: Option<(&str, u32, u32)>,
 ) -> bool {
-    // The inline check reads the element's own Document's policy list, while
-    // the violation is reported on the current settings object's global
-    // (<https://w3c.github.io/webappsec-csp/#should-block-inline>).
+    // https://w3c.github.io/webappsec-csp/#should-block-inline
     let Some(owner) = bindings::owning_world(ctx, id) else {
         return true;
     };
@@ -2504,10 +2146,7 @@ pub(crate) fn handler_attribute_allowed(
         }
     }
     if !violations.is_empty() {
-        // The attribute is checked again when it is invoked, and the parser
-        // walk checks attributes the parser inserted: report one event per
-        // distinct value, not one per check
-        // (<https://w3c.github.io/webappsec-csp/#report-violation>).
+        // https://w3c.github.io/webappsec-csp/#report-violation
         let repeated = owner
             .borrow_mut()
             .state
@@ -2515,9 +2154,7 @@ pub(crate) fn handler_attribute_allowed(
             .insert((id, source.to_owned()), source.to_owned())
             .is_some_and(|previous| previous == source);
         if !repeated {
-            // Reporting is a task, so a listener attached later in the same
-            // script still sees the event
-            // (<https://w3c.github.io/webappsec-csp/#report-violation>).
+            // https://w3c.github.io/webappsec-csp/#report-violation
             owner
                 .borrow_mut()
                 .queue_csp_violations(Some(id), violations.clone());
@@ -2526,10 +2163,8 @@ pub(crate) fn handler_attribute_allowed(
     !crate::csp::blocks(&violations)
 }
 
-/// The four legacy prefixed animation and transition handlers: their content
-/// attribute names are all lowercase while their event types are camelCase
-/// (<https://drafts.csswg.org/css-animations-1/#extensions-to-the-globaleventhandlers-mixin>,
-/// <https://drafts.csswg.org/css-transitions-1/#extensions-to-the-globaleventhandlers-mixin>).
+// https://drafts.csswg.org/css-animations-1/#extensions-to-the-globaleventhandlers-mixin
+// https://drafts.csswg.org/css-transitions-1/#extensions-to-the-globaleventhandlers-mixin
 const PREFIXED_HANDLERS: [(&str, &str); 4] = [
     ("onwebkitanimationend", "webkitAnimationEnd"),
     ("onwebkitanimationiteration", "webkitAnimationIteration"),
@@ -2537,13 +2172,7 @@ const PREFIXED_HANDLERS: [(&str, &str); 4] = [
     ("onwebkittransitionend", "webkitTransitionEnd"),
 ];
 
-/// The handler property name for an event type.
-///
-/// The four legacy `webkit`-prefixed animation and transition event types keep
-/// their camelCase spelling in `addEventListener`, while their handler
-/// attributes are all lowercase, so deriving the property name is not just
-/// `on` plus the type
-/// (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handlers-on-elements,-document-objects,-and-window-objects>).
+// https://html.spec.whatwg.org/multipage/webappapis.html#event-handlers-on-elements
 fn handler_attribute_name(typ: &str) -> String {
     PREFIXED_HANDLERS
         .iter()
@@ -2551,14 +2180,7 @@ fn handler_attribute_name(typ: &str) -> String {
         .map_or_else(|| format!("on{typ}"), |(name, _)| (*name).to_owned())
 }
 
-/// Runs the handlers this engine keeps as plain properties after the
-/// listener list. Event handlers on elements, documents, and a document
-/// realm's window are ordinary listeners registered by activation, so their
-/// order among `addEventListener` calls is the spec's; only targets this
-/// engine does not give an event handler map — constructible targets such as
-/// `MessagePort` and `XMLHttpRequest`, `Attr`, and a worker global — still run
-/// their property here
-/// (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes>).
+// https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes
 fn run_plain_property_handlers<'js>(
     ctx: &Ctx<'js>,
     event: &Class<'js, JsEvent>,
@@ -2578,9 +2200,7 @@ fn run_plain_property_handlers<'js>(
                 break;
             }
         }
-        // Handler attributes are listeners too, so a target whose global lost
-        // its browsing context runs none of them
-        // (<https://dom.spec.whatwg.org/#concept-event-listener-inner-invoke>).
+        // https://dom.spec.whatwg.org/#concept-event-listener-inner-invoke
         if !target_is_fully_active(ctx, &item.reference) {
             continue;
         }
@@ -2608,10 +2228,7 @@ fn run_plain_property_handlers<'js>(
     Ok(())
 }
 
-/// Calls a target's plain-property `on<type>` handler, for the targets this
-/// engine does not give an event handler map: constructible `EventTarget`s
-/// (`MessagePort`, `XMLHttpRequest`), `Attr`, and a worker global
-/// (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handlers>).
+// https://html.spec.whatwg.org/multipage/webappapis.html#event-handlers
 fn call_handler_attribute<'js>(
     ctx: &Ctx<'js>,
     target: Option<&Value<'js>>,
@@ -2622,22 +2239,14 @@ fn call_handler_attribute<'js>(
     let Some(object) = target.and_then(|target| target.as_object()) else {
         return Ok(());
     };
-    // Scripting is disabled in a sandboxed frame without `allow-scripts`, and
-    // an event handler content attribute is script
-    // (<https://html.spec.whatwg.org/multipage/browsers.html#sandboxed-scripts-browsing-context-flag>).
+    // https://html.spec.whatwg.org/multipage/browsers.html#sandboxed-scripts-browsing-context-flag
     if bindings::world(ctx)?.borrow().sandbox.scripts_disabled() {
         return Ok(());
     }
     let name = handler_attribute_name(typ);
     let handler: Value = object.get(name.as_str())?;
     if let Some(function) = handler.as_function() {
-        // A realm's own global is an `OnErrorEventHandler`: both `Window` and
-        // `WorkerGlobalScope` call `onerror` with
-        // `(message, filename, lineno, colno, error)` when the event is an
-        // `ErrorEvent` of type `error`. A `Worker` object is also a non-node
-        // event target, but its `onerror` receives the `ErrorEvent` like any
-        // other handler
-        // (<https://html.spec.whatwg.org/multipage/webappapis.html#the-event-handler-processing-algorithm>).
+        // https://html.spec.whatwg.org/multipage/webappapis.html#the-event-handler-processing-algorithm
         let is_global = {
             let world = bindings::world(ctx)?;
             let world = world.borrow();
@@ -2664,23 +2273,14 @@ fn call_handler_attribute<'js>(
     Ok(())
 }
 
-/// Where one event target keeps its handlers
-/// (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-map>).
+// https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-map
 #[derive(Clone, Copy)]
 enum HandlerStorage {
-    /// The window's entry, keyed `(None, name)`.
     Window,
-    /// An element's or document's entry, keyed `(Some(node), name)`.
     Node(NodeId),
-    /// A target this engine has not given an event handler map: `Attr`,
-    /// constructible `EventTarget`s, and a worker global.
     PlainProperty,
 }
 
-/// The one place that decides how a dispatch path item stores its handlers,
-/// so the map's listener path and the plain-property fallback cannot drift.
-/// A worker realm installs its handlers as ordinary properties on the global,
-/// so its `Window` key is not a map.
 fn handler_storage(key: EventTargetKey, world: &Rc<RefCell<World>>) -> HandlerStorage {
     match key {
         EventTargetKey::Window if world.borrow().kind == GlobalKind::Document => {
@@ -2694,7 +2294,6 @@ fn handler_storage(key: EventTargetKey, world: &Rc<RefCell<World>>) -> HandlerSt
 }
 
 impl HandlerStorage {
-    /// The world's map key for a map-backed target.
     fn map_target(self) -> Option<NodeId> {
         match self {
             Self::Node(id) => Some(id),
@@ -2703,9 +2302,7 @@ impl HandlerStorage {
     }
 }
 
-/// Gets the current value of one event handler, compiling a raw content
-/// attribute in the handler target document's realm
-/// (<https://html.spec.whatwg.org/multipage/webappapis.html#getting-the-current-value-of-the-event-handler>).
+// https://html.spec.whatwg.org/multipage/webappapis.html#getting-the-current-value-of-the-event-handler
 pub(crate) fn current_handler_value<'js>(
     ctx: &Ctx<'js>,
     world: &Rc<RefCell<World>>,
@@ -2719,13 +2316,8 @@ pub(crate) fn current_handler_value<'js>(
         HandlerValue::Null => Ok(Value::new_null(ctx.clone())),
         HandlerValue::Value(saved) => saved.restore(ctx),
         HandlerValue::Raw(body) => {
-            // A document with no browsing context, or with scripting
-            // disabled, never compiles its event handler content attributes.
-            // The raw value stays in the map: only the answer is null, so the
-            // handler still works if the document is adopted somewhere
-            // scripting is enabled
-            // (<https://html.spec.whatwg.org/multipage/webappapis.html#getting-the-current-value-of-the-event-handler>,
-            // <https://html.spec.whatwg.org/multipage/browsers.html#sandboxed-scripts-browsing-context-flag>).
+            // https://html.spec.whatwg.org/multipage/webappapis.html#getting-the-current-value-of-the-event-handler
+            // https://html.spec.whatwg.org/multipage/browsers.html#sandboxed-scripts-browsing-context-flag
             let has_context = {
                 let world = world.borrow();
                 let document =
@@ -2753,9 +2345,7 @@ pub(crate) fn current_handler_value<'js>(
                     saved.restore(ctx)
                 }
                 Err(error) => {
-                    // A parse error clears the value but leaves the handler
-                    // active, and reports in the handler's realm
-                    // (<https://html.spec.whatwg.org/multipage/webappapis.html#getting-the-current-value-of-the-event-handler>).
+                    // https://html.spec.whatwg.org/multipage/webappapis.html#getting-the-current-value-of-the-event-handler
                     world
                         .borrow_mut()
                         .set_handler_value(target, name, HandlerValue::Null);
@@ -2767,9 +2357,7 @@ pub(crate) fn current_handler_value<'js>(
     }
 }
 
-/// The source text of an event handler's function, which is what
-/// `Function.prototype.toString` reports
-/// (<https://html.spec.whatwg.org/multipage/webappapis.html#getting-the-current-value-of-the-event-handler>).
+// https://html.spec.whatwg.org/multipage/webappapis.html#getting-the-current-value-of-the-event-handler
 fn handler_function_source(name: &str, is_window: bool, body: &str) -> String {
     if name == "onerror" && is_window {
         format!("function {name}(event, source, lineno, colno, error) {{\n{body}\n}}")
@@ -2778,10 +2366,7 @@ fn handler_function_source(name: &str, is_window: bool, body: &str) -> String {
     }
 }
 
-/// Parses `body` as a `FunctionBody`, the requirement on an event handler
-/// content attribute. The parse also keeps a body whose braces would close the
-/// `sourceText` wrapper out of the function object that is actually returned
-/// (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes>).
+// https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes
 fn validate_handler_body(ctx: &Ctx<'_>, body: &str) -> Result<()> {
     let bridge = super::bridge::object(ctx)?;
     let constructor: Object = bridge.get("__tb_function")?;
@@ -2791,14 +2376,11 @@ fn validate_handler_body(ctx: &Ctx<'_>, body: &str) -> Result<()> {
             "Function constructor is not constructible",
         ));
     };
-    // No parameter list: the body may declare anything, including `event`.
     let _: Function = constructor.construct((body.to_owned(),))?;
     Ok(())
 }
 
-/// Compiles one handler source text in `ctx`'s realm, returning a function
-/// whose `toString()` is the spec's `sourceText`
-/// (<https://html.spec.whatwg.org/multipage/webappapis.html#getting-the-current-value-of-the-event-handler>).
+// https://html.spec.whatwg.org/multipage/webappapis.html#getting-the-current-value-of-the-event-handler
 fn compile_handler_text<'js>(
     ctx: &Ctx<'js>,
     name: &str,
@@ -2806,9 +2388,7 @@ fn compile_handler_text<'js>(
     body: &str,
 ) -> Result<Function<'js>> {
     let world = bindings::world(ctx)?;
-    // CSP's inline check owns the handler, so the string-compilation hook
-    // must not apply the `'unsafe-eval'` rule to it
-    // (<https://w3c.github.io/webappsec-csp/#can-compile-strings>).
+    // https://w3c.github.io/webappsec-csp/#can-compile-strings
     world.borrow().compiling_handler.set(true);
     let compiled = (|| {
         validate_handler_body(ctx, body)?;
@@ -2825,7 +2405,6 @@ fn compile_handler_text<'js>(
     compiled
 }
 
-/// The event type an event handler listens for, from the same table.
 fn handler_event_type(name: &str) -> String {
     PREFIXED_HANDLERS
         .iter()
@@ -2836,9 +2415,7 @@ fn handler_event_type(name: &str) -> String {
         )
 }
 
-/// One handler's listener object. It carries no callback: dispatch sees the
-/// name and runs the processing algorithm against the current value
-/// (<https://html.spec.whatwg.org/multipage/webappapis.html#the-event-handler-processing-algorithm>).
+// https://html.spec.whatwg.org/multipage/webappapis.html#the-event-handler-processing-algorithm
 fn handler_listener(name: &str) -> Rc<Listener> {
     Rc::new(Listener {
         typ: handler_event_type(name),
@@ -2852,8 +2429,7 @@ fn handler_listener(name: &str) -> Rc<Listener> {
     })
 }
 
-/// Registers the listener an event handler uses while it is active
-/// (<https://html.spec.whatwg.org/multipage/webappapis.html#activate-an-event-handler>).
+// https://html.spec.whatwg.org/multipage/webappapis.html#activate-an-event-handler
 pub(crate) fn activate_handler(world: &mut World, target: Option<NodeId>, name: &str) {
     let Some(slot) = world.handler_slot(target, name) else {
         return;
@@ -2866,10 +2442,7 @@ pub(crate) fn activate_handler(world: &mut World, target: Option<NodeId>, name: 
     world.set_handler_listener(target, name, Some(listener));
 }
 
-/// Clears one event handler and removes its listener. The map entry stays
-/// with a null value, so a later install pass on the same element does not
-/// resurrect the content attribute
-/// (<https://html.spec.whatwg.org/multipage/webappapis.html#deactivate-an-event-handler>).
+// https://html.spec.whatwg.org/multipage/webappapis.html#deactivate-an-event-handler
 pub(crate) fn deactivate_handler(world: &Rc<RefCell<World>>, target: Option<NodeId>, name: &str) {
     let listener = world
         .borrow()
@@ -2884,20 +2457,13 @@ pub(crate) fn deactivate_handler(world: &Rc<RefCell<World>>, target: Option<Node
     world.borrow_mut().deactivate_handler_slot(target, name);
 }
 
-/// Moves one adopted node's handler map entries to the copy that replaces
-/// it. Adoption materializes a new node id, and the handler map is node
-/// state: a script-assigned handler must travel with the node instead of
-/// being rederived from the content attribute
-/// (<https://dom.spec.whatwg.org/#concept-node-adopt>).
+// https://dom.spec.whatwg.org/#concept-node-adopt
 pub(crate) fn transfer_node_handlers(
     from_world: &Rc<RefCell<World>>,
     from: NodeId,
     to_world: &Rc<RefCell<World>>,
     to: NodeId,
 ) {
-    // The iterator expression's borrow would live for the whole loop, and
-    // the body takes the same world mutably. Same-world adoption is the
-    // common case.
     let names = from_world.borrow().handler_names(Some(from));
     for name in names {
         let Some(slot) = from_world.borrow_mut().take_handler(Some(from), &name) else {
@@ -2924,10 +2490,7 @@ pub(crate) fn transfer_node_handlers(
     }
 }
 
-/// Re-registers the window's handler listeners after a navigation cleared
-/// the listener list while keeping the same `Window` object. The handler map
-/// entries stay; only their listeners are rebuilt
-/// (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handlers>).
+// https://html.spec.whatwg.org/multipage/webappapis.html#event-handlers
 pub(crate) fn reactivate_window_handlers(world: &mut World) {
     for name in world.handler_names(None) {
         let active = world
@@ -2939,8 +2502,7 @@ pub(crate) fn reactivate_window_handlers(world: &mut World) {
     }
 }
 
-/// Runs one event handler's processing algorithm for a dispatch path item
-/// (<https://html.spec.whatwg.org/multipage/webappapis.html#the-event-handler-processing-algorithm>).
+// https://html.spec.whatwg.org/multipage/webappapis.html#the-event-handler-processing-algorithm
 fn run_handler_listener<'js>(
     ctx: &Ctx<'js>,
     event: &Class<'js, JsEvent>,
@@ -2959,22 +2521,14 @@ fn run_handler_listener<'js>(
             return;
         }
     };
-    // A handler value that is not callable is ignored at invoke time. The
-    // attribute accepts any object (`[LegacyTreatNonObjectAsNull]` clears
-    // only non-objects), and a browser does not throw for a plain object or
-    // a `Function.prototype` object assigned as the handler
-    // (<https://webidl.spec.whatwg.org/#LegacyTreatNonObjectAsNull>,
-    // <https://html.spec.whatwg.org/multipage/webappapis.html#the-event-handler-processing-algorithm>).
+    // https://webidl.spec.whatwg.org/#LegacyTreatNonObjectAsNull
+    // https://html.spec.whatwg.org/multipage/webappapis.html#the-event-handler-processing-algorithm
     let Some(function) = callback.as_function() else {
         return;
     };
     let typ = event.borrow().state().typ.clone();
     let event_value = Class::into_value(event.clone());
-    // "Special error event handling" is a property of the event and its
-    // target, not of the handler's name: an `ErrorEvent` of type `error`
-    // invoked at a global gets the five-argument call and cancels on `true`;
-    // every other handler cancels on `false`
-    // (<https://html.spec.whatwg.org/multipage/webappapis.html#the-event-handler-processing-algorithm>).
+    // https://html.spec.whatwg.org/multipage/webappapis.html#the-event-handler-processing-algorithm
     let special_error = typ == "error"
         && matches!(storage, HandlerStorage::Window)
         && is_event_of(ctx, &event_value, "ErrorEvent");
@@ -3002,17 +2556,12 @@ fn run_handler_listener<'js>(
     );
 }
 
-/// Whether `event` is a `BeforeUnloadEvent` object, which decides the branch
-/// the processing algorithm takes for a `beforeunload` event
-/// (<https://html.spec.whatwg.org/multipage/webappapis.html#the-event-handler-processing-algorithm>).
+// https://html.spec.whatwg.org/multipage/webappapis.html#the-event-handler-processing-algorithm
 fn is_before_unload_event<'js>(ctx: &Ctx<'js>, event: &Value<'js>) -> bool {
     is_event_of(ctx, event, "BeforeUnloadEvent")
 }
 
-/// Whether `event` is an instance of this realm's pinned event interface.
-/// A page that replaces the global constructor must not change the answer,
-/// so the prototype chain is compared against the constructor captured at
-/// install (<https://html.spec.whatwg.org/multipage/webappapis.html#dom-createevent>).
+// https://html.spec.whatwg.org/multipage/webappapis.html#dom-createevent
 fn is_event_of<'js>(ctx: &Ctx<'js>, event: &Value<'js>, interface: &str) -> bool {
     let Some(object) = event.as_object() else {
         return false;
@@ -3042,8 +2591,7 @@ fn is_event_of<'js>(ctx: &Ctx<'js>, event: &Value<'js>, interface: &str) -> bool
     false
 }
 
-/// Processes an event handler's return value
-/// (<https://html.spec.whatwg.org/multipage/webappapis.html#the-event-handler-processing-algorithm>).
+// https://html.spec.whatwg.org/multipage/webappapis.html#the-event-handler-processing-algorithm
 fn process_handler_return<'js>(
     ctx: &Ctx<'js>,
     event: &Class<'js, JsEvent>,
@@ -3053,10 +2601,7 @@ fn process_handler_return<'js>(
     special_error: bool,
     return_value: &Value<'js>,
 ) -> Result<()> {
-    // `onbeforeunload` is an `OnBeforeUnloadEventHandler`, whose return type
-    // is `DOMString?`: undefined and null become null, and every other value
-    // is coerced to a string
-    // (<https://html.spec.whatwg.org/multipage/webappapis.html#onbeforeunloadeventhandler>).
+    // https://html.spec.whatwg.org/multipage/webappapis.html#onbeforeunloadeventhandler
     let before_unload_return = if name == "onbeforeunload" {
         if return_value.is_null() || return_value.is_undefined() {
             None
@@ -3067,7 +2612,6 @@ fn process_handler_return<'js>(
         None
     };
     if typ == "beforeunload" && is_before_unload_event(ctx, event_value) {
-        // A non-null return cancels and fills `returnValue` while it is empty.
         let text = match (name == "onbeforeunload", &before_unload_return) {
             (true, coerced) => coerced.clone(),
             (false, _) if return_value.is_null() || return_value.is_undefined() => None,
@@ -3087,9 +2631,7 @@ fn process_handler_return<'js>(
     let canceled = if special_error {
         return_value.as_bool() == Some(true)
     } else if name == "onbeforeunload" {
-        // A coerced `onbeforeunload` return is a string or null, never the
-        // boolean false, so it only cancels a BeforeUnloadEvent
-        // (<https://html.spec.whatwg.org/multipage/webappapis.html#the-event-handler-processing-algorithm>).
+        // https://html.spec.whatwg.org/multipage/webappapis.html#the-event-handler-processing-algorithm
         false
     } else {
         return_value.as_bool() == Some(false)
@@ -3100,8 +2642,7 @@ fn process_handler_return<'js>(
     Ok(())
 }
 
-/// Sets an event's canceled flag when it is cancelable and no passive
-/// listener is running (<https://dom.spec.whatwg.org/#set-the-canceled-flag>).
+// https://dom.spec.whatwg.org/#set-the-canceled-flag
 fn set_event_canceled(event: &Class<'_, JsEvent>) {
     let class = event.borrow();
     let mut state = class.state_mut();
@@ -3110,9 +2651,7 @@ fn set_event_canceled(event: &Class<'_, JsEvent>) {
     }
 }
 
-/// The special `window.onerror` signature: `(message, filename, lineno, colno,
-/// error)`
-/// (<https://html.spec.whatwg.org/multipage/webappapis.html#the-event-handler-processing-algorithm>).
+// https://html.spec.whatwg.org/multipage/webappapis.html#the-event-handler-processing-algorithm
 fn call_error_handler<'js>(
     ctx: &Ctx<'js>,
     function: &Function<'js>,
@@ -3135,8 +2674,7 @@ fn call_error_handler<'js>(
     function.call((This(this.clone()), message, filename, lineno, colno, error))
 }
 
-/// `ToBoolean` for an optional argument; a missing or undefined argument is
-/// false (<https://webidl.spec.whatwg.org/#es-boolean>).
+// https://webidl.spec.whatwg.org/#es-boolean
 fn boolean_argument<'js>(ctx: &Ctx<'js>, value: Option<Value<'js>>) -> Result<bool> {
     match value {
         Some(value) if !value.is_undefined() => bindings::to_boolean(ctx, &value),

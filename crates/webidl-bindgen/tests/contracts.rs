@@ -4,7 +4,6 @@ use webidl_bindgen::{
     compile_javascript, parse_reflected_enumerated, validate_sources,
 };
 
-/// Generated token streams are whitespace-insensitive; assertions can be too.
 fn squash(source: &str) -> String {
     source.chars().filter(|c| !c.is_whitespace()).collect()
 }
@@ -48,8 +47,6 @@ fn an_included_generated_module_needs_no_hand_written_implementation() {
         .iter()
         .find(|binding| binding.interface == "Child")
         .expect("the included module is generated");
-    // The payload is the nearest implemented ancestor's, because the engine
-    // object that implements `Parent` is the same object `Child` names.
     assert!(child.rust.contains("use super::Payload"));
     assert!(
         !child.rust.contains("trait Child"),
@@ -114,10 +111,6 @@ fn conflicting_providers_and_unknown_contract_methods_are_diagnostics() {
             .to_string(),
         "Sample: methods do not match a supported IDL contract: typo"
     );
-    // Two payloads for one interface are the multi-payload case: one
-    // contract, one installation, a dispatch arm per platform type. The
-    // declared class named for the interface owns the prototype however
-    // discovery ordered the implementations.
     let providers = [Source {
         name: "fixture.rs",
         text: "#[rquickjs::class(rename = \"Sample\")] struct B; impl<'js> sample_generated::Sample<'js> for A {} impl<'js> sample_generated::Sample<'js> for B {}",
@@ -134,7 +127,6 @@ fn conflicting_providers_and_unknown_contract_methods_are_diagnostics() {
         "missing alternate payload arm: {}",
         bindings[0].rust
     );
-    // Two class-less payloads with no name match have no prototype owner.
     let anonymous = [Source {
         name: "fixture.rs",
         text: "impl<'js> sample_generated::Sample<'js> for A {} impl<'js> sample_generated::Sample<'js> for B {}",
@@ -146,7 +138,6 @@ fn conflicting_providers_and_unknown_contract_methods_are_diagnostics() {
             .to_string(),
         "(discovered): Sample has no prototype owner: several class-less payloads and none is named for the interface"
     );
-    // The same platform type twice is still a conflict.
     let repeated = [Source {
         name: "fixture.rs",
         text: "impl<'js> sample_generated::Sample<'js> for A {} impl<'js> sample_generated::Sample<'js> for A {}",
@@ -317,8 +308,6 @@ fn callbacks_dictionaries_and_sequences_lower_with_receiver() {
             "use_capture"
         ]
     );
-    // Four plain `bool` fields trip `clippy::struct_excessive_bools`; the
-    // generated dictionary states once that the members come from IDL.
     let expectation = dictionary
         .attrs
         .iter()
@@ -503,8 +492,6 @@ fn mixin_implementations_install_on_includers() {
         name: "dom.idl",
         text: "[Exposed=Window] interface Node {}; [Exposed=Window] interface Element {}; [Exposed=Window] interface Document {}; [Exposed=Window] interface Ghost {}; interface mixin Nodes { undefined append((Node or DOMString)... nodes); }; Element includes Nodes; Document includes Nodes; Ghost includes Nodes;",
     }];
-    // Install targets are the implemented includers: an included interface
-    // without an implementation has no global to install onto.
     let rust = [Source {
         name: "nodes.rs",
         text: "#[rquickjs::class] struct Payload; impl<'js> nodes_generated::Nodes<'js> for Payload { fn append(&self, ctx: Ctx<'js>, nodes: Vec<nodes_generated::DOMStringOrNode>) -> Result<()> { Ok(()) } } impl<'js> element_generated::Element<'js> for Payload {} impl<'js> document_generated::Document<'js> for Payload {}",
@@ -514,8 +501,6 @@ fn mixin_implementations_install_on_includers() {
         .iter()
         .find(|binding| binding.interface == "Nodes")
         .expect("mixin binding");
-    // Generated installers route through `host::install_interface`; whitespace
-    // spanning the call's arguments is normalized for the match.
     let source: String = binding
         .rust
         .chars()
@@ -565,7 +550,6 @@ fn reflect_attributes_install_without_implementation() {
 
 #[test]
 fn reflect_conflicts_and_unsupported_shapes() {
-    // An implementation method for a reflected name fails the build.
     let idl = [Source {
         name: "html.idl",
         text: "[Exposed=Window] interface Group { [Reflect] attribute boolean disabled; };",
@@ -575,8 +559,6 @@ fn reflect_conflicts_and_unsupported_shapes() {
         text: "#[rquickjs::class] struct Payload; impl<'js> group_generated::Group<'js> for Payload { fn get_disabled(&self, ctx: &Ctx<'js>) -> Result<bool> { Ok(true) } }",
     }];
     assert!(compile_contracts(&idl, &rust).is_err());
-    // Unsupported reflect shapes without implementation methods are absent,
-    // like any unimplemented member.
     for text in [
         "[Exposed=Window] interface Group { [Reflect] attribute unsigned long span; };",
         "[Exposed=Window] interface Group { [CEReactions, ReflectURL] attribute DOMString src; };",
@@ -600,8 +582,6 @@ fn reflect_conflicts_and_unsupported_shapes() {
 
 #[test]
 fn reflect_numeric_falls_through_to_hand_implementation() {
-    // Numeric `[Reflect]` is not auto-generated: a hand-written getter and
-    // setter pair lowers as ordinary methods.
     let idl = [Source {
         name: "html.idl",
         text: "[Exposed=Window] interface Group { [CEReactions, Reflect] attribute unsigned long size; };",
@@ -622,8 +602,6 @@ fn reflect_numeric_falls_through_to_hand_implementation() {
         !source.contains("reflect_set_ulong"),
         "numeric reflect must not use the generated setter"
     );
-    // The trait carries both methods with the path-specific numeric types:
-    // plain-method `unsigned long` getters answer `usize`.
     let trait_source = bindings[0].rust.clone();
     assert!(
         trait_source.contains("fn get_size(&self, ctx: &Ctx<'js>) -> Result<usize>;"),
@@ -633,8 +611,6 @@ fn reflect_numeric_falls_through_to_hand_implementation() {
 
 #[test]
 fn reflect_legacy_null_rejects_non_strings() {
-    // `[LegacyNullToEmptyString]` requires `DOMString`: booleans, numerics,
-    // and `USVString` fail the build instead of silently dropping the flag.
     for text in [
         "[Exposed=Window] interface Group { [Reflect] attribute [LegacyNullToEmptyString] boolean flag; };",
         "[Exposed=Window] interface Group { [Reflect] attribute [LegacyNullToEmptyString] USVString ping; };",
@@ -658,10 +634,6 @@ fn reflect_legacy_null_rejects_non_strings() {
 
 #[test]
 fn reflect_url_special_shapes_stay_absent() {
-    // `[ReflectURL]` with `SameObject` and an implementation fails: the
-    // member stays absent (a plain method would lose the `SameObject`
-    // semantics), and the orphaned implementation trips the build's
-    // method-contract check instead of installing silently.
     let idl = [Source {
         name: "html.idl",
         text: "[Exposed=Window] interface Group { [SameObject, ReflectURL] attribute USVString base; };",
@@ -675,8 +647,6 @@ fn reflect_url_special_shapes_stay_absent() {
 
 #[test]
 fn reflect_url_dom_string_falls_through_to_hand_implementation() {
-    // Non-`USVString` `[ReflectURL]` (like `object.codeBase`) lowers as an
-    // ordinary hand-written method pair.
     let idl = [Source {
         name: "html.idl",
         text: "[Exposed=Window] interface Group { [CEReactions, ReflectURL] attribute DOMString base; };",
@@ -694,8 +664,6 @@ fn reflect_url_dom_string_falls_through_to_hand_implementation() {
 
 #[test]
 fn reflect_setter_rejects_member_attributes() {
-    // Unknown member attributes on the `[ReflectSetter]` path fail instead
-    // of being silently ignored.
     let idl = [Source {
         name: "html.idl",
         text: "[Exposed=Window] interface Group { [ReflectSetter, Clamp] attribute long index; };",
@@ -709,7 +677,6 @@ fn reflect_setter_rejects_member_attributes() {
 
 #[test]
 fn reflect_parameter_values_are_validated() {
-    // `ReflectDefault=foo` and any malformed `ReflectRange` fail the build.
     for text in [
         "[Exposed=Window] interface Group { [Reflect, ReflectDefault=foo] attribute unsigned long size; };",
         "[Exposed=Window] interface Group { [Reflect, ReflectRange=(1, 2, 3)] attribute unsigned long size; };",
@@ -732,9 +699,6 @@ fn reflect_parameter_values_are_validated() {
 
 #[test]
 fn reflect_setter_unsigned_long_with_default_fails() {
-    // A non-zero `ReflectDefault` on a generated `unsigned long` setter
-    // would be silently ignored (the writer falls back to 0), so it fails
-    // the build instead of emitting the wrong fallback.
     let idl = [Source {
         name: "html.idl",
         text: "[Exposed=Window] interface Group { [ReflectSetter, ReflectDefault=1] attribute unsigned long span; };",
@@ -748,8 +712,6 @@ fn reflect_setter_unsigned_long_with_default_fails() {
 
 #[test]
 fn mixin_without_implemented_includers_fails() {
-    // A mixin included only by unimplemented interfaces has no install
-    // target: fail loudly instead of emitting an empty installer.
     let idl = [Source {
         name: "dom.idl",
         text: "[Exposed=Window] interface Ghost {}; interface mixin Nodes { undefined append((Node or DOMString)... nodes); }; Ghost includes Nodes;",
@@ -763,7 +725,6 @@ fn mixin_without_implemented_includers_fails() {
 
 #[test]
 fn usv_string_operation_argument_generates() {
-    // `USVString` operation arguments lower with the USV conversion.
     let idl = [Source {
         name: "html.idl",
         text: "[Exposed=Window] interface Group { undefined send(USVString data); };",
@@ -865,7 +826,6 @@ fn reflect_setter_splits_getter_and_generated_setter() {
         name: "html.idl",
         text: "[Exposed=Window] interface Button { [CEReactions, ReflectSetter] attribute USVString formAction; [CEReactions, ReflectSetter] attribute DOMString command; };",
     }];
-    // Only the getter with an implementation installs; the setter generates.
     let rust = [Source {
         name: "button.rs",
         text: "#[rquickjs::class] struct Payload; impl<'js> button_generated::Button<'js> for Payload { fn get_form_action(&self, ctx: &Ctx<'js>) -> Result<dom::DomString> { Ok(\"x\".into()) } }",
@@ -880,7 +840,6 @@ fn reflect_setter_splits_getter_and_generated_setter() {
         !source.contains("\"command\""),
         "unimplemented reflect setter member must stay absent"
     );
-    // An implemented setter conflicts with the generated one.
     let conflict = [Source {
         name: "button.rs",
         text: "#[rquickjs::class] struct Payload; impl<'js> button_generated::Button<'js> for Payload { fn get_form_action(&self, ctx: &Ctx<'js>) -> Result<dom::DomString> { Ok(\"x\".into()) } fn set_form_action(&self, ctx: &Ctx<'js>, value: rquickjs::String<'js>) -> Result<()> { Ok(()) } }",
@@ -894,16 +853,11 @@ fn unforgeable_and_scoped_native_members_fail_the_build() {
         name: "fixture.rs",
         text: "impl<'js> sample_generated::Sample<'js> for Payload { fn get_flag(&self, ctx: &Ctx<'js>) -> Result<bool> { Ok(true) } }",
     }];
-    // `[LegacyUnforgeable]` is annotation-only on the contract: the
-    // prototype accessor installs and the interface's own shim owns the
-    // unforgeable instance shape, matching the legacy path.
     let unforgeable = [Source {
         name: "fixture.idl",
         text: "[Exposed=Window] interface Sample { [LegacyUnforgeable] readonly attribute boolean flag; };",
     }];
     compile_contracts(&unforgeable, &rust).expect("unforgeable annotation is accepted");
-    // `[LegacyOverrideBuiltIns]` without a named getter changes nothing
-    // observable, so the scope is accepted.
     let scoped = [Source {
         name: "fixture.idl",
         text: "[Exposed=Window] interface Sample {}; [LegacyOverrideBuiltIns] partial interface Sample { readonly attribute boolean flag; };",
@@ -913,9 +867,7 @@ fn unforgeable_and_scoped_native_members_fail_the_build() {
 
 #[test]
 fn native_secure_context_resolves_from_every_declaration_site() {
-    // One resolved exposure no matter where `[SecureContext]` sits: on the
-    // member, on the interface, or on a partial interface or mixin scope
-    // (<https://webidl.spec.whatwg.org/#SecureContext>).
+    // https://webidl.spec.whatwg.org/#SecureContext
     let rust = [Source {
         name: "fixture.rs",
         text: "impl<'js> sample_generated::Sample<'js> for Payload { fn get_flag(&self, ctx: &Ctx<'js>) -> Result<bool> { Ok(true) } fn get_open(&self, ctx: &Ctx<'js>) -> Result<bool> { Ok(true) } fn hidden(&self, ctx: &Ctx<'js>) -> Result<rquickjs::String<'js>> { rquickjs::String::from_str(ctx.clone(), \"\") } fn visible(&self, ctx: &Ctx<'js>) -> Result<rquickjs::String<'js>> { rquickjs::String::from_str(ctx.clone(), \"\") } }",
@@ -940,8 +892,6 @@ fn native_secure_context_resolves_from_every_declaration_site() {
     );
     assert_eq!(generated.matches("secure_context:false").count(), 2);
 
-    // A `[SecureContext]` interface object and prototype are absent outside a
-    // secure context, so both install hooks answer `None`.
     let interface = [Source {
         name: "fixture.idl",
         text: "[Exposed=Window, SecureContext] interface Sample { readonly attribute boolean flag; };",
@@ -959,8 +909,6 @@ fn native_secure_context_resolves_from_every_declaration_site() {
         &generated[generated.find("fnprototype").unwrap_or(0)..][..600.min(generated.len())]
     );
 
-    // The same fact declared on a partial interface or a mixin scope reaches
-    // the member.
     for text in [
         "[Exposed=Window] interface Sample { readonly attribute boolean open; }; [SecureContext] partial interface Sample { readonly attribute boolean flag; };",
         "[Exposed=Window] interface Sample { readonly attribute boolean open; }; [SecureContext] interface mixin Extra { readonly attribute boolean flag; }; Sample includes Extra;",
@@ -1096,8 +1044,6 @@ fn javascript_unsupported_implementations_fail_the_build() {
     }
 }
 
-/// A `[SecureContext]` interface must use the installer form that owns its
-/// global, so the global can be omitted on an insecure page.
 #[test]
 fn javascript_global_installation_hides_a_secure_only_interface() {
     let idl = [Source {
@@ -1129,8 +1075,6 @@ fn javascript_global_installation_hides_a_secure_only_interface() {
     );
 }
 
-/// Structured JS types lower to their conversion helpers, including the
-/// `Promise` fulfillment conversion.
 #[test]
 fn javascript_structured_types_convert_sequences_and_promises() {
     let idl = [Source {
@@ -1153,9 +1097,7 @@ fn javascript_structured_types_convert_sequences_and_promises() {
     }
 }
 
-/// Argument defaults lower to a literal of the argument's own type, which is
-/// then converted like any supplied value
-/// (<https://webidl.spec.whatwg.org/#idl-default-values>).
+// https://webidl.spec.whatwg.org/#idl-default-values
 #[test]
 fn javascript_argument_defaults_lower_by_argument_type() {
     let idl = [Source {
@@ -1182,7 +1124,6 @@ fn javascript_argument_defaults_lower_by_argument_type() {
         .expect("argument defaults")
         .source;
     for fragment in [
-        // `010` is octal in the IDL grammar and decimal in the output
         ": __tbIDLUnsignedLong(31)",
         ": __tbIDLUnsignedLong(8)",
         ": __tbIDLBoolean(true)",
@@ -1195,10 +1136,7 @@ fn javascript_argument_defaults_lower_by_argument_type() {
 
 #[test]
 fn a_secure_context_constant_is_gated_where_it_is_installed() {
-    // `[SecureContext]` const is rejected on the member itself, but a
-    // `[SecureContext] partial interface` is a resolved scope, so the constant
-    // must carry the gate to the installer
-    // (<https://webidl.spec.whatwg.org/#SecureContext>).
+    // https://webidl.spec.whatwg.org/#SecureContext
     let idl = [Source {
         name: "dom.idl",
         text: "[Exposed=Window] interface Sample { readonly attribute boolean open; }; [SecureContext] partial interface Sample { const unsigned short SECRET = 7; };",
@@ -1222,10 +1160,7 @@ fn a_secure_context_constant_is_gated_where_it_is_installed() {
 
 #[test]
 fn an_interface_secure_context_gates_the_interface_not_its_members() {
-    // The interface object and prototype are gated whole, so a member of a
-    // `[SecureContext] interface` carries no gate of its own: only a member or
-    // an enclosing partial/mixin scope can gate one member
-    // (<https://webidl.spec.whatwg.org/#SecureContext>).
+    // https://webidl.spec.whatwg.org/#SecureContext
     let idl = [Source {
         name: "dom.idl",
         text: "[Exposed=Window, SecureContext] interface Sample { readonly attribute boolean open; [SecureContext] undefined secret(); };",
@@ -1266,10 +1201,6 @@ fn reflected(
     }
 }
 
-/// A table entry is the only definition of the getter and setter: the trait
-/// carries neither, and the generated dispatch names the keyword type and both
-/// defaults. Exchanging the defaults changes the generated code, so the table
-/// cannot silently swap them.
 #[test]
 fn reflected_enumerated_members_are_generated_from_the_table() {
     let idl = [Source {
@@ -1323,8 +1254,6 @@ fn reflected_enumerated_members_are_generated_from_the_table() {
     );
 }
 
-/// A hand-written getter for a table member would compete with the generated
-/// one, so the compiler refuses it instead of letting one silently win.
 #[test]
 fn a_hand_written_getter_for_a_table_member_is_rejected() {
     let idl = [Source {
@@ -1345,8 +1274,6 @@ fn a_hand_written_getter_for_a_table_member_is_rejected() {
     );
 }
 
-/// The table is one line per (interface, attribute); a duplicate is an error
-/// rather than a silent last-one-wins.
 #[test]
 fn the_reflected_table_rejects_a_duplicate_member() {
     let source = Source {

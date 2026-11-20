@@ -1,12 +1,5 @@
-//! Adoption, cloning, and cross-document import.
-//!
-//! Snapshots (`ImportSnapshot`) decouple the source subtree from the target
-//! arena: Blitz ids are per-tree, so cross-document adoption snapshots the
-//! source, detaches it, and materializes an equivalent subtree in the target
-//! (<https://dom.spec.whatwg.org/#concept-node-adopt>,
-//! <https://dom.spec.whatwg.org/#concept-node-clone>). Everything here works
-//! on `&BlitzDocument` / `&mut DocumentStore` and ids; wrapper retargeting
-//! and nonce slots stay with the binding layer.
+// https://dom.spec.whatwg.org/#concept-node-adopt
+// https://dom.spec.whatwg.org/#concept-node-clone
 
 use blitz_dom::NodeData;
 use markup5ever::QualName;
@@ -15,14 +8,11 @@ use crate::documents::{BlitzDocument, DocumentStore, JournalEntry};
 use crate::dom::TreeError;
 use crate::dom::tree::NodeId;
 
-/// Owned snapshot of a subtree for cross-document `importNode`.
 pub(crate) enum ImportSnapshot {
     Element {
         name: QualName,
         attributes: Vec<blitz_dom::Attribute>,
-        /// Live control state (dirty value, checkedness, selectedness,
-        /// indeterminate). A clone keeps it apart from the content
-        /// attributes (<https://html.spec.whatwg.org/multipage/input.html#input-element-cloning-steps>).
+        // https://html.spec.whatwg.org/multipage/input.html#input-element-cloning-steps
         form_state: blitz_dom::FormControlState,
         children: Vec<ImportSnapshot>,
     },
@@ -36,16 +26,12 @@ pub(crate) enum ImportSnapshot {
     ProcessingInstruction {
         target: String,
         data: crate::dom_string::DomString,
-        /// The DOM attribute map. A name the XML grammar rejects (an
-        /// attribute local name such as `$`) cannot be re-derived from the
-        /// serialized data, so an import carries it.
         attributes: Vec<(String, String)>,
     },
     CData(crate::dom_string::DomString),
     Fragment(Vec<ImportSnapshot>),
 }
 
-/// Deep-snapshots `children` for cross-document cloning.
 pub(crate) fn snapshot_children(
     doc: &BlitzDocument,
     document: u32,
@@ -76,9 +62,7 @@ pub(crate) fn import_snapshot(
         NodeData::Element(element) => {
             let name = element.name.clone();
             let attributes = element.attrs.iter().cloned().collect();
-            // Template children live in the template contents fragment, not
-            // as element children: snapshot from the contents
-            // (<https://html.spec.whatwg.org/multipage/scripting.html#the-template-element>).
+            // https://html.spec.whatwg.org/multipage/scripting.html#the-template-element
             let children = if deep {
                 if crate::dom::tree::is_template_tag(&name) {
                     doc.base
@@ -131,17 +115,11 @@ pub(crate) fn import_snapshot(
             };
             Some(ImportSnapshot::Fragment(children))
         }
-        // A shadow root is not a fragment that clone, import, or adopt may
-        // copy. Callers reject it with the spec exception before snapshotting
-        // (<https://dom.spec.whatwg.org/#dom-node-clonenode>). A document has
-        // no snapshot either.
+        // https://dom.spec.whatwg.org/#dom-node-clonenode
         NodeData::ShadowRoot { .. } | NodeData::Document(_) => None,
     }
 }
 
-/// Materializes `snapshot` as detached nodes in `doc` for `document`.
-/// Children are appended without journal recording: the parent
-/// is detached and has no observers yet; the eventual insertion records.
 pub(crate) fn materialize_import(
     doc: &mut BlitzDocument,
     document: u32,
@@ -165,12 +143,8 @@ pub(crate) fn materialize_import(
             {
                 element.adopt_cloned_state(form_state.clone());
             }
-            // A materialized input runs the value sanitization algorithm a
-            // parser-created one does
-            // (<https://html.spec.whatwg.org/multipage/input.html#the-input-element>).
+            // https://html.spec.whatwg.org/multipage/input.html#the-input-element
             crate::dom::input::sync_sanitized_value(doc, blitz_id);
-            // Template children materialize into the fresh element's
-            // contents fragment, which creation already established.
             let parent = if crate::dom::tree::is_template_tag(name) {
                 doc.base.mutate().template_contents(blitz_id)
             } else {
@@ -238,7 +212,6 @@ pub(crate) fn materialize_import(
     }
 }
 
-/// Materializes `snapshots` into a fresh fragment in tree order.
 pub(crate) fn materialize_children(
     doc: &mut BlitzDocument,
     document: u32,
@@ -255,11 +228,7 @@ pub(crate) fn materialize_children(
     })
 }
 
-/// Child pairs of `from`/`to` for a lockstep walk over corresponding trees.
-///
-/// A template's children live in its contents fragment, not as element
-/// children, so the walk descends into it
-/// (<https://html.spec.whatwg.org/multipage/scripting.html#the-template-element>).
+// https://html.spec.whatwg.org/multipage/scripting.html#the-template-element
 pub(crate) fn lockstep_children(
     from_base: &blitz_dom::BaseDocument,
     from: blitz_traits::node_id::NodeId,
@@ -272,8 +241,6 @@ pub(crate) fn lockstep_children(
         .collect()
 }
 
-/// A node's children for a lockstep walk: a template's contents fragment
-/// when it has one, otherwise the element children.
 fn children_for_walk(
     base: &blitz_dom::BaseDocument,
     id: blitz_traits::node_id::NodeId,
@@ -293,9 +260,6 @@ fn children_for_walk(
     }
 }
 
-/// Detaches `id` from its parent for adoption, recording the removal.
-///
-/// A node with no parent is already detached; that is a no-op.
 pub(crate) fn detach_for_adopt(
     doc: &mut BlitzDocument,
     id: NodeId,
@@ -327,9 +291,7 @@ pub(crate) fn detach_for_adopt(
             });
         (previous, next, position)
     };
-    // Adoption removes the node first, and the remove algorithm runs the
-    // live-range pre-remove steps
-    // (<https://dom.spec.whatwg.org/#concept-node-adopt>).
+    // https://dom.spec.whatwg.org/#concept-node-adopt
     if !doc.side.ranges.is_empty() {
         let index = u32::try_from(position).unwrap_or(u32::MAX);
         let parent_id = NodeId {
@@ -352,9 +314,6 @@ pub(crate) fn detach_for_adopt(
     Ok(())
 }
 
-/// Same-document clone via Blitz.
-/// Blitz ids are per-tree, so this must never run across documents;
-/// cross-document clones go through `import_snapshot`/`materialize_import`.
 pub(crate) fn clone_within_document(
     doc: &mut BlitzDocument,
     doc_id: u32,
@@ -371,18 +330,11 @@ pub(crate) fn clone_within_document(
     }
     let snapshot = import_snapshot(doc, id, false).ok_or(TreeError::Hierarchy)?;
     let fresh = materialize_import(doc, doc_id, &snapshot)?;
-    // Cloning copies the already-started flag even when the clone is
-    // shallow: the clone is the node itself, and a later connection must not
-    // run the script again
-    // (<https://html.spec.whatwg.org/multipage/scripting.html#script-processing-model:cloning-steps>).
+    // https://html.spec.whatwg.org/multipage/scripting.html#script-processing-model:cloning-steps
     doc.copy_script_started(id.node, fresh.node);
     Ok(fresh)
 }
 
-/// Adopts `node` into `parent`'s document through the shared store: snapshot
-/// the source subtree, detach it, and materialize an equivalent subtree in
-/// the target. Same-document nodes return as-is. The caller retargets
-/// wrappers and carries nonce slots, which are realm state.
 pub(crate) fn adopt_across_store(
     store: &mut DocumentStore,
     parent: NodeId,
@@ -399,9 +351,6 @@ pub(crate) fn adopt_across_store(
         .get_mut(node.document)
         .ok_or(TreeError::Stale)
         .and_then(|parsed| detach_for_adopt(&mut parsed.document, node))?;
-    // Adoption moves the node: the already-started flag travels with it.
-    // Materialize first, then walk source and copy in lockstep collecting
-    // flagged targets; detachment keeps subtree links, so the walk aligns.
     let fresh = {
         let target = store.get_mut(parent.document).ok_or(TreeError::Stale)?;
         materialize_import(&mut target.document, parent.document, &snapshot)?
@@ -415,9 +364,7 @@ pub(crate) fn adopt_across_store(
             if source.document.script_already_started(from) {
                 to_mark.push(to);
             }
-            // Templates carry their children in a contents fragment, so the
-            // walk follows those too
-            // (<https://html.spec.whatwg.org/multipage/scripting.html#the-template-element>).
+            // https://html.spec.whatwg.org/multipage/scripting.html#the-template-element
             stack.extend(lockstep_children(
                 &source.document.base,
                 from,

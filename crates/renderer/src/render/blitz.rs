@@ -1,16 +1,11 @@
-//! Blitz screenshots: HTML string through the Blitz stack into pixels.
-
 #[cfg(test)]
 use crate::render::providers::TinyNetProvider;
 use crate::render::{RenderError, RgbaImage};
 
-/// Largest viewport side in device pixels, matching the in-tree painter cap.
 pub(crate) const MAX_VIEWPORT_SIDE: u32 = 4096;
 
-/// Fallback base URL when the document URL cannot be a base.
 pub(crate) const INVALID_BASE_URL: &str = "http://invalid/";
 
-/// Base URL string for a Blitz document configuration.
 pub(crate) fn blitz_base_url(url: &url::Url) -> String {
     if url.cannot_be_a_base() {
         INVALID_BASE_URL.to_owned()
@@ -19,28 +14,15 @@ pub(crate) fn blitz_base_url(url: &url::Url) -> String {
     }
 }
 
-/// Resolves style and layout until Blitz reports no pending critical
-/// resources, bounded so a pathological tree still paints. A document whose
-/// [`has_changes`](blitz_dom::BaseDocument::has_changes) flag is clear has
-/// nothing to do, so a paint that follows a scroll or an animation frame does
-/// not pay for a style pass.
-///
-/// Returns how many real passes ran, which is the measurement a test uses to
-/// prove that several mutations between two paints cost one settle.
 pub(crate) fn resolve_until_settled(base: &mut blitz_dom::BaseDocument) -> u32 {
     let mut passes = 0;
     for _ in 0..8 {
         base.handle_messages();
-        // A render-blocking resource (`<link rel=stylesheet>`) means there is
-        // nothing this pass can apply; the arrival marks the document stale and
-        // the next rendering opportunity resolves it.
         if base.has_pending_critical_resources() || !base.has_changes() {
             break;
         }
         base.resolve(crate::animation_seconds());
         passes += 1;
-        // An animation sets `has_changes` for the *next* rendering
-        // opportunity, not this one.
         if !base.has_changes() && !base.has_pending_critical_resources() {
             break;
         }
@@ -48,15 +30,6 @@ pub(crate) fn resolve_until_settled(base: &mut blitz_dom::BaseDocument) -> u32 {
     passes
 }
 
-/// Renders `html` at `width` x `height` device pixels through Blitz.
-///
-/// External subresources are not fetched on this path (dummy providers), so
-/// only inline content paints.
-///
-/// # Errors
-///
-/// [`RenderError::InvalidViewport`] when either side is zero.
-/// [`RenderError::TooLarge`] when either side exceeds the pixel cap.
 #[cfg(test)]
 pub(crate) fn render_html(html: &str, width: u32, height: u32) -> Result<RgbaImage, RenderError> {
     let viewport = blitz_traits::shell::Viewport::new(
@@ -75,25 +48,12 @@ pub(crate) fn render_html(html: &str, width: u32, height: u32) -> Result<RgbaIma
     paint(&mut base, width, height)
 }
 
-/// Runs one resolve-plus-delivery frame, returning true when settled.
-///
-/// Frames the Blitz event loop as caller-driven steps: resolve, deliver
-/// arrived resources, then report whether anything is still pending (critical
-/// resources or in-flight fetches). The caller sleeps between frames on its
-/// own executor and paints with [`paint`] once this returns true (or its own
-/// deadline hits, painting whatever settled).
 #[cfg(test)]
 pub(crate) fn resolve_frame(base: &mut blitz_dom::BaseDocument, net: &TinyNetProvider) -> bool {
     resolve_until_settled(base);
     !base.has_pending_critical_resources() && net.in_flight() == 0
 }
 
-/// Paints an already-resolved document.
-///
-/// # Errors
-///
-/// [`RenderError::InvalidViewport`] when either side is zero.
-/// [`RenderError::TooLarge`] when either side exceeds the pixel cap.
 pub(crate) fn paint(
     base: &mut blitz_dom::BaseDocument,
     width: u32,
@@ -116,7 +76,6 @@ pub(crate) fn paint(
     })
 }
 
-/// Rejects zero and over-cap viewports.
 fn check_dims(width: u32, height: u32) -> Result<(), RenderError> {
     if width == 0 || height == 0 {
         return Err(RenderError::InvalidViewport);
@@ -127,11 +86,7 @@ fn check_dims(width: u32, height: u32) -> Result<(), RenderError> {
     Ok(())
 }
 
-/// Converts one premultiplied pixel to opaque straight-alpha `[r, g, b, 255]`,
-/// compositing onto the white canvas (screenshots have no transparency).
 fn over_white(red: u8, green: u8, blue: u8, alpha: u8) -> [u8; 4] {
-    // Premultiplied `c` over white: `c + 255 - a`, clamped. Opaque pixels
-    // pass through; transparent pixels become white.
     let blend = |component: u8| component.saturating_add(u8::MAX - alpha);
     [blend(red), blend(green), blend(blue), u8::MAX]
 }
@@ -169,8 +124,6 @@ mod tests {
 
     #[test]
     fn external_stylesheet_applies_before_paint() {
-        // The test plays the document's role: it serves the CSS itself and
-        // delivers the queued fetch straight into the filed handler.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = listener.local_addr().expect("addr").port();
         std::thread::spawn(move || {
@@ -208,8 +161,6 @@ mod tests {
         loop {
             base.resolve(crate::animation_seconds());
             base.handle_messages();
-            // Deliver every queued fetch the way the document would: read
-            // the CSS over plain TCP and hand the bytes to the handler.
             while let Ok((fetch, handler)) = rx.try_recv() {
                 let mut stream =
                     std::net::TcpStream::connect(("127.0.0.1", port)).expect("css server");

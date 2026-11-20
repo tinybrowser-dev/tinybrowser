@@ -1,15 +1,8 @@
-//! HTML/XML response encoding sniffing and the resource MIME sniff (realm-free).
-//!
-//! The encoding-sniffing algorithm reads a byte-order mark, a transport
-//! charset, an XML declaration, or an HTML prescan, in that order
-//! (<https://html.spec.whatwg.org/multipage/parsing.html#encoding-sniffing-algorithm>,
-//! <https://www.w3.org/TR/xml/#sec-guessing>). It is shared by the dial
-//! response decoder and the XML response decoder in the JS bindings.
+// https://html.spec.whatwg.org/multipage/parsing.html#encoding-sniffing-algorithm
+// https://www.w3.org/TR/xml/#sec-guessing
 
-/// The response encoding from BOM, transport charset, declaration or
-/// prescan, with the bytes already consumed
-/// (<https://html.spec.whatwg.org/multipage/parsing.html#encoding-sniffing-algorithm>,
-/// <https://encoding.spec.whatwg.org/#concept-encoding-get>).
+// https://html.spec.whatwg.org/multipage/parsing.html#encoding-sniffing-algorithm
+// https://encoding.spec.whatwg.org/#concept-encoding-get
 pub(crate) fn sniff_encoding(
     bytes: &[u8],
     content_type: Option<&str>,
@@ -24,10 +17,8 @@ pub(crate) fn sniff_encoding(
     if let Some(encoding) = content_type.and_then(charset_from_content_type) {
         return Some((encoding, 0));
     }
-    // An XML document's encoding comes from the XML declaration, then UTF-8.
-    // The HTML prescan and windows-1252 default do not apply
-    // (<https://www.w3.org/TR/xml/#sec-guessing>,
-    // <https://html.spec.whatwg.org/multipage/xhtml.html#parsing-xhtml-documents>).
+    // https://www.w3.org/TR/xml/#sec-guessing
+    // https://html.spec.whatwg.org/multipage/xhtml.html#parsing-xhtml-documents
     if content_type.is_some_and(|header| crate::xml::navigated_content_type(header).is_some()) {
         return xml_encoding(bytes, eof);
     }
@@ -37,9 +28,7 @@ pub(crate) fn sniff_encoding(
     (eof || bytes.len() >= 1024).then_some((encoding_rs::WINDOWS_1252, 0))
 }
 
-/// Labels from `<meta charset>` that the encoding spec names, remapped the
-/// way HTML's "getting an encoding" step does
-/// (<https://html.spec.whatwg.org/multipage/parsing.html#concept-encoding-get>).
+// https://html.spec.whatwg.org/multipage/parsing.html#concept-encoding-get
 fn html_meta_encoding(encoding: &'static encoding_rs::Encoding) -> &'static encoding_rs::Encoding {
     if encoding == encoding_rs::UTF_16LE || encoding == encoding_rs::UTF_16BE {
         encoding_rs::UTF_8
@@ -50,15 +39,10 @@ fn html_meta_encoding(encoding: &'static encoding_rs::Encoding) -> &'static enco
     }
 }
 
-/// XML encoding autodetection after a byte-order mark and a transport charset
-/// have already been ruled out
-/// (<https://www.w3.org/TR/xml/#sec-guessing>).
+// https://www.w3.org/TR/xml/#sec-guessing
 fn xml_encoding(bytes: &[u8], eof: bool) -> Option<(&'static encoding_rs::Encoding, usize)> {
     const MARK: &[u8] = b"<?xml";
-    // UTF-16 without a BOM announces itself with null bytes. UCS-4 and
-    // EBCDIC patterns have no codec here, so only the two UTF-16 patterns
-    // are detected
-    // (<https://www.w3.org/TR/xml/#sec-guessing>).
+    // https://www.w3.org/TR/xml/#sec-guessing
     const BE: &[u8] = &[0x00, 0x3C, 0x00, 0x3F];
     const LE: &[u8] = &[0x3C, 0x00, 0x3F, 0x00];
     if bytes.len() < 4
@@ -88,11 +72,7 @@ fn xml_encoding(bytes: &[u8], eof: bool) -> Option<(&'static encoding_rs::Encodi
     };
     let declaration = &window[..end];
     let declared = xml_encoding_attribute(declaration).unwrap_or(encoding_rs::UTF_8);
-    // The declaration was read as ASCII, so a UTF-16 label cannot be true:
-    // browsers remap an XML-header encoding to its closest byte-based
-    // equivalent, which for the UTF-16 labels is UTF-8 (Chromium
-    // `TextEncoding::ClosestByteBasedEquivalent`). A document that really is
-    // UTF-16 starts with a BOM or the null-byte pattern handled above.
+    // https://html.spec.whatwg.org/multipage/parsing.html#determining-the-character-encoding — remaps an ASCII-read UTF-16 XML encoding declaration to UTF-8, matching Chromium
     let encoding = if declared == encoding_rs::UTF_16LE || declared == encoding_rs::UTF_16BE {
         encoding_rs::UTF_8
     } else {
@@ -101,23 +81,13 @@ fn xml_encoding(bytes: &[u8], eof: bool) -> Option<(&'static encoding_rs::Encodi
     Some((encoding, 0))
 }
 
-/// The `encoding` pseudo-attribute of an XML declaration, resolved as an
-/// Encoding Standard label. Matches the token standalone on both sides so
-/// `fooencoding=` or a quoted occurrence does not count
-/// (<https://www.w3.org/TR/xml/#NT-EncodingDecl>).
-///
-/// Bounded: the declaration window is capped at 1024 bytes above, so the
-/// byte-wise scan is at most ~1M comparisons per parse. Unknown labels fall
-/// back to UTF-8 at the call site.
+// https://www.w3.org/TR/xml/#NT-EncodingDecl
 fn xml_encoding_attribute(declaration: &[u8]) -> Option<&'static encoding_rs::Encoding> {
     let token = b"encoding";
     let mut index = 0;
     while index + token.len() <= declaration.len() {
         if declaration[index..].starts_with(token) {
             let after = index + token.len();
-            // The token must stand alone on both sides: `fooencoding=` and
-            // `version="encoding"` are not the declaration. The declaration
-            // always starts with `<?xml`, so index 0 cannot match.
             let preceded = index
                 .checked_sub(1)
                 .is_some_and(|before| declaration[before].is_ascii_whitespace());
@@ -133,9 +103,7 @@ fn xml_encoding_attribute(declaration: &[u8]) -> Option<&'static encoding_rs::En
     None
 }
 
-/// The encoding name after `encoding=`: optional whitespace, `=`, a
-/// quoted label resolved as an Encoding Standard label
-/// (<https://www.w3.org/TR/xml/#NT-EncodingDecl>).
+// https://www.w3.org/TR/xml/#NT-EncodingDecl
 fn encoding_label(rest: &[u8]) -> Option<&'static encoding_rs::Encoding> {
     let rest = rest.trim_ascii_start();
     let rest = rest.strip_prefix(b"=")?.trim_ascii_start();
@@ -156,19 +124,15 @@ fn bom_prefix(bytes: &[u8]) -> bool {
     .iter()
     .any(|bom| bytes.len() < bom.len() && bom.starts_with(bytes))
 }
-/// The response charset: the MIME type's `charset` parameter resolved as an
-/// Encoding Standard label
-/// (<https://mimesniff.spec.whatwg.org/#parse-a-mime-type>,
-/// <https://encoding.spec.whatwg.org/#concept-encoding-get>).
+// https://mimesniff.spec.whatwg.org/#parse-a-mime-type
+// https://encoding.spec.whatwg.org/#concept-encoding-get
 fn charset_from_content_type(content_type: &str) -> Option<&'static encoding_rs::Encoding> {
     let parsed = parse_mime_type(content_type)?;
     let (_, value) = parsed
         .parameters
         .iter()
         .find(|(name, _)| name == "charset")?;
-    // "Get an encoding" removes leading and trailing ASCII whitespace from
-    // the label before matching
-    // (<https://encoding.spec.whatwg.org/#concept-encoding-get>).
+    // https://encoding.spec.whatwg.org/#concept-encoding-get
     encoding_rs::Encoding::for_label(
         value
             .trim_matches(|character: char| character.is_ascii_whitespace())
@@ -182,9 +146,6 @@ fn prescan_charset(body: &[u8]) -> Option<&'static encoding_rs::Encoding> {
     let mut cursor = 0;
     while let Some(relative_start) = ascii[cursor..].find("<meta") {
         let start = cursor + relative_start;
-        // An unterminated tag can still be streaming: `<meta charset=utf-16`
-        // would otherwise yield the valid label `utf-16` before the trailing
-        // `be` arrives. Wait for `>` instead of using the buffer end.
         let Some(offset) = ascii[start..].find('>') else {
             break;
         };
@@ -204,24 +165,17 @@ fn prescan_charset(body: &[u8]) -> Option<&'static encoding_rs::Encoding> {
     None
 }
 
-/// Bytes read for the [resource header](https://mimesniff.spec.whatwg.org/#read-the-resource-header).
+// https://mimesniff.spec.whatwg.org/#read-the-resource-header
 pub(crate) const RESOURCE_HEADER_LEN: usize = 1445;
 
-/// Sniff flags for one response. `http` enables the Apache `text/plain` check,
-/// which applies only to an HTTP `Content-Type`.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct MimeGuard {
     pub no_sniff: bool,
     pub http: bool,
 }
 
-/// Computed MIME type for a browsing context
-/// (<https://mimesniff.spec.whatwg.org/#mime-type-sniffing-algorithm>).
-///
-/// `supplied` is the raw `Content-Type` (or data-URL type). `apache_bug` is
-/// set only for an HTTP header that is byte-for-byte one of the legacy Apache
-/// `text/plain` values
-/// (<https://mimesniff.spec.whatwg.org/#supplied-mime-type-detection-algorithm>).
+// https://mimesniff.spec.whatwg.org/#mime-type-sniffing-algorithm
+// https://mimesniff.spec.whatwg.org/#supplied-mime-type-detection-algorithm
 #[must_use]
 pub(crate) fn sniff_mime(
     header: &[u8],
@@ -269,7 +223,6 @@ pub(crate) fn sniff_mime(
     supplied.unwrap_or_default().to_owned()
 }
 
-/// Whether an HTTP `Content-Type` value is one of the Apache bug byte sequences.
 #[must_use]
 pub(crate) fn apache_bug_content_type(value: &str) -> bool {
     matches!(
@@ -281,14 +234,8 @@ pub(crate) fn apache_bug_content_type(value: &str) -> bool {
     )
 }
 
-/// Whether an `X-Content-Type-Options` value is `nosniff`
-/// (<https://fetch.spec.whatwg.org/#determine-nosniff>).
-///
-/// `value` is the combined header value: every occurrence joined with
-/// `", "`, the way the fetch "getting" step exposes a header
-/// (<https://fetch.spec.whatwg.org/#concept-header-list-get-decode-split>).
-/// Only the first comma-separated item counts, and only HTTP tab or space is
-/// stripped, so `nosniff, nosniff` is nosniff while `foo, nosniff` is not.
+// https://fetch.spec.whatwg.org/#determine-nosniff
+// https://fetch.spec.whatwg.org/#concept-header-list-get-decode-split
 #[must_use]
 pub fn nosniff(value: &str) -> bool {
     net::split_header_value(value)
@@ -296,23 +243,13 @@ pub fn nosniff(value: &str) -> bool {
         .is_some_and(|first| first.eq_ignore_ascii_case("nosniff"))
 }
 
-/// `X-Content-Type-Options: nosniff` on a header list.
 #[must_use]
 pub(crate) fn headers_nosniff(headers: &[(String, String)]) -> bool {
     net::combined_header_in(headers, "x-content-type-options").is_some_and(|value| nosniff(&value))
 }
 
-/// "extract a MIME type" from one combined `Content-Type` value, serialized,
-/// or `None` when extraction fails
-/// (<https://fetch.spec.whatwg.org/#concept-header-extract-mime-type>).
-///
-/// The last item that parses wins, `*/*` never wins, and a `charset`
-/// parameter carries over from an earlier item with the same essence. The
-/// mimesniff supplied MIME type detection algorithm instead names "the value
-/// of the last `Content-Type` header"
-/// (<https://mimesniff.spec.whatwg.org/#supplied-mime-type-detection-algorithm>);
-/// browsers and the WPT `fetch/content-type` expectations follow this
-/// algorithm, so the document path does too.
+// https://fetch.spec.whatwg.org/#concept-header-extract-mime-type
+// https://mimesniff.spec.whatwg.org/#supplied-mime-type-detection-algorithm
 #[must_use]
 pub(crate) fn extract_mime_type(value: &str) -> Option<String> {
     let mut mime_type: Option<MimeType> = None;
@@ -344,13 +281,10 @@ pub(crate) fn extract_mime_type(value: &str) -> Option<String> {
     mime_type.map(|mime| mime.serialize())
 }
 
-/// A MIME type record
-/// (<https://mimesniff.spec.whatwg.org/#mime-type-representation>).
+// https://mimesniff.spec.whatwg.org/#mime-type-representation
 struct MimeType {
     essence: String,
-    /// Parameter names are ASCII-lowercased at parse; a later duplicate is
-    /// dropped
-    /// (<https://mimesniff.spec.whatwg.org/#parse-a-mime-type>).
+    // https://mimesniff.spec.whatwg.org/#parse-a-mime-type
     parameters: Vec<(String, String)>,
 }
 
@@ -377,8 +311,7 @@ impl MimeType {
             || self.essence == "application/ogg"
     }
 
-    /// Serialize a MIME type
-    /// (<https://mimesniff.spec.whatwg.org/#serialize-a-mime-type>).
+    // https://mimesniff.spec.whatwg.org/#serialize-a-mime-type
     fn serialize(&self) -> String {
         let mut serialization = self.essence.clone();
         for (name, value) in &self.parameters {
@@ -402,9 +335,7 @@ impl MimeType {
     }
 }
 
-/// Parse a MIME type
-/// (<https://mimesniff.spec.whatwg.org/#parse-a-mime-type>). `type` and
-/// `subtype` are ASCII-lowercased; parameter values keep their case.
+// https://mimesniff.spec.whatwg.org/#parse-a-mime-type
 fn parse_mime_type(input: &str) -> Option<MimeType> {
     let characters: Vec<char> = trim_http_ws(input).chars().collect();
     let mut position = 0;
@@ -417,7 +348,7 @@ fn parse_mime_type(input: &str) -> Option<MimeType> {
     if kind.is_empty() || !is_http_token(&kind) || position == characters.len() {
         return None;
     }
-    position += 1; // Skip `/`.
+    position += 1;
 
     let mut subtype = String::new();
     while position < characters.len() && characters[position] != ';' {
@@ -433,7 +364,7 @@ fn parse_mime_type(input: &str) -> Option<MimeType> {
 
     let mut parameters: Vec<(String, String)> = Vec::new();
     while position < characters.len() {
-        position += 1; // Skip `;`.
+        position += 1;
         while position < characters.len() && is_http_whitespace(characters[position]) {
             position += 1;
         }
@@ -450,14 +381,13 @@ fn parse_mime_type(input: &str) -> Option<MimeType> {
             if characters[position] == ';' {
                 continue;
             }
-            position += 1; // Skip `=`.
+            position += 1;
         }
         if position == characters.len() {
             break;
         }
         let value = if characters[position] == '"' {
             let value = collect_http_quoted_string(&characters, &mut position);
-            // Anything between the closing quote and the next `;` is dropped.
             while position < characters.len() && characters[position] != ';' {
                 position += 1;
             }
@@ -481,9 +411,7 @@ fn parse_mime_type(input: &str) -> Option<MimeType> {
             && value.chars().all(is_http_quoted_string_token)
             && !parameters.iter().any(|(existing, _)| *existing == name)
         {
-            // Charset labels are ASCII case-insensitive; the serialized MIME
-            // type normalizes them
-            // (<https://mimesniff.spec.whatwg.org/#parse-a-mime-type>).
+            // https://mimesniff.spec.whatwg.org/#parse-a-mime-type
             let value = if name == "charset" {
                 value.to_ascii_lowercase()
             } else {
@@ -503,16 +431,12 @@ fn parse_mime_type(input: &str) -> Option<MimeType> {
     })
 }
 
-/// Parse then serialize `input`, or the empty string when it is not a MIME
-/// type. `XMLHttpRequest.overrideMimeType` stores the result
-/// (<https://xhr.spec.whatwg.org/#the-overridemimetype()-method>).
+// https://xhr.spec.whatwg.org/#the-overridemimetype(
 #[must_use]
 pub(crate) fn parse_serialized_mime_type(input: &str) -> String {
     parse_mime_type(input).map_or_else(String::new, |mime| mime.serialize())
 }
 
-/// The essence and `boundary` parameter of a MIME type, for the multipart
-/// parser. The second element is empty when the parameter is absent.
 #[must_use]
 pub(crate) fn mime_type_parts(input: &str) -> Option<(String, String)> {
     let mime = parse_mime_type(input)?;
@@ -524,9 +448,7 @@ pub(crate) fn mime_type_parts(input: &str) -> Option<(String, String)> {
     Some((mime.essence, boundary))
 }
 
-/// Collect an HTTP quoted string with `extract-value` true
-/// (<https://fetch.spec.whatwg.org/#collect-an-http-quoted-string>). The
-/// position points at the opening `"`.
+// https://fetch.spec.whatwg.org/#collect-an-http-quoted-string
 fn collect_http_quoted_string(characters: &[char], position: &mut usize) -> String {
     *position += 1;
     let mut value = String::new();
@@ -630,7 +552,7 @@ fn match_rows(header: &[u8], rows: &[Row]) -> Option<&'static str> {
     })
 }
 
-/// <https://mimesniff.spec.whatwg.org/#pattern-matching-algorithm>
+// https://mimesniff.spec.whatwg.org/#pattern-matching-algorithm
 fn matches_pattern(
     input: &[u8],
     pattern: &[u8],
@@ -727,13 +649,7 @@ fn webm_signature(sequence: &[u8]) -> bool {
     false
 }
 
-/// `parse a vint` starting at `start`.
-///
-/// The published steps set `index` to 0 and never read the `start` parameter
-/// (<https://mimesniff.spec.whatwg.org/#parse-a-vint>), so taken literally
-/// they always read the first byte of the sequence. The `WebM` signature
-/// caller walks elements from an offset, and the algorithm takes the
-/// starting index, so the parameter is honoured here.
+// https://mimesniff.spec.whatwg.org/#parse-a-vint
 fn parse_vint(sequence: &[u8], start: usize) -> Option<usize> {
     let mut mask = 0x80_u16;
     let mut number_size = 1;
@@ -770,10 +686,7 @@ fn mp3_signature(sequence: &[u8]) -> bool {
     let Some(skipped) = mp3_frame_size(sequence, 0) else {
         return false;
     };
-    // The published comparison is `skipped-bytes > s - length`, which is
-    // negative. The following header has to land inside the resource, so
-    // the bound is the bytes still available
-    // (<https://mimesniff.spec.whatwg.org/#signature-for-mp3-without-id3>).
+    // https://mimesniff.spec.whatwg.org/#signature-for-mp3-without-id3
     if skipped < 4 || skipped > sequence.len() {
         return false;
     }
@@ -854,8 +767,7 @@ fn is_tag_terminating(byte: u8) -> bool {
     matches!(byte, 0x20 | 0x3E)
 }
 
-/// HTTP whitespace
-/// (<https://fetch.spec.whatwg.org/#http-whitespace>): TAB, LF, CR, SP.
+// https://fetch.spec.whatwg.org/#http-whitespace
 fn is_http_whitespace(character: char) -> bool {
     matches!(character, '\t' | '\n' | '\r' | ' ')
 }
@@ -864,8 +776,7 @@ fn trim_http_ws(value: &str) -> &str {
     value.trim_matches(is_http_whitespace)
 }
 
-/// An HTTP token code point
-/// (<https://mimesniff.spec.whatwg.org/#http-token-code-point>).
+// https://mimesniff.spec.whatwg.org/#http-token-code-point
 fn is_http_token_char(character: char) -> bool {
     character.is_ascii_alphanumeric()
         || matches!(
@@ -891,8 +802,7 @@ fn is_http_token(value: &str) -> bool {
     !value.is_empty() && value.chars().all(is_http_token_char)
 }
 
-/// An HTTP quoted-string token code point
-/// (<https://mimesniff.spec.whatwg.org/#http-quoted-string-token-code-point>).
+// https://mimesniff.spec.whatwg.org/#http-quoted-string-token-code-point
 fn is_http_quoted_string_token(character: char) -> bool {
     character == '\t'
         || ('\u{20}'..='\u{7e}').contains(&character)
@@ -1181,7 +1091,6 @@ mod tests {
             parsed("text/html;charset=\"a\\\"b\""),
             "text/html;charset=\"a\\\"b\""
         );
-        // Anything between the closing quote and the next `;` is dropped.
         assert_eq!(
             parsed("text/html;charset=\"shift_jis\"iso-2022-jp"),
             "text/html;charset=shift_jis"
@@ -1283,7 +1192,6 @@ mod tests {
         assert!(!nosniff("foo, nosniff"));
         assert!(!nosniff(""));
         assert!(!nosniff("nosniff-foo"));
-        // A non-breaking space is not an HTTP tab or space.
         assert!(!nosniff("\u{a0}nosniff"));
     }
 

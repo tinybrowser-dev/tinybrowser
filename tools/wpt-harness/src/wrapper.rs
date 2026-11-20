@@ -1,29 +1,10 @@
-//! wptserve's wrapper documents for multi-global and window test sources.
-//!
-//! WPT stores `.any.js` and `.window.js` sources as JavaScript, and wptserve
-//! synthesizes the HTML a browser navigates to. The bytes have to match the
-//! server's, because a test reads `document.URL`, `self.GLOBAL`, and the
-//! wrapper's metadata as facts about itself. The templates below are copied
-//! from `third_party/wpt/tools/serve/serve.py` (`AnyHtmlHandler`,
-//! `WindowHandler`) and the metadata rules from
-//! `tools/manifest/sourcefile.py` (`js_meta_re`, `_meta_replacement`,
-//! `_script_replacement`).
-
-/// Which wptserve handler renders a test URL.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Wrapper {
-    /// `AnyHtmlHandler`: `.any.html` from a `.any.js` source.
     Any,
-    /// `WindowHandler`: `.window.html` from a `.window.js` source.
     Window,
 }
 
 impl Wrapper {
-    /// The wrapper a test URL asks for, with the on-disk source it wraps.
-    ///
-    /// Only the two window-global wrappers are rendered; worker, service
-    /// worker, module, and shadow-realm variants need executors this lane does
-    /// not have, so they are not selected at all.
     #[must_use]
     pub fn for_url(url_path: &str) -> Option<(Self, String)> {
         if let Some(base) = url_path.strip_suffix(".any.html") {
@@ -39,10 +20,6 @@ impl Wrapper {
         ))
     }
 
-    /// The wrapper document, given the wrapped source and its URL path.
-    ///
-    /// `js_url` is the script's path as the browser will request it, so it
-    /// keeps the test's directory and encoding.
     #[must_use]
     pub fn render(self, js_bytes: &[u8], js_url: &str) -> String {
         let metadata = metadata(js_bytes);
@@ -50,8 +27,6 @@ impl Wrapper {
         let mut scripts = String::new();
         for (key, value) in &metadata {
             match key.as_str() {
-                // `timeout` and `title` become document metadata;
-                // `script` becomes a `<script src>` before the harness runs.
                 "timeout" if value == "long" => {
                     meta.push_str("<meta name=\"timeout\" content=\"long\">\n");
                 }
@@ -74,7 +49,6 @@ impl Wrapper {
         let harness = "<script src=\"/resources/testharness.js\"></script>\n\
                        <script src=\"/resources/testharnessreport.js\"></script>\n";
         match self {
-            // The document must look like a window to the shared test code.
             Self::Any => format!(
                 "{header}\
                  <script>\n\
@@ -96,11 +70,6 @@ impl Wrapper {
     }
 }
 
-/// The script metadata at the top of a multi-global or window source.
-///
-/// Upstream reads `// META: key=value` lines from the top of the file and
-/// stops at the first line that does not match
-/// (`tools/manifest/sourcefile.py:42`, `read_script_metadata`).
 fn metadata(bytes: &[u8]) -> Vec<(String, String)> {
     let text = String::from_utf8_lossy(bytes);
     let mut out = Vec::new();
@@ -163,7 +132,6 @@ mod tests {
                 ("timeout".into(), "long".into()),
             ]
         );
-        // Reading stops at the first non-metadata line, as upstream does.
         assert_eq!(metadata(b"// comment\n// META: script=/x.js\n").len(), 0);
     }
 

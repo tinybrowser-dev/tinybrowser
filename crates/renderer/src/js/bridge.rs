@@ -43,8 +43,6 @@ pub(crate) fn install(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
     bridge.set("apply", reflect.get::<_, Function>("apply")?)?;
     let json: Object = ctx.globals().get("JSON")?;
     bridge.set("stringify", json.get::<_, Function>("stringify")?)?;
-    // Pristine `Function` constructor for event-handler compilation: pages
-    // may replace the global afterwards, and handlers compile on demand.
     let function: Object = ctx.globals().get("Function")?;
     bridge.set("__tb_function", function)?;
     let table = Object::new(ctx.clone())?;
@@ -61,16 +59,12 @@ pub(crate) fn install(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
     bridge.set("__tbSecureContext", secure_context)?;
     let cross_origin_isolated = world.borrow().is_cross_origin_isolated();
     bridge.set("__tbCrossOriginIsolated", cross_origin_isolated)?;
-    // The high resolution clocks (`performance.now()` and `Event.timeStamp`)
-    // clamp to this resolution
-    // (<https://w3c.github.io/hr-time/#dfn-current-high-resolution-time>).
+    // https://w3c.github.io/hr-time/#dfn-current-high-resolution-time
     bridge.set(
         "__tbTimeResolutionMicros",
         world.borrow().time_resolution_micros(),
     )?;
-    // A sandboxed document has an opaque origin, and every `CookieStore`
-    // method rejects with a `SecurityError` there
-    // (<https://cookiestore.spec.whatwg.org/#dom-cookiestore-get>).
+    // https://cookiestore.spec.whatwg.org/#dom-cookiestore-get
     let opaque_origin = matches!(world.borrow().origin, url::Origin::Opaque(_));
     bridge.set("__tbOpaqueOrigin", opaque_origin)?;
     let install: Function = ctx.eval(format!(
@@ -83,18 +77,14 @@ pub(crate) fn install(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
         slots.realms.insert(ctx.as_raw().as_ptr() as usize);
     }
     world.borrow_mut().bridge = Some(Persistent::save(ctx, bridge));
-    // `isSecureContext` is a Web IDL readonly attribute: an enumerable,
-    // configurable accessor with a getter and no setter
-    // (<https://html.spec.whatwg.org/multipage/webappapis.html#dom-issecurecontext>).
+    // https://html.spec.whatwg.org/multipage/webappapis.html#dom-issecurecontext
     ctx.globals().prop(
         "isSecureContext",
         Accessor::new_get(move || secure_context)
             .enumerable()
             .configurable(),
     )?;
-    // `crossOriginIsolated` is a `WindowOrWorkerGlobalScope` mixin attribute
-    // with the same shape: an enumerable, configurable accessor and no setter
-    // (<https://html.spec.whatwg.org/multipage/webappapis.html#dom-crossoriginisolated>).
+    // https://html.spec.whatwg.org/multipage/webappapis.html#dom-crossoriginisolated
     ctx.globals().prop(
         "crossOriginIsolated",
         Accessor::new_get(move || cross_origin_isolated)
@@ -104,8 +94,6 @@ pub(crate) fn install(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
     Ok(())
 }
 
-/// Next handle id handed to one page-side object. Rust owns the counter; the
-/// realm only stores the value under the id it receives.
 static NEXT_HANDLE: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) fn mint_handle() -> String {
@@ -133,13 +121,7 @@ pub(crate) fn object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>> {
         .restore(ctx)
 }
 
-/// Web IDL's `[EnforceRange] unsigned long` conversion
-/// (<https://webidl.spec.whatwg.org/#abstract-opdef-converttoint>).
-///
-/// Reads one number a binding received from script as the integer it names in
-/// `0..=4294967295`. The value is truncated toward zero, as the algorithm
-/// says, so `1.9` names 1; `None` covers every value `unsigned long` cannot
-/// hold.
+// https://webidl.spec.whatwg.org/#abstract-opdef-converttoint
 #[must_use]
 pub(crate) fn enforce_range_u32(value: f64) -> Option<u32> {
     let value = enforce_range(value, 4_294_967_295.0)?;
@@ -151,14 +133,7 @@ pub(crate) fn enforce_range_u32(value: f64) -> Option<u32> {
     Some(value as u32)
 }
 
-/// Web IDL's `[EnforceRange] unsigned long long` conversion
-/// (<https://webidl.spec.whatwg.org/#abstract-opdef-converttoint>).
-///
-/// Reads one number a binding received from script as the integer it names in
-/// `0..=18446744073709551615`, truncated toward zero like its `unsigned long`
-/// twin. Every id this engine hands out is a counter far below the range a JS
-/// number carries exactly, and a number that names no live id simply finds no
-/// object.
+// https://webidl.spec.whatwg.org/#abstract-opdef-converttoint
 #[must_use]
 pub(crate) fn enforce_range_u64(value: f64) -> Option<u64> {
     let value = enforce_range(value, U64_MAX_EXACT)?;
@@ -170,14 +145,8 @@ pub(crate) fn enforce_range_u64(value: f64) -> Option<u64> {
     Some(value as u64)
 }
 
-/// The largest integer below `2^64` an `f64` holds, `2^64 - 2048`. `2^64` itself
-/// is the first value an `unsigned long long` cannot hold, and rounding puts it
-/// one step above this, so this is the conversion's inclusive upper bound.
 const U64_MAX_EXACT: f64 = 1.844_674_407_370_955e19;
 
-/// The half both conversions share: truncate toward zero, then admit only
-/// `0..=max`. Both bounds are exact `f64` values, so every accepted number is
-/// an integer the integer cast can hold.
 fn enforce_range(value: f64, max: f64) -> Option<f64> {
     if !value.is_finite() {
         return None;
@@ -186,15 +155,9 @@ fn enforce_range(value: f64, max: f64) -> Option<f64> {
     (value >= 0.0 && value <= max).then_some(value)
 }
 
-/// An id as the JS number a binding hands to script.
-///
-/// A JS number holds an integer exactly up to `2^53 - 1`; an id past that has
-/// no exact number form, so it becomes `NaN` and the shim's lookup answers no
-/// such object instead of addressing a neighbour
-/// (<https://tc39.es/ecma262/#sec-number.max_safe_integer>).
+// https://tc39.es/ecma262/#sec-number.max_safe_integer
 #[must_use]
 pub(crate) fn js_number(id: u64) -> f64 {
-    /// The largest id a JS number carries exactly.
     const MAX_EXACT: u64 = (1 << 53) - 1;
 
     if id > MAX_EXACT {
@@ -208,7 +171,6 @@ pub(crate) fn js_number(id: u64) -> f64 {
     number
 }
 
-/// A JS number naming a frame, or `None` when it names no frame id.
 #[must_use]
 pub(crate) fn frame_id(value: f64) -> Option<crate::protocol::FrameId> {
     enforce_range_u64(value).map(crate::protocol::FrameId::new)
@@ -217,10 +179,7 @@ pub(crate) fn frame_id(value: f64) -> Option<crate::protocol::FrameId> {
 pub(crate) fn evaluate(ctx: &Ctx<'_>, source: &str) -> Result<()> {
     let primordials = include_str!("scripts/primordials.js");
     let bindings = include_str!("scripts/bindings.js");
-    // Engine code carries its own filename so violation source attribution
-    // can tell the shim bundle apart from page script: the bundle's frames
-    // never name a page location
-    // (<https://w3c.github.io/webappsec-csp/#create-violation-for-global>).
+    // https://w3c.github.io/webappsec-csp/#create-violation-for-global
     let mut options = EvalOptions::default();
     options.filename = Some(ENGINE_FILENAME.into());
     let initializer: Function = ctx.eval_with_options(
@@ -230,9 +189,6 @@ pub(crate) fn evaluate(ctx: &Ctx<'_>, source: &str) -> Result<()> {
     initializer.call((object(ctx)?,))
 }
 
-/// Filename for engine shim evaluations, so stacks distinguish engine frames
-/// from page script. It parses as no URL scheme, so a leaked frame strips to
-/// the empty string rather than a fake location.
 pub(crate) const ENGINE_FILENAME: &str = "tinybrowser-shim";
 
 pub(crate) fn evaluate_page(ctx: Ctx<'_>, source: String) -> Result<Value<'_>> {

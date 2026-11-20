@@ -1,38 +1,14 @@
-//! DOM strings: ordered sequences of UTF-16 code units.
-
 use std::borrow::Cow;
 use std::fmt;
 
-/// A DOM string, a sequence of UTF-16 code units
-/// (<https://infra.spec.whatwg.org/#string>).
-///
-/// JavaScript strings and DOM character data may contain unpaired surrogates,
-/// which a Rust `String` cannot hold. A `DomString` stores the all-Unicode
-/// case as UTF-8 and promotes to a UTF-16 buffer only when an unpaired
-/// surrogate requires it, so the common case stays a plain `String` while
-/// every code-unit sequence round-trips exactly.
-///
-/// The representation is private, so a `DomString` is always one of the two
-/// canonical forms. Two values are equal when their code units are equal,
-/// whichever form each chose.
-///
-/// ```
-/// use renderer::dom_string::DomString;
-/// // Ordinary Unicode compacts to a Rust string.
-/// assert_eq!(DomString::from("\u{1f600}"), DomString::from_utf16(vec![0xd83d, 0xde00]));
-/// // An unpaired surrogate is preserved.
-/// assert_eq!(&*DomString::from_utf16(vec![0xd800]).units(), &[0xd800]);
-/// ```
+// https://infra.spec.whatwg.org/#string
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct DomString(Repr);
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum Repr {
-    /// The empty string.
     Empty,
-    /// Code units that form valid UTF-8.
     Utf8(String),
-    /// Code units that include at least one unpaired surrogate.
     Utf16(Vec<u16>),
 }
 
@@ -43,11 +19,6 @@ impl Default for DomString {
 }
 
 impl DomString {
-    /// Wraps a UTF-16 buffer, normalizing it to the compact form when it
-    /// contains no unpaired surrogate.
-    ///
-    /// For example, `[0x61, 0x62]` becomes the UTF-8 string `"ab"`, while
-    /// `[0xd800]` stays a UTF-16 buffer.
     #[must_use]
     pub fn from_utf16(units: impl Into<Vec<u16>>) -> Self {
         let units = units.into();
@@ -60,23 +31,17 @@ impl DomString {
         }
     }
 
-    /// Whether the code-unit sequence is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         matches!(self.0, Repr::Empty)
     }
 
-    /// Whether the sequence contains an unpaired surrogate.
-    ///
-    /// The UTF-8 tree cannot hold these, so they read back as U+FFFD
-    /// (see `docs/progress.md`,
-    /// <https://infra.spec.whatwg.org/#javascript-string-convert>).
+    // https://infra.spec.whatwg.org/#javascript-string-convert
     #[must_use]
     pub fn has_unpaired_surrogate(&self) -> bool {
         matches!(self.0, Repr::Utf16(_))
     }
 
-    /// The length in UTF-16 code units.
     #[must_use]
     pub fn len(&self) -> usize {
         match &self.0 {
@@ -86,7 +51,6 @@ impl DomString {
         }
     }
 
-    /// The code units, borrowing the stored buffer where possible.
     #[must_use]
     pub fn units(&self) -> Cow<'_, [u16]> {
         match &self.0 {
@@ -96,12 +60,6 @@ impl DomString {
         }
     }
 
-    /// The code units as a UTF-8 string, replacing each unpaired surrogate
-    /// with U+FFFD.
-    ///
-    /// Features that need text as UTF-8 (serialization text, layout, selector
-    /// matching) use this; features that must round-trip exact code units use
-    /// [`DomString::units`].
     #[must_use]
     pub fn to_string_lossy(&self) -> Cow<'_, str> {
         match &self.0 {
@@ -111,7 +69,6 @@ impl DomString {
         }
     }
 
-    /// Appends a UTF-8 string's code units.
     pub fn push_str(&mut self, extra: &str) {
         if extra.is_empty() {
             return;
@@ -123,7 +80,6 @@ impl DomString {
         }
     }
 
-    /// Appends another DOM string's code units.
     pub fn push_dom(&mut self, extra: &Self) {
         match &extra.0 {
             Repr::Empty => {}
@@ -143,11 +99,7 @@ impl DomString {
             },
         }
     }
-    /// Strips leading and trailing ASCII whitespace and collapses each
-    /// remaining run to one U+0020 SPACE
-    /// (<https://infra.spec.whatwg.org/#strip-and-collapse-ascii-whitespace>).
-    ///
-    /// Operates on code units so an unpaired surrogate survives unchanged.
+    // https://infra.spec.whatwg.org/#strip-and-collapse-ascii-whitespace
     pub(crate) fn strip_and_collapse_ascii_whitespace(&self) -> Self {
         let mut units = Vec::new();
         let mut pending_space = false;

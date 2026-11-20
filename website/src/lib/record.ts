@@ -2,8 +2,8 @@
  * The WPT record, as published by `tools/wpt/cli.py publish`.
  *
  * Build-time only: the files are copied into public/wpt/data by
- * scripts/sync-data.ts, so the site is a static snapshot and the raw entries
- * stay fetchable at the same paths.
+ * scripts/sync-wpt-results.ts, so the site is a static snapshot and the raw
+ * entries stay fetchable at the same paths.
  */
 
 export type Counters = {

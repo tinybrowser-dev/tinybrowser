@@ -1,14 +1,3 @@
-//! A configured `--tls-ca` is what makes an unknown loopback certificate
-//! trustworthy.
-//!
-//! The certificate is self-signed for `127.0.0.1`, so it is both the server's
-//! identity and the client's only trust anchor. Without the anchor the dial
-//! must fail as a TLS transport error; with it the same dial must reach the
-//! request handler. The CLI test in `tests/browser/webdriver.rs` proves the
-//! same through a whole browser, so what this adds is the exact failure kind,
-//! `NetError::Transport(TransportError::Tls(_))`, with no process in the way
-//! (<https://docs.rs/native-tls/latest/native_tls/struct.TlsConnector.html>).
-
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::time::Duration;
@@ -16,17 +5,10 @@ use std::time::Duration;
 use native_tls::{Identity, TlsAcceptor};
 use net::{Agent, AgentOptions, Method, NetError, Request, TransportError, TrustedCa};
 
-/// The self-signed loopback identity the browser tests also dial
-/// (`tests/fixtures/tls/README.md` explains how to regenerate it).
 const TLS_CERT_PEM: &str =
     include_str!("../../../../tests/fixtures/tls/loopback-127.0.0.1.crt.pem");
 const TLS_KEY_PEM: &str = include_str!("../../../../tests/fixtures/tls/loopback-127.0.0.1.key.pem");
 
-/// One HTTPS loopback server that serves `responses` completed requests.
-///
-/// A client that does not trust the certificate fails its handshake, and the
-/// server stays up for the next connection: that refusal is half of what this
-/// test measures.
 fn https_server(responses: usize) -> (url::Url, std::thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("loopback bind");
     let addr = listener.local_addr().expect("local addr");
@@ -37,8 +19,6 @@ fn https_server(responses: usize) -> (url::Url, std::thread::JoinHandle<()>) {
         let mut served = 0;
         while served < responses {
             let (stream, _) = listener.accept().expect("accept");
-            // A peer that connects and sends nothing must not park the
-            // handshake for the rest of the run.
             stream
                 .set_read_timeout(Some(Duration::from_secs(10)))
                 .expect("read timeout is settable");
@@ -98,8 +78,6 @@ async fn a_configured_ca_is_what_makes_an_unknown_loopback_certificate_trustwort
     server.join().expect("server");
 }
 
-/// An agent that cannot wait forever: a broken fixture fails the test instead
-/// of hanging it.
 fn agent(tls_cas: Vec<TrustedCa>) -> Agent {
     Agent::new(AgentOptions {
         tls_cas,

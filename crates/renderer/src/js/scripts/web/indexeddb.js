@@ -1,21 +1,4 @@
 // https://w3c.github.io/IndexedDB/
-//
-// The factory, database open/upgrade, object stores and their records,
-// indexes, and cursors. The host seam stores opaque encoded rows in the
-// profile's IndexedDB area, so the browser owns the data and every renderer of
-// a profile sees one store, like `localStorage`.
-//
-// Not implemented yet: upgrade blocking between open connections, transaction
-// scheduling across overlapping connections, and a key generator shared across
-// connections. A missing member is absent, so a page gets a TypeError instead
-// of a result.
-//
-// Rows:
-//   m\0<database>                     metadata, JSON
-//   r\0<database>\0<store>\0<key>      one record, JSON { key, value }
-//
-// The key is a JSON-encoded key object. The shim sorts and ranges in
-// JavaScript, so the encoded form only has to be unique and reversible.
 
 const __tbIdbRequestState = host.slots('tinybrowser.indexeddb.request');
 const __tbIdbFactoryState = host.slots('tinybrowser.indexeddb.factory');
@@ -39,17 +22,12 @@ const __tbIdbStartsWith = (text, prefix) => __tbApply(__tbStringStartsWith, text
 const __tbIdbSlice = (text, start) => __tbApply(__tbStringSlice, text, [start]);
 const __tbIdbSplit = (text, separator) => __tbApply(__tbStringSplit, text, [separator]);
 
-/// Runs `callback` as a task, never as a microtask: IndexedDB results and
-/// events are tasks
-/// (<https://w3c.github.io/IndexedDB/#tasks>).
+// https://w3c.github.io/IndexedDB/#tasks
 const __tbIdbTask = callback => {
   __tbIdbSetTimeout(callback, 0);
 };
 
-/// Deactivates a transaction at the end of the task that dispatched an event
-/// for it. The task is queued before the event, so it runs after the event's
-/// microtasks but before any timer the listeners queued
-/// (<https://w3c.github.io/IndexedDB/#cleanup-indexed-database-transactions>).
+// https://w3c.github.io/IndexedDB/#cleanup-indexed-database-transactions
 const __tbIdbCleanup = data => {
   __tbIdbTask(() => {
     if (data.finished || data.explicitCommit) return;
@@ -58,8 +36,6 @@ const __tbIdbCleanup = data => {
   });
 };
 
-/// Constructs an instance of `constructor` without running its illegal-
-/// constructor body, the way the shim builds every host-created object.
 const __tbIdbConstruct = constructor => {
   const parent = constructor.prototype instanceof __tbEventTargetConstructor
     ? __tbEventTargetConstructor
@@ -80,22 +56,17 @@ const __tbIdbStateError = () => new globalThis.DOMException(
   'InvalidStateError',
 );
 
-/// Whether this realm has an origin a database can be filed under. An opaque
-/// origin has no storage key, so `open()` and `deleteDatabase()` throw and
-/// `databases()` rejects
-/// (<https://w3c.github.io/IndexedDB/#dom-idbfactory-open>).
+// https://w3c.github.io/IndexedDB/#dom-idbfactory-open
 const __tbIdbOpaque = () => {
   if (typeof host.__tbStorageOrigin !== 'function') return true;
   const origin = host.__tbStorageOrigin();
   return origin === null || origin === undefined;
 };
 
-/// An ECMAScript `IdentifierName`
-/// (<https://tc39.es/ecma262/#prod-IdentifierName>).
+// https://tc39.es/ecma262/#prod-IdentifierName
 const __tbIdbIdentifierName = /^[$_\p{ID_Start}][$\u200c\u200d\p{ID_Continue}]*$/u;
 
-/// A valid key path string: empty, or one or more identifiers separated by
-/// periods (<https://w3c.github.io/IndexedDB/#valid-key-path>).
+// https://w3c.github.io/IndexedDB/#valid-key-path
 const __tbIdbValidKeyPathString = text => {
   if (text === '') return true;
   const parts = __tbIdbSplit(text, '.');
@@ -105,8 +76,7 @@ const __tbIdbValidKeyPathString = text => {
   return true;
 };
 
-/// A valid key path: a valid string, or a non-empty sequence of valid strings
-/// (<https://w3c.github.io/IndexedDB/#valid-key-path>).
+// https://w3c.github.io/IndexedDB/#valid-key-path
 const __tbIdbValidKeyPath = keyPath => {
   if (__tbIsArray(keyPath)) {
     if (keyPath.length === 0) return false;
@@ -119,10 +89,7 @@ const __tbIdbValidKeyPath = keyPath => {
   return typeof keyPath === 'string' && __tbIdbValidKeyPathString(keyPath);
 };
 
-/// The WebIDL union `(DOMString or sequence<DOMString>)` conversion used by
-/// `keyPath`: an iterable object becomes a sequence of strings, every other
-/// value becomes a string
-/// (<https://webidl.spec.whatwg.org/#es-union>).
+// https://webidl.spec.whatwg.org/#es-union
 const __tbIdbConvertKeyPath = value => {
   if (value === undefined) return null;
   if (
@@ -137,9 +104,7 @@ const __tbIdbConvertKeyPath = value => {
   return String(value);
 };
 
-/// Evaluates a key path against a value, returning the value that becomes the
-/// key; `undefined` means the path names no value
-/// (<https://w3c.github.io/IndexedDB/#evaluate-a-key-path>).
+// https://w3c.github.io/IndexedDB/#evaluate-a-key-path
 const __tbIdbEvaluate = (value, keyPath) => {
   if (__tbIsArray(keyPath)) {
     const parts = [];
@@ -160,8 +125,7 @@ const __tbIdbEvaluate = (value, keyPath) => {
       current = current.length;
       continue;
     }
-    // A File and a Blob expose these identifiers outside their own
-    // properties (<https://w3c.github.io/IndexedDB/#evaluate-a-key-path>).
+    // https://w3c.github.io/IndexedDB/#evaluate-a-key-path
     if (globalThis.File !== undefined && current instanceof globalThis.File
       && (parts[index] === 'name' || parts[index] === 'lastModified')) {
       current = current[parts[index]];
@@ -180,9 +144,7 @@ const __tbIdbEvaluate = (value, keyPath) => {
   return current;
 };
 
-/// Converts a JavaScript value to a key object, or returns `undefined` when
-/// the value is not a valid key
-/// (<https://w3c.github.io/IndexedDB/#convert-value-to-key>).
+// https://w3c.github.io/IndexedDB/#convert-value-to-key
 const __tbIdbToKey = (value, seen) => {
   const type = typeof value;
   if (type === 'number') {
@@ -219,10 +181,7 @@ const __tbIdbToKey = (value, seen) => {
       bytes = new __tbUint8Array(value.buffer, value.byteOffset, value.byteLength);
     } else if (globalThis.SharedArrayBuffer !== undefined
       && value instanceof globalThis.SharedArrayBuffer) {
-      // A shared buffer is a valid binary key once the page is allowed to
-      // create one; WPT's sharedarraybuffer-key.https.html requires it even
-      // though the older key-construct text called it an invalid type
-      // (<https://w3c.github.io/IndexedDB/#convert-value-to-key>).
+      // https://w3c.github.io/IndexedDB/#convert-value-to-key
       bytes = new __tbUint8Array(value);
     } else {
       return undefined;
@@ -233,9 +192,7 @@ const __tbIdbToKey = (value, seen) => {
   return { __proto__: null, t: 'binary', v: __tbBase64Encode(bytes) };
 };
 
-/// The type rank that orders numbers before dates before strings before
-/// binary keys before arrays
-/// (<https://w3c.github.io/IndexedDB/#compare-two-keys>).
+// https://w3c.github.io/IndexedDB/#compare-two-keys
 const __tbIdbRank = key => {
   switch (key.t) {
     case 'number': return 0;
@@ -280,9 +237,6 @@ const __tbIdbCompare = (first, second) => {
 };
 
 const __tbIdbInfinity = '\u0000infinity';
-/// JSON for IndexedDB data. Plain JSON turns Infinity and -Infinity into
-/// null, but both are valid keys, so the encoder tags them and the decoder
-/// restores them.
 const __tbIdbJson = value => __tbJsonStringify(value, (name, item) => {
   if (typeof item === 'number' && !__tbNumberIsFinite(item)) {
     return { __proto__: null, [__tbIdbInfinity]: item > 0 ? 1 : -1 };
@@ -299,9 +253,7 @@ const __tbIdbUnjson = text => __tbJsonParse(text, (name, item) => {
 const __tbIdbEncodeKey = key => __tbIdbJson(key);
 const __tbIdbDecodeKey = text => __tbIdbUnjson(text);
 
-/// The JavaScript value of a key. Keys live as tagged objects so they compare
-/// and encode stably, but every result and range bound exposes the ordinary
-/// value (<https://w3c.github.io/IndexedDB/#key-construct>).
+// https://w3c.github.io/IndexedDB/#key-construct
 const __tbIdbKeyValue = key => {
   switch (key.t) {
     case 'number':
@@ -334,9 +286,7 @@ const __tbIdbRangeIncludes = (range, key) => {
   return true;
 };
 
-/// Converts a value to a multiEntry key: an array keeps the valid, distinct
-/// members as subkeys and drops the rest; any other value becomes an ordinary
-/// key (<https://w3c.github.io/IndexedDB/#convert-value-to-a-multientry-key>).
+// https://w3c.github.io/IndexedDB/#convert-value-to-a-multientry-key
 const __tbIdbToMultiEntryKey = value => {
   if (!__tbIsArray(value)) return __tbIdbToKey(value, __tbPrivateSet());
   const items = [];
@@ -361,9 +311,7 @@ const __tbIdbToMultiEntryKey = value => {
   return { __proto__: null, t: 'array', v: items };
 };
 
-/// The key an index extracts from a stored value, or `undefined` when the
-/// value has no valid key at the index's key path
-/// (<https://w3c.github.io/IndexedDB/#extract-a-key-from-a-value-using-a-key-path>).
+// https://w3c.github.io/IndexedDB/#extract-a-key-from-a-value-using-a-key-path
 const __tbIdbExtractKey = (value, keyPath, multiEntry) => {
   const candidate = __tbIdbEvaluate(value, keyPath);
   if (candidate === undefined) return undefined;
@@ -376,8 +324,7 @@ const __tbIdbExtractKey = (value, keyPath, multiEntry) => {
   }
 };
 
-/// The stored records sorted by key, built once per mutation
-/// (<https://w3c.github.io/IndexedDB/#object-store-construct>).
+// https://w3c.github.io/IndexedDB/#object-store-construct
 const __tbIdbRowList = state => {
   if (state.rowList !== null) return state.rowList;
   const rows = [];
@@ -388,9 +335,7 @@ const __tbIdbRowList = state => {
   return rows;
 };
 
-/// The records of one index, sorted by index key and then by the primary key
-/// of the referenced record
-/// (<https://w3c.github.io/IndexedDB/#index-construct>).
+// https://w3c.github.io/IndexedDB/#index-construct
 const __tbIdbIndexEntries = (state, indexMeta) => {
   const cached = state.indexEntries.get(indexMeta);
   if (cached !== undefined) return cached;
@@ -422,10 +367,7 @@ const __tbIdbIndexEntries = (state, indexMeta) => {
   return entries;
 };
 
-/// Throws when a record with `primaryKey` cannot be written because one of the
-/// store's unique indexes already maps that index key to another record
-/// (<https://w3c.github.io/IndexedDB/#store-a-record-into-an-object-store>,
-/// step 9).
+// https://w3c.github.io/IndexedDB/#store-a-record-into-an-object-store
 const __tbIdbCheckUnique = (state, value, primaryKey) => {
   const indexes = state.meta.indexes;
   for (let index = 0; index < indexes.length; index++) {
@@ -451,7 +393,6 @@ const __tbIdbCheckUnique = (state, value, primaryKey) => {
     }
   }
 };
-
 
 const __tbIdbReadMeta = name => {
   const text = host.__tbStorageGet(__tbIdbArea, __tbIdbMetaPrefix + name);
@@ -503,10 +444,7 @@ const __tbIdbNewStoreState = (transaction, meta, initial) => {
   };
 };
 
-/// Builds the store records for one transaction scope. A transaction reads one
-/// snapshot of its stores at creation; every later operation works on that
-/// snapshot and commit writes the difference
-/// (<https://w3c.github.io/IndexedDB/#transaction-construct>).
+// https://w3c.github.io/IndexedDB/#transaction-construct
 const __tbIdbNewTransaction = (db, names, mode) => {
   const transaction = __tbIdbConstruct(__tbIdbTransactionConstructor);
   const data = {
@@ -532,10 +470,7 @@ const __tbIdbNewTransaction = (db, names, mode) => {
     onAbort: null,
   };
   __tbIdbTransactionState.set(transaction, data);
-  // A normal transaction auto-commits when control returns to the event loop
-  // with no queued requests, so a transaction created and never used still
-  // finishes (<https://w3c.github.io/IndexedDB/#cleanup-indexed-database-transactions>).
-  // A versionchange transaction is driven by the upgrade algorithm instead.
+  // https://w3c.github.io/IndexedDB/#cleanup-indexed-database-transactions
   if (mode !== 'versionchange') __tbIdbSchedule(data);
   const keys = __tbIdbAllKeys();
   const stores = data.stores;
@@ -556,8 +491,7 @@ const __tbIdbNewTransaction = (db, names, mode) => {
     const state = __tbIdbNewStoreState(data, __tbIdbUnjson(__tbIdbJson(storeMeta)), initial);
     stores.set(name, state);
   }
-  // A versionchange transaction starts with every existing store in scope
-  // (<https://w3c.github.io/IndexedDB/#upgrade-a-database>).
+  // https://w3c.github.io/IndexedDB/#upgrade-a-database
   if (mode === 'versionchange') {
     for (let index = 0; index < allMeta.stores.length; index++) {
       const storeMeta = allMeta.stores[index];
@@ -593,10 +527,7 @@ const __tbIdbRun = data => {
     return;
   }
   data.running = true;
-  // A request's event dispatch runs with the transaction active, even if the
-  // previous task's cleanup already marked it inactive. An explicit commit()
-  // keeps it inactive for every later call
-  // (<https://w3c.github.io/IndexedDB/#fire-a-success-event>).
+  // https://w3c.github.io/IndexedDB/#fire-a-success-event
   data.committing = data.explicitCommit;
   const request = __tbArray.shift(data.queue);
   __tbIdbTask(() => __tbIdbPerform(data, request));
@@ -611,9 +542,7 @@ const __tbIdbAbort = (data, error) => {
   if (data.versionChange) {
     const dbState = __tbIdbDatabaseState.get(data.db);
     if (dbState !== undefined) {
-      // The connection reverts to the version and object store set it had
-      // before the upgrade, and handles created during the transaction are
-      // marked deleted (<https://w3c.github.io/IndexedDB/#abort-a-transaction>).
+      // https://w3c.github.io/IndexedDB/#abort-a-transaction
       dbState.meta = data.oldMeta === null
         ? { __proto__: null, version: 0, stores: [] }
         : __tbIdbUnjson(__tbIdbJson(data.oldMeta));
@@ -674,10 +603,7 @@ const __tbIdbComplete = (data, request, error, result) => {
       return;
     }
   }
-  // With no request left, the cleanup task commits the transaction, not this
-  // one: listeners and their promise continuations still run here and the
-  // transaction stays active for them
-  // (<https://w3c.github.io/IndexedDB/#fire-a-success-event>).
+  // https://w3c.github.io/IndexedDB/#fire-a-success-event
   data.running = false;
   if (!data.finished && data.committing) __tbIdbSchedule(data);
 };
@@ -701,10 +627,7 @@ const __tbIdbPerform = (data, request) => {
   __tbIdbComplete(data, request, null, result);
 };
 
-/// Writes the transaction's rows and metadata. A refused row rolls back every
-/// row this commit already wrote, so another connection never sees half a
-/// transaction
-/// (<https://w3c.github.io/IndexedDB/#commit-a-transaction>).
+// https://w3c.github.io/IndexedDB/#commit-a-transaction
 const __tbIdbCommit = data => {
   if (data.finished) return;
   data.committing = true;
@@ -714,10 +637,7 @@ const __tbIdbCommit = data => {
   const applied = [];
   let failure = null;
   try {
-    // Remove the rows of deleted and renamed-away stores before writing, so a
-    // store that takes over a freed name writes into an empty prefix and a
-    // swap of two names never deletes rows written earlier in this commit
-    // (<https://w3c.github.io/IndexedDB/#commit-a-transaction>).
+    // https://w3c.github.io/IndexedDB/#commit-a-transaction
     for (let index = 0; index < data.removedStores.length; index++) {
       const prefix = __tbIdbRecordPrefixFor(dbState.name, data.removedStores[index]);
       const keys = __tbIdbAllKeys();
@@ -832,11 +752,8 @@ const __tbIdbRequest = (data, source, operation) => {
   return request;
 };
 
-/// Checks the order every object-store operation shares: the store must not
-/// have been deleted, the transaction must still be active, and a write needs a
-/// `readwrite` transaction
-/// (<https://w3c.github.io/IndexedDB/#add-or-put-operation>,
-/// <https://w3c.github.io/IndexedDB/#delete-records-operation>).
+// https://w3c.github.io/IndexedDB/#add-or-put-operation
+// https://w3c.github.io/IndexedDB/#delete-records-operation
 const __tbIdbCheckStore = (store, what, write) => {
   const state = __tbIdbObjectStoreState.get(store);
   if (state === undefined) throw new TypeError('Illegal invocation');
@@ -862,9 +779,7 @@ const __tbIdbCheckStore = (store, what, write) => {
   return state;
 };
 
-/// Checks the same order for an index: a deleted index or a deleted referenced
-/// object store precedes an inactive transaction
-/// (<https://w3c.github.io/IndexedDB/#dom-idbindex-get>).
+// https://w3c.github.io/IndexedDB/#dom-idbindex-get
 const __tbIdbCheckIndex = (index, what) => {
   const state = __tbIdbIndexState.get(index);
   if (state === undefined) throw new TypeError('Illegal invocation');
@@ -886,8 +801,7 @@ const __tbIdbCheckIndex = (index, what) => {
 
 const __tbIdbGeneratorLimit = 9007199254740992;
 
-/// The next generated key, or `null` when the generator is exhausted
-/// (<https://w3c.github.io/IndexedDB/#generate-a-key>).
+// https://w3c.github.io/IndexedDB/#generate-a-key
 const __tbIdbGenerateKey = state => {
   const value = state.meta.nextKey;
   if (value > __tbIdbGeneratorLimit) return null;
@@ -895,8 +809,7 @@ const __tbIdbGenerateKey = state => {
   return { __proto__: null, t: 'number', v: value };
 };
 
-/// Advances the generator past an explicit numeric key, capped at 2^53
-/// (<https://w3c.github.io/IndexedDB/#possibly-update-the-key-generator>).
+// https://w3c.github.io/IndexedDB/#possibly-update-the-key-generator
 const __tbIdbPossiblyUpdateKey = (state, key) => {
   if (!state.meta.autoIncrement || key.t !== 'number') return;
   let value = key.v;
@@ -905,11 +818,7 @@ const __tbIdbPossiblyUpdateKey = (state, key) => {
   if (value >= state.meta.nextKey) state.meta.nextKey = value + 1;
 };
 
-/// Injects a generated key into a record at `keyPath`, creating the
-/// intermediate objects the path names
-/// (<https://w3c.github.io/IndexedDB/#inject-key-into-value-using-a-key-path>).
-/// Only a string key path reaches here: a key generator cannot be combined
-/// with a sequence key path.
+// https://w3c.github.io/IndexedDB/#inject-key-into-value-using-a-key-path
 const __tbIdbInjectKey = (value, keyPath, key) => {
   const parts = __tbIdbSplit(keyPath, '.');
   let current = value;
@@ -929,9 +838,7 @@ const __tbIdbInjectKey = (value, keyPath, key) => {
   }
 };
 
-/// Whether a generated key can be injected at `keyPath` into `value` without
-/// hitting a non-object intermediate value
-/// (<https://w3c.github.io/IndexedDB/#check-that-a-key-could-be-injected-into-a-value>).
+// https://w3c.github.io/IndexedDB/#check-that-a-key-could-be-injected-into-a-value
 const __tbIdbCanInject = (value, keyPath) => {
   const parts = __tbIdbSplit(keyPath, '.');
   let current = value;
@@ -943,14 +850,10 @@ const __tbIdbCanInject = (value, keyPath) => {
   return current !== null && typeof current === 'object';
 };
 
-/// The explicit key a new record gets, or `undefined` when the request will
-/// generate one. The key is converted before the value is cloned
-/// (<https://w3c.github.io/IndexedDB/#add-or-put-operation>, steps 4-6).
+// https://w3c.github.io/IndexedDB/#add-or-put-operation
 const __tbIdbExplicitKey = (state, provided) => {
   const keyPath = state.meta.keyPath;
   if (keyPath !== null) {
-    // A store with an inline key path takes its key from the value, so an
-    // explicit key argument is a caller error (step 4).
     if (provided !== undefined) throw __tbIdbDataError();
     return undefined;
   }
@@ -963,9 +866,7 @@ const __tbIdbExplicitKey = (state, provided) => {
   return key;
 };
 
-/// The key at an inline key path in an already-cloned value, `null` when the
-/// generator supplies one, or an error when the path cannot be used
-/// (<https://w3c.github.io/IndexedDB/#add-or-put-operation>, step 8).
+// https://w3c.github.io/IndexedDB/#add-or-put-operation
 const __tbIdbInlineKey = (state, value) => {
   const keyPath = state.meta.keyPath;
   const candidate = __tbIdbEvaluate(value, keyPath);
@@ -993,8 +894,6 @@ const __tbIdbQuery = (value, disallowNull) => {
 
 const __tbIdbSortedRows = state => __tbIdbRowList(state);
 
-/// Drops the derived record lists after a write, so the next query rebuilds
-/// them from the transaction's rows.
 const __tbIdbInvalidate = state => {
   state.rowList = null;
   state.indexEntries.clear();
@@ -1007,9 +906,7 @@ const __tbIdbReadValue = payload => __tbDecode(payload, { __proto__: null });
 const __tbIdbPut = (store, value, key, add) => {
   const state = __tbIdbCheckStore(store, add ? 'add' : 'put', true);
   const explicit = __tbIdbExplicitKey(state, key);
-  // Clone before extracting an inline key, so a generated key lands in the
-  // stored record and never mutates the caller's object
-  // (<https://w3c.github.io/IndexedDB/#add-or-put-operation>, step 7).
+  // https://w3c.github.io/IndexedDB/#add-or-put-operation
   const clone = __tbIdbReadValue(__tbIdbStoreValue(value));
   const prepared = state.meta.keyPath !== null
     ? __tbIdbInlineKey(state, clone)
@@ -1017,9 +914,7 @@ const __tbIdbPut = (store, value, key, add) => {
   return __tbIdbRequest(state.transaction, store, () => {
     const previousNextKey = state.meta.nextKey;
     try {
-      // Key generation happens when the request runs, so requests queued before
-      // this one take the lower keys
-      // (<https://w3c.github.io/IndexedDB/#store-a-record-into-an-object-store>).
+      // https://w3c.github.io/IndexedDB/#store-a-record-into-an-object-store
       let recordKey = prepared;
       if (recordKey === null) {
         recordKey = __tbIdbGenerateKey(state);
@@ -1045,16 +940,13 @@ const __tbIdbPut = (store, value, key, add) => {
       __tbIdbInvalidate(state);
       return __tbIdbKeyValue(recordKey);
     } catch (error) {
-      // A failed operation leaves no trace, including a key the generator
-      // handed out before the constraint check failed.
       state.meta.nextKey = previousNextKey;
       throw error;
     }
   });
 };
 
-/// [EnforceRange] unsigned long conversion
-/// (<https://webidl.spec.whatwg.org/#es-unsigned-long>).
+// https://webidl.spec.whatwg.org/#es-unsigned-long
 const __tbIdbCountValue = value => {
   const number = Number(value);
   if (!__tbNumberIsFinite(number) || number < 0 || number > 4294967295) {
@@ -1063,10 +955,7 @@ const __tbIdbCountValue = value => {
   return __tbIdbTrunc(number);
 };
 
-/// Whether the first argument of getAll()/getAllKeys() is a key or key range
-/// rather than an options dictionary: any value convertible to a key, even one
-/// that fails conversion later, counts
-/// (<https://w3c.github.io/IndexedDB/#potentially-valid-key-range>).
+// https://w3c.github.io/IndexedDB/#potentially-valid-key-range
 const __tbIdbPotentiallyValidRange = value => {
   if (__tbIdbKeyRangeState.get(value) !== undefined) return true;
   if (typeof value === 'number' || typeof value === 'string') return true;
@@ -1078,8 +967,7 @@ const __tbIdbPotentiallyValidRange = value => {
     || __tbIsDataView(value);
 };
 
-/// `IDBGetAllOptions` dictionary conversion
-/// (<https://w3c.github.io/IndexedDB/#dictdef-idbgetalloptions>).
+// https://w3c.github.io/IndexedDB/#dictdef-idbgetalloptions
 const __tbIdbGetAllOptions = value => {
   if (value === undefined || value === null) {
     return { __proto__: null, query: undefined, count: undefined, direction: 'next' };
@@ -1095,9 +983,7 @@ const __tbIdbGetAllOptions = value => {
   };
 };
 
-/// Retrieves values, keys, or record snapshots from an object store or index
-/// for getAll(), getAllKeys(), and getAllRecords()
-/// (<https://w3c.github.io/IndexedDB/#retrieve-multiple-items-from-an-index>).
+// https://w3c.github.io/IndexedDB/#retrieve-multiple-items-from-an-index
 const __tbIdbRetrieve = (handle, state, indexMeta, kind, index, queryOrOptions, count) => {
   let range;
   let direction;
@@ -1217,8 +1103,6 @@ const __tbIdbClear = store => {
   });
 };
 
-// ── indexes
-
 const __tbIdbIndexHandle = (storeState, storeHandle, meta) => {
   const cached = storeState.indexHandles.get(meta.name);
   if (cached !== undefined && !__tbIdbIndexState.get(cached).deleted) return cached;
@@ -1236,10 +1120,7 @@ const __tbIdbIndexHandle = (storeState, storeHandle, meta) => {
   return handle;
 };
 
-/// Validation runs as a database task after the requests queued before the
-/// index existed, so an upgrade that already wrote conflicting records aborts
-/// when the index is created rather than when the conflicting record is stored
-/// (<https://w3c.github.io/IndexedDB/#dom-idbobjectstore-createindex>).
+// https://w3c.github.io/IndexedDB/#dom-idbobjectstore-createindex
 const __tbIdbValidateIndex = (state, indexMeta) => {
   if (!indexMeta.unique) return;
   const entries = __tbIdbIndexEntries(state, indexMeta);
@@ -1252,9 +1133,7 @@ const __tbIdbValidateIndex = (state, indexMeta) => {
   }
 };
 
-/// `IDBIndexParameters` dictionary conversion: `null` is an empty dictionary
-/// and any other non-object throws a `TypeError`
-/// (<https://webidl.spec.whatwg.org/#es-dictionary>).
+// https://webidl.spec.whatwg.org/#es-dictionary
 const __tbIdbIndexParameters = value => {
   if (value === undefined || value === null) {
     return { __proto__: null, unique: false, multiEntry: false };
@@ -1318,9 +1197,7 @@ const __tbIdbCreateIndex = (store, name, keyPath, options) => {
     keyPath: indexKeyPath,
     unique: parameters.unique,
     multiEntry: parameters.multiEntry,
-    // The index's uniqueness applies to records stored after its creation
-    // request runs, not to requests already queued when createIndex() was
-    // called (<https://w3c.github.io/IndexedDB/#dom-idbobjectstore-createindex>).
+    // https://w3c.github.io/IndexedDB/#dom-idbobjectstore-createindex
     pending: true,
     created: true,
   };
@@ -1411,11 +1288,7 @@ const __tbIdbIndexCount = (index, query) => {
   });
 };
 
-// ── cursors
-
-/// The records of an object store or index in ascending order: an index's
-/// records are ordered by index key and then by primary key
-/// (<https://w3c.github.io/IndexedDB/#cursor-construct>).
+// https://w3c.github.io/IndexedDB/#cursor-construct
 const __tbIdbSourceRecords = (store, indexMeta) => {
   if (indexMeta !== null) return __tbIdbIndexEntries(store, indexMeta);
   const rows = __tbIdbRowList(store);
@@ -1434,8 +1307,7 @@ const __tbIdbSourceRecords = (store, indexMeta) => {
 
 const __tbIdbCursorRecords = state => __tbIdbSourceRecords(state.store, state.indexMeta);
 
-/// The first record a "next" or "nextunique" cursor moves to
-/// (<https://w3c.github.io/IndexedDB/#cursor-iteration-operation>).
+// https://w3c.github.io/IndexedDB/#cursor-iteration-operation
 const __tbIdbCursorNext = (state, records, key, primaryKey, unique) => {
   for (let index = 0; index < records.length; index++) {
     const record = records[index];
@@ -1459,9 +1331,7 @@ const __tbIdbCursorNext = (state, records, key, primaryKey, unique) => {
   return null;
 };
 
-/// The last record a "prev" cursor moves to, or the last record a
-/// "prevunique" cursor considers before it snaps to that key's first record
-/// (<https://w3c.github.io/IndexedDB/#cursor-iteration-operation>).
+// https://w3c.github.io/IndexedDB/#cursor-iteration-operation
 const __tbIdbCursorPrev = (state, records, key, primaryKey, unique) => {
   for (let index = records.length - 1; index >= 0; index--) {
     const record = records[index];
@@ -1487,9 +1357,7 @@ const __tbIdbCursorPrev = (state, records, key, primaryKey, unique) => {
 
 const __tbIdbCursorForward = direction => direction === 'next' || direction === 'nextunique';
 
-/// Moves a cursor `count` records, or to `key`/`primaryKey`, and returns the
-/// cursor or null when the iteration is exhausted
-/// (<https://w3c.github.io/IndexedDB/#cursor-iteration-operation>).
+// https://w3c.github.io/IndexedDB/#cursor-iteration-operation
 const __tbIdbIterateCursor = (state, key, primaryKey, count) => {
   const records = __tbIdbCursorRecords(state);
   const unique = state.direction === 'nextunique' || state.direction === 'prevunique';
@@ -1502,8 +1370,6 @@ const __tbIdbIterateCursor = (state, key, primaryKey, count) => {
       : __tbIdbCursorPrev(state, records, key, primaryKey, unique);
     if (found === null) break;
     if (!forward && unique) {
-      // "prevunique" visits the same records as "nextunique", in reverse
-      // order, so the record it settles on is the first record with the key.
       for (let index = 0; index < records.length; index++) {
         if (__tbIdbCompare(records[index].key, found.key) !== 0) continue;
         found = records[index];
@@ -1547,8 +1413,7 @@ const __tbIdbDirection = value => {
   );
 };
 
-/// Creates a cursor and queues its first iteration as a request
-/// (<https://w3c.github.io/IndexedDB/#dom-idbobjectstore-opencursor>).
+// https://w3c.github.io/IndexedDB/#dom-idbobjectstore-opencursor
 const __tbIdbOpenCursor = (handle, storeState, indexMeta, query, direction, keyOnly) => {
   const range = __tbIdbQuery(query, false);
   const cursor = __tbIdbConstruct(
@@ -1582,9 +1447,7 @@ const __tbIdbOpenCursor = (handle, storeState, indexMeta, query, direction, keyO
   return request;
 };
 
-/// Queues the cursor's existing request again, so every step fires `success`
-/// at the request that opened the cursor
-/// (<https://w3c.github.io/IndexedDB/#dom-idbcursor-continue>).
+// https://w3c.github.io/IndexedDB/#dom-idbcursor-continue
 const __tbIdbCursorQueue = (state, operation) => {
   const requestState = __tbIdbRequestState.get(state.request);
   requestState.done = false;
@@ -1750,10 +1613,7 @@ const __tbIdbCursorDelete = cursor => {
   });
 };
 
-
-/// One `DOMStringList`, the interface `objectStoreNames`, `indexNames`, and
-/// `IDBTransaction.objectStoreNames` return
-/// (<https://webidl.spec.whatwg.org/#idl-DOMStringList>).
+// https://webidl.spec.whatwg.org/#idl-DOMStringList
 const __tbIdbStringListState = host.slots('tinybrowser.indexeddb.stringlist');
 const __tbDOMStringListConstructor = globalThis.DOMStringList = class DOMStringList {
   constructor() { throw new TypeError('Illegal constructor'); }
@@ -1880,8 +1740,7 @@ const __tbIdbUpgrade = (request, name, oldMeta, version) => {
       : data.error);
   };
   __tbIdbTask(() => {
-    // The result and versionchange transaction are visible from this event
-    // (<https://w3c.github.io/IndexedDB/#upgrade-a-database>).
+    // https://w3c.github.io/IndexedDB/#upgrade-a-database
     __tbDispatch(request, new __tbIdbVersionChangeEventConstructor('upgradeneeded', {
       oldVersion: oldMeta === null ? 0 : oldMeta.version,
       newVersion: version,
@@ -1913,8 +1772,6 @@ const __tbIdbDeleteDatabase = (request, name) => {
     __tbIdbOpenFailure(request, error);
   }
 };
-
-// ── interfaces
 
 // https://w3c.github.io/IndexedDB/#idbrequest
 const __tbIdbRequestConstructor = globalThis.IDBRequest = class IDBRequest extends EventTarget {
@@ -2519,10 +2376,7 @@ const __tbIdbDatabaseConstructor = globalThis.IDBDatabase = class IDBDatabase ex
     if (keyPath !== null && !__tbIdbValidKeyPath(keyPath)) {
       throw new globalThis.DOMException(`The key path '${keyPath}' is not a valid key path.`, 'SyntaxError');
     }
-    // An absent key path means out-of-line keys, which a key generator
-    // supports. Only an empty key path and a sequence key path are invalid
-    // (<https://w3c.github.io/IndexedDB/#dom-idbdatabase-createobjectstore>,
-    // step 5).
+    // https://w3c.github.io/IndexedDB/#dom-idbdatabase-createobjectstore
     if (autoIncrement && (keyPath === '' || __tbIsArray(keyPath))) {
       throw new globalThis.DOMException(
         'A key generator cannot be used with an empty key path or a sequence key path.',
@@ -2583,9 +2437,7 @@ const __tbIdbDatabaseConstructor = globalThis.IDBDatabase = class IDBDatabase ex
   close() {
     const data = __tbIdbDatabaseState.get(this);
     if (data === undefined) throw new TypeError('Illegal invocation');
-    // The connection is close-pending rather than gone: a running version
-    // change transaction still finishes and its requests still work
-    // (<https://w3c.github.io/IndexedDB/#dom-idbdatabase-close>).
+    // https://w3c.github.io/IndexedDB/#dom-idbdatabase-close
     data.closed = true;
   }
   get onabort() { return __tbIdbDatabaseState.get(this)?.onabort ?? null; }
@@ -2650,11 +2502,7 @@ const __tbIdbFactoryConstructor = globalThis.IDBFactory = class IDBFactory {
     if (__tbIdbOpaque()) {
       return Promise.reject(__tbIdbSecurityError());
     }
-    // The method returns a snapshot of the databases and their versions as
-    // they are when it is called. A versionchange transaction running now has
-    // not committed, so its database and version are invisible
-    // (<https://w3c.github.io/IndexedDB/#dom-idbfactory-databases>, steps 3
-    // and 5).
+    // https://w3c.github.io/IndexedDB/#dom-idbfactory-databases
     const names = [];
     const keys = __tbIdbAllKeys();
     for (let index = 0; index < keys.length; index++) {
@@ -2677,9 +2525,7 @@ const __tbIdbFactoryConstructor = globalThis.IDBFactory = class IDBFactory {
   }
   cmp(first, second) {
     if (__tbIdbFactoryState.get(this) === undefined) throw new TypeError('Illegal invocation');
-    // Both keys are required members of the overload, so a short argument
-    // list is a TypeError before either key is converted
-    // (<https://webidl.spec.whatwg.org/#dfn-argument-count>).
+    // https://webidl.spec.whatwg.org/#dfn-argument-count
     if (arguments.length < 2) {
       throw new TypeError(
         `Failed to execute 'cmp' on 'IDBFactory': 2 arguments required, but only ${arguments.length} present.`,
@@ -2694,8 +2540,7 @@ const __tbIdbFactoryConstructor = globalThis.IDBFactory = class IDBFactory {
 };
 Object.defineProperty(globalThis.IDBFactory.prototype, Symbol.toStringTag, { value: 'IDBFactory', configurable: true });
 
-/// [EnforceRange] unsigned long long conversion
-/// (<https://webidl.spec.whatwg.org/#es-unsigned-long-long>).
+// https://webidl.spec.whatwg.org/#es-unsigned-long-long
 const __tbIdbVersion = value => {
   const number = Number(value);
   if (!__tbNumberIsFinite(number) || number < 0 || number > __tbIdbMaxSafeInteger) {

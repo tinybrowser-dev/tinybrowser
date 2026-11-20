@@ -1,13 +1,10 @@
-// Autonomous custom elements backed by the agent's native reaction stack.
 // https://html.spec.whatwg.org/multipage/custom-elements.html#custom-elements-core-concepts
 {
   const definitions = new __tbPrivateMap();
   const constructors = new __tbPrivateMap();
   const upgraded = host.slots();
   const connected = host.slots();
-  // Subtree roots passed through `move`, so their childList records are not
-  // connection transitions
-  // (<https://dom.spec.whatwg.org/#move>).
+  // https://dom.spec.whatwg.org/#move
   const atomicMoves = host.slots();
   const pending = new __tbPrivateMap();
   let definitionRunning = false;
@@ -27,8 +24,7 @@
   const observe = MutationObserver.prototype.observe;
   const callbackNames = ['connectedCallback', 'disconnectedCallback', 'connectedMoveCallback', 'adoptedCallback', 'attributeChangedCallback'];
   const formCallbackNames = ['formAssociatedCallback', 'formResetCallback', 'formDisabledCallback', 'formStateRestoreCallback'];
-  // Reserved names that would collide with the SVG/HTML interfaces
-  // (<https://html.spec.whatwg.org/multipage/custom-elements.html#valid-custom-element-name>).
+  // https://html.spec.whatwg.org/multipage/custom-elements.html#valid-custom-element-name
   const reservedNames = ['annotation-xml', 'color-profile', 'font-face', 'font-face-src',
     'font-face-uri', 'font-face-format', 'font-face-name', 'missing-glyph'];
   const getAttribute = Element.prototype.getAttribute;
@@ -59,10 +55,7 @@
     return nativeApply(shadowRootGetter, host, []) || null;
   }
 
-  // Shadow-including element descendants, in tree order. A host's shadow tree
-  // is visited before its light children
-  // (<https://dom.spec.whatwg.org/#concept-shadow-including-tree-order>).
-  // Fragments and shadow roots walk their element children.
+  // https://dom.spec.whatwg.org/#concept-shadow-including-tree-order
   function visitElements(root, callback) {
     if (!root) return;
     const type = nativeApply(nodeTypeGetter, root, []);
@@ -78,9 +71,6 @@
     }
   }
 
-  // Connection reactions: fire once per connection transition, whatever
-  // mutation path caused it. The WeakSet makes the synchronous mutation
-  // hooks and the MutationObserver idempotent.
   function notifyConnected(root) {
     visitElements(root, function(element) {
       if (!upgraded.has(element) || connected.has(element) || !isConnected(element)) return;
@@ -92,9 +82,6 @@
   // https://dom.spec.whatwg.org/#move
   // https://html.spec.whatwg.org/multipage/custom-elements.html#enqueue-a-custom-element-callback-reaction
   function noteConnectedMove(node) {
-    // With no definitions there are no upgraded elements, so the walk would
-    // find nothing; skipping it also keeps `atomicMoves` free of marks that
-    // only the observer hook would consume.
     if (definitions.size === 0) return;
     atomicMoves.add(node);
     visitElements(node, function(element) {
@@ -124,8 +111,6 @@
   }
 
   function validName(name) {
-    // Pinned primitives: a page overriding `String.prototype` or
-    // `RegExp.prototype` before `define()` runs must not change validation.
     if (typeof name !== 'string' || !__tbApply(__tbStringIncludes, name, ['-'])
         || name !== __tbApply(__tbStringToLowerCase, name, [])
         || !__tbApply(__tbRegExpTest, /^[a-z][.0-9_a-z\-]*$/, [name])) {
@@ -137,9 +122,7 @@
     return true;
   }
 
-  // Web IDL `sequence<DOMString>` conversion: the value must be iterable (no
-  // implicit array-like), and each item converts with `ToString`
-  // (<https://webidl.spec.whatwg.org/#es-sequence>).
+  // https://webidl.spec.whatwg.org/#es-sequence
   function toSequence(value) {
     if (value === undefined) return [];
     if (value === null || (typeof value !== 'object' && typeof value !== 'function')) {
@@ -183,14 +166,10 @@
       try {
         constructed = nativeConstruct(definition.constructor, [], definition.constructor);
       } finally {
-        // A constructor that fails before `super()` must not leave its
-        // candidate on the construction stack for the next upgrade.
         host.__tbDiscardCustomConstruction(element);
       }
       if (constructed !== element) throw new TypeError('custom element constructor returned another object');
-      // Parser-created wrappers intern as `HTMLElement`. Point them at the
-      // definition's prototype so `instanceof` matches the node document's
-      // constructor (<https://html.spec.whatwg.org/multipage/custom-elements.html#upgrades>).
+      // https://html.spec.whatwg.org/multipage/custom-elements.html#upgrades
       __tbSetPrototypeOf(element, definition.constructor.prototype);
       for (const name of definition.observed) {
         if (nativeApply(hasAttribute, element, [name])) {
@@ -249,9 +228,6 @@
           if (callbacks.attributeChangedCallback !== undefined) {
             observed = toSequence(constructor.observedAttributes);
           }
-          // Read in the order the define algorithm does: observedAttributes,
-          // disabledFeatures, formAssociated, then the four form callbacks when
-          // the element is form-associated (`CustomElementRegistry.html`).
           toSequence(constructor.disabledFeatures);
           const formAssociated = Boolean(constructor.formAssociated);
           if (formAssociated) {
@@ -303,8 +279,6 @@
   }
 
   const registry = new CustomElementRegistry();
-  // Captured: `customElements` is configurable, so a page can replace the
-  // global and the same-realm check must not read it live.
   const __tbCustomElementsRegistry = registry;
   __tbDefineProperty(globalThis, 'CustomElementRegistry', {
     value: CustomElementRegistry, writable: true, configurable: true,
@@ -324,9 +298,8 @@
     return element;
   };
 
-  // innerHTML creates elements for the node document, not the setter's realm
-  // (<https://dom.spec.whatwg.org/#concept-create-element>,
-  // <https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-element-innerhtml>).
+  // https://dom.spec.whatwg.org/#concept-create-element
+  // https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-element-innerhtml
   const ownerDocumentGetter = __tbGetOwnPropertyDescriptor(Node.prototype, 'ownerDocument').get;
   const defaultViewGetter = __tbGetOwnPropertyDescriptor(Document.prototype, 'defaultView').get;
   const innerHTML = __tbGetOwnPropertyDescriptor(Element.prototype, 'innerHTML');
@@ -335,12 +308,6 @@
     if (!document) return;
     const view = nativeApply(defaultViewGetter, document, []);
     const foreign = view && view.customElements;
-    // Same registry as this realm: the Rust setter path already upgraded
-    // this root through the host hook, so a second walk is pure cost.
-    // Compared against the realm-init capture, not the live global, so a
-    // page replacing `globalThis.customElements` cannot lie either way.
-    // (A foreign registry without definitions cannot be detected — there is
-    // no enumeration API — so genuinely cross-realm roots always walk.)
     if (!foreign || foreign === __tbCustomElementsRegistry) return;
     if (typeof foreign.upgrade === 'function') {
       foreign.upgrade(root);
@@ -357,26 +324,16 @@
       },
     });
   }
-  // Insertion only upgrades elements that became connected; template
-  // contents and detached subtrees stay un-upgraded until they connect
-  // (<https://dom.spec.whatwg.org/#concept-node-insert>).
+  // https://dom.spec.whatwg.org/#concept-node-insert
   host.__tbUpgradeParsedTree = function(root) {
     if (!isConnected(root)) return;
     upgradeFromNodeDocument(root);
-    // The walk below only enqueues upgrades for this realm's definitions;
-    // with none it is pure cost, and `upgradeFromNodeDocument` above has
-    // already delegated to a foreign registry if there is one.
     if (definitions.size === 0) return;
     pushReactions();
     try { upgradeTree(root); } finally { popReactions(); }
   };
 
-  // The engine adopts a cross-document node by materializing a copy
-  // (<crates/renderer/src/js/bindings/clone.rs>), while Web IDL adoption keeps
-  // the same object. Reactions the observer enqueues for the copy never reach
-  // the original wrapper the page holds, so upgrade the arguments of the
-  // insertion operations as well
-  // (<https://dom.spec.whatwg.org/#concept-node-adopt>).
+  // https://dom.spec.whatwg.org/#concept-node-adopt
   function insertedNodes(node) {
     if (nativeApply(nodeTypeGetter, node, []) !== 11) return [node];
     const children = [];

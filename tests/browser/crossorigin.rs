@@ -1,14 +1,7 @@
-//! `crossorigin` at the request boundary: the attribute decides CORS mode and
-//! the credentials the request carries, its invalid value default must not send
-//! credentials, and the request key is the parsed state rather than the
-//! attribute text.
-
 use serde_json::json;
 
 use crate::fixture::{PIXEL, TestServer, evaluate, ok, open_page, poll_until, server};
 
-/// Counts each image's first `load` or `error` and records the settled widths.
-/// Runs after the images are in the tree.
 const COUNT_SETTLEMENTS: &str = "
 window.__loaded = 0; window.__errors = 0; window.__widths = []; window.__counted = [];
 const images = document.getElementsByTagName('img');
@@ -26,8 +19,7 @@ for (let index = 0; index < images.length; index++) {
 }
 ";
 
-/// Reads one image through a canvas and reports `clean` or the exception name
-/// (<https://html.spec.whatwg.org/multipage/canvas.html#the-image-argument>).
+// https://html.spec.whatwg.org/multipage/canvas.html#the-image-argument
 const CANVAS_TAINT: &str = "((...ids) => {
   const read = id => {
     const canvas = document.createElement('canvas');
@@ -40,8 +32,6 @@ const CANVAS_TAINT: &str = "((...ids) => {
   return ids.map(read).join(',');
 })";
 
-/// Waits until every counted image has settled, so the assertions read final
-/// state instead of a race.
 fn wait_settled(client: &mut cdp::Client, session: &str, images: u64) {
     poll_until(&format!("{images} image settlements"), || {
         let loaded = evaluate(
@@ -53,11 +43,7 @@ fn wait_settled(client: &mut cdp::Client, session: &str, images: u64) {
     });
 }
 
-/// A padded `crossorigin` names no keyword, so it takes the invalid value
-/// default: CORS mode with `same-origin` credentials. The request must be a
-/// CORS request and must not send the cookie the page set, while the
-/// `use-credentials` spelling on the same origin does
-/// (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#cors-settings-attributes>).
+// https://html.spec.whatwg.org/multipage/urls-and-fetching.html#cors-settings-attributes
 #[test]
 fn a_padded_crossorigin_image_is_a_cors_request_without_credentials() {
     let foreign = TestServer::start(
@@ -109,10 +95,7 @@ fn a_padded_crossorigin_image_is_a_cors_request_without_credentials() {
     );
 }
 
-/// A `<link rel=stylesheet crossorigin>` is a CORS request with the credentials
-/// its state selects. The sheet applies because the response passed the CORS
-/// check and carried `Access-Control-Allow-Origin`
-/// (<https://html.spec.whatwg.org/multipage/semantics.html#create-a-link-request>).
+// https://html.spec.whatwg.org/multipage/semantics.html#create-a-link-request
 #[test]
 fn a_link_stylesheet_crossorigin_is_a_cors_request() {
     let foreign = TestServer::start(
@@ -149,10 +132,7 @@ fn a_link_stylesheet_crossorigin_is_a_cors_request() {
     );
 }
 
-/// A CORS-mode stylesheet whose response carries no
-/// `Access-Control-Allow-Origin` fails the CORS check, so its rules never
-/// apply and the link reports `error`
-/// (<https://fetch.spec.whatwg.org/#cors-check>).
+// https://fetch.spec.whatwg.org/#cors-check
 #[test]
 fn a_link_stylesheet_crossorigin_without_cors_approval_does_not_apply() {
     let foreign = TestServer::start_without_cors(vec![(
@@ -188,10 +168,7 @@ fn a_link_stylesheet_crossorigin_without_cors_approval_does_not_apply() {
     );
 }
 
-/// The CORS settings state is part of the request, not a lookup by URL: two
-/// images on one URL with different `crossorigin` values are two requests with
-/// their own credentials, and both load
-/// (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#cors-settings-attributes>).
+// https://html.spec.whatwg.org/multipage/urls-and-fetching.html#cors-settings-attributes
 #[test]
 fn two_images_on_one_url_keep_their_own_crossorigin() {
     let foreign = TestServer::start(vec![("/shared.png", ok("image/png", PIXEL))], None);
@@ -234,9 +211,7 @@ fn two_images_on_one_url_keep_their_own_crossorigin() {
     );
 }
 
-/// `crossorigin=""` and `crossorigin="anonymous"` are one CORS state, so one
-/// request serves both images; the key is the parsed state, not the text
-/// (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#cors-settings-attributes>).
+// https://html.spec.whatwg.org/multipage/urls-and-fetching.html#cors-settings-attributes
 #[test]
 fn one_cors_state_is_one_request() {
     let foreign = TestServer::start(vec![("/canon.png", ok("image/png", PIXEL))], None);
@@ -264,9 +239,7 @@ fn one_cors_state_is_one_request() {
     );
 }
 
-/// Canvas taint is per request, not per URL: the CORS image is origin-clean
-/// and the `no-cors` image on the same URL is not, whichever delivery lands
-/// first (<https://html.spec.whatwg.org/multipage/canvas.html#the-image-argument>).
+// https://html.spec.whatwg.org/multipage/canvas.html#the-image-argument
 #[test]
 fn a_no_cors_image_on_a_cors_images_url_still_taints() {
     let foreign = TestServer::start(vec![("/pixel.png", ok("image/png", PIXEL))], None);
@@ -293,10 +266,7 @@ fn a_no_cors_image_on_a_cors_images_url_still_taints() {
     assert_eq!(outcome, json!("clean,SecurityError"));
 }
 
-/// The canvas taint of a cached image comes from its own CORS state, not from
-/// whichever same-URL request settled last: a `no-cors` image inserted after a
-/// clean CORS image on one URL must still taint
-/// (<https://html.spec.whatwg.org/multipage/canvas.html#the-image-argument>).
+// https://html.spec.whatwg.org/multipage/canvas.html#the-image-argument
 #[test]
 fn a_cached_no_cors_image_does_not_inherit_a_cors_images_clean_state() {
     let foreign = TestServer::start(vec![("/pixel.png", ok("image/png", PIXEL))], None);
@@ -340,9 +310,7 @@ window.__insertPlain = () => {{
     assert_eq!(outcome, json!("clean,SecurityError"));
 }
 
-/// A `crossorigin` write is a relevant mutation: the image starts over, and
-/// the new request carries the new state
-/// (<https://html.spec.whatwg.org/multipage/images.html#reacting-to-dom-mutations>).
+// https://html.spec.whatwg.org/multipage/images.html#reacting-to-dom-mutations
 #[test]
 fn a_crossorigin_write_starts_a_new_request() {
     let foreign = TestServer::start(vec![("/reload.png", ok("image/png", PIXEL))], None);
@@ -389,9 +357,7 @@ fn a_crossorigin_write_starts_a_new_request() {
     );
 }
 
-/// A write that leaves the parsed state alone is not a relevant mutation: the
-/// image does not restart, and no request is issued for it
-/// (<https://html.spec.whatwg.org/multipage/images.html#reacting-to-dom-mutations>).
+// https://html.spec.whatwg.org/multipage/images.html#reacting-to-dom-mutations
 #[test]
 fn a_same_state_crossorigin_write_keeps_the_request() {
     let foreign = TestServer::start(vec![("/same.png", ok("image/png", PIXEL))], None);
@@ -430,9 +396,7 @@ fn a_same_state_crossorigin_write_keeps_the_request() {
     );
 }
 
-/// A repeat request the image cache answers still settles the element: the
-/// image starts over and fires `load` without a network request
-/// (<https://html.spec.whatwg.org/multipage/images.html#update-the-image-data>).
+// https://html.spec.whatwg.org/multipage/images.html#update-the-image-data
 #[test]
 fn a_repeated_src_answered_from_cache_fires_load() {
     let foreign = TestServer::start(vec![("/cached.png", ok("image/png", PIXEL))], None);
@@ -471,9 +435,7 @@ document.getElementById('img').addEventListener('load', () => window.__loads++);
     );
 }
 
-/// Failure memory belongs to the request, not the URL: after a CORS request
-/// fails, dropping `crossorigin` starts a `no-cors` request that can succeed
-/// (<https://html.spec.whatwg.org/multipage/images.html#updating-the-image-data>).
+// https://html.spec.whatwg.org/multipage/images.html#updating-the-image-data
 #[test]
 fn a_failed_cors_request_loads_after_crossorigin_is_removed() {
     let foreign = TestServer::start_without_cors(vec![("/pixel.png", ok("image/png", PIXEL))]);
@@ -530,9 +492,7 @@ image.addEventListener('load', () => window.__loaded++);
     );
 }
 
-/// A `<link>`'s `crossorigin` is one of the stylesheet link type's fetch
-/// times, so changing it fetches the sheet again with the new credentials
-/// (<https://html.spec.whatwg.org/multipage/links.html#link-type-stylesheet>).
+// https://html.spec.whatwg.org/multipage/links.html#link-type-stylesheet
 #[test]
 fn a_link_crossorigin_write_refetches_the_sheet() {
     let foreign = TestServer::start(
@@ -572,7 +532,6 @@ fn a_link_crossorigin_write_refetches_the_sheet() {
     );
 }
 
-/// The `Referer` value of one recorded request head, if it sent one.
 fn referer(head: &str) -> Option<&str> {
     head.lines().find_map(|line| {
         let (name, value) = line.split_once(':')?;
@@ -581,10 +540,7 @@ fn referer(head: &str) -> Option<&str> {
     })
 }
 
-/// The element's `referrerpolicy` state reaches the dial: `unsafe-url` sends
-/// the full page URL, `no-referrer` sends nothing, and an element without the
-/// attribute follows the document's `<meta name=referrer>` fallback
-/// (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#referrer-policy-attribute>).
+// https://html.spec.whatwg.org/multipage/urls-and-fetching.html#referrer-policy-attribute
 #[test]
 fn each_referrerpolicy_state_reaches_the_dial() {
     let foreign = TestServer::start(
@@ -613,7 +569,6 @@ fn each_referrerpolicy_state_reaches_the_dial() {
         &format!("http://{origin}/page/index.html"),
     );
 
-    // A non-root page, so the full URL and the origin serialize differently.
     let full = format!("http://{origin}/page/index.html");
     let origin_only = format!("http://{origin}/");
     let unsafe_head = foreign.wait("/unsafe.png");
@@ -636,10 +591,7 @@ fn each_referrerpolicy_state_reaches_the_dial() {
     );
 }
 
-/// A write that leaves the `referrerpolicy` attribute's *state* alone does not
-/// restart the request: `NO-REFERRER` is the same state as `no-referrer`, and
-/// two invalid values are both the invalid value default
-/// (<https://html.spec.whatwg.org/multipage/images.html#reacting-to-dom-mutations>).
+// https://html.spec.whatwg.org/multipage/images.html#reacting-to-dom-mutations
 #[test]
 fn a_referrerpolicy_write_that_keeps_the_state_does_not_restart() {
     let foreign = TestServer::start(
@@ -680,7 +632,6 @@ for (const name of ['named', 'invalid']) {{
         "document.getElementById('named').setAttribute('referrerpolicy', 'NO-REFERRER');\
          document.getElementById('invalid').setAttribute('referrerpolicy', 'other-bogus')",
     );
-    // A restart would fire `load` again on the next turn.
     std::thread::sleep(std::time::Duration::from_millis(300));
     assert_eq!(
         evaluate(&mut client, &session, "window.__loads"),
@@ -691,11 +642,8 @@ for (const name of ['named', 'invalid']) {{
     assert_eq!(foreign.history("/invalid.png").len(), 1);
 }
 
-/// A `referrerpolicy` state change while the request is in flight dials it
-/// again: the request the page replaced was sampled with the old policy, so
-/// the new state can only take effect on a new request
-/// (<https://html.spec.whatwg.org/multipage/images.html#reacting-to-dom-mutations>,
-/// <https://html.spec.whatwg.org/multipage/urls-and-fetching.html#referrer-policy-attribute>).
+// https://html.spec.whatwg.org/multipage/images.html#reacting-to-dom-mutations
+// https://html.spec.whatwg.org/multipage/urls-and-fetching.html#referrer-policy-attribute
 #[test]
 fn a_referrerpolicy_state_change_dials_the_in_flight_request_again() {
     let (foreign_listener, _) = server();
@@ -738,10 +686,8 @@ document.body.append(image);
     );
 }
 
-/// A redirect response's `Referrer-Policy` decides the remaining hops: the
-/// first hop sends the document's policy, and the header tightens the next one
-/// (<https://w3c.github.io/webappsec-referrer-policy/#set-requests-referrer-policy-on-redirect>,
-/// <https://fetch.spec.whatwg.org/#http-redirect-fetch>).
+// https://w3c.github.io/webappsec-referrer-policy/#set-requests-referrer-policy-on-redirect
+// https://fetch.spec.whatwg.org/#http-redirect-fetch
 #[test]
 fn a_redirect_response_policy_decides_the_next_hop() {
     use crate::fixture::redirect;

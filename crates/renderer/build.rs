@@ -1,12 +1,3 @@
-//! Compresses the renderer's embedded JS shims at compile time.
-//!
-//! The Web API shims ship inside the binary (~323 KB raw, ~72 KB deflated),
-//! so they are stored deflated under `OUT_DIR/js_blobs` and inflated once per
-//! process (see `js::blob`). The web bundle order lives in
-//! `src/js/scripts/web/order.txt`: that file is the single source of truth,
-//! read here and by the round-trip test, so adding a shim cannot silently
-//! diverge from what realms evaluate.
-
 use std::collections::HashSet;
 use std::env;
 use std::fmt::Write as _;
@@ -14,7 +5,6 @@ use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-/// (blob file name, shim path relative to the crate root).
 const SINGLES: &[(&str, &str)] = &[
     ("intl.deflate", "src/js/scripts/intl.js"),
     ("brands.deflate", "src/js/scripts/brands.js"),
@@ -39,8 +29,6 @@ const SINGLES: &[(&str, &str)] = &[
     ),
 ];
 
-/// Wrapper around the concatenated web bundle, matching the previous
-/// `concat!("(function(){", ..., "})();")` shape in `js::JsRealm::install`.
 const WEB_PREFIX: &str = "(function(){";
 const WEB_SUFFIX: &str = "})();";
 
@@ -91,9 +79,6 @@ fn main() {
         );
         bundle.push_str(WEB_SUFFIX);
         let name = blob.trim_end_matches(".deflate");
-        // The bundles share interfaces on purpose: the worker bundle is the
-        // document bundle minus DOM and Window. Compile it against a fresh
-        // provider table so sharing a name is not a conflict.
         let bundle = if name == "web_bundle" {
             contracts.javascript(name, &bundle)
         } else {
@@ -123,8 +108,6 @@ fn main() {
     fs::write(out.join("manifest.txt"), manifest).expect("write manifest");
 }
 
-/// Deflate-compresses `bytes` at maximum level; output is deterministic for
-/// one `flate2` version, which `Cargo.lock` pins.
 fn write_blob(out: &Path, name: &str, bytes: &[u8]) {
     let mut encoder = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::best());
     encoder.write_all(bytes).expect("deflate shim");
@@ -132,8 +115,6 @@ fn write_blob(out: &Path, name: &str, bytes: &[u8]) {
     fs::write(out.join(name), compressed).expect("write blob");
 }
 
-/// Compiles only the declared native surface. Unsupported semantics fail the
-/// build instead of producing bindings that merely look like Web IDL.
 struct Contracts {
     idl: Vec<(String, String)>,
     providers: HashSet<String>,
@@ -206,9 +187,6 @@ fn generate_bindings() -> Contracts {
 }
 
 fn binding_sources(directory: &Path, extension: &str, sources: &mut Vec<(String, String)>) {
-    // The generated contracts depend on each implementation's method names,
-    // so a nested edit must rerun the build script. `rerun-if-changed` on a
-    // directory tracks the directory entry only, not files below it.
     println!("cargo:rerun-if-changed={}", directory.display());
     let mut paths: Vec<_> = fs::read_dir(directory)
         .expect("read binding input directory")

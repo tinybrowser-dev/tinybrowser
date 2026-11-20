@@ -19,8 +19,6 @@
       ? reason
       : new DOMException('signal is aborted without reason', 'AbortError');
     __tbApply(dispatchEvent, signal, [new EventConstructor('abort')]);
-    // Dependent signals abort after the source's listeners, so listeners on
-    // the source observe their own signal before a clone's.
     const dependents = DEPENDENTS.get(signal);
     if (dependents !== undefined) {
       DEPENDENTS.delete(signal);

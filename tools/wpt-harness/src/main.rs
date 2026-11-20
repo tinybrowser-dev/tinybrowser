@@ -1,14 +1,3 @@
-//! In-process WPT testharness runner.
-//!
-//! Mounts each selected file in the real `renderer::Engine` without `WebDriver`,
-//! wptserve, or a renderer child process. A paused Tokio clock jumps over
-//! timer waits, so a hung test costs milliseconds instead of the harness
-//! budget.
-//!
-//! The checkout is read-only. Requests are served from memory and the only
-//! replacement is `/resources/testharnessreport.js`, which records the
-//! completion payload the host polls.
-
 mod engine;
 mod journal;
 mod services;
@@ -28,7 +17,6 @@ use std::time::{Duration, Instant};
 use engine::Outcome;
 use suite::{Kind, TestCase};
 
-/// Parsed command line.
 struct Options {
     root: PathBuf,
     paths: Vec<String>,
@@ -39,31 +27,23 @@ struct Options {
     list: bool,
     limit: usize,
     offset: usize,
-    /// `(index, count)` of the source-hash chunk to run.
     shard: Option<(usize, usize)>,
-    /// Drop `testdriver` tests; the `WebDriver` lane runs them.
     exclude_testdriver: bool,
     clock: Clock,
     budgets: engine::Budgets,
     content_types: HashMap<String, String>,
     sidecar: Option<sidecar::Sidecar>,
-    /// Per-file verdict log; a restarted process resumes from it.
     journal: Option<PathBuf>,
-    /// How a file the previous attempt left running is recorded.
     stale: journal::Stale,
 }
 
-/// Which clock a worker's Tokio runtime uses.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Clock {
-    /// Paused: a timer wait costs no wall time.
     Paused,
-    /// The wall clock, for reproducing a hang.
     Real,
 }
 
 impl Options {
-    /// The defaults every flag adjusts.
     fn defaults() -> Self {
         Self {
             root: suite::default_root(),
@@ -78,9 +58,6 @@ impl Options {
             shard: None,
             exclude_testdriver: false,
             clock: Clock::Paused,
-            // Replaced by the required flags below. Zero is never a real
-            // budget: `for_case` would time out before mounting, and the flag
-            // parser rejects it.
             budgets: engine::Budgets {
                 normal: Duration::ZERO,
                 long: Duration::ZERO,
@@ -92,7 +69,6 @@ impl Options {
         }
     }
 
-    /// Rejects a command line that cannot run.
     fn validate(mut self) -> Result<Self, String> {
         if self.paths.is_empty() {
             return Err("pass at least one test path".into());
@@ -116,7 +92,6 @@ impl Options {
                     "--this-chunk must be in 1..={count} with --total-chunks {count}, got {index}"
                 ));
             }
-            // Stored zero-based for the selection filter.
             self.shard = Some((index - 1, count));
         }
         Ok(self)
@@ -179,7 +154,6 @@ fn main() {
     };
     let (attempt, outcomes) = run_selected(&options, &cases, journal.as_ref(), &resumed);
     let wall = started.elapsed();
-    // The summary is this process's work; the report carries every window.
     wpt_report::summarize(&attempt, wall, options.verbose);
     if let Some(path) = &options.report
         && let Err(error) = wpt_report::write_report(path, &outcomes)
@@ -207,19 +181,12 @@ fn main() {
     exit(0);
 }
 
-/// Leaves without running destructors.
-///
-/// A run's last engine can still root a `QuickJS` object, and freeing the
-/// runtime then trips `QuickJS`'s own `gc_obj_list` assertion — after every
-/// report is written. A browser process exits the same way, without walking
-/// its heap, so the harness does not turn a finished run into a crash.
 fn exit(code: i32) -> ! {
     use std::io::Write as _;
     let _ = std::io::stdout().flush();
     std::process::exit(code)
 }
 
-/// Runs every case in the selection, then reports what an earlier attempt left.
 fn run_selected(
     options: &Options,
     cases: &[TestCase],
@@ -228,9 +195,6 @@ fn run_selected(
 ) -> (Vec<wpt_report::Outcome>, Vec<wpt_report::Outcome>) {
     let mut finished = resumed.done.clone();
     if let Some(journal) = journal {
-        // A file the previous attempt started never reached a verdict of its
-        // own, so one file's ERROR or TIMEOUT is the honest answer. Writing it
-        // down now keeps a second restart from asking again.
         for case in cases {
             if !resumed.stale.contains(&case.id()) {
                 continue;
@@ -243,9 +207,6 @@ fn run_selected(
     let attempt = run_all(options, cases, journal, &finished);
     let mut outcomes = attempt.clone();
     if journal.is_some() {
-        // A verdict can belong to a window this process was not given; the
-        // report is still the whole run, because the driver hands one window
-        // at a time and the last window writes it.
         let selected: std::collections::HashSet<String> = cases.iter().map(TestCase::id).collect();
         for (id, outcome) in &finished {
             if !selected.contains(id) {
@@ -257,7 +218,6 @@ fn run_selected(
     (attempt, outcomes)
 }
 
-/// One file's verdict when the process that ran it stopped before it finished.
 fn interrupted(case: &TestCase, stale: journal::Stale) -> wpt_report::Outcome {
     let status = match stale {
         journal::Stale::Died => engine::Status::Error,
@@ -273,8 +233,6 @@ fn interrupted(case: &TestCase, stale: journal::Stale) -> wpt_report::Outcome {
     }
 }
 
-/// Runs every case that has no verdict yet, one current-thread runtime per
-/// worker.
 fn run_all(
     options: &Options,
     cases: &[TestCase],
@@ -285,8 +243,6 @@ fn run_all(
         .iter()
         .map(|case| finished.get(&case.id()).cloned())
         .collect();
-    // A resumed file keeps the verdict it already has; only the rest runs, so
-    // a restart costs the files after the abort, not the whole chunk.
     let pending: Vec<usize> = (0..cases.len())
         .filter(|&index| slots[index].is_none())
         .collect();
@@ -309,7 +265,6 @@ fn run_all(
         .collect()
 }
 
-/// Runs `pending` across the workers and fills their slots.
 fn run_pending(
     options: &Options,
     cases: &[TestCase],
@@ -336,8 +291,6 @@ fn run_pending(
     }
     let ahem = &ahem;
     std::thread::scope(|scope| {
-        // One monitor for every worker: a file that stops returning ends this
-        // process so the driver can record it and resume after it.
         let monitor = &watchdog;
         scope.spawn(move || {
             while !done.load(Ordering::Relaxed) {
@@ -370,8 +323,6 @@ fn run_pending(
                         eprintln!("wpt-harness: cannot create runtime: {error}");
                         std::process::exit(2);
                     });
-                // One font database per worker: building it scans the system
-                // fonts, and every engine this thread creates can share it.
                 let mut fonts = renderer::Fonts::default();
                 fonts.register_font(ahem.clone());
                 while let Some(&index) = pending.get(next.fetch_add(1, Ordering::Relaxed)) {
@@ -388,11 +339,6 @@ fn run_pending(
                         &fonts,
                         options.sidecar,
                     );
-                    // Layout, paint, and the bindings can panic on a hostile
-                    // page. A panic is this file's ERROR, not the end of the
-                    // run; the engine that saw it is abandoned rather than
-                    // dropped, because dropping a half-torn heap can panic
-                    // again during unwinding.
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         runtime.block_on(session.run(case, options.clock == Clock::Paused))
                     }));
@@ -426,10 +372,6 @@ fn run_pending(
     });
 }
 
-/// The shared report shape for one engine outcome.
-///
-/// The engine keeps its own `kind` (it drives the executor), which a wptreport
-/// has no field for.
 fn reported(outcome: &Outcome) -> wpt_report::Outcome {
     wpt_report::Outcome {
         id: outcome.id.clone(),
@@ -480,8 +422,6 @@ PATH is relative to the WPT root, such as dom/nodes or dom/events/foo.html.
 Tests come from MANIFEST.json, which `cli.py manifest` builds and stamps;
 reftests and generated worker wrappers are not selected.";
 
-/// Parses the command line.
-/// Takes the next argument as a path.
 fn path_arg(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<PathBuf, String> {
     args.next()
         .map(PathBuf::from)
@@ -497,7 +437,6 @@ fn parse_args() -> Result<Options, String> {
     options.validate()
 }
 
-/// Applies one command-line argument.
 fn parse_flag(
     options: &mut Options,
     arg: &str,
@@ -584,7 +523,6 @@ fn parse_flag(
     Ok(())
 }
 
-/// Takes the next argument as a positive number of seconds.
 fn seconds_arg(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<Duration, String> {
     let raw = args.next().ok_or_else(|| format!("{flag} needs seconds"))?;
     let seconds: f64 = raw

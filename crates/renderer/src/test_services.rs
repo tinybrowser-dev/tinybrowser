@@ -1,5 +1,3 @@
-//! Browser-service doubles shared by the renderer's unit tests.
-
 use std::collections::HashMap;
 use std::sync::{Mutex, PoisonError};
 
@@ -10,10 +8,6 @@ use crate::protocol::{
     MessagingHost, NetworkHost, StorageChange, StorageError, StorageHost, StorageKind,
 };
 
-/// Services that answer every network, browsing-context, and messaging call
-/// with its empty or failing result. Storage keeps one in-memory area per
-/// origin so the storage shims, including `indexedDB`, can be tested end to
-/// end.
 #[derive(Default)]
 pub(crate) struct NullServices {
     storage: Mutex<HashMap<(StorageKind, crate::protocol::StorageKey, String), String>>,

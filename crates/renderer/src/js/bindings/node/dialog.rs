@@ -1,7 +1,4 @@
-//! The `HTMLDialogElement` show, close, and request-close algorithms, plus the
-//! element state they maintain.
-//!
-//! <https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element>
+// https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element
 
 use rquickjs::{Ctx, Result};
 
@@ -14,9 +11,7 @@ use crate::js::bindings::{
 use crate::js::events;
 use crate::js::world::EventTargetKey;
 
-/// `dialog.returnValue`: element state that starts empty and is only written
-/// by the IDL setter or by closing the dialog with a value
-/// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:dom-dialog-returnvalue>).
+// https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:dom-dialog-returnvalue
 pub(super) fn return_value(ctx: &Ctx<'_>, id: NodeId) -> Result<DomString> {
     let owner = world_for_node(ctx, id)?;
     let value = owner.borrow().state.dialog_return_values.get(&id).cloned();
@@ -32,10 +27,7 @@ pub(super) fn set_return_value(ctx: &Ctx<'_>, id: NodeId, value: DomString) -> R
     Ok(())
 }
 
-/// The computed `closedBy` state: the attribute's keyword; the Auto state
-/// behaves as Close Request for a modal dialog and None otherwise. This engine
-/// does not implement `showModal()`, so the Auto state always computes to None
-/// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:computed-closed-by-state>).
+// https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:computed-closed-by-state
 pub(super) fn closed_by(ctx: &Ctx<'_>, id: NodeId) -> &'static str {
     content_attr(ctx, id, "closedby")
         .map(|value| value.to_ascii_lowercase())
@@ -48,10 +40,7 @@ pub(super) fn closed_by(ctx: &Ctx<'_>, id: NodeId) -> &'static str {
         .unwrap_or("none")
 }
 
-/// `show()`: displays the dialog non-modally. A dialog can only be open
-/// modally through `showModal()`, which this engine does not implement, so an
-/// already-open dialog is simply left alone
-/// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:dom-dialog-show>).
+// https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:dom-dialog-show
 pub(super) fn show(ctx: &Ctx<'_>, id: NodeId) -> Result<()> {
     if has_open(ctx, id) {
         return Ok(());
@@ -75,8 +64,7 @@ pub(super) fn show(ctx: &Ctx<'_>, id: NodeId) -> Result<()> {
     dialog_focusing_steps(ctx, id)
 }
 
-/// `close(returnValue)`
-/// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:dom-dialog-close>).
+// https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:dom-dialog-close
 pub(super) fn close(ctx: &Ctx<'_>, id: NodeId, result: Option<DomString>) -> Result<()> {
     if !has_open(ctx, id) {
         return Ok(());
@@ -114,9 +102,7 @@ pub(super) fn close(ctx: &Ctx<'_>, id: NodeId, result: Option<DomString>) -> Res
     Ok(())
 }
 
-/// `requestClose(returnValue)`: fires a cancelable `cancel` event first, then
-/// closes when the event was not canceled. It ignores `closedby`
-/// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:dom-dialog-requestclose>).
+// https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:dom-dialog-requestclose
 pub(super) fn request_close(ctx: &Ctx<'_>, id: NodeId, result: Option<DomString>) -> Result<()> {
     if !has_open(ctx, id) {
         return Ok(());
@@ -144,9 +130,7 @@ fn is_connected(ctx: &Ctx<'_>, id: NodeId) -> Result<bool> {
         .is_some_and(|parsed| tree::is_connected(&parsed.document.base, id.node)))
 }
 
-/// Whether `id` belongs to the frame's active document. A document created by
-/// `createHTMLDocument` is not fully active, so `showModal()` throws for it
-/// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#show-a-modal-dialog>).
+// https://html.spec.whatwg.org/multipage/interactive-elements.html#show-a-modal-dialog
 fn is_fully_active(ctx: &Ctx<'_>, id: NodeId) -> Result<bool> {
     let owner = world_for_node(ctx, id)?;
     let borrowed = owner.borrow();
@@ -155,9 +139,7 @@ fn is_fully_active(ctx: &Ctx<'_>, id: NodeId) -> Result<bool> {
         .is_some_and(|parsed| parsed.id == id.document))
 }
 
-/// Records the element the dialog focuses again on close: the focused element
-/// before the dialog focusing steps run
-/// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:previously-focused-element>).
+// https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:previously-focused-element
 fn capture_previously_focused(ctx: &Ctx<'_>, id: NodeId) -> Result<()> {
     let owner = world_for_node(ctx, id)?;
     let mut world = owner.borrow_mut();
@@ -166,9 +148,7 @@ fn capture_previously_focused(ctx: &Ctx<'_>, id: NodeId) -> Result<()> {
     Ok(())
 }
 
-/// Whether the document's focused element is the dialog or one of its
-/// descendants
-/// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:close-the-dialog>).
+// https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:close-the-dialog
 fn focus_is_inside(ctx: &Ctx<'_>, id: NodeId) -> Result<bool> {
     let owner = world_for_node(ctx, id)?;
     let focused = owner.borrow().active_element(id.document);
@@ -189,13 +169,7 @@ fn queue_toggle(ctx: &Ctx<'_>, id: NodeId, old_state: &str, new_state: &str) -> 
     Ok(())
 }
 
-/// The dialog focusing steps
-/// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#dialog-focusing-steps>).
-///
-/// A disconnected dialog must not move focus, and this engine has no notion of
-/// the document's own focusability, so connection is the allow-focus gate. The
-/// focus delegate here is the first focusable autofocus descendant, then the
-/// first focusable descendant, then the dialog itself.
+// https://html.spec.whatwg.org/multipage/interactive-elements.html#dialog-focusing-steps
 fn dialog_focusing_steps(ctx: &Ctx<'_>, id: NodeId) -> Result<()> {
     if !is_connected(ctx, id)? {
         return Ok(());
@@ -219,7 +193,6 @@ fn dialog_focusing_steps(ctx: &Ctx<'_>, id: NodeId) -> Result<()> {
     Ok(())
 }
 
-/// The dialog's descendants with the `autofocus` attribute, in tree order.
 fn autofocus_descendant(ctx: &Ctx<'_>, id: NodeId) -> Result<Option<NodeId>> {
     let candidates = descendants_with(ctx, id, |base, node| {
         tree::attr(base, node, "autofocus").is_some()
@@ -232,7 +205,6 @@ fn autofocus_descendant(ctx: &Ctx<'_>, id: NodeId) -> Result<Option<NodeId>> {
     Ok(None)
 }
 
-/// The first focusable descendant of the dialog in tree order.
 fn first_focusable_descendant(ctx: &Ctx<'_>, id: NodeId) -> Result<Option<NodeId>> {
     for candidate in descendants_with(ctx, id, |_, _| true)? {
         if is_focusable(ctx, candidate)? {
@@ -242,7 +214,6 @@ fn first_focusable_descendant(ctx: &Ctx<'_>, id: NodeId) -> Result<Option<NodeId
     Ok(None)
 }
 
-/// Every descendant element of `id` matching `predicate`, in tree order.
 fn descendants_with(
     ctx: &Ctx<'_>,
     id: NodeId,

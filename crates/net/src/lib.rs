@@ -1,7 +1,4 @@
-//! Blocking HTTP client for the page engine.
-//!
-//! Types in this crate are the public network surface. Behavior follows
-//! [Fetch](https://fetch.spec.whatwg.org/).
+// https://fetch.spec.whatwg.org/
 
 mod client;
 pub mod cors;
@@ -35,17 +32,6 @@ pub use resolve::{InvalidResolveRule, ResolveRule};
 pub use transport::native::{InvalidCa, InvalidProxy, Proxy, TrustedCa};
 pub use transport::{HopBudget, Transport, WireBody, WireRequest, WireResponse, buffered_body};
 
-/// The URL a tuple origin serializes to; `None` for an opaque origin.
-///
-/// The serialization of a tuple origin is always a valid URL, so the `expect`
-/// lives here instead of at every reader: `SerializedOrigin::to_url`, redirect
-/// reporting, and the site lock all ask this one function.
-///
-/// # Panics
-///
-/// Never in practice: `url` serializes a tuple origin as an absolute URL. The
-/// panic exists so a future `url` change fails loudly instead of silently
-/// turning a tuple origin into an opaque one at three call sites.
 #[must_use]
 pub fn origin_url(origin: &url::Origin) -> Option<url::Url> {
     let url::Origin::Tuple(..) = origin else {
@@ -56,11 +42,6 @@ pub fn origin_url(origin: &url::Origin) -> Option<url::Url> {
     )
 }
 
-/// The URL a browsing context starts on when it has no creator to inherit
-/// from.
-///
-/// Parsed once: every document path, browser tab, and stylesheet parser that
-/// needs the placeholder shares this value instead of re-spelling the URL.
 #[must_use]
 pub fn about_blank() -> url::Url {
     static ABOUT_BLANK: std::sync::LazyLock<url::Url> = std::sync::LazyLock::new(|| {
@@ -73,7 +54,6 @@ pub fn about_blank() -> url::Url {
 mod tests {
     use url::Url;
 
-    /// A tuple origin serializes to a URL; an opaque one has none.
     #[test]
     fn an_origin_produces_its_url_or_nothing() {
         let page = Url::parse("https://a.test:8443/page").expect("URL");

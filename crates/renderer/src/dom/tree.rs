@@ -1,30 +1,14 @@
-//! Node identity, classification, and tree walks over Blitz trees.
-//!
-//! Every function takes a `&BaseDocument` (or `&Parsed`) plus `NodeId`s and
-//! returns plain data, so callers in the binding layer, the frame actor, and
-//! the render paths share one implementation per concept.
-
 use blitz_dom::NodeData;
 use blitz_traits::node_id::NodeId as BlitzNodeId;
-/// Blitz tree ids, re-exported for helper signatures across the renderer.
 pub(crate) use blitz_traits::node_id::NodeId as BlitzId;
 
-/// One node in one document.
-///
-/// Blitz ids are per-tree: two documents can issue the same id. Document
-/// identity rides along so wrapper caches and event maps stay sound across
-/// documents. Replaces the arena handle: same name, same
-/// [`NodeId::document_id`] accessor, new payload.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct NodeId {
-    /// The document store id owning the tree.
     pub document: u32,
-    /// The node inside that document's tree.
     pub node: BlitzNodeId,
 }
 
 impl NodeId {
-    /// The document store id owning the tree.
     pub(crate) fn document_id(self) -> u32 {
         self.document
     }
@@ -48,8 +32,7 @@ impl Ord for NodeId {
     }
 }
 
-/// The parent of `id`, or the host when `id` is a shadow root
-/// (<https://dom.spec.whatwg.org/#concept-shadow-including-parent>).
+// https://dom.spec.whatwg.org/#concept-shadow-including-parent
 pub(crate) fn shadow_including_parent(
     base: &blitz_dom::BaseDocument,
     id: BlitzNodeId,
@@ -61,8 +44,7 @@ pub(crate) fn shadow_including_parent(
     shadow_root_host(base, id)
 }
 
-/// The host of shadow root `id`, when `id` is a shadow root
-/// (<https://dom.spec.whatwg.org/#concept-shadow-root>).
+// https://dom.spec.whatwg.org/#concept-shadow-root
 pub(crate) fn shadow_root_host(
     base: &blitz_dom::BaseDocument,
     id: BlitzNodeId,
@@ -73,13 +55,7 @@ pub(crate) fn shadow_root_host(
     }
 }
 
-/// `start` and its ancestors, crossing a shadow root to its host
-/// (<https://dom.spec.whatwg.org/#concept-shadow-including-parent>).
-///
-/// CSSOM View's visibility and `offsetParent` algorithms walk the flat tree.
-/// Blitz has no slot assignment, so a slotted element's slot is missing from
-/// this chain; the shadow-including chain is the closest walk the engine can
-/// express (`docs/limitations.md`).
+// https://dom.spec.whatwg.org/#concept-shadow-including-parent
 pub(crate) fn shadow_including_ancestors(
     base: &blitz_dom::BaseDocument,
     start: Option<BlitzNodeId>,
@@ -89,8 +65,7 @@ pub(crate) fn shadow_including_ancestors(
     })
 }
 
-/// The shadow-including root of `id`
-/// (<https://dom.spec.whatwg.org/#concept-shadow-including-root>).
+// https://dom.spec.whatwg.org/#concept-shadow-including-root
 pub(crate) fn shadow_including_root(
     base: &blitz_dom::BaseDocument,
     id: BlitzNodeId,
@@ -102,16 +77,12 @@ pub(crate) fn shadow_including_root(
     root
 }
 
-/// Whether `node` is connected: its shadow-including root is the document
-/// (<https://dom.spec.whatwg.org/#connected>).
+// https://dom.spec.whatwg.org/#connected
 pub(crate) fn is_connected(base: &blitz_dom::BaseDocument, id: BlitzNodeId) -> bool {
     shadow_including_root(base, id) == base.root_node().id
 }
 
-/// Whether `node` is in the flat tree. Blitz has no slot assignment, so a
-/// light-tree descendant of a shadow host is in the flat tree only when the
-/// host's shadow tree has a `<slot>` it could be assigned to
-/// (<https://drafts.csswg.org/css-scoping-1/#flat-tree>).
+// https://drafts.csswg.org/css-scoping-1/#flat-tree
 pub(crate) fn is_in_flat_tree(base: &blitz_dom::BaseDocument, id: BlitzNodeId) -> bool {
     let mut current = base.get_node(id);
     while let Some(node) = current {
@@ -131,9 +102,7 @@ pub(crate) fn is_in_flat_tree(base: &blitz_dom::BaseDocument, id: BlitzNodeId) -
     true
 }
 
-/// Whether the shadow tree rooted at `root` contains a `<slot>` element, which
-/// stands in for slot assignment while Blitz has none
-/// (<https://html.spec.whatwg.org/multipage/scripting.html#the-slot-element>).
+// https://html.spec.whatwg.org/multipage/scripting.html#the-slot-element
 fn shadow_tree_has_slot(base: &blitz_dom::BaseDocument, root: BlitzNodeId) -> bool {
     let mut pending = vec![root];
     while let Some(id) = pending.pop() {
@@ -150,7 +119,6 @@ fn shadow_tree_has_slot(base: &blitz_dom::BaseDocument, root: BlitzNodeId) -> bo
     false
 }
 
-/// Whether `node` is an HTML `iframe` element.
 pub(crate) fn is_child_navigable_container(
     base: &blitz_dom::BaseDocument,
     id: BlitzNodeId,
@@ -165,8 +133,7 @@ pub(crate) fn is_child_navigable_container(
     })
 }
 
-/// Whether `node` is a `<link>` whose `rel` lists the `stylesheet` keyword
-/// (<https://html.spec.whatwg.org/multipage/links.html#link-type-stylesheet>).
+// https://html.spec.whatwg.org/multipage/links.html#link-type-stylesheet
 pub(crate) fn is_stylesheet_link(base: &blitz_dom::BaseDocument, id: BlitzNodeId) -> bool {
     is_html_element(base, id, "link")
         && attr(base, id, "rel").is_some_and(|rel| {
@@ -175,7 +142,6 @@ pub(crate) fn is_stylesheet_link(base: &blitz_dom::BaseDocument, id: BlitzNodeId
         })
 }
 
-/// Wrapped children of `node` in `document`, in tree order.
 pub(crate) fn child_ids(
     base: &blitz_dom::BaseDocument,
     document: u32,
@@ -192,7 +158,6 @@ pub(crate) fn child_ids(
     })
 }
 
-/// The value of the first attribute of `id` matching `match_name`.
 fn attr_find(
     base: &blitz_dom::BaseDocument,
     id: BlitzNodeId,
@@ -207,12 +172,7 @@ fn attr_find(
         .map(|attribute| attribute.value.as_str())
 }
 
-/// The value of the attribute named `name` on `id`, when it is an element.
-///
-/// An attribute named by its local name is the no-namespace attribute: a
-/// namespaced attribute (such as `xlink:href`) is a different attribute and
-/// never stands in for it, for HTML behavior or for a reflected IDL property
-/// (<https://dom.spec.whatwg.org/#concept-element-attributes-get-by-name>).
+// https://dom.spec.whatwg.org/#concept-element-attributes-get-by-name
 pub(crate) fn attr<'a>(
     base: &'a blitz_dom::BaseDocument,
     id: BlitzNodeId,
@@ -224,9 +184,7 @@ pub(crate) fn attr<'a>(
     })
 }
 
-/// The value of the first attribute whose qualified name is `qualified`.
-///
-/// <https://dom.spec.whatwg.org/#concept-element-attributes-get-by-name>
+// https://dom.spec.whatwg.org/#concept-element-attributes-get-by-name
 pub(crate) fn attr_by_qualified_name<'a>(
     base: &'a blitz_dom::BaseDocument,
     id: BlitzNodeId,
@@ -237,10 +195,6 @@ pub(crate) fn attr_by_qualified_name<'a>(
     })
 }
 
-/// Whether `local` is an event-handler content attribute name (`on*` with a
-/// non-empty lowercase/digit type). HTML parsing lowercases attribute names,
-/// so `ONCLICK` arrives as `onclick`; the single spelling here keeps the
-/// realm-need walk and handler compilation in agreement.
 pub(crate) fn is_handler_attribute_name(local: &str) -> bool {
     local.strip_prefix("on").is_some_and(|typ| {
         !typ.is_empty()
@@ -250,22 +204,18 @@ pub(crate) fn is_handler_attribute_name(local: &str) -> bool {
     })
 }
 
-/// The HTML namespace all HTML elements live in.
 pub(crate) fn html_namespace() -> markup5ever::Namespace {
     markup5ever::ns!(html)
 }
 
-/// The SVG namespace.
 pub(crate) fn svg_namespace() -> markup5ever::Namespace {
     markup5ever::ns!(svg)
 }
 
-/// The `MathML` namespace.
 pub(crate) fn mathml_namespace() -> markup5ever::Namespace {
     markup5ever::ns!(mathml)
 }
 
-/// Whether `data` is an HTML element named `local`.
 pub(crate) fn is_html_tag(data: Option<&blitz_dom::NodeData>, local: &str) -> bool {
     match data {
         Some(blitz_dom::NodeData::Element(element)) => {
@@ -275,14 +225,11 @@ pub(crate) fn is_html_tag(data: Option<&blitz_dom::NodeData>, local: &str) -> bo
     }
 }
 
-/// Whether `name` is the HTML `template` tag: the only element with template
-/// contents
-/// (<https://html.spec.whatwg.org/multipage/scripting.html#the-template-element>).
+// https://html.spec.whatwg.org/multipage/scripting.html#the-template-element
 pub(crate) fn is_template_tag(name: &markup5ever::QualName) -> bool {
     name.ns == html_namespace() && name.local.as_str() == "template"
 }
 
-/// The template contents fragment of `id`, when it is a `template` element.
 pub(crate) fn template_contents(
     base: &blitz_dom::BaseDocument,
     id: BlitzNodeId,
@@ -294,7 +241,6 @@ pub(crate) fn template_contents(
         .and_then(|element| element.template_contents)
 }
 
-/// Whether `node` is an HTML element named `local`.
 pub(crate) fn is_html_element(
     base: &blitz_dom::BaseDocument,
     id: BlitzNodeId,
@@ -304,15 +250,9 @@ pub(crate) fn is_html_element(
         .is_some_and(|node| is_html_tag(Some(&node.data), local))
 }
 
-/// First element in tree order within `root`'s tree whose `id` content
-/// attribute is `id`. An empty ID matches nothing
-/// (<https://dom.spec.whatwg.org/#concept-id>,
-/// <https://dom.spec.whatwg.org/#dom-nonelementparentnode-getelementbyid>).
-///
-/// The search is scoped to one tree: a shadow tree's root is not its host, so
-/// a `form` attribute on a control inside a shadow root never names an element
-/// in the host's tree
-/// (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#form-owner>).
+// https://dom.spec.whatwg.org/#concept-id
+// https://dom.spec.whatwg.org/#dom-nonelementparentnode-getelementbyid
+// https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#form-owner
 pub(crate) fn first_element_with_id(
     base: &blitz_dom::BaseDocument,
     document: u32,
@@ -344,21 +284,12 @@ pub(crate) fn first_element_with_id(
     None
 }
 
-/// [Reset the form owner](https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#reset-the-form-owner)
-/// lookup used by `form` IDL getters: a `form` content attribute names the
-/// first matching `form` in tree order when the control is in a document;
-/// otherwise the nearest ancestor `form` is used.
-///
-/// If the attribute is set on a connected element but does not identify a
-/// `form`, the owner is null; the ancestor is not consulted.
+// https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#reset-the-form-owner
 pub(crate) fn form_owner_of(
     base: &blitz_dom::BaseDocument,
     document: u32,
     node: BlitzId,
 ) -> Option<NodeId> {
-    // Blitz's `controls_to_form` map is only refreshed at insertion time, so
-    // an attribute write or a reparent can leave it stale. The getters and the
-    // entry list need the owner as it is now, so resolve it on read.
     if let Some(form_id) = attr(base, node, "form")
         && is_connected(base, node)
     {
@@ -382,9 +313,7 @@ pub(crate) fn form_owner_of(
     None
 }
 
-/// The DOM qualified name of `name`: `prefix:local` when a prefix exists, the
-/// local name otherwise
-/// (<https://dom.spec.whatwg.org/#concept-element-qualified-name>).
+// https://dom.spec.whatwg.org/#concept-element-qualified-name
 pub(crate) fn qualified_name(name: &markup5ever::QualName) -> String {
     match &name.prefix {
         Some(prefix) if !prefix.is_empty() => format!("{prefix}:{}", name.local),
@@ -392,9 +321,7 @@ pub(crate) fn qualified_name(name: &markup5ever::QualName) -> String {
     }
 }
 
-/// `Node.nodeName` for an element: the HTML-uppercased qualified name in HTML
-/// documents, the qualified name otherwise
-/// (<https://dom.spec.whatwg.org/#concept-element-html-uppercased-qualified-name>).
+// https://dom.spec.whatwg.org/#concept-element-html-uppercased-qualified-name
 pub(crate) fn element_node_name(name: &markup5ever::QualName, uppercase: bool) -> String {
     let qualified = qualified_name(name);
     if uppercase && name.ns == html_namespace() {
@@ -404,9 +331,7 @@ pub(crate) fn element_node_name(name: &markup5ever::QualName, uppercase: bool) -
     }
 }
 
-/// `Node.nodeType` for `data`, or `None` for an internal node that script
-/// cannot observe
-/// (<https://dom.spec.whatwg.org/#dom-node-nodetype>).
+// https://dom.spec.whatwg.org/#dom-node-nodetype
 pub(crate) fn node_type(data: Option<&NodeData>) -> Option<u16> {
     match data {
         Some(NodeData::Element(_)) => Some(1),
@@ -421,10 +346,8 @@ pub(crate) fn node_type(data: Option<&NodeData>) -> Option<u16> {
     }
 }
 
-/// `Node.nodeName` for `base`'s `id`
-/// (<https://dom.spec.whatwg.org/#dom-node-nodename>,
-/// <https://dom.spec.whatwg.org/#concept-element-html-uppercased-qualified-name>).
-/// `html` selects the HTML-uppercased element name of an HTML document.
+// https://dom.spec.whatwg.org/#dom-node-nodename
+// https://dom.spec.whatwg.org/#concept-element-html-uppercased-qualified-name
 pub(crate) fn node_name(base: &blitz_dom::BaseDocument, id: BlitzId, html: bool) -> Option<String> {
     let data = base.get_node(id).map(|node| &node.data);
     match data {
@@ -442,7 +365,6 @@ pub(crate) fn node_name(base: &blitz_dom::BaseDocument, id: BlitzId, html: bool)
     }
 }
 
-/// The previous (`forward == false`) or next sibling of `id` in its parent.
 pub(crate) fn sibling(
     base: &blitz_dom::BaseDocument,
     id: BlitzId,
@@ -461,13 +383,11 @@ pub(crate) fn sibling(
     }
 }
 
-/// Whether `id` is an element node.
 pub(crate) fn is_element(base: &blitz_dom::BaseDocument, id: BlitzId) -> bool {
     base.get_node(id)
         .is_some_and(|node| matches!(node.data, NodeData::Element(_)))
 }
 
-/// The root of the tree `id` participates in (itself when detached).
 pub(crate) fn root_of(base: &blitz_dom::BaseDocument, id: BlitzId) -> BlitzId {
     let mut root = id;
     while let Some(parent) = base.get_node(root).and_then(|node| node.parent) {
@@ -476,7 +396,6 @@ pub(crate) fn root_of(base: &blitz_dom::BaseDocument, id: BlitzId) -> BlitzId {
     root
 }
 
-/// `id` followed by its inclusive ancestors, nearest first.
 pub(crate) fn ancestor_chain(
     base: &blitz_dom::BaseDocument,
     document: u32,
@@ -494,8 +413,7 @@ pub(crate) fn ancestor_chain(
     chain
 }
 
-/// Document order of two nodes in one tree
-/// (<https://dom.spec.whatwg.org/#concept-tree-order>).
+// https://dom.spec.whatwg.org/#concept-tree-order
 pub(crate) fn tree_order(
     base: &blitz_dom::BaseDocument,
     document: u32,

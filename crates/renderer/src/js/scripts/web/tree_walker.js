@@ -1,8 +1,4 @@
 // https://dom.spec.whatwg.org/#traversal
-//
-// `TreeWalker` and `NodeIterator` are the traversal interfaces: both hold a
-// root, a whatToShow bitmask, and a filter callback, and both guard against a
-// filter that re-enters the traversal through an "is active" flag.
 {
   const FILTER_ACCEPT = 1;
   const FILTER_REJECT = 2;
@@ -10,29 +6,21 @@
 
   const __tbTraversalTreeWalker = host.slots('tinybrowser.traversal.treewalker');
   const __tbTraversalNodeIterator = host.slots('tinybrowser.traversal.nodeiterator');
-  // Passed as the first constructor argument so `new TreeWalker()` and
-  // `new NodeIterator()` throw: neither interface has a constructor
-  // (<https://webidl.spec.whatwg.org/#interface-object>).
+  // https://webidl.spec.whatwg.org/#interface-object
   const __tbTraversalConstruct = { __proto__: null };
 
-  /// Converts `whatToShow` to an unsigned long.
   const __tbTraversalMask = value => {
     if (value === undefined) return 0xFFFFFFFF;
     return Number(value) >>> 0;
   };
 
-  /// The `NodeFilter?` callback-interface conversion: null and undefined are
-  /// no filter, anything else is kept and called as a function or through
-  /// `acceptNode` when filtering
-  /// (<https://webidl.spec.whatwg.org/#es-callback-interface>).
+  // https://webidl.spec.whatwg.org/#es-callback-interface
   const __tbTraversalFilterValue = value => {
     if (value === null || value === undefined) return null;
     return value;
   };
 
-  /// Filtering a node for a traverser, including the active flag that makes a
-  /// re-entrant filter throw
-  /// (<https://dom.spec.whatwg.org/#concept-node-filter>).
+  // https://dom.spec.whatwg.org/#concept-node-filter
   const __tbTraversalFilter = (state, node) => {
     if (state.active) {
       throw new globalThis.DOMException(
@@ -55,8 +43,6 @@
     return Number(result);
   };
 
-  /// The first node after `node` in tree order, staying inside `root`'s
-  /// subtree.
   const __tbTraversalFollowing = (root, node) => {
     if (node.firstChild !== null) return node.firstChild;
     let current = node;
@@ -67,8 +53,6 @@
     return null;
   };
 
-  /// The last node before `node` in tree order, staying inside `root`'s
-  /// subtree.
   const __tbTraversalPreceding = (root, node) => {
     if (node === root) return null;
     if (node.previousSibling !== null) {
@@ -206,8 +190,7 @@
     value: 'TreeWalker', configurable: true,
   });
 
-  /// `firstChild()` / `lastChild()`
-  /// (<https://dom.spec.whatwg.org/#concept-traverse-children>).
+  // https://dom.spec.whatwg.org/#concept-traverse-children
   const __tbTraversalChildren = (walker, type) => {
     const state = __tbTraversalTreeWalker.get(walker);
     if (state === undefined) throw new TypeError('Illegal invocation');
@@ -239,8 +222,7 @@
     return null;
   };
 
-  /// `nextSibling()` / `previousSibling()`
-  /// (<https://dom.spec.whatwg.org/#concept-traverse-siblings>).
+  // https://dom.spec.whatwg.org/#concept-traverse-siblings
   const __tbTraversalSiblings = (walker, type) => {
     const state = __tbTraversalTreeWalker.get(walker);
     if (state === undefined) throw new TypeError('Illegal invocation');
@@ -321,8 +303,7 @@
     value: 'NodeIterator', configurable: true,
   });
 
-  /// `nextNode()` / `previousNode()` for a `NodeIterator`
-  /// (<https://dom.spec.whatwg.org/#concept-nodeiterator-traverse>).
+  // https://dom.spec.whatwg.org/#concept-nodeiterator-traverse
   const __tbTraversalIterate = (iterator, type) => {
     const state = __tbTraversalNodeIterator.get(iterator);
     if (state === undefined) throw new TypeError('Illegal invocation');
@@ -374,10 +355,7 @@
     value: Object.freeze(NodeFilter), writable: true, configurable: true,
   });
 
-  /// The `Node` root argument shared by `createTreeWalker` and
-  /// `createNodeIterator`. Nodes from another realm are still Nodes, so this
-  /// checks the interface's shape instead of the local constructor
-  /// (<https://webidl.spec.whatwg.org/#es-interface>).
+  // https://webidl.spec.whatwg.org/#es-interface
   const __tbTraversalRoot = root => {
     if (root === null || typeof root !== 'object'
       || typeof root.nodeType !== 'number'

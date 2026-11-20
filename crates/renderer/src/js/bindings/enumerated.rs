@@ -1,49 +1,23 @@
-//! Enumerated content attributes: one Rust enum per keyword set, with one
-//! reflection rule for all of them.
-//!
-//! `parse` is ASCII case-insensitive and does not trim. Reflection answers the
-//! canonical keyword, the missing-value default when the attribute is absent,
-//! or the invalid-value default when it is not a keyword
-//! (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#limited-to-only-known-values>).
-//!
-//! The declaration form is `enumerated::enumerated!`, shared with `net`'s
-//! `ReferrerPolicy` and `CrossOrigin`.
+// https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#limited-to-only-known-values
 
 pub(crate) use enumerated::Enumerated;
 use enumerated::enumerated;
 
-/// When an enumerated attribute names no keyword: what its getter answers with
-/// the attribute absent, and with the attribute present but invalid.
-///
-/// The defaults are enum values, not spellings, so a typo cannot compile; the
-/// two named fields make an exchange of the spec's missing-value default for
-/// its invalid-value default impossible to write by accident.
-/// `None` is the spec's "no state", which a getter reports as the empty string
-/// (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#limited-to-only-known-values>).
+// https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#limited-to-only-known-values
 #[derive(Clone, Copy)]
 pub(crate) struct Defaults<T> {
-    /// The missing-value default.
     pub(crate) missing: Option<T>,
-    /// The invalid-value default.
     pub(crate) invalid: Option<T>,
 }
 
 impl<T> Defaults<T> {
-    /// No default for either state. A `const` so getters that answer the empty
-    /// string need not name the enum twice.
     pub(crate) const NONE: Self = Self {
         missing: None,
         invalid: None,
     };
 }
 
-/// Enumerated reflection: the canonical keyword, the missing-value default
-/// when the attribute is absent, or the invalid-value default when it names no
-/// keyword.
-///
-/// A state with no keyword reports the empty string, which is the HTML rule
-/// for a `DOMString` IDL attribute
-/// (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#limited-to-only-known-values>).
+// https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#limited-to-only-known-values
 pub(crate) fn reflect_enumerated<T: Enumerated>(
     raw: Option<&str>,
     defaults: Defaults<T>,
@@ -56,9 +30,7 @@ pub(crate) fn reflect_enumerated<T: Enumerated>(
         .map_or("", |value| value.keyword())
 }
 
-/// Enumerated reflection for a nullable `DOMString?` IDL attribute: a state
-/// with no keyword is `null` rather than the empty string
-/// (<https://w3c.github.io/aria/#enumerated-attribute-values-html>).
+// https://w3c.github.io/aria/#enumerated-attribute-values-html
 pub(crate) fn reflect_enumerated_nullable<T: Enumerated>(
     raw: Option<&str>,
     defaults: Defaults<T>,
@@ -70,7 +42,7 @@ pub(crate) fn reflect_enumerated_nullable<T: Enumerated>(
 }
 
 enumerated! {
-    /// `dir` (<https://html.spec.whatwg.org/multipage/dom.html#the-dir-attribute>).
+    // https://html.spec.whatwg.org/multipage/dom.html#the-dir-attribute
     pub(crate) Dir {
         Ltr => "ltr",
         Rtl => "rtl",
@@ -79,8 +51,7 @@ enumerated! {
 }
 
 enumerated! {
-    /// `enterkeyhint`
-    /// (<https://html.spec.whatwg.org/multipage/interaction.html#attr-enterkeyhint>).
+    // https://html.spec.whatwg.org/multipage/interaction.html#attr-enterkeyhint
     pub(crate) EnterKeyHint {
         Enter => "enter",
         Done => "done",
@@ -93,8 +64,7 @@ enumerated! {
 }
 
 enumerated! {
-    /// `inputmode`
-    /// (<https://html.spec.whatwg.org/multipage/interaction.html#attr-inputmode>).
+    // https://html.spec.whatwg.org/multipage/interaction.html#attr-inputmode
     pub(crate) InputMode {
         None => "none",
         Text => "text",
@@ -108,8 +78,7 @@ enumerated! {
 }
 
 enumerated! {
-    /// `loading`
-    /// (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#attr-loading>).
+    // https://html.spec.whatwg.org/multipage/urls-and-fetching.html#attr-loading
     pub(crate) Loading {
         Lazy => "lazy",
         Eager => "eager",
@@ -117,8 +86,7 @@ enumerated! {
 }
 
 enumerated! {
-    /// `preload`
-    /// (<https://html.spec.whatwg.org/multipage/media.html#attr-media-preload>).
+    // https://html.spec.whatwg.org/multipage/media.html#attr-media-preload
     pub(crate) Preload {
         None => "none",
         Metadata => "metadata",
@@ -127,8 +95,7 @@ enumerated! {
 }
 
 enumerated! {
-    /// `decoding`
-    /// (<https://html.spec.whatwg.org/multipage/embedded-content.html#attr-img-decoding>).
+    // https://html.spec.whatwg.org/multipage/embedded-content.html#attr-img-decoding
     pub(crate) Decoding {
         Async => "async",
         Sync => "sync",
@@ -136,11 +103,7 @@ enumerated! {
     }
 }
 
-/// `method` and `formmethod`
-/// (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#attr-fs-method>).
-///
-/// The parser is the engine's form-submission parser, so the reflection getter
-/// and the submission plan cannot disagree about a value such as `" post"`.
+// https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#attr-fs-method
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum FormMethod {
     Get,
@@ -170,8 +133,7 @@ impl Enumerated for FormMethod {
     }
 }
 
-/// `enctype` and `formenctype`
-/// (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#attr-fs-enctype>).
+// https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#attr-fs-enctype
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum FormEnctype {
     UrlEncoded,
@@ -204,8 +166,7 @@ impl Enumerated for FormEnctype {
 }
 
 enumerated! {
-    /// `autocomplete`
-    /// (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#attr-fe-autocomplete>).
+    // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#attr-fe-autocomplete
     pub(crate) Autocomplete {
         On => "on",
         Off => "off",
@@ -213,8 +174,7 @@ enumerated! {
 }
 
 enumerated! {
-    /// `scope` on `th`
-    /// (<https://html.spec.whatwg.org/multipage/tables.html#attr-th-scope>).
+    // https://html.spec.whatwg.org/multipage/tables.html#attr-th-scope
     pub(crate) TableScope {
         Row => "row",
         Col => "col",
@@ -224,8 +184,7 @@ enumerated! {
 }
 
 enumerated! {
-    /// `as` on `link`
-    /// (<https://html.spec.whatwg.org/multipage/semantics.html#attr-link-as>).
+    // https://html.spec.whatwg.org/multipage/semantics.html#attr-link-as
     pub(crate) LinkAs {
         Fetch => "fetch",
         Audio => "audio",
@@ -253,8 +212,7 @@ enumerated! {
 }
 
 enumerated! {
-    /// `kind` on `track`
-    /// (<https://html.spec.whatwg.org/multipage/media.html#attr-track-kind>).
+    // https://html.spec.whatwg.org/multipage/media.html#attr-track-kind
     pub(crate) TrackKind {
         Subtitles => "subtitles",
         Captions => "captions",
@@ -264,17 +222,9 @@ enumerated! {
     }
 }
 
-// ── ARIA enumerated attributes ───────────────────────────────────────────
-//
-// ARIA 1.3 reflects an enumerated `aria-*` attribute as a nullable string with
-// a missing-value default and an invalid-value default, either of which may be
-// the Undefined state (null)
-// (<https://w3c.github.io/aria/#enumerated-attribute-values-html>). Each
-// keyword set is one type; the two defaults are per attribute and live in
-// `reflected-enumerated.txt`.
+// https://w3c.github.io/aria/#enumerated-attribute-values-html
 
 enumerated! {
-    /// The boolean-like `true`/`false` value of an ARIA state.
     pub(crate) AriaTrueFalse {
         True => "true",
         False => "false",
@@ -282,8 +232,6 @@ enumerated! {
 }
 
 enumerated! {
-    /// The tristate `true`/`false`/`mixed` value of `aria-checked` and
-    /// `aria-pressed`.
     pub(crate) AriaTristate {
         True => "true",
         False => "false",
@@ -292,7 +240,6 @@ enumerated! {
 }
 
 enumerated! {
-    /// The `aria-haspopup` value.
     pub(crate) AriaHasPopup {
         True => "true",
         False => "false",
@@ -305,7 +252,6 @@ enumerated! {
 }
 
 enumerated! {
-    /// The `aria-orientation` value.
     pub(crate) AriaOrientation {
         Horizontal => "horizontal",
         Vertical => "vertical",
@@ -313,8 +259,7 @@ enumerated! {
 }
 
 enumerated! {
-    /// The `aria-autocomplete` value
-    /// (<https://w3c.github.io/aria/#aria-autocomplete>).
+    // https://w3c.github.io/aria/#aria-autocomplete
     pub(crate) AriaAutoComplete {
         Inline => "inline",
         List => "list",
@@ -324,9 +269,7 @@ enumerated! {
 }
 
 enumerated! {
-    /// The `aria-current` value, which includes the `true`/`false` states
-    /// alongside the token values
-    /// (<https://w3c.github.io/aria/#aria-current>).
+    // https://w3c.github.io/aria/#aria-current
     pub(crate) AriaCurrent {
         Page => "page",
         Step => "step",
@@ -339,8 +282,7 @@ enumerated! {
 }
 
 enumerated! {
-    /// The `aria-invalid` value
-    /// (<https://w3c.github.io/aria/#aria-invalid>).
+    // https://w3c.github.io/aria/#aria-invalid
     pub(crate) AriaInvalid {
         True => "true",
         False => "false",
@@ -350,7 +292,6 @@ enumerated! {
 }
 
 enumerated! {
-    /// The `aria-live` value.
     pub(crate) AriaLive {
         Polite => "polite",
         Assertive => "assertive",
@@ -359,7 +300,6 @@ enumerated! {
 }
 
 enumerated! {
-    /// The `aria-sort` value.
     pub(crate) AriaSort {
         Ascending => "ascending",
         Descending => "descending",
@@ -374,9 +314,7 @@ mod reflection_tests {
         AriaTrueFalse, Defaults, TrackKind, reflect_enumerated, reflect_enumerated_nullable,
     };
 
-    /// The four answers a getter can give, from the spec's missing-value and
-    /// invalid-value defaults
-    /// (<https://html.spec.whatwg.org/multipage/media.html#dom-track-kind>).
+    // https://html.spec.whatwg.org/multipage/media.html#dom-track-kind
     #[test]
     fn reflection_answers_each_state_once() {
         let track = Defaults {
@@ -410,10 +348,7 @@ mod reflection_tests {
         );
     }
 
-    /// A nullable enumerated getter reports the Undefined state as `null`, and
-    /// still maps a present value through the keyword set and the
-    /// invalid-value default
-    /// (<https://w3c.github.io/aria/#enumerated-attribute-values-html>).
+    // https://w3c.github.io/aria/#enumerated-attribute-values-html
     #[test]
     fn nullable_reflection_reports_the_undefined_state_as_null() {
         let atomic = Defaults {

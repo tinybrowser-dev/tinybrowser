@@ -1,28 +1,15 @@
-//! Reading one decoded response body under the carrier's cap and checks.
-//!
-//! Both delivery modes — buffered and streamed — and every carrier drive this
-//! reader, so the size cap, the integrity check, and the mapping from
-//! [`net::NetError`] to [`DialFailure`] exist once
-//! (<https://fetch.spec.whatwg.org/#concept-response-body>).
+// https://fetch.spec.whatwg.org/#concept-response-body
 
 use crate::dial_failure;
 use renderer::DialFailure;
 
-/// One event from [`BodyReader`].
 pub enum BodyEvent {
-    /// A decoded chunk. The reader has already collected it when the delivery
-    /// mode needs the whole body.
     Chunk(Vec<u8>),
-    /// The body ended; the collected bytes are what integrity checked.
     Done(Vec<u8>),
-    /// The body could not be decoded for its `Content-Encoding`.
     DecodeError,
-    /// The transfer failed before the body ended.
     Failed(DialFailure),
 }
 
-/// Reads one decoded response body. Both delivery modes drive this reader, so
-/// the size cap, integrity check, and error mapping exist once.
 pub struct BodyReader {
     body: net::Body,
     integrity: Option<String>,

@@ -1,11 +1,3 @@
-//! The native transport: hyper client, native-tls (OpenSSL) TLS, and system
-//! DNS with `--resolve` rewrites ahead of it.
-//!
-//! The browser process owns one Tokio runtime. `net` never implements HTTP
-//! framing; `hyper-util` supplies HTTP/1.1, HTTP/2, pooling, and the connector
-//! stack, while this module enforces the hop's deadline and maps transport
-//! failures. Every fetch rule stays in the fetch core above the port.
-
 use std::convert::Infallible;
 use std::fmt;
 use std::future::Future;
@@ -33,7 +25,6 @@ use crate::error::{NetError, TimeoutKind, TransportError};
 use crate::protocol::{HeaderMap, basic_authorization};
 use crate::resolve::{HostMap, ResolveFailure, Target};
 
-/// Resolver that applies ordered `--resolve` rules before system DNS.
 #[derive(Clone)]
 pub(crate) struct HostResolver {
     host_map: HostMap,
@@ -51,10 +42,9 @@ impl Service<Name> for HostResolver {
 
     fn call(&mut self, name: Name) -> Self::Future {
         match self.host_map.lookup(name.as_str()) {
-            Some(Target::Addr(ip)) => Box::pin(async move {
-                // The connector replaces port zero with the URI's port.
-                Ok(vec![SocketAddr::new(ip.into(), 0)].into_iter())
-            }),
+            Some(Target::Addr(ip)) => {
+                Box::pin(async move { Ok(vec![SocketAddr::new(ip.into(), 0)].into_iter()) })
+            }
             Some(Target::Fail) => Box::pin(async move { Err(ResolveFailure::Denied) }),
             None => {
                 let mut system = self.system.clone();
@@ -71,22 +61,16 @@ impl Service<Name> for HostResolver {
 
 type RequestBody = BoxBody<Bytes, Infallible>;
 
-/// An HTTP CONNECT proxy parsed at the configuration boundary.
-///
-/// Debug output names the destination and whether credentials are present,
-/// never the credentials themselves.
 #[derive(Clone)]
 pub struct Proxy {
     destination: hyper::Uri,
     auth: Option<HeaderValue>,
 }
 
-/// A proxy URI that is not an `http://` HTTP CONNECT authority with a host.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 #[error("proxy URI must be an http:// HTTP CONNECT authority")]
 pub struct InvalidProxy;
 
-/// A certificate file that is not a PEM-encoded certificate.
 #[derive(Debug, thiserror::Error)]
 #[error("invalid certificate authority: {0}")]
 pub struct InvalidCa(#[source] native_tls::Error);
@@ -164,19 +148,10 @@ impl fmt::Debug for HttpEngine {
     }
 }
 
-/// A PEM certificate authority, already parsed for the TLS connector.
-///
-/// The configuration boundary builds these, so a malformed file is a usage
-/// error instead of a dial-time TLS failure.
 #[derive(Clone)]
 pub struct TrustedCa(native_tls::Certificate);
 
 impl TrustedCa {
-    /// Parses one PEM certificate.
-    ///
-    /// # Errors
-    ///
-    /// [`InvalidCa`] when `pem` is not a PEM-encoded certificate.
     pub fn from_pem(pem: &[u8]) -> Result<Self, InvalidCa> {
         native_tls::Certificate::from_pem(pem)
             .map(Self)
@@ -184,12 +159,6 @@ impl TrustedCa {
     }
 }
 
-/// `native-tls` connector trusting `cas`.
-///
-/// ALPN is configured here, not by `hyper-tls`: its `alpn` feature only reports
-/// the protocol the server picked. OpenSSL initialization failure is
-/// unrecoverable for TLS in this process, and `hyper-tls`'s own constructors
-/// panic on it for the same reason.
 fn tls_connector(cas: &[TrustedCa]) -> tokio_native_tls::TlsConnector {
     let mut tls = native_tls::TlsConnector::builder();
     for ca in cas {
@@ -208,8 +177,6 @@ impl HttpEngine {
             host_map,
             system: GaiResolver::new(),
         };
-        // `HttpConnector` resolves through `HostResolver` and applies Happy
-        // Eyeballs (300 ms default) when a name returns multiple addresses.
         let mut http = HttpConnector::new_with_resolver(resolver);
         http.enforce_http(false);
         let tls = tls_connector(tls_cas);
@@ -228,14 +195,6 @@ impl HttpEngine {
 }
 
 impl Transport for HttpEngine {
-    /// Sends one hop over hyper. Redirects, cookies, and header shaping belong
-    /// to the fetch core; this port applies the deadline and maps transport
-    /// failures.
-    ///
-    /// # Errors
-    ///
-    /// [`NetError::Transport`] for DNS, connect, TLS, timeout, or I/O failure.
-    /// [`NetError::RejectedRequest`] when the request cannot be represented.
     fn exchange(
         &self,
         request: WireRequest,
@@ -265,10 +224,7 @@ impl Transport for HttpEngine {
                 )
                 .body(request_body)
                 .map_err(|_| NetError::RejectedRequest)?;
-            // Browsers state the HTTP/1.1 default explicitly. hyper leaves the
-            // field to the caller, and ALPN can only select HTTP/2 over TLS, so a
-            // cleartext URL is always the HTTP/1.1 connection this field belongs
-            // on (<https://www.rfc-editor.org/rfc/rfc9110#section-7.6.1>).
+            // https://www.rfc-editor.org/rfc/rfc9110#section-7.6.1
             if wire_url.scheme() == "http" && headers.value("connection").is_none() {
                 request.headers_mut().append(
                     hyper::header::CONNECTION,
@@ -289,17 +245,13 @@ impl Transport for HttpEngine {
                 Ok(Err(error)) => return Err(map_client_error(error, &host)),
                 Err(error) => return Err(error),
             };
-            // HTTP/2 has no reason phrase; `StatusCode::canonical_reason` would
-            // invent one (<https://www.rfc-editor.org/rfc/rfc9113#section-8.3.2>).
+            // https://www.rfc-editor.org/rfc/rfc9113#section-8.3.2
             let http2 = response.version() == hyper::Version::HTTP_2;
             let status = response.status().as_u16();
             let mut mapped = HeaderMap::new();
             for (name, value) in response.headers() {
                 mapped.insert_wire(name.clone(), value.clone());
             }
-            // The port's body is a `http_body` stream so the fetch core decodes
-            // it uniformly, whether the bytes come from a socket or from an
-            // embedder's in-memory origin.
             let body = response.into_body().map_err(|error| {
                 NetError::Transport(TransportError::Io(std::io::Error::other(error)))
             });
@@ -319,13 +271,7 @@ impl Transport for HttpEngine {
     }
 }
 
-/// The hop deadline applied to a response body.
-///
-/// A body is read after [`Transport::exchange`] returns, and only the transport
-/// can interrupt a read that has not produced a byte yet. Expiry surfaces as
-/// [`TransportError::Timeout`] carrying the kind that ran out, because the fetch
-/// core reports a stalled body and a stalled socket the same way
-/// (<https://fetch.spec.whatwg.org/#concept-http-network-fetch>).
+// https://fetch.spec.whatwg.org/#concept-http-network-fetch
 struct BodyDeadline {
     inner: WireBody,
     budget: HopBudget,
@@ -355,8 +301,6 @@ impl http_body::Body for BodyDeadline {
     }
 }
 
-/// Awaits `future` under the hop deadline. `fallback` names the phase when
-/// neither the global nor the per-call deadline is the one that expired.
 pub(crate) async fn within<T>(
     budget: HopBudget,
     fallback: TimeoutKind,
@@ -382,9 +326,6 @@ fn map_client_error(error: hyper_util::client::legacy::Error, host: &str) -> Net
         let mut source = std::error::Error::source(&error);
         let mut tls_reason: Option<Box<str>> = None;
         while let Some(cause) = source {
-            // The resolver phase fails before any socket exists: `hyper-util`
-            // wraps `HostResolver`'s error in its connect error, and the typed
-            // cause survives the wrapping.
             if cause.downcast_ref::<ResolveFailure>().is_some() {
                 return NetError::Transport(TransportError::Dns(host.into()));
             }
@@ -395,9 +336,6 @@ fn map_client_error(error: hyper_util::client::legacy::Error, host: &str) -> Net
                 if io.kind() == std::io::ErrorKind::NotFound {
                     return NetError::Transport(TransportError::Dns(host.into()));
                 }
-                // A connect-phase io error that wraps another error is a
-                // protocol failure (TLS handshake, most often); plain OS
-                // errors carry no inner error.
                 let wrapped = io.get_ref().is_some();
                 if wrapped && tls_reason.is_none() {
                     tls_reason = Some(io.to_string().into());

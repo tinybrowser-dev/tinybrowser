@@ -10,9 +10,6 @@
   delete host.__tbIntlFormatNumber;
   delete host.__tbIntlFormatDateTime;
 
-  // The first language of the identity is the default locale, so `Intl`
-  // resolves to the same locale `navigator.language` reports when the caller
-  // asks for nothing and nothing matches.
   const defaultLocale = host.__tbIdentity().languages[0];
 
   const call = Function.prototype.call.bind(Function.prototype.call);
@@ -165,13 +162,8 @@
     throw new TypeError('cannot convert object to a primitive value');
   }
 
-  // A `StringNumericLiteral` in exact plain-decimal form, or null when
-  // `text` is not one. Decimal exponents expand (`"1e30"`), and
-  // hexadecimal/binary/octal integers convert through `BigInt`, so split
-  // UTF-8 tails and huge magnitudes keep every digit instead of taking the
-  // lossy `Number` path
-  // (https://402.ecma-international.org/#sec-tointlmathematicalvalue,
-  // https://262.ecma-international.org/#sec-stringnumericliteral).
+  // https://402.ecma-international.org/#sec-tointlmathematicalvalue
+  // https://262.ecma-international.org/#sec-stringnumericliteral
   function expandDecimalLiteral(text) {
     if (text.length > 2 && text[0] === '0') {
       const prefix = text[1] === 'x' || text[1] === 'X' ? [16, /^[0-9a-fA-F]+$/]
@@ -179,7 +171,6 @@
         : text[1] === 'o' || text[1] === 'O' ? [8, /^[0-7]+$/] : null;
       if (prefix) {
         if (!regexpTest(prefix[1], stringSlice(text, 2))) return null;
-        // `BigInt` accepts the `0x`/`0b`/`0o` prefixes exactly.
         return stringConstructor(bigintConstructor('0' + stringToLowerCase(text[1]) + stringSlice(text, 2)));
       }
     }
@@ -190,8 +181,6 @@
     const mantissa = stringSlice(text, 0, marker);
     if (!regexpTest(/^[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)$/, mantissa)) return null;
     const exponent = parseDecimalExponent(stringSlice(text, marker + 1));
-    // Absurd magnitudes stay on the lossy path rather than materializing a
-    // ten-thousand-digit string for the formatter.
     if (exponent === null || exponent > 9999 || exponent < -9999) return null;
     return expandDecimalExponent(mantissa, exponent);
   }
@@ -265,8 +254,6 @@
       }
     }
 
-    // ResolveOptions and SetNumberFormatUnitOptions are kept in specification
-    // order so getters observe the same sequence as Firefox.
     const style = stringOption(
       options, 'style', ['decimal', 'percent', 'currency', 'unit'], 'decimal'
     );
@@ -392,8 +379,6 @@
     const signDisplay = stringOption(
       options, 'signDisplay', ['auto', 'never', 'always', 'exceptZero', 'negative'], 'auto'
     );
-    // SetNumberFormatUnitOptions stores [[Currency]] only for currency style,
-    // so resolvedOptions must not expose the currency fields for other styles.
     // https://402.ecma-international.org/#sec-setnumberformatunitoptions
     const slots = {
       locale, numberingSystem, style,
@@ -516,7 +501,6 @@
     throw new RangeError('this date component combination is not currently supported');
   }
 
-  // ECMA-402 gathers the component and style options before matching a locale pattern.
   // https://402.ecma-international.org/#sec-createdatetimeformat
   function initializeDateTimeFormat(instance, locales, options, required, defaults) {
     const locale = resolveLocale(locales);
@@ -597,8 +581,6 @@
     for (let index = 0; index < timeComponentNames.length; index += 1) {
       if (components[timeComponentNames[index]] !== undefined) hasTimeComponents = true;
     }
-    // CreateDateTimeFormat lets only the component group named by `required`
-    // veto the defaults, then applies the groups named by `defaults`.
     // https://402.ecma-international.org/#sec-createdatetimeformat
     const needDefaults = dateStyle === undefined && timeStyle === undefined &&
       (required === 'date'
@@ -745,13 +727,9 @@
     return method;
   }
 
-  // Firefox likewise keeps BigInt as an exact mathematical value until the
-  // backend boundary instead of coercing it through Number.
   // https://searchfox.org/firefox-main/source/js/src/builtin/intl/NumberFormat.cpp#2023
   function numberLocaleMethod(unbox) {
-    // The receiver is validated before the formatter is built, so an invalid
-    // receiver neither reads option getters nor throws a locale error
-    // (<https://402.ecma-international.org/#sec-formatnumeric>).
+    // https://402.ecma-international.org/#sec-formatnumeric
     return localeMethod('toLocaleString', (receiver, locales, options) => {
       const value = call(unbox, receiver);
       return new NumberFormat(locales, options).format(value);

@@ -3,7 +3,6 @@ import AreaTable from "@/components/AreaTable.astro"
 import HistoryChart from "@/components/HistoryChart.astro"
 import Regressions from "@/components/Regressions.astro"
 import Base from "@/layouts/Base.astro"
-import { loadSnapshot } from "@/lib/data"
 import {
   counter,
   formatCount,
@@ -13,10 +12,11 @@ import {
   subtestPercent,
   testPercent,
 } from "@/lib/record"
+import { loadWptSnapshot } from "@/lib/wpt-results"
 
 export const prerender = true
 
-const { latest, index, regressions } = loadSnapshot()
+const { latest, index, regressions } = loadWptSnapshot()
 
 const score = latest ? subtestPercent(latest.totals) : null
 const files = latest ? testPercent(latest.totals) : null

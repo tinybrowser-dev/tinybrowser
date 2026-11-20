@@ -1,9 +1,4 @@
-//! A `Document`'s named properties
-//! (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-nameditem>).
-//!
-//! `Document` is the only node interface that supports named properties, but
-//! every node wrapper shares the `JsNode` class, so the exotic hooks in
-//! `node::mod` answer `None` for every other node before reaching here.
+// https://html.spec.whatwg.org/multipage/dom.html#dom-document-nameditem
 
 use rquickjs::{
     Atom, Ctx, Exception, Function, Persistent, Result, Value,
@@ -18,9 +13,7 @@ use crate::js::bindings::{
     wrap_node,
 };
 
-/// The descriptor of the Document named property `atom` names, or `None` when
-/// no named element carries it, or when a prototype member shadows it
-/// (<https://webidl.spec.whatwg.org/#legacy-platform-object-getownproperty>).
+// https://webidl.spec.whatwg.org/#legacy-platform-object-getownproperty
 pub(super) fn named_property<'js>(
     ctx: &Ctx<'js>,
     document: NodeId,
@@ -30,25 +23,20 @@ pub(super) fn named_property<'js>(
     let Some(name) = atom_name(ctx, atom) else {
         return Ok(None);
     };
-    // Document named properties no longer override built-ins, which is the
-    // direction of <https://github.com/whatwg/html/pull/13161> and what
-    // Firefox Nightly ships: a prototype member keeps its own value.
+    // https://github.com/whatwg/html/pull/13161
     if !named_key_visible(object, &name)? {
         return Ok(None);
     }
     let Some(value) = named_value(ctx, document, &name)? else {
         return Ok(None);
     };
-    // `Document` has no named property setter, so the property is a
-    // non-writable but configurable, enumerable data property
-    // (<https://webidl.spec.whatwg.org/#legacy-platform-object-getownproperty>).
+    // https://webidl.spec.whatwg.org/#legacy-platform-object-getownproperty
     Ok(Some(PropertyDescriptor::new_value(
         value, true, true, false,
     )))
 }
 
-/// The Document's supported property names, for `[[OwnPropertyKeys]]`
-/// (<https://webidl.spec.whatwg.org/#legacy-platform-object-ownpropertykeys>).
+// https://webidl.spec.whatwg.org/#legacy-platform-object-ownpropertykeys
 pub(super) fn named_property_names<'js>(
     ctx: &Ctx<'js>,
     document: NodeId,
@@ -75,9 +63,7 @@ pub(super) fn named_property_names<'js>(
     Ok(properties)
 }
 
-/// `Document`'s `[[Set]]` for a supported name: the named property is ignored
-/// and an ordinary own property is created that shadows it from then on
-/// (<https://webidl.spec.whatwg.org/#legacy-platform-object-set>).
+// https://webidl.spec.whatwg.org/#legacy-platform-object-set
 pub(super) fn set_named_property<'js>(
     ctx: &Ctx<'js>,
     document: NodeId,
@@ -101,9 +87,7 @@ pub(super) fn set_named_property<'js>(
     Ok(ExoticSetResult::Handled(true))
 }
 
-/// `Document`'s `[[Delete]]` for a supported name: it has no named property
-/// deleter, so the deletion fails
-/// (<https://webidl.spec.whatwg.org/#legacy-platform-object-delete>).
+// https://webidl.spec.whatwg.org/#legacy-platform-object-delete
 pub(super) fn delete_named_property<'js>(
     ctx: &Ctx<'js>,
     document: NodeId,
@@ -129,10 +113,7 @@ fn is_supported_name(ctx: &Ctx<'_>, document: NodeId, name: &str) -> Result<bool
     ))
 }
 
-/// The value of the Document named property `name`: the single named element,
-/// that element's `contentWindow` when it is an `iframe`, or the cached live
-/// `HTMLCollection` when several elements share the name
-/// (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-nameditem>).
+// https://html.spec.whatwg.org/multipage/dom.html#dom-document-nameditem
 fn named_value<'js>(ctx: &Ctx<'js>, document: NodeId, name: &str) -> Result<Option<Value<'js>>> {
     let world = world_for_node(ctx, document)?;
     let elements = {
@@ -182,10 +163,7 @@ fn named_value<'js>(ctx: &Ctx<'js>, document: NodeId, name: &str) -> Result<Opti
     }
 }
 
-/// The active `WindowProxy` of an `iframe` whose content navigable exists.
-/// A `frame`, or an `iframe` without a navigable, is answered as the element
-/// itself by the caller
-/// (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-nameditem>).
+// https://html.spec.whatwg.org/multipage/dom.html#dom-document-nameditem
 fn iframe_content_window<'js>(ctx: &Ctx<'js>, id: NodeId) -> Result<Option<Value<'js>>> {
     let world = world_for_node(ctx, id)?;
     let frame = {

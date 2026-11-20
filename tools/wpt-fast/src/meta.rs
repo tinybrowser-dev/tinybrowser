@@ -1,87 +1,54 @@
-//! test262 frontmatter, reduced to the fields the runner consumes.
-//!
-//! The vendored suite has a YAML block in every test, but the runner needs
-//! only `includes`, `flags`, `negative`, and `features`. This parser reads
-//! that subset directly so a dev tool does not depend on a YAML crate. It
-//! deliberately ignores unknown keys: newer test262 releases add metadata
-//! without changing how a test runs.
-
-/// The phase a negative test expects its error in.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Phase {
-    /// The source does not parse.
     Parse,
-    /// An early error (duplicate parameters, invalid `break`, and so on).
     Early,
-    /// A module import does not resolve.
     Resolution,
-    /// The code runs and throws.
     Runtime,
 }
 
-/// A `negative:` block: which error the test expects and where.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Negative {
-    /// Constructor name the thrown value must have, when the block names one.
     pub error_type: Option<String>,
-    /// Phase the error is expected in.
     pub phase: Phase,
 }
 
-/// One test file's frontmatter.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Meta {
-    /// Harness files the test asks for, in order.
     pub includes: Vec<String>,
-    /// `flags:` entries.
     pub flags: Vec<String>,
-    /// The expected negative outcome.
     pub negative: Option<Negative>,
-    /// `features:` entries; the runner records them but does not gate on them.
     pub features: Vec<String>,
 }
 
 impl Meta {
-    /// Whether the test reports through `$DONE` / `print`.
     #[must_use]
     pub fn is_async(&self) -> bool {
         self.has_flag("async")
     }
 
-    /// Whether the test is a module.
     #[must_use]
     pub fn is_module(&self) -> bool {
         self.has_flag("module")
     }
 
-    /// Whether the test only runs in strict mode.
     #[must_use]
     pub fn is_only_strict(&self) -> bool {
         self.has_flag("onlyStrict")
     }
 
-    /// Whether the test only runs in sloppy mode.
     #[must_use]
     pub fn is_no_strict(&self) -> bool {
         self.has_flag("noStrict")
     }
 
-    /// Whether the frontmatter declared `flag`.
     #[must_use]
     pub fn has_flag(&self, flag: &str) -> bool {
         self.flags.iter().any(|declared| declared == flag)
     }
 }
 
-/// Parses the frontmatter block at the start of `source`.
-///
-/// A file without a block is not a test262 test; the caller decides whether
-/// that is a skip. Unknown and malformed entries are ignored rather than
-/// failing the file.
 #[must_use]
 pub fn parse(source: &str) -> Meta {
-    // A few tests use bare CR line endings. `str::lines` splits on LF only, so
-    // normalize first; the test body keeps its original bytes.
     let normalized;
     let source = if source.contains('\r') {
         normalized = source.replace("\r\n", "\n").replace('\r', "\n");
@@ -105,11 +72,6 @@ pub fn parse(source: &str) -> Meta {
     }
 }
 
-/// The values of one top-level key.
-///
-/// Supports the two shapes test262 uses: a flow list (`includes: [a.js, b.js]`)
-/// and a block list (`includes:` followed by `- a.js` lines). A scalar value is
-/// returned as a one-element list so flags written without brackets still work.
 fn values(frontmatter: &str, key: &str) -> Vec<String> {
     let mut values = Vec::new();
     let lines: Vec<&str> = frontmatter.lines().collect();
@@ -140,7 +102,6 @@ fn values(frontmatter: &str, key: &str) -> Vec<String> {
                 push_scalar(&mut values, item);
             }
         } else if rest.is_empty() {
-            // Block list: only indented `- value` lines belong to this key.
             index += 1;
             while let Some(next) = lines.get(index) {
                 let Some(item) = next.trim_start().strip_prefix("- ") else {
@@ -158,7 +119,6 @@ fn values(frontmatter: &str, key: &str) -> Vec<String> {
     values
 }
 
-/// Appends one list item unless it is empty or a YAML comment.
 fn push_scalar(values: &mut Vec<String>, item: &str) {
     let item = item.trim();
     if item.is_empty() || item.starts_with('#') {
@@ -170,7 +130,6 @@ fn push_scalar(values: &mut Vec<String>, item: &str) {
     }
 }
 
-/// Parses the `negative:` block, if the frontmatter has one.
 fn negative(frontmatter: &str) -> Option<Negative> {
     let lines: Vec<&str> = frontmatter.lines().collect();
     let start = lines
@@ -180,8 +139,6 @@ fn negative(frontmatter: &str) -> Option<Negative> {
         error_type: None,
         phase: Phase::Runtime,
     };
-    // The nested keys are indented under `negative:`; stop at the next
-    // top-level key.
     for line in &lines[start + 1..] {
         if !line.starts_with([' ', '\t']) {
             break;
@@ -204,7 +161,6 @@ fn negative(frontmatter: &str) -> Option<Negative> {
     Some(negative)
 }
 
-/// One YAML scalar with surrounding whitespace and quotes removed.
 fn scalar(value: &str) -> String {
     value
         .trim()

@@ -1,16 +1,4 @@
-//! `FontFace` host support.
-//!
-//! A face owns bytes, a family, and the matching descriptors (weight, style,
-//! width). `FontFaceSet.add` and a CSS-connected face both register through
-//! `__tbRegisterFont` into the document's one Parley font context, so canvas
-//! text and page text shape against the same table. `delete` and `clear` call
-//! `__tbUnregisterFont` with the token returned here
-//! (<https://drafts.csswg.org/css-font-loading/#fontface-interface>).
-//!
-//! `__tbValidateFont` parses bytes before they become a loaded face, and
-//! `__tbFontFamilyAvailable` answers whether the table already knows a family
-//! (a system font or a registered face). WOFF and WOFF2 are decoded once here
-//! rather than at each call site.
+// https://drafts.csswg.org/css-font-loading/#fontface-interface
 
 use std::sync::Arc;
 
@@ -35,15 +23,8 @@ pub(crate) fn install(ctx: &Ctx<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Largest font this host will decompress. A WOFF1 header carries its
-/// decompressed size, so a page-supplied tiny file could otherwise ask the
-/// renderer to allocate a multi-gigabyte buffer before validation.
 const MAX_FONT_BYTES: usize = 64 * 1024 * 1024;
 
-/// Decode a WOFF/WOFF2 source into an sfnt. The font table (and fontique)
-/// reads sfnt data only; both the validation and registration paths go through
-/// this so a face is judged by the bytes it will actually register. Returns
-/// empty when a declared size exceeds [`MAX_FONT_BYTES`].
 pub(crate) fn decode_font(data: Vec<u8>) -> Vec<u8> {
     match data.get(..4) {
         Some(b"wOFF") => {
@@ -61,14 +42,7 @@ pub(crate) fn decode_font(data: Vec<u8>) -> Vec<u8> {
     }
 }
 
-/// Whether the bytes parse into at least one font face.
-///
-/// A throwaway collection with no system fonts keeps validation side-effect
-/// free: the document's font table only changes when the face is registered.
 fn validate_font(data: TypedArray<'_, u8>) -> bool {
-    // A page can call this host entry point with a detached buffer, and
-    // `to_vec` panics on one. No JavaScript can run between this query and
-    // the copy.
     if data.as_raw().is_none() {
         return false;
     }
@@ -85,8 +59,6 @@ fn validate_font(data: TypedArray<'_, u8>) -> bool {
         .is_empty()
 }
 
-/// Whether the document's font table knows `family`, either a system font or
-/// a face registered by `@font-face` or `FontFaceSet.add`.
 fn family_available(ctx: Ctx<'_>, family: String) -> Result<bool> {
     let world = world(&ctx)?;
     let mut world = world.borrow_mut();
@@ -131,9 +103,6 @@ fn register_font(
     style: Opt<String>,
     stretch: Opt<String>,
 ) -> Result<u32> {
-    // A page can call this host entry point with a detached buffer, and
-    // `to_vec` panics on one. No JavaScript can run between this query and
-    // the copy, so a detached buffer is the only case `to_vec` sees.
     if data.as_raw().is_none() {
         return Ok(0);
     }
@@ -174,8 +143,6 @@ fn register_font(
         }
         Some(document)
     };
-    // Detached canvases fall back to the runtime context, so register there
-    // too.
     let runtime_fonts = descriptors(world.runtime.font_ctx.collection.register_fonts(
         parley::fontique::Blob::new(Arc::new(data)),
         Some(override_font),

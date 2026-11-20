@@ -1,33 +1,9 @@
-//! The renderer *as a child process*: this crate's second role.
-//!
-//! The child is the same executable re-executed with the `renderer` argument.
-//! On Unix the browser hands it one end of an unnamed socket pair as file
-//! descriptor 0; other platforms keep the stdin/stdout pipes. stderr stays for
-//! diagnostics, which `crate::link` forwards into the daemon's log.
-//!
-//! This module is child-side only. It must not reach for the `link`,
-//! `manager`, `actor`, or `store` modules: a renderer serves one process's
-//! pages and never acts as a browser. `serve` takes no handles for exactly that
-//! reason — everything it needs comes from fd 0 and the engine.
-//!
-//! The loop runs as a future on one current-thread Tokio runtime and owns every
-//! wait: commands, dial completions, timer deadlines, and shutdown. The reader
-//! and writer stay blocking threads because synchronous browser-service calls
-//! (`document.cookie`) must make progress while the page engine runs. The
-//! reader never waits for inbox capacity: a full command inbox disconnects.
-//! Storage and broadcast notices are best-effort, like the spec's task queue:
-//! the engine may be blocked in a synchronous service call, so dropping them
-//! on a full inbox keeps the service reply path alive.
-
 mod session;
 
-/// Bounded command channel: one renderer's inbound messages.
 const INBOX_CAPACITY: usize = 256;
 
-/// Bounded outbox control lane: cancellation.
 const OUTBOX_CONTROL_CAPACITY: usize = 256;
 
-/// Bounded outbox data lane: replies, reverse calls, events, and screenshot chunks.
 const OUTBOX_DATA_CAPACITY: usize = 4096;
 
 use std::io::{self, Read, Write};
@@ -50,11 +26,6 @@ use crate::wire::{
 };
 use renderer::{OpenerPolicy, WindowId};
 
-/// Runs the renderer child until `Shutdown` or the channel closes.
-///
-/// # Errors
-///
-/// Runtime creation, channel bootstrap, or writer failure.
 pub fn serve() -> io::Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_time()
@@ -100,14 +71,10 @@ async fn serve_async() -> io::Result<thread::JoinHandle<io::Result<()>>> {
         );
     });
     session::run(command_rx, &out_tx, client, &stop, Arc::clone(&wake)).await;
-    // The reader returns on `Shutdown`, dropping its `ServiceClient` clone, so
-    // the writer channel closes and the child can exit.
     drop(out_tx);
     Ok(writer)
 }
 
-/// One child endpoint. Unix duplicates the inherited descriptor; other
-/// platforms split stdin and stdout.
 #[cfg(unix)]
 fn endpoint() -> io::Result<(Box<dyn Read + Send>, Box<dyn Write + Send>)> {
     use std::os::fd::AsFd;
@@ -161,10 +128,6 @@ fn read_messages(
         };
         if !greeted {
             match message {
-                // The handshake is the first command the session sees, so it
-                // holds the identity every later `Assign` builds its engine
-                // with. Losing it would leave every engine on the default, so a
-                // full lane stops the renderer instead of dropping the frame.
                 Frame::Notify(HostNotice::Hello { identity }) => {
                     greeted = true;
                     if command_tx
@@ -189,15 +152,12 @@ fn read_messages(
             break;
         }
     }
-    // The host is gone (EOF or a broken pipe). A renderer must not outlive its
-    // browser: interrupt in-flight work and stop the loop.
     stop.request();
     wake.notify_one();
     client.close();
     let _result = command_tx.try_send(Frame::Notify(HostNotice::Shutdown));
 }
 
-/// Routes one post-handshake host message; `false` stops the read loop.
 fn route_message(
     message: ToRenderer,
     command_tx: &exchange::Sender<ToRenderer>,
@@ -241,14 +201,9 @@ fn write_messages(
     Ok(())
 }
 
-/// The blocking service client one child process shares: the reader thread
-/// delivers replies on it, and every assignment's web services bind it with
-/// their id.
 pub(crate) type ServiceClient =
     BlockingClient<BrowserCall, RendererReply, RendererNotice, ServiceReply>;
 
-/// Web services for one renderer assignment, answered by the browser process
-/// over the control channel.
 pub(crate) struct HostServices {
     assignment: RendererAssignmentId,
     client: Arc<ServiceClient>,
@@ -372,7 +327,6 @@ impl NetworkHost for HostServices {
     }
 }
 
-/// One storage key as the wire claim, which is the serialized origin.
 fn claim(origin: &renderer::StorageKey) -> renderer::SerializedOrigin {
     renderer::SerializedOrigin::from(origin.origin())
 }

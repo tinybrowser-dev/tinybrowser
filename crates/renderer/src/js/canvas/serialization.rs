@@ -1,12 +1,4 @@
-//! Canvas bitmap serialization: `toDataURL`, `toBlob`, and `convertToBlob`.
-//!
-//! The encoder and the Blob construction run here; the JS shims keep only the
-//! canvas object state. Every lookup that must not be page-replaceable is
-//! captured at realm install (`Blob`, `setTimeout`), so a page cannot reroute
-//! serialization by replacing a global.
-//!
-//! Spec:
-//! <https://html.spec.whatwg.org/multipage/canvas.html#a-serialisation-of-the-bitmap-as-a-file>
+// https://html.spec.whatwg.org/multipage/canvas.html#a-serialisation-of-the-bitmap-as-a-file
 
 use rquickjs::function::This;
 use rquickjs::object::Property;
@@ -22,8 +14,7 @@ use super::{
 };
 use crate::js::bindings::{dom_exception_value, throw_dom};
 
-/// The formats this engine serializes. An unsupported `type` falls back to PNG
-/// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-canvas-todataurl>).
+// https://html.spec.whatwg.org/multipage/canvas.html#dom-canvas-todataurl
 #[derive(Clone, Copy)]
 enum CanvasImageFormat {
     Png,
@@ -39,9 +30,6 @@ impl CanvasImageFormat {
     }
 }
 
-/// Captures the page-replaceable globals serialization needs and installs the
-/// native methods over the JS-defined interfaces. Called once per realm after
-/// the web bundle, so `Blob`, `OffscreenCanvas`, and `setTimeout` exist.
 pub(crate) fn install(ctx: &Ctx<'_>) -> Result<()> {
     let globals = ctx.globals();
     let blob: Function = globals.get("Blob")?;
@@ -57,8 +45,6 @@ pub(crate) fn install(ctx: &Ctx<'_>) -> Result<()> {
         world.pristine_set_timeout = Some(Persistent::save(ctx, set_timeout));
     }
 
-    // A worker realm has no `HTMLCanvasElement`; only the offscreen methods
-    // exist there.
     if let Ok(canvas) = globals.get::<_, Object>("HTMLCanvasElement") {
         let canvas = canvas.get::<_, Object>("prototype")?;
         define_method(&canvas, ctx, "toDataURL", 0, to_data_url)?;
@@ -72,8 +58,7 @@ pub(crate) fn install(ctx: &Ctx<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Defines one `WebIDL` method: writable, configurable, not enumerable
-/// (<https://webidl.spec.whatwg.org/#interface-prototype-object>).
+// https://webidl.spec.whatwg.org/#interface-prototype-object
 fn define_method<'js, F, A>(
     object: &Object<'js>,
     ctx: &Ctx<'js>,
@@ -90,9 +75,7 @@ where
     object.prop(name, Property::from(function).writable().configurable())
 }
 
-/// The `type` argument of `toDataURL`/`toBlob`, converted with `ToString` once
-/// and compared ASCII case-insensitively. An unsupported type falls back to PNG
-/// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-canvas-todataurl>).
+// https://html.spec.whatwg.org/multipage/canvas.html#dom-canvas-todataurl
 fn format<'js>(ctx: &Ctx<'js>, mime: Option<&Value<'js>>) -> Result<CanvasImageFormat> {
     let Some(mime) = mime.filter(|mime| !mime.is_undefined()) else {
         return Ok(CanvasImageFormat::Png);
@@ -105,17 +88,13 @@ fn format<'js>(ctx: &Ctx<'js>, mime: Option<&Value<'js>>) -> Result<CanvasImageF
     })
 }
 
-/// The canvas quality once its IDL conversion has run. A value outside
-/// `0..=1` (or a non-finite one) keeps the spec's 0.92 default.
 fn quality(value: Option<f64>) -> f64 {
     value
         .filter(|value| value.is_finite() && (0.0..=1.0).contains(value))
         .unwrap_or(0.92)
 }
 
-/// The `any` quality of `toDataURL`/`toBlob`: `WebIDL` performs no conversion,
-/// so only a JavaScript Number in `0..=1` is used and a page `valueOf` never
-/// runs (<https://webidl.spec.whatwg.org/#idl-any>).
+// https://webidl.spec.whatwg.org/#idl-any
 fn any_quality(value: Option<&Value<'_>>) -> f64 {
     value
         .and_then(Value::as_number)
@@ -123,18 +102,14 @@ fn any_quality(value: Option<&Value<'_>>) -> f64 {
         .unwrap_or(0.92)
 }
 
-/// `ImageEncodeOptions`, converted in `WebIDL` dictionary order: lexicographic
-/// by member name, each getter then its conversion
-/// (<https://webidl.spec.whatwg.org/#es-dictionary>). `quality` therefore reads
-/// and converts before `type`.
+// https://webidl.spec.whatwg.org/#es-dictionary
 struct ImageEncodeOptions {
     format: CanvasImageFormat,
     quality: f64,
 }
 
 fn encode_options<'js>(ctx: &Ctx<'js>, options: Option<&Value<'js>>) -> Result<ImageEncodeOptions> {
-    // A dictionary accepts `undefined`, `null`, and objects; any other value
-    // is a `TypeError` (<https://webidl.spec.whatwg.org/#es-dictionary>).
+    // https://webidl.spec.whatwg.org/#es-dictionary
     let object =
         match options {
             None => None,
@@ -149,8 +124,6 @@ fn encode_options<'js>(ctx: &Ctx<'js>, options: Option<&Value<'js>>) -> Result<I
             quality: 0.92,
         });
     };
-    // A dictionary member is absent only when its getter returned `undefined`;
-    // `null` is a value and converts (`unrestricted double` maps it to 0).
     let quality_value: Value<'js> = object.get("quality")?;
     let quality = if quality_value.is_undefined() {
         quality(None)
@@ -173,10 +146,7 @@ fn encode_options<'js>(ctx: &Ctx<'js>, options: Option<&Value<'js>>) -> Result<I
     Ok(ImageEncodeOptions { format, quality })
 }
 
-/// Encodes a canvas bitmap. `None` is the spec's "encoding failed" branch: a
-/// zero-sized canvas, or an encoder that could not produce bytes, serializes
-/// as `data:,` or a null Blob
-/// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-canvas-todataurl>).
+// https://html.spec.whatwg.org/multipage/canvas.html#dom-canvas-todataurl
 fn encode(
     ctx: &Ctx<'_>,
     host: &impl CanvasHost,
@@ -216,15 +186,13 @@ fn encode(
     Ok(bytes)
 }
 
-/// The `toDataURL(type, quality)` method
-/// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-canvas-todataurl>).
+// https://html.spec.whatwg.org/multipage/canvas.html#dom-canvas-todataurl
 fn to_data_url<'js>(
     ctx: Ctx<'js>,
     this: This<Object<'js>>,
     mime: Opt<Value<'js>>,
     quality_value: Opt<Value<'js>>,
 ) -> Result<String> {
-    // WebIDL converts the arguments left to right, `type` before `quality`.
     let format = format(&ctx, mime.0.as_ref())?;
     let quality = any_quality(quality_value.0.as_ref());
     let Some(host) = ElementCanvas::resolve(&ctx, &this.0.into_value()) else {
@@ -245,8 +213,7 @@ fn data_url(format: CanvasImageFormat, bytes: &[u8]) -> String {
     )
 }
 
-/// The `toBlob(callback, type, quality)` method
-/// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-canvas-toblob>).
+// https://html.spec.whatwg.org/multipage/canvas.html#dom-canvas-toblob
 fn to_blob<'js>(
     ctx: Ctx<'js>,
     this: This<Object<'js>>,
@@ -254,21 +221,15 @@ fn to_blob<'js>(
     mime: Opt<Value<'js>>,
     quality_value: Opt<Value<'js>>,
 ) -> Result<()> {
-    // WebIDL converts the arguments left to right, `type` before `quality`.
     let format = format(&ctx, mime.0.as_ref())?;
     let quality = any_quality(quality_value.0.as_ref());
     let host = ElementCanvas::resolve(&ctx, &this.0.into_value())
         .ok_or_else(|| throw_dom(&ctx, "InvalidStateError", "the canvas is not usable"))?;
     let bytes = encode(&ctx, &host, format, quality)?;
-    // A canvas with no pixels, or a failed encoder, hands the callback `null`:
-    // the spec leaves `result` null through the parallel steps.
     let blob = match bytes {
         None => Value::new_null(ctx.clone()),
         Some(bytes) => blob_value(&ctx, format.mime(), bytes)?,
     };
-    // The spec queues a task. A captured timer runs the callback after the
-    // current task's microtasks without going through a page-replaceable
-    // global.
     let callback = Persistent::save(&ctx, callback);
     let blob = Persistent::save(&ctx, blob);
     let task = Function::new(ctx.clone(), move |ctx: Ctx<'_>| -> Result<()> {
@@ -286,15 +247,12 @@ fn to_blob<'js>(
     Ok(())
 }
 
-/// The `convertToBlob(options)` method
-/// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-offscreencanvas-converttoblob>).
+// https://html.spec.whatwg.org/multipage/canvas.html#dom-offscreencanvas-converttoblob
 fn convert_to_blob<'js>(
     ctx: Ctx<'js>,
     this: This<Object<'js>>,
     options: Opt<Value<'js>>,
 ) -> Result<Value<'js>> {
-    // `convertToBlob` declares `options` as a dictionary, so WebIDL converts
-    // it before the method body: a throwing getter must throw, not reject.
     let options = encode_options(&ctx, options.0.as_ref())?;
     let (promise, resolve, reject) = Promise::new(&ctx)?;
     let Some(id) = offscreen_canvas_id(&ctx, &this.0.clone().into_value())? else {
@@ -313,12 +271,7 @@ fn convert_to_blob<'js>(
         reject_dom(&ctx, &reject, "InvalidStateError", "the canvas is detached")?;
         return Ok(promise.into_value());
     }
-    // A canvas that never had a context, or one whose context is a
-    // `bitmaprenderer`, still has a bitmap: it serializes as transparent
-    // until something paints it. Only a detached canvas is an error here.
     let host = OffscreenCanvasHost { id };
-    // Step 3: a bitmap with no pixels rejects `IndexSizeError`. A later null
-    // encoding is a separate `EncodingError`.
     let (width, height) = host.dimensions(&ctx);
     if width == 0 || height == 0 {
         reject_dom(&ctx, &reject, "IndexSizeError", "the canvas has no pixels")?;
@@ -357,8 +310,6 @@ fn reject_dom<'js>(
     Ok(())
 }
 
-/// A new `Blob` in this realm from the captured constructor, so replacing the
-/// `Blob` global does not reroute serialization.
 fn blob_value<'js>(ctx: &Ctx<'js>, mime: &str, bytes: Vec<u8>) -> Result<Value<'js>> {
     let constructor = world(ctx)?
         .borrow()

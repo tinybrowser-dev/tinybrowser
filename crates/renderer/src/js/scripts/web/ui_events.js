@@ -1,24 +1,14 @@
-
-// ── uievents ───────────────────────────────────────────────────────────────
-// Event interfaces for input dispatch. The engine fires its own input events
-// from Rust; these classes exist so pages can construct events with the
-// spec's properties.
-
 const __tbUIEventData = host.slots('tinybrowser.uievent.data');
 const __tbFreshUIEvent = () => ({ view: null, detail: 0, which: 0 });
-// `unsigned long` converts with ToUint32: a string is coerced, a negative or
-// fractional number wraps, and NaN is zero
-// (<https://webidl.spec.whatwg.org/#es-unsigned-long>).
+// https://webidl.spec.whatwg.org/#es-unsigned-long
 const __tbToUnsignedLong = value =>
   value === undefined ? 0 : (__tbNumberCtor(value) >>> 0);
-// `long` members convert with `ToNumber`, not truthiness: `"5"` is 5
-// (<https://webidl.spec.whatwg.org/#es-long>).
+// https://webidl.spec.whatwg.org/#es-long
 const __tbToLong = value => {
   const n = __tbNumberCtor(value);
   return Number.isNaN(n) ? 0 : Math.trunc(n);
 };
-// `Window?` conversion: undefined becomes null, and any other value that is
-// not a Window throws (<https://webidl.spec.whatwg.org/#es-interface>).
+// https://webidl.spec.whatwg.org/#es-interface
 const __tbEventView = value => {
   if (value === undefined) return null;
   if (value === null || __tbIsWindow(value)) return value;
@@ -35,8 +25,7 @@ const __tbUIEventConstructor = globalThis.UIEvent = class UIEvent extends Event 
     __tbUIEventData.set(event, {
       view,
       detail: init.detail || 0,
-      // `which` is a legacy `UIEvent` attribute the init dictionary carries
-      // (<https://w3c.github.io/uievents/#dom-uievent-which>).
+      // https://w3c.github.io/uievents/#dom-uievent-which
       which: __tbToUnsignedLong(init.which),
     });
     return event;
@@ -54,19 +43,13 @@ const __tbUIEventConstructor = globalThis.UIEvent = class UIEvent extends Event 
   get view() { return __tbEventEntry(this, __tbUIEventData, __tbFreshUIEvent).view; }
   get detail() { return __tbEventEntry(this, __tbUIEventData, __tbFreshUIEvent).detail; }
   get which() { return __tbEventEntry(this, __tbUIEventData, __tbFreshUIEvent).which; }
-  // The pseudo-element a user-agent event hit. The engine has no
-  // `CSSPseudoElement`, so every event reports null; the attribute is the
-  // proposed extension of UI Events for pseudo-element hit testing
-  // (<https://github.com/w3c/uievents/pull/413>).
+  // https://github.com/w3c/uievents/pull/413
   get pseudoTarget() { return null; }
 };
 Object.defineProperty(globalThis.UIEvent.prototype, Symbol.toStringTag, { value: 'UIEvent', writable: false, enumerable: false, configurable: true });
 
 const __tbMouseEventData = host.slots('tinybrowser.mouseevent.data');
-// One row per `EventModifierInit` member:
-// <https://w3c.github.io/uievents/#dictdef-eventmodifierinit>. The first column
-// is the key `getModifierState()` looks up, the second the slot a constructor,
-// initializer, or event default fills.
+// https://w3c.github.io/uievents/#dictdef-eventmodifierinit
 const __tbModifierKeys = [
   ['Alt', 'altKey'],
   ['AltGraph', 'modifierAltGraph'],
@@ -92,9 +75,7 @@ const __tbModifiersFromList = list => {
   return globalThis.Object.fromEntries(
     __tbModifierKeys.map(([key, field]) => [field, names.includes(key)]));
 };
-// `getModifierState()` reports every `EventModifierInit` member by its key
-// value; a key the dictionary cannot set is always false
-// (<https://w3c.github.io/uievents/#dom-keyboardevent-getmodifierstate>).
+// https://w3c.github.io/uievents/#dom-keyboardevent-getmodifierstate
 const __tbModifierState = (entry, key) => {
   const name = __tbStringCtor(key);
   const row = __tbModifierKeys.find(([known]) => known === name);
@@ -105,9 +86,7 @@ const __tbFreshMouseEvent = () => ({
   ...__tbModifierDefaults(),
   button: 0, buttons: 0, relatedTarget: null,
 });
-// The event target's padding edge in client coordinates, or null when the
-// target has no box to measure
-// (<https://w3c.github.io/uievents/#dom-mouseevent-offsetx>).
+// https://w3c.github.io/uievents/#dom-mouseevent-offsetx
 const __tbPaddingEdge = event => {
   const target = event.target;
   if (target === null || target === undefined || target.nodeType !== 1) return null;
@@ -126,8 +105,7 @@ const __tbMouseEventConstructor = globalThis.MouseEvent = class MouseEvent exten
     }
     init = init || {};
     const event = __tbConstruct(__tbUIEventConstructor, [type, init], new.target);
-    // `long` members convert with `ToNumber`, not truthiness: `"5"` is 5
-    // (<https://w3c.github.io/uievents/#dom-mouseevent-clientx>).
+    // https://w3c.github.io/uievents/#dom-mouseevent-clientx
     const button = init.button === undefined ? 0 : __tbToLong(init.button);
     __tbMouseEventData.set(event, {
         screenX: init.screenX === undefined ? 0 : __tbToLong(init.screenX),
@@ -164,23 +142,17 @@ const __tbMouseEventConstructor = globalThis.MouseEvent = class MouseEvent exten
   get screenY() { return __tbEventEntry(this, __tbMouseEventData, __tbFreshMouseEvent).screenY; }
   get clientX() { return __tbEventEntry(this, __tbMouseEventData, __tbFreshMouseEvent).clientX; }
   get clientY() { return __tbEventEntry(this, __tbMouseEventData, __tbFreshMouseEvent).clientY; }
-  // `x` and `y` are the client coordinates under their CSSOM View names
-  // (<https://w3c.github.io/uievents/#dom-mouseevent-x>).
+  // https://w3c.github.io/uievents/#dom-mouseevent-x
   get x() { return __tbEventEntry(this, __tbMouseEventData, __tbFreshMouseEvent).clientX; }
   get y() { return __tbEventEntry(this, __tbMouseEventData, __tbFreshMouseEvent).clientY; }
-  // `pageX`/`pageY` add the viewport's scroll offset to the client coordinates
-  // (<https://drafts.csswg.org/cssom-view/#dom-mouseevent-pagex>).
+  // https://drafts.csswg.org/cssom-view/#dom-mouseevent-pagex
   get pageX() {
     return __tbEventEntry(this, __tbMouseEventData, __tbFreshMouseEvent).clientX + globalThis.scrollX;
   }
   get pageY() {
     return __tbEventEntry(this, __tbMouseEventData, __tbFreshMouseEvent).clientY + globalThis.scrollY;
   }
-  // `offsetX`/`offsetY` are the client coordinates relative to the target's
-  // padding edge: its border box's origin plus the border width. A target with
-  // no box (a text node, the document) has no padding edge, and the coordinate
-  // itself is the offset
-  // (<https://w3c.github.io/uievents/#dom-mouseevent-offsetx>).
+  // https://w3c.github.io/uievents/#dom-mouseevent-offsetx
   get offsetX() {
     const edge = __tbPaddingEdge(this);
     const clientX = __tbEventEntry(this, __tbMouseEventData, __tbFreshMouseEvent).clientX;
@@ -205,10 +177,6 @@ const __tbMouseEventConstructor = globalThis.MouseEvent = class MouseEvent exten
 Object.defineProperty(globalThis.MouseEvent.prototype, Symbol.toStringTag, { value: 'MouseEvent', writable: false, enumerable: false, configurable: true });
 
 const __tbPointerEventData = host.slots('tinybrowser.pointerevent.data');
-// Strict `__tbBrand` (not lazy `__tbEventEntry` like the `__tbExposeEvent`
-// siblings): `createEvent` never produces Pointer/Wheel/Input events, so no
-// uninitialized-entry path needs the lazy default. Keep strict on any
-// consistency refactor.
 globalThis.PointerEvent = class PointerEvent extends MouseEvent {
   constructor(type, init) {
     if (arguments.length < 1) {
@@ -218,8 +186,7 @@ globalThis.PointerEvent = class PointerEvent extends MouseEvent {
     const event = __tbConstruct(__tbMouseEventConstructor, [type, init], new.target);
     __tbPointerEventData.set(event, {
         pointerId: init.pointerId === undefined ? 1 : init.pointerId,
-        // An explicit 0 is a valid width, not a missing one
-        // (<https://w3c.github.io/pointerevents/#dom-pointerevent-width>).
+        // https://w3c.github.io/pointerevents/#dom-pointerevent-width
         width: init.width === undefined ? 1 : __tbNumberCtor(init.width),
         height: init.height === undefined ? 1 : __tbNumberCtor(init.height),
         pressure: init.pressure === undefined ? 0 : init.pressure,
@@ -243,11 +210,8 @@ globalThis.PointerEvent = class PointerEvent extends MouseEvent {
 };
 Object.defineProperty(globalThis.PointerEvent.prototype, Symbol.toStringTag, { value: 'PointerEvent', writable: false, enumerable: false, configurable: true });
 
-// A `click` the engine synthesizes has no pointing device behind it. The
-// reserved pointer id is -1 and `pointerType` is the empty string, while the
-// remaining members keep their dictionary defaults
-// (<https://html.spec.whatwg.org/multipage/interaction.html#dom-click>,
-// <https://w3c.github.io/pointerevents/#dom-pointerevent-initpointerevent>).
+// https://html.spec.whatwg.org/multipage/interaction.html#dom-click
+// https://w3c.github.io/pointerevents/#dom-pointerevent-initpointerevent
 host.__tbInitClickPointer = event => {
   __tbPointerEventData.set(event, {
     pointerId: -1, width: 1, height: 1, pressure: 0, tangentialPressure: 0,
@@ -301,9 +265,7 @@ globalThis.KeyboardEvent = class KeyboardEvent extends UIEvent {
     });
     return event;
   }
-  // The legacy DOM Level 3 initializer, whose arguments differ from the
-  // constructor's dictionary. It never runs while the event is dispatched
-  // (<https://www.w3.org/TR/DOM-Level-3-Events/#dom-keyboardevent-initkeyboardevent>).
+  // https://www.w3.org/TR/DOM-Level-3-Events/#dom-keyboardevent-initkeyboardevent
   initKeyboardEvent(type, bubbles, cancelable, view, keyIdentifier, location,
       modifiersList, repeat, locale) {
     if (host.__tbEventDispatching(this)) return;
@@ -360,15 +322,7 @@ globalThis.InputEvent = class InputEvent extends UIEvent {
 };
 Object.defineProperty(globalThis.InputEvent.prototype, Symbol.toStringTag, { value: 'InputEvent', writable: false, enumerable: false, configurable: true });
 
-// Interfaces named by document.createEvent
-// (https://dom.spec.whatwg.org/#dom-document-createevent).
-// createEvent builds an uninitialized Event and sets this prototype; it does
-// not call the constructor, which requires a type. Getters below therefore
-// initialize uninitialized events with their spec defaults on first read
-// (real events constructed with `new` already carry entries). Non-events
-// still throw: the brand check is the native `Class<JsEvent>` conversion
-// (`host.__tbIsEvent`), not a prototype walk, so
-// `Object.create(MouseEvent.prototype)` throws instead of allocating state.
+// https://dom.spec.whatwg.org/#dom-document-createevent
 const __tbEventString = value => (value === undefined ? '' : __tbStringCtor(value));
 function __tbExposeEvent(name, parent, data, fresh, read, members) {
   const ctor = {
@@ -395,25 +349,20 @@ function __tbExposeEvent(name, parent, data, fresh, read, members) {
   __tbDefineProperty(ctor.prototype, Symbol.toStringTag, {
     value: name, writable: false, enumerable: false, configurable: true,
   });
-  // WebIDL interface objects are non-enumerable on the global
-  // (<https://webidl.spec.whatwg.org/#interface-object>).
+  // https://webidl.spec.whatwg.org/#interface-object
   __tbDefineProperty(globalThis, name, {
     __proto__: null,
     value: ctor, writable: true, enumerable: false, configurable: true,
   });
 }
-// Each exposed interface: its slot map, a fresh-defaults factory (fresh
-// objects per event, so TouchEvent lists never alias), an init-dictionary
-// reader, and the member names exposed as getters
-// (<https://w3c.github.io/uievents/>, <https://w3c.github.io/touch-events/>).
+// https://w3c.github.io/uievents/
+// https://w3c.github.io/touch-events/
 const __tbBeforeUnloadEventData = host.slots('tinybrowser.beforeunloadevent.data');
 __tbExposeEvent('BeforeUnloadEvent', __tbEventConstructor, __tbBeforeUnloadEventData,
   () => ({ returnValue: '' }),
   init => ({ returnValue: __tbEventString(init.returnValue) }),
   ['returnValue']);
-// `returnValue` is read-write per spec (all other exposed members are
-// read-only): a setter on the prototype writing the slot entry
-// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#the-beforeunloadevent-interface>).
+// https://html.spec.whatwg.org/multipage/browsing-the-web.html#the-beforeunloadevent-interface
 __tbDefineProperty(globalThis.BeforeUnloadEvent.prototype, 'returnValue', {
   __proto__: null,
   get() { return __tbEventEntry(this, __tbBeforeUnloadEventData, () => ({ returnValue: '' })).returnValue; },
@@ -430,9 +379,7 @@ __tbExposeEvent('HashChangeEvent', __tbEventConstructor, __tbHashChangeEventData
   () => ({ oldURL: '', newURL: '' }),
   init => ({ oldURL: __tbEventString(init.oldURL), newURL: __tbEventString(init.newURL) }),
   ['oldURL', 'newURL']);
-// The `toggle` event of a `details` element or a popover carries the states
-// it moved between, and the invoker that requested the change
-// (<https://html.spec.whatwg.org/multipage/popover.html#the-toggleevent-interface>).
+// https://html.spec.whatwg.org/multipage/popover.html#the-toggleevent-interface
 const __tbToggleEventData = host.slots('tinybrowser.toggleevent.data');
 __tbExposeEvent('ToggleEvent', __tbEventConstructor, __tbToggleEventData,
   () => ({ oldState: '', newState: '', source: null }),
@@ -442,10 +389,8 @@ __tbExposeEvent('ToggleEvent', __tbEventConstructor, __tbToggleEventData,
     source: init.source === undefined ? null : init.source,
   }),
   ['oldState', 'newState']);
-// `source` is retargeted against the event's target on every read
-// (<https://html.spec.whatwg.org/multipage/popover.html#dom-toggleevent-source>,
-// <https://dom.spec.whatwg.org/#retarget>). `getRootNode` is captured at
-// realm init so a page-patched `Node.prototype` cannot change the walk.
+// https://html.spec.whatwg.org/multipage/popover.html#dom-toggleevent-source
+// https://dom.spec.whatwg.org/#retarget
 const __tbGetRootNode = Node.prototype.getRootNode;
 function __tbRetarget(a, b) {
   while (a !== null && typeof a === 'object' && typeof a.nodeType === 'number') {
@@ -469,8 +414,6 @@ __tbDefineProperty(globalThis.ToggleEvent.prototype, 'source', {
   },
   enumerable: true, configurable: true,
 });
-// The engine fires its own trusted `hashchange`; it owns the event object and
-// trust flag, and this writes the interface's slot map for it.
 host.__tbSetHashChange = (event, oldURL, newURL) => {
   __tbHashChangeEventData.set(event, {
     oldURL: __tbEventString(oldURL),
@@ -523,8 +466,7 @@ __tbExposeEvent('TouchEvent', __tbUIEventConstructor, __tbTouchEventData,
     ...__tbModifiersFromInit(init),
   }),
   ['touches', 'targetTouches', 'changedTouches', 'altKey', 'metaKey', 'ctrlKey', 'shiftKey']);
-// `TouchEvent` also inherits `getModifierState()`
-// (<https://w3c.github.io/uievents/#dom-touchevent-getmodifierstate>).
+// https://w3c.github.io/uievents/#dom-touchevent-getmodifierstate
 globalThis.TouchEvent.prototype.getModifierState = function (key) {
   return __tbModifierState(__tbEventEntry(this, __tbTouchEventData, __tbFreshTouchEvent), key);
 };
@@ -533,11 +475,7 @@ __tbExposeEvent('DragEvent', __tbMouseEventConstructor, host.slots('tinybrowser.
   init => ({ dataTransfer: init.dataTransfer || null }),
   ['dataTransfer']);
 
-// The dispatch algorithm rewrites `relatedTarget` for every event path struct,
-// so the host reads and writes the same private slot the interface getters use.
-// Only the interfaces that define the attribute have a slot entry; an event of
-// another interface has none, and the host treats it as a null relatedTarget
-// (<https://dom.spec.whatwg.org/#concept-event-dispatch>).
+// https://dom.spec.whatwg.org/#concept-event-dispatch
 const __tbRelatedTargetSlots = [
   [__tbMouseEventData, __tbFreshMouseEvent, __tbMouseEventConstructor.prototype],
   [__tbFocusEventData, __tbFreshFocusEvent, __tbFocusEventPrototype],
@@ -558,9 +496,6 @@ host.__tbRelatedTargetSet = (event, value) => {
     }
   }
 };
-// A trusted event is created in Rust with the interface's prototype but
-// without a constructor call, so its slot entry is initialized here before
-// dispatch reads it.
 host.__tbInitRelatedTarget = (event, value) => {
   for (const [data, fresh, prototype] of __tbRelatedTargetSlots) {
     if (prototype.isPrototypeOf(event)) {
@@ -569,10 +504,8 @@ host.__tbInitRelatedTarget = (event, value) => {
     }
   }
 };
-// CSS Animations and Transitions own the event interfaces whose handlers the
-// legacy `webkit` names alias
-// (<https://drafts.csswg.org/css-animations-1/#interface-animationevent>,
-// <https://drafts.csswg.org/css-transitions-1/#interface-transitionevent>).
+// https://drafts.csswg.org/css-animations-1/#interface-animationevent
+// https://drafts.csswg.org/css-transitions-1/#interface-transitionevent
 __tbExposeEvent('AnimationEvent', __tbEventConstructor, host.slots('tinybrowser.animationevent.data'),
   () => ({ animationName: '', elapsedTime: 0, pseudoElement: '' }),
   init => ({
@@ -590,9 +523,7 @@ __tbExposeEvent('TransitionEvent', __tbEventConstructor, host.slots('tinybrowser
   }),
   ['propertyName', 'elapsedTime', 'pseudoElement']);
 
-// Touch Events extends GlobalEventHandlers with these handlers. createEvent's
-// touch rows run only when the document exposes one
-// (https://w3c.github.io/touch-events/#extensions-to-the-globaleventhandlers-mixin).
+// https://w3c.github.io/touch-events/#extensions-to-the-globaleventhandlers-mixin
 if (typeof Document !== 'undefined') {
   for (const name of ['ontouchstart', 'ontouchend', 'ontouchmove', 'ontouchcancel']) {
     Object.defineProperty(Document.prototype, name, {

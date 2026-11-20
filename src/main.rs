@@ -1,23 +1,13 @@
-//! `tinybrowser`: the smallest headless browser for AI agents.
-//!
-//! One executable. No separately shipped helper. Engine is Blitz
-//! parse/style/layout/paint plus `QuickJS` behind a value-only browser
-//! interface.
-//! The same executable may self-spawn a profile daemon and renderer
-//! processes.
-//! The embeddable surface lives here; CDP is a peer crate.
-
 mod cli;
 mod daemon;
 
 use std::future::Future;
 use std::io;
-use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use browser::{Browser, BrowserOptions, Profile, default_data_home};
-use cli::{Cli, Command};
+use browser::{Profile, default_data_home};
+use cli::{Cli, Mode};
 use logging::Level;
 
 fn main() -> ExitCode {
@@ -52,31 +42,25 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> ExitCode {
-    match cli.command {
-        Some(Command::Renderer) => match browser::child::serve() {
+    match cli.mode {
+        Mode::Renderer => match browser::child::serve() {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 logging::error!(target: "renderer", "{error}");
                 ExitCode::from(1)
             }
         },
-        Some(Command::Daemon { profile }) => run_browser_process("daemon", async {
-            let home = default_data_home()?;
-            daemon::run(&profile, &home).await
-        }),
-        Some(Command::Webdriver {
+        Mode::Daemon {
             port,
             profile,
             network,
-        }) => run_browser_process("webdriver", serve_webdriver(port, *network, &profile)),
-        None => {
-            print!("{}", cli::HELP);
-            ExitCode::from(2)
-        }
+        } => run_browser_process("daemon", async move {
+            let home = default_data_home()?;
+            daemon::run(&profile, &home, port, *network).await
+        }),
     }
 }
 
-/// Installs the process logger for the mode and flags this invocation selected.
 fn install_logger(cli: &Cli) -> Result<(), logging::InstallError> {
     let requested = cli.log_level.or(if cli.verbose {
         Some(Level::Debug)
@@ -84,23 +68,19 @@ fn install_logger(cli: &Cli) -> Result<(), logging::InstallError> {
         None
     });
     let level = requested.or_else(env_level).unwrap_or(Level::Info);
-    let file = cli.log_file.clone().or_else(|| match &cli.command {
-        Some(Command::Daemon { profile } | Command::Webdriver { profile, .. }) => {
-            profile_log_file(profile)
-        }
-        Some(Command::Renderer) | None => None,
+    let file = cli.log_file.clone().or_else(|| match &cli.mode {
+        Mode::Daemon { profile, .. } => profile_log_file(profile),
+        Mode::Renderer => None,
     });
     logging::install(level, file, std::time::SystemTime::now)
 }
 
-/// Level passed to a spawned daemon or renderer, when no flag overrides it.
 fn env_level() -> Option<Level> {
     std::env::var("TINYBROWSER_LOG")
         .ok()
         .and_then(|value| value.parse().ok())
 }
 
-/// Per-profile log file, or `None` when no data home can be resolved.
 fn profile_log_file(profile: &Profile) -> Option<PathBuf> {
     let home = default_data_home().ok()?;
     Some(
@@ -132,22 +112,4 @@ fn run_browser_process(
             ExitCode::from(1)
         }
     }
-}
-
-async fn serve_webdriver(
-    port: u16,
-    options: browser::AgentOptions,
-    profile: &Profile,
-) -> io::Result<()> {
-    let data_home = default_data_home()?;
-    let browser = Browser::new(BrowserOptions {
-        data_home: Some(data_home),
-        profile: profile.clone(),
-        network: options,
-    })?;
-    let listener = TcpListener::bind(("127.0.0.1", port))
-        .map_err(|error| io::Error::new(error.kind(), format!("bind failed: {error}")))?;
-    let result = webdriver::serve(&listener, browser.handle()).await;
-    let close = browser.close().await;
-    result.and(close)
 }

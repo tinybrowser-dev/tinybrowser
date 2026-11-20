@@ -1,12 +1,3 @@
-//! wptreport output, the baseline diff, and the console summary.
-//!
-//! Both fast lanes (`wpt-fast`, `wpt-harness`) write the same report shape and
-//! gate on the same baseline rule, so the implementation lives here once. Two
-//! copies had already drifted: one learned that a file-level timeout, crash, or
-//! error outranks its subtests, and the other still read such a baseline as a
-//! pass, so a later failure was reported as a regression and a later pass was
-//! never reported as a fix (#234).
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
@@ -16,24 +7,17 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-/// The file-level verdict for one test.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum Status {
-    /// The test completed and every subtest passed.
     Pass,
-    /// The test completed with at least one failure.
     Fail,
-    /// The runner killed the test at its budget.
     Timeout,
-    /// The engine or the runner could not execute the test.
     Error,
-    /// The runner does not implement this test's kind.
     Skip,
 }
 
 impl Status {
-    /// The status spelling a wptreport uses.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -45,54 +29,33 @@ impl Status {
         }
     }
 
-    /// Whether the file stopped before it could report a verdict, which
-    /// outranks whatever subtests it managed to emit.
     #[must_use]
     pub fn is_hard(self) -> bool {
         matches!(self, Self::Timeout | Self::Error)
     }
 }
 
-/// Which executor a test needs. The cache stores this, so an unknown spelling
-/// fails to deserialize into a cache miss instead of silently becoming a
-/// testharness file.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
-    /// testharness.js reports subtests through the injected reporter.
     Testharness,
-    /// The file only has to load and not kill the process.
     Crashtest,
-    /// The file compares against a reference screenshot.
     Reftest,
-    /// The file calls `WebDriver` through `testdriver.js`.
     Testdriver,
 }
 
-/// The verdict one subtest reported.
-///
-/// testharness.js encodes these as numbers; the report spells them out. The
-/// two conversions live here so the cache and the report writer cannot
-/// disagree, and an unknown code is a harness error rather than a default.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum SubtestStatus {
-    /// The subtest passed.
     Pass,
-    /// The subtest failed.
     Fail,
-    /// The subtest exceeded its timeout.
     Timeout,
-    /// The harness never reached the subtest.
     NotRun,
-    /// A required feature was absent, which wptrunner reports as a skip.
     PreconditionFailed,
-    /// A test262 variant that the runner excluded before running.
     Skip,
 }
 
 impl SubtestStatus {
-    /// The spelling a wptreport uses.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -100,14 +63,10 @@ impl SubtestStatus {
             Self::Fail => "FAIL",
             Self::Timeout => "TIMEOUT",
             Self::NotRun => "NOTRUN",
-            // wptrunner reports both as skips: a missing optional feature and a
-            // variant the runner excluded before it ran.
             Self::PreconditionFailed | Self::Skip => "SKIP",
         }
     }
 
-    /// Reads the numeric code testharness.js reports, or `None` for a code the
-    /// harness does not define.
     #[must_use]
     pub fn from_harness_code(code: u64) -> Option<Self> {
         match code {
@@ -121,46 +80,23 @@ impl SubtestStatus {
     }
 }
 
-/// One testharness subtest.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Subtest {
-    /// Subtest name.
     pub name: String,
-    /// The subtest's verdict.
     pub status: SubtestStatus,
-    /// Failure message.
     pub message: Option<String>,
 }
 
-/// One file's result.
-///
-/// `Deserialize` as well as `Serialize`: the harness journals finished files so
-/// a process that aborts can resume, and a resumed verdict has to survive the
-/// round trip unchanged.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Outcome {
-    /// wptreport test identifier, such as `/dom/nodes/Node-nodeName.html`.
     pub id: String,
-    /// File-level verdict used by the summary and the baseline diff.
     pub status: Status,
-    /// Failure, skip, or timeout reason.
     pub message: Option<String>,
-    /// Wall time spent in this file.
     pub duration: Duration,
-    /// testharness subtests, or one synthetic subtest for a non-testharness
-    /// lane that reports through the same shape.
     pub subtests: Vec<Subtest>,
-    /// Whether the overall `status` field is `OK` and the verdict lives in the
-    /// subtests, which is the testharness form. A crashtest uses the
-    /// file-level form WPT already emits.
     pub testharness: bool,
 }
 
-/// Writes `outcomes` as a wptreport the `tools/wpt/cli.py` readers understand.
-///
-/// # Errors
-///
-/// The report cannot be created or written.
 pub fn write_report(path: &Path, outcomes: &[Outcome]) -> io::Result<()> {
     let results: Vec<Value> = outcomes
         .iter()
@@ -210,31 +146,20 @@ pub fn write_report(path: &Path, outcomes: &[Outcome]) -> io::Result<()> {
     writer.write_all(b"\n")
 }
 
-/// What changed against a baseline report.
 pub struct Comparison {
-    /// Tests that were passing (or skipped) and now fail or stop running.
     pub regressions: Vec<String>,
-    /// Tests that were failing and now pass.
     pub fixes: Vec<String>,
-    /// Tests that are not in the baseline and fail now.
     pub new_failures: Vec<String>,
-    /// Baseline tests the run did not select.
     pub missing: Vec<String>,
 }
 
 impl Comparison {
-    /// Whether a push should be rejected.
     #[must_use]
     pub fn failed(&self) -> bool {
         !self.regressions.is_empty() || !self.new_failures.is_empty()
     }
 }
 
-/// Compares `outcomes` with a previous wptreport.
-///
-/// # Errors
-///
-/// The baseline cannot be read or does not have the expected shape.
 pub fn compare(baseline: &Path, outcomes: &[Outcome]) -> io::Result<Comparison> {
     let text = std::fs::read_to_string(baseline)?;
     let report: Value = serde_json::from_str(&text).map_err(io::Error::other)?;
@@ -263,14 +188,9 @@ pub fn compare(baseline: &Path, outcomes: &[Outcome]) -> io::Result<Comparison> 
             Some("PASS" | "SKIP") if current == "FAIL" => {
                 comparison.regressions.push(outcome.id.clone());
             }
-            // A test that used to run and pass but is now skipped or stopped
-            // short is lost coverage, which is a regression for the per-push
-            // gate.
             Some("PASS") if matches!(current, "SKIP" | "TIMEOUT" | "ERROR") => {
                 comparison.regressions.push(outcome.id.clone());
             }
-            // A hard baseline that now passes is a fix too; a TIMEOUT or an
-            // ERROR is a failing baseline, not a different category.
             Some("FAIL" | "TIMEOUT" | "ERROR" | "CRASH") if current == "PASS" => {
                 comparison.fixes.push(outcome.id.clone());
             }
@@ -286,26 +206,8 @@ pub fn compare(baseline: &Path, outcomes: &[Outcome]) -> io::Result<Comparison> 
     Ok(comparison)
 }
 
-/// The file-level verdict one report entry records.
-///
-/// A testharness entry keeps the overall `OK` status and reports the verdict in
-/// its subtests, so an entry fails when any subtest is neither `PASS` nor
-/// `SKIP`. Reading one fixed subtest instead would call a file whose later
-/// subtest fails a pass, and every later run would report the same false
-/// regression.
-///
-/// A file-level `FAIL` is a verdict of its own: a failing reftest reports
-/// `FAIL` with no subtests at all, and reading that as `SKIP` made a later
-/// pass invisible as a fix.
-///
-/// `tools/wpt/verdict-cases.json` pins this rule against `cli.py`'s
-/// `raw_verdict`; both read the same reports, so a disagreement would report a
-/// pass as a regression or hide a fix.
 fn verdict(result: &Value) -> &str {
     let status = result.get("status").and_then(Value::as_str);
-    // A file-level timeout, crash, or error outranks its subtests: the file
-    // stopped part-way, so the subtests it reported are a prefix, not a
-    // verdict.
     if let Some(status) = status
         && matches!(status, "TIMEOUT" | "ERROR" | "CRASH")
     {
@@ -326,10 +228,6 @@ fn verdict(result: &Value) -> &str {
         Some("OK" | "PASS") => "PASS",
         Some("FAIL") => "FAIL",
         Some(other) => other,
-        // A report that omits the file status keeps the verdict in its
-        // subtests; that is how a testharness entry reads when the writer
-        // recorded only the cases. Treating it as SKIP would turn every
-        // later pass into a hidden fix.
         None => {
             if subtests.is_some_and(|subtests| {
                 subtests
@@ -344,7 +242,6 @@ fn verdict(result: &Value) -> &str {
     }
 }
 
-/// Prints the run summary and, when `verbose`, the failures and slowest tests.
 pub fn summarize(outcomes: &[Outcome], wall: Duration, verbose: bool) {
     let mut pass = 0;
     let mut fail = 0;
@@ -388,7 +285,6 @@ pub fn summarize(outcomes: &[Outcome], wall: Duration, verbose: bool) {
     }
 }
 
-/// Prints what changed against the baseline.
 pub fn print_comparison(comparison: &Comparison) {
     for test in &comparison.regressions {
         println!("REGRESSION {test}");
@@ -466,9 +362,6 @@ mod tests {
         assert!(comparison.failed());
     }
 
-    /// A hard status in the baseline outranks the subtests it emitted before
-    /// dying, so a later pass is a fix and a later failure is not a
-    /// regression.
     #[test]
     fn a_hard_status_outranks_its_subtests() {
         let path = scratch(
@@ -491,8 +384,6 @@ mod tests {
         assert_eq!(comparison.new_failures, [] as [String; 0]);
     }
 
-    /// The shared fixture is the contract: `cli.py` asserts the same cases, so
-    /// a change to either reader that disagrees with the other fails here.
     #[test]
     fn the_verdict_rule_matches_the_shared_cases() {
         let path =

@@ -1,9 +1,3 @@
-//! The renderer child's loop: one current-thread future that owns every wait.
-//!
-//! It drains engines, then sleeps until the next timer deadline, a dial
-//! completion, or a message from the browser. Commands become engine calls;
-//! engine events and replies become wire messages.
-
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::ready;
 use std::sync::Arc;
@@ -22,15 +16,11 @@ use crate::wire::{
 
 const MAX_CANCELLED_STREAMS: usize = 256;
 
-/// What one host command produced.
 enum Handled {
-    /// A control-plane reply.
     Reply(Reply),
-    /// A PNG to stream in body frames.
     Screenshot(Vec<u8>),
 }
 
-/// Runs the renderer loop until `Shutdown`, channel close, or stop.
 pub(super) async fn run(
     mut inbox: exchange::Receiver<ToRenderer>,
     outbox: &exchange::BlockingSender<FromRenderer>,
@@ -55,9 +45,6 @@ pub(super) async fn run(
                 stop.request();
                 break;
             }
-            // The script deadline passed with ready work still queued. Read
-            // one waiting command, then drain again, so the inbox is serviced
-            // between slices instead of after every timer has run.
             Drained::Yielded => match poll_inbox(&mut inbox).await {
                 Polled::Empty => {}
                 Polled::Received(received) => {
@@ -101,8 +88,6 @@ pub(super) async fn run(
     }
 }
 
-/// The values every engine this process hosts shares: the browser's identity,
-/// and the stop and wake handles its loop waits on.
 struct Session {
     identity: net::ValidIdentity,
     stop: Arc<Stop>,
@@ -219,7 +204,6 @@ fn handle_host(
     }
 }
 
-/// Handles one host command for one assignment; `false` stops the loop.
 fn handle_request(
     engines: &mut HashMap<RendererAssignmentId, Engine>,
     outbox: &exchange::BlockingSender<FromRenderer>,
@@ -265,7 +249,6 @@ fn handle_request(
     }
 }
 
-/// Answers a finished or aborted response stream with its unit reply.
 fn reply_result(
     outbox: &exchange::BlockingSender<FromRenderer>,
     id: RequestId,
@@ -283,7 +266,6 @@ fn reply_result(
     )
 }
 
-/// Creates one engine for `assignment`; `false` stops the loop on a duplicate.
 fn assign_engine(
     engines: &mut HashMap<RendererAssignmentId, Engine>,
     assignment: RendererAssignmentId,
@@ -306,8 +288,6 @@ fn assign_engine(
     true
 }
 
-/// Queues one browser-broadcast `BroadcastChannel` message on every engine;
-/// only the posting assignment skips the source channel.
 fn queue_broadcast_message(
     engines: &mut HashMap<RendererAssignmentId, Engine>,
     origin: &renderer::StorageKey,
@@ -323,9 +303,6 @@ fn queue_broadcast_message(
     }
 }
 
-/// Queues one browser-broadcast `localStorage` change on every engine. Only
-/// the assignment that made the change excludes the source window; other
-/// assignments and renderers fire in every matching frame.
 fn queue_storage_event(
     engines: &mut HashMap<RendererAssignmentId, Engine>,
     event: &renderer::PendingStorageEvent,
@@ -340,27 +317,17 @@ fn queue_storage_event(
     }
 }
 
-/// What one drain of every engine produced.
 enum Drained {
-    /// Nothing ready remains; wait for the inbox, a wake, or a timer.
     Idle,
-    /// The shared script deadline passed with ready work still queued.
     Yielded,
-    /// Publishing an engine's events failed.
     Failed,
 }
 
-/// One non-blocking look at the host inbox.
 enum Polled {
-    /// No frame is waiting.
     Empty,
-    /// A frame, or `None` when the inbox is closed. Boxed: a response start
-    /// carries headers and history, and the unboxed form trips
-    /// `large_enum_variant` next to the empty arm.
     Received(Box<Option<ToRenderer>>),
 }
 
-/// Reads a host frame if one is already queued.
 async fn poll_inbox(inbox: &mut exchange::Receiver<ToRenderer>) -> Polled {
     tokio::select! {
         biased;
@@ -369,8 +336,6 @@ async fn poll_inbox(inbox: &mut exchange::Receiver<ToRenderer>) -> Polled {
     }
 }
 
-/// Runs every engine's ready work under one script deadline and publishes
-/// what it produced.
 fn drain_engines(
     engines: &mut HashMap<RendererAssignmentId, Engine>,
     outbox: &exchange::BlockingSender<FromRenderer>,
@@ -388,11 +353,6 @@ fn drain_engines(
         if !publish(*assignment, engine, outbox) {
             return Drained::Failed;
         }
-        // Publishing evaluates the JS-truth predicates, and entering
-        // JavaScript runs pending microtasks: a module evaluation or an event
-        // handler can queue a task of its own. With that task left in the
-        // engine, reporting `Idle` would park this loop until an unrelated
-        // host event arrived.
         if engine.has_ready_work() {
             yielded = true;
         }
@@ -404,15 +364,12 @@ fn drain_engines(
     }
 }
 
-/// One streamed top-level response: which engine and frame it feeds, and how
-/// many bytes it has carried.
 struct ActiveResponse {
     assignment: RendererAssignmentId,
     frame: FrameId,
     bytes: usize,
 }
 
-/// Streamed responses in flight, keyed by request id.
 #[derive(Default)]
 struct ResponseStreams {
     active: HashMap<RequestId, ActiveResponse>,
@@ -550,8 +507,6 @@ impl ResponseStreams {
         self.tombstone(id);
     }
 
-    /// Removes the stream for `id`, defaulting the assignment when the browser
-    /// sent no matching start.
     fn take(
         &mut self,
         id: RequestId,
@@ -680,7 +635,6 @@ fn handle_command(engine: &mut Engine, command: Command) -> Handled {
     }
 }
 
-/// Writes a PNG as response chunks followed by its terminal reply.
 fn stream_screenshot(
     outbox: &exchange::BlockingSender<FromRenderer>,
     id: RequestId,
@@ -724,14 +678,11 @@ fn stream_screenshot(
     )
 }
 
-/// Sends every event one engine produced, returning false when the host is gone.
 fn publish(
     assignment: RendererAssignmentId,
     engine: &mut Engine,
     outbox: &exchange::BlockingSender<FromRenderer>,
 ) -> bool {
-    // The predicates run first: their evaluation is the drain's last work,
-    // and only the ids that became true cross the boundary.
     let settled = engine.settle_js_waiters();
     let Ok(events) = engine.take_browser_events() else {
         return false;

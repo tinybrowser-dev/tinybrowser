@@ -1,12 +1,9 @@
 // https://fetch.spec.whatwg.org/#headers-class
-// Page requests share the browser process's HTTP client with navigation.
 const __tbHeadersData = host.slots('tinybrowser.headers.data');
 const __tbHeadersIteratorState = host.slots('tinybrowser.headers.iterator');
 const __tbResponseData = host.slots('tinybrowser.response.data');
 const __tbRequestData = host.slots('tinybrowser.request.data');
-// WebIDL ByteString conversion: one code point per byte, and anything above
-// 0xFF is a TypeError before any header algorithm runs
-// (<https://webidl.spec.whatwg.org/#es-ByteString>).
+// https://webidl.spec.whatwg.org/#es-ByteString
 const __tbByteString = value => {
   const text = __tbToDOMString(value);
   for (let index = 0; index < text.length; index++) {
@@ -14,9 +11,7 @@ const __tbByteString = value => {
   }
   return text;
 };
-// WebIDL USVString conversion: lone surrogates become U+FFFD before the value
-// reaches Rust, whose `String` cannot carry them
-// (<https://webidl.spec.whatwg.org/#es-USVString>).
+// https://webidl.spec.whatwg.org/#es-USVString
 const __tbToUSVString = value => {
   const text = __tbToDOMString(value);
   let result = '';
@@ -56,10 +51,7 @@ const __tbHeaderValue = value => {
   if (!__tbIsHeaderValue(text)) throw new TypeError('Invalid header value');
   return text;
 };
-// HTTP whitespace is SP and HTAB; JS `trim()` also strips NBSP and BOM.
 const __tbHttpTrim = value => value.replace(/^[\t ]+|[\t ]+$/g, '');
-// The policy tables live in `net::cors`; the renderer only applies the host
-// predicates, so JS and the preflight decision cannot drift.
 const __tbHeadersRecord = headers => __tbBrand(headers, __tbHeadersData);
 const __tbHeadersList = headers => __tbHeadersRecord(headers).list;
 const __tbHeadersGuardOf = headers => __tbHeadersRecord(headers).guard;
@@ -75,10 +67,7 @@ const __tbHeadersLookupRaw = (headers, name) => {
   }
   return values.length === 0 ? null : __tbArray.join(values, ', ');
 };
-// Sorted-and-combined view the iterator and `forEach` walk: names sort
-// alphabetically, duplicate values combine with ", ", and every set-cookie
-// entry stays separate in insertion order
-// (<https://fetch.spec.whatwg.org/#concept-header-list-sort-and-combine>).
+// https://fetch.spec.whatwg.org/#concept-header-list-sort-and-combine
 const __tbSortedHeaders = headers => {
   const record = __tbHeadersRecord(headers);
   if (record.sorted !== null) return record.sorted;
@@ -197,10 +186,7 @@ const __tbFillHeaders = (headers, init) => {
       __tbHeadersAppendRaw(headers, values[0], values[1]);
     }
   } else {
-    // WebIDL record conversion: ownKeys, then per-key
-    // getOwnPropertyDescriptor and (for enumerable keys) get, with the name
-    // converted to a ByteString before the value is read
-    // (<https://webidl.spec.whatwg.org/#es-to-record>).
+    // https://webidl.spec.whatwg.org/#es-to-record
     const keys = Reflect.ownKeys(init);
     for (let index = 0; index < keys.length; index++) {
       const key = keys[index];
@@ -219,8 +205,7 @@ const __tbRequestMethod = value => {
   }
   return /^(DELETE|GET|HEAD|OPTIONS|POST|PUT)$/i.test(method) ? method.toUpperCase() : method;
 };
-// Request mode, credentials mode, and redirect mode
-// (<https://fetch.spec.whatwg.org/#request-class>).
+// https://fetch.spec.whatwg.org/#request-class
 const __tbRequestMode = value => {
   const mode = String(value);
   if (mode === 'same-origin' || mode === 'cors' || mode === 'no-cors') return mode;
@@ -236,9 +221,7 @@ const __tbRedirectMode = value => {
   if (mode === 'follow' || mode === 'error' || mode === 'manual') return mode;
   throw new TypeError('Invalid redirect mode');
 };
-// A `no-cors` request may use only a CORS-safelisted method
-// (<https://fetch.spec.whatwg.org/#cors-safelisted-method>). `net` owns the
-// method table.
+// https://fetch.spec.whatwg.org/#cors-safelisted-method
 const __tbCorsSafelistedMethod = method => host.__tbIsCorsSafelistedMethod(method);
 const __tbBrand = (value, slots, message) => {
   const data = slots.get(value);
@@ -279,8 +262,7 @@ Object.defineProperty(globalThis.Headers.prototype, Symbol.toStringTag, { value:
 const __tbHeadersConstructor = globalThis.Headers;
 const __tbHeadersGet = __tbHeadersConstructor.prototype.get;
 const __tbHeadersAppend = __tbHeadersConstructor.prototype.append;
-// Internal construction with a guard; page code only sees the default guard
-// (<https://fetch.spec.whatwg.org/#concept-headers-guard>).
+// https://fetch.spec.whatwg.org/#concept-headers-guard
 const __tbMakeHeaders = (entries, guard) => {
   const headers = Object.create(__tbHeadersConstructor.prototype);
   __tbHeadersData.set(headers, { list: entries, guard, version: 0, sorted: null });
@@ -292,9 +274,7 @@ const __tbNewHeaders = (init, guard) => {
   __tbFillHeaders(headers, init);
   return headers;
 };
-// A BodyInit becomes bytes plus a type, or a ReadableStream when the caller
-// supplied one (<https://fetch.spec.whatwg.org/#bodyinit>). The bytes stay in
-// memory: every consumer in this engine reads the whole body anyway.
+// https://fetch.spec.whatwg.org/#bodyinit
 const __tbConcatBytes = chunks => {
   let length = 0;
   for (let index = 0; index < chunks.length; index++) length += chunks[index].length;
@@ -321,7 +301,7 @@ const __tbMultipartBoundary = () => {
   for (let index = 0; index < bytes.length; index++) boundary += bytes[index].toString(16).padStart(2, '0');
   return boundary;
 };
-// <https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#multipart-form-data>
+// https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#multipart-form-data
 const __tbFormDataBody = formData => {
   const boundary = __tbMultipartBoundary();
   const type = 'multipart/form-data; boundary=' + boundary;
@@ -368,8 +348,7 @@ const __tbExtractBody = body => {
   }
   return { bytes: __tbUtf8Encode(__tbToDOMString(body)), type: 'text/plain;charset=UTF-8', stream: null };
 };
-// Blob types are ASCII-lowercased MIME type strings
-// (<https://w3c.github.io/FileAPI/#dfn-type>).
+// https://w3c.github.io/FileAPI/#dfn-type
 const __tbBlobTypeFromHeader = header =>
   header === null ? '' : header.toLowerCase();
 const __tbBodyStream = extracted => {
@@ -385,8 +364,6 @@ const __tbBodyStream = extracted => {
 };
 const __tbBodyUsed = data =>
   data.bodyUsed || (data.stream !== null && __tbStreamDisturbed(data.stream));
-// A null-prototype result keeps `Object.prototype.then` from turning the
-// bytes into a thenable while the promise chain is still internal.
 const __tbReadResult = bytes => {
   const result = __tbObjectCreate(null);
   result.bytes = bytes;
@@ -401,9 +378,7 @@ const __tbConsumeBody = data => {
   data.bodyUsed = true;
   const stream = data.stream;
   const markDisturbed = () => { __tbStreamBrand(stream).disturbed = true; };
-  // The fast path drains a closed stream without taking a reader; mark the
-  // stream disturbed so a later `getReader()` still throws
-  // (<https://streams.spec.whatwg.org/#is-readable-stream-disturbed>).
+  // https://streams.spec.whatwg.org/#is-readable-stream-disturbed
   return __tbReadAllBytes(stream).then(
     result => { markDisturbed(); return result; },
     error => { markDisturbed(); throw error; },
@@ -523,9 +498,7 @@ const __tbInstallBody = (proto, slots) => {
     },
   });
 };
-// One host MIME parse supplies the essence and the boundary, so a boundary
-// containing `=` or `;` and quoted parameters follow the MIME algorithm
-// (<https://mimesniff.spec.whatwg.org/#parse-a-mime-type>).
+// https://mimesniff.spec.whatwg.org/#parse-a-mime-type
 const __tbContentType = headers => {
   const value = __tbHeadersLookupRaw(headers, 'content-type');
   if (value === null) return null;
@@ -563,8 +536,7 @@ const __tbParseMultipart = (bytes, boundary) => {
   if (position === -1) throw new TypeError('Missing multipart boundary');
   position += delimiter.length;
   while (true) {
-    // Transport padding between the boundary and the line break is legal
-    // (<https://www.rfc-editor.org/rfc/rfc2046#section-5.1.1>).
+    // https://www.rfc-editor.org/rfc/rfc2046#section-5.1.1
     while (position < bytes.length && (bytes[position] === 0x20 || bytes[position] === 0x09)) position += 1;
     if (position + 1 < bytes.length && bytes[position] === 0x2D && bytes[position + 1] === 0x2D) {
       position += 2;
@@ -638,8 +610,7 @@ const __tbErroredStream = () => new ReadableStream({
 });
 const __tbResponseRecord = (body, status, statusText, headers) => {
   const extracted = __tbExtractBody(body);
-  // The body's type becomes the Content-Type when the header list holds none
-  // (<https://fetch.spec.whatwg.org/#dom-response>).
+  // https://fetch.spec.whatwg.org/#dom-response
   if (extracted.type !== null && __tbHeadersLookupRaw(headers, 'content-type') === null) {
     __tbHeadersAppendRaw(headers, 'content-type', extracted.type);
   }
@@ -671,7 +642,7 @@ globalThis.Response = class Response {
     if (status < 200 || status > 599) throw new RangeError('Invalid response status');
     const statusText = __tbStatusText(options.statusText);
     const storedBody = body === undefined || body === null ? null : body;
-    // A null body status has no body (<https://fetch.spec.whatwg.org/#null-body-status>).
+    // https://fetch.spec.whatwg.org/#null-body-status
     if (storedBody !== null && (status === 204 || status === 205 || status === 304)) {
       throw new TypeError('A null body status cannot have a body');
     }
@@ -703,7 +674,7 @@ globalThis.Response = class Response {
     __tbResponseData.set(copy, { ...data, stream, bodyUsed: false, headers });
     return copy;
   }
-  // <https://fetch.spec.whatwg.org/#dom-response-json>
+  // https://fetch.spec.whatwg.org/#dom-response-json
   static json(data, init) {
     const options = init === undefined ? {} : Object(init);
     const body = JSON.stringify(data);
@@ -720,7 +691,7 @@ globalThis.Response = class Response {
     }
     return __tbCreateResponse(__tbResponseRecord(body, status, statusText, headers));
   }
-  // <https://fetch.spec.whatwg.org/#dom-response-redirect>
+  // https://fetch.spec.whatwg.org/#dom-response-redirect
   static redirect(url, status) {
     let resolved;
     try {
@@ -744,7 +715,7 @@ globalThis.Response = class Response {
       headers: __tbMakeHeaders([['location', resolved]], 'immutable'),
     });
   }
-  // <https://fetch.spec.whatwg.org/#dom-response-error>
+  // https://fetch.spec.whatwg.org/#dom-response-error
   static error() {
     return __tbCreateResponse({
       stream: null,
@@ -844,8 +815,7 @@ globalThis.Request = class Request {
     const method = options.method !== undefined ? __tbRequestMethod(options.method) : source === null ? 'GET' : source.method;
     const mode = options.mode !== undefined ? __tbRequestMode(options.mode) : source === null ? 'cors' : source.mode;
     const initHeaders = options.headers !== undefined ? options.headers : source === null ? undefined : source.headers;
-    // The guard is installed before the list is filled so construction cannot
-    // bypass it (<https://fetch.spec.whatwg.org/#concept-headers-guard>).
+    // https://fetch.spec.whatwg.org/#concept-headers-guard
     const headers = __tbNewHeaders(initHeaders, mode === 'no-cors' ? 'request-no-cors' : 'request');
     const credentials = options.credentials !== undefined ? __tbCredentialsMode(options.credentials) : source === null ? 'same-origin' : source.credentials;
     const redirect = options.redirect !== undefined ? __tbRedirectMode(options.redirect) : source === null ? 'follow' : source.redirect;
@@ -874,10 +844,7 @@ globalThis.Request = class Request {
       } else {
         const resolved = host.__tbResolveUrl(__tbToUSVString(value), undefined);
         if (resolved == null) throw new TypeError('Invalid referrer');
-        // A referrer cross-origin to the settings object is not exposed; it
-        // becomes "client". An opaque origin is never same origin, and it
-        // serializes as "null", so it needs its own check
-        // (<https://fetch.spec.whatwg.org/#dom-request-referrer>).
+        // https://fetch.spec.whatwg.org/#dom-request-referrer
         const origin = host.__tbOrigin();
         referrer = origin !== 'null' && new URL(resolved).origin === origin
           ? resolved
@@ -897,9 +864,7 @@ globalThis.Request = class Request {
       else signal.addEventListener('abort', () => controller.abort(signal.reason));
       signal = controller.signal;
     }
-    // A body inherited from a Request is transferred through a proxy reader;
-    // the source becomes disturbed and the new request gets its own stream
-    // (<https://fetch.spec.whatwg.org/#dom-request>).
+    // https://fetch.spec.whatwg.org/#dom-request
     const inheritedBody = options.body === undefined && source !== null;
     if (inheritedBody && source.stream !== null && (__tbBodyUsed(source) || source.stream.locked)) {
       throw new TypeError('Body already used');
@@ -910,8 +875,7 @@ globalThis.Request = class Request {
     if ((method === 'GET' || method === 'HEAD') && (inheritedBody ? source.stream !== null : options.body !== undefined && options.body !== null)) {
       throw new TypeError('GET and HEAD requests cannot have a body');
     }
-    // A `no-cors` Request rejects a method that is not CORS-safelisted
-    // (<https://fetch.spec.whatwg.org/#dom-request>).
+    // https://fetch.spec.whatwg.org/#dom-request
     if (mode === 'no-cors' && !__tbCorsSafelistedMethod(method)) {
       throw new TypeError('Invalid request method for no-cors mode');
     }
@@ -938,8 +902,6 @@ globalThis.Request = class Request {
     } else {
       bodySourceIsStream = options.body instanceof ReadableStream;
       if (source !== null && source.stream !== null && !__tbBodyUsed(source) && !source.stream.locked) {
-        // Replacing the body still consumes the source request in the
-        // vendored WPT revision this tree pins.
         source.stream.getReader();
         source.bodyUsed = true;
       }
@@ -950,9 +912,7 @@ globalThis.Request = class Request {
           empty = false;
           break;
         }
-        // An empty FormData request body is zero bytes; the Response
-        // constructor keeps the multipart terminator instead
-        // (<https://fetch.spec.whatwg.org/#bodyinit-safely-extract>).
+        // https://fetch.spec.whatwg.org/#bodyinit-safely-extract
         if (empty) extracted.bytes = new __tbUint8Array(0);
       }
       if (extracted.type !== null && __tbHeadersLookupRaw(headers, 'content-type') === null) {
@@ -967,8 +927,7 @@ globalThis.Request = class Request {
     if (bodySourceIsStream && mode !== 'same-origin' && mode !== 'cors') {
       throw new TypeError('A stream body requires same-origin or cors mode');
     }
-    // A Request keeps a blob URL's data alive, so fetching it still works
-    // after revokeObjectURL (<https://w3c.github.io/FileAPI/#lifeTime>).
+    // https://w3c.github.io/FileAPI/#lifeTime
     const blob = source !== null ? source.blob : url.indexOf('blob:') === 0 ? __tbLookupObjectUrl(url) : null;
     __tbRequestData.set(this, {
       url, method, blob, headers, stream, bodySourceIsStream, bodyUsed: false, bodySize, mode, credentials, redirect,
@@ -1018,14 +977,11 @@ Object.defineProperty(globalThis.Request.prototype, Symbol.toStringTag, { value:
 __tbInstallBody(globalThis.Response.prototype, __tbResponseData);
 __tbInstallBody(globalThis.Request.prototype, __tbRequestData);
 const __tbRequestConstructor = globalThis.Request;
-// The body of a response the engine already holds, in the same tagged shape
-// the host hands the fetch callback
-// (<https://fetch.spec.whatwg.org/#concept-response-body>).
+// https://fetch.spec.whatwg.org/#concept-response-body
 const __tbBodyBytes = bytes => ({ kind: 'bytes', bytes });
 
 const __tbMakeResponse = (body, status, statusText, url, type, fields, responseType, redirected) => {
-  // An opaque filtered response exposes no status, headers, or body
-  // (<https://fetch.spec.whatwg.org/#concept-filtered-response-opaque>).
+  // https://fetch.spec.whatwg.org/#concept-filtered-response-opaque
   const opaque = responseType === 'opaque';
   const headers = __tbMakeHeaders(opaque ? [] : fields, 'response');
   if (!opaque && type && __tbHeadersLookupRaw(headers, 'content-type') === null) {
@@ -1097,7 +1053,7 @@ const __tbMakeStreamingResponse = (outcome, signal) => {
   });
 };
 
-// <https://fetch.spec.whatwg.org/#bodyinit-safely-extract>
+// https://fetch.spec.whatwg.org/#bodyinit-safely-extract
 const __tbPageRequestBody = async body => {
   if (body === null || body === undefined) return { bytes: new __tbUint8Array(0), type: null };
   if (body instanceof ReadableStream) {
@@ -1109,10 +1065,7 @@ const __tbPageRequestBody = async body => {
 };
 const __tbQueuePageRequest = (url, method, body, headers, cors, referrer, callback, initiator) => {
   const id = ++host.__tb_fetchSeq;
-  // Requests made through this helper are resources of the global's timeline.
-  // The entry is created when the response arrives, with the request's start
-  // and end recorded from the same clock
-  // (<https://w3c.github.io/resource-timing/#sec-resource-timing>).
+  // https://w3c.github.io/resource-timing/#sec-resource-timing
   const started = performance.now();
   const queuedInitiator = initiator === undefined ? 'fetch' : initiator;
   const reportResource = outcome => {
@@ -1156,7 +1109,7 @@ const __tbCancelPageRequest = id => {
   delete host.__tb_fetchCbs[id];
   host.__cancelFetch(id);
 };
-// <https://fetch.spec.whatwg.org/#concept-range-header>
+// https://fetch.spec.whatwg.org/#concept-range-header
 const __tbParseRange = (value, length) => {
   const match = /^bytes[ \t]*=[ \t]*([0-9]*)[ \t]*-[ \t]*([0-9]*)$/.exec(value);
   if (match === null) return null;
@@ -1190,10 +1143,7 @@ globalThis.fetch = function(input, init) {
   const mode = data.mode;
   const credentials = data.credentials;
   const redirect = data.redirect;
-  // The host resolves "about:client" against the authorized document and runs
-  // "Determine request's Referrer" per hop; JS only carries the request's
-  // referrer value
-  // (<https://fetch.spec.whatwg.org/#concept-request-referrer>).
+  // https://fetch.spec.whatwg.org/#concept-request-referrer
   const referrer = data.referrer;
   const signal = data.signal;
   const keepalive = data.keepalive;
@@ -1258,8 +1208,7 @@ globalThis.fetch = function(input, init) {
       ));
       return;
     }
-    // A fragment is not part of the HTTP request or the response URL
-    // (<https://fetch.spec.whatwg.org/#concept-request-url>).
+    // https://fetch.spec.whatwg.org/#concept-request-url
     const hash = url.indexOf('#');
     const networkUrl = hash === -1 ? url : url.slice(0, hash);
     requestID = __tbQueuePageRequest(networkUrl, method, body, headers, {
@@ -1270,7 +1219,6 @@ globalThis.fetch = function(input, init) {
       bodySize: data.bodySize,
       integrity: data.integrity,
       cache: data.cache,
-      // HEAD has no body, and SRI has to see the whole body before exposure.
       delivery: method !== 'HEAD' && data.integrity === '' ? 'stream' : 'buffer',
       referrerPolicy: data.referrerPolicy,
     }, referrer, outcome => {
@@ -1282,8 +1230,7 @@ globalThis.fetch = function(input, init) {
       const fields = outcome.headers;
       const responseType = outcome.responseType;
       if (responseType !== 'error') {
-        // A redirect in manual mode is an opaque-redirect filtered response
-        // (<https://fetch.spec.whatwg.org/#concept-filtered-response-opaque-redirect>).
+        // https://fetch.spec.whatwg.org/#concept-filtered-response-opaque-redirect
         if (responseType === 'opaqueredirect'
             || (redirect === 'manual' && (status === 301 || status === 302 || status === 303 || status === 307 || status === 308))) {
           finish(resolve, __tbMakeResponse(__tbBodyBytes(new __tbUint8Array(0)), 0, '', url, '', [], 'opaqueredirect', false));
@@ -1301,8 +1248,7 @@ globalThis.fetch = function(input, init) {
           return;
         }
         const response = __tbWithSignal(__tbMakeResponse(body, status, statusText, finalUrl, type, fields, responseType, outcome.redirectCount > 0), signal);
-        // A HEAD response has no body regardless of what the wire carried
-        // (<https://fetch.spec.whatwg.org/#concept-head>).
+        // https://fetch.spec.whatwg.org/#concept-head
         if (method === 'HEAD') __tbBrand(response, __tbResponseData).stream = null;
         finish(resolve, response);
       } else {

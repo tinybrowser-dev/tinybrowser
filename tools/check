@@ -104,6 +104,26 @@ run_layers() {
   return 0
 }
 
+run_comments() {
+  local matches
+  matches="$(grep -rnE '^[[:space:]]*//' src crates tools tests \
+    --include='*.rs' --include='*.js' \
+    --exclude-dir=generated --exclude-dir=third_party --exclude-dir=node_modules \
+    | grep -vE '^[^:]+:[0-9]+:[[:space:]]*// (SAFETY: [^[:space:]]|https?://[^[:space:]]+( — .+)?)$' || true)"
+  local py_matches
+  py_matches="$(grep -rnE '^[[:space:]]*#' tools/wpt --include='*.py' --exclude-dir=.venv \
+    | grep -vE '^[^:]+:1:#!' \
+    | grep -vE '^[^:]+:[0-9]+:[[:space:]]*# https?://[^[:space:]]+( — .+)?$' || true)"
+  if [[ -n "$matches" || -n "$py_matches" ]]; then
+    [[ -n "$matches" ]] && printf '%s\n' "$matches" >&2
+    [[ -n "$py_matches" ]] && printf '%s\n' "$py_matches" >&2
+    echo "comments: only '// SAFETY: ...' and '// https://... [— disagreement]' are allowed" >&2
+    return 1
+  fi
+  echo "comments: only SAFETY and spec URL citations present"
+  return 0
+}
+
 run_docs() {
   # Workspace `warnings` (deny) covers rustdoc's intra-doc link lints, and
   # `--document-private-items` documents private items too, so a broken or
@@ -194,6 +214,7 @@ valgrind_test() {
 case "${1:-clippy}" in
   clippy)
     tools/webidl/import --check
+    run_comments
     run_rust
     run_js
     run_layers

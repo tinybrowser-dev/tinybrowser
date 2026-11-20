@@ -1,10 +1,5 @@
-//! Tree mutation: pre-insert classification, insert, replace, and move.
-//!
-//! These algorithms work on `&mut Parsed` and `NodeId`s only, and they return
-//! the realm-side work they cannot do themselves (child navigables to destroy,
-//! insertion steps to apply) to the caller that owns the realm
-//! (<https://dom.spec.whatwg.org/#concept-node-insert>,
-//! <https://dom.spec.whatwg.org/#concept-node-replace>).
+// https://dom.spec.whatwg.org/#concept-node-insert
+// https://dom.spec.whatwg.org/#concept-node-replace
 
 use blitz_dom::NodeData;
 
@@ -15,33 +10,21 @@ use crate::dom::tree::{
     is_html_element, mathml_namespace, sibling, svg_namespace,
 };
 
-/// The inserted node's side of ensure pre-insert validity.
 pub(crate) enum InsertedNode {
-    Fragment {
-        elements: usize,
-        has_text: bool,
-    },
+    Fragment { elements: usize, has_text: bool },
     Element,
-    /// A `Text` node, including a CDATA section.
     Text,
     Doctype,
-    /// A comment or processing instruction.
     CharacterData,
     Other,
 }
 
-/// The inserted node's side of ensure pre-insert validity: fragments
-/// report their shape, elements/text/comments report their kind, anything
-/// else cannot be inserted
-/// (<https://dom.spec.whatwg.org/#concept-node-ensure-pre-insert-validity>).
+// https://dom.spec.whatwg.org/#concept-node-ensure-pre-insert-validity
 pub(crate) fn classify_inserted(
     doc: &crate::documents::BlitzDocument,
     id: BlitzId,
 ) -> InsertedNode {
-    // A fragment node splices its children on insertion, so the shape is its
-    // children's: the DOM cannot hold a fragment inside a fragment, because
-    // inserting one splices it
-    // (<https://dom.spec.whatwg.org/#concept-node-insert>).
+    // https://dom.spec.whatwg.org/#concept-node-insert
     if doc.is_fragment(id) {
         let Some(fragment) = doc.base.get_node(id) else {
             return InsertedNode::Other;
@@ -68,15 +51,13 @@ pub(crate) fn classify_inserted(
     }
 }
 
-/// Whether `id` is a doctype node.
 pub(crate) fn is_doctype(doc: &crate::documents::BlitzDocument, id: BlitzId) -> bool {
     doc.base
         .get_node(id)
         .is_some_and(|node| matches!(node.data, NodeData::Doctype { .. }))
 }
 
-/// Whether `parent` has a doctype child that `excluded` does not contain
-/// (<https://dom.spec.whatwg.org/#concept-node-ensure-pre-insert-validity>).
+// https://dom.spec.whatwg.org/#concept-node-ensure-pre-insert-validity
 pub(crate) fn parent_has_doctype(
     doc: &crate::documents::BlitzDocument,
     parent: BlitzId,
@@ -89,7 +70,6 @@ pub(crate) fn parent_has_doctype(
     })
 }
 
-/// Whether a doctype follows `child` among `parent`'s children.
 pub(crate) fn sibling_doctype_follows(
     doc: &crate::documents::BlitzDocument,
     parent: BlitzId,
@@ -107,7 +87,6 @@ pub(crate) fn sibling_doctype_follows(
         .any(|kid| is_doctype(doc, *kid))
 }
 
-/// Whether an element precedes `child` among `parent`'s children.
 pub(crate) fn sibling_element_precedes(
     doc: &crate::documents::BlitzDocument,
     parent: BlitzId,
@@ -125,8 +104,7 @@ pub(crate) fn sibling_element_precedes(
         .any(|kid| is_element(&doc.base, *kid))
 }
 
-/// Whether `parent` has an element child that `excluded` does not contain
-/// (<https://dom.spec.whatwg.org/#concept-node-ensure-pre-insert-validity>).
+// https://dom.spec.whatwg.org/#concept-node-ensure-pre-insert-validity
 pub(crate) fn parent_has_element(
     doc: &crate::documents::BlitzDocument,
     parent: BlitzId,
@@ -139,7 +117,6 @@ pub(crate) fn parent_has_element(
     })
 }
 
-/// Siblings around `child` within `parent`, for the mutation journal.
 pub(crate) fn siblings_around(
     base: &blitz_dom::BaseDocument,
     document: u32,
@@ -171,8 +148,6 @@ pub(crate) fn siblings_around(
     (previous, next)
 }
 
-/// The HTML `iframe` containers in the inclusive subtrees of `roots`, whose
-/// child navigables the caller destroys after releasing the tree borrow.
 #[must_use = "destroy these child navigables after releasing the tree borrow"]
 pub(crate) fn iframe_containers_in_subtrees(
     parsed: &crate::Parsed,
@@ -196,10 +171,7 @@ pub(crate) fn iframe_containers_in_subtrees(
     containers
 }
 
-/// Records the removal of an already-parented `target`, then detaches it. A
-/// node with no parent is already detached; that is a no-op. The removal
-/// keeps its own `childList` record, so a move reads as removed plus added
-/// (<https://dom.spec.whatwg.org/#concept-node-remove>).
+// https://dom.spec.whatwg.org/#concept-node-remove
 pub(crate) fn unlink_journaled(parsed: &mut crate::Parsed, target: NodeId) {
     let document = target.document;
     let (parent, previous, next) = {
@@ -210,7 +182,6 @@ pub(crate) fn unlink_journaled(parsed: &mut crate::Parsed, target: NodeId) {
         });
         (parent, previous, next)
     };
-    // The index scan only feeds the live-range adjustment.
     let index = if parsed.document.side.ranges.is_empty() {
         None
     } else {
@@ -262,11 +233,7 @@ pub(crate) fn unlink_journaled(parsed: &mut crate::Parsed, target: NodeId) {
     });
 }
 
-/// Adjusts live ranges for `children` leaving `fragment` through a move into
-/// a new parent. The insert algorithm removes the fragment's children first,
-/// and each removal runs the pre-remove steps; removing in tree order always
-/// takes the first slot
-/// (<https://dom.spec.whatwg.org/#concept-node-insert>).
+// https://dom.spec.whatwg.org/#concept-node-insert
 pub(crate) fn adjust_children_leaving(
     parsed: &mut crate::Parsed,
     fragment: NodeId,
@@ -282,10 +249,6 @@ pub(crate) fn adjust_children_leaving(
     }
 }
 
-/// Inserts the already-adopted `child` into `parent` before `reference` (or
-/// at the end for `None`), recording one `childList` addition. Blitz detaches
-/// from the old parent during the insert itself, so callers run
-/// `unlink_journaled` first and the removal keeps its own record.
 pub(crate) fn place_journaled(
     parsed: &mut crate::Parsed,
     parent: NodeId,
@@ -293,9 +256,7 @@ pub(crate) fn place_journaled(
     reference: Option<NodeId>,
 ) {
     place_inner(parsed, parent, child, reference);
-    // The index scan only feeds the live-range adjustment, and an append
-    // (null reference) shifts no offsets
-    // (<https://dom.spec.whatwg.org/#concept-node-insert>).
+    // https://dom.spec.whatwg.org/#concept-node-insert
     if reference.is_none() || parsed.document.side.ranges.is_empty() {
         return;
     }
@@ -362,9 +323,7 @@ fn place_inner(
     });
 }
 
-/// Moves one already-adopted node into `parent`, expanding a fragment into
-/// its children. Inserting beside itself stays put
-/// (<https://dom.spec.whatwg.org/#concept-node-pre-insert>).
+// https://dom.spec.whatwg.org/#concept-node-pre-insert
 pub(crate) fn insert_parsed(
     parsed: &mut crate::Parsed,
     parent: NodeId,
@@ -385,9 +344,7 @@ pub(crate) fn insert_parsed(
     place_journaled(parsed, parent, node, reference);
 }
 
-/// Splices an adopted fragment's children into `parent` before `reference`:
-/// one removal record on the fragment plus one addition record on the parent
-/// (<https://dom.spec.whatwg.org/#concept-node-insert>).
+// https://dom.spec.whatwg.org/#concept-node-insert
 pub(crate) fn splice_parsed(
     parsed: &mut crate::Parsed,
     parent: NodeId,
@@ -410,9 +367,7 @@ pub(crate) fn splice_parsed(
     if moved.is_empty() {
         return;
     }
-    // The fragment's children leave it before the insert, and each removal
-    // runs the live-range pre-remove steps
-    // (<https://dom.spec.whatwg.org/#concept-node-insert>).
+    // https://dom.spec.whatwg.org/#concept-node-insert
     adjust_children_leaving(parsed, fragment, &moved);
     parsed.document.record(JournalEntry::ChildList {
         target: fragment,
@@ -421,10 +376,7 @@ pub(crate) fn splice_parsed(
         previous: None,
         next: None,
     });
-    // The insert steps shift parent points past the reference child's index
-    // by the node count; the index is the reference's before the insert, and
-    // an append (null child) shifts nothing
-    // (<https://dom.spec.whatwg.org/#concept-node-insert>).
+    // https://dom.spec.whatwg.org/#concept-node-insert
     let reference_index = reference.and_then(|reference| {
         parsed
             .document
@@ -485,13 +437,7 @@ pub(crate) fn splice_parsed(
     });
 }
 
-/// Replace all with `node` within `parent`
-/// (<https://dom.spec.whatwg.org/#concept-node-replace-all>).
-///
-/// Children of `parent` are removed with observers suppressed. Inserting a
-/// fragment then records one empty childList on the fragment (the insert
-/// algorithm always queues that record). The parent gets one combined
-/// childList for the swap.
+// https://dom.spec.whatwg.org/#concept-node-replace-all
 #[must_use = "destroy these child navigables after releasing the tree borrow"]
 pub(crate) fn replace_all_with_node(
     parsed: &mut crate::Parsed,
@@ -500,9 +446,7 @@ pub(crate) fn replace_all_with_node(
 ) -> Vec<NodeId> {
     let added = if parsed.document.is_fragment(node.node) {
         let moved = fragment_children(&parsed.document, node);
-        // The children leave the fragment before the insert, and each
-        // removal runs the live-range pre-remove steps
-        // (<https://dom.spec.whatwg.org/#concept-node-insert>).
+        // https://dom.spec.whatwg.org/#concept-node-insert
         adjust_children_leaving(parsed, node, &moved);
         for child in &moved {
             parsed.document.base.mutate().remove_node(child.node);
@@ -521,10 +465,7 @@ pub(crate) fn replace_all_with_node(
     replace_all_journaled(parsed, parent, added)
 }
 
-/// Replaces every child of `parent` with `added`: standing children detach
-/// silently and one record carries the swap. Replacing with the same
-/// contents is silent
-/// (<https://dom.spec.whatwg.org/#concept-node-replace-all>).
+// https://dom.spec.whatwg.org/#concept-node-replace-all
 #[must_use = "destroy these child navigables after releasing the tree borrow"]
 pub(crate) fn replace_all_journaled(
     parsed: &mut crate::Parsed,
@@ -545,12 +486,7 @@ pub(crate) fn replace_all_journaled(
                 .collect()
         });
     let iframes = iframe_containers_in_subtrees(parsed, &removed);
-    // Adjust live ranges while the tree links are intact: after `remove_node`
-    // the detached children report no parent, so the descendant check would
-    // miss every point inside them. Removing every child in tree order leaves
-    // every affected point on `(parent, 0)`, and the following insert before
-    // null shifts nothing
-    // (<https://dom.spec.whatwg.org/#concept-node-replace-all>).
+    // https://dom.spec.whatwg.org/#concept-node-replace-all
     if !removed.is_empty() && !parsed.document.side.ranges.is_empty() {
         let base = &parsed.document.base;
         let ranges = &mut parsed.document.side.ranges;
@@ -560,9 +496,7 @@ pub(crate) fn replace_all_journaled(
         parsed.document.base.mutate().remove_node(kid.node);
     }
     for child in &added {
-        // Insert adopts: a node with a parent is removed first, and that
-        // removal is not suppressed
-        // (<https://dom.spec.whatwg.org/#concept-node-adopt>).
+        // https://dom.spec.whatwg.org/#concept-node-adopt
         unlink_journaled(parsed, *child);
         parsed
             .document
@@ -582,8 +516,6 @@ pub(crate) fn replace_all_journaled(
     iframes
 }
 
-/// The HTML, SVG, and `MathML` elements under `id` whose `nonce` content
-/// attribute clears on browsing-context connection.
 pub(crate) fn collect_nonce_elements(
     base: &blitz_dom::BaseDocument,
     id: NodeId,
@@ -624,8 +556,6 @@ pub(crate) enum InsertionStep {
     Base(NodeId),
 }
 
-/// The insertion steps an inserted subtree owes, in tree order: iframe
-/// contexts, classic scripts, and referrer-policy updates.
 pub(crate) fn collect_html_insertion_steps(
     base: &blitz_dom::BaseDocument,
     id: NodeId,
@@ -655,8 +585,7 @@ pub(crate) fn collect_html_insertion_steps(
     }
 }
 
-/// The reference child of an insertion must already be parented at the
-/// parent (<https://dom.spec.whatwg.org/#concept-node-ensure-pre-insert-validity>).
+// https://dom.spec.whatwg.org/#concept-node-ensure-pre-insert-validity
 pub(crate) fn ensure_parented(
     base: &blitz_dom::BaseDocument,
     parent: NodeId,
@@ -673,17 +602,13 @@ pub(crate) fn ensure_parented(
     }
 }
 
-/// A node cannot be inserted into its own subtree
-/// (<https://dom.spec.whatwg.org/#concept-node-ensure-pre-insert-validity>).
+// https://dom.spec.whatwg.org/#concept-node-ensure-pre-insert-validity
 pub(crate) fn ensure_no_cycle(
     base: &blitz_dom::BaseDocument,
     parent: BlitzId,
     node: BlitzId,
 ) -> Result<(), TreeError> {
-    // Host-including inclusive ancestry: a template contents fragment counts
-    // as a child of its host, and a shadow root counts as a child of its
-    // host, so appending an ancestor of the host into either is a cycle
-    // (<https://dom.spec.whatwg.org/#concept-tree-host-including-inclusive-ancestor>).
+    // https://dom.spec.whatwg.org/#concept-tree-host-including-inclusive-ancestor
     let mut cursor = Some(parent);
     while let Some(current) = cursor {
         if current == node {
@@ -700,15 +625,7 @@ pub(crate) fn ensure_no_cycle(
     Ok(())
 }
 
-/// Document parent rules from ensure pre-insert validity, steps after the
-/// non-document early return
-/// (<https://dom.spec.whatwg.org/#concept-node-ensure-pre-insertion-validity>).
-///
-/// `excluded` is `childrenToExclude`: `replace` passes the replaced child,
-/// `replaceChildren` passes the parent's current children, and pre-insert
-/// paths pass nothing — a move of the document's own doctype or element
-/// therefore throws, matching the spec and Chromium's "only one element on
-/// document allowed".
+// https://dom.spec.whatwg.org/#concept-node-ensure-pre-insertion-validity
 pub(crate) fn ensure_document_content_model(
     doc: &crate::documents::BlitzDocument,
     parent: NodeId,
@@ -717,14 +634,9 @@ pub(crate) fn ensure_document_content_model(
     inserted: &InsertedNode,
 ) -> Result<(), TreeError> {
     match inserted {
-        // A text node, including a CDATA section, cannot be a document child.
-        // `Other` is unreachable here: the caller rejects it for every parent
-        // before this runs, and it fails closed on the same exception rather
-        // than admitting documents or anonymous blocks as document children.
         InsertedNode::Text | InsertedNode::Other => {
             return Err(TreeError::Hierarchy);
         }
-        // A comment or processing instruction may be a document child.
         InsertedNode::CharacterData => return Ok(()),
         InsertedNode::Fragment { elements, has_text } => {
             if *elements > 1 || *has_text {
@@ -740,9 +652,6 @@ pub(crate) fn ensure_document_content_model(
         }
     }
     let has_element = parent_has_element(doc, parent.node, excluded);
-    // `ensure_parented` above guarantees same-document-or-absent, but the
-    // filter stays: in release builds a bypassed check must degrade to
-    // append-at-end, never to cross-document slot reads.
     let child_id = reference.filter(|child| child.document == parent.document);
     let doctype_follows =
         child_id.is_some_and(|child| sibling_doctype_follows(doc, parent.node, child.node));
@@ -754,8 +663,7 @@ pub(crate) fn ensure_document_content_model(
     Ok(())
 }
 
-/// A doctype child must precede every element child of its parent
-/// (<https://dom.spec.whatwg.org/#concept-node-ensure-pre-insert-validity>).
+// https://dom.spec.whatwg.org/#concept-node-ensure-pre-insert-validity
 pub(crate) fn ensure_doctype_position(
     doc: &crate::documents::BlitzDocument,
     parent: NodeId,
@@ -773,19 +681,14 @@ pub(crate) fn ensure_doctype_position(
     Ok(())
 }
 
-/// The `child` argument of `move`, after `moveBefore` rewrites a self-reference
-/// to the node's next sibling
-/// (<https://dom.spec.whatwg.org/#dom-parentnode-movebefore>).
+// https://dom.spec.whatwg.org/#dom-parentnode-movebefore
 pub(crate) enum MoveTarget {
-    /// `child` is null, so the node is appended.
     End,
-    /// Insert before this child of the destination.
     Before(NodeId),
-    /// An attribute, which is never parented.
     Unparented,
 }
 
-/// Preconditions of `move` (<https://dom.spec.whatwg.org/#move>).
+// https://dom.spec.whatwg.org/#move
 pub(crate) fn ensure_can_move(
     doc: &crate::documents::BlitzDocument,
     parent: NodeId,
@@ -796,17 +699,13 @@ pub(crate) fn ensure_can_move(
         return Err(TreeError::Hierarchy);
     }
     let base = &doc.base;
-    // `move` compares shadow-including roots, so a node can cross into a
-    // connected shadow tree
-    // (<https://dom.spec.whatwg.org/#move>).
+    // https://dom.spec.whatwg.org/#move
     if crate::dom::tree::shadow_including_root(base, parent.node)
         != crate::dom::tree::shadow_including_root(base, node.node)
     {
         return Err(TreeError::Hierarchy);
     }
-    // Host-including ancestry (template contents and shadow roots via their
-    // host) is checked inside `ensure_no_cycle`
-    // (<https://dom.spec.whatwg.org/#concept-tree-host-including-inclusive-ancestor>).
+    // https://dom.spec.whatwg.org/#concept-tree-host-including-inclusive-ancestor
     ensure_no_cycle(base, parent.node, node.node)?;
     match target {
         MoveTarget::Before(child) => {
@@ -833,10 +732,7 @@ pub(crate) fn ensure_can_move(
         return Err(TreeError::Hierarchy);
     }
     if parent_is_document && matches!(kind, InsertedNode::Element) {
-        // Pre-move validity counts an element child that is not the moved
-        // node: moving the document element itself past a doctype-less
-        // prolog is not a second element
-        // (<https://dom.spec.whatwg.org/#concept-node-ensure-pre-insert-validity>).
+        // https://dom.spec.whatwg.org/#concept-node-ensure-pre-insert-validity
         let has_element = base.get_node(parent.node).is_some_and(|root| {
             root.children
                 .iter()
@@ -846,8 +742,7 @@ pub(crate) fn ensure_can_move(
             return Err(TreeError::Hierarchy);
         }
     }
-    // The root and ancestor checks make this parent exist. The spec asserts
-    // it (<https://dom.spec.whatwg.org/#move>).
+    // https://dom.spec.whatwg.org/#move
     if base
         .get_node(node.node)
         .and_then(|candidate| candidate.parent)
@@ -858,10 +753,7 @@ pub(crate) fn ensure_can_move(
     Ok(())
 }
 
-/// Applies a validated `move`: reparents `node` without the insertion or
-/// removing steps
-/// (<https://dom.spec.whatwg.org/#concept-node-move>).
-/// The caller owns validity (`ensure_can_move`).
+// https://dom.spec.whatwg.org/#concept-node-move
 pub(crate) fn move_parsed(
     parsed: &mut crate::Parsed,
     parent: NodeId,
@@ -959,7 +851,6 @@ pub(crate) fn move_parsed(
     }
 }
 
-/// The index of `child` under `parent`, or `None` when it has none.
 fn child_index(parsed: &crate::Parsed, parent: NodeId, child: Option<NodeId>) -> Option<u32> {
     let child = child?;
     parsed
@@ -974,9 +865,7 @@ fn child_index(parsed: &crate::Parsed, parent: NodeId, child: Option<NodeId>) ->
         .and_then(|index| u32::try_from(index).ok())
 }
 
-/// Runs the live-range pre-remove steps for the old child of a replacement.
-/// The removal itself carries `suppressObservers`, which does not skip them
-/// (<https://dom.spec.whatwg.org/#concept-node-replace>).
+// https://dom.spec.whatwg.org/#concept-node-replace
 fn adjust_replace_removal(parsed: &mut crate::Parsed, parent: NodeId, old: NodeId) {
     if parsed.document.side.ranges.is_empty() {
         return;
@@ -989,7 +878,6 @@ fn adjust_replace_removal(parsed: &mut crate::Parsed, parent: NodeId, old: NodeI
     }
 }
 
-/// The children of a fragment, as handles in its own document.
 pub(crate) fn fragment_children(
     doc: &crate::documents::BlitzDocument,
     fragment: NodeId,
@@ -997,30 +885,17 @@ pub(crate) fn fragment_children(
     crate::dom::tree::child_ids(&doc.base, fragment.document, fragment.node)
 }
 
-/// What takes a replaced child's place
-/// (<https://dom.spec.whatwg.org/#concept-node-replace>).
+// https://dom.spec.whatwg.org/#concept-node-replace
 pub(crate) enum Replacement {
-    /// One node, in `parent`'s document.
     Node(NodeId),
-    /// A fragment's children, still in `parent`'s document. They leave the
-    /// fragment inside this operation, so the removal is recorded here.
     FragmentContents {
         fragment: NodeId,
         children: Vec<NodeId>,
     },
-    /// Children already adopted into `parent`'s document from a fragment in
-    /// another one. Adoption recorded each removal in the old document.
     Adopted(Vec<NodeId>),
 }
 
-/// Replaces `old` with `replacement`: a node's own unlink keeps a removal
-/// record when it moves, then one combined record carries the replacement
-/// (<https://dom.spec.whatwg.org/#concept-node-replace>). Returns the nodes
-/// the parent gained, for the insertion fixups.
-///
-/// `replacement` owns every child list it needs. A fragment in another
-/// document has no arena entry here, and a Blitz id from one document's arena
-/// names an unrelated node in another's.
+// https://dom.spec.whatwg.org/#concept-node-replace
 pub(crate) fn replace_parsed(
     parsed: &mut crate::Parsed,
     parent: NodeId,
@@ -1038,9 +913,7 @@ pub(crate) fn replace_parsed(
         place_journaled(parsed, parent, node, reference);
         return vec![node];
     }
-    // Let referenceChild be child's next sibling. If that is node, use
-    // node's next sibling instead
-    // (<https://dom.spec.whatwg.org/#concept-node-replace>).
+    // https://dom.spec.whatwg.org/#concept-node-replace
     let previous = siblings_around(
         &parsed.document.base,
         parent.document,
@@ -1066,9 +939,7 @@ pub(crate) fn replace_parsed(
         Replacement::Adopted(children) => (children, None, None),
     };
     if let Some(fragment) = leaving_fragment {
-        // The fragment's children leave it through the insert, and each
-        // removal runs the live-range pre-remove steps
-        // (<https://dom.spec.whatwg.org/#concept-node-insert>).
+        // https://dom.spec.whatwg.org/#concept-node-insert
         adjust_children_leaving(parsed, fragment, &added);
         parsed.document.record(JournalEntry::ChildList {
             target: fragment,

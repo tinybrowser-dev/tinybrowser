@@ -1,7 +1,3 @@
-//! One integration binary for every browser-level suite: `cargo test
-//! --test browser cdp::` filters inside it, and helpers in `fixture` are
-//! dead-code checked against the whole tree instead of per binary.
-
 mod canvas;
 mod cdp;
 mod cookies;

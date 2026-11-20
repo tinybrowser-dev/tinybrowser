@@ -1,6 +1,3 @@
-//! Media interfaces: images, canvas, audio/video, meters, progress,
-//! and marquee.
-
 use super::super::{attribute_value, host, set_attribute_sync, world, world_for_node};
 
 use rquickjs::{Ctx, Result, Value};
@@ -23,19 +20,11 @@ include!(concat!(env!("OUT_DIR"), "/HTMLMarqueeElement.rs"));
 include!(concat!(env!("OUT_DIR"), "/HTMLAudioElement.rs"));
 
 impl<'js> html_media_element_generated::HTMLMediaElement<'js> for JsNode {
-    // No media pipeline: the network state never leaves its initial value
-    // (<https://html.spec.whatwg.org/multipage/media.html#dom-media-networkstate>).
+    // https://html.spec.whatwg.org/multipage/media.html#dom-media-networkstate
     fn get_network_state(&self, ctx: &Ctx<'js>) -> Result<u16> {
-        // Resource selection's first step sets NETWORK_NO_SOURCE, before the
-        // await-a-stable-state wait
-        // (<https://html.spec.whatwg.org/multipage/media.html#concept-media-load-algorithm>).
-        // The algorithm runs when a media element is inserted into a document,
-        // when `src` is set, or when a `source` child is inserted even with
-        // no `src`
-        // (<https://html.spec.whatwg.org/multipage/media.html#loading-the-media-resource>,
-        // <https://html.spec.whatwg.org/multipage/embedded-content.html#the-source-element:html-element-insertion-steps>).
-        // No media pipeline runs past that point, so the state stays
-        // NETWORK_NO_SOURCE instead of NETWORK_LOADING.
+        // https://html.spec.whatwg.org/multipage/media.html#concept-media-load-algorithm
+        // https://html.spec.whatwg.org/multipage/media.html#loading-the-media-resource
+        // https://html.spec.whatwg.org/multipage/embedded-content.html#the-source-element:html-element-insertion-steps
         const NETWORK_NO_SOURCE: u16 = 3;
         const NETWORK_EMPTY: u16 = 0;
         let selected = world_for_node(ctx, self.handle.get().0)
@@ -69,8 +58,7 @@ impl<'js> html_media_element_generated::HTMLMediaElement<'js> for JsNode {
         })
     }
 
-    // No media pipeline: the ready state never leaves its initial value
-    // (<https://html.spec.whatwg.org/multipage/media.html#dom-media-readystate>).
+    // https://html.spec.whatwg.org/multipage/media.html#dom-media-readystate
     fn get_ready_state(&self, _ctx: &Ctx<'js>) -> Result<u16> {
         Ok(0)
     }
@@ -116,10 +104,7 @@ impl<'js> html_video_element_generated::HTMLVideoElement<'js> for JsNode {
     }
 }
 
-/// Resets the context after a dimension setter, even when the value is
-/// unchanged.
 fn reset_canvas(ctx: &Ctx<'_>, id: NodeId) -> Result<()> {
-    // Read the new attributes, not the bitmap's previous dimensions.
     let width = crate::js::canvas::canvas_dimension(ctx, id, "width", 300);
     let height = crate::js::canvas::canvas_dimension(ctx, id, "height", 150);
     let world = world_for_node(ctx, id)?;
@@ -141,8 +126,7 @@ impl<'js> html_canvas_element_generated::HTMLCanvasElement<'js> for JsNode {
     }
 
     fn set_width(&self, ctx: &Ctx<'js>, value: u32) -> Result<()> {
-        // Out-of-range values write the default rather than the raw value
-        // (<https://html.spec.whatwg.org/multipage/canvas.html#dom-canvas-width>).
+        // https://html.spec.whatwg.org/multipage/canvas.html#dom-canvas-width
         let value = if value > 2_147_483_647 { 300 } else { value };
         set_attribute_sync(ctx, self.handle.get().0, "width", &value.to_string())?;
         reset_canvas(ctx, self.handle.get().0)
@@ -157,8 +141,7 @@ impl<'js> html_canvas_element_generated::HTMLCanvasElement<'js> for JsNode {
     }
 
     fn set_height(&self, ctx: &Ctx<'js>, value: u32) -> Result<()> {
-        // Out-of-range values write the default rather than the raw value
-        // (<https://html.spec.whatwg.org/multipage/canvas.html#dom-canvas-height>).
+        // https://html.spec.whatwg.org/multipage/canvas.html#dom-canvas-height
         let value = if value > 2_147_483_647 { 150 } else { value };
         set_attribute_sync(ctx, self.handle.get().0, "height", &value.to_string())?;
         reset_canvas(ctx, self.handle.get().0)
@@ -171,8 +154,7 @@ impl<'js> html_canvas_element_generated::HTMLCanvasElement<'js> for JsNode {
         context_id: rquickjs::String<'js>,
         options: Value<'js>,
     ) -> Result<Option<RenderingContext<'js>>> {
-        // Context names are ASCII case-sensitive; "2D" is unrecognised
-        // (<https://html.spec.whatwg.org/multipage/canvas.html#dom-canvas-getcontext>).
+        // https://html.spec.whatwg.org/multipage/canvas.html#dom-canvas-getcontext
         let requested = context_id.to_string()?;
         let member = match requested.as_str() {
             "2d" => crate::js::world::SameObject::Canvas2d,
@@ -192,13 +174,10 @@ impl<'js> html_canvas_element_generated::HTMLCanvasElement<'js> for JsNode {
         if let Some(saved) = world_rc.borrow().same_object(self.handle.get().0, other)
             && super::super::deref_weak(&ctx, saved)?.is_some()
         {
-            // A canvas has one context mode
-            // (<https://html.spec.whatwg.org/multipage/canvas.html#concept-canvas-context-mode>).
+            // https://html.spec.whatwg.org/multipage/canvas.html#concept-canvas-context-mode
             return Ok(None);
         }
-        // The mode outlives the context object: a collected 2D context still
-        // stops a later `bitmaprenderer` request
-        // (<https://html.spec.whatwg.org/multipage/canvas.html#concept-canvas-context-mode>).
+        // https://html.spec.whatwg.org/multipage/canvas.html#concept-canvas-context-mode
         let requested_mode = if member == crate::js::world::SameObject::Canvas2d {
             crate::js::world::CanvasMode::TwoD
         } else {
@@ -278,9 +257,7 @@ impl<'js> html_image_element_generated::HTMLImageElement<'js> for JsNode {
         Ok(self.current_src(ctx.clone())?.into())
     }
 
-    // `width`/`height` reflect with generated setters; the getters answer
-    // the parsed value
-    // (<https://html.spec.whatwg.org/multipage/embedded-content.html#dom-img-width>).
+    // https://html.spec.whatwg.org/multipage/embedded-content.html#dom-img-width
     fn get_width(&self, ctx: &Ctx<'js>) -> Result<u32> {
         Ok(reflect_ulong(
             content_attr(ctx, self.handle.get().0, "width").as_deref(),
@@ -306,8 +283,7 @@ impl<'js> html_image_element_generated::HTMLImageElement<'js> for JsNode {
         set_cross_origin(ctx, self.handle.get().0, value)
     }
 
-    // Obsolete `hspace`/`vspace` default to zero
-    // (<https://html.spec.whatwg.org/multipage/obsolete.html#dom-img-hspace>).
+    // https://html.spec.whatwg.org/multipage/obsolete.html#dom-img-hspace
     fn get_hspace(&self, ctx: &Ctx<'js>) -> Result<usize> {
         Ok(usize::try_from(reflect_ulong(
             content_attr(ctx, self.handle.get().0, "hspace").as_deref(),
@@ -337,11 +313,7 @@ impl<'js> html_image_element_generated::HTMLImageElement<'js> for JsNode {
 }
 
 impl<'js> html_meter_element_generated::HTMLMeterElement<'js> for JsNode {
-    // The six gauge points derive in order: the maximum never drops below
-    // the minimum, the value clamps into range, low defaults to the
-    // minimum, high defaults to the maximum and never drops below low, and
-    // the optimum defaults to the midpoint
-    // (<https://html.spec.whatwg.org/multipage/form-elements.html#the-meter-element>).
+    // https://html.spec.whatwg.org/multipage/form-elements.html#the-meter-element
     fn get_value(&self, ctx: &Ctx<'js>) -> Result<f64> {
         Ok(meter_gauge(ctx, self.handle.get().0).value)
     }
@@ -373,9 +345,7 @@ impl<'js> html_meter_element_generated::HTMLMeterElement<'js> for JsNode {
 }
 
 impl<'js> html_progress_element_generated::HTMLProgressElement<'js> for JsNode {
-    // The current value: the parsed `value` when positive, capped at the
-    // maximum; anything else (including an indeterminate bar) reads 0
-    // (<https://html.spec.whatwg.org/multipage/form-elements.html#dom-progress-value>).
+    // https://html.spec.whatwg.org/multipage/form-elements.html#dom-progress-value
     fn get_value(&self, ctx: &Ctx<'js>) -> Result<f64> {
         let max = reflect_limited_double(
             content_attr(ctx, self.handle.get().0, "max").as_deref(),
@@ -392,8 +362,7 @@ impl<'js> html_progress_element_generated::HTMLProgressElement<'js> for JsNode {
         )
     }
 
-    // `max` must parse positive, defaulting to 1.0
-    // (<https://html.spec.whatwg.org/multipage/form-elements.html#dom-progress-max>).
+    // https://html.spec.whatwg.org/multipage/form-elements.html#dom-progress-max
     fn get_max(&self, ctx: &Ctx<'js>) -> Result<f64> {
         Ok(reflect_limited_double(
             content_attr(ctx, self.handle.get().0, "max").as_deref(),
@@ -403,8 +372,7 @@ impl<'js> html_progress_element_generated::HTMLProgressElement<'js> for JsNode {
 
     // https://html.spec.whatwg.org/multipage/form-elements.html#dom-progress-max
     fn set_max(&self, ctx: &Ctx<'js>, value: f64) -> Result<()> {
-        // Non-positive values leave the attribute untouched
-        // (<https://html.spec.whatwg.org/multipage/form-elements.html#dom-progress-max>).
+        // https://html.spec.whatwg.org/multipage/form-elements.html#dom-progress-max
         if value.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
             return Ok(());
         }
@@ -413,9 +381,7 @@ impl<'js> html_progress_element_generated::HTMLProgressElement<'js> for JsNode {
 }
 
 impl<'js> html_marquee_element_generated::HTMLMarqueeElement<'js> for JsNode {
-    // `scrollAmount` defaults to 6, `scrollDelay` to 85; both are plain
-    // unsigned-long reflection
-    // (<https://html.spec.whatwg.org/multipage/obsolete.html#dom-marquee-scrollamount>).
+    // https://html.spec.whatwg.org/multipage/obsolete.html#dom-marquee-scrollamount
     fn get_scroll_amount(&self, ctx: &Ctx<'js>) -> Result<usize> {
         Ok(usize::try_from(reflect_ulong(
             content_attr(ctx, self.handle.get().0, "scrollamount").as_deref(),
@@ -443,8 +409,7 @@ impl<'js> html_marquee_element_generated::HTMLMarqueeElement<'js> for JsNode {
         host::reflect_set_ulong_defaulting(ctx, self.handle.get().0, "scrolldelay", value, 85)
     }
 
-    // `loop` is a plain long defaulting to -1
-    // (<https://html.spec.whatwg.org/multipage/obsolete.html#dom-marquee-loop>).
+    // https://html.spec.whatwg.org/multipage/obsolete.html#dom-marquee-loop
     fn get_loop(&self, ctx: &Ctx<'js>) -> Result<i32> {
         Ok(content_attr(ctx, self.handle.get().0, "loop")
             .as_deref()
@@ -457,8 +422,7 @@ impl<'js> html_marquee_element_generated::HTMLMarqueeElement<'js> for JsNode {
         set_attribute_sync(ctx, self.handle.get().0, "loop", &value.to_string())
     }
 
-    // Obsolete `hspace`/`vspace` default to zero
-    // (<https://html.spec.whatwg.org/multipage/obsolete.html#dom-marquee-hspace>).
+    // https://html.spec.whatwg.org/multipage/obsolete.html#dom-marquee-hspace
     fn get_hspace(&self, ctx: &Ctx<'js>) -> Result<usize> {
         Ok(usize::try_from(reflect_ulong(
             content_attr(ctx, self.handle.get().0, "hspace").as_deref(),
@@ -516,9 +480,7 @@ impl JsNode {
         }
         let world = world(&ctx)?;
         let world = world.borrow();
-        // The first two conditions are attribute-only: a source-less element
-        // is complete whether or not a request is still settling
-        // (<https://html.spec.whatwg.org/multipage/embedded-content.html#dom-img-complete>).
+        // https://html.spec.whatwg.org/multipage/embedded-content.html#dom-img-complete
         let (src_empty, srcset_present) =
             world
                 .document(self.handle.get().0)
@@ -578,17 +540,14 @@ pub(super) fn img_size(ctx: &Ctx<'_>, id: NodeId) -> Result<Option<(u32, u32)>> 
     Ok(world.borrow().image_size(id))
 }
 
-/// Whether the input is in the image button state (`type=image`, ASCII
-/// case-insensitive)
-/// (<https://html.spec.whatwg.org/multipage/input.html#image-button-state>).
+// https://html.spec.whatwg.org/multipage/input.html#image-button-state
 pub(super) fn is_image_input(ctx: &Ctx<'_>, id: NodeId) -> bool {
     content_attr(ctx, id, "type")
         .as_deref()
         .is_some_and(|kind| kind.eq_ignore_ascii_case("image"))
 }
 
-/// The six derived gauge points of a `meter` element, in spec order
-/// (<https://html.spec.whatwg.org/multipage/form-elements.html#the-meter-element>).
+// https://html.spec.whatwg.org/multipage/form-elements.html#the-meter-element
 pub(super) struct MeterGauge {
     min: f64,
     max: f64,
@@ -632,9 +591,7 @@ pub(super) fn meter_gauge(ctx: &Ctx<'_>, id: NodeId) -> MeterGauge {
     }
 }
 
-/// Canvas `width`/`height` reflection: a non-negative integer or the IDL
-/// default, per the HTML parsing rules
-/// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-canvas-width>).
+// https://html.spec.whatwg.org/multipage/canvas.html#dom-canvas-width
 pub(super) fn canvas_dimension(ctx: &Ctx<'_>, id: NodeId, attribute: &str, default: u32) -> u32 {
     let value = attribute_value(ctx, id, attribute).unwrap_or_default();
     crate::dom::parse::parse_non_negative_integer(&value).unwrap_or(default)
@@ -653,7 +610,6 @@ pub(super) fn install(ctx: &Ctx<'_>) -> Result<()> {
     Ok(())
 }
 
-/// The generated union of rendering contexts.
 type RenderingContext<'js> =
     html_canvas_element_generated::CanvasRenderingContext2DOrGPUCanvasContextOrImageBitmapRenderingContextOrWebGL2RenderingContextOrWebGLRenderingContext<'js>;
 
@@ -665,17 +621,12 @@ fn context_variant(member: crate::js::world::SameObject, value: Value<'_>) -> Re
     }
 }
 
-/// `getContext("bitmaprenderer")`: the object exists but transfers nothing
-/// until `ImageBitmap` decoding lands.
 fn bitmap_context_object<'js>(ctx: &Ctx<'js>, id: NodeId) -> Result<Value<'js>> {
     let globals = ctx.globals();
     let ctor =
         if let Ok(existing) = globals.get::<_, rquickjs::Function>("ImageBitmapRenderingContext") {
             existing
         } else {
-            // A plain `Function::new` owns a non-writable `name`, and QuickJS
-            // throws on assignment, so the interface constructor keeps its
-            // inferred name.
             let ctor = rquickjs::Function::new(ctx.clone(), || {})?;
             let prototype = rquickjs::Object::new(ctx.clone())?;
             ctor.set("prototype", prototype)?;

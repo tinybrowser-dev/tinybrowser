@@ -1,8 +1,3 @@
-//! Durable profile backing: the cookie store and its file codec.
-//!
-//! The browser context owns live state and uses this store only at open and
-//! persistence boundaries.
-
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -20,7 +15,6 @@ const LOCAL_STORAGE_VERSION: &str = "tinybrowser-localstorage-v1";
 const INDEXED_DB_VERSION: &str = "tinybrowser-indexeddb-v1";
 static COOKIE_TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
-/// Durable backing for one Profile under `XDG_DATA_HOME`.
 pub(crate) struct ProfileStore {
     root: PathBuf,
     _lock: File,
@@ -28,11 +22,6 @@ pub(crate) struct ProfileStore {
 }
 
 impl ProfileStore {
-    /// Opens and exclusively locks the on-disk store for `profile` under `data_home`.
-    ///
-    /// # Errors
-    ///
-    /// The directory cannot be created or another process owns the profile.
     pub(crate) fn open_in(data_home: &Path, profile: &Profile) -> io::Result<Self> {
         let root = data_home
             .join("tinybrowser")
@@ -112,20 +101,10 @@ impl ProfileStore {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Loads the profile's local storage areas into `storage`.
-    ///
-    /// # Errors
-    ///
-    /// The file exists but cannot be read or moved aside when corrupt.
     pub(crate) fn load_local_storage(&self, storage: &StorageAreas) -> io::Result<()> {
         self.load_areas("localstorage", LOCAL_STORAGE_VERSION, storage)
     }
 
-    /// Loads the profile's `indexedDB` rows into `storage`.
-    ///
-    /// # Errors
-    ///
-    /// The file exists but cannot be read or moved aside when corrupt.
     pub(crate) fn load_indexed_db(&self, storage: &StorageAreas) -> io::Result<()> {
         self.load_areas("indexeddb", INDEXED_DB_VERSION, storage)
     }
@@ -156,20 +135,10 @@ impl ProfileStore {
         Ok(())
     }
 
-    /// Persists every dirty local storage area.
-    ///
-    /// # Errors
-    ///
-    /// The file cannot be written or the directory cannot be synced.
     pub(crate) fn save_local_storage(&self, storage: &StorageAreas) -> io::Result<()> {
         self.save_areas("localstorage", LOCAL_STORAGE_VERSION, storage)
     }
 
-    /// Persists every dirty `indexedDB` row.
-    ///
-    /// # Errors
-    ///
-    /// The file cannot be written or the directory cannot be synced.
     pub(crate) fn save_indexed_db(&self, storage: &StorageAreas) -> io::Result<()> {
         self.save_areas("indexeddb", INDEXED_DB_VERSION, storage)
     }
@@ -209,7 +178,6 @@ impl ProfileStore {
     }
 }
 
-/// Restricts `path` to `mode` on Unix; a no-op elsewhere.
 fn restrict(path: &Path, mode: u32) -> io::Result<()> {
     #[cfg(unix)]
     {
@@ -248,9 +216,6 @@ fn encode_cookies(records: &[CookieRecord]) -> String {
         out.push(if record.http_only { '1' } else { '0' });
         out.push('\t');
         out.push_str(same_site_token(record.same_site));
-        // Appended after the versioned fields: a file written before CHIPS
-        // has no twelfth field, which parses as the unpartitioned cookie it
-        // was.
         out.push('\t');
         if let Some(key) = &record.partition_key {
             push_escaped(&mut out, key);
@@ -419,7 +384,6 @@ fn parse_same_site(raw: &str) -> io::Result<CookieSameSite> {
     }
 }
 
-/// One `origin \t key \t value` row per local storage entry.
 fn encode_areas(rows: &[(String, String, String)], version: &str) -> String {
     let mut out = String::from(version);
     out.push('\n');

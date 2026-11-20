@@ -1,5 +1,3 @@
-//! Emit tables and a single dispatch function per interface, not per member.
-
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
@@ -75,7 +73,7 @@ pub(crate) fn interface(interface: &Interface) -> TokenStream {
                 let ctx = params.ctx().clone();
                 #constructor_dispatch
                 #alternate_dispatch
-                // https://webidl.spec.whatwg.org/#es-attributes
+                // https://webidl.spec.whatwg.org/#es-attributes — omitted setter argument converts undefined per WebIDL rather than throwing like Chromium and Firefox
                 // https://webidl.spec.whatwg.org/#es-operations
                 let receiver = host::receiver::<#payload>(params)?;
                 let receiver = receiver.borrow();
@@ -138,14 +136,8 @@ fn member_tables(interface: &Interface) -> TokenStream {
     }
 }
 
-/// The receiver brand check for one payload of an interface. A node payload
-/// checks the node's interface; a partial binding on an existing class uses
-/// the shared-class hook; a payload that *is* the interface's class needs no
-/// further check.
 fn receiver_check(interface: &Interface, rust: &proc_macro2::Ident) -> TokenStream {
     let name = &interface.name;
-    // A partial binding has no class of its own, so it always checks the brand
-    // the shared class installed, whether or not the contract has members.
     if matches!(interface.kind, InterfaceKind::Partial) {
         quote! { host::SharedClass::require_interface(&*receiver, &ctx, #name)?; }
     } else if rust == "JsNode" && interface.name != "Node" {
@@ -164,10 +156,6 @@ fn payload_type(payload: &Payload) -> TokenStream {
     }
 }
 
-/// Dispatch arms for interface payloads beyond the primary one, each tried in
-/// discovery order. This is how an interface implemented by more than one Rust
-/// type (every node interface is also an `EventTarget`) installs once and still
-/// reaches the right platform algorithm.
 fn alternate_dispatch(interface: &Interface) -> (TokenStream, Vec<TokenStream>) {
     let mut arms = Vec::new();
     let mut groups = Vec::new();
@@ -175,9 +163,6 @@ fn alternate_dispatch(interface: &Interface) -> (TokenStream, Vec<TokenStream>) 
         let payload = payload_type(payload);
         let prefix = format!("dispatch_{index}");
         let (routes, mut payload_groups) = dispatch_groups(interface, &payload, &prefix);
-        // The receiver check follows the payload, not the interface: the
-        // shared node payload consults the node table, every other payload
-        // answers through the shared-class hook it implements.
         let check = if interface.payloads[index].rust == "JsNode" {
             let name = &interface.name;
             quote! { host::require_node_interface(&ctx, receiver.node_id(), #name)?; }
@@ -222,8 +207,6 @@ fn dispatch_groups(
             crate::model::Stringifier::Attribute(index) => {
                 getter_dispatch(&interface.attributes[*index], interface)
             }
-            // An anonymous `stringifier;` calls the provided method and
-            // converts the string result.
             crate::model::Stringifier::Method => quote! {
                 let result: rquickjs::String = receiver.stringifier(&ctx)?;
                 rquickjs::IntoJs::into_js(result, &ctx)
@@ -233,11 +216,6 @@ fn dispatch_groups(
     }
     let mut routes = Vec::new();
     let mut groups = Vec::new();
-    // Each member's body becomes its own function taking only what it uses,
-    // and a group of four members dispatches to them, so no generated body
-    // grows past the line bound while the routes retain one native entry
-    // point and one payload borrow. These are plain Rust functions, not JS
-    // callbacks.
     for (index, chunk) in arms.chunks(4).enumerate() {
         let name = format_ident!("{prefix}_group_{index}");
         let first = chunk[0].0;
@@ -261,9 +239,6 @@ fn dispatch_groups(
     (routes, groups)
 }
 
-/// The argument list handing a member body what it uses: a body written
-/// against an owned `Ctx` gets the context, and the receiver and params go
-/// through only when the body reaches for them.
 fn member_call(uses_params: bool, body: &TokenStream) -> TokenStream {
     let tokens = body.to_string();
     let mut call = Vec::new();
@@ -296,7 +271,6 @@ fn member_function(
     if uses_params {
         signature.push(quote! { params: &Params<'_, 'js> });
     }
-    // Bodies are written against an owned `Ctx`; the clone gives them one.
     let shadow = tokens
         .contains("ctx")
         .then(|| quote! { let ctx = ctx.clone(); });
@@ -467,10 +441,7 @@ impl NamedHooks {
             .expect("validated named item")
             .rust;
         let enumerable = !unenumerable;
-        // `[LegacyOverrideBuiltIns]`: named properties override built-ins, so
-        // no prototype-visibility check
-        // (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#htmloptionscollection>).
-        // Plain `HTMLCollection` keeps `[LegacyUnenumerableNamedProperties]` hiding.
+        // https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#htmloptionscollection
         if *override_builtins {
             return Self {
                 descriptor: quote! {
@@ -696,8 +667,7 @@ fn indexed_hooks_with_tokens(
     let define = &hooks.define;
     let set = &hooks.set;
     let delete = &hooks.delete;
-    // Indexed properties are writable only when an indexed setter exists
-    // (<https://webidl.spec.whatwg.org/#legacy-platform-object-getownproperty>).
+    // https://webidl.spec.whatwg.org/#legacy-platform-object-getownproperty
     let writable = tokens.writable;
     let define_descriptor = &tokens.define_descriptor;
     let indexed_define = &tokens.indexed_define;
@@ -795,7 +765,6 @@ fn method_call(interface: &Interface, method: &syn::Ident, arguments: &TokenStre
     }
 }
 
-/// The `Option<T>` value for a generated default: `None` or `Some(path)`.
 fn optional_default(path: Option<&syn::Path>) -> TokenStream {
     if let Some(path) = path {
         quote! { Some(#path) }
@@ -804,12 +773,7 @@ fn optional_default(path: Option<&syn::Path>) -> TokenStream {
     }
 }
 
-/// A reflected-enumerated getter: map the content attribute through the
-/// keyword type and the two defaults.
-///
-/// A nullable `DOMString?` member reports the spec's "no state" as `null`; a
-/// plain `DOMString` reports it as the empty string
-/// (<https://w3c.github.io/aria/#enumerated-attribute-values-html>).
+// https://w3c.github.io/aria/#enumerated-attribute-values-html
 fn reflected_enumerated_getter(
     getter: &Attribute,
     content: &str,
@@ -852,17 +816,10 @@ fn reflected_enumerated_getter(
 
 fn getter_dispatch(getter: &Attribute, interface: &Interface) -> TokenStream {
     let method = &getter.rust;
-    // Operation dispatch always hands over an owned `Ctx`; attributes borrow it.
     let ctx_arg = quote! { &ctx };
     let call = method_call(interface, method, &ctx_arg);
     let body = match &getter.mapping {
-        // `[Reflect]`: generated content-attribute access needs no trait
-        // method. The receiver check already ran, so `node_id` targets the
-        // branded element.
         GetterMapping::Reflect { content } => match getter.return_type {
-            // `USVString` under a plain `[Reflect]` reads the raw content
-            // attribute exactly like `DOMString` (stored content is
-            // already scalar values); only the setter argument converts.
             ReturnType::String | ReturnType::UsvString => quote! {
                 host::ret(
                     host::reflect_string(&ctx, receiver.node_id(), #content)?,
@@ -935,7 +892,6 @@ fn getter_dispatch(getter: &Attribute, interface: &Interface) -> TokenStream {
             | ReturnType::UnsignedLongLong
             | ReturnType::Short
             | ReturnType::Any => {
-                // `any` attributes are rejected at lowering.
                 unreachable!("validated field mapping")
             }
         },
@@ -943,7 +899,6 @@ fn getter_dispatch(getter: &Attribute, interface: &Interface) -> TokenStream {
     quote! { #body }
 }
 
-/// One attribute setter's value conversion from the first argument.
 fn setter_value_conversion(return_type: &ReturnType, legacy_null_to_empty: bool) -> TokenStream {
     match return_type {
         ReturnType::String if legacy_null_to_empty => quote! {
@@ -964,11 +919,9 @@ fn setter_value_conversion(return_type: &ReturnType, legacy_null_to_empty: bool)
         ReturnType::Long => quote! { host::long_argument(params, 0)? },
         // https://webidl.spec.whatwg.org/#es-double
         ReturnType::Double => quote! { host::double_argument(params, 0)? },
-        // Restricted `double` rejects NaN and infinities.
         ReturnType::RestrictedDouble => {
             quote! { host::restricted_double_argument(params, 0)? }
         }
-        // A platform-object setter takes the value as-is.
         ReturnType::PlatformObject => quote! { host::fetch(params, 0) },
         ReturnType::Enumeration(name) => {
             let name = format_ident!("{name}");
@@ -996,7 +949,7 @@ fn setter_dispatch(attribute: &Attribute, interface: &Interface) -> Option<Token
         Setter::PutForwards { target, nullable } => {
             let name = &attribute.name;
             return Some(quote! {
-                // https://webidl.spec.whatwg.org/#es-attributes
+                // https://webidl.spec.whatwg.org/#es-attributes — omitted setter argument converts undefined per WebIDL rather than throwing like Chromium and Firefox
                 host::put_forwards(params, #name, #target, #nullable)
             });
         }
@@ -1013,17 +966,12 @@ fn setter_dispatch(attribute: &Attribute, interface: &Interface) -> Option<Token
         body
     };
     Some(quote! {
-        // https://webidl.spec.whatwg.org/#es-attributes
-        // Chromium and Firefox reject an omitted setter argument;
-        // WebIDL instead converts undefined, so follow that algorithm.
+        // https://webidl.spec.whatwg.org/#es-attributes — omitted setter argument converts undefined per WebIDL rather than throwing like Chromium and Firefox
         let value = #convert;
         #body
     })
 }
 
-/// A `[Reflect]` setter: convert the value, then write the content
-/// attribute through the shared helper. Reactions wrap the write, like any
-/// setter.
 fn reflect_setter(attribute: &Attribute, content: &str) -> TokenStream {
     let convert = match attribute.return_type {
         ReturnType::String if attribute.legacy_null_to_empty => {
@@ -1032,7 +980,6 @@ fn reflect_setter(attribute: &Attribute, content: &str) -> TokenStream {
         ReturnType::String => {
             quote! { host::string_argument(params, 0, None)? }
         }
-        // A nullable reflected string removes the content attribute on null.
         ReturnType::NullableString => {
             quote! { host::nullable_string_argument(params, 0)? }
         }
@@ -1048,7 +995,6 @@ fn reflect_setter(attribute: &Attribute, content: &str) -> TokenStream {
         ReturnType::UnsignedLong => quote! { host::ulong_argument(params, 0)? },
         // https://webidl.spec.whatwg.org/#es-double
         ReturnType::Double => quote! { host::double_argument(params, 0)? },
-        // Restricted `double` rejects NaN and infinities.
         ReturnType::RestrictedDouble => {
             quote! { host::restricted_double_argument(params, 0)? }
         }
@@ -1058,8 +1004,6 @@ fn reflect_setter(attribute: &Attribute, content: &str) -> TokenStream {
         ReturnType::String | ReturnType::UsvString => quote! {
             host::reflect_set_string(&ctx, receiver.node_id(), #content, &value)?;
         },
-        // A nullable enumerable remembers an explicit null, which the getter
-        // must not replace with the attribute's missing-value default.
         ReturnType::NullableString
             if matches!(attribute.mapping, GetterMapping::ReflectEnumerated { .. }) =>
         {
@@ -1094,7 +1038,7 @@ fn reflect_setter(attribute: &Attribute, content: &str) -> TokenStream {
         body
     };
     quote! {
-        // https://webidl.spec.whatwg.org/#es-attributes
+        // https://webidl.spec.whatwg.org/#es-attributes — omitted setter argument converts undefined per WebIDL rather than throwing like Chromium and Firefox
         let value = #convert;
         #body
     }
@@ -1186,12 +1130,7 @@ fn operation_argument(
     operation_argument_at(&quote! { #index }, argument, variable)
 }
 
-/// An optional union argument's IDL default, materialized as the value
-/// before conversion where the default differs from `undefined`.
-///
-/// `undefined` already converts to an empty dictionary's defaults, so the
-/// `{}` default needs no materialization
-/// (<https://webidl.spec.whatwg.org/#es-dictionary>).
+// https://webidl.spec.whatwg.org/#es-dictionary
 fn union_default_value(argument: &OperationArgument) -> TokenStream {
     match argument.union_default {
         None | Some(UnionDefault::EmptyDictionary) => quote! {},
@@ -1205,8 +1144,6 @@ fn union_default_value(argument: &OperationArgument) -> TokenStream {
     }
 }
 
-/// One object-family operation argument's conversion: nodes, callbacks,
-/// platform objects, dictionaries, enumerations, and unions.
 fn converted_argument(
     argument: &OperationArgument,
     variable: &proc_macro2::Ident,
@@ -1225,8 +1162,7 @@ fn converted_argument(
             #fetch
             let #variable = host::callback_argument(&ctx, &value)?;
         },
-        // A platform object or IDL `any` passes the original value through
-        // (<https://webidl.spec.whatwg.org/#idl-any>).
+        // https://webidl.spec.whatwg.org/#idl-any
         ReturnType::PlatformObject | ReturnType::Any => quote! {
             #fetch
             let #variable = value;
@@ -1282,9 +1218,7 @@ fn operation_argument_at(
     match &argument.type_ {
         ReturnType::Any => {
             let fetch = if argument.null_default {
-                // An omitted optional argument takes its default before
-                // conversion, so `= null` supplies `null`, not `undefined`
-                // (<https://webidl.spec.whatwg.org/#es-any>).
+                // https://webidl.spec.whatwg.org/#es-any
                 quote! {
                     let value = params.arg(#index).unwrap_or_else(|| Value::new_null(ctx.clone()));
                 }
@@ -1316,9 +1250,6 @@ fn operation_argument_at(
     }
 }
 
-/// The scalar argument conversions: strings, numerics, booleans, and the
-/// nullable/legacy variants around them. Split out of `operation_argument_at`
-/// for size; every arm here is one or two shared-funnel calls.
 fn operation_scalar_argument(
     argument: &OperationArgument,
     index: &TokenStream,
@@ -1333,7 +1264,7 @@ fn operation_scalar_argument(
                 }
                 (ArgumentArity::Optional, true) => quote! {
                     {
-                        // (<https://webidl.spec.whatwg.org/#LegacyNullToEmptyString>)
+                        // https://webidl.spec.whatwg.org/#LegacyNullToEmptyString
                         let value = host::fetch(params, #index);
                         if value.is_undefined() {
                             None
@@ -1350,8 +1281,6 @@ fn operation_scalar_argument(
             quote! { let #variable = #conversion; }
         }
         ReturnType::UsvString => {
-            // Handled like `DOMString` except for lone surrogates; legacy
-            // null is rejected at contract time.
             let conversion = if argument.arity == ArgumentArity::Optional {
                 quote! {
                     {
@@ -1372,9 +1301,7 @@ fn operation_scalar_argument(
             let #variable = host::nullable_string_argument(params, #index)?;
         },
         ReturnType::NullableDocumentType => {
-            // An omitted optional argument takes its default before
-            // conversion, so `= null` supplies `null`, not `undefined`
-            // (<https://webidl.spec.whatwg.org/#es-any>).
+            // https://webidl.spec.whatwg.org/#es-any
             let fetch = if argument.null_default {
                 quote! {
                     let value = params.arg(#index).unwrap_or_else(|| Value::new_null(ctx.clone()));
@@ -1392,17 +1319,12 @@ fn operation_scalar_argument(
         ReturnType::Boolean => {
             // https://webidl.spec.whatwg.org/#es-boolean
             let conversion = match (argument.arity, argument.boolean_default) {
-                // A defaulted boolean (any arity) takes the default before
-                // conversion.
                 (_, Some(default)) => {
                     quote! { host::boolean_argument_with_default(params, #index, #default)? }
                 }
                 (ArgumentArity::Optional, None) => {
                     quote! { host::optional_boolean_argument(params, #index)? }
                 }
-                // Required and variadic booleans without a default convert
-                // nothing first; variadic presence is checked at contract
-                // time.
                 (_, None) => quote! { host::boolean_argument(params, #index)? },
             };
             quote! { let #variable = #conversion; }
@@ -1413,8 +1335,6 @@ fn operation_scalar_argument(
         },
         ReturnType::Short => quote! {
             // https://webidl.spec.whatwg.org/#es-short
-            // Inline rather than funnelled: no interface in the corpus takes a
-            // `short` argument, so the conversion stays where it is used.
             let value = host::fetch(params, #index);
             let converted: rquickjs::Coerced<i32> = rquickjs::Coerced::from_js(&ctx, value)?;
             let #variable = u16::try_from(converted.0.rem_euclid(65536))
@@ -1521,9 +1441,7 @@ fn dictionary(dictionary: &Dictionary) -> TokenStream {
     });
     let null_branch = if has_required {
         quote! {
-            // A null or undefined dictionary with a required member throws
-            // instead of filling defaults
-            // (<https://webidl.spec.whatwg.org/#es-dictionary>).
+            // https://webidl.spec.whatwg.org/#es-dictionary
             return Err(rquickjs::Exception::throw_type(
                 ctx,
                 "required dictionary member is missing",
@@ -1535,10 +1453,6 @@ fn dictionary(dictionary: &Dictionary) -> TokenStream {
     };
     let fields = dictionary.fields.iter().map(dictionary_field);
     let conversions = dictionary.fields.iter().map(dictionary_conversion);
-    // A dictionary with more than three booleans trips
-    // `clippy::struct_excessive_bools`, which does not know the members come
-    // from IDL. The members stay individual fields: a bitmask would obscure
-    // that mapping.
     let bool_fields = dictionary
         .fields
         .iter()
@@ -1554,8 +1468,6 @@ fn dictionary(dictionary: &Dictionary) -> TokenStream {
     });
     quote! {
         // https://webidl.spec.whatwg.org/#es-dictionary
-        // A dictionary carries every IDL member; the algorithm that receives it
-        // may consume a subset, so unconsumed fields are not dead code.
         #[allow(dead_code, reason = "generated from IDL; algorithms may read a subset")]
         #excessive_bools
         pub(crate) struct #name {
@@ -1577,11 +1489,6 @@ fn dictionary(dictionary: &Dictionary) -> TokenStream {
     }
 }
 
-/// Whether a dictionary member's generated struct field is a plain `bool`.
-///
-/// An optional boolean with no default is `Option<bool>`, which
-/// `clippy::struct_excessive_bools` does not count; the expectation the
-/// dictionary emitter derives counts the same fields clippy does.
 fn dictionary_field_is_bool(field: &DictionaryField) -> bool {
     matches!(
         &field.type_,
@@ -1592,7 +1499,6 @@ fn dictionary_field_is_bool(field: &DictionaryField) -> bool {
     )
 }
 
-/// One dictionary field's struct member type.
 fn dictionary_field(field: &DictionaryField) -> TokenStream {
     let rust = &field.rust;
     if dictionary_field_is_bool(field) {
@@ -1635,8 +1541,6 @@ fn dictionary_field(field: &DictionaryField) -> TokenStream {
     }
 }
 
-/// One dictionary field's default for a null or undefined input. Required
-/// members never reach this: their dictionaries throw above.
 fn dictionary_default(field: &DictionaryField) -> TokenStream {
     let rust = &field.rust;
     match &field.type_ {
@@ -1672,7 +1576,6 @@ fn dictionary_default(field: &DictionaryField) -> TokenStream {
     }
 }
 
-/// One dictionary field's conversion from the input object.
 fn dictionary_conversion(field: &DictionaryField) -> TokenStream {
     let rust = &field.rust;
     let key = &field.name;
@@ -1711,9 +1614,7 @@ fn dictionary_conversion(field: &DictionaryField) -> TokenStream {
             #rust: host::dict_object(ctx, &object, #key)?
         },
         DictionaryFieldType::Interface { nullable: false } => quote! {
-            // Absent and `undefined` members stay absent; a present
-            // null throws through the interface conversion
-            // (<https://webidl.spec.whatwg.org/#es-dictionary>).
+            // https://webidl.spec.whatwg.org/#es-dictionary
             #rust: {
                 let value: Value = object.get(#key)?;
                 if value.is_undefined() {
@@ -1726,7 +1627,6 @@ fn dictionary_conversion(field: &DictionaryField) -> TokenStream {
     }
 }
 
-/// One enumeration-typed dictionary field's conversion.
 fn dictionary_enum_conversion(field: &DictionaryField) -> TokenStream {
     let rust = &field.rust;
     let key = &field.name;
@@ -1807,7 +1707,6 @@ fn enumeration(enumeration: &Enumeration) -> TokenStream {
 
         impl #name {
             // https://webidl.spec.whatwg.org/#es-enumeration
-            // Only used when the enum converts an argument or setter value.
             #[allow(dead_code, reason = "generated from IDL; conversion is used on demand")]
             fn from_value<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Self> {
                 let string: rquickjs::Coerced<rquickjs::String> = rquickjs::FromJs::from_js(ctx, value)?;
@@ -1822,7 +1721,6 @@ fn enumeration(enumeration: &Enumeration) -> TokenStream {
                 }
             }
 
-            // Only used when an algorithm reads the keyword back out.
             #[allow(dead_code, reason = "generated from IDL; serialization is used on demand")]
             pub(crate) fn as_str(self) -> &'static str {
                 match self { #(#strings),* }
@@ -1831,8 +1729,6 @@ fn enumeration(enumeration: &Enumeration) -> TokenStream {
     }
 }
 
-/// `[Unscopable]` member names for the `@@unscopables` object. Attributes
-/// cannot be unscopable yet; the contract path rejects them at lowering.
 fn unscopables(interface: &Interface) -> TokenStream {
     let names: Vec<&str> = interface
         .operations
@@ -1852,21 +1748,12 @@ fn unscopables(interface: &Interface) -> TokenStream {
     }
 }
 
-/// One generated module per interface, named after it, so a bindings file
-/// that includes several interfaces cannot collide.
 fn module_name(name: &str) -> proc_macro2::Ident {
     let snake = crate::names::snake_case(name);
     format_ident!("{snake}_generated")
 }
 
-/// A generated union enum with an ordered `from_value`, following the
-/// `WebIDL` union conversion: platform-object members precede string
-/// coercion (<https://webidl.spec.whatwg.org/#es-union>). Chromium
-/// generates one class per flattened member set with the same trial order
-/// (`third_party/blink/renderer/bindings/scripts/bind_gen/union.py`);
-/// Firefox generates the same order in its union `Init`
-/// (`dom/bindings/Codegen.py::getJSToNativeConversionInfo`). V8 and
-/// `SpiderMonkey` glue does not transfer; only the trial order does.
+// https://webidl.spec.whatwg.org/#es-union
 fn union(union: &Union) -> TokenStream {
     let name = format_ident!("{}", union.name);
     let variants = union.members.iter().map(|member| {
@@ -1885,9 +1772,6 @@ fn union(union: &Union) -> TokenStream {
         quote! { #variant(#type_) }
     });
     let mut trials = Vec::new();
-    // Trial order follows the WebIDL union algorithm, not the declaration
-    // order: platform objects, then objects as dictionaries, then primitives,
-    // then string coercion. Within a step, every member gets a trial.
     let mut ordered: Vec<_> = union.members.iter().collect();
     ordered.sort_by_key(|member| match &member.type_ {
         UnionMemberType::Interface { .. } => 0,
@@ -1903,9 +1787,6 @@ fn union(union: &Union) -> TokenStream {
                 name: interface,
                 node: true,
             } => trials.push(quote! {
-                // A platform object implementing the interface; anything
-                // else falls through. `is_interface` is strict: `Attr` has
-                // its own payload and does not implement `Node`.
                 if host::is_interface(ctx, value, #interface) {
                     return host::node_argument(ctx, value).map(Self::#variant);
                 }
@@ -1914,9 +1795,6 @@ fn union(union: &Union) -> TokenStream {
                 node: false,
                 name: interface,
             } => trials.push(quote! {
-                // Non-node platform objects are not exposed by this engine,
-                // so this trial never matches; it keeps the generated union
-                // total without inventing values.
                 if host::is_interface(ctx, value, #interface) {
                     return Ok(Self::#variant(value.clone()));
                 }
@@ -1924,10 +1802,7 @@ fn union(union: &Union) -> TokenStream {
             UnionMemberType::Dictionary(name) => {
                 let name = format_ident!("{name}");
                 trials.push(quote! {
-                    // A null, undefined, or object value converts to the
-                    // dictionary once platform objects have been tried; the
-                    // dictionary defaults fill an omitted argument
-                    // (<https://webidl.spec.whatwg.org/#es-union>).
+                    // https://webidl.spec.whatwg.org/#es-union
                     if value.is_null() || value.is_undefined() || value.is_object() {
                         return #name::from_object(ctx, value).map(Self::#variant);
                     }
@@ -1948,16 +1823,11 @@ fn union(union: &Union) -> TokenStream {
             }),
             UnionMemberType::String => trials.push(quote! {
                 // https://webidl.spec.whatwg.org/#es-DOMString
-                // Coerced rejects Symbol and stringifies everything else.
-                // A string member is tried last, so this is the tail
-                // expression.
                 rquickjs::FromJs::from_js(ctx, value.clone())
                     .map(|string: rquickjs::Coerced<rquickjs::String>| Self::#variant(string.0))
             }),
         }
     }
-    // String coercion returns or throws, so it ends the trial chain; a
-    // trailing mismatch error only exists without a string member.
     let mismatch = union_fallback(union);
     let generic = if union
         .members
@@ -1970,17 +1840,12 @@ fn union(union: &Union) -> TokenStream {
     };
     let into_js = union_into_js(union, &name, &generic);
     quote! {
-        // A union carries every IDL member; the algorithm that receives it
-        // may consume a subset, so unconsumed variants are not dead code.
         #[allow(dead_code, reason = "generated from IDL; algorithms may read a subset")]
         pub(crate) enum #name #generic {
             #(#variants),*
         }
 
         impl<'js> #name #generic {
-            // The value borrows through the trial chain: only the members that
-            // take ownership clone it, so a union whose members all borrow
-            // never pays for a clone.
             #[allow(dead_code, reason = "generated from IDL; return-only unions do not convert from JS")]
             fn from_value(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Self> {
                 #(#trials)*
@@ -1992,9 +1857,6 @@ fn union(union: &Union) -> TokenStream {
     }
 }
 
-/// `IntoJs` for a union whose members all convert back to JS values. Unions
-/// used only as arguments skip it; `union_result` rejects returned unions
-/// with members this cannot express.
 fn union_into_js(union: &Union, name: &proc_macro2::Ident, generic: &TokenStream) -> TokenStream {
     let convertible = union.members.iter().all(|member| {
         matches!(
@@ -2019,8 +1881,6 @@ fn union_into_js(union: &Union, name: &proc_macro2::Ident, generic: &TokenStream
     } else {
         quote! { _ctx }
     };
-    // Members whose conversion is the same share one arm: the patterns merge,
-    // so the match stays exhaustive without repeating a body.
     let mut grouped: Vec<(String, proc_macro2::TokenStream, Vec<&syn::Ident>)> = Vec::new();
     for member in &union.members {
         let variant = &member.variant;
@@ -2030,12 +1890,8 @@ fn union_into_js(union: &Union, name: &proc_macro2::Ident, generic: &TokenStream
             UnionMemberType::Boolean | UnionMemberType::Long => {
                 quote! { rquickjs::IntoJs::into_js(value, &#ctx_name) }
             }
-            // Excluded by `convertible` above; `union_result` rejects
-            // dictionary members before emitting a returned union.
             UnionMemberType::Dictionary(_) => continue,
         };
-        // `Boolean` and `Long` share body text but bind different types; an
-        // or-pattern needs one type for `value`.
         let key = match member.type_ {
             UnionMemberType::Boolean => format!("bool:{body}"),
             UnionMemberType::Long => format!("i32:{body}"),
@@ -2060,10 +1916,7 @@ fn union_into_js(union: &Union, name: &proc_macro2::Ident, generic: &TokenStream
     }
 }
 
-/// The tail of a union's `from_value`: a string member stringifies everything
-/// and a boolean member coerces everything, so either one or the other catches
-/// the remaining values; only a union with neither throws
-/// (<https://webidl.spec.whatwg.org/#es-union>).
+// https://webidl.spec.whatwg.org/#es-union
 fn union_fallback(union: &Union) -> TokenStream {
     if union
         .members
@@ -2077,8 +1930,6 @@ fn union_fallback(union: &Union) -> TokenStream {
         .iter()
         .find(|member| matches!(member.type_, UnionMemberType::Boolean))
     {
-        // Step 12: a boolean member is the fallback and converts any
-        // remaining value with `ToBoolean` (`2.3` is true, `""` is false).
         let variant = &member.variant;
         return quote! {
             rquickjs::FromJs::from_js(ctx, value.clone())

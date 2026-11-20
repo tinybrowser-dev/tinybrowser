@@ -5,13 +5,11 @@
       throw new TypeError('Class constructor CustomEvent cannot be invoked without new');
     }
     const event = __tbApply(host.__tb_new_custom_event, globalThis, arguments);
-    // A subclass constructor keeps its own prototype
-    // (<https://webidl.spec.whatwg.org/#interface-object>).
+    // https://webidl.spec.whatwg.org/#interface-object
     if (new.target !== CustomEvent) {
       __tbSetPrototypeOf(event, new.target.prototype);
     }
-    // `detail` is read after the EventInit members and defaults to null
-    // (<https://dom.spec.whatwg.org/#dictdef-customeventinit>).
+    // https://dom.spec.whatwg.org/#dictdef-customeventinit
     const init = arguments[1];
     const detail = (init === undefined || init === null) ? null : init.detail;
     TB_DETAIL.set(event, detail === undefined ? null : detail);

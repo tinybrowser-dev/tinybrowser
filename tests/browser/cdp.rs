@@ -67,8 +67,6 @@ fn browser_target_page_runtime_flatten_and_method_not_found() {
     assert_eq!(undefined_value["result"]["type"], json!("undefined"));
     assert!(undefined_value["result"].get("subtype").is_none());
 
-    // `returnByValue` defaults to false: primitives serialize inline, objects
-    // come back as handles.
     let primitive = client
         .call(
             "Runtime.evaluate",
@@ -257,7 +255,6 @@ fn clear_browser_cookies_deletes_page_cookies_from_both_target_kinds() {
     let set_cookie = "document.cookie = 'a=1; path=/'";
     let read_cookie = "document.cookie";
 
-    // The root browser target clears the whole jar.
     evaluate(&mut client, &session, set_cookie);
     assert_eq!(evaluate(&mut client, &session, read_cookie), json!("a=1"));
     client
@@ -269,7 +266,6 @@ fn clear_browser_cookies_deletes_page_cookies_from_both_target_kinds() {
         "root clear must delete the page's cookies"
     );
 
-    // The page session clears the same jar.
     evaluate(&mut client, &session, set_cookie);
     assert_eq!(evaluate(&mut client, &session, read_cookie), json!("a=1"));
     client
@@ -306,11 +302,7 @@ fn page_navigate_loads_http_document() {
     assert_eq!(evaluated["result"]["value"], json!("hi"));
 }
 
-/// A browser-driven navigation has no initiating document, so its cookies are
-/// same-site while `Sec-Fetch-Site` is `none`. The tab's blank document is not
-/// its initiator: treating it as one withheld `SameSite=Strict` cookies on the
-/// path every CDP client drives
-/// (<https://httpwg.org/http-extensions/draft-ietf-httpbis-rfc6265bis.html#name-same-site-requests>).
+// https://httpwg.org/http-extensions/draft-ietf-httpbis-rfc6265bis.html#name-same-site-requests
 #[test]
 fn page_navigate_from_a_fresh_tab_is_same_site_for_cookies() {
     let server = TestServer::start(
@@ -346,10 +338,6 @@ fn page_navigate_from_a_fresh_tab_is_same_site_for_cookies() {
     assert!(head.contains("sec-fetch-site: none"), "{head}");
 }
 
-/// `Page.navigateToHistoryEntry` names an entry by identity and the browser
-/// resolves it, so a client never turns an id into a position and back. An id
-/// the tab no longer holds is an error rather than a traversal to a
-/// neighbour.
 #[test]
 fn navigate_to_history_entry_takes_the_entry_id() {
     let server = TestServer::start(
@@ -396,8 +384,6 @@ fn navigate_to_history_entry_takes_the_entry_id() {
             Some(&session),
         )
         .expect("traverse to the first entry");
-    // The browser re-fetched the first entry's document and committed it, so
-    // the traversal really loaded that entry rather than answering "done".
     server.wait_count("/one", 2);
     let after = client
         .call("Page.getNavigationHistory", &json!({}), Some(&session))
@@ -733,7 +719,6 @@ fn dom_resolve_node_returns_an_object_id_runtime_can_use() {
         .expect("call");
     assert_eq!(evaluated["result"]["value"], json!("P"));
 
-    // A second resolve reuses the node's handle instead of growing the table.
     let again = client
         .call(
             "DOM.resolveNode",

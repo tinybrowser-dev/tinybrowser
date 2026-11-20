@@ -265,7 +265,7 @@ export const test = base.extend<Fixtures>({
 
     // Detached so cleanup can kill the daemon and its renderer children as one
     // process group.
-    const daemon = spawn(binary, ["daemon", "--profile=default"], {
+    const daemon = spawn(binary, ["--profile=default"], {
       env: { ...process.env, XDG_RUNTIME_DIR: runtime, XDG_DATA_HOME: data },
       stdio: "ignore",
       detached: true,

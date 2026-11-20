@@ -1,9 +1,5 @@
 use net::{Agent, AgentOptions};
 
-/// The global quota is our policy, not the spec's: eviction runs oldest
-/// first across all domains. Path scoping, `SameSite`, and security prefixes
-/// are WPT's `cookies/` suite; the quota and public-suffix cases below have
-/// no WPT coverage.
 #[test]
 fn cookie_quota_evicts_the_oldest_entries_globally() {
     let agent = Agent::new(AgentOptions::default());
@@ -19,8 +15,6 @@ fn cookie_quota_evicts_the_oldest_entries_globally() {
     assert_eq!(agent.cookies_for(&oldest), "");
 }
 
-/// The per-domain quota: the newest cookie evicts the oldest on that one
-/// domain. Our policy; WPT `cookies/` has no quota cases.
 #[test]
 fn per_domain_quota_keeps_the_newest_fifty() {
     let agent = Agent::new(AgentOptions::default());
@@ -34,10 +28,6 @@ fn per_domain_quota_keeps_the_newest_fifty() {
     assert!(listed.contains("n50="));
 }
 
-/// Public-suffix domain matching: `Domain=com` and the multi-label
-/// `Domain=s3.amazonaws.com` are refused; `github.io` set from its own host
-/// stays host-only and never reaches subdomains. WPT `cookies/` has no
-/// public-suffix cases.
 #[test]
 fn public_suffix_domains_are_rejected() {
     let agent = Agent::new(AgentOptions::default());

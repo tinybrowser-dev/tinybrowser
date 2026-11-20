@@ -1,5 +1,3 @@
-//! Live browser context and its default storage partition.
-
 use std::io;
 use std::path::Path;
 use std::sync::Arc;
@@ -13,7 +11,6 @@ use crate::profile::Profile;
 use crate::profile::store::ProfileStore;
 use crate::storage::{SessionStorage, StorageAreas};
 
-/// Services shared by renderer assignments in one storage partition.
 #[derive(Clone)]
 pub(crate) struct PartitionServices {
     pub(crate) local_storage: Arc<StorageAreas>,
@@ -21,13 +18,11 @@ pub(crate) struct PartitionServices {
     pub(crate) events: Arc<RendererEventHub>,
 }
 
-/// Network and site data shared by documents in one partition.
 struct StoragePartition {
     network: NetworkContext,
     services: PartitionServices,
 }
 
-/// One live profile and its default storage partition.
 pub(crate) struct BrowserContext {
     store: Arc<ProfileStore>,
     partition: StoragePartition,
@@ -35,12 +30,6 @@ pub(crate) struct BrowserContext {
 }
 
 impl BrowserContext {
-    /// Opens one context and restores its durable partition state.
-    ///
-    /// # Errors
-    ///
-    /// The profile directory cannot be created or exclusively locked, or stored
-    /// profile data could not be read or quarantined.
     pub(crate) fn open(
         data_home: &Path,
         profile: &Profile,

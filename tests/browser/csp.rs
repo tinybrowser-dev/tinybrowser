@@ -1,18 +1,9 @@
-//! Where a CSP violation says it came from.
-//!
-//! A fetch violation reports the script that triggered the load. That script
-//! location is captured while the binding runs, so it must come from the
-//! interpreter's own stack frames: a page controls `Error.stackTraceLimit` and
-//! `Error.prepareStackTrace`, and could otherwise name any source it likes or
-//! erase the attribution
-//! (<https://w3c.github.io/webappsec-csp/#create-violation-for-global>).
+// https://w3c.github.io/webappsec-csp/#create-violation-for-global
 
 use serde_json::json;
 
 use crate::fixture::{TestServer, evaluate, ok, open_page, server};
 
-/// The page records every violation it sees, tries to point the capture at a
-/// script of its own, and then inserts a blocked script.
 const PAGE: &str = r"<!doctype html><body>
 <script>
 window.__violations = [];
@@ -64,8 +55,6 @@ fn a_violation_names_the_page_script_that_triggered_it() {
         &json!(page),
         "the violation names the page script, not the spoofed one: {violations:?}"
     );
-    // The trigger is on line 9 of the inline script, and the page's own stack
-    // settings cannot move it.
     assert_eq!(
         line_number,
         &json!(9),

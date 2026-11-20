@@ -29,14 +29,7 @@ pub(crate) struct Member<'idl> {
     scopes: Vec<ExtendedAttributeList<'idl>>,
 }
 
-/// What a member's declaration and enclosing scopes say about its exposure.
-///
-/// `[SecureContext]` is one fact no matter where it is declared: on the member,
-/// or on a partial interface or mixin the interface includes
-/// (<https://webidl.spec.whatwg.org/#SecureContext>). An interface-level
-/// `[SecureContext]` is not part of this: it gates the interface object and
-/// prototype themselves, so its members are never installed outside a secure
-/// context in the first place. Both emitters read this one value.
+// https://webidl.spec.whatwg.org/#SecureContext
 #[derive(Clone, Copy)]
 pub(crate) struct Exposure {
     pub(crate) secure_context: bool,
@@ -67,11 +60,6 @@ impl Member<'_> {
         }
     }
 
-    /// The exposure of this member's own declaration and enclosing scopes.
-    ///
-    /// The interface's own `[SecureContext]` is deliberately absent: it gates
-    /// the interface object and prototype, so no member of it is installed
-    /// outside a secure context anyway.
     pub(crate) fn exposure(&self) -> Exposure {
         Exposure {
             secure_context: has_no_args(self.attributes(), "SecureContext")
@@ -85,10 +73,6 @@ impl Member<'_> {
     pub(crate) fn validate_scopes(&self) -> Result<(), Error> {
         // https://webidl.spec.whatwg.org/#SecureContext
         // https://webidl.spec.whatwg.org/#using-mixins-and-partials
-        // `[SecureContext]` is a resolved exposure, not scope syntax. A
-        // `[LegacyOverrideBuiltIns]` scope only changes how named properties
-        // resolve against built-ins; on an interface without a named getter it
-        // is unobservable. Any other scope attribute needs a lowering.
         if let Some(scope) = self.scopes.iter().find(|scope| {
             !scope.body.list.is_empty()
                 && !scope.body.list.iter().all(|attribute| {
@@ -138,10 +122,6 @@ impl<'idl> Database<'idl> {
             partials: BTreeMap::new(),
             includes: BTreeMap::new(),
         };
-        // Partial definitions merge in encounter order, so the source order
-        // would otherwise leak into the generated member order. Sort by the
-        // caller-supplied name: two callers that hand over the same corpus in
-        // a different order must compile to the same bytes.
         let mut ordered: Vec<&Source<'idl>> = sources.iter().collect();
         ordered.sort_by(|left, right| left.name.cmp(right.name));
         for source in ordered {
@@ -371,14 +351,7 @@ impl<'idl> Database<'idl> {
         self.definitions.get(name)
     }
 
-    /// Resolve a mixin and the interfaces that include it. Mixins have no
-    /// interface object; the generated installer targets each includer.
-    /// Member scopes carry the mixin and partial-mixin declaration
-    /// attributes, following partial interfaces
-    /// (<https://webidl.spec.whatwg.org/#using-mixins-and-partials>).
-    /// Chromium resolves the same includes statements in
-    /// `third_party/blink/renderer/bindings/scripts/web_idl/idl_compiler.py`;
-    /// Firefox reads them in `dom/bindings/parser/WebIDL.py`.
+    // https://webidl.spec.whatwg.org/#using-mixins-and-partials
     pub(crate) fn mixin(&self, name: &str) -> Result<Mixin<'idl>, Error> {
         let Some(Definition::InterfaceMixin(definition)) = self.definitions.get(name) else {
             return Err(Error(format!("no mixin declaration for {name}")));
@@ -416,7 +389,6 @@ impl<'idl> Database<'idl> {
         })
     }
 
-    /// Interfaces that include the mixin, in IDL source order.
     pub(crate) fn includers(&self, mixin: &str) -> Vec<String> {
         self.includes
             .iter()
@@ -425,11 +397,6 @@ impl<'idl> Database<'idl> {
             .collect()
     }
 
-    /// Indexed and named getter operations inherited through the parent
-    /// chain, for hook support. An interface whose hook drivers come from a
-    /// parent lowers its own copies, derived here instead of repeated by
-    /// hand; anything else stays on the parent's prototype and dispatches
-    /// through the shared payload arms.
     pub(crate) fn hook_members(&self, name: &str) -> Result<Vec<Member<'idl>>, Error> {
         let mut members = Vec::new();
         let mut seen = BTreeSet::new();
@@ -442,7 +409,6 @@ impl<'idl> Database<'idl> {
                 return Err(Error(format!("inheritance cycle at {parent}")));
             }
             let Ok(declaration) = self.interface(parent) else {
-                // Parents can be mixins, which terminate the chain.
                 self.mixin(parent)?;
                 return Ok(members);
             };
@@ -458,8 +424,6 @@ impl<'idl> Database<'idl> {
         Ok(members)
     }
 
-    /// Whether `name` is `Node` or inherits from it, walking the declared
-    /// inheritance chain.
     pub(crate) fn is_node_interface(&self, name: &str) -> bool {
         let mut current = name;
         let mut seen = BTreeSet::new();

@@ -1,33 +1,15 @@
-//! wptserve's `.sub.headers` template substitution.
-//!
-//! wptserve runs a small expression language over `.sub.headers` and `.sub.*`
-//! bodies (`third_party/wpt/tools/wptserve/wptserve/pipes.py`, `template`).
-//! Only the expressions the checkout's header files use are implemented:
-//! `host`, `ports`, `domains`, `hosts`, `GET`, `location`, `uuid`,
-//! `header_or_default`, and `$name:` assignment. An expression this module does
-//! not understand is an error, never an empty substitution: a silently dropped
-//! header changes what the test observes.
-
 use std::collections::HashMap;
 
 use url::Url;
 
-/// The request facts a header template can read.
 pub struct Context<'a> {
-    /// The URL of the request the header belongs to.
     pub url: &'a Url,
-    /// Request headers, as sent by the engine.
     pub headers: &'a [(String, String)],
 }
 
-/// The browser host `tools/serve/serve.py` configures.
 const BROWSER_HOST: &str = "web-platform.test";
-/// The alternate host, reached as `hosts[alt]`.
 const ALTERNATE_HOST: &str = "not-web-platform.test";
 
-/// The subdomains serve.py registers, already IDNA-encoded the way
-/// `wptserve/config.py` encodes them (`www`, `www1`, `www2`, and the two
-/// non-ASCII names). Upstream makes the one- and two-level products.
 const SUBDOMAINS: [&str; 5] = [
     "www",
     "www1",
@@ -36,21 +18,13 @@ const SUBDOMAINS: [&str; 5] = [
     "xn--lve-6lad",
 ];
 
-/// How a substituted value is escaped in the payload.
-///
-/// wptserve picks this from the response's extension: markup gets HTML
-/// escaping, every other pipe (`sub(none)`) gets the raw value
-/// (`wptserve/handlers.py::wrap_pipeline`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Escape {
-    /// `html.escape(value, quote=True)`.
     Html,
-    /// The value as the template produced it.
     None,
 }
 
 impl Escape {
-    /// The escape mode wptserve uses for a path's extension.
     #[must_use]
     pub fn for_path(path: &str) -> Self {
         let extension = path.rsplit('.').next().unwrap_or_default();
@@ -61,7 +35,6 @@ impl Escape {
         }
     }
 
-    /// Applies the mode to one expanded value.
     fn apply(self, value: &str) -> String {
         match self {
             Self::None => value.to_owned(),
@@ -73,7 +46,6 @@ impl Escape {
                         '<' => out.push_str("&lt;"),
                         '>' => out.push_str("&gt;"),
                         '"' => out.push_str("&quot;"),
-                        // `html.escape(quote=True)` uses this named form.
                         '\'' => out.push_str("&#x27;"),
                         other => out.push(other),
                     }
@@ -84,23 +56,10 @@ impl Escape {
     }
 }
 
-/// Replaces every `{{...}}` expression in `text`, without escaping.
-///
-/// This is the header form: wptserve expands `.sub.headers` with
-/// `template(..., escape_type="none")`.
-///
-/// # Errors
-///
-/// An unterminated expression, or one this module does not implement.
 pub fn substitute(text: &str, context: &Context<'_>) -> Result<String, String> {
     substitute_escaped(text, context, Escape::None)
 }
 
-/// Replaces every `{{...}}` expression in `text`, escaping each value.
-///
-/// # Errors
-///
-/// An unterminated expression, or one this module does not implement.
 pub fn substitute_escaped(
     text: &str,
     context: &Context<'_>,
@@ -123,7 +82,6 @@ pub fn substitute_escaped(
     Ok(out)
 }
 
-/// Evaluates one expression, handling `$name:` assignment and `$name` reuse.
 fn evaluate(
     expression: &str,
     context: &Context<'_>,
@@ -145,13 +103,11 @@ fn evaluate(
     value(expression, context)
 }
 
-/// A `[...]` index or a `(...)` argument list.
 enum Selector {
     Index(String),
     Arguments(String),
 }
 
-/// Evaluates a value expression such as `ports[https][0]`.
 fn value(expression: &str, context: &Context<'_>) -> Result<String, String> {
     let head_end = expression.find(['[', '(', '.']).unwrap_or(expression.len());
     let head = &expression[..head_end];
@@ -210,10 +166,7 @@ fn value(expression: &str, context: &Context<'_>) -> Result<String, String> {
             let [Selector::Index(key)] = selectors.as_slice() else {
                 return Err(format!("GET needs [key] in {{{{{expression}}}}}"));
             };
-            // wptserve's `FirstWrapper` answers an absent parameter with the
-            // empty string, and the CSP support scripts rely on it: they
-            // reference `{{GET[timeout]}}` and treat `""` as the default
-            // (<https://github.com/web-platform-tests/wpt/blob/master/tools/wptserve/wptserve/pipes.py>).
+            // https://github.com/web-platform-tests/wpt/blob/master/tools/wptserve/wptserve/pipes.py
             Ok(context
                 .url
                 .query_pairs()
@@ -248,7 +201,6 @@ fn value(expression: &str, context: &Context<'_>) -> Result<String, String> {
     }
 }
 
-/// Rejects selectors on a bare value such as `host`.
 fn expect_no_selectors(head: &str, selectors: &[Selector]) -> Result<(), String> {
     if selectors.is_empty() {
         Ok(())
@@ -257,7 +209,6 @@ fn expect_no_selectors(head: &str, selectors: &[Selector]) -> Result<(), String>
     }
 }
 
-/// Rejects anything but an empty argument list.
 fn expect_arguments(head: &str, selectors: &[Selector], expected: &str) -> Result<(), String> {
     match selectors {
         [] => Ok(()),
@@ -266,12 +217,6 @@ fn expect_arguments(head: &str, selectors: &[Selector], expected: &str) -> Resul
     }
 }
 
-/// The port serve.py gives a scheme and index.
-///
-/// The table is the one the `WebDriver` lane runs against
-/// (`tools/wptrunner/wptrunner/environment.py::TestEnvironment.build_config`);
-/// the standalone `serve.py` defaults differ in the second `http` port and in
-/// every `auto` scheme.
 fn port(scheme: &str, index: &str) -> Option<String> {
     let ports: &[u16] = match scheme {
         "http" => &[8000, 8001],
@@ -291,8 +236,6 @@ fn port(scheme: &str, index: &str) -> Option<String> {
     ports.get(index).map(ToString::to_string)
 }
 
-/// `domains[subdomain]` under the browser host, with `""` naming the host
-/// itself (`wptserve/config.py::_get_domains`).
 fn domain(subdomain: &str) -> Option<String> {
     if subdomain.is_empty() {
         return Some(BROWSER_HOST.to_owned());
@@ -300,7 +243,6 @@ fn domain(subdomain: &str) -> Option<String> {
     encoded_subdomain(subdomain).map(|encoded| format!("{encoded}.{BROWSER_HOST}"))
 }
 
-/// `hosts[alias][subdomain]`, where the alias is `""` (browser) or `alt`.
 fn host(alias: &str, subdomain: &str) -> Option<String> {
     let base = match alias {
         "" => BROWSER_HOST,
@@ -313,14 +255,6 @@ fn host(alias: &str, subdomain: &str) -> Option<String> {
     encoded_subdomain(subdomain).map(|encoded| format!("{encoded}.{base}"))
 }
 
-/// The registered one- or two-level subdomain in `name`, with every label
-/// IDNA-encoded.
-///
-/// `serve.py` registers the configured names twice: once as written (the
-/// non-ASCII `天気の良い日` and `élève` included) for the server's host
-/// matching, and IDNA-encoded in `domains[...]`
-/// (`wptserve/config.py::_get_domains`). A template can therefore name either
-/// spelling, and the expansion is always the ASCII form.
 fn encoded_subdomain(name: &str) -> Option<String> {
     let labels: Vec<&str> = name.split('.').collect();
     if labels.is_empty() || labels.len() > 2 {
@@ -339,7 +273,6 @@ fn encoded_subdomain(name: &str) -> Option<String> {
     Some(encoded.join("."))
 }
 
-/// `location[field]` for one request URL.
 fn location(field: &str, url: &Url) -> Option<String> {
     let host = url.host_str()?;
     let port = url.port_or_known_default()?;
@@ -355,7 +288,6 @@ fn location(field: &str, url: &Url) -> Option<String> {
     })
 }
 
-/// A UUID for `uuid()` and `$name:uuid()`.
 fn uuid() -> String {
     uuid::Uuid::new_v4().to_string()
 }
@@ -389,9 +321,6 @@ mod tests {
         assert_eq!(expand("{{ports[https][0]}}", ""), "8443");
         assert_eq!(expand("{{domains[]}}", ""), "web-platform.test");
         assert_eq!(expand("{{domains[www]}}", ""), "www.web-platform.test");
-        // The tests spell the two non-ASCII subdomains as written; the
-        // expansion is the IDNA form `serve.py` serves
-        // (`wptserve/config.py::_get_domains`).
         assert_eq!(
             expand("{{domains[天気の良い日]}}", ""),
             "xn--n8j6ds53lwwkrqhv28a.web-platform.test"

@@ -1,4 +1,3 @@
-// Navigator identity exposed by the browsing-context global.
 // https://html.spec.whatwg.org/multipage/system-state.html#the-navigator-object
 {
   const identity = host.__tbIdentity();
@@ -6,12 +5,8 @@
   const uaFullVersionList = Object.freeze(identity.fullVersionList.map((entry) => Object.freeze(entry)));
   const uaMobile = identity.mobile;
   const uaPlatform = identity.platform;
-  // `navigator.languages` is a FrozenArray of the identity's language list, in
-  // preference order, and `language` is its first tag
   // https://html.spec.whatwg.org/multipage/system-state.html#dom-navigator-languages
   const languages = Object.freeze(identity.languages.slice());
-  // `uaFullVersion` reports the engine version, so the Chromium brand wins; an
-  // identity without one falls back to its last brand rather than to nothing
   // https://wicg.github.io/ua-client-hints/#getHighEntropyValues
   const chromium = uaFullVersionList.find((entry) => entry.brand === 'Chromium');
   const lastFullVersion = uaFullVersionList[uaFullVersionList.length - 1];
@@ -19,10 +14,6 @@
     ? chromium.version
     : (lastFullVersion === undefined ? '' : lastFullVersion.version);
 
-  // `NavigatorUAData` is generated from its IDL shape. Its global stays
-  // conditional because tinybrowser exposes it only where `userAgentData`
-  // itself is available; the installer's `__tbInstallGlobal` form is what a
-  // `[SecureContext]` interface needs, and `NavigatorUAData` is not one.
   const [NavigatorUAData, userAgentData] = __tbInstallInterface(class NavigatorUAData {
     get brands() {
       return uaBrands;
@@ -79,9 +70,7 @@
     'matrix', 'mms', 'news', 'nntp', 'openpgp4fpr', 'sftp', 'sip', 'sms',
     'smsto', 'ssh', 'tel', 'urn', 'webcal', 'wtai', 'xmpp',
   ]);
-  // The spec says ASCII lowercase, not `toLowerCase`: the Kelvin sign and
-  // other non-ASCII characters must not become an ASCII letter
-  // (<https://infra.spec.whatwg.org/#ascii-lowercase>).
+  // https://infra.spec.whatwg.org/#ascii-lowercase
   const asciiLowercase = value => {
     let result = '';
     for (let index = 0; index < value.length; index++) {
@@ -100,9 +89,7 @@
     if (url.indexOf('%s') === -1) {
       throw new DOMException('The URL does not contain a %s placeholder.', 'SyntaxError');
     }
-    // Encoding-parsing the URL relative to the entry settings object; a
-    // placeholder in the host or port makes the parse fail
-    // (<https://html.spec.whatwg.org/multipage/system-state.html#normalize-protocol-handler-parameters>).
+    // https://html.spec.whatwg.org/multipage/system-state.html#normalize-protocol-handler-parameters
     const resolved = host.__tbResolveUrl(url, undefined);
     if (resolved == null) {
       throw new DOMException('The URL is invalid.', 'SyntaxError');
@@ -114,22 +101,11 @@
     }
     return { key: normalizedScheme + ' ' + resolved, scheme: normalizedScheme, url: resolved };
   };
-  // The user agent's registered handlers for this realm.
   const protocolHandlers = new Map();
 
-  // The UA renders no PDF content, so `pdfViewerEnabled` is false and both
-  // plugin lists are empty. A Window has one `PluginArray` and one
-  // `MimeTypeArray`, and every `Navigator` of that Window returns the same
-  // object
-  // (<https://html.spec.whatwg.org/multipage/system-state.html#navigatorplugins>,
-  // <https://html.spec.whatwg.org/multipage/system-state.html#pdf-viewer-plugin-objects-list>).
-  //
-  // Both interfaces are legacy platform objects with named properties, which
-  // the binding generator's prototype does not synthesize, so they are written
-  // here like the other legacy collections
-  // (<https://webidl.spec.whatwg.org/#es-legacy-platform-objects>). An empty
-  // list has no named or indexed property to find, so every `item` and
-  // `namedItem` answer is null.
+  // https://html.spec.whatwg.org/multipage/system-state.html#navigatorplugins
+  // https://html.spec.whatwg.org/multipage/system-state.html#pdf-viewer-plugin-objects-list
+  // https://webidl.spec.whatwg.org/#es-legacy-platform-objects
   const pluginArrayBrand = host.slots('tinybrowser.PluginArray');
   const mimeTypeArrayBrand = host.slots('tinybrowser.MimeTypeArray');
   const checkBrand = (slot, receiver) => {
@@ -208,9 +184,6 @@
   const mimeTypeArray = Object.create(MimeTypeArray.prototype);
   mimeTypeArrayBrand.set(mimeTypeArray, true);
 
-  // `Navigator` includes seven NavigatorID/Language/etc. mixins, so the
-  // generator resolves `userAgentData` from `Navigator includes NavigatorUA`
-  // and applies its `[SecureContext]` exposure per member.
   const [Navigator, navigator] = __tbInstallGlobal('Navigator', class Navigator {
     get userAgent() {
       return identity.userAgent;
@@ -265,16 +238,10 @@
     'virtualKeyboard', 'wakeLock', 'windowControlsOverlay', 'xr',
   ]);
 
-  // `sendBeacon`'s `BodyInit` union is not lowered by the binding generator
-  // yet, so the operation is installed here with the prototype shape the
-  // generator gives an operation: a brand check and the IDL string conversion
-  // (<https://w3c.github.io/beacon/#sec-sendBeacon-method>).
+  // https://w3c.github.io/beacon/#sec-sendBeacon-method
   if (host.__tbIsWorker !== true) {
     const navigatorBrand = host.slots('webidl.Navigator');
-    // The quota covers the requests this navigator's document has in flight,
-    // and a finished request returns its bytes
-    // (<https://w3c.github.io/beacon/#sec-sendBeacon-method>, "the amount of
-    // data that can be queued ... in-flight quota restrictions").
+    // https://w3c.github.io/beacon/#sec-sendBeacon-method
     const beaconQuota = host.slots('tinybrowser.beacon.quota');
     const quotaFor = navigator => {
       let quota = beaconQuota.get(navigator);
@@ -290,44 +257,30 @@
       }
       if (!navigatorBrand.has(this)) throw new TypeError('Illegal invocation');
       const quota = quotaFor(this);
-      // WebIDL converts both arguments before the algorithm runs. The
-      // `BodyInit` union is (ReadableStream or XMLHttpRequestBodyInit), so any
-      // other object fails the union conversion here; a `ReadableStream`
-      // reaches the keepalive extraction step, which throws because a
-      // keepalive request cannot have a stream body
-      // (<https://webidl.spec.whatwg.org/#es-union>,
-      // <https://fetch.spec.whatwg.org/#concept-bodyinit-extract>).
+      // https://webidl.spec.whatwg.org/#es-union
+      // https://fetch.spec.whatwg.org/#concept-bodyinit-extract
       const isObject = data !== null && (typeof data === 'object' || typeof data === 'function');
       if (isObject && !(data instanceof ReadableStream) && !(data instanceof Blob)
           && !(data instanceof FormData) && !(data instanceof URLSearchParams)
           && !(data instanceof ArrayBuffer) && !ArrayBuffer.isView(data)) {
         throw new TypeError('The provided value is not a valid BodyInit.');
       }
-      // `url` is a USVString resolved against the entry settings object, and
-      // only `http` and `https` are beacon schemes
-      // (<https://w3c.github.io/beacon/#sec-sendBeacon-method>, step 3).
+      // https://w3c.github.io/beacon/#sec-sendBeacon-method
       const resolved = host.__tbResolveUrl(__tbIDLUSVString(url), undefined);
       if (resolved == null) throw new TypeError('Invalid URL');
       if (!/^https?:/i.test(resolved)) {
         throw new TypeError('The URL scheme is not http or https.');
       }
-      // A keepalive request cannot have a stream body, so a `ReadableStream`
-      // in the union throws at extraction
-      // (<https://fetch.spec.whatwg.org/#concept-bodyinit-extract>).
+      // https://fetch.spec.whatwg.org/#concept-bodyinit-extract
       if (data instanceof ReadableStream) {
         throw new TypeError('The provided body is a ReadableStream, which keepalive cannot send.');
       }
       const extracted = __tbExtractBody(data === undefined ? null : data);
       const bytes = extracted.bytes === null ? new __tbUint8Array(0) : extracted.bytes;
-      // The quota covers the keepalive requests this document has in flight,
-      // and a finished request returns its bytes
-      // (<https://w3c.github.io/beacon/#sec-sendBeacon-method>, step 5; the
-      // limit itself is Fetch's keepalive quota).
+      // https://w3c.github.io/beacon/#sec-sendBeacon-method
       if (quota.bytes + bytes.length > 65536) return false;
       quota.bytes += bytes.length;
-      // A CORS-safelisted content type keeps the request in `no-cors` mode;
-      // any other content type needs a CORS request
-      // (<https://w3c.github.io/beacon/#sec-sendBeacon-method>, step 6.3).
+      // https://w3c.github.io/beacon/#sec-sendBeacon-method
       let mode = 'no-cors';
       if (extracted.type !== null
           && host.__tbIsNoCorsSafelistedHeader('content-type', extracted.type) !== true) {
@@ -360,10 +313,7 @@
     });
   }
 
-  // `NavigatorPlugins` is Window-only and all three members read state this
-  // realm already owns, so they install on the generated prototype here. A
-  // worker's `Navigator` has none of them
-  // (<https://html.spec.whatwg.org/multipage/system-state.html#navigatorplugins>).
+  // https://html.spec.whatwg.org/multipage/system-state.html#navigatorplugins
   if (host.__tbIsWorker !== true) {
     const navigatorBrand = host.slots('webidl.Navigator');
     const attribute = (name, read) => {
@@ -378,12 +328,10 @@
         __proto__: null, get: getter, enumerable: true, configurable: true,
       });
     };
-    // `[SameObject]`: the Window's one array answers every read
-    // (<https://html.spec.whatwg.org/multipage/system-state.html#dom-navigator-plugins>).
+    // https://html.spec.whatwg.org/multipage/system-state.html#dom-navigator-plugins
     attribute('plugins', () => pluginArray);
     attribute('mimeTypes', () => mimeTypeArray);
-    // The UA has no PDF viewer, so the flag is false and both arrays are empty
-    // (<https://html.spec.whatwg.org/multipage/system-state.html#dom-navigator-pdfviewerenabled>).
+    // https://html.spec.whatwg.org/multipage/system-state.html#dom-navigator-pdfviewerenabled
     attribute('pdfViewerEnabled', () => false);
     for (const [name, value] of [['PluginArray', PluginArray], ['MimeTypeArray', MimeTypeArray]]) {
       __tbDefineProperty(globalThis, name, {
@@ -392,11 +340,7 @@
     }
   }
 
-  // The UA has no window controls overlay (it is a desktop-window feature),
-  // so the object reports `visible: false`, an empty titlebar area, and a
-  // handler that never runs. The interface is not constructible; the
-  // `[SameObject]` member answers the realm's one instance
-  // (<https://wicg.github.io/window-controls-overlay/#windowcontrolsany>).
+  // https://wicg.github.io/window-controls-overlay/#windowcontrolsany
   if (host.__tbIsWorker !== true) {
     const navigatorBrand = host.slots('webidl.Navigator');
     const overlayKey = host.slots('tinybrowser.WindowControlsOverlay');

@@ -1,11 +1,5 @@
-//! One tab's joint session history, keyed by frame.
-//!
-//! The browser owns every entry of every fully active navigable in the tab.
-//! A renderer mirrors the part it needs for synchronous `history` reads, but
-//! it never decides the entry count or the active position: those are the
-//! joint list's
-//! (<https://html.spec.whatwg.org/multipage/history.html#joint-session-history>,
-//! <https://html.spec.whatwg.org/multipage/browsing-the-web.html#session-history-entry>).
+// https://html.spec.whatwg.org/multipage/history.html#joint-session-history
+// https://html.spec.whatwg.org/multipage/browsing-the-web.html#session-history-entry
 
 use std::collections::HashMap;
 
@@ -13,60 +7,44 @@ use renderer::HistorySnapshot as RendererHistorySnapshot;
 use renderer::{FrameId, HistoryHandling};
 use url::Url;
 
-/// Stable identity of one session-history entry.
-///
-/// The value survives list shifts, so a traversal can name its target without
-/// depending on an index
-/// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#session-history>).
+// https://html.spec.whatwg.org/multipage/browsing-the-web.html#session-history
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EntryId(u64);
 
 impl EntryId {
-    /// An identity from a value a caller already holds, such as a protocol
-    /// adapter's entry id. A value that names no entry answers no target; it
-    /// is never redirected to a neighbour.
     #[must_use]
     pub fn new(raw: u64) -> Self {
         Self(raw)
     }
 
-    /// The wire value protocol adapters put on their surface.
     #[must_use]
     pub fn get(self) -> u64 {
         self.0
     }
 }
 
-/// How a traversal names the entry it activates
-/// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#traverse-the-history>).
+// https://html.spec.whatwg.org/multipage/browsing-the-web.html#traverse-the-history
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum HistoryStep {
-    /// A signed distance from the active entry, as `history.go` speaks
-    /// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-history-go>).
+    // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-history-go
     Delta(i32),
-    /// An identity the caller already holds, as a CDP history entry id does
-    /// (<https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-navigateToHistoryEntry>).
+    // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-navigateToHistoryEntry
     Entry(EntryId),
 }
 
-/// What one browser-driven commit does to the main frame's session history.
 pub(crate) enum Commit {
-    /// Adds an entry after the active one and drops the whole forward branch.
     Push {
         url: Url,
-        /// The document state's navigable target name, resolved after the
-        /// commit's target-name reset
-        /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#resetBCName>).
+        // https://html.spec.whatwg.org/multipage/browsing-the-web.html#resetBCName
         name: Option<renderer::ContextName>,
     },
-    /// Re-populates the entry a traversal selected. That entry keeps the name
-    /// already stored in its document state: the entry, not the live browsing
-    /// context, is the source
-    /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#resetBCName>).
-    Traverse { entry: EntryId, url: Url },
+    // https://html.spec.whatwg.org/multipage/browsing-the-web.html#resetBCName
+    Traverse {
+        entry: EntryId,
+        url: Url,
+    },
 }
 
-/// One committed session-history entry.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HistoryEntry {
     id: EntryId,
@@ -75,29 +53,22 @@ pub struct HistoryEntry {
 }
 
 impl HistoryEntry {
-    /// Stable identity that survives list shifts.
     #[must_use]
     pub fn id(&self) -> EntryId {
         self.id
     }
 
-    /// URL committed for this entry.
     #[must_use]
     pub fn url(&self) -> &Url {
         &self.url
     }
 
-    /// Document title recorded when the entry committed.
     #[must_use]
     pub fn title(&self) -> &str {
         &self.title
     }
 }
 
-/// The main frame's committed history, as protocol adapters project it.
-///
-/// The joint list is longer: child-frame entries are part of it, but `CDP`'s
-/// navigation history is the top-level document's own list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HistorySnapshot {
     entries: Vec<HistoryEntry>,
@@ -105,13 +76,11 @@ pub struct HistorySnapshot {
 }
 
 impl HistorySnapshot {
-    /// Entries in traversal order, oldest first.
     #[must_use]
     pub fn entries(&self) -> &[HistoryEntry] {
         &self.entries
     }
 
-    /// Zero-based position of the active entry.
     #[must_use]
     pub fn current_index(&self) -> usize {
         self.current_index
@@ -121,62 +90,39 @@ impl HistorySnapshot {
 #[derive(Clone)]
 struct Entry {
     id: EntryId,
-    /// The joint step this entry occupies. Initial blank entries share the
-    /// step current when their frame was created; every navigation that pushes
-    /// takes the next step and makes it current
-    /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#getting-all-used-history-steps>).
+    // https://html.spec.whatwg.org/multipage/browsing-the-web.html#getting-all-used-history-steps
     step: u64,
-    /// Position within its own frame's list, which is what a child renderer
-    /// keeps its replay payloads under.
     local_index: usize,
     url: Url,
     title: String,
     state: Option<String>,
-    /// Identity of the document state this entry presents. Contiguous entries
-    /// can share one, and every entry that does presents the same `Document`
-    /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#document-state>).
+    // https://html.spec.whatwg.org/multipage/browsing-the-web.html#document-state
     document: u64,
 }
 
-/// A navigation whose document has not committed.
-///
-/// The entry stays out of the joint list until the frame reports its commit,
-/// so a load that fails, is blocked, or is superseded adds no phantom step
-/// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#finalize-a-cross-document-navigation>).
+// https://html.spec.whatwg.org/multipage/browsing-the-web.html#finalize-a-cross-document-navigation
 #[derive(Clone)]
 enum PendingChange {
-    /// A push, which takes the step after the current one at commit time.
-    Push { name: Option<renderer::ContextName> },
-    /// A replacement of an entry that already occupies a step.
+    Push {
+        name: Option<renderer::ContextName>,
+    },
     Replace {
         entry: EntryId,
         name: Option<renderer::ContextName>,
     },
 }
 
-/// The tab coordinator owns the list. Renderer realms only receive a snapshot
-/// and submit changes after a script turn.
 #[derive(Clone)]
 pub(crate) struct SessionHistory {
-    /// Every entry of every frame, in creation order. Traversal order is the
-    /// `step` order, not this order.
     entries: Vec<Entry>,
-    /// Each frame's entries in its own traversal order.
     frames: HashMap<FrameId, Vec<EntryId>>,
-    /// Started navigations that have not committed, by frame. A later start
-    /// replaces one, because the newest load owns the frame.
     pending: HashMap<FrameId, PendingChange>,
-    /// The step of the tab's active entry
-    /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#tn-current-session-history-step>).
+    // https://html.spec.whatwg.org/multipage/browsing-the-web.html#tn-current-session-history-step
     current_step: u64,
     next_document: u64,
     next_entry: u64,
-    /// The navigable target name of each document state, keyed by the
-    /// `document` id its entries share. Storing it once is what makes entries
-    /// that share a document state agree about the name by construction; a
-    /// missing id means the empty name
-    /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#document-state>,
-    /// <https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-name>).
+    // https://html.spec.whatwg.org/multipage/browsing-the-web.html#document-state
+    // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-name
     names: HashMap<u64, renderer::ContextName>,
 }
 
@@ -204,27 +150,14 @@ impl SessionHistory {
         history
     }
 
-    /// State one frame needs for `history.length`, `history.state`, and
-    /// traversal, for its active entry.
-    ///
-    /// `length` is the joint step count, so a child sees every step of the
-    /// tab, not only its own
-    /// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-history-length>).
-    /// `index` is the tab's current step, which every `History` object mirrors
-    /// whether or not its own frame moved
-    /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#getting-the-history-object-length-and-index>).
+    // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-history-length
+    // https://html.spec.whatwg.org/multipage/browsing-the-web.html#getting-the-history-object-length-and-index
     pub(crate) fn renderer_snapshot_for(&self, frame: FrameId) -> Option<RendererHistorySnapshot> {
         self.frames.get(&frame)?;
         Some(self.build_snapshot(frame, self.active_entry(frame), None))
     }
 
-    /// The mirror for one particular entry.
-    ///
-    /// `length` counts the used history steps, and `index` is the step's
-    /// position among them, because that is what the `History` object exposes:
-    /// two entries that share a step (an initial child blank and the document
-    /// it belongs to) are one step, not two
-    /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#getting-the-history-object-length-and-index>).
+    // https://html.spec.whatwg.org/multipage/browsing-the-web.html#getting-the-history-object-length-and-index
     pub(crate) fn renderer_snapshot_for_entry(
         &self,
         entry: EntryId,
@@ -236,7 +169,6 @@ impl SessionHistory {
         Some(self.build_snapshot(frame, Some(entry), Some((steps.len(), index))))
     }
 
-    /// The main frame's mirror, for a tab with no renderer yet.
     pub(crate) fn renderer_snapshot(&self) -> RendererHistorySnapshot {
         self.build_snapshot(FrameId::MAIN, self.active_entry(FrameId::MAIN), None)
     }
@@ -265,12 +197,7 @@ impl SessionHistory {
         }
     }
 
-    /// Every history step the tab uses, in traversal order.
-    ///
-    /// Frames created later share their parent's step until their first real
-    /// navigation, so a step can hold several entries and the joint length is
-    /// the number of steps, not the number of entries
-    /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#getting-all-used-history-steps>).
+    // https://html.spec.whatwg.org/multipage/browsing-the-web.html#getting-all-used-history-steps
     fn used_steps(&self) -> Vec<u64> {
         let mut steps: Vec<u64> = self.entries.iter().map(|entry| entry.step).collect();
         steps.sort_unstable();
@@ -278,12 +205,7 @@ impl SessionHistory {
         steps
     }
 
-    /// The tab's current step in `steps`.
-    ///
-    /// A step can stop being used when its only entries are removed with a
-    /// frame; the greatest used step at or below the current one is then the
-    /// active step
-    /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#getting-the-used-step>).
+    // https://html.spec.whatwg.org/multipage/browsing-the-web.html#getting-the-used-step
     fn current_step_index(&self, steps: &[u64]) -> usize {
         steps
             .iter()
@@ -291,13 +213,10 @@ impl SessionHistory {
             .unwrap_or(0)
     }
 
-    /// The frames the joint list currently covers.
     pub(crate) fn frames(&self) -> Vec<FrameId> {
         self.frames.keys().copied().collect()
     }
 
-    /// Committed entries and the active index for protocol adapters, projected
-    /// onto the main frame.
     pub(crate) fn snapshot(&self) -> HistorySnapshot {
         let ids = self.frames.get(&FrameId::MAIN).cloned().unwrap_or_default();
         let entries: Vec<HistoryEntry> = ids
@@ -319,12 +238,10 @@ impl SessionHistory {
         }
     }
 
-    /// Records the committed document's title on the main frame's active entry.
     pub(crate) fn set_current_title(&mut self, title: String) {
         self.set_title(FrameId::MAIN, title);
     }
 
-    /// Records a committed document's title on its frame's active entry.
     pub(crate) fn set_title(&mut self, frame: FrameId, title: String) {
         let Some(id) = self.active_entry(frame) else {
             return;
@@ -334,12 +251,7 @@ impl SessionHistory {
         }
     }
 
-    /// Seeds a newly created child frame's initial blank entry.
-    ///
-    /// The entry shares the step current when the frame appeared: it belongs to
-    /// the document state the tab is presenting, and it is replaced by the
-    /// frame's first real navigation
-    /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate>).
+    // https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate
     pub(crate) fn add_frame(
         &mut self,
         frame: FrameId,
@@ -367,12 +279,7 @@ impl SessionHistory {
         self.frames.insert(frame, vec![id]);
     }
 
-    /// Records a child navigation the renderer started.
-    ///
-    /// The renderer reports its own local position so a replay can find the
-    /// payload later; the browser still decides the joint step and the active
-    /// position
-    /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#finalize-a-cross-document-navigation>).
+    // https://html.spec.whatwg.org/multipage/browsing-the-web.html#finalize-a-cross-document-navigation
     pub(crate) fn begin(
         &mut self,
         frame: FrameId,
@@ -405,8 +312,6 @@ impl SessionHistory {
             self.pending.insert(frame, change);
             return current;
         }
-        // A committed navigation supersedes any uncommitted one: the newest
-        // load owns the frame.
         self.pending.remove(&frame);
         if replace && let Some(current) = current {
             let target = if local_index < self.frame_len(frame) {
@@ -424,17 +329,12 @@ impl SessionHistory {
         Some(id)
     }
 
-    /// Promotes a pending navigation after its document committed, or updates
-    /// the URL of a frame's active entry, carrying a redirect's final URL
-    /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#finalize-a-cross-document-navigation>).
+    // https://html.spec.whatwg.org/multipage/browsing-the-web.html#finalize-a-cross-document-navigation
     pub(crate) fn commit_url(&mut self, frame: FrameId, url: Url) {
         if let Some(change) = self.pending.remove(&frame) {
             match change {
                 PendingChange::Push { name, .. } => {
-                    // The step is taken now, not at start, so navigations in
-                    // other frames that committed meanwhile are ordered
-                    // exactly as the queue ran them
-                    // (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#finalize-a-cross-document-navigation>).
+                    // https://html.spec.whatwg.org/multipage/browsing-the-web.html#finalize-a-cross-document-navigation
                     self.truncate_forward();
                     let step = self.current_step.saturating_add(1);
                     let local_index = self.frame_len(frame);
@@ -455,21 +355,11 @@ impl SessionHistory {
         }
     }
 
-    /// Drops an uncommitted navigation for `frame`, because a traversal now
-    /// owns it.
     pub(crate) fn discard_pending(&mut self, frame: FrameId) {
         self.pending.remove(&frame);
     }
 
-    /// Writes the active document state's navigable target name for the main
-    /// frame.
-    ///
-    /// A commit calls this directly, and the `window.name` setter reaches it
-    /// at the next commit or traversal, when the tab actor folds the registry's
-    /// value in
-    /// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-name>).
-    /// The state is shared by every entry that presents the same `Document`,
-    /// so a same-document push reads the new value with no copy of its own.
+    // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-name
     pub(crate) fn sync_current_name(&mut self, name: Option<&renderer::ContextName>) {
         let Some(id) = self.active_entry(FrameId::MAIN) else {
             return;
@@ -487,13 +377,11 @@ impl SessionHistory {
         }
     }
 
-    /// The target name stored with a session-history entry's document state.
     pub(crate) fn name(&self, entry: EntryId) -> Option<renderer::ContextName> {
         self.locate(entry)
             .and_then(|entry| self.names.get(&entry.document).cloned())
     }
 
-    /// Applies one same-document history update in `frame`.
     pub(crate) fn update(
         &mut self,
         frame: FrameId,
@@ -531,20 +419,13 @@ impl SessionHistory {
         }
     }
 
-    /// Applies one browser-driven main-frame commit, or returns false if a
-    /// traversal's entry was removed while its response was being fetched.
-    /// Entry identities survive list shifts.
     pub(crate) fn commit(&mut self, commit: Commit) -> bool {
         match commit {
             Commit::Traverse { entry, url } => {
                 let Some(index) = self.locate_index(entry) else {
                     return false;
                 };
-                // Repopulating an entry replaces only *its* document state:
-                // adjacent entries that shared the old one keep referencing
-                // it, so they also keep their document id
-                // (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#populating-a-session-history-entry>).
-                // The new state starts with the name the entry had.
+                // https://html.spec.whatwg.org/multipage/browsing-the-web.html#populating-a-session-history-entry
                 let document = self.entries[index].document;
                 let step = self.entries[index].step;
                 let next = self.take_document();
@@ -575,12 +456,7 @@ impl SessionHistory {
         }
     }
 
-    /// The step a traversal selects, or `None` when it names none.
-    ///
-    /// A delta counts used steps, not entries: a frame that has never navigated
-    /// shares its parent's step, so going back once leaves that frame on the
-    /// same document
-    /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#traverse-the-history-by-a-delta>).
+    // https://html.spec.whatwg.org/multipage/browsing-the-web.html#traverse-the-history-by-a-delta
     pub(crate) fn target_step(&self, step: HistoryStep, _caller: FrameId) -> Option<u64> {
         match step {
             HistoryStep::Entry(entry) => self.locate(entry).map(|entry| entry.step),
@@ -593,9 +469,6 @@ impl SessionHistory {
         }
     }
 
-    /// The entry a frame presents at `at_step`: its greatest entry at or
-    /// before that step. A frame created later keeps its first entry, which is
-    /// the blank it appeared with.
     pub(crate) fn active_entry_at(&self, frame: FrameId, at_step: u64) -> Option<EntryId> {
         let ids = self.frames.get(&frame)?;
         ids.iter()
@@ -605,23 +478,18 @@ impl SessionHistory {
             .copied()
     }
 
-    /// The entry a frame presents now.
     pub(crate) fn active_entry(&self, frame: FrameId) -> Option<EntryId> {
         self.active_entry_at(frame, self.current_step)
     }
 
-    /// The step of the tab's active entry.
     pub(crate) fn current_step(&self) -> u64 {
         self.current_step
     }
 
-    /// Makes `step` the tab's active entry after a traversal whose documents
-    /// already moved.
     pub(crate) fn set_current_step(&mut self, step: u64) {
         self.current_step = step;
     }
 
-    /// The main frame's active entry, for reloads that keep their position.
     pub(crate) fn current_entry(&self) -> EntryId {
         self.active_entry(FrameId::MAIN).unwrap_or(EntryId(0))
     }
@@ -634,9 +502,7 @@ impl SessionHistory {
         self.locate(entry).map(|entry| entry.local_index)
     }
 
-    /// Whether two entries present the same `Document`, which makes a step
-    /// between them a same-document traversal
-    /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#document-state>).
+    // https://html.spec.whatwg.org/multipage/browsing-the-web.html#document-state
     pub(crate) fn same_document(&self, left: EntryId, right: EntryId) -> bool {
         match (self.locate(left), self.locate(right)) {
             (Some(left), Some(right)) => left.document == right.document,
@@ -644,8 +510,6 @@ impl SessionHistory {
         }
     }
 
-    /// Makes a same-document traversal target current. `false` when the entry
-    /// is gone, which a caller must not mistake for a completed traversal.
     pub(crate) fn traverse_same_document(&mut self, entry: EntryId) -> bool {
         let Some(target) = self.locate(entry) else {
             return false;
@@ -654,10 +518,7 @@ impl SessionHistory {
         true
     }
 
-    /// Drops a frame the renderer tore down. Its entries leave the joint list,
-    /// so a removed iframe stops counting toward every frame's
-    /// `history.length`
-    /// (<https://html.spec.whatwg.org/multipage/history.html#joint-session-history>).
+    // https://html.spec.whatwg.org/multipage/history.html#joint-session-history
     pub(crate) fn remove_frame(&mut self, frame: FrameId) {
         if frame == FrameId::MAIN {
             return;
@@ -679,7 +540,6 @@ impl SessionHistory {
         self.clamp_current_step();
     }
 
-    /// Drops every child frame's entries, as a renderer replacement does.
     pub(crate) fn clear_children(&mut self) {
         let children: Vec<FrameId> = self
             .frames
@@ -692,11 +552,7 @@ impl SessionHistory {
         }
     }
 
-    /// Drops the entries after the active one, and the document-state names
-    /// only those entries referenced.
-    ///
-    /// Clearing the forward branch spans every frame's entry list
-    /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#clear-the-forward-session-history>).
+    // https://html.spec.whatwg.org/multipage/browsing-the-web.html#clear-the-forward-session-history
     fn truncate_forward(&mut self) {
         let removed: Vec<u64> = self
             .entries
@@ -738,7 +594,6 @@ impl SessionHistory {
         self.frames.get(&frame)?.get(local_index).copied()
     }
 
-    /// The frame whose entry list holds `entry`.
     fn frame_of(&self, entry: EntryId) -> Option<FrameId> {
         self.frames
             .iter()
@@ -746,7 +601,6 @@ impl SessionHistory {
             .map(|(frame, _)| *frame)
     }
 
-    /// The position of `entry` in `frame`'s own list.
     fn frame_position(&self, frame: FrameId, entry: EntryId) -> Option<usize> {
         self.frames
             .get(&frame)?
@@ -874,7 +728,6 @@ mod tests {
             ]
         );
         assert_eq!(snapshot.current_index(), 2);
-        // The traversal entry keeps its identity at index 1.
         assert_eq!(snapshot.entries()[1].id(), entry);
     }
 
@@ -891,12 +744,8 @@ mod tests {
         assert_eq!(snapshot.entries()[2].title(), "Beta");
     }
 
-    /// The target name belongs to the entry's document state, so traversal
-    /// reads it back instead of the live browsing-context name, a
-    /// same-document push inherits it, and the `window.name` setter writes
-    /// the active document state
-    /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#resetBCName>,
-    /// <https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-name>).
+    // https://html.spec.whatwg.org/multipage/browsing-the-web.html#resetBCName
+    // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-name
     #[test]
     fn a_target_name_rides_the_entry_it_committed_with() {
         let named = |raw: &str| renderer::ContextName::parse(raw);
@@ -905,12 +754,9 @@ mod tests {
         let first = history.active_entry_at(FrameId::MAIN, 1).expect("entry");
         assert_eq!(history.name(first), named("first"));
 
-        // The setter writes the active document state.
         history.sync_current_name(named("renamed").as_ref());
         assert_eq!(history.name(first), named("renamed"));
 
-        // A same-document push shares the document state, so it presents the
-        // same name with no copy of its own.
         history.update(
             FrameId::MAIN,
             url("https://example.com/hash"),
@@ -921,14 +767,11 @@ mod tests {
         assert_eq!(history.name(pushed), named("renamed"));
         assert_eq!(history.name(first), named("renamed"));
 
-        // A commit that resets the name stores no name on its entry.
         history.commit(push("https://example.com/b", None));
         let current = history.current_entry();
         assert_eq!(history.name(current), None);
         assert_eq!(history.name(first), named("renamed"));
 
-        // Traversal repopulates only its own entry, keeping the name its
-        // document state had.
         assert!(history.commit(Commit::Traverse {
             entry: first,
             url: url("https://example.com/a"),
@@ -936,18 +779,13 @@ mod tests {
         assert_eq!(history.name(first), named("renamed"));
         assert_eq!(history.name(pushed), named("renamed"));
 
-        // The sibling kept the old document state, so the traversed entry
-        // now has its own and the setter reaches only the active one.
         history.sync_current_name(None);
         assert_eq!(history.name(first), None);
         assert_eq!(history.name(pushed), named("renamed"));
         assert_eq!(history.name(current), None);
     }
 
-    /// Repopulating an entry must not merge its document state with the
-    /// siblings that shared it: a later traversal to a sibling is a new
-    /// document, not a same-document step
-    /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#populating-a-session-history-entry>).
+    // https://html.spec.whatwg.org/multipage/browsing-the-web.html#populating-a-session-history-entry
     #[test]
     fn a_traversal_repopulates_only_its_own_entry() {
         let mut history = SessionHistory::new(url("about:blank"), None);
@@ -974,7 +812,6 @@ mod tests {
             url: url("https://example.com/a#hash"),
         }));
 
-        // The sibling still presents the pre-traversal document object.
         let target = history
             .target_step(HistoryStep::Delta(-1), FrameId::MAIN)
             .expect("sibling target");
@@ -988,10 +825,7 @@ mod tests {
         }));
     }
 
-    /// Every frame's length is the joint step count, while each frame's state
-    /// is its own active entry's. A freshly created child shares its parent's
-    /// step, so the first navigation of either is one step, not two
-    /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#getting-the-history-object-length-and-index>).
+    // https://html.spec.whatwg.org/multipage/browsing-the-web.html#getting-the-history-object-length-and-index
     #[test]
     fn a_child_length_is_the_joint_step_count() {
         let child = FrameId::new(1);
@@ -1067,9 +901,7 @@ mod tests {
         );
     }
 
-    /// A started network navigation is not a step until its document commits,
-    /// so a load that never commits leaves the joint history untouched
-    /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#finalize-a-cross-document-navigation>).
+    // https://html.spec.whatwg.org/multipage/browsing-the-web.html#finalize-a-cross-document-navigation
     #[test]
     fn a_pending_navigation_takes_its_step_at_commit() {
         let child = FrameId::new(1);
@@ -1107,8 +939,6 @@ mod tests {
         );
     }
 
-    /// A pending replacement that never commits keeps the entry it would have
-    /// replaced.
     #[test]
     fn an_uncommitted_replace_changes_nothing() {
         let child = FrameId::new(1);
@@ -1126,9 +956,7 @@ mod tests {
         );
     }
 
-    /// A frame whose entries all sat on steps the tab left behind can navigate
-    /// again, and it still reports the joint count
-    /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#clear-the-forward-session-history>).
+    // https://html.spec.whatwg.org/multipage/browsing-the-web.html#clear-the-forward-session-history
     #[test]
     fn a_frame_with_no_entries_left_can_navigate_again() {
         let child = FrameId::new(1);
@@ -1144,8 +972,6 @@ mod tests {
             false,
         );
 
-        // Back to the blank, then push: every child step is forward history
-        // and leaves the joint list.
         history.set_current_step(0);
         history.commit(push("https://example.com/replaced", None));
         assert_eq!(
@@ -1169,9 +995,7 @@ mod tests {
         );
     }
 
-    /// A push trims the forward branch, so the synchronous mirror must report
-    /// the new step's position, not the old, longer length
-    /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#url-and-history-update-steps>).
+    // https://html.spec.whatwg.org/multipage/browsing-the-web.html#url-and-history-update-steps
     #[test]
     fn a_push_after_back_shortens_the_synchronous_length() {
         let mut history = SessionHistory::new(url("about:blank"), None);
@@ -1194,7 +1018,6 @@ mod tests {
             .expect("entry snapshot");
         assert_eq!((snapshot.length, snapshot.index), (3, 1));
 
-        // The foreground entry b is cleared and the push takes its position.
         assert!(history.traverse_same_document(entry));
         history.commit(push("https://example.com/c", None));
         snapshot = history.renderer_snapshot();

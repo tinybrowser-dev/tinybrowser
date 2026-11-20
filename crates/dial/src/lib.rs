@@ -1,30 +1,14 @@
-//! The adapter between the carrier wire types and the fetch core.
-//!
-//! [`renderer::DialRequest`] is what a page engine asks for; [`net::Request`] is
-//! what the fetch algorithm understands. This crate owns that one conversion
-//! plus the reverse projection of a [`net::Response`] into
-//! [`renderer::DialOutcome`], so the native browser and every in-process host
-//! run one copy of the policy boundary
-//! (<https://fetch.spec.whatwg.org/#concept-request>,
-//! <https://fetch.spec.whatwg.org/#concept-response>).
+// https://fetch.spec.whatwg.org/#concept-request
+// https://fetch.spec.whatwg.org/#concept-response
 
 pub mod body;
 pub mod cache;
 
-/// The URL a dial's CSP reports name as their document.
-///
-/// The dial seam carries the initiator origin, not its document URL; an origin
-/// root is the URL the old seam carried too. An opaque origin has no URL, so
-/// reports get `about:blank`; the renderer keeps the real one.
 fn document_url(origin: &url::Origin) -> Url {
     net::origin_url(origin).unwrap_or_else(net::about_blank)
 }
 
-/// Records a redirect the policy refuses, and refuses the hop.
-///
-/// The stored URL comes back as a status-0 outcome so the renderer can fire
-/// `securitypolicyviolation` and drop the body
-/// (<https://w3c.github.io/webappsec-csp/#should-request-be-blocked-by-content-security-policy>).
+// https://w3c.github.io/webappsec-csp/#should-request-be-blocked-by-content-security-policy
 pub fn watch_redirects(
     request: &DialRequest,
     initiator: &url::Origin,
@@ -47,8 +31,7 @@ pub fn watch_redirects(
     blocked
 }
 
-/// The status-0 outcome a refused redirect produces, when the gate recorded
-/// one (<https://w3c.github.io/webappsec-csp/#report-violation>).
+// https://w3c.github.io/webappsec-csp/#report-violation
 #[must_use]
 pub fn refused_redirect(blocked: &Mutex<Option<Url>>) -> Option<DialOutcome> {
     let url = blocked
@@ -81,37 +64,24 @@ use net::{InitiatorKind, Request, isomorphic_decode, isomorphic_encode};
 use renderer::{DialFailure, DialKind, DialOutcome, DialRequest, ResponseBody, ResponseHead};
 use url::Url;
 
-/// Everything a dial outcome reports except its body. Each delivery path fills
-/// in the body it actually has, so a streamed outcome is never built from an
-/// empty buffered one
-/// (<https://fetch.spec.whatwg.org/#concept-response>).
+// https://fetch.spec.whatwg.org/#concept-response
 pub struct DialHead {
     status: u16,
     status_text: String,
-    /// The internal response URL; a filtered opaque view hides it from page
-    /// script but the engine still names it.
     final_url: Url,
     content_type: Option<String>,
-    /// The response's header list, minus the forbidden response-header names:
-    /// cookies live in the browser's jar, and an `HttpOnly` one must not reach
-    /// the renderer.
     headers: Vec<(String, String)>,
     response_type: net::cors::ResponseType,
     crossed_origin: bool,
     redirect_count: u32,
     referrer: Option<Url>,
-    /// Whether the jar stored a cookie from this response; the header list
-    /// cannot say, as [`DialOutcome::cookies_stored`] explains.
     cookies_stored: bool,
-    /// A page-visible opaque response has a null body
-    /// (<https://fetch.spec.whatwg.org/#concept-filtered-response-opaque>).
+    // https://fetch.spec.whatwg.org/#concept-filtered-response-opaque
     null_body: bool,
 }
 
 impl DialHead {
-    /// The head of a response an engine consumer reads: the *unsafe* response,
-    /// which keeps the status, URL, header list, and body the server sent
-    /// (<https://fetch.spec.whatwg.org/#concept-internal-response>).
+    // https://fetch.spec.whatwg.org/#concept-internal-response
     #[must_use]
     pub fn internal(response: &net::Response) -> Self {
         Self {
@@ -129,9 +99,7 @@ impl DialHead {
         }
     }
 
-    /// The head of a response page script reads: the *filtered* response, whose
-    /// status, URL, headers, and redirect flag are already masked
-    /// (<https://fetch.spec.whatwg.org/#concept-filtered-response>).
+    // https://fetch.spec.whatwg.org/#concept-filtered-response
     #[must_use]
     pub fn filtered(response: &net::Response) -> Self {
         let filtered = response.filtered();
@@ -160,7 +128,6 @@ impl DialHead {
         }
     }
 
-    /// The head of one response, in the view its consumer may read.
     #[must_use]
     pub fn read(request: &DialRequest, response: &net::Response) -> Self {
         if request.policy.exposes_response() {
@@ -170,24 +137,12 @@ impl DialHead {
         }
     }
 
-    /// Whether this is an opaque response with a null body.
     #[must_use]
     pub fn null_body(&self) -> bool {
         self.null_body
     }
 
-    /// The document head a navigation mounts, from the same fields a fetch
-    /// outcome reports.
-    ///
-    /// The top-level and child-frame paths cannot disagree about how a header
-    /// becomes policy, endpoints, or the nosniff flag: both read the header
-    /// list here and hand it to one derivation
-    /// (<https://html.spec.whatwg.org/multipage/document-lifecycle.html#initialise-the-document-object>).
-    ///
-    /// # Panics
-    ///
-    /// When the head is the page-fetch view of an opaque response, which names
-    /// no document to mount.
+    // https://html.spec.whatwg.org/multipage/document-lifecycle.html#initialise-the-document-object
     #[must_use]
     pub fn into_document_head(self) -> ResponseHead {
         ResponseHead::http(
@@ -198,7 +153,6 @@ impl DialHead {
         )
     }
 
-    /// The outcome this head answers with, once its body is known.
     #[must_use]
     pub fn into_outcome(self, body: ResponseBody) -> DialOutcome {
         DialOutcome {
@@ -217,22 +171,6 @@ impl DialHead {
     }
 }
 
-/// Builds the `net` request for one page dial: URL, method, CORS parameters,
-/// headers, body, and initiator.
-///
-/// JS header values are `ByteString`s: each UTF-16 code unit is one byte. The
-/// renderer carries them as Rust `String`, so UTF-8 would turn `0x80..=0xFF`
-/// into two wire bytes.
-///
-/// `sheets` is the explicit-referrer authority: the style sheet URLs the
-/// initiator's origin loaded. A host with no style-sheet bookkeeping passes an
-/// empty map, which reduces the rule to same-origin referrers.
-///
-/// # Errors
-///
-/// [`DialFailure::Connect`] when the request names a forbidden method, a
-/// header value that is not a byte string, or a referrer the caller may not
-/// name.
 pub fn outbound_request<S: BuildHasher>(
     request: &DialRequest,
     initiator: &url::Origin,
@@ -246,46 +184,20 @@ pub fn outbound_request<S: BuildHasher>(
         return Err(DialFailure::Connect);
     }
     let cors = request.policy.cors();
-    // A `no-cors` request page script builds may only use CORS-safelisted
-    // methods and headers: the page-side `request-no-cors` guard is advisory,
-    // so the network boundary enforces it here. Otherwise a page could send an
-    // unpreflighted, state-changing cross-origin request with an arbitrary
-    // method and headers (<https://fetch.spec.whatwg.org/#concept-headers-guard>).
-    //
-    // The guard is the page's, not the engine's: a dial the engine builds sets
-    // the headers its own algorithm names, and CSP's `report-uri` POST carries
-    // a non-safelisted `application/csp-report` on a `no-cors` request by
-    // construction (<https://w3c.github.io/webappsec-csp/#report-violation>).
+    // https://fetch.spec.whatwg.org/#concept-headers-guard
+    // https://w3c.github.io/webappsec-csp/#report-violation
     let page_no_cors =
         request.policy.exposes_response() && cors.mode == net::cors::RequestMode::NoCors;
     if page_no_cors && !net::cors::is_cors_safelisted_method(&request.method) {
         return Err(DialFailure::Connect);
     }
     let mut outbound = Request::new(request.method.clone(), url);
-    // The caller owns the origin check: it authorizes `initiator` before
-    // calling this adapter. The native browser checks the renderer's site lock
-    // at the dial boundary, so nothing outside that site can be named. Inside
-    // it, one origin is not distinguishable from another: the only frame record
-    // the browser could consult is the one the same renderer reports, so a
-    // per-frame table would add a leaky invariant without adding authority.
-    // The site lock *is* the trust boundary, the same one `postMessage`,
-    // `BroadcastChannel`, and storage use, and the one Chromium's process model
-    // draws
-    // (<https://chromium.googlesource.com/chromium/src/+/main/docs/process_model_and_site_isolation.md#process-locks>).
-    // The WPT host has no renderer process to defend against and passes the
-    // test page's own claim.
-    //
-    // `SameSite` cannot be affected by which same-site origin is claimed,
-    // because the cookie jar compares sites, not origins
-    // (`cookies::CookieOp::is_same_site_request`).
+    // https://chromium.googlesource.com/chromium/src/+/main/docs/process_model_and_site_isolation.md#process-locks
     outbound.cors = cors.with_origin(initiator.clone());
     if let Some(content_type) = &request.content_type {
         let content_type = isomorphic_encode(content_type).ok_or(DialFailure::Connect)?;
-        // The body's type is appended through the same guard as every other
-        // field, so a `no-cors` body cannot smuggle a type that would have
-        // needed a preflight
-        // (<https://fetch.spec.whatwg.org/#dom-request>,
-        // <https://fetch.spec.whatwg.org/#concept-headers-guard>).
+        // https://fetch.spec.whatwg.org/#dom-request
+        // https://fetch.spec.whatwg.org/#concept-headers-guard
         if !page_no_cors
             || net::cors::is_no_cors_safelisted_request_header("content-type", &content_type)
         {
@@ -308,9 +220,7 @@ pub fn outbound_request<S: BuildHasher>(
             .insert(name, encoded)
             .map_err(|_| DialFailure::Connect)?;
     }
-    // The request's cache mode names request headers HTTP-network-or-cache
-    // fetch appends itself, and a page header of the same name wins
-    // (<https://fetch.spec.whatwg.org/#http-network-or-cache-fetch>).
+    // https://fetch.spec.whatwg.org/#http-network-or-cache-fetch
     cache_mode_headers(request, &mut outbound);
     let destination = match kind {
         DialKind::JsFetch => "empty",
@@ -329,14 +239,8 @@ pub fn outbound_request<S: BuildHasher>(
     outbound.initiator_kind = InitiatorKind::Fetch;
     outbound.initiator = Some(initiator.clone());
     outbound.deadline = Some(deadline);
-    // The renderer picks the referrer kind and policy; the browser owns the
-    // client environment and the origin check. A referrer URL that is neither
-    // the authorized initiator's origin nor a style sheet this tab loaded is a
-    // renderer bug or forgery, so it fails closed to no referrer instead of
-    // leaking. A sheet-initiated request names the sheet's URL, which can be
-    // cross-origin to both the document and the target
-    // (<https://fetch.spec.whatwg.org/#concept-request-referrer>,
-    // <https://w3c.github.io/webappsec-referrer-policy/#integration-with-css>).
+    // https://fetch.spec.whatwg.org/#concept-request-referrer
+    // https://w3c.github.io/webappsec-referrer-policy/#integration-with-css
     outbound.referrer = match &request.referrer {
         renderer::ReferrerRequest::Client { url } if url.origin() == *initiator => {
             net::Referrer::Client(net::ReferrerClient {
@@ -360,17 +264,9 @@ pub fn outbound_request<S: BuildHasher>(
     Ok(outbound)
 }
 
-/// The longest one page dial may take before the caller's own `timeout_ms`
-/// lowers it.
-///
-/// A page must not be able to hold a tab's dial slot forever, and a navigation
-/// waits on the same cap, so the number lives here where every carrier reads
-/// it.
 pub const PAGE_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// The deadline budget one page dial gets: [`PAGE_FETCH_TIMEOUT`], lowered by
-/// the request's own `timeout_ms` when it set one
-/// (<https://fetch.spec.whatwg.org/#concept-request>).
+// https://fetch.spec.whatwg.org/#concept-request
 #[must_use]
 pub fn budget(request: &DialRequest) -> Duration {
     if request.timeout_ms == 0 {
@@ -380,7 +276,6 @@ pub fn budget(request: &DialRequest) -> Duration {
     }
 }
 
-/// The `DialFailure` one fetch error reports to the page engine.
 #[must_use]
 pub fn dial_failure(error: &net::NetError) -> DialFailure {
     use net::{NetError, TransportError};
@@ -398,11 +293,7 @@ pub fn dial_failure(error: &net::NetError) -> DialFailure {
     }
 }
 
-/// Whether an explicit referrer URL is one the renderer may name: same origin
-/// as the authorized initiator, or a style sheet this tab's network served.
-/// The sheet arm is what authorizes CSS-initiated requests, whose referrer is
-/// the sheet's URL on whatever host the sheet came from
-/// (<https://w3c.github.io/webappsec-referrer-policy/#integration-with-css>).
+// https://w3c.github.io/webappsec-referrer-policy/#integration-with-css
 #[must_use]
 pub fn referrer_authorized<S: BuildHasher>(
     referrer: &Url,
@@ -412,9 +303,6 @@ pub fn referrer_authorized<S: BuildHasher>(
     if referrer.origin() == *initiator {
         return true;
     }
-    // Only the sheets this request's initiator loaded. A sheet another
-    // document fetched is a different principal's URL, and naming it here
-    // would leak that URL (and the policy it was served with).
     let Some(loaded) = sheets.get(initiator) else {
         return false;
     };
@@ -423,9 +311,7 @@ pub fn referrer_authorized<S: BuildHasher>(
     loaded.contains(&stripped)
 }
 
-/// Appends the request headers Fetch's HTTP-network-or-cache fetch derives
-/// from the cache mode, leaving a header the page already sent untouched
-/// (<https://fetch.spec.whatwg.org/#http-network-or-cache-fetch>).
+// https://fetch.spec.whatwg.org/#http-network-or-cache-fetch
 fn cache_mode_headers(request: &DialRequest, outbound: &mut Request) {
     let add = |outbound: &mut Request, name: &str, value: &str| {
         if net::combined_header_in(&request.headers, name).is_none() {
@@ -433,9 +319,7 @@ fn cache_mode_headers(request: &DialRequest, outbound: &mut Request) {
         }
     };
     match request.cache {
-        // A `no-cache` request asks every cache on the path to validate.
         renderer::RequestCache::NoCache => add(outbound, "Cache-Control", "max-age=0"),
-        // A `no-store` or `reload` request asks them to bypass storage.
         renderer::RequestCache::NoStore | renderer::RequestCache::Reload => {
             add(outbound, "Pragma", "no-cache");
             add(outbound, "Cache-Control", "no-cache");
@@ -446,24 +330,13 @@ fn cache_mode_headers(request: &DialRequest, outbound: &mut Request) {
     }
 }
 
-/// Dark `Sec-CH-Prefers-Color-Scheme`, kept in lockstep with Stylo and `matchMedia`
-/// (<https://wicg.github.io/user-preference-media-features-headers/#sec-ch-prefers-color-scheme>).
+// https://wicg.github.io/user-preference-media-features-headers/#sec-ch-prefers-color-scheme
 pub const SEC_CH_PREFERS_COLOR_SCHEME: &str = "dark";
 
-/// Applies the browser's default headers for one top-level (or popup) document
-/// request, matching Chrome's document navigation.
-///
-/// `Upgrade-Insecure-Requests` is the document navigation preference
-/// (<https://www.w3.org/TR/upgrade-insecure-requests/#preference>), and
-/// `Accept` and the other Fetch Metadata headers match Chrome's document
-/// navigation request
-/// (<https://w3c.github.io/webappsec-fetch-metadata/>). `Sec-Fetch-Site` is
-/// the net client's: it reads the request's one initiator origin and widens it
-/// across redirects, for navigations and subresources alike.
-///
-/// Low-entropy UA client hints are sent only to potentially trustworthy URLs
-/// (<https://wicg.github.io/ua-client-hints/#sec-ch-ua>,
-/// <https://w3c.github.io/webappsec-secure-contexts/#is-url-trustworthy>).
+// https://www.w3.org/TR/upgrade-insecure-requests/#preference
+// https://w3c.github.io/webappsec-fetch-metadata/
+// https://wicg.github.io/ua-client-hints/#sec-ch-ua
+// https://w3c.github.io/webappsec-secure-contexts/#is-url-trustworthy
 pub fn apply_navigation_headers(request: &mut Request, url: &Url) {
     static_header(request, "Upgrade-Insecure-Requests", "1");
     static_header(
@@ -483,12 +356,7 @@ pub fn apply_navigation_headers(request: &mut Request, url: &Url) {
     }
 }
 
-/// Whether `outcome`'s body satisfies the request's integrity metadata
-/// (<https://fetch.spec.whatwg.org/#concept-main-fetch>).
-///
-/// An opaque response is never verified: its body is not readable, so a
-/// request that named metadata cannot be shown the bytes the metadata would
-/// cover.
+// https://fetch.spec.whatwg.org/#concept-main-fetch
 #[must_use]
 pub fn integrity_ok(request: &DialRequest, outcome: &DialOutcome) -> bool {
     let Some(integrity) = request.integrity.as_deref() else {
@@ -502,14 +370,7 @@ pub fn integrity_ok(request: &DialRequest, outcome: &DialOutcome) -> bool {
     }
 }
 
-/// The header list one outbound request will put on the wire, decoded the way
-/// a response's `Vary` comparison reads it
-/// (<https://www.rfc-editor.org/rfc/rfc9111#section-4.1>).
-///
-/// The HTTP cache compares against this list, not the page's own: `Cookie`,
-/// `Accept`, `User-Agent`, and the fetch-metadata headers are added while the
-/// request is built, and a `Vary` naming one of them must see the value that
-/// was actually sent.
+// https://www.rfc-editor.org/rfc/rfc9111#section-4.1
 #[must_use]
 pub fn sent_headers(request: &Request) -> Vec<(String, String)> {
     request
@@ -519,9 +380,6 @@ pub fn sent_headers(request: &Request) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Sets a request header this process chose, not the page. The value is a
-/// static HTTP token, so a rejected one is a programming error, and the panic
-/// names the header that has none.
 fn static_header(request: &mut Request, name: &str, value: &str) {
     request
         .headers
@@ -529,13 +387,9 @@ fn static_header(request: &mut Request, name: &str, value: &str) {
         .unwrap_or_else(|_| panic!("{name}: {value:?} is not a header value"));
 }
 
-/// Every `Content-Type` value from the response as one string, the way
-/// getting a list header does: values combined with `", "`, each byte the
-/// same code point
-/// (<https://fetch.spec.whatwg.org/#concept-header-list-get-decode-split>,
-/// <https://infra.spec.whatwg.org/#isomorphic-decode>). The renderer extracts
-/// the MIME type from it
-/// (<https://fetch.spec.whatwg.org/#concept-header-extract-mime-type>).
+// https://fetch.spec.whatwg.org/#concept-header-list-get-decode-split
+// https://infra.spec.whatwg.org/#isomorphic-decode
+// https://fetch.spec.whatwg.org/#concept-header-extract-mime-type
 fn content_type_header<'a>(headers: impl Iterator<Item = (&'a str, &'a [u8])>) -> Option<String> {
     let values: Vec<String> = headers
         .filter(|(name, _)| name.eq_ignore_ascii_case("content-type"))
@@ -544,9 +398,7 @@ fn content_type_header<'a>(headers: impl Iterator<Item = (&'a str, &'a [u8])>) -
     net::combined_header(values.iter().map(String::as_str))
 }
 
-/// The header list the renderer receives from an internal response: every field
-/// the engine may read, minus the forbidden response-header names
-/// (<https://fetch.spec.whatwg.org/#forbidden-response-header-name>).
+// https://fetch.spec.whatwg.org/#forbidden-response-header-name
 fn internal_headers(response: &net::Response) -> Vec<(String, String)> {
     response
         .internal_headers()

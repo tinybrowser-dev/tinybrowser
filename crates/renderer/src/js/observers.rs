@@ -1,5 +1,3 @@
-//! Agent-owned mutation registrations and notification state.
-
 use std::collections::BTreeMap;
 
 use rquickjs::{Function, Object, Persistent};
@@ -13,8 +11,7 @@ use super::world::{
     match_observation, observes_region,
 };
 
-/// One pending-observer set and notification flag for one window agent
-/// (<https://dom.spec.whatwg.org/#mutation-observers>).
+// https://dom.spec.whatwg.org/#mutation-observers
 #[derive(Default)]
 pub(crate) struct MutationObservers {
     observers: BTreeMap<u64, ObserverState>,
@@ -64,9 +61,7 @@ impl MutationObservers {
             {
                 let order = existing.order;
                 existing.options = options;
-                // Re-registering a target re-opens the subtree: transient
-                // registrations copied from the old registration stop
-                // (<https://dom.spec.whatwg.org/#dom-mutationobserver-observe>).
+                // https://dom.spec.whatwg.org/#dom-mutationobserver-observe
                 observer
                     .transient
                     .retain(|transient| transient.order != order);
@@ -129,13 +124,7 @@ impl MutationObservers {
         }
     }
 
-    // https://dom.spec.whatwg.org/#queue-a-mutation-record
-    ///
-    /// Returns how many journal entries were queued and whether any of them
-    /// landed in an observed region. An unobserved mutation needs no notify
-    /// microtask of its own, but one inside an observed region does, so the
-    /// microtask that retires transient registrations still runs when no
-    /// record was queued.
+    // https://dom.spec.whatwg.org/#queue-a-mutation-record — notifies interested observers in ancestor/registration order per DOM rather than Chromium's creation-priority sort
     pub(crate) fn drain(&mut self, documents: &mut DocumentStore) -> (usize, bool) {
         let mut mutations = Vec::new();
         for parsed in documents.values_mut() {
@@ -164,9 +153,7 @@ impl MutationObservers {
                         observes_region(&parsed.document.base, document, observer, &entry)
                     });
                 }
-                // DOM inserts interested observers in ancestor/registration
-                // order (#queue-a-mutation-record). Chromium instead sorts
-                // notification by creation priority; retain the spec order.
+                // https://dom.spec.whatwg.org/#queue-a-mutation-record — notifies interested observers in ancestor/registration order per DOM rather than Chromium's creation-priority sort
                 interested.sort_by_key(|(depth, order, _, _)| (*depth, *order));
                 for (_, _, id, record) in interested {
                     if let Some(observer) = self.observers.get_mut(&id) {
@@ -182,14 +169,7 @@ impl MutationObservers {
         (queued, observed)
     }
 
-    /// Copies a `subtree: true` registration onto each node the entry removed
-    /// (<https://dom.spec.whatwg.org/#mutation-observers>).
-    ///
-    /// The removed node's own parent link is already cleared when the entry is
-    /// read, so its inclusive ancestors at removal time are the entry's target
-    /// and that target's ancestors. A transient registration can itself be the
-    /// source of another, which is how a subtree removed from a removed subtree
-    /// stays observed.
+    // https://dom.spec.whatwg.org/#mutation-observers
     fn register_transients(
         &mut self,
         base: &blitz_dom::BaseDocument,
@@ -259,9 +239,7 @@ impl MutationObservers {
     pub(crate) fn begin_notification(&mut self, documents: &mut DocumentStore) -> Vec<u64> {
         self.drain(documents);
         self.scheduled = false;
-        // Transient registrations live only until the notification, whether or
-        // not a record was queued for the observer that owns them
-        // (<https://dom.spec.whatwg.org/#notify-mutation-observers>).
+        // https://dom.spec.whatwg.org/#notify-mutation-observers
         for observer in self.observers.values_mut() {
             observer.transient.clear();
         }

@@ -1,26 +1,18 @@
-//! Content Security Policy parse and enforcement.
-//!
-//! Policies arrive on the document response (`Content-Security-Policy` and
-//! `Content-Security-Policy-Report-Only`) and on `meta http-equiv`. Fetch and
-//! classic scripts consult the list before a request or an inline script runs.
-//!
-//! <https://w3c.github.io/webappsec-csp/#parse-serialized-policy>
-//! <https://w3c.github.io/webappsec-csp/#should-request-be-blocked-by-content-security-policy>
-//! <https://w3c.github.io/webappsec-csp/#should-elements-inline-type-behavior-be-blocked-by-content-security-policy>
+// https://w3c.github.io/webappsec-csp/#parse-serialized-policy
+// https://w3c.github.io/webappsec-csp/#should-request-be-blocked-by-content-security-policy
+// https://w3c.github.io/webappsec-csp/#should-elements-inline-type-behavior-be-blocked-by-content-security-policy
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256, Sha384, Sha512};
 use url::{Host, Origin, Url};
 
-/// Where a policy was delivered.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Source {
     Header,
     Meta,
 }
 
-/// Whether a policy blocks or is only monitored.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Disposition {
     Enforce,
@@ -28,8 +20,7 @@ pub(crate) enum Disposition {
 }
 
 impl Disposition {
-    /// `"enforce"` or `"report"`, as the legacy report body spells it
-    /// (<https://w3c.github.io/webappsec-csp/#deprecated-serialize-violation>).
+    // https://w3c.github.io/webappsec-csp/#deprecated-serialize-violation
     #[must_use]
     pub(crate) fn as_str(self) -> &'static str {
         match self {
@@ -39,87 +30,57 @@ impl Disposition {
     }
 }
 
-/// One parsed policy: directive names in source order, first occurrence wins.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Policy {
     directives: Vec<(String, Vec<String>)>,
     disposition: Disposition,
-    /// The serialized policy as delivered, reported as `originalPolicy`
-    /// (<https://w3c.github.io/webappsec-csp/#parse-serialized-policy>).
+    // https://w3c.github.io/webappsec-csp/#parse-serialized-policy
     serialized: String,
 }
 
-/// A decision to block (or, for report-only policies, to report) one check.
-/// Callers dispatch one `securitypolicyviolation` event per violation
-/// (<https://w3c.github.io/webappsec-csp/#report-violation>).
+// https://w3c.github.io/webappsec-csp/#report-violation
 #[derive(Clone)]
 pub(crate) struct Violation {
-    /// The directive that blocked, after fallback: `script-src-elem` from a
-    /// `script-src` policy reports `script-src`
-    /// (<https://w3c.github.io/webappsec-csp/#violation-effective-directive>).
+    // https://w3c.github.io/webappsec-csp/#violation-effective-directive
     pub effective_directive: String,
     pub original_policy: String,
     pub disposition: Disposition,
-    /// The blocked URL, or `inline` / `eval` for non-fetch checks.
     pub blocked_uri: String,
-    /// First 40 characters of an inline script or style, when applicable.
     pub sample: Option<String>,
-    /// Stripped URL of the protected resource, reported as `document-uri`
-    /// (<https://w3c.github.io/webappsec-csp/#deprecated-serialize-violation>).
+    // https://w3c.github.io/webappsec-csp/#deprecated-serialize-violation
     pub document_uri: String,
-    /// The script that triggered the violation, if one was executing. The
-    /// event and the reports carry the stripped URL; a non-HTTP(S) script
-    /// URL reports just its scheme
-    /// (<https://w3c.github.io/webappsec-csp/#strip-url-for-use-in-reports>).
+    // https://w3c.github.io/webappsec-csp/#strip-url-for-use-in-reports
     pub source_file: Option<String>,
-    /// Line and column of the triggering call in `source_file`. Zero when
-    /// unknown or inapplicable.
     pub line_number: u32,
     pub column_number: u32,
-    /// HTTP status of the protected resource. Zero when unknown.
     pub status_code: u16,
-    /// `report-uri` endpoints of the violated policy, resolved against the
-    /// document URL when the report is sent
-    /// (<https://w3c.github.io/webappsec-csp/#directive-report-uri>).
+    // https://w3c.github.io/webappsec-csp/#directive-report-uri
     pub report_uris: Vec<String>,
-    /// `report-to` endpoint names of the violated policy. A name the
-    /// document's `Reporting-Endpoints` header defines takes the report as a
-    /// Reporting API `csp-violation` POST and suppresses `report-uri`
-    /// (<https://w3c.github.io/webappsec-csp/#directive-report-to>).
+    // https://w3c.github.io/webappsec-csp/#directive-report-to
     pub report_to: Vec<String>,
-    /// The element the violation names, when an inline check names one. A
-    /// request violation has no element, so its event fires at the document
-    /// (<https://w3c.github.io/webappsec-csp/#report-violation>).
+    // https://w3c.github.io/webappsec-csp/#report-violation
     pub element: Option<crate::dom::tree::NodeId>,
 }
 
 impl Violation {
-    /// Whether this violation blocks; report-only policies only report
-    /// (<https://w3c.github.io/webappsec-csp/#disposition>).
+    // https://w3c.github.io/webappsec-csp/#disposition
     #[must_use]
     pub(crate) fn blocks(&self) -> bool {
         self.disposition == Disposition::Enforce
     }
 }
 
-/// True when any violation comes from an enforced policy.
 #[must_use]
 pub(crate) fn blocks(violations: &[Violation]) -> bool {
     violations.iter().any(Violation::blocks)
 }
 
-/// The document's CSP list and the origin `'self'` is resolved against.
-///
-/// The fields stay private: consumers pass the list around as an opaque
-/// policy container. It is `pub` because a response head carries it as the
-/// inherited policy container of a local-scheme document.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct List {
     policies: Vec<Policy>,
 }
 
 impl List {
-    /// An empty list, usable in a constant.
     #[must_use]
     pub const fn empty() -> Self {
         Self {
@@ -128,79 +89,51 @@ impl List {
     }
 }
 
-/// Inline content being checked: an inline script, `javascript:` navigation,
-/// event handler, style block, or style attribute.
 pub(crate) struct InlineScript<'a> {
-    /// Script or style source.
     pub source: &'a str,
-    /// Element `nonce` attribute, empty when there is none.
     pub nonce: &'a str,
-    /// [Is element nonceable](https://w3c.github.io/webappsec-csp/#is-element-nonceable).
+    // https://w3c.github.io/webappsec-csp/#is-element-nonceable
     pub nonceable: bool,
-    /// Parser-inserted scripts do not get the `'strict-dynamic'` bypass.
     pub parser_inserted: bool,
-    /// What kind of inline behavior is being checked.
     pub kind: InlineKind,
 }
 
-/// The behavior an inline check governs.
 #[derive(Clone, Copy)]
 pub(crate) enum InlineKind {
-    /// Inline classic script (`script-src-elem`).
     Script,
-    /// `javascript:` navigation (`script-src-elem`).
     Navigation,
-    /// Event handler content attribute (`script-src-attr`).
     ScriptAttribute,
-    /// `eval()` / `Function()` (`script-src`).
     Evaluation,
 }
 
-/// Destination used by the pre-request check this browser enforces.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Destination {
-    /// `fetch` and `XMLHttpRequest` (`connect-src`).
     Connect,
-    /// Classic and module script requests (`script-src-elem`).
     Script,
-    /// Stylesheet requests: `<link rel=stylesheet>` and `@import`
-    /// (`style-src-elem`).
     StyleSheet,
-    /// Images (`img-src`).
     Img,
-    /// Web fonts (`font-src`).
     Font,
-    /// Nested browsing-context navigations (`frame-src`).
     Frame,
-    /// Worker script and static-import requests inside a worker
-    /// (`worker-src`, which falls back to `child-src`, `script-src`, and
-    /// `default-src`).
     Worker,
 }
 
 impl Destination {
-    /// Whether this request settles through the image lifecycle: an `<img>`
-    /// learns about success and failure from its settlements, not from an
-    /// `error` event on generic resource failure.
     pub(crate) fn is_image(self) -> bool {
         self == Self::Img
     }
 }
 
-/// The directive that decides a check
-/// (<https://w3c.github.io/webappsec-csp/#effective-directive>).
+// https://w3c.github.io/webappsec-csp/#effective-directive
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Effective {
     ScriptSrcElem,
     ScriptSrcAttr,
-    /// String compilation (`eval`, `Function`).
     ScriptSrc,
     StyleSrcElem,
     ConnectSrc,
     ImgSrc,
     FontSrc,
     FrameSrc,
-    /// A worker script or a static import inside one (`worker-src`).
     WorkerSrc,
 }
 
@@ -219,8 +152,7 @@ impl Effective {
         }
     }
 
-    /// The fallback list from most to least relevant, the directive itself
-    /// included (<https://w3c.github.io/webappsec-csp/#directive-fallback-list>).
+    // https://w3c.github.io/webappsec-csp/#directive-fallback-list
     fn fallback(self) -> &'static [&'static str] {
         match self {
             Self::ScriptSrcElem => &["script-src-elem", "script-src", "default-src"],
@@ -230,18 +162,14 @@ impl Effective {
             Self::ConnectSrc => &["connect-src", "default-src"],
             Self::ImgSrc => &["img-src", "default-src"],
             Self::FontSrc => &["font-src", "default-src"],
-            // <https://w3c.github.io/webappsec-csp/#directive-fallback-list>
+            // https://w3c.github.io/webappsec-csp/#directive-fallback-list
             Self::FrameSrc => &["frame-src", "child-src", "default-src"],
-            // `worker-src` delegates to `child-src`, then the script list: a
-            // worker is a script request that a cross-origin page cannot turn
-            // into an escape from `script-src`.
             Self::WorkerSrc => &["worker-src", "child-src", "script-src", "default-src"],
         }
     }
 }
 
 impl Destination {
-    /// The effective directive for this destination.
     fn effective(self) -> Effective {
         match self {
             Self::Connect => Effective::ConnectSrc,
@@ -256,7 +184,6 @@ impl Destination {
 }
 
 impl InlineScript<'_> {
-    /// The effective directive for this inline check.
     fn effective(&self) -> Effective {
         match self.kind {
             InlineKind::Script | InlineKind::Navigation => Effective::ScriptSrcElem,
@@ -265,8 +192,7 @@ impl InlineScript<'_> {
         }
     }
 
-    /// `blockedURI` for an inline check: `inline`, or `eval` for evaluation
-    /// (<https://w3c.github.io/webappsec-csp/#violation-blocked-uri>).
+    // https://w3c.github.io/webappsec-csp/#violation-blocked-uri
     fn blocked_uri(&self) -> String {
         match self.kind {
             InlineKind::Evaluation => "eval".to_owned(),
@@ -276,28 +202,21 @@ impl InlineScript<'_> {
         }
     }
 
-    /// First 40 characters of the source
-    /// (<https://w3c.github.io/webappsec-csp/#violation-sample>).
+    // https://w3c.github.io/webappsec-csp/#violation-sample
     fn sample(&self) -> String {
         self.source.chars().take(40).collect()
     }
 }
 
-/// Metadata for a script request.
 #[derive(Clone, Copy)]
 pub(crate) struct ScriptRequest<'a> {
     pub nonce: &'a str,
     pub parser_inserted: bool,
-    /// Raw `integrity` attribute value, empty when there is none.
     pub integrity: &'a str,
 }
 
-/// `blockedURI` for a request violation: a non-HTTP(S) scheme reports
-/// just the scheme; a cross-origin `frame-src` violation reports the
-/// origin, so the page never learns the framed path; otherwise the URL
-/// without fragment or credentials
-/// (<https://w3c.github.io/webappsec-csp/#violation-blocked-uri>,
-/// <https://crbug.com/633306>).
+// https://w3c.github.io/webappsec-csp/#violation-blocked-uri
+// https://crbug.com/633306
 fn blocked_uri(origin: &Origin, effective: Effective, url: &Url) -> String {
     if effective == Effective::FrameSrc && url.origin() != *origin {
         let port = url
@@ -313,9 +232,7 @@ fn blocked_uri(origin: &Origin, effective: Effective, url: &Url) -> String {
     strip_url(url)
 }
 
-/// A URL for use in violation reports: a non-HTTP(S) scheme reports just
-/// the scheme, otherwise the URL without fragment or credentials
-/// (<https://w3c.github.io/webappsec-csp/#strip-url-for-use-in-reports>).
+// https://w3c.github.io/webappsec-csp/#strip-url-for-use-in-reports
 fn strip_url(url: &Url) -> String {
     if !matches!(url.scheme(), "http" | "https" | "ws" | "wss") {
         return url.scheme().to_owned();
@@ -327,15 +244,11 @@ fn strip_url(url: &Url) -> String {
     clean.as_str().to_owned()
 }
 
-/// Parses `raw` and strips it for use in violation reports. Unparseable
-/// input reports as the empty string.
 #[must_use]
 pub(crate) fn strip_url_for_reports(raw: &str) -> String {
     Url::parse(raw).map_or_else(|_| String::new(), |url| strip_url(&url))
 }
 
-/// `report-uri` endpoints of `policy`, in order. The report goes to every
-/// endpoint; meta-delivered policies never carry one.
 fn report_uris(policy: &Policy) -> Vec<String> {
     policy
         .directives
@@ -344,9 +257,6 @@ fn report_uris(policy: &Policy) -> Vec<String> {
         .map_or_else(Vec::new, |(_, values)| values.clone())
 }
 
-/// `report-to` endpoint names of `policy`, in order. The report goes to the
-/// first name the document's `Reporting-Endpoints` header defines, and that
-/// delivery suppresses `report-uri`; meta-delivered policies never carry one.
 fn report_to(policy: &Policy) -> Vec<String> {
     policy
         .directives
@@ -355,7 +265,6 @@ fn report_to(policy: &Policy) -> Vec<String> {
         .map_or_else(Vec::new, |(_, values)| values.clone())
 }
 
-/// Endpoint names and URLs from one combined `Reporting-Endpoints` value.
 #[must_use]
 pub(crate) fn parse_reporting_endpoints_value(combined: &str) -> Vec<(String, String)> {
     let mut endpoints = Vec::new();
@@ -387,9 +296,7 @@ pub(crate) fn parse_reporting_endpoints_value(combined: &str) -> Vec<(String, St
 }
 
 impl List {
-    /// Whether any enforced policy opts its document into upgrading insecure
-    /// requests
-    /// (<https://w3c.github.io/webappsec-upgrade-insecure-requests/#upgrade-insecure-requests>).
+    // https://w3c.github.io/webappsec-upgrade-insecure-requests/#upgrade-insecure-requests
     #[must_use]
     pub(crate) fn upgrades_insecure_requests(&self) -> bool {
         self.policies.iter().any(|policy| {
@@ -401,10 +308,7 @@ impl List {
         })
     }
 
-    /// The sandbox flags the enforced policies impose: the union of every
-    /// `sandbox` directive, which is how multiple policies combine. A
-    /// directive with no value is a bare `sandbox` and sets every flag
-    /// (<https://w3c.github.io/webappsec-csp/#sandbox>).
+    // https://w3c.github.io/webappsec-csp/#sandbox
     #[must_use]
     pub(crate) fn sandbox_flags(&self) -> crate::protocol::SandboxFlags {
         let mut flags = crate::protocol::SandboxFlags::empty();
@@ -420,8 +324,6 @@ impl List {
         flags
     }
 
-    /// Header policies from a navigation response. Absent headers yield an
-    /// empty list, which allows every request.
     #[must_use]
     pub(crate) fn from_headers(enforce: Option<&str>, report_only: Option<&str>) -> Self {
         let mut policies = Vec::new();
@@ -442,17 +344,12 @@ impl List {
         Self { policies }
     }
 
-    /// Appends every policy of `other`, which is how a worker's policy
-    /// container takes the policies its own script response carried on top of
-    /// the creator's
-    /// (<https://html.spec.whatwg.org/multipage/browsers.html#initialize-a-policy-container-from-a-fetch-response>).
+    // https://html.spec.whatwg.org/multipage/browsers.html#initialize-a-policy-container-from-a-fetch-response
     pub(crate) fn append(&mut self, other: Self) {
         self.policies.extend(other.policies);
     }
 
-    /// Appends one `meta` policy. Report-only is not delivered by `meta`.
-    /// `report-uri`, `report-to`, `frame-ancestors`, and `sandbox` are dropped
-    /// (<https://w3c.github.io/webappsec-csp/#meta-element>).
+    // https://w3c.github.io/webappsec-csp/#meta-element
     pub(crate) fn push_meta(&mut self, content: &str) {
         let mut policy = parse_serialized(content, Source::Meta, Disposition::Enforce);
         policy.directives.retain(|(name, _)| {
@@ -466,10 +363,7 @@ impl List {
         }
     }
 
-    /// The violations `url` produces for `destination`, one per policy. An
-    /// empty result allows the request; report-only policies appear without
-    /// blocking
-    /// (<https://w3c.github.io/webappsec-csp/#should-request-be-blocked-by-content-security-policy>).
+    // https://w3c.github.io/webappsec-csp/#should-request-be-blocked-by-content-security-policy
     #[must_use]
     pub(crate) fn check_request(
         &self,
@@ -482,13 +376,8 @@ impl List {
         self.violations(origin, document_url, url, destination, script, 0)
     }
 
-    /// The violations a response URL produces after redirects: the
-    /// post-request check re-runs the source lists with paths ignored
-    /// (<https://w3c.github.io/webappsec-csp/#should-block-response>).
-    ///
-    /// `blocked_url` is the request's URL, not the redirect target. The
-    /// violation reports that URL so the page never learns where the hop
-    /// went (<https://w3c.github.io/webappsec-csp/#create-violation-for-request>).
+    // https://w3c.github.io/webappsec-csp/#should-block-response
+    // https://w3c.github.io/webappsec-csp/#create-violation-for-request
     #[must_use]
     pub(crate) fn check_redirected_request(
         &self,
@@ -529,10 +418,7 @@ impl List {
                 redirects,
             ) {
                 violations.push(Violation {
-                    // The canonical directive name for the destination, even
-                    // when the list that decided the check came from lower in
-                    // the fallback chain
-                    // (<https://w3c.github.io/webappsec-csp/#get-the-effective-directive>).
+                    // https://w3c.github.io/webappsec-csp/#get-the-effective-directive
                     effective_directive: effective.name().to_owned(),
                     original_policy: policy.serialized.clone(),
                     disposition: policy.disposition,
@@ -552,14 +438,7 @@ impl List {
         violations
     }
 
-    /// The violations a `<base href>` produces, one per policy whose
-    /// `base-uri` list refuses the resolved URL
-    /// (<https://w3c.github.io/webappsec-csp/#is-base-allowed-for-document>).
-    ///
-    /// `blockedURI` is the resolved URL, which is what Chrome reports and
-    /// what `content-security-policy/base-uri/` asserts. The algorithm says
-    /// to set the violation's resource to `"inline"`; the shipped browsers
-    /// and the tests disagree with that sentence.
+    // https://w3c.github.io/webappsec-csp/#is-base-allowed-for-document — blockedURI reports the resolved URL, matching Chrome and WPT rather than "inline"
     #[must_use]
     pub(crate) fn check_base(
         &self,
@@ -572,9 +451,7 @@ impl List {
             let Some(list) = directive_value(policy, "base-uri") else {
                 continue;
             };
-            // `base-uri` has no fallback list: a policy without the directive
-            // does not constrain the base element
-            // (<https://w3c.github.io/webappsec-csp/#directive-fallback-list>).
+            // https://w3c.github.io/webappsec-csp/#directive-fallback-list
             if url_matches_list(base, list, origin, document_url, 0) {
                 continue;
             }
@@ -597,9 +474,7 @@ impl List {
         violations
     }
 
-    /// The violations an inline classic script or `javascript:` navigation
-    /// produces
-    /// (<https://w3c.github.io/webappsec-csp/#should-elements-inline-type-behavior-be-blocked-by-content-security-policy>).
+    // https://w3c.github.io/webappsec-csp/#should-elements-inline-type-behavior-be-blocked-by-content-security-policy
     #[must_use]
     pub(crate) fn check_inline(
         &self,
@@ -615,9 +490,7 @@ impl List {
                     original_policy: policy.serialized.clone(),
                     disposition: policy.disposition,
                     blocked_uri: inline.blocked_uri(),
-                    // A sample is opt-in: only a directive carrying
-                    // `'report-sample'` sends the source prefix
-                    // (<https://w3c.github.io/webappsec-csp/#violation-sample>).
+                    // https://w3c.github.io/webappsec-csp/#violation-sample
                     sample: has_keyword(list, "'report-sample'").then(|| inline.sample()),
                     document_uri: strip_url(document_url),
                     source_file: None,
@@ -633,11 +506,7 @@ impl List {
         violations
     }
 
-    /// Violations when the `frame-ancestors` directives of these policies
-    /// refuse to embed `child_url` in `ancestors`. Every ancestor must
-    /// match; a source expression with a path matches no origin, so a
-    /// path-bearing policy blocks everything
-    /// (<https://w3c.github.io/webappsec-csp/#frame-ancestors-navigation-response>).
+    // https://w3c.github.io/webappsec-csp/#frame-ancestors-navigation-response
     #[must_use]
     pub(crate) fn check_frame_ancestors(
         &self,
@@ -675,8 +544,6 @@ impl List {
     }
 }
 
-/// Tuple origin carried with a dial. An opaque document origin is `None`,
-/// and `'self'` then matches only the document URL.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct TupleOrigin {
     scheme: String,
@@ -702,11 +569,7 @@ impl TupleOrigin {
     }
 }
 
-/// The policy a subresource dial carries so every redirect hop is checked
-/// before it is followed. `None` on a dial skips the check, which is how a
-/// document navigation is sent.
-///
-/// <https://w3c.github.io/webappsec-csp/#should-request-be-blocked-by-content-security-policy>
+// https://w3c.github.io/webappsec-csp/#should-request-be-blocked-by-content-security-policy
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RedirectGate {
     list: List,
@@ -723,9 +586,6 @@ impl RedirectGate {
         }
     }
 
-    /// Whether `url` may be fetched. `redirects` is `0` for the original URL
-    /// and at least `1` after a redirect, which skips path matching.
-    /// Report-only policies do not refuse the hop.
     #[must_use]
     pub fn allows(&self, document_url: &Url, url: &Url, redirects: u32) -> bool {
         let origin = self
@@ -742,8 +602,7 @@ impl RedirectGate {
         ))
     }
 
-    /// Violations for a redirect hop. `blocked_url` is the request's URL
-    /// (<https://w3c.github.io/webappsec-csp/#create-violation-for-request>).
+    // https://w3c.github.io/webappsec-csp/#create-violation-for-request
     pub(crate) fn redirected_violations(
         &self,
         document_url: &Url,
@@ -764,8 +623,7 @@ impl RedirectGate {
     }
 }
 
-/// Whether the fallback directive chain for `destination` violates `policy`
-/// (<https://w3c.github.io/webappsec-csp/#should-request-be-blocked-by-content-security-policy>).
+// https://w3c.github.io/webappsec-csp/#should-request-be-blocked-by-content-security-policy
 fn policy_request_violation(
     policy: &Policy,
     origin: &Origin,
@@ -780,13 +638,7 @@ fn policy_request_violation(
         let Some(list) = directive_value(policy, name) else {
             continue;
         };
-        // A directive lower in the fallback chain only executes when no
-        // higher-priority directive is present; the loop order guarantees
-        // that, so the first present directive decides. The check is the
-        // found directive's own: a worker that falls back to `script-src` is
-        // a script request for `'strict-dynamic'`, while a worker decided by
-        // `worker-src` or `child-src` is URL-matched only
-        // (<https://w3c.github.io/webappsec-csp/#effective-directive>).
+        // https://w3c.github.io/webappsec-csp/#effective-directive
         let script_semantics = matches!(name, "script-src" | "script-src-elem");
         return request_check_blocks(
             script_semantics,
@@ -801,7 +653,6 @@ fn policy_request_violation(
     false
 }
 
-/// The source list that decides an inline check, when it blocks.
 fn policy_inline_violation<'a>(
     policy: &'a Policy,
     inline: &InlineScript<'_>,
@@ -816,8 +667,6 @@ fn policy_inline_violation<'a>(
     None
 }
 
-/// `meta http-equiv=content-security-policy` content when the element is in
-/// `head` and has a `content` attribute. Other metas return `None`.
 #[must_use]
 pub(crate) fn meta_policy(
     base: &blitz_dom::BaseDocument,
@@ -851,7 +700,6 @@ fn ancestor_is(
     false
 }
 
-/// `nonce` attribute and whether a nonce-source may match the element.
 #[must_use]
 pub(crate) fn element_nonce(
     base: &blitz_dom::BaseDocument,
@@ -864,9 +712,7 @@ pub(crate) fn element_nonce(
     else {
         return (String::new(), false);
     };
-    // `clear_nonce_on_connect` blanks the content attribute and moves the
-    // value to the internal slot; checks use the slot when it exists
-    // (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#nonce-attributes>).
+    // https://html.spec.whatwg.org/multipage/urls-and-fetching.html#nonce-attributes
     let mut nonce = slot.unwrap_or_default().to_owned();
     let mut nonceable = !nonce.is_empty();
     for attribute in element.attrs.iter() {
@@ -876,8 +722,7 @@ pub(crate) fn element_nonce(
             value.clone_into(&mut nonce);
             nonceable = true;
         }
-        // Dangling-markup guard
-        // (<https://w3c.github.io/webappsec-csp/#is-element-nonceable>).
+        // https://w3c.github.io/webappsec-csp/#is-element-nonceable
         let lowered_name = name.to_ascii_lowercase();
         let lowered_value = value.to_ascii_lowercase();
         for needle in ["<link", "<script", "<style"] {
@@ -901,7 +746,7 @@ fn parse_policy_list(header: &str, source: Source, disposition: Disposition) -> 
         .collect()
 }
 
-/// <https://w3c.github.io/webappsec-csp/#parse-serialized-policy>
+// https://w3c.github.io/webappsec-csp/#parse-serialized-policy
 fn parse_serialized(serialized: &str, _source: Source, disposition: Disposition) -> Policy {
     let mut directives = Vec::new();
     for token in serialized.split(';') {
@@ -936,11 +781,7 @@ fn request_check_blocks(
     script: Option<ScriptRequest<'_>>,
     redirects: u32,
 ) -> bool {
-    // The pre-request check short-circuits on nonces, integrity metadata,
-    // and `'strict-dynamic'`, in that order. The post-request (redirect)
-    // check is URL-only, so a policy with `'strict-dynamic'` does not block
-    // every response
-    // (<https://w3c.github.io/webappsec-csp/#script-pre-request>).
+    // https://w3c.github.io/webappsec-csp/#script-pre-request
     if redirects == 0 && script_semantics {
         let script = script.unwrap_or(ScriptRequest {
             nonce: "",
@@ -960,11 +801,7 @@ fn request_check_blocks(
     !url_matches_list(url, list, origin, document_url, redirects)
 }
 
-/// Whether the request's SRI integrity metadata matches the source list: the
-/// parsed metadata must be non-empty and every entry must equal a hash-source
-/// in the list. Entries with unrecognized algorithms never parse, so they
-/// cannot satisfy the subset but also do not break it
-/// (<https://w3c.github.io/webappsec-csp/#does-integrity-metadata-match-source-list>).
+// https://w3c.github.io/webappsec-csp/#does-integrity-metadata-match-source-list
 fn integrity_matches(list: &[String], integrity: &str) -> bool {
     let expressions: Vec<(&str, &str)> = list
         .iter()
@@ -986,11 +823,7 @@ fn integrity_matches(list: &[String], integrity: &str) -> bool {
     })
 }
 
-/// Parses SRI integrity metadata into `(algorithm, base64-value)` pairs.
-/// Entries with unsupported algorithms or invalid values are dropped, the
-/// algorithm is lowercased, and any `?`-suffixed options ride along with
-/// neither the digest nor the parse: unknown options degrade gracefully
-/// (<https://www.w3.org/TR/SRI/#parse-metadata>).
+// https://www.w3.org/TR/SRI/#parse-metadata
 fn parse_integrity_metadata(metadata: &str) -> Vec<(String, String)> {
     metadata
         .split_ascii_whitespace()
@@ -1011,8 +844,7 @@ fn parse_integrity_metadata(metadata: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// SRI accepts base64url and may omit trailing padding
-/// (<https://www.w3.org/TR/SRI/#parse-metadata>).
+// https://www.w3.org/TR/SRI/#parse-metadata
 fn normalize_base64(value: &str) -> String {
     let mut normalized = value.replace('-', "+").replace('_', "/");
     while !normalized.len().is_multiple_of(4) {
@@ -1021,12 +853,7 @@ fn normalize_base64(value: &str) -> String {
     normalized
 }
 
-/// Whether `bytes` satisfy SRI `integrity` metadata: the strongest supported
-/// algorithm present must have at least one entry matching the content.
-/// Empty metadata enforces nothing, and so does metadata with no supported
-/// algorithm: unknown hashes degrade gracefully, and only a supported
-/// algorithm's mismatch fails the load
-/// (<https://www.w3.org/TR/SRI/#does-response-match-metadatalist>).
+// https://www.w3.org/TR/SRI/#does-response-match-metadatalist
 #[must_use]
 pub fn integrity_verifies(integrity: &str, bytes: &[u8]) -> bool {
     let integrity = integrity.trim();
@@ -1043,7 +870,6 @@ pub fn integrity_verifies(integrity: &str, bytes: &[u8]) -> bool {
             _ => 0,
         })
     else {
-        // No supported metadata: nothing to enforce.
         return true;
     };
     sources.iter().any(|(algorithm, expected)| {
@@ -1058,8 +884,7 @@ pub fn integrity_verifies(integrity: &str, bytes: &[u8]) -> bool {
     })
 }
 
-/// The inline check for one directive
-/// (<https://w3c.github.io/webappsec-csp/#should-block-inline>).
+// https://w3c.github.io/webappsec-csp/#should-block-inline
 fn inline_check_blocks(effective: Effective, list: &[String], inline: &InlineScript<'_>) -> bool {
     match effective {
         Effective::ScriptSrc => evaluation_blocks(list),
@@ -1073,15 +898,8 @@ fn inline_check_blocks(effective: Effective, list: &[String], inline: &InlineScr
     }
 }
 
-/// Whether a source list blocks compiling a string
-/// (<https://w3c.github.io/webappsec-csp/#can-compile-strings>).
-///
-/// Only `'unsafe-eval'` allows evaluation. A hash source names an inline
-/// script's contents, and `'wasm-unsafe-eval'` covers WebAssembly compilation,
-/// so neither opens this door. The `'eval-<algorithm>-<hash>'` form some
-/// browsers prototype is not in the spec
-/// (<https://w3c.github.io/webappsec-csp/#directive-script-src>); a policy that
-/// names it still needs `'unsafe-eval'` here.
+// https://w3c.github.io/webappsec-csp/#can-compile-strings
+// https://w3c.github.io/webappsec-csp/#directive-script-src
 fn evaluation_blocks(list: &[String]) -> bool {
     !has_keyword(list, "'unsafe-eval'")
 }
@@ -1094,7 +912,7 @@ fn directive_value<'a>(policy: &'a Policy, name: &str) -> Option<&'a [String]> {
         .map(|(_, value)| value.as_slice())
 }
 
-/// <https://w3c.github.io/webappsec-csp/#match-nonce-to-source-list>
+// https://w3c.github.io/webappsec-csp/#match-nonce-to-source-list
 fn nonce_matches(nonce: &str, list: &[String]) -> bool {
     if nonce.is_empty() {
         return false;
@@ -1111,14 +929,12 @@ fn has_keyword(list: &[String], keyword: &str) -> bool {
         .any(|expression| expression.eq_ignore_ascii_case(keyword))
 }
 
-/// <https://w3c.github.io/webappsec-csp/#match-element-to-source-list>
+// https://w3c.github.io/webappsec-csp/#match-element-to-source-list
 fn element_matches(list: &[String], inline: &InlineScript<'_>) -> bool {
     if allows_all_inline(list, inline.kind) {
         return true;
     }
-    // Nonces apply to inline script and style elements, not to attributes of
-    // either element or to `javascript:` navigations
-    // (<https://w3c.github.io/webappsec-csp/#match-element-to-source-list>).
+    // https://w3c.github.io/webappsec-csp/#match-element-to-source-list
     let nonce_applies = matches!(inline.kind, InlineKind::Script);
     if nonce_applies && inline.nonceable && nonce_matches(inline.nonce, list) {
         return true;
@@ -1142,7 +958,7 @@ fn element_matches(list: &[String], inline: &InlineScript<'_>) -> bool {
     false
 }
 
-/// <https://w3c.github.io/webappsec-csp/#allow-all-inline>
+// https://w3c.github.io/webappsec-csp/#allow-all-inline
 fn allows_all_inline(list: &[String], kind: InlineKind) -> bool {
     let mut allow = false;
     for expression in list {
@@ -1243,7 +1059,7 @@ fn is_base64_value(value: &str) -> bool {
     saw_data
 }
 
-/// <https://w3c.github.io/webappsec-csp/#match-url-to-source-list>
+// https://w3c.github.io/webappsec-csp/#match-url-to-source-list
 fn url_matches_list(
     url: &Url,
     list: &[String],
@@ -1395,7 +1211,7 @@ fn host_source_matches(
     true
 }
 
-/// <https://w3c.github.io/webappsec-csp/#match-hosts>
+// https://w3c.github.io/webappsec-csp/#match-hosts
 fn host_part_matches(pattern: &str, url: &Url) -> bool {
     let Some(host) = url.host_str() else {
         return false;
@@ -1403,8 +1219,7 @@ fn host_part_matches(pattern: &str, url: &Url) -> bool {
     if pattern == "*" {
         return true;
     }
-    // Only the leading `*` is removed, so `*.example.com` becomes `.example.com`
-    // (<https://w3c.github.io/webappsec-csp/#match-hosts>).
+    // https://w3c.github.io/webappsec-csp/#match-hosts
     if let Some(remaining) = pattern.strip_prefix('*')
         && remaining.starts_with('.')
     {
@@ -1413,7 +1228,7 @@ fn host_part_matches(pattern: &str, url: &Url) -> bool {
     pattern.eq_ignore_ascii_case(host)
 }
 
-/// <https://w3c.github.io/webappsec-csp/#match-ports>
+// https://w3c.github.io/webappsec-csp/#match-ports
 fn port_part_matches(port: Option<&PortPart>, url: &Url) -> bool {
     let input = match port {
         None => None,
@@ -1431,7 +1246,7 @@ fn port_part_matches(port: Option<&PortPart>, url: &Url) -> bool {
     input.is_none() && url_port == default
 }
 
-/// <https://w3c.github.io/webappsec-csp/#match-paths>
+// https://w3c.github.io/webappsec-csp/#match-paths
 fn path_part_matches(path_a: &str, path_b: &str) -> bool {
     if path_a.is_empty() {
         return true;
@@ -1461,7 +1276,7 @@ fn path_part_matches(path_a: &str, path_b: &str) -> bool {
     true
 }
 
-/// <https://w3c.github.io/webappsec-csp/#match-schemes>
+// https://w3c.github.io/webappsec-csp/#match-schemes
 fn scheme_part_matches(expression_scheme: &str, url_scheme: &str) -> bool {
     expression_scheme.eq_ignore_ascii_case(url_scheme)
         || (expression_scheme.eq_ignore_ascii_case("http")
@@ -1542,17 +1357,7 @@ fn default_port(scheme: &str) -> Option<u16> {
     }
 }
 
-/// Splits `host-part [ ":" port-part ]`.
-///
-/// A bracketed address keeps every colon inside the brackets. The port is
-/// only the component after `]`, so `[::1]` is a host with no port and
-/// `[::1]:443` is that host on port 443. An empty port (`example.test:`,
-/// `[::1]:`) is rejected.
-///
-/// CSP3's `host-part` grammar does not include addresses
-/// (<https://w3c.github.io/webappsec-csp/#grammardef-host-part>), so
-/// [`valid_host_part`] still drops the expression. The split itself must not
-/// treat the last hextet as a port.
+// https://w3c.github.io/webappsec-csp/#grammardef-host-part
 fn split_host_port(hostport: &str) -> Option<(&str, Option<PortPart>)> {
     if hostport.starts_with('[') {
         let end = hostport.find(']')?;
@@ -1660,7 +1465,6 @@ mod tests {
         let list = List::from_headers(Some("script-SRC 'self'; SCRIPT-SRC 'none'"), None);
         let origin = url("https://example.test/").origin();
         let document_url = url("https://example.test/page");
-        // The duplicate `'none'` must not override the first `'self'`.
         assert!(
             list.check_request(
                 &origin,
@@ -1678,7 +1482,6 @@ mod tests {
         let list = List::from_headers(Some("script-src \u{e9}"), None);
         let origin = url("https://example.test/").origin();
         let document_url = url("https://example.test/page");
-        // The only token is not ASCII, so the policy parses empty and allows.
         assert!(
             list.check_request(
                 &origin,
@@ -1827,10 +1630,8 @@ mod tests {
         assert_eq!(blocked[0].effective_directive, "base-uri");
         assert_eq!(blocked[0].blocked_uri, "http://a.test/");
         assert!(blocked[0].blocks());
-        // A policy that says nothing about base-uri does not constrain it.
         let silent = List::from_headers(Some("default-src 'none'"), None);
         assert!(silent.check_base(&origin, &document, &own).is_empty());
-        // A report-only policy reports without blocking.
         let report = List::from_headers(Some("default-src 'none'"), Some("base-uri 'none'"));
         let reported = report.check_base(&origin, &document, &own);
         assert_eq!(reported.len(), 1);
@@ -1839,8 +1640,6 @@ mod tests {
 
     #[test]
     fn evaluation_needs_unsafe_eval_and_not_a_matching_hash() {
-        // sha256("t1.done();") is a valid hash source; it names an inline
-        // script, so it must not allow `eval` of the same text.
         let hash_only = vec!["'sha256-wmuLCpoj8EMqfQlPnt5NIMgKkCK62CxAkAiewI0zZps='".to_owned()];
         assert!(evaluation_blocks(&hash_only));
         let unsafe_eval = vec!["'unsafe-eval'".to_owned()];
@@ -1856,7 +1655,6 @@ mod tests {
 
     #[test]
     fn hash_sources_match_their_digest() {
-        // sha256("t1.done();"), the digest the WPT unsafe-hashes fixtures use.
         let expression = "'sha256-wmuLCpoj8EMqfQlPnt5NIMgKkCK62CxAkAiewI0zZps='";
         assert!(hash_matches(expression, "t1.done();"));
         assert!(!hash_matches(expression, "t2.done();"));
@@ -1893,12 +1691,10 @@ mod tests {
             &list,
             "sha256-L7/UQ9VWpyG7C9RDEC4ctS5hI3Zcw+ta+haPGlByG9c= sha512-rYCVMxWV5nq8IsMo+UZNObWtEiWGok/vDN8BMoEQi41s0znSes6E1Q2aag3Lw3u2J1w2rqH7uF2ws6FpQhfSOA=="
         ));
-        // An entry outside the policy breaks the subset, even beside a match.
         assert!(!integrity_matches(
             &list,
             "sha256-L7/UQ9VWpyG7C9RDEC4ctS5hI3Zcw+ta+haPGlByG9c= sha256-xyz"
         ));
-        // Entries with unrecognized algorithms never parse: dropped, not fatal.
         assert!(integrity_matches(
             &list,
             "sha256-L7/UQ9VWpyG7C9RDEC4ctS5hI3Zcw+ta+haPGlByG9c= sha999-xyz"
@@ -1910,22 +1706,17 @@ mod tests {
 
     #[test]
     fn integrity_verifies_strongest_algorithm() {
-        // Exact bytes of the WPT simpleSourcedScript.js fixture.
         let body = b"window.postMessage(document.currentScript.id, \"*\");\n";
         let sha256 = "sha256-L7/UQ9VWpyG7C9RDEC4ctS5hI3Zcw+ta+haPGlByG9c=";
         assert!(integrity_verifies(sha256, body));
         assert!(integrity_verifies("", body));
         assert!(!integrity_verifies("sha256-xyz", body));
-        // Unknown algorithms degrade gracefully: no supported metadata means
-        // nothing to enforce
-        // (<https://www.w3.org/TR/SRI/#does-response-match-metadatalist>).
+        // https://www.w3.org/TR/SRI/#does-response-match-metadatalist
         assert!(integrity_verifies("sha999-xyz", body));
         assert!(integrity_verifies(
             "sha256-L7/UQ9VWpyG7C9RDEC4ctS5hI3Zcw+ta+haPGlByG9c=?opt",
             body
         ));
-        // A matching sha256 beside a mismatch still verifies: sha512 is
-        // absent, so sha256 is strongest and one entry matches.
         assert!(integrity_verifies(
             "sha256-L7/UQ9VWpyG7C9RDEC4ctS5hI3Zcw+ta+haPGlByG9c= sha256-xyz",
             body

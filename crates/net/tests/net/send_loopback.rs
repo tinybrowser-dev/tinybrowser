@@ -103,9 +103,6 @@ async fn http_transcripts_cover_status_headers_framing_limits_and_failures() {
     server.assert_clean();
 }
 
-/// One redirect-chain server shared by the hop-deadline tests: every
-/// connection stalls `hop_delay`, redirects `redirects` times, then lands.
-/// The count is an `AtomicU8` because the accept thread only increments it.
 fn redirect_server(hop_delay: Duration, redirects: u8) -> (TestServer, Arc<AtomicU8>) {
     let hops = Arc::new(AtomicU8::new(0));
     let server_hops = Arc::clone(&hops);
@@ -125,9 +122,6 @@ fn redirect_server(hop_delay: Duration, redirects: u8) -> (TestServer, Arc<Atomi
 
 #[tokio::test]
 async fn timeout_global_covers_every_redirect_hop() {
-    // The margins are wide on purpose: one hop is well under the global
-    // deadline, and two hops overshoot it, so a loaded CI box cannot flip
-    // which side of the deadline the chain ends on.
     let hop_delay = Duration::from_millis(150);
     let global = Duration::from_millis(400);
     let (server, _hops) = redirect_server(hop_delay, 2);
@@ -157,9 +151,6 @@ async fn timeout_global_covers_every_redirect_hop() {
 
 #[tokio::test]
 async fn timeout_per_call_restarts_on_every_redirect_hop() {
-    // One hop fits the per-call deadline many times over, but the whole chain
-    // does not: a budget minted once at call start would expire mid-chain, so
-    // success proves every hop got a fresh deadline.
     let hop_delay = Duration::from_millis(100);
     let per_call = Duration::from_millis(500);
     let (server, hops) = redirect_server(hop_delay, 6);
@@ -183,8 +174,6 @@ async fn timeout_per_call_restarts_on_every_redirect_hop() {
 
 #[tokio::test]
 async fn timeout_per_call_bounds_a_single_slow_hop() {
-    // The hop stalls far past the per-call deadline: the test pins the
-    // deadline kind, not the stall length, so the slack stays wide.
     let hop_delay = Duration::from_secs(1);
     let per_call = Duration::from_millis(50);
     let (server, _hops) = redirect_server(hop_delay, 0);
@@ -336,14 +325,10 @@ async fn request_shaping_custom_method_fragments_and_rejections_are_wire_visible
     let mut request = Request::new(Method::GET, server.url("/invalid"));
     let result = request.headers.insert("X-Bad", "line\r\nInjected: yes");
     assert!(matches!(result, Err(net::HeaderError::InvalidValue(_))));
-    // `RecordedRequest` has no `PartialEq`, so compare the count.
     assert_eq!(server.requests().len(), 0);
     server.assert_clean();
 }
 
-/// Our redirect cap and its typed error: a tinybrowser option, not a
-/// web-platform contract. Redirect policy itself is WPT's
-/// `fetch/api/redirect/`.
 #[tokio::test]
 async fn max_redirects_cap_returns_a_redirect_limit() {
     let empty = scripted([canned_redirect(302, ""), canned_redirect(302, "")]);
@@ -373,11 +358,8 @@ async fn max_redirects_cap_returns_a_redirect_limit() {
     server.assert_clean();
 }
 
-/// `strict-origin-when-cross-origin` determines the referrer again on every
-/// redirect hop: the first hop sends the full source URL, the cross-origin hop
-/// sends only its origin
-/// (<https://w3c.github.io/webappsec-referrer-policy/#determine-requests-referrer>,
-/// <https://fetch.spec.whatwg.org/#http-redirect-fetch>).
+// https://w3c.github.io/webappsec-referrer-policy/#determine-requests-referrer
+// https://fetch.spec.whatwg.org/#http-redirect-fetch
 #[tokio::test]
 async fn redirect_hops_re_determine_the_referrer() {
     let landed = scripted([canned_ok(&[("Content-Type", "text/plain")], b"landed")]);
@@ -405,10 +387,7 @@ async fn redirect_hops_re_determine_the_referrer() {
     landed.assert_clean();
 }
 
-/// `net` writes `Sec-Fetch-Site` for every request, not just navigations: the
-/// first hop names the initiator's relationship, a redirect chain only widens
-/// it, and a request with no initiator says `none`
-/// (<https://w3c.github.io/webappsec-fetch-metadata/#abstract-opdef-set-site>).
+// https://w3c.github.io/webappsec-fetch-metadata/#abstract-opdef-set-site
 #[tokio::test]
 async fn every_hop_carries_the_fetch_site_relationship() {
     let landed = scripted([canned_ok(&[], b"landed")]);
@@ -441,8 +420,6 @@ async fn every_hop_carries_the_fetch_site_relationship() {
     );
 }
 
-/// The redirect gate sees the next URL and the hop count before that hop is
-/// sent. A false answer is a protocol rejection, not a followed request.
 #[tokio::test]
 async fn redirect_gate_can_refuse_the_next_hop() {
     let server = scripted([canned_redirect(302, "/landed"), canned_ok(&[], b"landed")]);
@@ -469,10 +446,7 @@ async fn redirect_gate_can_refuse_the_next_hop() {
     server.assert_clean();
 }
 
-/// On origin change the redirect loop drops caller-set forbidden headers
-/// (`Host`, `Content-Length`). JS cannot set forbidden header names
-/// (<https://fetch.spec.whatwg.org/#forbidden-header-name>), so WPT cannot
-/// observe this wire behavior.
+// https://fetch.spec.whatwg.org/#forbidden-header-name
 #[tokio::test]
 async fn cross_origin_redirect_drops_caller_forbidden_headers() {
     let landing = TestServer::start(|connection| {
@@ -970,7 +944,6 @@ async fn resolve_maps_hit_miss_and_fail() {
 async fn request_deadline_expires_with_a_typed_timeout() {
     let server = TestServer::start(|connection| {
         connection.read_request();
-        // Never respond; the client's absolute deadline must fire.
         std::thread::sleep(Duration::from_millis(600));
     });
     let mut request = Request::new(Method::GET, server.url("/stall"));
@@ -993,7 +966,6 @@ async fn https_dials_offer_h2_before_http1_in_alpn() {
         let (mut stream, _) = listener.accept().expect("accept");
         let hello = read_client_hello(&mut stream);
         let protocols = client_hello_alpn(&hello);
-        // Hold the connection so the request deadline is the visible failure.
         std::thread::sleep(Duration::from_millis(600));
         protocols
     });
@@ -1069,10 +1041,7 @@ fn client_hello_alpn(hello: &[u8]) -> Vec<String> {
     Vec::new()
 }
 
-/// A `no-cors` response that crosses an origin is opaque to page script, but
-/// the internal response keeps the header list the server sent: a script's MIME
-/// check and an image decoder read the unsafe response, not the filtered one
-/// (<https://fetch.spec.whatwg.org/#concept-internal-response>).
+// https://fetch.spec.whatwg.org/#concept-internal-response
 #[tokio::test]
 async fn an_opaque_response_keeps_the_internal_header_list() {
     let server = scripted([canned_ok(
@@ -1117,10 +1086,7 @@ async fn an_opaque_response_keeps_the_internal_header_list() {
     server.assert_clean();
 }
 
-/// A `no-cors` request whose redirect mode is `error` is still sent, and a
-/// redirect response is the error. CSP's deprecated `report-uri` delivery is
-/// exactly that request, and it has to reach the collector
-/// (<https://w3c.github.io/webappsec-csp/#report-violation>).
+// https://w3c.github.io/webappsec-csp/#report-violation
 #[tokio::test]
 async fn a_no_cors_error_request_is_sent_and_refuses_a_redirect() {
     let landing = url::Url::parse("https://b.test/landed").expect("landing URL");
@@ -1152,9 +1118,7 @@ async fn a_no_cors_error_request_is_sent_and_refuses_a_redirect() {
     server.assert_clean();
 }
 
-/// A `no-cors` request that asks for `manual` would hand page script an
-/// opaque-redirect response main fetch forbids, so it never leaves the agent
-/// (<https://fetch.spec.whatwg.org/#main-fetch>).
+// https://fetch.spec.whatwg.org/#main-fetch
 #[tokio::test]
 async fn a_no_cors_manual_request_is_refused_before_sending() {
     let server = scripted([canned_ok(&[], b"must not arrive")]);
@@ -1178,10 +1142,7 @@ async fn a_no_cors_manual_request_is_refused_before_sending() {
     server.assert_clean();
 }
 
-/// A hop the user agent makes to a potentially trustworthy URL carries the
-/// identity's `User-Agent` and its client hints. Loopback is potentially
-/// trustworthy, so this is the https path without a TLS fixture
-/// (<https://wicg.github.io/ua-client-hints/#http-ua-hints>).
+// https://wicg.github.io/ua-client-hints/#http-ua-hints
 #[tokio::test]
 async fn a_trustworthy_hop_carries_the_identity_and_its_hints() {
     let server = scripted([canned_ok(&[], b"")]);

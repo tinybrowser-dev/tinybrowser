@@ -1,11 +1,4 @@
-//! Canvas 2D context: JS bindings over [`Canvas2D`].
-//!
-//! The context is a plain platform object, not a node wrapper, so the
-//! generated IDL traits (which dispatch on `JsNode`) do not apply. Members
-//! are installed on the `CanvasRenderingContext2D` prototype and reach the
-//! bitmap through the opaque `__tbCanvasId` stamped on the instance.
-//!
-//! Spec: <https://html.spec.whatwg.org/multipage/canvas.html#2dcontext>
+// https://html.spec.whatwg.org/multipage/canvas.html#2dcontext
 
 mod host;
 mod path2d;
@@ -35,8 +28,6 @@ use crate::js::bindings::{attribute_value, world, wrap_node};
 use path2d::JsPath2D;
 use state::serialize_color;
 
-/// A `WebIDL` `DOMString` argument: coerces like `ToString`, then owns the
-/// UTF-8 bytes for the duration of the call.
 pub(crate) struct CanvasString(std::string::String);
 
 impl std::ops::Deref for CanvasString {
@@ -47,19 +38,12 @@ impl std::ops::Deref for CanvasString {
     }
 }
 
-/// One measured glyph cluster. A native class, not a plain object, so
-/// `fillTextCluster` can tell a cluster this engine produced from an object a
-/// page made up; the brand is the class itself
-/// (<https://github.com/whatwg/html/issues/10677>).
+// https://github.com/whatwg/html/issues/10677
 #[derive(rquickjs::JsLifetime)]
 #[rquickjs::class(rename = "TextCluster")]
 pub(crate) struct JsTextCluster {
     record: std::rc::Rc<text::TextMetricsRecord>,
-    /// Index into `record.shaped.clusters`.
     index: usize,
-    /// The alignment and baseline this cluster was positioned with. A
-    /// `getTextClusters({align, baseline})` override applies to the returned
-    /// clusters, so the object cannot read them back from the record.
     align: text::ResolvedAlign,
     baseline: state::TextBaseline,
 }
@@ -68,9 +52,6 @@ impl<'js> rquickjs::class::Trace<'js> for JsTextCluster {
     fn trace<'a>(&self, _tracer: rquickjs::class::Tracer<'a, 'js>) {}
 }
 
-/// One `measureText()` result. The class owns the shaping through an `Rc`, so
-/// the shaping is released when `QuickJS` collects the metrics object and every
-/// cluster it returned instead of living in a context-wide map.
 #[derive(rquickjs::JsLifetime)]
 #[rquickjs::class(rename = "TextMetrics")]
 pub(crate) struct JsTextMetrics {
@@ -89,9 +70,7 @@ impl<'js> FromJs<'js> for CanvasString {
     }
 }
 
-/// `OffscreenCanvas.transferToImageBitmap()`: snapshot the bitmap, clear the
-/// canvas to transparent black, and wrap the pixels in an `ImageBitmap`
-/// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-offscreencanvas-transfertoimagebitmap>).
+// https://html.spec.whatwg.org/multipage/canvas.html#dom-offscreencanvas-transfertoimagebitmap
 fn offscreen_transfer_to_image_bitmap(ctx: Ctx<'_>, raw: f64) -> Result<Value<'_>> {
     let id = canvas_id_argument(&ctx, raw)?;
     let world = world(&ctx)?;
@@ -129,9 +108,6 @@ fn offscreen_transfer_to_image_bitmap(ctx: Ctx<'_>, raw: f64) -> Result<Value<'_
                 "a layer is open",
             ));
         }
-        // A context exists once `getContext` returned it, even before the
-        // first draw; allocate the bitmap so the first transfer returns a
-        // transparent image instead of "no 2D context".
         if registry.canvas_mut(id).is_none() {
             return Err(crate::js::bindings::throw_dom(
                 &ctx,
@@ -158,16 +134,12 @@ fn offscreen_transfer_to_image_bitmap(ctx: Ctx<'_>, raw: f64) -> Result<Value<'_
     )
 }
 
-/// Reads a bitmap id that an internal host function received from the shim.
 fn canvas_id_argument(ctx: &Ctx<'_>, raw: f64) -> Result<CanvasId> {
     crate::js::bridge::enforce_range_u64(raw)
         .map(CanvasId)
         .ok_or_else(|| Exception::throw_type(ctx, "invalid canvas id"))
 }
 
-/// The bitmap id of an `OffscreenCanvas`, read through the pristine brand the
-/// shim keeps in a realm-private map. A plain object with the same shape is
-/// not an `OffscreenCanvas`.
 pub(crate) fn offscreen_canvas_id<'js>(
     ctx: &Ctx<'js>,
     value: &Value<'js>,
@@ -187,7 +159,6 @@ pub(crate) fn offscreen_canvas_id<'js>(
     Ok(crate::js::bridge::enforce_range_u64(raw).map(CanvasId))
 }
 
-/// Builds the `CanvasRenderingContext2D` constructor and its prototype.
 pub(crate) fn install(ctx: &Ctx<'_>) -> Result<()> {
     let host = crate::js::bridge::object(ctx)?;
     host.set("__tbOffscreenCanvasNew", Func::from(offscreen_canvas_new))?;
@@ -235,8 +206,7 @@ pub(crate) fn install(ctx: &Ctx<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Reads an `ImageBitmap`'s pixels for structured serialization
-/// (<https://html.spec.whatwg.org/multipage/structured-data.html#serializable-objects>).
+// https://html.spec.whatwg.org/multipage/structured-data.html#serializable-objects
 fn image_bitmap_pixels<'js>(ctx: Ctx<'js>, image: Value<'js>) -> Result<Value<'js>> {
     let null = || Value::new_null(ctx.clone());
     let Some(object) = image.as_object() else {
@@ -255,9 +225,7 @@ fn image_bitmap_pixels<'js>(ctx: Ctx<'js>, image: Value<'js>) -> Result<Value<'j
     Ok(TypedArray::new(ctx.clone(), bitmap.pixels.to_vec())?.into_value())
 }
 
-/// Builds a fresh `ImageBitmap` from serialized pixels, so a clone does not
-/// share the source's bitmap
-/// (<https://html.spec.whatwg.org/multipage/structured-data.html#structureddeserialize>).
+// https://html.spec.whatwg.org/multipage/structured-data.html#structureddeserialize
 fn image_bitmap_from<'js>(
     ctx: Ctx<'js>,
     width: u32,
@@ -275,9 +243,7 @@ fn install_path2d(ctx: &Ctx<'_>) -> Result<()> {
     path2d::install(ctx)
 }
 
-/// `new OffscreenCanvas(width, height)`: allocate a bitmap in this realm with
-/// no DOM node
-/// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-offscreencanvas-offscreencanvas>).
+// https://html.spec.whatwg.org/multipage/canvas.html#dom-offscreencanvas-offscreencanvas
 fn offscreen_canvas_new(ctx: Ctx<'_>, width: f64, height: f64) -> Result<f64> {
     let world = world(&ctx)?;
     let (realm, document) = {
@@ -293,8 +259,7 @@ fn offscreen_canvas_new(ctx: Ctx<'_>, width: f64, height: f64) -> Result<f64> {
     Ok(crate::js::bridge::js_number(id.0))
 }
 
-/// The bitmap id's width or height
-/// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-offscreencanvas-width>).
+// https://html.spec.whatwg.org/multipage/canvas.html#dom-offscreencanvas-width
 fn offscreen_canvas_width(ctx: Ctx<'_>, raw: f64) -> Result<u32> {
     let id = canvas_id_argument(&ctx, raw)?;
     with_offscreen_registry(&ctx, id, |registry| {
@@ -311,8 +276,7 @@ fn offscreen_canvas_height(ctx: Ctx<'_>, raw: f64) -> Result<u32> {
     })
 }
 
-/// Replaces the bitmap with a new transparent one of the requested width
-/// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-offscreencanvas-width>).
+// https://html.spec.whatwg.org/multipage/canvas.html#dom-offscreencanvas-width
 fn offscreen_canvas_set_width(ctx: Ctx<'_>, raw: f64, value: f64) -> Result<()> {
     let id = canvas_id_argument(&ctx, raw)?;
     let width = canvas_u32(value);
@@ -335,16 +299,13 @@ fn offscreen_canvas_set_height(ctx: Ctx<'_>, raw: f64, value: f64) -> Result<()>
     })
 }
 
-/// `OffscreenCanvas.getContext("2d")`: create the context object on the bitmap
-/// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-offscreencanvas-getcontext>).
+// https://html.spec.whatwg.org/multipage/canvas.html#dom-offscreencanvas-getcontext
 fn offscreen_canvas_context<'js>(
     ctx: Ctx<'js>,
     raw: f64,
     options: Opt<Value<'js>>,
 ) -> Result<Value<'js>> {
     let id = canvas_id_argument(&ctx, raw)?;
-    // The dictionary converts before the context mode changes, so a throwing
-    // getter leaves the canvas untouched.
     read_context_options(&ctx, options.0.as_ref())?;
     let existing = with_offscreen_registry(&ctx, id, |registry| Ok(registry.canvas_mode(id)))?;
     match existing {
@@ -357,8 +318,6 @@ fn offscreen_canvas_context<'js>(
         }
         Some(crate::js::world::CanvasMode::None) | None => {}
         Some(crate::js::world::CanvasMode::TwoD | crate::js::world::CanvasMode::Bitmap) => {
-            // The shim returns the same context object it stored, so a second
-            // request never reaches here.
             return Ok(Value::new_null(ctx.clone()));
         }
     }
@@ -370,8 +329,7 @@ fn offscreen_canvas_context<'js>(
     Ok(context)
 }
 
-/// The transfer steps unset the sender's bitmap
-/// (<https://html.spec.whatwg.org/multipage/structured-data.html#transferable-objects>).
+// https://html.spec.whatwg.org/multipage/structured-data.html#transferable-objects
 fn offscreen_canvas_detach(ctx: Ctx<'_>, raw: f64) -> Result<()> {
     let id = canvas_id_argument(&ctx, raw)?;
     with_offscreen_registry(&ctx, id, |registry| {
@@ -380,7 +338,6 @@ fn offscreen_canvas_detach(ctx: Ctx<'_>, raw: f64) -> Result<()> {
     })
 }
 
-/// Runs `run` against the registry after checking that this realm owns `id`.
 fn with_offscreen_registry<R>(
     ctx: &Ctx<'_>,
     id: CanvasId,
@@ -399,9 +356,7 @@ fn with_offscreen_registry<R>(
     run(&mut registry)
 }
 
-/// `CanvasGradient` and `CanvasPattern` constructors: canvas returns branded
-/// instances, and the globals make `instanceof` and prototype checks work
-/// (<https://html.spec.whatwg.org/multipage/canvas.html#canvasgradient>).
+// https://html.spec.whatwg.org/multipage/canvas.html#canvasgradient
 fn install_gradient_objects(ctx: &Ctx<'_>) -> Result<()> {
     for name in ["CanvasGradient", "CanvasPattern"] {
         let prototype = Object::new(ctx.clone())?;
@@ -418,11 +373,6 @@ fn install_gradient_objects(ctx: &Ctx<'_>) -> Result<()> {
     Ok(())
 }
 
-/// `TextMetrics` and `TextCluster` interface objects. Both are non-constructible
-/// platform interfaces, so the global is a throwing constructor and the
-/// prototypes carry the members. The prototypes live in the realm's brand map,
-/// so a cluster from an iframe never resolves against another realm's
-/// prototype (the rquickjs `Class::instance` cache is runtime-wide).
 fn install_text_metrics_objects(ctx: &Ctx<'_>) -> Result<()> {
     let metrics = Object::new(ctx.clone())?;
     for (name, getter) in [
@@ -457,8 +407,6 @@ fn install_text_metrics_objects(ctx: &Ctx<'_>) -> Result<()> {
 
     let cluster = Object::new(ctx.clone())?;
     cluster.prop("begin", Accessor::from(cluster_begin))?;
-    // `TextCluster.start` is the name the current WPT suite uses; the explainer
-    // IDL calls it `begin`. Expose both rather than pick a side.
     cluster.prop("start", Accessor::from(cluster_begin))?;
     cluster.prop("end", Accessor::from(cluster_end))?;
     cluster.prop("x", Accessor::from(cluster_x))?;
@@ -472,9 +420,6 @@ fn install_text_metrics_objects(ctx: &Ctx<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Publishes a non-constructible platform interface: a throwing constructor
-/// whose `prototype` is the member object, and a realm-local brand entry that
-/// instance creation looks up.
 fn install_interface_object<'js>(ctx: &Ctx<'js>, name: &str, prototype: Object<'js>) -> Result<()> {
     let ctor = Function::new(ctx.clone(), illegal_constructor)?;
     ctor.prop("name", Property::from(name).configurable())?;
@@ -495,7 +440,6 @@ fn illegal_constructor(ctx: Ctx<'_>) -> Result<Value<'_>> {
     Err(Exception::throw_type(&ctx, "illegal constructor"))
 }
 
-/// One 2D context object for `id`.
 pub(crate) fn context_object<'js>(ctx: &Ctx<'js>, id: CanvasId) -> Result<Value<'js>> {
     let ctor: Function = ctx.globals().get("CanvasRenderingContext2D")?;
     let prototype: Object = ctor.get("prototype")?;
@@ -507,11 +451,7 @@ pub(crate) fn context_object<'js>(ctx: &Ctx<'js>, id: CanvasId) -> Result<Value<
     Ok(object.into_value())
 }
 
-/// Converts `getContext` options to `CanvasRenderingContext2DSettings` in
-/// `WebIDL` dictionary member order (lexicographic by member name). The settings
-/// are not stored yet, but conversion order is observable through getters and
-/// must match
-/// (<https://webidl.spec.whatwg.org/#es-dictionary>).
+// https://webidl.spec.whatwg.org/#es-dictionary
 pub(crate) fn read_context_options<'js>(
     ctx: &Ctx<'js>,
     options: Option<&Value<'js>>,
@@ -522,9 +462,7 @@ pub(crate) fn read_context_options<'js>(
     if options.is_undefined() || options.is_null() {
         return Ok(());
     }
-    // `getContext` takes `any` for options: primitives are ignored rather than
-    // converted as a dictionary
-    // (<https://html.spec.whatwg.org/multipage/canvas.html#dom-canvas-getcontext>).
+    // https://html.spec.whatwg.org/multipage/canvas.html#dom-canvas-getcontext
     let Some(object) = options.as_object() else {
         return Ok(());
     };
@@ -809,15 +747,8 @@ fn noop(_: This<Object<'_>>) -> Result<()> {
     Ok(())
 }
 
-// ---- state access --------------------------------------------------------
-
 fn context_canvas_id(ctx: &Ctx<'_>, object: &Object<'_>) -> Result<CanvasId> {
     let id = CanvasId(object.get("__tbCanvasId")?);
-    // The id is a claim like any page-writable property, so the registry
-    // decides whether this realm owns it. An element slot must still be a
-    // `<canvas>` in a document this realm created; an offscreen slot must
-    // belong to this realm, which is what lets a worker with no document use
-    // one.
     let world = world(ctx)?;
     let registry = world.borrow().registry();
     if !registry.borrow().owns_canvas(id, &world.borrow()) {
@@ -830,7 +761,6 @@ fn context_canvas_id(ctx: &Ctx<'_>, object: &Object<'_>) -> Result<CanvasId> {
     Ok(id)
 }
 
-/// The element behind a 2D context, or `None` for an `OffscreenCanvas`.
 fn context_canvas_node(ctx: &Ctx<'_>, object: &Object<'_>) -> Result<Option<NodeId>> {
     let id = context_canvas_id(ctx, object)?;
     let world = world(ctx)?;
@@ -838,8 +768,7 @@ fn context_canvas_node(ctx: &Ctx<'_>, object: &Object<'_>) -> Result<Option<Node
     Ok(registry.borrow().canvas_node(id))
 }
 
-/// Rejects members that cannot run while a layer is open
-/// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-beginlayer>).
+// https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-beginlayer
 fn reject_open_layer(ctx: &Ctx<'_>, object: &Object<'_>) -> Result<()> {
     if with_canvas(ctx, object, |canvas| canvas.has_open_layer())? {
         return Err(crate::js::bindings::throw_dom(
@@ -857,15 +786,11 @@ fn with_canvas<R>(
     run: impl FnOnce(&mut Canvas2D) -> R,
 ) -> Result<R> {
     let id = context_canvas_id(ctx, object)?;
-    // A content attribute change resets the bitmap even when it bypassed the
-    // IDL setter, so follow the element's current size before every use
-    // (<https://html.spec.whatwg.org/multipage/canvas.html#the-canvas-element>).
+    // https://html.spec.whatwg.org/multipage/canvas.html#the-canvas-element
     let world = world(ctx)?;
     let registry = world.borrow().registry();
     let mut registry = registry.borrow_mut();
-    // A content attribute change resets the bitmap even when it bypassed the
-    // IDL setter, so follow the element's current size before every use
-    // (<https://html.spec.whatwg.org/multipage/canvas.html#the-canvas-element>).
+    // https://html.spec.whatwg.org/multipage/canvas.html#the-canvas-element
     if let Some(node) = registry.canvas_node(id) {
         let dimensions = (
             canvas_dimension(ctx, node, "width", 300),
@@ -881,8 +806,7 @@ fn with_canvas<R>(
     Ok(run(canvas))
 }
 
-/// A canvas content attribute as a bitmap dimension
-/// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-canvas-width>).
+// https://html.spec.whatwg.org/multipage/canvas.html#dom-canvas-width
 pub(crate) fn canvas_dimension(ctx: &Ctx<'_>, id: NodeId, attribute: &str, default: u32) -> u32 {
     let value = world(ctx)
         .ok()
@@ -905,8 +829,6 @@ fn f32_of(value: f64) -> f32 {
     value
 }
 
-/// `WebIDL` `[EnforceRange] long`: reject non-finite values and values outside
-/// the long range with `TypeError`, then truncate.
 fn enforce_long(ctx: &Ctx<'_>, value: f64) -> Result<i32> {
     if !value.is_finite() {
         return Err(Exception::throw_type(ctx, "value must be finite"));
@@ -936,8 +858,6 @@ fn i32_of(value: f64) -> i32 {
     let value = value.clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32;
     value
 }
-
-// ---- state methods -------------------------------------------------------
 
 fn save(this: This<Object<'_>>) -> Result<()> {
     with_canvas(this.0.ctx(), &this.0, state::Canvas2D::save)
@@ -974,8 +894,6 @@ fn begin_layer<'js>(this: This<Object<'js>>, options: Opt<Value<'js>>) -> Result
             && filter.is_object()
             && !filter.is_null()
         {
-            // Validate before reading `name`/`type`/`values`, so an invalid
-            // filter throws before any page getter runs.
             if let Ok(validate) = ctx.globals().get::<_, Function>("__tbValidateFilter") {
                 validate.call::<_, ()>((filter.clone(),))?;
             }
@@ -1043,10 +961,7 @@ fn transform(
     })
 }
 
-/// Reads a `DOMMatrix2DInit` dictionary. Each member is read once, in
-/// lexicographic order, `undefined` falls back to the default, and the
-/// `m11`/`m12`/... aliases override `a`/`b`/...
-/// (<https://drafts.fxtf.org/geometry/#dictdef-dommatrix2dinit>).
+// https://drafts.fxtf.org/geometry/#dictdef-dommatrix2dinit
 #[expect(
     clippy::many_single_char_names,
     reason = "the names are the DOMMatrix2DInit members a through f"
@@ -1080,10 +995,8 @@ fn matrix_2d_init<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Option<tiny
     let m22 = read("m22")?;
     let m41 = read("m41")?;
     let m42 = read("m42")?;
-    // The two spellings may both appear only when each alias agrees
-    // (<https://drafts.csswg.org/geometry/#matrix-validate-and-fixup-2d>).
-    // SameValueZero compares NaN equal and +0 equal to -0
-    // (<https://tc39.es/ecma262/#sec-samevaluezero>).
+    // https://drafts.csswg.org/geometry/#matrix-validate-and-fixup-2d
+    // https://tc39.es/ecma262/#sec-samevaluezero
     let same_value_zero = |left: f64, right: f64| {
         let canonical = |value: f64| {
             if value.is_nan() {
@@ -1219,8 +1132,6 @@ fn get_transform(this: This<Object<'_>>) -> Result<Object<'_>> {
     object.set("isIdentity", transform.is_identity())?;
     Ok(object)
 }
-
-// ---- path methods --------------------------------------------------------
 
 fn begin_path(this: This<Object<'_>>) -> Result<()> {
     with_canvas(this.0.ctx(), &this.0, state::Canvas2D::begin_path)
@@ -1410,9 +1321,7 @@ fn round_rect<'js>(
     height: Coerced<f64>,
     radii: Opt<Value<'js>>,
 ) -> Result<()> {
-    // Step 1 returns before the radii list is validated, so a non-finite
-    // rectangle never throws for its corners
-    // (<https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-roundrect>).
+    // https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-roundrect
     if [*x, *y, *width, *height]
         .iter()
         .any(|value| !value.is_finite())
@@ -1441,8 +1350,6 @@ fn round_rect<'js>(
         }
         radii
     } else {
-        // An omitted radii argument uses one zero radius. It still draws the
-        // rectangle and leaves the step-14 subpath at (x, y).
         vec![(0.0, 0.0)]
     };
     with_canvas(this.0.ctx(), &this.0, |canvas| {
@@ -1456,9 +1363,7 @@ fn round_rect<'js>(
     })
 }
 
-/// Reads the `roundRect` radii argument: one number or `DOMPointInit`, or a
-/// sequence of either
-/// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-roundrect>).
+// https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-roundrect
 fn round_rect_radii(value: &Value<'_>) -> Result<Option<Vec<(f32, f32)>>> {
     let Some(array) = value.as_array() else {
         let Some(pair) = round_rect_radius(value)? else {
@@ -1476,12 +1381,8 @@ fn round_rect_radii(value: &Value<'_>) -> Result<Option<Vec<(f32, f32)>>> {
     Ok(Some(radii))
 }
 
-/// One radius: a number for both axes, or a `DOMPointInit` dictionary whose
-/// missing members read zero.
 fn round_rect_radius(value: &Value<'_>) -> Result<Option<(f32, f32)>> {
     if let Some(object) = value.as_object() {
-        // WebIDL dictionary conversion: a missing or undefined member is 0,
-        // not NaN from ToNumber(undefined).
         let read = |name: &str| -> Result<f32> {
             let member: Value = object.get(name)?;
             if member.is_undefined() || member.is_null() {
@@ -1497,11 +1398,7 @@ fn round_rect_radius(value: &Value<'_>) -> Result<Option<(f32, f32)>> {
     Ok(Some((number, number)))
 }
 
-// ---- painting ------------------------------------------------------------
-
-/// `CanvasFillRule`: an absent rule is nonzero, and any other string is a
-/// `TypeError`
-/// (<https://html.spec.whatwg.org/multipage/canvas.html#canvasfillrule>).
+// https://html.spec.whatwg.org/multipage/canvas.html#canvasfillrule
 fn fill_rule(ctx: &Ctx<'_>, rule: Option<&CanvasString>) -> Result<bool> {
     match rule {
         None => Ok(false),
@@ -1533,7 +1430,6 @@ fn fill<'js>(
                 canvas.fill_borrowed_path(&path.canvas.borrow(), even_odd);
             });
         }
-        // The two-argument overload only accepts a Path2D first.
         if second.0.is_some() {
             return Err(Exception::throw_type(ctx, "fill expects a Path2D"));
         }
@@ -1697,8 +1593,6 @@ fn clear_rect(
     })
 }
 
-// ---- line dash -----------------------------------------------------------
-
 fn get_line_dash(this: This<Object<'_>>) -> Result<rquickjs::Array<'_>> {
     let dash = with_canvas(this.0.ctx(), &this.0, |canvas| canvas.line_dash())?;
     let array = rquickjs::Array::new(this.0.ctx().clone())?;
@@ -1715,8 +1609,7 @@ fn set_line_dash<'js>(this: This<Object<'js>>, values: Value<'js>) -> Result<()>
     let mut dash = Vec::new();
     for value in array.iter::<Coerced<f64>>() {
         let value = f32_of(*value?);
-        // An invalid entry rejects the whole sequence and keeps the old one
-        // (<https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-setlinedash>).
+        // https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-setlinedash
         if !value.is_finite() || value < 0.0 {
             return Ok(());
         }
@@ -1724,8 +1617,6 @@ fn set_line_dash<'js>(this: This<Object<'js>>, values: Value<'js>) -> Result<()>
     }
     with_canvas(this.0.ctx(), &this.0, |canvas| canvas.set_line_dash(dash))
 }
-
-// ---- resources -----------------------------------------------------------
 
 fn create_linear_gradient(
     this: This<Object<'_>>,
@@ -1838,8 +1729,6 @@ fn create_pattern<'js>(
     let source = match source_image(this.0.ctx(), source)? {
         ImageLookup::Decoded(source) => source,
         ImageLookup::Vector(vector) => {
-            // A pattern has no destination rect, so the natural size is the
-            // only scale available.
             let Some(image) = vector.natural(this.0.ctx()) else {
                 return Ok(Value::new_null(this.0.ctx().clone()));
             };
@@ -1879,8 +1768,6 @@ fn resource_object<'js>(this: &Object<'js>, kind: &str, id: u32) -> Result<Value
     } else {
         "CanvasPattern"
     };
-    // Use the intrinsic prototype captured at install time. The global is
-    // page-writable, the intrinsic is not.
     let prototype: Object = if let Some(prototype) = world(this.ctx())?.borrow().brand(ctor_name) {
         prototype.restore(this.ctx())?
     } else {
@@ -1903,8 +1790,6 @@ fn add_color_stop(this: This<Object<'_>>, offset: Coerced<f64>, color: CanvasStr
             "color stop offset must be finite",
         ));
     }
-    // The offset check precedes color parsing, so an out-of-range offset
-    // reports IndexSizeError even when the color is also invalid.
     if !(0.0..=1.0).contains(&*offset) {
         return Err(crate::js::bindings::throw_dom(
             this.0.ctx(),
@@ -1912,9 +1797,7 @@ fn add_color_stop(this: This<Object<'_>>, offset: Coerced<f64>, color: CanvasStr
             "offset out of range",
         ));
     }
-    // `currentColor` in a gradient stop resolves to opaque black: canvas
-    // color stops do not inherit the element's CSS color
-    // (<https://html.spec.whatwg.org/multipage/canvas.html#dom-canvasgradient-addcolorstop>).
+    // https://html.spec.whatwg.org/multipage/canvas.html#dom-canvasgradient-addcolorstop
     let color = if color.trim().eq_ignore_ascii_case("currentColor") {
         [0, 0, 0, 255]
     } else if let Some((color, _)) = css_color_exact(this.0.ctx(), &this.0, &color)? {
@@ -1950,8 +1833,6 @@ fn set_pattern_transform<'js>(this: This<Object<'js>>, matrix: Value<'js>) -> Re
         canvas.set_pattern_transform(id, transform);
     })
 }
-
-// ---- image data ----------------------------------------------------------
 
 fn install_image_data(ctx: &Ctx<'_>) -> Result<()> {
     let prototype = Object::new(ctx.clone())?;
@@ -2008,8 +1889,6 @@ fn image_data_read_only(_this: This<Object<'_>>, _value: Value<'_>) -> Result<()
     Ok(())
 }
 
-/// Runs the `ImageData` constructor as a native callback so it can inspect
-/// `new.target`; signature-derived callbacks cannot see `Params`.
 struct ImageDataConstructor;
 
 impl<'js> rquickjs::function::IntoJsFunc<'js, ()> for ImageDataConstructor {
@@ -2022,8 +1901,7 @@ impl<'js> rquickjs::function::IntoJsFunc<'js, ()> for ImageDataConstructor {
     }
 }
 
-/// Both `ImageData` constructor overloads
-/// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-imagedata-imagedata>).
+// https://html.spec.whatwg.org/multipage/canvas.html#dom-imagedata-imagedata
 fn image_data_construct<'js>(params: &rquickjs::function::Params<'_, 'js>) -> Result<Value<'js>> {
     let ctx = params.ctx().clone();
     if !params.is_constructor() {
@@ -2063,9 +1941,6 @@ fn image_data_construct<'js>(params: &rquickjs::function::Params<'_, 'js>) -> Re
         initialize_image_data_from_data(ctx, &object, data.len(), first, sw, sh, settings)?;
         return Ok(object.into_value());
     }
-    // The other data-overload member is Float16Array, which this engine does
-    // not implement. Any other value selects the numeric overload, where
-    // `null`/`{}` go through ToNumber to 0 and fail with IndexSizeError.
     let width = *Coerced::<f64>::from_js(ctx, first.clone())?;
     let height = args
         .get(1)
@@ -2078,9 +1953,6 @@ fn image_data_construct<'js>(params: &rquickjs::function::Params<'_, 'js>) -> Re
     Ok(object.into_value())
 }
 
-/// A `Uint8ClampedArray`'s buffer is shared when the engine does not classify
-/// it as an ordinary `ArrayBuffer`. Class checks survive cross-realm buffers;
-/// a page cannot fake the internal class with a constructor name.
 fn image_data_buffer_is_shared(value: &Value<'_>) -> bool {
     let Some(buffer) = value
         .as_object()
@@ -2092,8 +1964,7 @@ fn image_data_buffer_is_shared(value: &Value<'_>) -> bool {
     rquickjs::ArrayBuffer::from_value(buffer).is_none()
 }
 
-/// The data overload of the `ImageData` constructor
-/// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-imagedata-with-data>).
+// https://html.spec.whatwg.org/multipage/canvas.html#dom-imagedata-with-data
 fn initialize_image_data_from_data<'js>(
     ctx: &Ctx<'js>,
     object: &Object<'js>,
@@ -2171,9 +2042,7 @@ fn new_blank_image_data<'js>(
     set_image_data(ctx, object, width, height, data, color_space, pixel_format)
 }
 
-/// A dictionary argument must be an object (or null/undefined). Other
-/// primitives cannot convert to `ImageDataSettings` and throw `TypeError`
-/// (<https://webidl.spec.whatwg.org/#es-dictionary>).
+// https://webidl.spec.whatwg.org/#es-dictionary
 fn validate_image_data_settings(ctx: &Ctx<'_>, settings: Option<&Value<'_>>) -> Result<()> {
     if let Some(value) = settings
         && !value.is_null()
@@ -2263,7 +2132,6 @@ fn get_image_data(
     sh: Coerced<f64>,
 ) -> Result<Value<'_>> {
     reject_open_layer(this.0.ctx(), &this.0)?;
-    // The IDL marks every argument `[EnforceRange] long`.
     let (mut sx, mut sy, mut sw, mut sh) = (
         f64::from(enforce_long(this.0.ctx(), *sx)?),
         f64::from(enforce_long(this.0.ctx(), *sy)?),
@@ -2277,8 +2145,6 @@ fn get_image_data(
             "source width or height is zero",
         ));
     }
-    // Negative extents move the origin and normalize, like Blink
-    // (`base_rendering_context_2d.cc`, getImageDataInternal).
     if sw < 0.0 {
         sx += sw;
         sw = -sw;
@@ -2366,9 +2232,6 @@ fn create_image_data<'js>(
     if let Some(second) = second.0 {
         let width = *Coerced::<f64>::from_js(ctx, first)?;
         let height = *second;
-        // Blink takes the absolute value of both dimensions
-        // (`BaseRenderingContext2D::createImageData`), but both are
-        // `[EnforceRange] long` first.
         let width = enforce_long(ctx, width)?.unsigned_abs();
         let height = enforce_long(ctx, height)?.unsigned_abs();
         if width == 0 || height == 0 {
@@ -2453,10 +2316,6 @@ fn read_image_data(value: &Value<'_>) -> Result<Option<(u32, u32, Vec<u8>)>> {
     let Some(bytes) = typed_array_bytes(&data)? else {
         return Ok(None);
     };
-    // A matching width and height do not validate the buffer: a page can hand
-    // `putImageData` any object with a short array and huge sizes, and the
-    // per-pixel loop would run for hours inside Rust, where the JS interrupt
-    // handler never runs.
     let Some(expected) = crate::js::world::canvas_bytes(width, height) else {
         return Ok(None);
     };
@@ -2502,10 +2361,7 @@ fn canvas_u32(value: f64) -> u32 {
     value
 }
 
-// ---- image bitmaps -------------------------------------------------------
-
-/// `ImageBitmap` and the host half of `createImageBitmap`
-/// (<https://html.spec.whatwg.org/multipage/imagebitmap-and-animations.html#imagebitmaps>).
+// https://html.spec.whatwg.org/multipage/imagebitmap-and-animations.html#imagebitmaps
 fn install_image_bitmap(ctx: &Ctx<'_>) -> Result<()> {
     let prototype = Object::new(ctx.clone())?;
     prototype.prop(
@@ -2751,8 +2607,6 @@ fn resize_bitmap(
     pixels: Arc<[u8]>,
     options: &BitmapOptions,
 ) -> Option<(u32, u32, Arc<[u8]>)> {
-    // `RgbaImage` owns its pixels, so a raster still shared with the source
-    // cache is copied once here; `createImageBitmap` is not a hot path.
     let buffer = image::RgbaImage::from_raw(width, height, pixels.to_vec())?;
     let (source_width, source_height) = (buffer.width(), buffer.height());
     let (target_width, target_height) = match (options.resize_width, options.resize_height) {
@@ -2775,9 +2629,7 @@ fn resize_bitmap(
     Some((resized.width(), resized.height(), resized.into_raw().into()))
 }
 
-/// The unspecified resize axis keeps the source aspect ratio, rounded to the
-/// nearest pixel
-/// (<https://html.spec.whatwg.org/multipage/imagebitmap-and-animations.html#dom-createimagebitmap>).
+// https://html.spec.whatwg.org/multipage/imagebitmap-and-animations.html#dom-createimagebitmap
 fn scaled_side(side: u32, target: u32, source: u32) -> u32 {
     if source == 0 {
         return 1;
@@ -2792,8 +2644,6 @@ fn scaled_side(side: u32, target: u32, source: u32) -> u32 {
     let scaled = scaled.max(1.0) as u32;
     scaled
 }
-
-// ---- images --------------------------------------------------------------
 
 fn draw_image<'js>(
     this: This<Object<'js>>,
@@ -2867,9 +2717,6 @@ fn draw_image<'js>(
             let Some(image) = vector.rasterize(this.0.ctx(), raster_width, raster_height) else {
                 return Ok(());
             };
-            // `src` selects a region in intrinsic image pixels; the raster is
-            // that image at `raster_width x raster_height`, so the same region
-            // is a proportionally larger rectangle.
             let factor_x = to_f32(raster_width) / to_f32(vector.natural_width);
             let factor_y = to_f32(raster_height) / to_f32(vector.natural_height);
             let src = Rect::new(
@@ -2882,34 +2729,20 @@ fn draw_image<'js>(
                 canvas.draw_image(&image, src, dst);
             })
         }
-        // The natural-size lookup above returned for these.
         ImageLookup::NotReady | ImageLookup::Unsupported | ImageLookup::Invalid => Ok(()),
     }
 }
 
-/// A `drawImage`/`createPattern` source lookup.
 enum ImageLookup {
     Decoded(SourceImage),
-    /// A vector source (`<img>` whose data is SVG). Rasterization is deferred
-    /// so `drawImage` can choose the destination's device resolution instead
-    /// of scaling a fixed raster.
     Vector(VectorSource),
-    /// A canvas or image that exists but has no pixels yet; drawing it is a
-    /// no-op, not an error.
     NotReady,
-    /// The object is not an image source at all.
     Unsupported,
-    /// The source is invalid (zero-sized canvas, closed bitmap).
     Invalid,
 }
 
-/// Decodes a `drawImage`/`createPattern` source: a canvas element, an
-/// `ImageData`/`ImageBitmap`, or an `<img>` with decoded pixels
-/// (<https://html.spec.whatwg.org/multipage/canvas.html#check-the-usability-of-the-image-argument>).
+// https://html.spec.whatwg.org/multipage/canvas.html#check-the-usability-of-the-image-argument
 fn source_image<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<ImageLookup> {
-    // A canvas this realm owns is its bitmap, not a DOM lookup. `<canvas>` and
-    // `OffscreenCanvas` share the snapshot and taint rules; only their
-    // dimensions differ.
     if let Some(host) = ElementCanvas::resolve(ctx, &value) {
         return Ok(canvas_host_image(ctx, host));
     }
@@ -2954,12 +2787,8 @@ fn source_image<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<ImageLookup> {
         .as_ref()
         .is_some_and(|request| request.status == blitz_dom::ImageRequestStatus::Failed);
     let zero_size = size.is_some_and(|(width, height)| width == 0 || height == 0);
-    // A pending request is not fully decodable, so `drawImage` draws
-    // nothing: reassigning `src` starts a new request whose state is
-    // unavailable, and the previous request's pixels are not what the
-    // element's image data names any more
-    // (<https://html.spec.whatwg.org/multipage/canvas.html#check-the-usability-of-the-image-argument>,
-    // <https://html.spec.whatwg.org/multipage/images.html#img-not-fully-decodable>).
+    // https://html.spec.whatwg.org/multipage/canvas.html#check-the-usability-of-the-image-argument
+    // https://html.spec.whatwg.org/multipage/images.html#img-not-fully-decodable
     if loading {
         return Ok(ImageLookup::NotReady);
     }
@@ -2977,7 +2806,6 @@ fn source_image<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<ImageLookup> {
     Ok(lookup)
 }
 
-/// The pixels of a canvas source, whether it has a context yet or not.
 fn canvas_host_image(ctx: &Ctx<'_>, host: impl CanvasHost) -> ImageLookup {
     let (width, height) = host.dimensions(ctx);
     if width == 0 || height == 0 {
@@ -2993,8 +2821,6 @@ fn canvas_host_image(ctx: &Ctx<'_>, host: impl CanvasHost) -> ImageLookup {
             ImageLookup::Decoded(snapshot)
         };
     }
-    // A canvas without a context is still an empty bitmap. Its declared size
-    // is page-controlled, so an over-budget one has no pixels to draw.
     let pixels =
         crate::js::world::canvas_bytes(width, height).map_or_else(Vec::new, |bytes| vec![0; bytes]);
     ImageLookup::Decoded(SourceImage {
@@ -3005,9 +2831,6 @@ fn canvas_host_image(ctx: &Ctx<'_>, host: impl CanvasHost) -> ImageLookup {
     })
 }
 
-/// Looks up a canvas, SVG image, or HTML image element by node id. An HTML
-/// image's canvas taint is `origin_clean`, recorded when its response
-/// settled; a canvas is its own bitmap and carries no taint of its own.
 fn source_element(
     ctx: &Ctx<'_>,
     id: NodeId,
@@ -3026,14 +2849,11 @@ fn source_element(
         );
 
     if data.name.ns == crate::dom::tree::html_namespace() && data.name.local.as_str() == "canvas" {
-        // A canvas without a context is still an empty bitmap.
         let width = canvas_dimension(ctx, id, "width", 300);
         let height = canvas_dimension(ctx, id, "height", 150);
         if width == 0 || height == 0 {
             return Some(ImageLookup::Invalid);
         }
-        // A context-less canvas is transparent, but its declared size is
-        // page-controlled: an over-budget one has no pixels to draw.
         let pixels = crate::js::world::canvas_bytes(width, height)
             .map_or_else(Vec::new, |bytes| vec![0; bytes]);
         return Some(ImageLookup::Decoded(SourceImage {
@@ -3044,7 +2864,6 @@ fn source_element(
         }));
     }
     if data.name.ns == crate::dom::tree::svg_namespace() && data.name.local.as_str() == "image" {
-        // A rasterized SVG image is usable; zero-sized and detached sources are null.
         let has_source = data.attrs().iter().any(|attribute| {
             matches!(attribute.name.local.as_str(), "href" | "src")
                 && !attribute.value.trim().is_empty()
@@ -3055,15 +2874,10 @@ fn source_element(
                 width: raster.width,
                 height: raster.height,
                 pixels: raster.data.as_ref().to_vec().into(),
-                // Blitz does not decode SVG `<image>` resources, so this is
-                // unreachable today; if it starts, fail closed rather than
-                // claim the pixels are clean.
                 origin_clean: false,
             }),
             None if broken => ImageLookup::Invalid,
             None if zero_size || !connected || !has_source => ImageLookup::NotReady,
-            // A connected SVG image that Blitz did not rasterize and did not
-            // mark broken has no usable pixels yet.
             None => ImageLookup::NotReady,
         });
     }
@@ -3072,10 +2886,7 @@ fn source_element(
     }
     match data.name.local.as_str() {
         "video" => {
-            // Video decoding is not implemented, so a video element never has
-            // a frame to draw. It is a valid source type, not an unsupported
-            // one
-            // (<https://html.spec.whatwg.org/multipage/canvas.html#canvasimagesource>).
+            // https://html.spec.whatwg.org/multipage/canvas.html#canvasimagesource
             return Some(ImageLookup::NotReady);
         }
         "img" => {}
@@ -3105,20 +2916,13 @@ fn source_element(
             width: raster.width,
             height: raster.height,
             pixels: raster.data.as_ref().to_vec().into(),
-            // Only the settled request's taint record speaks for the pixels;
-            // an unrecorded request is treated as cross-origin.
             origin_clean: origin_clean.unwrap_or(false),
         })),
-        // A connected missing resource is invalid; a zero-sized image, a
-        // detached image, or one with no source is not ready.
         None if has_source && connected && !zero_size => Some(ImageLookup::Invalid),
         None => Some(ImageLookup::NotReady),
     }
 }
 
-/// A parsed vector image source. Rasterization is deferred so `drawImage` can
-/// choose the destination's device resolution instead of scaling a fixed
-/// raster.
 struct VectorSource {
     svg: blitz_dom::node::SvgImageData,
     natural_width: u32,
@@ -3127,13 +2931,10 @@ struct VectorSource {
 }
 
 impl VectorSource {
-    /// Rasterizes at the natural size, for callers without a destination rect
-    /// (`createPattern`, `createImageBitmap`).
     fn natural(&self, ctx: &Ctx<'_>) -> Option<SourceImage> {
         self.rasterize(ctx, self.natural_width, self.natural_height)
     }
 
-    /// Rasterizes at `width x height` through the realm's bounded cache.
     fn rasterize(&self, ctx: &Ctx<'_>, width: u32, height: u32) -> Option<SourceImage> {
         Some(SourceImage {
             width,
@@ -3143,9 +2944,6 @@ impl VectorSource {
         })
     }
 
-    /// The raster size for a draw of `src` (in intrinsic image pixels) into
-    /// `dst` (in user units) under a CTM that maps user units to device pixels
-    /// by `(scale_x, scale_y)`.
     fn raster_size(&self, src: Rect, dst: Rect, scale_x: f32, scale_y: f32) -> Option<(u32, u32)> {
         vector_raster_size(
             self.natural_width,
@@ -3158,13 +2956,6 @@ impl VectorSource {
     }
 }
 
-/// The raster size for a vector draw of `src` (in intrinsic image pixels)
-/// into `dst` (in user units), under a CTM that maps user units to device
-/// pixels by `(scale_x, scale_y)`.
-///
-/// The raster never shrinks below the intrinsic size: upscaling a small SVG to
-/// a large destination is the case that looks soft, while keeping the
-/// intrinsic size for a downscale leaves room for the sampler.
 fn vector_raster_size(
     natural_width: u32,
     natural_height: u32,
@@ -3193,15 +2984,9 @@ fn vector_raster_size(
     )
 }
 
-/// The most cached SVG rasters and the bytes they may hold together. A page
-/// can request any size, so both bounds are needed.
 const MAX_SVG_RASTER_ENTRIES: usize = 8;
 const MAX_SVG_RASTER_BYTES: usize = 32 * 1024 * 1024;
 
-/// Bounded cache of SVG rasters, keyed by the parsed tree and target size.
-///
-/// The entry keeps the tree alive, so the `Arc` identity cannot be reused by a
-/// later parse while its raster is cached.
 #[derive(Default)]
 pub(crate) struct SvgRasterCache {
     entries: Vec<SvgRasterEntry>,
@@ -3227,8 +3012,6 @@ impl SvgRasterCache {
                 && entry.height == height
                 && Arc::ptr_eq(&entry.svg.tree, &svg.tree)
         })?;
-        // A repeated draw at the same size is the common case, so the hit
-        // moves to the front and eviction takes from the back.
         if index != 0 {
             let entry = self.entries.remove(index);
             self.entries.insert(0, entry);
@@ -3243,7 +3026,6 @@ impl SvgRasterCache {
         height: u32,
         pixels: Arc<[u8]>,
     ) {
-        // An oversized raster is used once, not retained for the whole realm.
         if pixels.len() > MAX_SVG_RASTER_BYTES {
             return;
         }
@@ -3266,8 +3048,6 @@ impl SvgRasterCache {
     }
 }
 
-/// Rasterizes `svg` at `width x height` into straight RGBA, through the
-/// realm's cache.
 fn svg_raster(
     ctx: &Ctx<'_>,
     svg: &blitz_dom::node::SvgImageData,
@@ -3289,15 +3069,11 @@ fn svg_raster(
     Some(pixels)
 }
 
-/// Renders `svg` at `width x height` into straight RGBA. This is the work the
-/// cache exists to avoid repeating.
 fn render_svg_pixels(
     svg: &blitz_dom::node::SvgImageData,
     width: u32,
     height: u32,
 ) -> Option<Vec<u8>> {
-    // The declared viewport is page-controlled. Refuse anything above the
-    // canvas pixmap budget instead of letting a huge SVG allocate gigabytes.
     let bytes = crate::js::world::canvas_bytes(width, height)?;
     let mut painter = anyrender_tiny_skia::TinySkiaScenePainter::new(width, height);
     #[expect(
@@ -3326,8 +3102,6 @@ fn render_svg_pixels(
     Some(pixels)
 }
 
-/// A raster size clamped to the pixmap budget by shrinking both sides
-/// proportionally.
 fn fit_raster(width: f32, height: f32) -> Option<(u32, u32)> {
     if !(width.is_finite() && height.is_finite() && width > 0.0 && height > 0.0) {
         return None;
@@ -3348,8 +3122,6 @@ fn fit_raster(width: f32, height: f32) -> Option<(u32, u32)> {
     Some((width.to_u32()?, height.to_u32()?))
 }
 
-/// A raster side in device pixels. Raster sizes are bounded by
-/// [`crate::js::world::MAX_CANVAS_BYTES`], far inside the exact `f32` range.
 fn to_f32(value: u32) -> f32 {
     #[expect(
         clippy::cast_precision_loss,
@@ -3358,8 +3130,6 @@ fn to_f32(value: u32) -> f32 {
     let value = value as f32;
     value
 }
-
-// ---- text ----------------------------------------------------------------
 
 fn fill_text(
     this: This<Object<'_>>,
@@ -3401,11 +3171,7 @@ fn stroke_text_cluster<'js>(
     draw_text_cluster(this, &cluster, *x, *y, options, true)
 }
 
-/// Paints one measured cluster from the shaping recorded by `measureText`. The
-/// glyph outlines are the measured ones, so a font or spacing change after
-/// measurement cannot reshape the cluster, and drawing every cluster at the
-/// same anchor reproduces `fillText` exactly
-/// (<https://github.com/whatwg/html/issues/10677>).
+// https://github.com/whatwg/html/issues/10677
 fn draw_text_cluster<'js>(
     this: This<Object<'js>>,
     cluster: &Class<'js, JsTextCluster>,
@@ -3443,9 +3209,6 @@ fn draw_text_cluster<'js>(
         .unwrap_or(cluster_baseline);
     let scale_x = record.shaped.scale_x;
     let advance = cluster.advance * scale_x;
-    // Blink replaces the cluster's recorded position with an explicit option and
-    // otherwise uses it as-is. That position was computed from the *measured*
-    // alignment, so drawing adds this call's alignment delta on top.
     let cluster_x = f64::from(
         cluster.offset * scale_x + align_delta(advance, cluster_align)
             - -alignment_offset(&record.shaped, record.align),
@@ -3478,8 +3241,6 @@ fn draw_text(
     draw_text_with(this, text, x, y, max_width, stroke)
 }
 
-/// Horizontal shift from the text anchor to the alignment point. Negative
-/// shifts move the string left for `center` and `right`.
 fn alignment_offset_width(width: f32, align: text::ResolvedAlign) -> f32 {
     match align {
         text::ResolvedAlign::Center => -width / 2.0,
@@ -3492,16 +3253,11 @@ fn alignment_offset(shaped: &text::ShapedText, align: text::ResolvedAlign) -> f3
     alignment_offset_width(shaped.width * shaped.scale_x, align)
 }
 
-/// Blink's `getTextAlignDelta`: the distance from the anchor to the text
-/// origin, positive in the inline direction. It is the negation of
-/// [`alignment_offset_width`], which is the shift applied at draw time
-/// (<https://source.chromium.org/chromium/chromium/src/+/main:third_party/blink/renderer/core/html/canvas/text_metrics.cc>).
+// https://source.chromium.org/chromium/chromium/src/+/main:third_party/blink/renderer/core/html/canvas/text_metrics.cc
 fn align_delta(width: f32, align: text::ResolvedAlign) -> f32 {
     -alignment_offset_width(width, align)
 }
 
-/// Vertical shift from the top of the line box to the requested baseline.
-/// All five text operations share this to keep the signs consistent.
 fn baseline_offset(shaped: &text::ShapedText, baseline: state::TextBaseline) -> f32 {
     match baseline {
         state::TextBaseline::Top => 0.0,
@@ -3544,8 +3300,7 @@ fn draw_text_with(
     let max_width = match max_width {
         None => None,
         Some(value) if value.is_finite() && value > 0.0 => Some(f32_of(value)),
-        // A zero, negative, or non-finite maxWidth paints nothing
-        // (<https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-filltext>).
+        // https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-filltext
         Some(_) => return Ok(()),
     };
     let mut font_ctx = document_font_context(ctx, &this.0)?;
@@ -3566,9 +3321,7 @@ fn draw_text_with(
     let direction = with_canvas(ctx, &this.0, |canvas| canvas.direction().to_owned())?;
     let resolved = resolved_alignment(ctx, &this.0, &align, &direction);
     let dx = alignment_offset(&shaped, resolved);
-    // The shaped layout's origin is the top of the line, so shift it up by
-    // the distance from the top to the chosen baseline
-    // (<https://html.spec.whatwg.org/multipage/canvas.html#text-baselines>).
+    // https://html.spec.whatwg.org/multipage/canvas.html#text-baselines
     let baseline = state::TextBaseline::parse(&baseline).unwrap_or(state::TextBaseline::Alphabetic);
     let dy = baseline_offset(&shaped, baseline);
     let (x, y) = (f32_of(x) + dx, f32_of(y) + dy);
@@ -3581,9 +3334,7 @@ fn draw_text_with(
     })
 }
 
-/// UTF-16 ranges come from `WebIDL` `unsigned long`; negatives are a `TypeError`
-/// and a range outside the string or reversed is an `IndexSizeError`
-/// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-textmetrics-gettextclusters>).
+// https://html.spec.whatwg.org/multipage/canvas.html#dom-textmetrics-gettextclusters
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -3630,9 +3381,6 @@ fn text_range<'js>(
     Ok((start, end))
 }
 
-/// Reads the `TextClusterOptions` dictionary in `WebIDL` member order. A member
-/// that is absent or `undefined` stays `None`, so "not passed" is distinct
-/// from an explicit `0`.
 #[derive(Default)]
 struct TextOptions {
     align: Option<String>,
@@ -3650,9 +3398,6 @@ fn read_text_options<'js>(ctx: &Ctx<'js>, value: Option<&Value<'js>>) -> Result<
     options.baseline = object.get::<_, Option<String>>("baseline")?;
     options.x = object.get::<_, Option<f64>>("x")?;
     options.y = object.get::<_, Option<f64>>("y")?;
-    // WebIDL enum conversion throws `TypeError` for a value outside the enum;
-    // a silently ignored typo would measure at a different alignment than the
-    // page asked for.
     if let Some(align) = &options.align
         && !matches!(
             align.as_str(),
@@ -3672,9 +3417,6 @@ fn read_text_options<'js>(ctx: &Ctx<'js>, value: Option<&Value<'js>>) -> Result<
     Ok(options)
 }
 
-/// The shaping a `TextMetrics` method was called on. Extracting the class
-/// clones the `Rc` and drops the borrow before the caller runs any page
-/// script, so a getter or `valueOf` cannot re-enter a borrowed canvas.
 fn metrics_record(this: &This<Object<'_>>) -> Result<std::rc::Rc<text::TextMetricsRecord>> {
     let metrics = Class::<JsTextMetrics>::from_object(&this.0)
         .ok_or_else(|| Exception::throw_type(this.0.ctx(), "illegal invocation"))?;
@@ -3700,7 +3442,6 @@ fn cluster_parts(
     ))
 }
 
-/// Builds a `TextCluster` bound to this realm's prototype.
 fn text_cluster_object<'js>(
     ctx: &Ctx<'js>,
     record: std::rc::Rc<text::TextMetricsRecord>,
@@ -3725,11 +3466,7 @@ fn text_cluster_object<'js>(
     .into_value())
 }
 
-/// The `actualBoundingBox*` distances for one ink box, in the record's
-/// alignment and baseline. `(left, right, ascent, descent)`.
 fn bounding_box(record: &text::TextMetricsRecord, ink: text::ClusterInk) -> (f32, f32, f32, f32) {
-    // The alignment point sits at `-align_dx` in text space; distances are
-    // measured from it, so `left` grows leftward and `right` rightward.
     let align_dx = alignment_offset(&record.shaped, record.align);
     let dy = baseline_offset(&record.shaped, record.baseline);
     let shift = -record.shaped.ascent - dy;
@@ -3750,12 +3487,6 @@ fn no_ink() -> text::ClusterInk {
     }
 }
 
-/// The union of the ink of every cluster whose start index falls in
-/// `[start, end)`. Blink attributes each glyph to its cluster's start
-/// character, so a range that excludes a ligature's start contributes no ink;
-/// this follows that rule rather than intersecting the cluster's span. The
-/// WPT reference shapes a space-padded copy of the range, which is a third
-/// answer this engine does not reproduce (the suite only measures `ABCDE`).
 fn range_ink(record: &text::TextMetricsRecord, start: usize, end: usize) -> text::ClusterInk {
     if start >= end {
         return no_ink();
@@ -3779,9 +3510,7 @@ fn get_text_clusters<'js>(
 ) -> Result<Array<'js>> {
     let ctx = this.0.ctx();
     let record = metrics_record(&this)?;
-    // The options-only overload takes a dictionary first; the ranged overload
-    // takes `start`, `end`, then an optional dictionary
-    // (<https://github.com/whatwg/html/issues/10677>).
+    // https://github.com/whatwg/html/issues/10677
     let (range_args, options_value): (&[Value<'js>], Option<&Value<'js>>) =
         if args.0.first().is_some_and(Value::is_object) {
             (&[], args.0.first())
@@ -3839,7 +3568,6 @@ fn get_selection_rects<'js>(
     let ctx = this.0.ctx();
     let record = metrics_record(&this)?;
     let (start, end) = text_range(ctx, &record.text, &args.0, false, true)?;
-    // A reversed or empty range has no selection.
     let array = Array::new(ctx.clone())?;
     if start >= end {
         return Ok(array);
@@ -3889,7 +3617,6 @@ fn get_selection_rects<'js>(
     Ok(array)
 }
 
-/// Nearest cluster boundary to a horizontal offset.
 fn get_index_from_offset(this: This<Object<'_>>, offset: Coerced<f64>) -> Result<u32> {
     let record = metrics_record(&this)?;
     let shaped = &record.shaped;
@@ -3897,8 +3624,6 @@ fn get_index_from_offset(this: This<Object<'_>>, offset: Coerced<f64>) -> Result
     if width <= 0.0 {
         return Ok(0);
     }
-    // The offset is measured from the alignment point, so undo the alignment
-    // shift before comparing against left-to-right cluster positions.
     let target = (f32_of(*offset) - alignment_offset(shaped, record.align)).clamp(0.0, width);
     let mut best = 0_u32;
     let mut best_distance = f32::MAX;
@@ -3947,10 +3672,6 @@ fn measure_text(this: This<Object<'_>>, text: CanvasString) -> Result<Value<'_>>
         &mut font_ctx,
         text::Shaping::Clusters,
     );
-    // Canvas `width` is a double, and `word-spacing` is a double of layout
-    // units. Parley accumulates spacing in f32, which rounds the total before
-    // the caller adds the same spacing in f64 (WPT's wordSpacing.change.font
-    // compares exactly). Shape once without spacing and add it in f64.
     let width = if word_spacing == 0.0 {
         f64::from(shaped.width)
     } else {
@@ -3973,10 +3694,7 @@ fn measure_text(this: This<Object<'_>>, text: CanvasString) -> Result<Value<'_>>
         let spacing = f64::from(word_spacing) * spaces as f64;
         f64::from(unspaced.width) + spacing
     };
-    // Keep positive zero so `TextMetrics` does not expose `-0`.
     let width = if width == 0.0 { 0.0 } else { width };
-    // Freeze the two anchor values at measure time, so a later context change
-    // cannot alter what this snapshot reports.
     let rtl = resolved_direction(ctx, &this.0, &direction);
     let align = resolve_alignment(&align, rtl);
     let baseline = state::TextBaseline::parse(&baseline).unwrap_or(state::TextBaseline::Alphabetic);
@@ -4084,9 +3802,6 @@ fn cluster_x(this: This<Object<'_>>) -> Result<f64> {
     let (record, index, align, _) = cluster_parts(&this)?;
     let cluster = &record.shaped.clusters[index];
     let advance = cluster.advance * record.shaped.scale_x;
-    // Blink: `cluster.x_position + getTextAlignDelta(cluster.width, option) -
-    // text_align_dx`, where `text_align_dx` is the measured alignment's
-    // distance from the anchor to the text origin.
     let text_align_dx = -alignment_offset(&record.shaped, record.align);
     Ok(f64::from(
         cluster.offset * record.shaped.scale_x + align_delta(advance, align) - text_align_dx,
@@ -4095,8 +3810,6 @@ fn cluster_x(this: This<Object<'_>>) -> Result<f64> {
 
 fn cluster_y(this: This<Object<'_>>) -> Result<f64> {
     let (record, _, _, baseline) = cluster_parts(&this)?;
-    // Blink: `GetFontBaseline(measured) - GetFontBaseline(option)`, which is
-    // the difference of the two baseline offsets.
     Ok(f64::from(
         baseline_offset(&record.shaped, record.baseline)
             - baseline_offset(&record.shaped, baseline),
@@ -4118,8 +3831,6 @@ fn cluster_baseline(this: This<Object<'_>>) -> Result<&'static str> {
 
 fn get_filter(this: This<Object<'_>>) -> Result<Value<'_>> {
     let ctx = this.0.ctx().clone();
-    // The filter object is drawing state. `save()` clones it with the rest of
-    // `State`, so `restore()` brings back both the object and its matrix.
     if let Some(object) = with_canvas(&ctx, &this.0, |canvas| canvas.filter_object())? {
         return object.restore(&ctx);
     }
@@ -4153,9 +3864,6 @@ fn set_filter_binding<'js>(this: This<Object<'js>>, value: Value<'js>) -> Result
     })
 }
 
-/// Reads a `colorMatrix` filter init dictionary (or a list of them) into one
-/// matrix. Returns `None` for filters this engine cannot represent as a color
-/// matrix, so the drawing path stays unfiltered instead of wrong.
 fn color_matrix_from_filter(value: &Value<'_>) -> Option<ColorMatrix> {
     let object = value.as_object()?;
     let init = object
@@ -4182,7 +3890,6 @@ fn color_matrix_from_single(value: &Value<'_>) -> Option<ColorMatrix> {
     }
     let kind: Option<String> = object.get("type").ok();
     match kind.as_deref() {
-        // `feColorMatrix` defaults: hueRotate 0 degrees, saturate 1.
         Some("hueRotate") => {
             let degrees = object
                 .get::<_, Coerced<f64>>("values")
@@ -4210,13 +3917,10 @@ fn color_matrix_from_single(value: &Value<'_>) -> Option<ColorMatrix> {
             }
             Some(ColorMatrix::from_values(matrix))
         }
-        // An unknown `type` is not a color matrix this engine can apply.
         Some(_) => None,
     }
 }
 
-/// Index of the `)` matching the opening `(` that was already consumed,
-/// skipping quoted strings and nested function calls.
 fn matching_paren(text: &str) -> Option<usize> {
     let mut depth = 0_u32;
     let mut quote = None;
@@ -4243,9 +3947,7 @@ fn matching_paren(text: &str) -> Option<usize> {
     None
 }
 
-/// A CSS filter list with each function's argument shape checked. The canvas
-/// stores the serialized string; invalid values leave the previous filter
-/// (<https://drafts.fxtf.org/filter-effects/#filter-property>).
+// https://drafts.fxtf.org/filter-effects/#filter-property
 fn valid_filter(text: &str) -> bool {
     let mut rest = text.trim();
     if rest.eq_ignore_ascii_case("none") {
@@ -4306,8 +4008,6 @@ fn angle(text: &str) -> bool {
     number.parse::<f32>().is_ok_and(f32::is_finite)
 }
 
-/// The document's Parley font context. It includes `@font-face` fonts, which
-/// the shared process context does not.
 fn document_font_context(ctx: &Ctx<'_>, object: &Object<'_>) -> Result<parley::FontContext> {
     let world = world(ctx)?;
     let font_ctx = match context_canvas_node(ctx, object)? {
@@ -4315,8 +4015,6 @@ fn document_font_context(ctx: &Ctx<'_>, object: &Object<'_>) -> Result<parley::F
             .borrow()
             .document(id)
             .map(|parsed| parsed.document.base.font_context()),
-        // An `OffscreenCanvas` has no element, but a window realm still shapes
-        // with the document's `@font-face` fonts.
         None => world
             .borrow()
             .main_document()
@@ -4327,8 +4025,6 @@ fn document_font_context(ctx: &Ctx<'_>, object: &Object<'_>) -> Result<parley::F
         |font_ctx| Ok(font_ctx.lock().map_or_default(|font_ctx| font_ctx.clone())),
     )
 }
-
-// ---- style properties ----------------------------------------------------
 
 fn get_fill_style(this: This<Object<'_>>) -> Result<Value<'_>> {
     style_value(this.0.ctx(), &this.0, state::Canvas2D::fill_style)
@@ -4380,9 +4076,7 @@ fn style_value<'js>(
     }
 }
 
-/// Copies a gradient or pattern into the target canvas when the style comes
-/// from another canvas
-/// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-fillstyle>).
+// https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-fillstyle
 fn import_resource(
     ctx: &Ctx<'_>,
     target: &Object<'_>,
@@ -4392,8 +4086,6 @@ fn import_resource(
     match style {
         StyleValue::Gradient(id) => {
             let source = context_canvas_id(ctx, resource)?;
-            // Ids are per-bitmap; a target that happens to own the same id is
-            // a different gradient. Only a same-canvas assignment is local.
             if source == context_canvas_id(ctx, target)? {
                 return Ok(style);
             }
@@ -4478,9 +4170,7 @@ fn set_style_value<'js>(
     with_canvas(ctx, object, |canvas| set(canvas, style))
 }
 
-/// A color object is a dictionary with numeric `r`, `g`, and `b` in the
-/// 0..1 range, plus an optional `a`/`alpha`
-/// (<https://drafts.csswg.org/css-color-5/#color-conversion>).
+// https://drafts.csswg.org/css-color-5/#color-conversion
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -4519,10 +4209,7 @@ fn set_font_binding(this: This<Object<'_>>, value: CanvasString) -> Result<()> {
     with_canvas(ctx, &this.0, |canvas| canvas.set_font(&font))
 }
 
-/// The canvas element's font-size and line-height from its inline style. A
-/// canvas with no font-size resolves relative lengths against the context's
-/// 10px initial font
-/// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-font>).
+// https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-font
 fn canvas_style_metrics(style: &str) -> (f32, f32) {
     let mut size = 10.0;
     let mut line_height = None;
@@ -4554,9 +4241,7 @@ fn canvas_style_metrics(style: &str) -> (f32, f32) {
     (size, line_height)
 }
 
-/// `ctx.lang` inherits the canvas element's `lang` attribute; parley uses it
-/// for locale-sensitive shaping
-/// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-lang>).
+// https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-lang
 fn resolved_language(ctx: &Ctx<'_>, object: &Object<'_>, lang: &str) -> Option<String> {
     if lang != "inherit" && !lang.is_empty() {
         return Some(lang.to_owned());
@@ -4565,9 +4250,7 @@ fn resolved_language(ctx: &Ctx<'_>, object: &Object<'_>, lang: &str) -> Option<S
         let owner = crate::js::bindings::world_for_node(ctx, id).ok()?;
         let owner = owner.borrow();
         let parsed = owner.document(id)?;
-        // `lang` inherits from the nearest ancestor that declares it, and an
-        // empty declaration stops the search
-        // (<https://html.spec.whatwg.org/multipage/dom.html#attr-lang>).
+        // https://html.spec.whatwg.org/multipage/dom.html#attr-lang
         for ancestor in
             crate::dom::tree::ancestor_chain(&parsed.document.base, id.document, id.node)
         {
@@ -4579,23 +4262,17 @@ fn resolved_language(ctx: &Ctx<'_>, object: &Object<'_>, lang: &str) -> Option<S
         }
         return None;
     }
-    // An `OffscreenCanvas` has no element of its own; the constructor step
-    // inherits the document element's language
-    // (<https://html.spec.whatwg.org/multipage/canvas.html#offscreencanvas-inherited-lang>).
+    // https://html.spec.whatwg.org/multipage/canvas.html#offscreencanvas-inherited-lang
     let world = world(ctx).ok()?;
     let owner = world.borrow();
     let parsed = owner.main_document()?;
-    // A document with no element child (an empty or still-parsing tree) has no
-    // document element to inherit from.
     let root = parsed.document.base.try_root_element()?;
     crate::dom::tree::attr(&parsed.document.base, root.id, "lang")
         .filter(|value| !value.trim().is_empty())
         .map(str::to_owned)
 }
 
-/// Resolves `start`/`end` using the context direction, then the canvas
-/// element's `dir` attribute
-/// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-textalign>).
+// https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-textalign
 fn resolved_direction(ctx: &Ctx<'_>, object: &Object<'_>, direction: &str) -> bool {
     match direction {
         "rtl" => true,
@@ -4608,9 +4285,6 @@ fn resolved_direction(ctx: &Ctx<'_>, object: &Object<'_>, direction: &str) -> bo
     }
 }
 
-/// Resolves `start`/`end` against a direction. The metrics record stores the
-/// resolved answer, so a `TextMetrics` read never re-resolves against the
-/// canvas element's current `dir`.
 fn resolve_alignment(align: &str, rtl: bool) -> text::ResolvedAlign {
     match align {
         "start" if rtl => text::ResolvedAlign::Right,
@@ -4632,19 +4306,13 @@ fn resolved_alignment(
 
 fn canvas_object(this: This<Object<'_>>) -> Result<Value<'_>> {
     let ctx = this.0.ctx();
-    // The inspection attributes `ctx.canvas` returns the element; an
-    // `OffscreenCanvas` overrides this accessor with its owner object.
     match context_canvas_node(ctx, &this.0)? {
         Some(id) => wrap_node(ctx, id),
         None => Ok(Value::new_undefined(ctx.clone())),
     }
 }
 
-/// Parses a canvas color, preserving the `color(srgb …)` serialization that
-/// `fillStyle`/`strokeStyle`/`shadowColor` must report for color functions and
-/// `color-mix`. `currentColor` resolves against the canvas element's computed
-/// `color` at assignment time, not at paint time
-/// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-fillstyle>).
+// https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-fillstyle
 fn css_color_exact(
     ctx: &Ctx<'_>,
     object: &Object<'_>,
@@ -4655,8 +4323,6 @@ fn css_color_exact(
         .map(|parsed| (parsed.bytes, parsed.serialized)))
 }
 
-/// Parses a canvas color against the canvas document's device, so a system
-/// color resolves with the document's used color scheme.
 fn parse_canvas_color(
     ctx: &Ctx<'_>,
     object: &Object<'_>,
@@ -4677,10 +4343,6 @@ fn parse_canvas_color(
     Ok(parsed)
 }
 
-/// The canvas document and, for an element context, its node. `__tbCanvasId`
-/// is a writable property, so the registry decides whether the id is this
-/// realm's element. An `OffscreenCanvas` has no element style; it still parses
-/// colors against its realm's document device so system colors resolve.
 fn with_canvas_document<T>(
     ctx: &Ctx<'_>,
     object: &Object<'_>,
@@ -4708,9 +4370,7 @@ fn with_canvas_document<T>(
     Ok(Some(f(node, &mut parsed)))
 }
 
-/// The canvas element's computed `color`, or black when it has no computed
-/// style (detached elements and offscreen canvases have none)
-/// (<https://drafts.csswg.org/css-color-4/#currentcolor-color>).
+// https://drafts.csswg.org/css-color-4/#currentcolor-color
 fn current_color(ctx: &Ctx<'_>, object: &Object<'_>) -> Result<style::color::AbsoluteColor> {
     let Some(current) = with_canvas_document(ctx, object, |node, parsed| {
         let node = node?;
@@ -4738,8 +4398,6 @@ mod tests {
 
     #[test]
     fn vector_raster_size_upscales_to_the_destination_scale() {
-        // A 10x10 SVG drawn into 100x100 user units on a 2x display needs 200
-        // device pixels per side.
         let size = vector_raster_size(
             10,
             10,
@@ -4766,8 +4424,6 @@ mod tests {
 
     #[test]
     fn vector_raster_size_scales_a_source_subrect_back_to_the_whole_image() {
-        // Half the image fills the same destination, so the whole raster needs
-        // twice the destination's device pixels.
         let size = vector_raster_size(
             100,
             100,

@@ -2,15 +2,11 @@ const __tbUrlSlots = host.slots('URL');
 const __tbParamsSlots = host.slots('URLSearchParams');
 const __tbUrlState = value => __tbBrand(value, __tbUrlSlots);
 const __tbParamsState = value => __tbBrand(value, __tbParamsSlots);
-// Single USVString conversion, shared with the IDL bindings: lone
-// surrogates become U+FFFD and Symbols throw, per WebIDL
-// (<https://webidl.spec.whatwg.org/#es-USVString>).
+// https://webidl.spec.whatwg.org/#es-USVString
 host.__tbUSVString = __tbIDLUSVString;
 
-// URL decomposition components; indexes match `js/url_parts.rs`
-// (<https://html.spec.whatwg.org/multipage/links.html#url-decomposition-idl-attributes>).
-// The WHATWG URL constructor never takes an encoding override, so its parses
-// are always UTF-8 (<https://url.spec.whatwg.org/#dom-url-url>).
+// https://html.spec.whatwg.org/multipage/links.html#url-decomposition-idl-attributes
+// https://url.spec.whatwg.org/#dom-url-url
 const __tbUrlPart = (href, index) => {
   const values = host.__tbUrlParts(href, href, 'utf-8');
   return values === null || values === undefined ? null : values[index];
@@ -19,9 +15,7 @@ const __tbRefreshUrlParams = url => {
   if (__tbUrlState(url).searchParams !== null) {
     const fresh = __tbParamsState(new URLSearchParams(__tbUrlPart(__tbUrlState(url).href, 7) || '')).pairs;
     const pairs = __tbParamsState(__tbUrlState(url).searchParams).pairs;
-    // Replace the contents without replacing the array, so live iterators
-    // keep observing the same list
-    // (<https://url.spec.whatwg.org/#urlsearchparams-iterate>).
+    // https://url.spec.whatwg.org/#urlsearchparams-iterate
     pairs.length = 0;
     for (const pair of fresh) pairs.push(pair);
   }
@@ -37,8 +31,7 @@ const __tbSetUrlPart = (url, index, value) => {
 
 globalThis.URL = class URL {
   constructor(input, base) {
-    // No base means no document fallback: the input must parse absolutely
-    // (<https://url.spec.whatwg.org/#concept-url-parser>).
+    // https://url.spec.whatwg.org/#concept-url-parser
     const href = base === undefined
       ? host.__tbParseUrl(host.__tbUSVString(input))
       : host.__tbResolveUrl(host.__tbUSVString(input), host.__tbUSVString(base));
@@ -47,8 +40,7 @@ globalThis.URL = class URL {
   }
   get href() { return __tbUrlState(this).href; }
   set href(value) {
-    // A value that fails to parse throws a TypeError and leaves the URL
-    // unchanged (<https://url.spec.whatwg.org/#dom-url-href>).
+    // https://url.spec.whatwg.org/#dom-url-href
     const parsed = host.__tbParseUrl(host.__tbUSVString(value));
     if (parsed == null) throw new TypeError('Invalid URL');
     __tbUrlState(this).href = parsed;
@@ -101,9 +93,7 @@ globalThis.URL.revokeObjectURL = function(url) {
   host.__tbRevokeObjectURL(String(url));
 };
 Object.defineProperty(globalThis.URL.prototype, Symbol.toStringTag, { value: 'URL', writable: false, enumerable: false, configurable: true });
-// `location` stringifies to its URL, which is what `new URL(input, location)`
-// and other base-taking APIs expect
-// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-href>).
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-href
 if (globalThis.location !== undefined && globalThis.location !== null) {
   Object.defineProperty(globalThis.location, 'toString', {
     value: function() { return String(this.href); },
@@ -144,8 +134,7 @@ globalThis.URLSearchParams = class URLSearchParams {
     var input = host.__tbUSVString(init === undefined ? '' : init);
     if (input[0] === '?') input = __tbApply(__tbStringSlice, input, [1]);
     if (!input) return;
-    // The `application/x-www-form-urlencoded` parser drops empty items
-    // (<https://url.spec.whatwg.org/#urlencoded-parsing>).
+    // https://url.spec.whatwg.org/#urlencoded-parsing
     for (const pair of host.__tbParseParams(input)) {
       __tbArray.push(__tbParamsState(this).pairs, [pair[0], pair[1]]);
     }
@@ -195,8 +184,7 @@ globalThis.URLSearchParams = class URLSearchParams {
     name = host.__tbUSVString(name);
     const removeValue = !(arguments.length < 2 || value === undefined);
     if (removeValue) value = host.__tbUSVString(value);
-    // Splice in place: an iterator over this object must observe mutations
-    // (<https://url.spec.whatwg.org/#urlsearchparams-iterate>).
+    // https://url.spec.whatwg.org/#urlsearchparams-iterate
     for (let index = __tbParamsState(this).pairs.length - 1; index >= 0; index--) {
       const pair = __tbParamsState(this).pairs[index];
       if (pair[0] === name && (!removeValue || pair[1] === value)) __tbArray.remove(__tbParamsState(this).pairs, index);
@@ -204,8 +192,7 @@ globalThis.URLSearchParams = class URLSearchParams {
     if (__tbParamsState(this).sync) __tbParamsState(this).sync(this.toString());
   }
   sort() {
-    // Array.prototype.sort is stable, matching the spec's sort
-    // (<https://url.spec.whatwg.org/#dom-urlsearchparams-sort>).
+    // https://url.spec.whatwg.org/#dom-urlsearchparams-sort
     __tbArray.sort(__tbParamsState(this).pairs, (a, b) => a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0);
     if (__tbParamsState(this).sync) __tbParamsState(this).sync(this.toString());
   }
@@ -232,8 +219,7 @@ globalThis.URLSearchParams = class URLSearchParams {
     }
   }
   toString() {
-    // The `application/x-www-form-urlencoded` serializer
-    // (<https://url.spec.whatwg.org/#concept-urlencoded-serializer>).
+    // https://url.spec.whatwg.org/#concept-urlencoded-serializer
     return host.__tbSerializeParams(__tbParamsState(this).pairs);
   }
   [Symbol.iterator]() { return this.entries(); }

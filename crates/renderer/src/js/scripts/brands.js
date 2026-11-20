@@ -18,9 +18,7 @@
     Object.defineProperty(ctor, 'name', { value: name, configurable: true });
     Object.defineProperty(proto, 'constructor', { value: ctor, writable: true, configurable: true });
     Object.defineProperty(ctor, 'prototype', { value: proto, writable: false });
-    // Interface prototypes carry @@toStringTag
-    // (<https://webidl.spec.whatwg.org/#es-interface>), so
-    // Object.prototype.toString says `[object HTMLDivElement]`.
+    // https://webidl.spec.whatwg.org/#es-interface
     Object.defineProperty(proto, Symbol.toStringTag, {
       value: name, writable: false, enumerable: false, configurable: true,
     });
@@ -94,13 +92,7 @@
     SVGElement: SVGElementInterface.prototype,
     MathMLElement: MathMLElementInterface.prototype,
   };
-  // Every element interface chains to HTMLElement except the media pair,
-  // which chains through HTMLMediaElement, and SVG, which chains to Element.
-  // Members arrive from the generated contract installers, which run after
-  // this script creates the constructors and prototypes.
-  // `type` is defined per interface below; the form-control states live
-  // here so each interface exposes exactly the reflecting attributes the
-  // spec gives it (<https://html.spec.whatwg.org/#the-disabled-attribute>).
+  // https://html.spec.whatwg.org/#the-disabled-attribute
   for (const [name, parent] of [
     ['HTMLAnchorElement', HTMLElementInterface],
     ['HTMLAreaElement', HTMLElementInterface],
@@ -174,11 +166,7 @@
   ]) {
     table[name] = define(name, parent).prototype;
   }
-  // URL decomposition IDL attributes
-  // (<https://html.spec.whatwg.org/multipage/links.html#url-decomposition-idl-attributes>).
-  // A href that fails to parse makes `protocol` ":" and every other getter
-  // empty; setting a component that the parse or the component rejects
-  // leaves the attribute untouched.
+  // https://html.spec.whatwg.org/multipage/links.html#url-decomposition-idl-attributes
   {
     const parts = {
       protocol: 0, username: 1, password: 2, host: 3, hostname: 4,
@@ -189,17 +177,13 @@
       return value === null ? null : host.__tbUSVString(value);
     };
     const base = function() { return host.__tbUSVString(document.baseURI); };
-    // The shared decomposition getters parse the href with the document's
-    // character encoding, not UTF-8
-    // (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#parse-a-url>).
+    // https://html.spec.whatwg.org/multipage/urls-and-fetching.html#parse-a-url
     const charset = function() { return host.__tbUSVString(document.charset); };
     for (const proto of [table.HTMLAnchorElement, table.HTMLAreaElement]) {
       for (const name of Object.keys(parts)) {
         const index = parts[name];
         const descriptor = {
           get: function() {
-            // An absent `href` reports the URL-decomposition defaults, not
-            // the document URL.
             const href = hrefValue.call(this);
             if (href === null) return name === 'protocol' ? ':' : '';
             const values = host.__tbUrlParts(href, base.call(this), charset.call(this));
@@ -213,7 +197,6 @@
         };
         if (name !== 'origin') {
           descriptor.set = function(value) {
-            // Setting a component with no `href` attribute is a no-op.
             const href = hrefValue.call(this);
             if (href === null) return;
             const result = host.__tbUrlSetPart(
@@ -225,12 +208,9 @@
       }
     }
   }
-  // `type` reflects the content attribute, limited to only known values with
-  // ASCII case-insensitive matching (not Unicode folding: Kelvin K must not
-  // match `k`)
-  // (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#limited-to-only-known-values>,
-  // <https://html.spec.whatwg.org/multipage/input.html#dom-input-type>,
-  // <https://html.spec.whatwg.org/multipage/form-elements.html#dom-button-type>).
+  // https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#limited-to-only-known-values
+  // https://html.spec.whatwg.org/multipage/input.html#dom-input-type
+  // https://html.spec.whatwg.org/multipage/form-elements.html#dom-button-type
   function reflectType(keywords, fallback) {
     return {
       get: function() {
@@ -239,7 +219,6 @@
         const lowered = __tbAsciiLower(value);
         return keywords.has(lowered) ? lowered : fallback;
       },
-      // The setter reflects verbatim: no lowercasing, only conversion.
       set: function(value) { this.setAttribute('type', __tbToDOMString(value)); },
       enumerable: true,
       configurable: true,
@@ -258,20 +237,16 @@
       return INPUT_TYPE_KEYWORDS.has(lowered) ? lowered : 'text';
     },
     set: function(value) {
-      // The `type` attribute change runs the input type-change steps in the
-      // DOM, whatever the mutation path
-      // (<https://html.spec.whatwg.org/multipage/input.html#the-input-element:type-change-state>).
+      // https://html.spec.whatwg.org/multipage/input.html#the-input-element:type-change-state
       this.setAttribute('type', __tbToDOMString(value));
     },
     enumerable: true,
     configurable: true,
   });
-  // `<input type=file>` exposes a (possibly empty) FileList
-  // (<https://html.spec.whatwg.org/multipage/input.html#dom-input-files>).
+  // https://html.spec.whatwg.org/multipage/input.html#dom-input-files
   Object.defineProperty(table.HTMLInputElement, 'files', {
     get: function() {
-      // `files` applies only to the File Upload state
-      // (<https://html.spec.whatwg.org/multipage/input.html#dom-input-files>).
+      // https://html.spec.whatwg.org/multipage/input.html#dom-input-files
       if (this.type !== 'file') return null;
       let list = inputFilesSymbol.get(this);
       if (list === undefined) {
@@ -286,9 +261,7 @@
       if (!(value instanceof globalThis.FileList)) {
         throw new TypeError('files must be a FileList');
       }
-      // `input.files = fileList` replaces the list a script set; the same list
-      // can be shared across inputs
-      // (<https://html.spec.whatwg.org/multipage/input.html#dom-input-files>).
+      // https://html.spec.whatwg.org/multipage/input.html#dom-input-files
       inputFilesSymbol.set(this, value);
       host.__tbSetInputFiles(this, value);
     },
@@ -298,16 +271,13 @@
   Object.defineProperty(table.HTMLButtonElement, 'type', reflectType(new Set([
     'submit', 'reset', 'button',
   ]), 'submit'));
-  // <https://html.spec.whatwg.org/multipage/form-elements.html#dom-textarea-type>
+  // https://html.spec.whatwg.org/multipage/form-elements.html#dom-textarea-type
   Object.defineProperty(table.HTMLTextAreaElement, 'type', {
     get: function() { return 'textarea'; },
     enumerable: true,
     configurable: true,
   });
-  // The `hidden` IDL is a nullable `(boolean or unrestricted double or
-  // DOMString)` union the generator does not lower yet, so the getter and
-  // setter steps live here until it does
-  // (<https://html.spec.whatwg.org/multipage/interaction.html#dom-hidden>).
+  // https://html.spec.whatwg.org/multipage/interaction.html#dom-hidden
   Object.defineProperty(table.HTMLElement, 'hidden', {
     get: function() {
       const value = this.getAttribute('hidden');
@@ -316,8 +286,6 @@
       return true;
     },
     set: function(value) {
-      // Nullable union conversion: null and undefined empty to null,
-      // booleans and numbers keep their type, everything else stringifies.
       let converted;
       if (value === null || value === undefined) converted = null;
       else if (typeof value === 'boolean' || typeof value === 'number') converted = value;
@@ -336,8 +304,6 @@
     enumerable: true,
     configurable: true,
   });
-  // Slot assignment is not implemented. `assignedNodes` filters the host's
-  // light-DOM children by the `slot` attribute.
   Object.defineProperties(table.HTMLSlotElement, {
     assignedNodes: {
       value: function() {

@@ -1,5 +1,3 @@
-//! Screenshots through Blitz: resolve, paint, encode.
-
 mod blitz;
 mod png;
 mod providers;
@@ -10,17 +8,11 @@ pub(crate) use blitz::{
 pub(crate) use png::encode_png;
 pub(crate) use providers::{BlitzFetch, CountingHandler, TinyNetProvider, TinyShell};
 
-/// Default object size for an `<img>` without intrinsic dimensions
-/// (<https://html.spec.whatwg.org/multipage/rendering.html#images>).
+// https://html.spec.whatwg.org/multipage/rendering.html#images
 const DEFAULT_OBJECT_WIDTH: u32 = 300;
 const DEFAULT_OBJECT_HEIGHT: u32 = 150;
 
-/// Natural size of a decoded SVG image: the declared absolute `width` and
-/// `height` when both resolve to CSS pixels, otherwise the default object
-/// size. Chromium reports the default size even for a `viewBox`-only SVG
-/// (probed 2026-10-06: `viewBox="0 0 20 10"` with no width/height answers
-/// 300x150), so the viewBox only sizes paint, never
-/// `naturalWidth`/`naturalHeight`.
+// https://svgwg.org/svg2-draft/coords.html#SizingSVGInCSS — viewBox-only SVG without width/height reports the 300x150 default natural size, matching Chromium
 pub(crate) fn svg_natural_size(svg: &blitz_dom::node::SvgImageData) -> (u32, u32) {
     let dims = &svg.intrinsic_dimensions;
     if let (Some(width), Some(height)) = (dims.width, dims.height)
@@ -31,8 +23,6 @@ pub(crate) fn svg_natural_size(svg: &blitz_dom::node::SvgImageData) -> (u32, u32
     (DEFAULT_OBJECT_WIDTH, DEFAULT_OBJECT_HEIGHT)
 }
 
-/// `length` in CSS pixels, if it is an absolute SVG length. Relative units
-/// (`em`, `ex`, `%`) have no meaning without layout context.
 fn absolute_px(length: svgtypes::Length) -> Option<u32> {
     use svgtypes::LengthUnit;
     let px = match length.unit {
@@ -55,26 +45,14 @@ fn absolute_px(length: svgtypes::Length) -> Option<u32> {
     Some(px.floor() as u32)
 }
 
-/// One rendered viewport, 8 bits per channel, straight (non-premultiplied)
-/// alpha, row-major RGBA.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RgbaImage {
-    /// Width in device pixels.
     pub width: u32,
-    /// Height in device pixels.
     pub height: u32,
-    /// `width * height * 4` bytes, RGBA order.
     pub data: Vec<u8>,
 }
 
 impl RgbaImage {
-    /// Crops to the device-pixel rectangle `(x, y, width, height)`, clamped
-    /// to the image bounds.
-    ///
-    /// # Errors
-    ///
-    /// [`RenderError::InvalidCrop`] when the rectangle has no area after
-    /// clamping.
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -115,28 +93,20 @@ impl RgbaImage {
     }
 }
 
-/// One laid-out box in CSS pixels, keyed by its DOM element.
 #[derive(Clone, Copy, Debug)]
 pub struct NodeBox {
-    /// The element the box was generated for.
     pub node: crate::dom::tree::NodeId,
-    /// Border box in CSS pixels.
     pub x: f32,
     pub y: f32,
     pub width: f32,
     pub height: f32,
 }
 
-/// A render failure that is the document's fault rather than the caller's.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RenderError {
-    /// A zero-sized screenshot viewport was requested.
     InvalidViewport,
-    /// The output image would exceed the renderer's size cap.
     TooLarge,
-    /// The PNG encoder rejected the rendered image.
     Encode,
-    /// A crop rectangle had no area inside the image.
     InvalidCrop,
 }
 

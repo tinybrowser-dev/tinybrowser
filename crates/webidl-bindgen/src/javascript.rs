@@ -103,11 +103,6 @@ impl<'ast> Visit<'ast> for Discovery<'_, '_, '_> {
     }
 }
 
-/// Which installer a shim asked for.
-///
-/// `Interface` leaves global registration to the shim, so it cannot host a
-/// `[SecureContext]` interface: the shim would define the global on an
-/// insecure page. `Global` owns the registration, so it can.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum InstallForm {
     Interface,
@@ -208,7 +203,6 @@ impl Discovery<'_, '_, '_> {
     }
 }
 
-/// The string literals in an installation's `unimplemented` array.
 fn string_list(list: &ast::ArrayExpression<'_>) -> Result<BTreeSet<String>, Error> {
     let mut names = BTreeSet::new();
     for element in &list.elements {
@@ -491,17 +485,13 @@ fn member_descriptor(
 
 enum JsType {
     Native(ReturnType),
-    /// `ArrayBufferView`: any typed array or `DataView`
-    /// (<https://webidl.spec.whatwg.org/#ArrayBufferView>).
+    // https://webidl.spec.whatwg.org/#ArrayBufferView
     ArrayBufferView,
-    /// `sequence<T>`: a copied JS array, converted element by element
-    /// (<https://webidl.spec.whatwg.org/#es-sequence>).
+    // https://webidl.spec.whatwg.org/#es-sequence
     Sequence(Box<JsType>),
-    /// `FrozenArray<T>`: a frozen JS array, converted element by element
-    /// (<https://webidl.spec.whatwg.org/#es-frozen-array>).
+    // https://webidl.spec.whatwg.org/#es-frozen-array
     FrozenArray(Box<JsType>),
-    /// `Promise<T>`: a promise whose fulfillment value is converted
-    /// (<https://webidl.spec.whatwg.org/#es-promise>).
+    // https://webidl.spec.whatwg.org/#es-promise
     Promise(Box<JsType>),
 }
 
@@ -598,8 +588,6 @@ fn arguments(
         attributes(argument.type_.attributes.as_ref(), &["AllowShared"])?;
         let allow_shared = argument.attributes.iter().chain(argument.type_.attributes.iter())
             .any(|attributes| attributes.body.list.iter().any(|attribute| matches!(attribute, ExtendedAttribute::NoArgs(item) if item.0.0 == "AllowShared")));
-        // Read an argument only when it is present. `args[index]` past the end
-        // would otherwise consult the page-controlled `Array.prototype`.
         let present = format!("args.length > {index}");
         let value = format!("{present} ? args[{index}] : undefined");
         let lowered = js_type(database, &argument.type_.type_)?;
@@ -612,9 +600,7 @@ fn arguments(
             (Some(_), Some(default)) => {
                 optional = true;
                 let literal = default_literal(&lowered, &default.value)?;
-                // A default is an IDL value of the argument's own type, so it
-                // is converted the same way a supplied value is
-                // (<https://webidl.spec.whatwg.org/#idl-default-values>).
+                // https://webidl.spec.whatwg.org/#idl-default-values
                 let literal = input(database, &lowered, &literal, allow_shared)?;
                 format!("{present} && args[{index}] !== undefined ? {converted} : {literal}")
             }
@@ -625,10 +611,7 @@ fn arguments(
     Ok((required, format!("[{}]", conversions.join(","))))
 }
 
-/// The JavaScript literal for an IDL argument default, checked against the
-/// argument's lowered type. The caller converts the literal like any other
-/// value of that type
-/// (<https://webidl.spec.whatwg.org/#idl-default-values>).
+// https://webidl.spec.whatwg.org/#idl-default-values
 fn default_literal(
     type_: &JsType,
     default: &weedle::literal::DefaultValue<'_>,
@@ -650,9 +633,7 @@ fn default_literal(
                 ));
             }
         },
-        // An integer literal is a valid default for an integer argument and
-        // for a `double`, and a floating point literal only for a `double`
-        // (<https://webidl.spec.whatwg.org/#idl-default-values>).
+        // https://webidl.spec.whatwg.org/#idl-default-values
         DefaultValue::Integer(default) => match type_ {
             JsType::Native(
                 ReturnType::UnsignedShort
@@ -686,9 +667,6 @@ fn default_literal(
     Ok(literal)
 }
 
-/// An IDL integer default as a decimal JavaScript literal. The grammar admits
-/// decimal, hexadecimal, and octal forms; JavaScript accepts the decimal one
-/// everywhere a number is expected.
 fn integer_default(default: &weedle::literal::IntegerLit<'_>) -> Result<String, Error> {
     use weedle::literal::IntegerLit;
 
@@ -707,8 +685,6 @@ fn integer_default(default: &weedle::literal::IntegerLit<'_>) -> Result<String, 
             .strip_prefix("0x")
             .or_else(|| digits.strip_prefix("0X"))
             .unwrap_or(digits),
-        // The octal grammar includes the leading zero; `0` alone is an empty
-        // digit run.
         8 => digits.strip_prefix('0').unwrap_or(digits),
         _ => digits,
     };
@@ -736,8 +712,6 @@ fn input(
         }
         JsType::FrozenArray(_) => Err(Error("FrozenArray is a result type only".into())),
         JsType::Promise(_) => Err(Error("Promise is a result type only".into())),
-        // `AllowShared` is meaningless on a copied string; only the argument
-        // conversion differs from the native side.
         JsType::Native(ReturnType::String) if !allow_shared => {
             Ok(format!("__tbIDLString({value})"))
         }
@@ -798,8 +772,6 @@ fn input(
                 fields.join(",")
             ))
         }
-        // A platform object argument is already the value; its interface
-        // brand and required type are the caller's contract.
         JsType::Native(
             ReturnType::Any
             | ReturnType::PlatformObject
@@ -815,10 +787,7 @@ fn input(
 
 fn output(database: &Database<'_>, type_: &JsType, value: &str) -> Result<String, Error> {
     match type_ {
-        // An `ArrayBufferView` and a platform object both pass through: the
-        // argument conversion already validated `ArrayBufferView`, and the
-        // algorithm built the platform object itself
-        // (<https://webidl.spec.whatwg.org/#es-buffer-source-types>).
+        // https://webidl.spec.whatwg.org/#es-buffer-source-types
         JsType::ArrayBufferView
         | JsType::Native(
             ReturnType::Any
@@ -908,7 +877,6 @@ fn output(database: &Database<'_>, type_: &JsType, value: &str) -> Result<String
     }
 }
 
-/// The keywords of one IDL enumeration, in declaration order.
 fn enum_keywords(database: &Database<'_>, name: &str) -> Result<Vec<String>, Error> {
     let Some(weedle::Definition::Enum(definition)) = database.definition(name) else {
         return Err(Error(format!("unknown enumeration: {name}")));

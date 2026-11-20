@@ -1,19 +1,9 @@
-// The Selection API for this realm's document
-// (<https://w3c.github.io/selection-api/#selection-interface>).
-//
-// A selection holds at most one range, by reference: `addRange` stores the
-// Range object a script passed, and `getRangeAt(0)` returns that same object,
-// so a DOM mutation that moves the live range moves the selection with it
-// (<https://w3c.github.io/selection-api/#dom-selection-getrangeat>).
+// https://w3c.github.io/selection-api/#selection-interface
+// https://w3c.github.io/selection-api/#dom-selection-getrangeat
 {
-  // The document the selection belongs to. A realm keeps its document object
-  // across `document.open()`, and a navigation replaces the whole realm, so
-  // reading it lazily is enough to notice a replaced tree.
   let selectionDocument = null;
   let range = null;
-  // null is the spec's "directionless" state, which `getRangeAt` answers as
-  // "none" until `extend`, `setBaseAndExtent`, or `selectAllChildren` sets a
-  // direction (<https://w3c.github.io/selection-api/#dfn-directionless>).
+  // https://w3c.github.io/selection-api/#dfn-directionless
   let direction = null;
 
   const documentOf = () => {
@@ -26,8 +16,6 @@
     return document;
   };
 
-  // A node's length: CharacterData's character count, otherwise the child
-  // count. A document type has none.
   const lengthOf = (node) => {
     const type = node.nodeType;
     if (type === Node.TEXT_NODE || type === Node.CDATA_SECTION_NODE
@@ -38,13 +26,7 @@
     return node.childNodes.length;
   };
 
-  // Whether the node is in the document tree the selection belongs to, in
-  // the shadow-including sense every Selection algorithm asks about: the
-  // document must be a shadow-including inclusive ancestor of the node
-  // (<https://w3c.github.io/selection-api/#terminology>). A node in a
-  // detached tree, a template's contents, or another document (one a parser
-  // or `createHTMLDocument` produced, whose `isConnected` is true against its
-  // own root) is not in this document tree.
+  // https://w3c.github.io/selection-api/#terminology
   const inDocumentTree = (node) => {
     const document = documentOf();
     let current = node;
@@ -65,7 +47,6 @@
     ? point(range.startContainer, range.startOffset)
     : point(range.endContainer, range.endOffset));
 
-  // The shadow-including ancestor chain, root first.
   const ancestry = (node) => {
     const chain = [];
     let current = node;
@@ -74,8 +55,6 @@
       if (current.parentNode !== null) {
         current = current.parentNode;
       } else if (current.host !== undefined) {
-        // A shadow root hangs below its host: its contents come before the
-        // host's light children in shadow-including tree order.
         current = current.host;
       } else {
         current = null;
@@ -94,8 +73,6 @@
       const parent = pathA[index - 1];
       const aShadow = pathA[index].host !== undefined;
       const bShadow = pathB[index].host !== undefined;
-      // A shadow root is not in `childNodes`; it precedes the light children
-      // of its host
       if (aShadow !== bShadow) return aShadow ? -1 : 1;
       const children = parent.childNodes;
       let aIndex = children.length;
@@ -106,13 +83,9 @@
       }
       return aIndex < bIndex ? -1 : 1;
     }
-    // One chain is a prefix of the other: the shorter is an ancestor
     return pathA.length === pathB.length ? 0 : (pathA.length < pathB.length ? -1 : 1);
   };
 
-  // Where boundary point `a` lies relative to `b`: -1 before, 0 equal, 1
-  // after. Same-tree points go through `Range.comparePoint`; across shadow
-  // trees the answer comes from shadow-including tree order.
   const comparePoints = (a, b) => {
     if (a.node === b.node) {
       if (a.offset === b.offset) return 0;
@@ -147,11 +120,7 @@
     return range;
   };
 
-  // WebIDL's `Range` argument conversion: only an object implementing the
-  // interface reaches the algorithm. `Range` is a Rust-backed class and
-  // `startContainer` is `AbstractRange`'s accessor, so invoking it on the
-  // value is the brand check: it throws `TypeError` for anything that is not
-  // an `AbstractRange` (<https://webidl.spec.whatwg.org/#es-interface>).
+  // https://webidl.spec.whatwg.org/#es-interface
   const rangeStartContainer = __tbIDLDescriptor(AbstractRange.prototype, 'startContainer').get;
   const requireRangeArgument = (value) => {
     if (value === null || (typeof value !== 'object' && typeof value !== 'function')) {
@@ -166,9 +135,7 @@
     }
   };
 
-  // The anchor and focus points as the IDL attributes expose them: a point
-  // outside the document tree reads as `null`, offset `0`
-  // (<https://w3c.github.io/selection-api/#dom-selection-anchornode>).
+  // https://w3c.github.io/selection-api/#dom-selection-anchornode
   const exposed = (point) => (inDocumentTree(point.node)
     ? point
     : { node: null, offset: 0 });
@@ -213,9 +180,7 @@
       if (index !== 0 || this.rangeCount === 0) {
         throw new DOMException('no range at this index', 'IndexSizeError');
       }
-      // The selection holds the range by reference, so a script that keeps it
-      // sees the mutations the document makes to it
-      // (<https://w3c.github.io/selection-api/#dom-selection-addrange>).
+      // https://w3c.github.io/selection-api/#dom-selection-addrange
       return range;
     }
     addRange(candidate) {
@@ -230,9 +195,7 @@
       direction = null;
     }
     removeRange(candidate) {
-      // The IDL conversion runs before the algorithm, so `null` is a
-      // `TypeError` and only a real Range can reach the identity test
-      // (<https://webidl.spec.whatwg.org/#es-interface>).
+      // https://webidl.spec.whatwg.org/#es-interface
       requireRangeArgument(candidate);
       if (range !== candidate) {
         throw new DOMException('the range is not in the selection', 'NotFoundError');
@@ -281,9 +244,7 @@
       }
       const anchor = anchorPoint();
       const focus = point(node, offset);
-      // A focus in another root cannot share a range with the anchor, so the
-      // selection collapses onto it
-      // (<https://w3c.github.io/selection-api/#dom-selection-extend>).
+      // https://w3c.github.io/selection-api/#dom-selection-extend
       if (focus.node.getRootNode() !== range.startContainer.getRootNode()) {
         range = newRange(focus, focus);
         direction = 'forward';
@@ -291,9 +252,7 @@
       }
       const order = comparePoints(anchor, focus);
       range = order <= 0 ? newRange(anchor, focus) : newRange(focus, anchor);
-      // The direction is backwards only when the focus ends up before the
-      // anchor; an equal focus is forwards
-      // (<https://w3c.github.io/selection-api/#dom-selection-extend>).
+      // https://w3c.github.io/selection-api/#dom-selection-extend
       direction = order < 0 ? 'forward' : (order > 0 ? 'backward' : 'forward');
     }
     // https://w3c.github.io/selection-api/#dom-selection-setbaseandextent
@@ -323,9 +282,7 @@
     }
   }, ['deleteFromDocument', 'getComposedRanges', 'modify']);
 
-  // The anonymous `stringifier` is the selection's text: the range's text if
-  // it has one, the empty string otherwise
-  // (<https://w3c.github.io/selection-api/#dom-selection-stringifier>).
+  // https://w3c.github.io/selection-api/#dom-selection-stringifier
   __tbDefineProperty(Selection.prototype, 'toString', {
     value: function toString() {
       return range === null ? '' : range.toString();
@@ -333,10 +290,7 @@
     writable: true, enumerable: true, configurable: true,
   });
 
-  // Every read of the document's selection returns that Window's one object
-  // (<https://w3c.github.io/selection-api/#extensions-to-the-document-interface>).
-  // A document with no browsing context has no Window, and therefore no
-  // selection.
+  // https://w3c.github.io/selection-api/#extensions-to-the-document-interface
   const getSelection = function getSelection() {
     return this.defaultView === null ? null : selection;
   };

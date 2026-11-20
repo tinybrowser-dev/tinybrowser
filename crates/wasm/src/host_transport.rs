@@ -1,11 +1,4 @@
-//! The fetch core's byte mover over the host contract.
-//!
-//! The fetch core shapes every request: redirects, cookies, CORS, `Sec-Fetch-*`,
-//! and the referrer are decided above this module. [`HostTransport`] turns one
-//! shaped [`WireRequest`] into one `host.start-fetch` and hands the answer back
-//! as a [`WireResponse`], which is the same port the native hyper engine
-//! implements
-//! (<https://fetch.spec.whatwg.org/#concept-http-network-fetch>).
+// https://fetch.spec.whatwg.org/#concept-http-network-fetch
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -26,39 +19,20 @@ use crate::bindings::tinybrowser::browser::types::{
 };
 use crate::lock;
 
-/// The host's answer to one exchange, in the host contract's own types.
 pub(crate) type Answer = Result<FetchResponse, FetchError>;
 
-/// One exchange, parked until the host completes it.
 struct Exchange {
-    /// Deposited once by [`HostTransport::complete`] and taken once by the
-    /// future that is waiting on it.
     answer: Mutex<Option<Answer>>,
 }
 
-/// The tab whose dial is being polled right now.
-///
-/// A dial's future is polled only from [`crate::DialRegistry::poll`], which the
-/// host drives through `engine.complete-fetch`, so this slot is set for exactly
-/// the poll that opens an exchange. The host contract forbids completing an
-/// exchange before `start-fetch` returns, so no poll nests inside another and
-/// one slot is enough.
 struct PollContext {
     owner: u64,
-    /// The exchange this poll opened, for the driver to learn what a pending
-    /// dial waits on.
     opened: Option<u64>,
 }
 
-/// The [`Transport`] a component runs the fetch core against.
-///
-/// One instance serves the whole component instance, because the agent owns the
-/// cookie jar: every tab's dials must pass through the same transport for the
-/// jar to see one set of responses.
 pub(crate) struct HostTransport {
     exchanges: Mutex<HashMap<u64, Arc<Exchange>>>,
     polled: Mutex<Option<PollContext>>,
-    /// Cap on one response body, from the renderer's own limit.
     max_body_bytes: u64,
     next_id: AtomicU64,
 }
@@ -73,7 +47,6 @@ impl HostTransport {
         }
     }
 
-    /// Marks the start of one dial's poll, attributed to `owner`.
     pub(crate) fn begin_poll(&self, owner: u64) {
         *lock(&self.polled) = Some(PollContext {
             owner,
@@ -81,19 +54,16 @@ impl HostTransport {
         });
     }
 
-    /// Ends the poll and reports the exchange it opened, when it opened one.
     pub(crate) fn end_poll(&self) -> Option<u64> {
         lock(&self.polled).take().and_then(|context| context.opened)
     }
 
-    /// Deposits the host's answer for a waiting exchange.
     pub(crate) fn complete(&self, id: u64, answer: Answer) {
         if let Some(exchange) = lock(&self.exchanges).remove(&id) {
             *lock(&exchange.answer) = Some(answer);
         }
     }
 
-    /// Drops an exchange nobody will resume, because its dial was cancelled.
     pub(crate) fn abandon(&self, id: u64) {
         lock(&self.exchanges).remove(&id);
     }
@@ -138,8 +108,6 @@ impl Transport for HostTransport {
             });
             lock(&self.exchanges).insert(id, Arc::clone(&exchange));
             if !host::start_fetch(&host_request) {
-                // The host cannot serve this request at all, so no completion
-                // is owed and none may be waited for.
                 self.abandon(id);
                 return Err(refused("the host refused the exchange"));
             }
@@ -175,11 +143,6 @@ impl Transport for HostTransport {
 }
 
 impl HostTransport {
-    /// The fetch error the host contract reports, in the core's vocabulary.
-    ///
-    /// The kinds are distinct because the page engine reports them distinct:
-    /// a capacity refusal is not a connect failure, and a body over the cap is
-    /// a limit rather than a network error.
     fn map_error(error: FetchError, request: &WireRequest, budget: &HopBudget) -> NetError {
         let transport = match error {
             FetchError::Dns => {
@@ -192,15 +155,12 @@ impl HostTransport {
             }
             FetchError::Limit => TransportError::BodyTooLarge,
             FetchError::QueueFull => TransportError::Capacity,
-            // The component cancels by dropping the dial, so a host that
-            // reports this ran past its cancellation or never had one.
             FetchError::Cancelled => TransportError::Connect("host cancelled the exchange".into()),
         };
         NetError::Transport(transport)
     }
 }
 
-/// The answer one exchange waits for.
 struct AnswerSlot<'a> {
     exchange: &'a Exchange,
 }
@@ -209,9 +169,6 @@ impl Future for AnswerSlot<'_> {
     type Output = Answer;
 
     fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Answer> {
-        // The driver polls this future only after depositing an answer, so
-        // `Pending` here never waits on a waker: the component has no executor
-        // and needs none.
         match lock(&self.exchange.answer).take() {
             Some(answer) => Poll::Ready(answer),
             None => Poll::Pending,

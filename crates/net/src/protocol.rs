@@ -2,14 +2,8 @@ use std::fmt;
 
 use http::header::{HeaderName, HeaderValue};
 
-/// Joins every occurrence of a list header's values with `", "`, the way
-/// combining a header does
-/// (<https://fetch.spec.whatwg.org/#concept-header-list-combine>).
-///
-/// A present header with an empty value is one empty member, not an absent
-/// header: "get, decode, and split" of `A: nosniff` plus `A:` yields
-/// «`nosniff`, `""`» (<https://fetch.spec.whatwg.org/#example-header-value-get-decode-and-split>).
-/// `None` means no occurrence of the header at all.
+// https://fetch.spec.whatwg.org/#concept-header-list-combine
+// https://fetch.spec.whatwg.org/#example-header-value-get-decode-and-split
 #[must_use]
 pub fn combined_header<'a>(values: impl Iterator<Item = &'a str>) -> Option<String> {
     let values: Vec<&str> = values
@@ -22,9 +16,7 @@ pub fn combined_header<'a>(values: impl Iterator<Item = &'a str>) -> Option<Stri
     }
 }
 
-/// Joins every value of `name` in a decoded header list with `", "`, or
-/// `None` when the header is absent
-/// (<https://fetch.spec.whatwg.org/#concept-header-list-get>).
+// https://fetch.spec.whatwg.org/#concept-header-list-get
 #[must_use]
 pub fn combined_header_in(headers: &[(String, String)], name: &str) -> Option<String> {
     combined_header(
@@ -35,14 +27,8 @@ pub fn combined_header_in(headers: &[(String, String)], name: &str) -> Option<St
     )
 }
 
-/// Splits one header value into its members
-/// (<https://fetch.spec.whatwg.org/#header-value-get-decode-and-split>).
-///
-/// A comma inside a quoted string does not split, the quoted text keeps its
-/// quotes and escapes, and every member is stripped of leading and trailing
-/// HTTP tab or space. Values are isomorphic-decoded, so a byte above `0x7F` is
-/// the code point with the same number
-/// (<https://infra.spec.whatwg.org/#isomorphic-decode>).
+// https://fetch.spec.whatwg.org/#header-value-get-decode-and-split
+// https://infra.spec.whatwg.org/#isomorphic-decode
 #[must_use]
 pub fn split_header_value(value: &str) -> Vec<String> {
     let mut values = Vec::new();
@@ -65,11 +51,7 @@ pub fn split_header_value(value: &str) -> Vec<String> {
     values
 }
 
-/// Appends one HTTP quoted string, quotes and escapes included, and leaves
-/// the iterator just past it
-/// (<https://fetch.spec.whatwg.org/#collect-an-http-quoted-string>).
-///
-/// An unterminated string runs to the end of the value, escapes included.
+// https://fetch.spec.whatwg.org/#collect-an-http-quoted-string
 fn collect_quoted_string(characters: &mut std::str::Chars<'_>, member: &mut String) {
     while let Some(character) = characters.next() {
         member.push(character);
@@ -85,11 +67,8 @@ fn collect_quoted_string(characters: &mut std::str::Chars<'_>, member: &mut Stri
     }
 }
 
-/// The bytes a Web IDL `ByteString` names: every code point must be in
-/// `0x00..=0xFF`, and each becomes that byte
-/// (<https://webidl.spec.whatwg.org/#es-ByteString>,
-/// <https://infra.spec.whatwg.org/#isomorphic-encode>). `None` when a code
-/// point is outside the range, which the `ByteString` conversion rejects.
+// https://webidl.spec.whatwg.org/#es-ByteString
+// https://infra.spec.whatwg.org/#isomorphic-encode
 #[must_use]
 pub fn isomorphic_encode(value: &str) -> Option<Vec<u8>> {
     value
@@ -98,20 +77,13 @@ pub fn isomorphic_encode(value: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
-/// Exposes each byte as the same code point, so a page never sees a
-/// replacement character
-/// (<https://infra.spec.whatwg.org/#isomorphic-decode>).
+// https://infra.spec.whatwg.org/#isomorphic-decode
 #[must_use]
 pub fn isomorphic_decode(bytes: &[u8]) -> String {
     bytes.iter().map(|&byte| char::from(byte)).collect()
 }
 
-/// Gets `name` from `headers` and splits it into members
-/// (<https://fetch.spec.whatwg.org/#header-value-get-decode-and-split>).
-///
-/// Repeated fields are combined with `", "` first, as getting a header does.
-/// `None` means the header is absent; present headers with no value produce
-/// one empty member, as the spec requires.
+// https://fetch.spec.whatwg.org/#header-value-get-decode-and-split
 #[must_use]
 pub fn get_decode_split(headers: &HeaderMap, name: &str) -> Option<Vec<String>> {
     let mut combined = Vec::new();
@@ -126,17 +98,12 @@ pub fn get_decode_split(headers: &HeaderMap, name: &str) -> Option<Vec<String>> 
     found.then(|| split_header_value(&isomorphic_decode(&combined)))
 }
 
-/// Gets `name` from an already isomorphic-decoded header list and splits it
-/// into members, combining repeated fields with `", "` first
-/// (<https://fetch.spec.whatwg.org/#header-value-get-decode-and-split>).
-///
-/// `None` means the header is absent.
+// https://fetch.spec.whatwg.org/#header-value-get-decode-and-split
 #[must_use]
 pub fn get_decode_split_decoded(headers: &[(String, String)], name: &str) -> Option<Vec<String>> {
     combined_header_in(headers, name).map(|value| split_header_value(&value))
 }
 
-/// Why a header name or value was rejected.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum HeaderError {
     #[error("invalid header name: {0:?}")]
@@ -145,32 +112,18 @@ pub enum HeaderError {
     InvalidValue(Box<str>),
 }
 
-/// Ordered HTTP fields. Names are compared case-insensitively; values are
-/// typed [`HeaderValue`]s.
-///
-/// `insert` appends. It does not replace earlier values of the same name.
 #[derive(Clone, Default, Debug, PartialEq, Eq)]
 pub struct HeaderMap {
     entries: Vec<(HeaderName, HeaderValue)>,
 }
 
 impl HeaderMap {
-    /// Empty map.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Appends `name` / `value`. Existing fields with the same name are kept.
-    ///
-    /// # Errors
-    ///
-    /// [`HeaderError::InvalidName`] when `name` is empty or not an HTTP token.
-    /// [`HeaderError::InvalidValue`] when `value` contains a CTL byte other than TAB.
-    ///
-    /// Validation uses `http`'s `HeaderName` / `HeaderValue` parsers, the same
-    /// checks already applied when the map is written to the wire
-    /// (<https://httpwg.org/specs/rfc9110.html#field.names>).
+    // https://httpwg.org/specs/rfc9110.html#field.names
     pub fn insert(&mut self, name: &str, value: impl Into<Vec<u8>>) -> Result<(), HeaderError> {
         let name = HeaderName::from_bytes(name.as_bytes())
             .map_err(|_| HeaderError::InvalidName(name.into()))?;
@@ -182,14 +135,10 @@ impl HeaderMap {
         Ok(())
     }
 
-    /// Appends an already-parsed field. Cannot fail because both halves came
-    /// from `http`'s parsers.
     pub(crate) fn append(&mut self, name: HeaderName, value: HeaderValue) {
         self.entries.push((name, value));
     }
 
-    /// Replaces every field named `name` with `value`, keeping the position of
-    /// the first match. Appends when the name is absent.
     pub(crate) fn set(&mut self, name: HeaderName, value: HeaderValue) {
         let mut replacement = Some(value);
         self.entries.retain_mut(|(existing_name, existing_value)| {
@@ -210,25 +159,20 @@ impl HeaderMap {
         }
     }
 
-    /// Appends a field that came off the network, already parsed by the
-    /// transport.
     pub(crate) fn insert_wire(&mut self, name: HeaderName, value: HeaderValue) {
         self.entries.push((name, value));
     }
 
-    /// Removes every field whose name matches `name`, case-insensitively.
     pub fn remove(&mut self, name: &str) {
         self.entries
             .retain(|(field, _)| !field.as_str().eq_ignore_ascii_case(name));
     }
 
-    /// First value whose name matches `name`, case-insensitively.
     #[must_use]
     pub fn get(&self, name: &str) -> Option<&[u8]> {
         self.get_all(name).next()
     }
 
-    /// First typed value whose name matches `name`, case-insensitively.
     pub(crate) fn value(&self, name: &str) -> Option<&HeaderValue> {
         self.entries
             .iter()
@@ -236,7 +180,6 @@ impl HeaderMap {
             .map(|(_, value)| value)
     }
 
-    /// Every value whose name matches `name`, in insertion order.
     pub fn get_all<'s>(&'s self, name: &str) -> impl Iterator<Item = &'s [u8]> {
         self.entries
             .iter()
@@ -244,38 +187,32 @@ impl HeaderMap {
             .map(|(_, value)| value.as_bytes())
     }
 
-    /// All fields in insertion order, with typed names and values.
     #[cfg(feature = "native")]
     pub(crate) fn typed_iter(&self) -> impl Iterator<Item = (&HeaderName, &HeaderValue)> {
         self.entries.iter().map(|(name, value)| (name, value))
     }
 
-    /// All fields in insertion order. Names are serialized lowercase.
     pub fn iter(&self) -> impl Iterator<Item = (&str, &[u8])> {
         self.entries
             .iter()
             .map(|(name, value)| (name.as_str(), value.as_bytes()))
     }
 
-    /// Number of stored fields, counting duplicates.
     #[must_use]
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
-    /// Whether no fields are stored.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 }
 
-/// `token` is not an HTTP method token.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("invalid HTTP method: {0:?}")]
 pub struct InvalidMethod(Box<str>);
 
-/// A `Basic` credential header value for one username and password.
 pub(crate) fn basic_authorization(username: &str, password: &str) -> String {
     use base64::Engine as _;
     format!(
@@ -284,17 +221,8 @@ pub(crate) fn basic_authorization(username: &str, password: &str) -> String {
     )
 }
 
-/// HTTP request method.
-///
-/// `http::Method` owns the token grammar and the RFC 9110 predicates
-/// (<https://www.rfc-editor.org/rfc/rfc9110#section-9>). This type adds Fetch's
-/// two rules on top: [`Method::parse`] normalizes the six standard methods to
-/// uppercase and keeps any other method as typed
-/// (<https://fetch.spec.whatwg.org/#methods>), and [`Method::is_forbidden`]
-/// rejects the methods page script may not send.
-///
-/// The wire spelling is the text [`Method::parse`] accepts, so a decoded
-/// method is always a parsed method and neither side re-checks the grammar.
+// https://www.rfc-editor.org/rfc/rfc9110#section-9
+// https://fetch.spec.whatwg.org/#methods
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct Method(http::Method);
@@ -308,11 +236,7 @@ impl Method {
     pub const OPTIONS: Self = Self(http::Method::OPTIONS);
     pub const PATCH: Self = Self(http::Method::PATCH);
 
-    /// Parses an HTTP method token per [Fetch methods](https://fetch.spec.whatwg.org/#methods).
-    ///
-    /// # Errors
-    ///
-    /// [`InvalidMethod`] when `token` is empty or not an HTTP token.
+    // https://fetch.spec.whatwg.org/#methods
     pub fn parse(token: &str) -> Result<Self, InvalidMethod> {
         let standard = [
             Self::GET,
@@ -332,51 +256,19 @@ impl Method {
             .map_err(|_| InvalidMethod(token.into()))
     }
 
-    /// Whether this method is safe per
-    /// [RFC 9110](https://www.rfc-editor.org/rfc/rfc9110#section-9.2.1):
-    /// `GET`, `HEAD`, `OPTIONS`, or `TRACE`.
-    ///
-    /// ```
-    /// use net::Method;
-    ///
-    /// assert!(Method::GET.is_safe());
-    /// assert!(Method::parse("TRACE").unwrap().is_safe());
-    /// assert!(!Method::POST.is_safe());
-    /// ```
+    // https://www.rfc-editor.org/rfc/rfc9110#section-9.2.1
     #[must_use]
     pub fn is_safe(&self) -> bool {
         self.0.is_safe()
     }
 
-    /// Whether this method is idempotent per
-    /// [RFC 9110](https://www.rfc-editor.org/rfc/rfc9110#section-9.2.2):
-    /// `GET`, `HEAD`, `OPTIONS`, `TRACE`, `PUT`, and `DELETE`.
-    ///
-    /// ```
-    /// use net::Method;
-    ///
-    /// assert!(Method::PUT.is_idempotent());
-    /// assert!(!Method::POST.is_idempotent());
-    /// ```
+    // https://www.rfc-editor.org/rfc/rfc9110#section-9.2.2
     #[must_use]
     pub fn is_idempotent(&self) -> bool {
         self.0.is_idempotent()
     }
 
-    /// Whether this method is forbidden to page scripts
-    /// (<https://fetch.spec.whatwg.org/#forbidden-method>).
-    ///
-    /// Unlike the RFC predicates above, Fetch defines this one as a
-    /// byte-case-insensitive match, because it rejects the spelling a page
-    /// typed before normalization.
-    ///
-    /// ```
-    /// use net::Method;
-    ///
-    /// assert!(Method::parse("TRACE").unwrap().is_forbidden());
-    /// assert!(Method::parse("trace").unwrap().is_forbidden());
-    /// assert!(!Method::POST.is_forbidden());
-    /// ```
+    // https://fetch.spec.whatwg.org/#forbidden-method
     #[must_use]
     pub fn is_forbidden(&self) -> bool {
         ["CONNECT", "TRACE", "TRACK"]
@@ -384,13 +276,11 @@ impl Method {
             .any(|forbidden| self.0.as_str().eq_ignore_ascii_case(forbidden))
     }
 
-    /// Wire spelling of this method.
     #[must_use]
     pub fn as_str(&self) -> &str {
         self.0.as_str()
     }
 
-    /// The same method as the HTTP crate's type, for the carrier's builder.
     #[must_use]
     pub(crate) fn as_http(&self) -> &http::Method {
         &self.0
@@ -469,9 +359,6 @@ mod tests {
             ["x / x", "", "", "1"]
         );
         assert_eq!(super::split_header_value("\"1,2\", 3"), ["\"1,2\"", "3"]);
-        // An escaped comma stays inside the member. Without the escape
-        // branch the quoted string ends at the backslash and the comma
-        // splits, so this pins the branch itself.
         assert_eq!(super::split_header_value("\"a\\,b\",c"), ["\"a\\,b\"", "c"]);
     }
 
@@ -487,9 +374,7 @@ mod tests {
         assert_eq!(super::get_decode_split(&map, "x-missing"), None);
     }
 
-    /// A present field with an empty value is one empty member. Fetch's own
-    /// table gives `A: nosniff` plus `A:` as «`nosniff`, `""`»
-    /// (<https://fetch.spec.whatwg.org/#example-header-value-get-decode-and-split>).
+    // https://fetch.spec.whatwg.org/#example-header-value-get-decode-and-split
     #[test]
     fn combining_keeps_an_empty_field_value() {
         assert_eq!(super::combined_header(std::iter::empty()), None);

@@ -10,26 +10,12 @@ use crate::dom::tree::NodeId;
 use crate::js::{JsFetchId, RealmRequest};
 use crate::protocol::{BrowserEvent, RendererEvent, TimerId};
 
-/// Upper bound on realm requests applied in one turn. Host callbacks can
-/// enqueue more work while a request runs, so a turn must not loop forever.
 const MAX_REALM_REQUESTS_PER_TURN: usize = 1024;
 
-/// How long a host may sleep while a scroll animation is in progress. The
-/// animation advances once per rendering opportunity, and this is the frame
-/// interval the host uses to schedule them
-/// (<https://drafts.csswg.org/cssom-view/#scroll-an-element>).
+// https://drafts.csswg.org/cssom-view/#scroll-an-element
 const SCROLL_FRAME_INTERVAL: Duration = Duration::from_millis(16);
 
 impl Document {
-    /// Runs one batch of ready work and reports whether the engine must
-    /// reconcile and run another pass: a task ran (its side effects include a
-    /// queued navigation or a new iframe the next task must see), or the
-    /// document already has follow-up work.
-    ///
-    /// The engine calls this instead of draining the whole document at once so
-    /// it can reconcile frame documents between tasks: a task that inserts an
-    /// iframe must be visible to the next task's `contentDocument` read, and a
-    /// navigation queued by the last task must still be applied.
     pub(crate) fn drain_step(&mut self) -> bool {
         self.adopt_dial_completions();
         while let Some(id) = self.due_timer() {
@@ -43,13 +29,9 @@ impl Document {
         self.adopt_dial_completions();
         let Some(task) = self.tasks.pop_front() else {
             let fired = self.check_load();
-            // The settle can finish a smooth scroll, which the next scroll
-            // steps report
-            // (<https://drafts.csswg.org/cssom-view/#run-the-scroll-steps>).
+            // https://drafts.csswg.org/cssom-view/#run-the-scroll-steps
             self.adopt_scroll_events();
-            // The settle ticks CSS animations and transitions, so this
-            // resolve's lifecycle events join the same batch
-            // (<https://drafts.csswg.org/css-animations-1/#events>).
+            // https://drafts.csswg.org/css-animations-1/#events
             self.adopt_animation_events();
             return !self.stop.is_set()
                 && (fired
@@ -57,46 +39,23 @@ impl Document {
                     || self.awaits_proxy_replay()
                     || !self.tasks.is_empty());
         };
-        // Joins the drain's turn when one is open, so serial tasks share
-        // its deadline. A task outside a drain still opens its own turn.
         let _turn = self.js.as_ref().map(crate::js::JsRealm::enter_turn);
         self.run_task(task);
-        // Deliver resource messages between tasks, but keep the settle for the
-        // end of the batch. A later task can observe an arrival (a font
-        // registered into the shaping collection, a stylesheet `@import`
-        // started), while several mutations still share one style/layout pass
-        // at the batch's one rendering opportunity.
         self.pump_blitz_messages();
-        // A task ran even when nothing is left: the engine still reconciles the
-        // queued navigations and child frames it produced
-        // (<https://html.spec.whatwg.org/multipage/iframe-embed-object.html#dom-iframe-contentdocument>).
+        // https://html.spec.whatwg.org/multipage/iframe-embed-object.html#dom-iframe-contentdocument
         !self.stop.is_set()
     }
 
-    /// Whether a task is queued or a timer is already due.
     pub(crate) fn has_ready_work(&self) -> bool {
-        // A blitz subresource fetch queued but not yet ingested is ready
-        // work: the next drain_step answers it from the byte cache or turns
-        // it into a dial, which is the only way a microtask continuation
-        // that just asked for a subresource keeps going — the provider's
-        // count covers the queue and every filed handler, and a handler
-        // whose dial is pending belongs to the dial, not to this queue
-        // (drain.rs's `has_pending_dials` is the host's wait for that one).
         if self.net_provider.in_flight() > 0 && !self.dials.has_pending() {
             return true;
         }
-        // A response handed to a Blitz handler has a document event queued for
-        // the pump. Its effect — a font outcome, a failed stylesheet — exists
-        // only after that pass, so a host must not wait for the next timer
-        // with the response unread.
         if self.blitz_response_pending {
             return true;
         }
         if !self.tasks.is_empty() || self.dials.has_queued() {
             return true;
         }
-        // A queued navigation or child traversal is engine work the next
-        // reconcile applies, even though no task carries it.
         if !self.frame_traversals.is_empty() || self.world.borrow().has_frame_navigations() {
             return true;
         }
@@ -109,12 +68,6 @@ impl Document {
             .any(|timer| !timer.fired && timer.when.is_some_and(|when| when <= now))
     }
 
-    /// Whether a dial is queued, in flight, or waiting for its completion task.
-    ///
-    /// A host that can make progress only through a dial uses this to wait for
-    /// the completion instead of declaring the page idle. [`Self::has_ready_work`]
-    /// deliberately excludes an in-flight dial so the native engine can sleep on
-    /// its wake handle rather than spin.
     pub(crate) fn has_pending_dials(&self) -> bool {
         self.dials.has_pending()
     }
@@ -132,10 +85,7 @@ impl Document {
         }
     }
 
-    /// Drops a completion no task will read. A streamed body's task keeps
-    /// reading into its channel and holds the tab's dial permits until the
-    /// stream is cancelled, so nothing else can reclaim it
-    /// (<https://fetch.spec.whatwg.org/#concept-response-body>).
+    // https://fetch.spec.whatwg.org/#concept-response-body
     fn abandon_dial(&self, completed: Result<CompletedDial, DialContext>) {
         if let Ok(done) = completed
             && let crate::protocol::ResponseBody::Streamed(stream) = done.outcome.body
@@ -144,7 +94,6 @@ impl Document {
         }
     }
 
-    /// Earliest timer deadline this document waits for.
     #[must_use]
     pub(crate) fn next_deadline(&self) -> Option<Instant> {
         let timers = self
@@ -153,14 +102,8 @@ impl Document {
             .filter(|timer| !timer.fired)
             .filter_map(|timer| timer.when)
             .min();
-        // A scroll animation advances at rendering opportunities, so a host
-        // that sleeps until the next deadline wakes once per frame while one
-        // runs instead of jumping straight to the next page timer
-        // (<https://drafts.csswg.org/cssom-view/#scroll-an-element>). A CSS
-        // animation or transition is ticked by the same rendering
-        // opportunities, so it needs the same per-frame wake-up or its
-        // lifecycle events never fire
-        // (<https://drafts.csswg.org/css-animations-1/#events>).
+        // https://drafts.csswg.org/cssom-view/#scroll-an-element
+        // https://drafts.csswg.org/css-animations-1/#events
         let frame = (self.scroll_animation_active() || self.css_animation_active())
             .then(|| Instant::now() + SCROLL_FRAME_INTERVAL);
         match (timers, frame) {
@@ -182,8 +125,6 @@ impl Document {
         id
     }
 
-    /// Stops the frame and drops its queued work. The shared `QuickJS` heap
-    /// belongs to the page engine, not the frame, so it is not touched.
     pub(crate) fn shutdown(&mut self) {
         self.stop.request();
         self.release();
@@ -213,22 +154,12 @@ impl Document {
     }
 
     pub(in crate::document) fn launch_queued_dials(&mut self) {
-        // A `data:` response can itself request more `data:` images. Keep
-        // decoding those before returning so paint does not run with the
-        // fetches still sitting on the queue. Eight passes is the bound for one
-        // drain step, so a `data:` cycle cannot spin inside this call.
         for _ in 0..8 {
             let mut completed_data = false;
-            // One at a time: a `data:` frame load can commit a new document
-            // and replace the ledger, and the rest of the old queue must not
-            // start on the new one.
             while let Some(entry) = self.dials.pop_queued() {
                 let super::dials::QueuedEntry { dial, delay } = entry;
-                // The queue holds a parsed URL, so the scheme is its scheme.
                 if dial.req.url.scheme() == "data" {
                     completed_data = true;
-                    // Same ceiling as a streamed navigation body. Decoding an
-                    // unbounded `data:` URL would sit entirely in this process.
                     if let Some((content_type, body)) =
                         crate::engine::decode_data_url_bounded(dial.req.url.as_str())
                     {
@@ -245,9 +176,7 @@ impl Document {
                                 status_text: "OK".to_owned(),
                                 final_url,
                                 content_type: Some(content_type.clone()),
-                                // Scheme fetch serves the data: MIME type
-                                // as the response's `Content-Type` header
-                                // (<https://fetch.spec.whatwg.org/#concept-scheme-fetch>).
+                                // https://fetch.spec.whatwg.org/#concept-scheme-fetch
                                 headers: vec![("content-type".to_owned(), content_type)],
                                 body: crate::protocol::ResponseBody::Bytes(body),
                                 response_type: net::cors::ResponseType::Basic,
@@ -369,8 +298,6 @@ impl Document {
                 self.adopt_js_work();
             }
             Task::RejectionTasks => {
-                // The rejection events cannot fail the task: each handler's
-                // exception is reported where it was thrown.
                 if let Some(js) = self.js.as_ref() {
                     js.fire_rejection_tasks();
                 }
@@ -379,11 +306,8 @@ impl Document {
         }
     }
 
-    /// Fires the coalesced `toggle` event of one element: the state the burst
-    /// started from and the state it ended at. A later change before the task
-    /// ran only moved the end state
-    /// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-details-toggle-event-task>,
-    /// <https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-dialog-toggle-event-task>).
+    // https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-details-toggle-event-task
+    // https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-dialog-toggle-event-task
     fn run_toggle_task(&mut self, node: NodeId) {
         if let Some((old_state, new_state)) = self.ui_events.take_toggle(node) {
             self.fire_js(|js| js.fire_toggle_task(node, &old_state, &new_state));
@@ -391,10 +315,6 @@ impl Document {
         self.adopt_js_work();
     }
 
-    /// Drains the realm's outbox in enqueue order. Requests generated while
-    /// one runs go behind the requests already queued, and one turn stops at
-    /// `MAX_REALM_REQUESTS_PER_TURN` so a host callback cannot hold the
-    /// renderer forever.
     pub(in crate::document) fn adopt_js_work(&mut self) {
         for _ in 0..MAX_REALM_REQUESTS_PER_TURN {
             let Some(request) = self.world.borrow().pop_outbox() else {
@@ -419,9 +339,7 @@ impl Document {
                 }
             }
             RealmRequest::CookieChanges => {
-                // Each realm diffs the jar against what it last processed, so
-                // two writes before this turn report one event with both
-                // (<https://cookiestore.spec.whatwg.org/#process-cookie-changes>).
+                // https://cookiestore.spec.whatwg.org/#process-cookie-changes
                 self.fire_js(crate::js::JsRealm::process_cookie_changes);
             }
             RealmRequest::Fetch(fetch) => self.queue_js_fetch(*fetch),
@@ -452,16 +370,9 @@ impl Document {
                 url,
                 handling,
             } => {
-                // The setter moved the document URL, the joint entry, and the
-                // owner realm's `history` view and `popstate` already. The
-                // document URL the loader keeps must move too, and the
-                // `hashchange` is the part this turn delivers
-                // (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate-to-a-fragment>).
+                // https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate-to-a-fragment
                 self.apply_document_url_same_origin(url.as_str());
-                // The URL now names a fragment, so `:target` moves to the
-                // element it names before the `hashchange` handler can read a
-                // style
-                // (<https://drafts.csswg.org/selectors-4/#the-target-pseudo>).
+                // https://drafts.csswg.org/selectors-4/#the-target-pseudo
                 self.update_url_target();
                 let url = url.to_string();
                 self.history_updates.push(crate::document::HistoryUpdate {
@@ -469,8 +380,6 @@ impl Document {
                     state: "null".to_owned(),
                     handling,
                 });
-                // A fragment navigation never carries classic state, so the
-                // realm restores `null` rather than a serialized payload.
                 let length = self.world.borrow().history.length;
                 self.fire_js(|js| {
                     js.restore_history(None, length)?;
@@ -483,11 +392,7 @@ impl Document {
                 }));
             }
             RealmRequest::HistoryTraverse { delta } => {
-                // A step names a joint position no single renderer can resolve
-                // alone, so the engine forwards it: a browser-hosted engine
-                // turns it into a tab event, and a standalone engine applies
-                // it against its own joint list
-                // (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#traverse-the-history-by-a-delta>).
+                // https://html.spec.whatwg.org/multipage/browsing-the-web.html#traverse-the-history-by-a-delta
                 self.frame_traversals.push(delta);
             }
             RealmRequest::SelectionChanged(node) => self.push_selection_changed(node),
@@ -519,12 +424,8 @@ impl Document {
         }
     }
 
-    /// A connected `<script src>` element queued its prepare steps from
-    /// script; the fetch starts here.
     fn queue_dynamic_script(&mut self, element: NodeId) {
-        // Scripting is disabled in a sandboxed frame without `allow-scripts`:
-        // a script element never executes, however it was inserted
-        // (<https://html.spec.whatwg.org/multipage/browsers.html#sandboxed-scripts-browsing-context-flag>).
+        // https://html.spec.whatwg.org/multipage/browsers.html#sandboxed-scripts-browsing-context-flag
         if self.world.borrow().sandbox.scripts_disabled() {
             return;
         }
@@ -543,9 +444,7 @@ impl Document {
             parsed.document.mark_script_started(element.node);
         }
         if let crate::js::Script::Module(source) = script {
-            // The graph runs now; the element's `load` or `error` is an element
-            // task, so it lands after the current script's turn ends
-            // (<https://html.spec.whatwg.org/multipage/scripting.html#attr-script-type-module>).
+            // https://html.spec.whatwg.org/multipage/scripting.html#attr-script-type-module
             match self.run_module_body(element, source) {
                 None => self.tasks.push_back(Task::NodeError(element)),
                 Some(result) => {
@@ -596,22 +495,12 @@ impl Document {
             self.redirect_gate(crate::csp::Destination::Script),
         ));
         dial.integrity = self.script_integrity(element);
-        // A script-inserted `src` script is async, but it still belongs to
-        // the set of scripts that will execute as soon as possible, and
-        // `load` waits for that set to drain
-        // (<https://html.spec.whatwg.org/multipage/parsing.html#the-end>).
+        // https://html.spec.whatwg.org/multipage/parsing.html#the-end
         self.queue_dial(dial);
     }
 
-    /// Runs the module graph of one module script element. The element itself
-    /// gets `load` or `error`, so the caller decides when that task runs: a
-    /// deferred parser module fires it in the same turn the graph finishes,
-    /// and a script-inserted one that prepared after parsing queues the task
-    /// (<https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script>).
-    ///
-    /// `None` means CSP blocked the script before its fetch: the caller fires
-    /// `error` without running anything
-    /// (<https://html.spec.whatwg.org/multipage/scripting.html#prepare-the-script-element>).
+    // https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script
+    // https://html.spec.whatwg.org/multipage/scripting.html#prepare-the-script-element
     pub(super) fn run_module_body(
         &mut self,
         element: crate::dom::tree::NodeId,
@@ -656,13 +545,7 @@ impl Document {
         Some(result)
     }
 
-    /// Hands off the `keepalive` requests this document queued but never
-    /// started, then starts them. A `keepalive` fetch must outlive the
-    /// environment that made it, which is the whole point of the flag: pages
-    /// report on teardown from an `unload` handler, when the document's next
-    /// turn will never run
-    /// (<https://fetch.spec.whatwg.org/#keepalive-flag>). Every other queued
-    /// request dies with the document, as aborting it requires.
+    // https://fetch.spec.whatwg.org/#keepalive-flag
     pub(crate) fn flush_keepalive_fetches(&mut self) {
         let pending = {
             let world = self.world.borrow();
@@ -676,10 +559,7 @@ impl Document {
         let services = &*self.services;
         let shared = self.world.borrow().runtime.shared.clone();
         for entry in self.dials.take_queued_keepalive() {
-            // Nothing will read this dial's completion, but the request is
-            // still running, so the count keeps the engine from reporting
-            // itself idle before the network answers
-            // (<https://fetch.spec.whatwg.org/#keepalive-flag>).
+            // https://fetch.spec.whatwg.org/#keepalive-flag
             shared.begin_keepalive_fetch();
             let settle = shared.clone();
             self.dials
@@ -701,9 +581,7 @@ impl Document {
         self.settle_js_fetch(js_id, None);
     }
 
-    /// Queues one page `fetch` / XHR dial. The connect check is here, where
-    /// the request leaves the renderer
-    /// (<https://w3c.github.io/webappsec-csp/#should-request-be-blocked-by-content-security-policy>).
+    // https://w3c.github.io/webappsec-csp/#should-request-be-blocked-by-content-security-policy
     fn queue_js_fetch(&mut self, fetch: crate::js::JsFetchRequest) {
         if self.dials.pending_js_fetches() >= MAX_PENDING_JS_FETCHES {
             self.fail_js_fetch(fetch.js_id);
@@ -733,10 +611,7 @@ impl Document {
         dial.req.body = fetch.body;
         dial.req.content_type = fetch.content_type;
         dial.req.headers = fetch.headers;
-        // The dial is built after the request was queued, and a same-turn
-        // `history.replaceState` updates the client URL in between, so resolve
-        // the client branch against the document as it is now
-        // (<https://html.spec.whatwg.org/multipage/history.html#dom-history-replacestate>).
+        // https://html.spec.whatwg.org/multipage/history.html#dom-history-replacestate
         dial.req.referrer = match fetch.options.referrer {
             crate::protocol::ReferrerRequest::Client { .. } => {
                 crate::protocol::ReferrerRequest::Client {
@@ -745,11 +620,8 @@ impl Document {
             }
             referrer => referrer,
         };
-        // An unset request policy means the client's policy container
-        // decides: resolve it here so every redirect hop re-determines with
-        // the same policy the initial request used
-        // (<https://fetch.spec.whatwg.org/#main-fetch>,
-        // <https://w3c.github.io/webappsec-referrer-policy/#determine-requests-referrer>).
+        // https://fetch.spec.whatwg.org/#main-fetch
+        // https://w3c.github.io/webappsec-referrer-policy/#determine-requests-referrer
         dial.req.referrer_policy = fetch
             .options
             .referrer_policy
@@ -768,10 +640,8 @@ impl Document {
 
     fn due_timer(&mut self) -> Option<TimerId> {
         let now = Instant::now();
-        // Ties at the same deadline run in creation order, so tasks queued
-        // together keep the order they were queued in
-        // (<https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#timer-initialisation-steps>,
-        // <https://html.spec.whatwg.org/multipage/webappapis.html#task-queue>).
+        // https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#timer-initialisation-steps
+        // https://html.spec.whatwg.org/multipage/webappapis.html#task-queue
         let (id, timer) = self
             .timers
             .iter_mut()

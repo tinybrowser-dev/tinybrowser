@@ -1,8 +1,3 @@
-//! Browser side of the renderer seam: factory, handles, and async routing.
-//!
-//! One private platform channel per renderer, length-prefixed frames, async
-//! reader and writer tasks, and oneshot replies. The handle stays value-only.
-
 use std::collections::HashMap;
 use std::io;
 use std::process::Stdio;
@@ -33,16 +28,8 @@ use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use url::Url;
 
-/// Upper bound on one request to a renderer. The renderer budget is seconds;
-/// this is a last-resort wake-up if its reply path dies silently. A renderer
-/// that misses it is interrupted so the tab can re-acquire a fresh process
-/// instead of paying the timeout on every later operation.
-///
-/// `TINYBROWSER_RENDERER_REQUEST_TIMEOUT_MS` overrides it so recovery tests
-/// do not wait a full minute.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// The effective renderer request deadline.
 fn request_timeout() -> Duration {
     std::env::var_os("TINYBROWSER_RENDERER_REQUEST_TIMEOUT_MS")
         .and_then(|value| value.to_str()?.parse::<u64>().ok())
@@ -50,16 +37,12 @@ fn request_timeout() -> Duration {
         .map_or(REQUEST_TIMEOUT, Duration::from_millis)
 }
 
-/// Upper bound for one downloaded renderer payload such as a PNG.
 const MAX_RENDERER_STREAM_BYTES: usize = 64 * 1024 * 1024;
 
-/// How long a `renderer` child has to send [`RendererNotice::Ready`].
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// How long teardown waits for transport tasks to finish.
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Bounded browser-to-renderer command queue.
 const COMMAND_CAPACITY: usize = 256;
 
 type RendererClient =
@@ -70,20 +53,13 @@ type BrowserServiceResponder = exchange::Responder<RendererCall, ServiceReply, H
 type RendererRouter = exchange::Router<BrowserCall, RendererReply, RendererNotice>;
 type ResponseUpload = exchange::Upload<RendererCall, ServiceReply, HostNotice, RendererReply>;
 
-/// Value-only transport handle to one renderer process.
 pub(crate) struct RendererHandle {
-    /// Process identity, checked against an assignment's host before serving
-    /// a renderer call: the assignment registry is shared by every process, so
-    /// a call must be bound to the process that sent it.
     pub(crate) id: RendererId,
     client: RendererClient,
     pub(crate) alive: Arc<AtomicBool>,
     kill: watch::Sender<bool>,
     tasks: Mutex<Vec<JoinHandle<()>>>,
     pub(crate) site: Arc<Mutex<Option<Site>>>,
-    /// Live assignments counted against this process. The assignment registry
-    /// increments while the manager's state lock is held; release decrements
-    /// before the manager re-evaluates shutdown.
     pub(crate) assignments: AtomicUsize,
     _slot: tokio::sync::OwnedSemaphorePermit,
 }
@@ -157,7 +133,6 @@ impl RendererHandle {
         }
     }
 
-    /// Tells the renderer to create the engine for one reserved assignment.
     pub(crate) async fn assign_notify(&self, assignment: RendererAssignmentId) -> io::Result<()> {
         self.client
             .notify(HostNotice::Assign { assignment })
@@ -165,10 +140,6 @@ impl RendererHandle {
             .map_err(|_| io::Error::other("renderer stopped"))
     }
 
-    /// Best-effort release notice from the assignment registry's drop path.
-    /// A dead renderer needs none, and a full lane must not disconnect the
-    /// shared transport, so the notice is delivered on its own task instead of
-    /// a `try_notify` that closes the exchange when the lane is full.
     pub(crate) fn try_notify_release(&self, assignment: RendererAssignmentId) {
         let notice = HostNotice::Release { assignment };
         match tokio::runtime::Handle::try_current() {
@@ -184,14 +155,6 @@ impl RendererHandle {
         }
     }
 
-    /// Sends one command and waits for its reply.
-    ///
-    /// # Errors
-    ///
-    /// [`TabError::ActorStopped`] when the renderer is gone or the reply does
-    /// not arrive within the request timeout. A timeout also interrupts the
-    /// renderer: a process that stopped answering must not keep its tab
-    /// hostage.
     pub(crate) async fn request(
         &self,
         assignment: RendererAssignmentId,
@@ -214,13 +177,6 @@ impl RendererHandle {
         decode_reply(assignment, response)
     }
 
-    /// Sends one command whose reply is a streamed byte payload and waits for
-    /// it to complete.
-    ///
-    /// # Errors
-    ///
-    /// [`TabError::ActorStopped`] when the renderer is gone, the stream is
-    /// incomplete when the process dies, or the reply times out.
     pub(crate) async fn request_bytes(
         &self,
         assignment: RendererAssignmentId,
@@ -257,8 +213,6 @@ impl RendererHandle {
         }
     }
 
-    /// Streams one top-level response to the renderer and waits for its mount
-    /// result. The body is carried only in bounded raw IPC frames.
     pub(crate) async fn mount(
         self: &Arc<Self>,
         assignment: RendererAssignmentId,
@@ -306,17 +260,14 @@ impl RendererHandle {
         })
     }
 
-    /// Interrupts a blocked script by killing the renderer process.
     pub(crate) fn interrupt(&self) {
         let _ = self.kill.send(true);
     }
 
-    /// Asks the renderer loop to stop without waiting.
     pub(crate) fn request_shutdown(&self) {
         let _result = self.client.try_notify(HostNotice::Shutdown);
     }
 
-    /// Stops the renderer and waits for its transport tasks.
     pub(crate) async fn shutdown(&self) {
         self.request_shutdown();
         self.interrupt();
@@ -343,7 +294,6 @@ fn decode_reply(
 
 impl Drop for RendererHandle {
     fn drop(&mut self) {
-        // Dropping `kill` stops the child task's watch and reaps the child.
         for task in std::mem::take(&mut *self.tasks.lock().unwrap_or_else(PoisonError::into_inner))
         {
             task.abort();
@@ -366,17 +316,12 @@ struct ActiveDial {
 
 struct ServiceContext {
     responder: BrowserServiceResponder,
-    /// Process this service task belongs to; renderer calls may only resolve
-    /// assignments this process hosts.
     renderer: RendererId,
     registry: Arc<AssignmentRegistry>,
-    /// Cross-tab calls resolve through this registry, never through the
-    /// browser owner task: the wait-for graph stays acyclic.
     tabs: TabRegistry,
     partition: PartitionServices,
     sessions: Arc<SessionStorage>,
     kill: watch::Sender<bool>,
-    /// Browser command handle: renderer links create tabs for `window.open`.
     browser: crate::browser::BrowserHandle,
     dials: Arc<Mutex<HashMap<RequestId, ActiveDial>>>,
 }
@@ -489,8 +434,6 @@ async fn reader_task(
     fail(&context.alive, &context.router, &context.kill);
 }
 
-/// Runs browser services and renderer notifications after the exchange router
-/// has separated them from replies and stream chunks.
 async fn service_task(mut server: BrowserServiceServer, context: ServiceContext) {
     while let Some(input) = server.recv().await {
         let result = match input {
@@ -534,8 +477,6 @@ fn route_event(
     }
 }
 
-/// Routes a settled JS waiter. It shares the event route's authorization: a
-/// renderer may only speak for an assignment it hosts.
 fn route_waiter_settled(
     context: &ServiceContext,
     assignment: RendererAssignmentId,
@@ -549,8 +490,6 @@ fn route_waiter_settled(
     Ok(())
 }
 
-/// The live assignment `id` names. `None` means it was already released and
-/// the notice is stale, which is not a violation.
 fn live_assignment(
     context: &ServiceContext,
     assignment: RendererAssignmentId,
@@ -569,8 +508,6 @@ fn live_assignment(
     Ok(Some(assignment))
 }
 
-/// Runs one dial attempt, racing the process kill switch and this call's
-/// cancellation.
 async fn race_dial(
     network: &crate::network::TabNetworkHandle,
     request: &renderer::DialRequest,
@@ -587,8 +524,6 @@ async fn race_dial(
     }
 }
 
-/// Routes one browser service call from a renderer. This is a dispatch table:
-/// each arm validates and forwards one call shape.
 #[expect(
     clippy::too_many_lines,
     reason = "dispatch table with one arm per service call; splitting it is a refactor, not a lint fix"
@@ -604,10 +539,6 @@ async fn route_service_call(
         .resolve(assignment_id)
         .filter(|assignment| assignment.hosted_by(context.renderer))
     else {
-        // The renderer may have queued the call before it processed
-        // `Release`. Answer with a benign failure so a synchronous
-        // `document.cookie` caller cannot block forever, and keep the
-        // process alive for its other assignments.
         if context.registry.was_released(assignment_id) {
             return send_released_reply(&context.responder, id, &call).await;
         }
@@ -615,12 +546,7 @@ async fn route_service_call(
     };
     match call {
         ServiceCall::Network(NetworkCall::Dial(request)) => {
-            // An opaque initiator (`data:`, `blob:` with an opaque creator, a
-            // sandboxed document) has no site to authorize. It may still
-            // fetch: the request goes out as `Origin: null`, with no
-            // credentials it would not otherwise send and no referrer, so it
-            // cannot claim the renderer's own site
-            // (<https://fetch.spec.whatwg.org/#concept-request-origin>).
+            // https://fetch.spec.whatwg.org/#concept-request-origin
             let initiator = match assignment.site.authorize_origin(&request.initiator) {
                 Some(initiator) => initiator,
                 None if request.initiator.is_opaque() => url::Origin::new_opaque(),
@@ -656,9 +582,7 @@ async fn route_service_call(
                     cancel_rx.clone(),
                 )
                 .await;
-                // A 421 asks for a retry on a different connection, but only an
-                // idempotent method may be replayed
-                // (<https://www.rfc-editor.org/rfc/rfc9110#section-15.5.20>).
+                // https://www.rfc-editor.org/rfc/rfc9110#section-15.5.20
                 if request.method.is_idempotent()
                     && matches!(&outcome, Ok(head) if head.status == 421)
                 {
@@ -677,18 +601,13 @@ async fn route_service_call(
                     )
                     .await;
                 }
-                // `release_streams` may have run while the dial was in flight.
                 if let Ok(head) = &outcome
                     && let renderer::ResponseBody::Streamed(stream) = &head.body
                     && registry.resolve(assignment_id).is_none()
                 {
                     worker_network.cancel_stream(assignment_id, *stream);
                 }
-                // A frame navigation carries the response head the browser
-                // already sees, so parse the enforced CSP `sandbox`
-                // directives here and narrow the frame's own record before the
-                // renderer can commit the document and run its scripts
-                // (<https://w3c.github.io/webappsec-csp/#sandbox>).
+                // https://w3c.github.io/webappsec-csp/#sandbox
                 if let (Ok(head), Some(frame)) = (&outcome, request.frame) {
                     let csp = renderer::SandboxFlags::from_csp_headers(&head.headers);
                     tabs.commit_frame_sandbox(tab_id, frame, csp);
@@ -728,17 +647,7 @@ async fn route_service_call(
             }
             send_reply(&context.responder, id, ServiceReply::Unit).await?;
         }
-        // Every cookie arm authorizes the URL and passes the partition key the
-        // renderer named. The key only narrows the same host's cookie set to
-        // one partition, so a renderer that names another top-level site reads
-        // data it already owns, never another origin's.
-        //
-        // A renderer hosts every frame of its tab, so a cross-site frame's
-        // document URL is a claim the browser must answer without treating it
-        // as a protocol violation: cookies are origin data, so a URL outside
-        // the lock reads empty and writes nowhere. Killing the renderer would
-        // let any cross-site iframe take its whole page down
-        // (<https://chromium.googlesource.com/chromium/src/+/main/docs/process_model_and_site_isolation.md#process-locks>).
+        // https://chromium.googlesource.com/chromium/src/+/main/docs/process_model_and_site_isolation.md#process-locks
         ServiceCall::Network(NetworkCall::CookieGet { url, partition_key }) => {
             let cookies = assignment.site.authorize_url(&url).map_or_default(|url| {
                 assignment
@@ -785,8 +694,6 @@ async fn route_service_call(
             payload,
             channel,
         }) => {
-            // `BroadcastChannel` is origin-scoped; a frame's origin is the
-            // frame's, so the browser bound is the process site lock.
             let origin = assignment
                 .site
                 .storage_key(&origin)
@@ -812,21 +719,13 @@ async fn route_service_call(
     Ok(())
 }
 
-/// Whether a page may address `target` with `postMessage`: itself, its
-/// opener, or a tab it opened.
 fn message_related(context: &ServiceContext, assignment: &Assignment, target: TabId) -> bool {
     target == assignment.tab
         || context.tabs.opener(target) == Some(assignment.tab)
         || context.tabs.opener(assignment.tab) == Some(target)
 }
 
-/// Authorizes and runs one `window.close()` after its synchronous reply.
-///
-/// The caller's renderer has already been answered, so the target's
-/// coordinator is free to report its history. A page may close itself or a tab
-/// it opened; a tab is script-closable when script created it (`noopener`
-/// included) or while it has one history entry
-/// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#script-closable>).
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#script-closable
 fn spawn_window_close(
     browser: crate::browser::BrowserHandle,
     tabs: TabRegistry,
@@ -851,18 +750,11 @@ fn spawn_window_close(
     });
 }
 
-/// The URL a browser-hosted popup may load.
-///
-/// The renderer resolved the URL; the browser still checks the scheme, because
-/// a renderer is not the trust boundary. `data:` and `blob:` popups would need
-/// a browser-side document store this engine does not have, so they are
-/// refused here rather than mis-navigated
-/// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps>).
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps
 fn navigable_popup_url(url: Url) -> Option<Url> {
     matches!(url.scheme(), "about" | "http" | "https").then_some(url)
 }
 
-/// The authorized navigation a `window.open`-family call runs under.
 fn window_initiator(
     assignment: &Assignment,
     source: renderer::NavigationSource,
@@ -872,18 +764,10 @@ fn window_initiator(
         origin: claim,
         referrer,
         referrer_policy,
-        // The browser checks the calling frame against its own per-frame
-        // sandbox record; the initiator does not carry that state.
         frame: _,
         secure_context,
     } = source;
-    // The calling document's origin must belong to this renderer's site lock;
-    // an opaque document may still open a window, but its origin stays opaque.
-    // The referrer is the document's own URL, so it must be same-origin with
-    // that claim and inside the lock: a URL that is neither is not this
-    // document's to name, and the popup goes out without one rather than
-    // leaking it. The dial seam makes the same check
-    // (<https://w3c.github.io/webappsec-referrer-policy/#determine-requests-referrer>).
+    // https://w3c.github.io/webappsec-referrer-policy/#determine-requests-referrer
     let origin = match assignment.site.authorize_origin(&claim) {
         Some(origin) => origin,
         None if claim.is_opaque() => url::Origin::new_opaque(),
@@ -894,10 +778,7 @@ fn window_initiator(
         .allows_url(&referrer)
         .then_some(referrer)
         .filter(|referrer| referrer.origin() == origin);
-    // `noreferrer` is the opener feature's referrer half, and the browser owns
-    // the feature's meaning: the renderer sends the document's policy and this
-    // overrides it
-    // (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps>).
+    // https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps
     let referrer_policy = if opener == renderer::OpenerPolicy::NoReferrer {
         net::ReferrerPolicy::NoReferrer
     } else {
@@ -911,7 +792,6 @@ fn window_initiator(
     })
 }
 
-/// The window calls that create or navigate a browser tab.
 #[derive(Clone, Copy)]
 struct WindowRouter<'a> {
     context: &'a ServiceContext,
@@ -920,7 +800,6 @@ struct WindowRouter<'a> {
 }
 
 impl WindowRouter<'_> {
-    /// Creates the browser tab a `window.open` call asked for.
     async fn open(
         self,
         url: Option<Url>,
@@ -933,9 +812,6 @@ impl WindowRouter<'_> {
             assignment,
             request: id,
         } = self;
-        // `_self`, `_parent`, and `_top` never create a browsing context; the
-        // renderer navigates those in its own frame tree. Sending one here is a
-        // renderer bug or a forgery, not a request the browser should soften.
         if matches!(
             target,
             renderer::TargetName::Current
@@ -945,11 +821,7 @@ impl WindowRouter<'_> {
         {
             return Err(RendererViolation);
         }
-        // The browser's per-frame record is the whole check. A renderer
-        // reports an `iframe`'s `sandbox` attribute once, at creation, and the
-        // browser unions it with its own parent set; a call can therefore only
-        // be refused, never widened, by anything the renderer says now
-        // (<https://html.spec.whatwg.org/multipage/browsers.html#sandboxed-auxiliary-navigation-browsing-context-flag>).
+        // https://html.spec.whatwg.org/multipage/browsers.html#sandboxed-auxiliary-navigation-browsing-context-flag
         let Some(active) = context.tabs.frame_sandbox(assignment.tab, source.frame) else {
             return Err(RendererViolation);
         };
@@ -971,10 +843,7 @@ impl WindowRouter<'_> {
         };
         let calling_frame = source.frame;
         let initiator = window_initiator(assignment, source, opener)?;
-        // Every document in the new tab inherits this set. `auxiliary_flags`
-        // is the spec's one release: `allow-popups-to-escape-sandbox` empties
-        // it, and only the actively governing set can carry that keyword
-        // (<https://html.spec.whatwg.org/multipage/browsers.html#sandbox-propagates-to-auxiliary-browsing-contexts-flag>).
+        // https://html.spec.whatwg.org/multipage/browsers.html#sandbox-propagates-to-auxiliary-browsing-contexts-flag
         let popup_sandbox = active.auxiliary_flags();
         let tab = context
             .browser
@@ -993,9 +862,6 @@ impl WindowRouter<'_> {
         send_reply(&context.responder, id, ServiceReply::Window(tab)).await
     }
 
-    /// Selects the browser tab this tab's group holds under `name` and
-    /// navigates it. The reply is the selected tab, or `None` when the name
-    /// selects nothing so the caller creates a context.
     async fn navigate(
         self,
         name: renderer::ContextName,
@@ -1008,24 +874,14 @@ impl WindowRouter<'_> {
             assignment,
             request: id,
         } = self;
-        // The lookup runs here, once: the caller names a context, the browser
-        // decides which tab that is, and the answer is what it selected. A
-        // renderer cannot name a tab outside its own group.
         let Some(target) = context.tabs.find_by_name(assignment.tab, &name) else {
             return send_reply(&context.responder, id, ServiceReply::Window(None)).await;
         };
         if let Some(url) = url.and_then(navigable_popup_url) {
-            // A sandboxed document may navigate itself, the contexts nested
-            // inside it, and the auxiliary contexts it opened — and only those.
-            // The set is the browser's per-frame record, never a claim the
-            // renderer makes now
-            // (<https://html.spec.whatwg.org/multipage/browsers.html#sandboxed-navigation-browsing-context-flag>).
+            // https://html.spec.whatwg.org/multipage/browsers.html#sandboxed-navigation-browsing-context-flag
             let Some(active) = context.tabs.frame_sandbox(assignment.tab, source.frame) else {
                 return Err(RendererViolation);
             };
-            // "The auxiliary contexts it created" is a frame relationship: the
-            // tab that hosts the sandboxed document is not the document, so a
-            // frame cannot inherit its parent document's permission.
             let created_by_caller = context.tabs.opener(target) == Some(assignment.tab)
                 && context.tabs.opener_frame(target) == Some(source.frame);
             if target != assignment.tab && active.blocks_navigation() && !created_by_caller {
@@ -1042,16 +898,11 @@ impl WindowRouter<'_> {
                 }
             }
         }
-        // A refused navigation still selected the tab, so the caller answers
-        // the `WindowProxy` it already has. Only a missing name creates one.
         let tab = renderer::WindowId::new(target.get());
         send_reply(&context.responder, id, ServiceReply::Window(Some(tab))).await
     }
 }
 
-/// Routes one `window.open`/`window.close`/`postMessage` service call. Step 1
-/// created the tab and its first navigation; step 2 adds the opener link,
-/// cross-tab messaging, and the relatedness gates.
 async fn route_window_call(
     context: &ServiceContext,
     assignment: &Assignment,
@@ -1074,14 +925,7 @@ async fn route_window_call(
             .await?;
         }
         BrowsingContextCall::WindowName { change } => {
-            // The call names no target, so a renderer can only rename its own
-            // tab. The name is the target a `window.open` from any tab in the
-            // group may select
-            // (<https://html.spec.whatwg.org/multipage/document-sequences.html#the-rules-for-choosing-a-navigable>).
-            // The registry is the one store: the tab actor reads the document
-            // state's name from it when it commits, so this handler never waits
-            // on a coordinator that may be running the script that made the
-            // call. The registry itself skips a tab that closed in flight.
+            // https://html.spec.whatwg.org/multipage/document-sequences.html#the-rules-for-choosing-a-navigable
             context.tabs.rename(assignment.tab, change);
             send_reply(&context.responder, id, ServiceReply::Unit).await?;
         }
@@ -1112,12 +956,7 @@ async fn route_window_call(
         }
         BrowsingContextCall::WindowClose { window } => {
             let target = TabId::new(window.get());
-            // Reply before the close runs. The renderer is blocked in this
-            // call, and the target may be the very tab executing the script,
-            // so asking it for its history here would deadlock the coordinator
-            // behind the renderer that is waiting for this reply. Closing is
-            // fire-and-forget by spec
-            // (<https://html.spec.whatwg.org/multipage/window-object.html#dom-window-close>).
+            // https://html.spec.whatwg.org/multipage/window-object.html#dom-window-close
             send_reply(&context.responder, id, ServiceReply::Unit).await?;
             spawn_window_close(
                 context.browser.clone(),
@@ -1134,22 +973,11 @@ async fn route_window_call(
             send_reply(&context.responder, id, ServiceReply::Window(opener)).await?;
         }
         BrowsingContextCall::WindowMessage { window, message } => {
-            // A page can only hold a `WindowProxy` for a related window: its
-            // own, its opener, or a tab it opened. An unrelated target is a
-            // forged call and is ignored.
-            // `MessageEvent.origin` is what a receiving page authenticates
-            // with, so the sender's claim must stay inside this renderer's
-            // site lock. An opaque origin has no authority to claim: its
-            // serialized `null` passes through, and no tuple-origin document
-            // admits it.
             if !assignment.site.allows_message_origin(&message.origin) {
                 return Err(RendererViolation);
             }
             let target = TabId::new(window.get());
             if message_related(context, assignment, target) {
-                // Enqueue on the target's mailbox and return: the spec's
-                // `postMessage` is asynchronous, and waiting here would let a
-                // busy target block this renderer.
                 let _queued = context
                     .tabs
                     .deliver(target, crate::actor::RemoteWindowMessage { message });
@@ -1176,9 +1004,6 @@ async fn route_window_call(
     Ok(())
 }
 
-/// Registers a frame the renderer created. The call arrives on the
-/// synchronous service lane before the frame's document can run script, so a
-/// `window.open` from the new frame always finds its record.
 async fn route_frame_created(
     context: &ServiceContext,
     assignment: &Assignment,
@@ -1197,7 +1022,6 @@ async fn route_frame_created(
     send_reply(&context.responder, id, ServiceReply::Unit).await
 }
 
-/// Drops a frame the renderer tore down.
 async fn route_frame_destroyed(
     context: &ServiceContext,
     assignment: &Assignment,
@@ -1219,8 +1043,6 @@ struct StorageRouter<'a> {
 
 impl StorageRouter<'_> {
     async fn route(&self, call: StorageCall) -> Result<(), RendererViolation> {
-        // Every storage call names one origin; authorize and type it once,
-        // before any area is touched.
         match call {
             StorageCall::Get { kind, origin, key } => {
                 let origin = self.key(&origin)?;
@@ -1263,7 +1085,6 @@ impl StorageRouter<'_> {
         }
     }
 
-    /// The typed key for one renderer's origin claim, or a refusal.
     fn key(&self, origin: &renderer::SerializedOrigin) -> Result<StorageKey, RendererViolation> {
         self.authority
             .site
@@ -1458,11 +1279,6 @@ fn broadcast_local_storage_event(
         }));
 }
 
-/// Answers a late call from a released assignment so the renderer's blocking
-/// service path stays unblocked while its engine is torn down. Only the dial
-/// answer differs from the benign default: the submitted dial is cancelled,
-/// and its completion gets a typed cancellation failure rather than a
-/// transport one.
 async fn send_released_reply(
     responder: &BrowserServiceResponder,
     id: RequestId,
@@ -1494,11 +1310,6 @@ fn fail(alive: &Arc<AtomicBool>, router: &RendererRouter, kill: &watch::Sender<b
     let _ = kill.send(true);
 }
 
-/// Forwards one renderer child's stderr into this process's logger.
-///
-/// The child formats its own level and target; the browser only forwards the
-/// lines, so renderer records land in the daemon's console and file without a
-/// second file writer.
 async fn forward_stderr(stderr: tokio::process::ChildStderr) {
     let mut reader = tokio::io::BufReader::new(stderr);
     let mut bytes = Vec::new();
@@ -1511,18 +1322,12 @@ async fn forward_stderr(stderr: tokio::process::ChildStderr) {
     }
 }
 
-/// One spawned child and its host-side channel endpoints.
 struct SpawnedRenderer {
     child: Child,
     reader: Box<dyn AsyncRead + Send + Unpin>,
     writer: Box<dyn AsyncWrite + Send + Unpin>,
 }
 
-/// Spawns one renderer child and returns its host-side reader and writer.
-///
-/// Unix passes one end of an unnamed socket pair as the child's file
-/// descriptor 0. Other platforms keep the piped stdin/stdout transport until
-/// their platform channel lands.
 #[cfg(unix)]
 fn spawn_transport(command: &mut Command) -> io::Result<SpawnedRenderer> {
     let (host, child_end) = std::os::unix::net::UnixStream::pair()?;
@@ -1561,11 +1366,6 @@ fn spawn_transport(command: &mut Command) -> io::Result<SpawnedRenderer> {
     })
 }
 
-/// Registers browser-to-renderer notifications. A saturated command inbox
-/// drops storage and broadcast notices instead of disconnecting the renderer;
-/// the renderer may be blocked in a synchronous service call, and losing an
-/// observable event is better than killing the page. A closed client removes
-/// the subscription and stops the renderer.
 fn subscribe_renderer_events(
     partition: &PartitionServices,
     client: &RendererClient,
@@ -1600,19 +1400,12 @@ fn subscribe_renderer_events(
     }));
 }
 
-/// Browser services one renderer process hosts for its assignments.
 pub(crate) struct RendererServices {
-    /// The identity the new renderer reports to its pages and its CDP clients.
     pub(crate) identity: net::ValidIdentity,
-    /// Partition services shared with the new process.
     pub(crate) partition: PartitionServices,
-    /// Session storage owned by the browser.
     pub(crate) sessions: Arc<SessionStorage>,
-    /// Browser command handle for `window.open` callbacks.
     pub(crate) browser: crate::browser::BrowserHandle,
-    /// Assignment registry shared by every renderer of this browser context.
     pub(crate) registry: Arc<AssignmentRegistry>,
-    /// Tab registry for cross-tab calls from renderer service tasks.
     pub(crate) tabs: TabRegistry,
 }
 
@@ -1632,7 +1425,7 @@ pub(crate) async fn spawn_process(
     } = services;
     let mut command = Command::new(std::env::current_exe()?);
     command
-        .arg("renderer")
+        .arg("--renderer")
         .env("TINYBROWSER_LOG", logging::level().as_str())
         .stderr(Stdio::piped());
     let SpawnedRenderer {
@@ -1678,8 +1471,6 @@ pub(crate) async fn spawn_process(
     let reader_task = tokio::spawn(reader_task(reader, reader_context, Some(ready_tx)));
     let service_task = tokio::spawn(service_task(server, service_context));
     let stderr_task = tokio::spawn(forward_stderr(stderr));
-    // Detached child task: it reaps the child when the channel closes or the
-    // handle signals a kill. Dropping every kill sender also stops it.
     let _reaper = tokio::spawn(child_task(child, kill_rx));
     if client
         .notify(HostNotice::Hello {
@@ -1740,10 +1531,7 @@ async fn child_task(mut child: Child, mut kill: watch::Receiver<bool>) {
 mod tests {
     use renderer::SandboxFlags;
 
-    /// The browser's tab-level set is the baseline and the calling document's
-    /// set only adds to it, so a renderer that under-reports its own sandbox
-    /// cannot free a popup whose tab the browser knows is sandboxed
-    /// (<https://html.spec.whatwg.org/multipage/browsers.html#sandboxing>).
+    // https://html.spec.whatwg.org/multipage/browsers.html#sandboxing
     #[test]
     fn a_source_can_add_sandbox_flags_but_never_remove_the_tabs() {
         let tab = SandboxFlags::parse(Some("allow-scripts allow-popups"));

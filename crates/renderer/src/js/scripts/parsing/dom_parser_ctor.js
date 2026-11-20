@@ -1,10 +1,4 @@
-// DOMParser wrapper
-// (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-domparser-parsefromstring>).
-//
-// The native instance remembers its constructing realm's URL, so parsed
-// documents take that URL even when the method runs in another realm. This
-// wrapper only exists to keep `new.target` branding and argument validation
-// on the JS side.
+// https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-domparser-parsefromstring
 (function() {
   const Native = globalThis.DOMParser;
   const parsers = host.slots('DOMParser');

@@ -1,6 +1,3 @@
-//! The `isSecureContext` bit of a document and the `[SecureContext]` surfaces
-//! it gates, across a real frame tree rather than a hand-built one.
-
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
@@ -8,7 +5,6 @@ use serde_json::{Value, json};
 
 use crate::fixture::{Fixture, TestServer, attach, evaluate, ok, open_page, server, wait_for_load};
 
-/// Percent-encodes `markup` into a `data:` URL.
 fn data_url(markup: &str) -> String {
     let mut url = String::from("data:text/html,");
     for byte in markup.bytes() {
@@ -24,7 +20,6 @@ fn data_url(markup: &str) -> String {
     url
 }
 
-/// A document whose only content is one `srcdoc` child.
 const SRCDOC_PAGE: &str = r#"<!doctype html><body>
 <iframe srcdoc="<script>
 parent.__child = [
@@ -36,7 +31,6 @@ parent.__child = [
 </script>"></iframe>
 "#;
 
-/// What the top-level document reports about itself.
 const SELF_REPORT: &str = "[
   String(isSecureContext),
   String('userAgentData' in navigator),
@@ -44,7 +38,6 @@ const SELF_REPORT: &str = "[
   typeof crypto.randomUUID,
 ].join(',')";
 
-/// Polls `expression` until it returns `expected`.
 fn wait_for(client: &mut cdp::Client, session: &str, expression: &str, expected: &Value) -> Value {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -57,9 +50,7 @@ fn wait_for(client: &mut cdp::Client, session: &str, expression: &str, expected:
     }
 }
 
-/// A `data:` document is never a secure context, and a child of it inherits
-/// that, however secure the child's own URL looks
-/// (<https://html.spec.whatwg.org/multipage/webappapis.html#secure-contexts>).
+// https://html.spec.whatwg.org/multipage/webappapis.html#secure-contexts
 #[test]
 fn a_data_document_is_never_secure_and_its_child_inherits_it() {
     let (_fixture, mut client, session) =
@@ -78,12 +69,7 @@ fn a_data_document_is_never_secure_and_its_child_inherits_it() {
     );
 }
 
-/// A child of a potentially trustworthy document inherits the bit
-/// (<https://html.spec.whatwg.org/multipage/webappapis.html#secure-contexts>).
-///
-/// The other direction, an `https` child of an insecure document, needs a
-/// trusted TLS server, so it lives in `webdriver.rs`
-/// (`an_https_child_of_an_insecure_parent_is_not_a_secure_context`).
+// https://html.spec.whatwg.org/multipage/webappapis.html#secure-contexts
 #[test]
 fn a_child_inherits_its_creators_secure_context() {
     let (listener, page) = server();
@@ -94,14 +80,11 @@ fn a_child_inherits_its_creators_secure_context() {
         &format!("http://{page}/"),
     );
 
-    // A loopback host is potentially trustworthy, so the parent and the
-    // `srcdoc` child it creates are both secure contexts.
     assert_eq!(
         evaluate(&mut client, &session, SELF_REPORT),
         json!("true,true,function,function")
     );
-    // Web IDL names the attribute getter `get userAgentData`
-    // (<https://webidl.spec.whatwg.org/#idl-attributes>).
+    // https://webidl.spec.whatwg.org/#idl-attributes
     assert_eq!(
         evaluate(
             &mut client,
@@ -118,7 +101,6 @@ fn a_child_inherits_its_creators_secure_context() {
     );
 }
 
-/// The target ids the browser reports before the test opens its page.
 fn target_ids(client: &mut cdp::Client) -> Vec<String> {
     let targets = client
         .call("Target.getTargets", &json!({}), None)
@@ -131,11 +113,6 @@ fn target_ids(client: &mut cdp::Client) -> Vec<String> {
         .collect()
 }
 
-/// Opens `url` and returns the popup target the page opened while loading.
-///
-/// A same-origin popup is a browser tab, and its `WindowProxy` is the
-/// restricted cross-tab proxy (`docs/upstream.md`), so the Interesting bit is
-/// read from the popup's own target rather than through the opener.
 fn open_page_with_popup(prefix: &str, url: &str) -> (Fixture, cdp::Client, String, String) {
     let mut fixture = Fixture::new(prefix);
     fixture.spawn_daemon();
@@ -157,14 +134,9 @@ fn open_page_with_popup(prefix: &str, url: &str) -> (Fixture, cdp::Client, Strin
     (fixture, client, session, popup)
 }
 
-/// A popup's creator is its opener, so it inherits the opener's secure-context
-/// bit the same way a local-scheme frame does. An `about:blank` or `blob:`
-/// popup opened by a `data:` document is insecure
-/// (<https://html.spec.whatwg.org/multipage/webappapis.html#secure-contexts>).
+// https://html.spec.whatwg.org/multipage/webappapis.html#secure-contexts
 #[test]
 fn a_popup_inherits_its_openers_insecure_context() {
-    // A `data:` document's blob is opaque-origin and the blob opens no
-    // opener, so the popup reports its own bit through an image request.
     let markers = TestServer::start(vec![], None);
     let marker_port = markers.address().port();
     let page = format!(
@@ -190,9 +162,7 @@ const blob = open(URL.createObjectURL(new Blob([blobMarkup], {{type: 'text/html'
     markers.wait("/false");
 }
 
-/// The mirror case: a loopback document is secure, and the blank and blob
-/// popups it opens are secure creators' children
-/// (<https://html.spec.whatwg.org/multipage/webappapis.html#secure-contexts>).
+// https://html.spec.whatwg.org/multipage/webappapis.html#secure-contexts
 #[test]
 fn a_popup_inherits_its_openers_secure_context() {
     let page = r#"<!doctype html><script>

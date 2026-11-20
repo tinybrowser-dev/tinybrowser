@@ -17,7 +17,7 @@ fn start_in(mut fixture: Fixture, extra_args: Vec<String>) -> (String, Fixture) 
     let port = listener.local_addr().expect("addr").port();
     drop(listener);
     let mut command = Command::new(env!("CARGO_BIN_EXE_tinybrowser"));
-    command.args(["webdriver", &format!("--port={port}")]);
+    command.arg(format!("--port={port}"));
     command.args(extra_args);
     let child = command
         .env("XDG_RUNTIME_DIR", fixture.runtime())
@@ -61,18 +61,10 @@ fn request(addr: &str, method: &str, path: &str, body: Option<&str>) -> Value {
     panic!("webdriver not reachable: {last_error:?}");
 }
 
-/// The loopback HTTPS server identity: the same backdated P-256 certificate,
-/// with `IP:127.0.0.1` in its SAN, that the `net` crate's TLS test dials.
 const TLS_SERVER_CERT_PEM: &str = include_str!("../fixtures/tls/loopback-127.0.0.1.crt.pem");
 
-/// The key for [`TLS_SERVER_CERT_PEM`]. Test-only: it signs nothing but this
-/// fixture.
 const TLS_SERVER_KEY_PEM: &str = include_str!("../fixtures/tls/loopback-127.0.0.1.key.pem");
 
-/// One HTTPS loopback server whose page title says it was reached over TLS.
-///
-/// A framed copy also reports its `isSecureContext` bit to the parent, so a
-/// test can put it under an insecure document.
 fn https_server() -> (String, TestServer) {
     let identity = native_tls::Identity::from_pkcs8(
         TLS_SERVER_CERT_PEM.as_bytes(),
@@ -94,7 +86,6 @@ fn https_server() -> (String, TestServer) {
     (format!("https://{}/", server.address()), server)
 }
 
-/// Creates a session and navigates it, returning the `/url` reply.
 fn navigate_new_session(addr: &str, url: &str) -> Value {
     let created = request(addr, "POST", "/session", Some("{}"));
     let id = created["value"]["sessionId"]
@@ -109,9 +100,6 @@ fn navigate_new_session(addr: &str, url: &str) -> Value {
     )
 }
 
-/// The CLI's read CA reaches the dial: the same navigation fails without
-/// `--tls-ca` and loads the page with it. Reading the file and dropping it on
-/// the way to `AgentOptions` passes every other test in the suite.
 #[test]
 fn a_tls_ca_from_the_command_line_makes_an_https_navigation_load() {
     let (url, _server) = https_server();
@@ -132,12 +120,7 @@ fn a_tls_ca_from_the_command_line_makes_an_https_navigation_load() {
     assert_eq!(loaded["value"], Value::Null, "{loaded}");
 }
 
-/// An `https` document under an insecure parent is not a secure context: its
-/// URL is potentially trustworthy, but every ancestor must be too
-/// (<https://html.spec.whatwg.org/multipage/webappapis.html#secure-contexts>).
-///
-/// The parent is plain http on `example.test`, a non-loopback host, so only the
-/// inheritance rule can make the loopback `https` child insecure.
+// https://html.spec.whatwg.org/multipage/webappapis.html#secure-contexts
 #[test]
 fn an_https_child_of_an_insecure_parent_is_not_a_secure_context() {
     let (url, _server) = https_server();
@@ -507,9 +490,7 @@ fn one_session_delete_closes_tabs_close_last_window_invalidates() {
     assert_eq!(invalid["value"]["error"], json!("invalid session id"));
 }
 
-/// A page that calls `window.close()` while the driver is executing it must
-/// not deadlock the tab coordinator: the close runs after the script returns
-/// (<https://html.spec.whatwg.org/multipage/window-object.html#dom-window-close>).
+// https://html.spec.whatwg.org/multipage/window-object.html#dom-window-close
 #[test]
 fn a_page_close_during_execute_returns() {
     let page = spawn_page("<!doctype html><title>closer</title>");
@@ -530,10 +511,8 @@ fn a_page_close_during_execute_returns() {
     assert_eq!(closed["value"].as_f64(), Some(1.0), "{closed}");
 }
 
-/// A `window.open` popup is a real browser tab, so a `WebDriver` client sees a
-/// second window handle, can switch to it, read its URL, and close it
-/// (<https://w3c.github.io/webdriver/#get-window-handles>,
-/// <https://w3c.github.io/webdriver/#switch-to-window>).
+// https://w3c.github.io/webdriver/#get-window-handles
+// https://w3c.github.io/webdriver/#switch-to-window
 #[test]
 fn a_script_popup_is_a_switchable_window_handle() {
     let page = b"<!doctype html><title>opener</title>";
@@ -570,7 +549,6 @@ fn a_script_popup_is_a_switchable_window_handle() {
     );
     assert_eq!(opened_popup["value"], json!(true), "{opened_popup}");
 
-    // The script-created tab becomes a session window handle.
     let handles = wait_for_handles(&addr, &id, 2);
     let popup_handle = handles
         .iter()
@@ -595,7 +573,6 @@ fn a_script_popup_is_a_switchable_window_handle() {
     wait_for_handles(&addr, &id, 1);
 }
 
-/// Polls the session's window handles until there are `count` of them.
 fn wait_for_handles(addr: &str, id: &str, count: usize) -> Vec<String> {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -618,7 +595,6 @@ fn wait_for_handles(addr: &str, id: &str, count: usize) -> Vec<String> {
     }
 }
 
-/// Polls the current window's URL until it equals `expected`.
 fn wait_for_url(addr: &str, id: &str, expected: &str) {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -635,7 +611,6 @@ fn wait_for_url(addr: &str, id: &str, expected: &str) {
 }
 
 const ELEMENT_KEY: &str = "element-6066-11e4-a52e-4f735466cecf";
-/// Serves one page over HTTP for any request until the test process exits.
 fn spawn_page(html: &'static str) -> TestServer {
     TestServer::start(
         vec![("/", ok("text/html; charset=utf-8", html.as_bytes()))],
@@ -678,8 +653,6 @@ fn element_roundtrip() {
     let id = create_session(&addr);
     navigate(&addr, &id, &format!("http://127.0.0.1:{page_port}/"));
 
-    // Hold the page objects, so their wrappers survive between calls, and
-    // record whether the driver click is trusted.
     let held = request(
         &addr,
         "POST",
@@ -722,7 +695,6 @@ fn element_roundtrip() {
     );
     assert_eq!(value["value"], json!("hi"));
 
-    // A reference returned by execute_script is a valid element reference.
     let script_ref = request(
         &addr,
         "POST",
@@ -741,7 +713,6 @@ fn element_roundtrip() {
     );
     assert_eq!(clicked_again["value"], Value::Null);
 
-    // Find Elements returns every match, not just the first.
     let many = request(
         &addr,
         "POST",
@@ -754,7 +725,6 @@ fn element_roundtrip() {
             .is_some_and(|items| items.len() > 1)
     );
 
-    // An invalid selector is `invalid selector`, not a javascript error.
     let bad = request(
         &addr,
         "POST",
@@ -763,7 +733,6 @@ fn element_roundtrip() {
     );
     assert_eq!(bad["value"]["error"], json!("invalid selector"));
 
-    // The virtual rectangle is present for any live element.
     let rect = request(
         &addr,
         "GET",
@@ -794,7 +763,6 @@ fn cookie_roundtrip() {
     assert_eq!(script_set["value"], json!("a=1"));
     let named = request(&addr, "GET", &format!("/session/{id}/cookie/a"), None);
     assert_eq!(named["value"]["value"], json!("1"));
-    // No SameSite attribute serializes as "None".
     assert_eq!(named["value"]["sameSite"], json!("None"));
     let added = request(
         &addr,
@@ -837,7 +805,6 @@ fn window_rect_roundtrip() {
     assert_eq!(got["value"]["x"], json!(150));
     assert_eq!(got["value"]["y"], json!(175));
 
-    // An out-of-range value is rejected and does not partially mutate.
     let bad = request(
         &addr,
         "POST",
@@ -886,8 +853,6 @@ fn unknown_element_click_and_perform_actions_validation() {
         .as_str()
         .expect("session id")
         .to_owned();
-    // Element ids are minted by any node returned to the client; an id that
-    // was never issued fails the engine-side lookup as an unknown element.
     let click = request(
         &addr,
         "POST",
@@ -895,8 +860,6 @@ fn unknown_element_click_and_perform_actions_validation() {
         Some("{}"),
     );
     assert_eq!(click["value"]["error"], json!("no such element"));
-    // Perform Actions requires the actions array; a missing one is an invalid
-    // argument, an empty sequence succeeds.
     let actions = request(&addr, "POST", &format!("/session/{id}/actions"), Some("{}"));
     assert_eq!(actions["value"]["error"], json!("invalid argument"));
     let empty = request(
@@ -923,8 +886,6 @@ fn take_screenshot_returns_base64_png() {
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(data)
         .expect("base64 png");
-    // PNG signature, then the IHDR dimensions (big-endian after the 8-byte
-    // length/type prefix).
     assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n", "not a PNG");
     let width = u32::from_be_bytes(bytes[16..20].try_into().expect("width"));
     let height = u32::from_be_bytes(bytes[20..24].try_into().expect("height"));

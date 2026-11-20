@@ -1,6 +1,3 @@
-//! Core node interfaces: `Node`, `CharacterData`, `Text`,
-//! `ProcessingInstruction`, `DocumentType`, and the `ParentNode`/`ChildNode` mixins.
-
 use super::super::{
     CollectionKind, NodeOrString, WebIdlString, adopt_across_documents, attr_owner, attr_state,
     character_data, character_data_offset, child_value, clone_document,
@@ -339,30 +336,30 @@ impl<'js> character_data_generated::CharacterData<'js> for JsNode {
 }
 
 impl<'js> text_generated::Text<'js> for JsNode {
-    /// <https://dom.spec.whatwg.org/#dom-text-splittext>
+    // https://dom.spec.whatwg.org/#dom-text-splittext
     fn split_text(&self, ctx: Ctx<'js>, offset: u32) -> Result<Value<'js>> {
         split_text_node(&ctx, self.handle.get().0, offset)
     }
 
-    /// <https://dom.spec.whatwg.org/#dom-text-wholetext>
+    // https://dom.spec.whatwg.org/#dom-text-wholetext
     fn get_whole_text(&self, ctx: &Ctx<'js>) -> Result<rquickjs::String<'js>> {
         dom_string(ctx, &whole_text(ctx, self.handle.get().0)?)
     }
 }
 
 impl<'js> processing_instruction_generated::ProcessingInstruction<'js> for JsNode {
-    /// <https://dom.spec.whatwg.org/#dom-processinginstruction-target>
+    // https://dom.spec.whatwg.org/#dom-processinginstruction-target
     fn get_target(&self, ctx: &Ctx<'js>) -> Result<rquickjs::String<'js>> {
         let target = pi_target(ctx, self.handle.get().0);
         rquickjs::String::from_str(ctx.clone(), &target)
     }
 
-    /// <https://dom.spec.whatwg.org/#dom-processinginstruction-hasattributes>
+    // https://dom.spec.whatwg.org/#dom-processinginstruction-hasattributes
     fn has_attributes(&self, ctx: Ctx<'js>) -> Result<bool> {
         Ok(!pi_attributes(&ctx, self.handle.get().0)?.is_empty())
     }
 
-    /// <https://dom.spec.whatwg.org/#dom-processinginstruction-getattributenames>
+    // https://dom.spec.whatwg.org/#dom-processinginstruction-getattributenames
     fn get_attribute_names(&self, ctx: Ctx<'js>) -> Result<Vec<String>> {
         Ok(pi_attributes(&ctx, self.handle.get().0)?
             .into_iter()
@@ -370,7 +367,7 @@ impl<'js> processing_instruction_generated::ProcessingInstruction<'js> for JsNod
             .collect())
     }
 
-    /// <https://dom.spec.whatwg.org/#dom-processinginstruction-getattribute>
+    // https://dom.spec.whatwg.org/#dom-processinginstruction-getattribute
     fn get_attribute(
         &self,
         ctx: Ctx<'js>,
@@ -386,7 +383,7 @@ impl<'js> processing_instruction_generated::ProcessingInstruction<'js> for JsNod
         }
     }
 
-    /// <https://dom.spec.whatwg.org/#dom-processinginstruction-setattribute>
+    // https://dom.spec.whatwg.org/#dom-processinginstruction-setattribute
     fn set_attribute(
         &self,
         ctx: Ctx<'js>,
@@ -414,7 +411,7 @@ impl<'js> processing_instruction_generated::ProcessingInstruction<'js> for JsNod
         set_pi_attributes(&ctx, self.handle.get().0, attributes)
     }
 
-    /// <https://dom.spec.whatwg.org/#dom-processinginstruction-removeattribute>
+    // https://dom.spec.whatwg.org/#dom-processinginstruction-removeattribute
     fn remove_attribute(&self, ctx: Ctx<'js>, arg_0: rquickjs::String<'js>) -> Result<()> {
         let name = arg_0.to_string()?;
         let mut attributes = pi_attributes(&ctx, self.handle.get().0)?;
@@ -422,7 +419,7 @@ impl<'js> processing_instruction_generated::ProcessingInstruction<'js> for JsNod
         set_pi_attributes(&ctx, self.handle.get().0, attributes)
     }
 
-    /// <https://dom.spec.whatwg.org/#dom-processinginstruction-toggleattribute>
+    // https://dom.spec.whatwg.org/#dom-processinginstruction-toggleattribute
     fn toggle_attribute(
         &self,
         ctx: Ctx<'js>,
@@ -448,8 +445,7 @@ impl<'js> processing_instruction_generated::ProcessingInstruction<'js> for JsNod
             return Ok(false);
         }
         if arg_1 == Some(true) {
-            // Present and force is true: the value and the data stay as they are
-            // (<https://dom.spec.whatwg.org/#dom-processinginstruction-toggleattribute>).
+            // https://dom.spec.whatwg.org/#dom-processinginstruction-toggleattribute
             return Ok(true);
         }
         attributes.retain(|(attribute, _)| attribute != &name);
@@ -457,7 +453,7 @@ impl<'js> processing_instruction_generated::ProcessingInstruction<'js> for JsNod
         Ok(false)
     }
 
-    /// <https://dom.spec.whatwg.org/#dom-processinginstruction-hasattribute>
+    // https://dom.spec.whatwg.org/#dom-processinginstruction-hasattribute
     fn has_attribute(&self, ctx: Ctx<'js>, arg_0: rquickjs::String<'js>) -> Result<bool> {
         let name = arg_0.to_string()?;
         Ok(pi_attributes(&ctx, self.handle.get().0)?
@@ -467,13 +463,13 @@ impl<'js> processing_instruction_generated::ProcessingInstruction<'js> for JsNod
 }
 
 impl<'js> document_type_generated::DocumentType<'js> for JsNode {
-    /// <https://dom.spec.whatwg.org/#dom-documenttype-name>
+    // https://dom.spec.whatwg.org/#dom-documenttype-name
     fn get_name(&self, ctx: &Ctx<'js>) -> Result<rquickjs::String<'js>> {
         let name = doctype_field(ctx, self.handle.get().0, |name, _, _| name.to_owned());
         rquickjs::String::from_str(ctx.clone(), &name)
     }
 
-    /// <https://dom.spec.whatwg.org/#dom-documenttype-publicid>
+    // https://dom.spec.whatwg.org/#dom-documenttype-publicid
     fn get_public_id(&self, ctx: &Ctx<'js>) -> Result<rquickjs::String<'js>> {
         let public_id = doctype_field(ctx, self.handle.get().0, |_, public_id, _| {
             public_id.to_owned()
@@ -481,7 +477,7 @@ impl<'js> document_type_generated::DocumentType<'js> for JsNode {
         rquickjs::String::from_str(ctx.clone(), &public_id)
     }
 
-    /// <https://dom.spec.whatwg.org/#dom-documenttype-systemid>
+    // https://dom.spec.whatwg.org/#dom-documenttype-systemid
     fn get_system_id(&self, ctx: &Ctx<'js>) -> Result<rquickjs::String<'js>> {
         let system_id = doctype_field(ctx, self.handle.get().0, |_, _, system_id| {
             system_id.to_owned()
@@ -580,8 +576,7 @@ impl<'js> parent_node_generated::ParentNode<'js> for JsNode {
         ctx: Ctx<'js>,
         nodes: Vec<parent_node_generated::DOMStringOrNode<'js>>,
     ) -> Result<()> {
-        // Adoption by copy leaves a stale handle behind; prepend to the live
-        // parent (https://dom.spec.whatwg.org/#concept-node-adopt).
+        // https://dom.spec.whatwg.org/#concept-node-adopt
         let parent = self.handle.get().0;
         let node = convert_union_nodes_into_node(&ctx, parent, union_nodes(nodes))?;
         let reference = {
@@ -615,9 +610,6 @@ impl<'js> parent_node_generated::ParentNode<'js> for JsNode {
         ctx: Ctx<'js>,
         nodes: Vec<parent_node_generated::DOMStringOrNode<'js>>,
     ) -> Result<()> {
-        // Convert nodes first: append to a fragment records each removal from
-        // a previous parent. Then ensure pre-insert validity with this node's
-        // current children excluded, then replace all.
         // https://dom.spec.whatwg.org/#convert-nodes-into-a-node
         // https://github.com/whatwg/dom/issues/1045
         let parent = self.handle.get().0;
@@ -654,7 +646,7 @@ impl<'js> parent_node_generated::ParentNode<'js> for JsNode {
         schedule_mutation_delivery(&ctx)
     }
 
-    /// <https://dom.spec.whatwg.org/#dom-parentnode-movebefore>
+    // https://dom.spec.whatwg.org/#dom-parentnode-movebefore
     fn move_before(
         &self,
         ctx: Ctx<'js>,
@@ -672,8 +664,7 @@ impl<'js> parent_node_generated::ParentNode<'js> for JsNode {
     ) -> Result<Value<'js>> {
         let selectors = selectors.to_string()?;
         let selectors = selector_matching_elements(&selectors);
-        // Adoption by copy leaves a stale handle behind; search the live
-        // subtree (https://dom.spec.whatwg.org/#concept-node-adopt).
+        // https://dom.spec.whatwg.org/#concept-node-adopt
         let scope = self.handle.get().0;
         let world = world(&ctx)?;
         let found = {
@@ -702,14 +693,12 @@ impl<'js> parent_node_generated::ParentNode<'js> for JsNode {
     ) -> Result<Value<'js>> {
         let selectors = selectors.to_string()?;
         let selectors = selector_matching_elements(&selectors);
-        // Adoption by copy leaves a stale handle behind; search the live
-        // subtree (https://dom.spec.whatwg.org/#concept-node-adopt).
+        // https://dom.spec.whatwg.org/#concept-node-adopt
         let scope = self.handle.get().0;
         let world = world(&ctx)?;
         let ids = {
             let parsed = world.borrow();
-            // A missing document answers with an empty list, not null
-            // (<https://dom.spec.whatwg.org/#dom-parentnode-queryselectorall>).
+            // https://dom.spec.whatwg.org/#dom-parentnode-queryselectorall
             parsed
                 .document(scope)
                 .map(|parsed| {
@@ -743,9 +732,7 @@ impl<'js> child_node_generated::ChildNode<'js> for JsNode {
         ctx: Ctx<'js>,
         nodes: Vec<child_node_generated::DOMStringOrNode<'js>>,
     ) -> Result<()> {
-        // Parent and the viable sibling are captured before conversion.
-        // Converting can move `this` into a fragment
-        // (https://dom.spec.whatwg.org/#dom-childnode-before).
+        // https://dom.spec.whatwg.org/#dom-childnode-before
         let target = self.handle.get().0;
         let nodes = union_nodes(nodes);
         let excluded = argument_node_ids(&nodes);
@@ -794,9 +781,7 @@ impl<'js> child_node_generated::ChildNode<'js> for JsNode {
         ctx: Ctx<'js>,
         nodes: Vec<child_node_generated::DOMStringOrNode<'js>>,
     ) -> Result<()> {
-        // Parent and the viable sibling are captured before conversion.
-        // Converting can move `this` into a fragment
-        // (https://dom.spec.whatwg.org/#dom-childnode-after).
+        // https://dom.spec.whatwg.org/#dom-childnode-after
         let target = self.handle.get().0;
         let nodes = union_nodes(nodes);
         let excluded = argument_node_ids(&nodes);
@@ -831,9 +816,7 @@ impl<'js> child_node_generated::ChildNode<'js> for JsNode {
         ctx: Ctx<'js>,
         nodes: Vec<child_node_generated::DOMStringOrNode<'js>>,
     ) -> Result<()> {
-        // Parent and the viable sibling are captured before conversion.
-        // A parentless child returns before any node is moved
-        // (https://dom.spec.whatwg.org/#dom-childnode-replacewith).
+        // https://dom.spec.whatwg.org/#dom-childnode-replacewith
         let target = self.handle.get().0;
         let nodes = union_nodes(nodes);
         let excluded = argument_node_ids(&nodes);
@@ -961,8 +944,7 @@ impl JsNode {
 
     // https://dom.spec.whatwg.org/#dom-node-firstchild
     pub(super) fn first_child<'js>(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
-        // Adoption by copy leaves a stale handle behind; read the live node's
-        // children (https://dom.spec.whatwg.org/#concept-node-adopt).
+        // https://dom.spec.whatwg.org/#concept-node-adopt
         let id = self.handle.get().0;
         let world = world(ctx)?;
         let id = world.borrow().document(id).and_then(|parsed| {
@@ -1030,7 +1012,6 @@ impl JsNode {
 
     // https://dom.spec.whatwg.org/#dom-node-childnodes
     pub(super) fn child_nodes<'js>(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
-        // `[SameObject]`: one NodeList per node.
         let world_rc = world(ctx)?;
         if let Some(saved) = world_rc
             .borrow()
@@ -1064,9 +1045,7 @@ impl JsNode {
 
     // https://dom.spec.whatwg.org/#dom-node-ownerdocument
     pub(super) fn owner_document<'js>(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
-        // Adoption by copy leaves a stale handle behind; the owner is the
-        // live node's document
-        // (https://dom.spec.whatwg.org/#concept-node-adopt).
+        // https://dom.spec.whatwg.org/#concept-node-adopt
         let id = self.handle.get().0;
         let world = world(ctx)?;
         let id = world.borrow().document(id).and_then(|parsed| {
@@ -1129,8 +1108,7 @@ impl JsNode {
         ctx: &Ctx<'_>,
         value: Option<rquickjs::String<'_>>,
     ) -> Result<()> {
-        // Document, DocumentType, and DocumentFragment ignore the setter
-        // (<https://dom.spec.whatwg.org/#dom-node-nodevalue>).
+        // https://dom.spec.whatwg.org/#dom-node-nodevalue
         let skip = world(ctx).is_ok_and(|world| {
             world
                 .borrow()
@@ -1204,18 +1182,13 @@ impl JsNode {
             Some(value) => crate::dom_string::DomString::from_utf16(value.to_utf16()?),
             None => crate::dom_string::DomString::default(),
         };
-        // A `CharacterData` node [replaces its data] in place; `Document`
-        // nodes ignore the setter; every other node replaces its children
-        // with one `Text` node
-        // (<https://dom.spec.whatwg.org/#dom-node-textcontent>).
+        // https://dom.spec.whatwg.org/#dom-node-textcontent
         let world_rc = world(ctx)?;
         let character_data = {
             let world = world_rc.borrow();
             let Some(parsed) = world.document(self.handle.get().0) else {
                 return Ok(());
             };
-            // A `CharacterData` node [replaces its data] in place; every other
-            // non-document node replaces its children with one `Text` node
             parsed
                 .document
                 .base
@@ -1237,8 +1210,7 @@ impl JsNode {
         let Some(mut parsed) = world.document_mut(self.handle.get().0) else {
             return Ok(());
         };
-        // Document and DocumentType ignore the setter
-        // (<https://dom.spec.whatwg.org/#dom-node-textcontent>).
+        // https://dom.spec.whatwg.org/#dom-node-textcontent
         if parsed.document.base.root_node().id == self.handle.get().0.node {
             return Ok(());
         }
@@ -1268,11 +1240,7 @@ impl JsNode {
         drop(parsed);
         world.destroy_child_navigables(&iframes);
         drop(world);
-        // The script children changed steps prepare a connected script element
-        // again. An empty inline script returns from "prepare the script
-        // element" before the already-started flag is set, so setting its body
-        // later still runs it
-        // (<https://html.spec.whatwg.org/multipage/scripting.html#script-processing-model>).
+        // https://html.spec.whatwg.org/multipage/scripting.html#script-processing-model
         if is_script {
             prepare_classic_script(ctx, self.handle.get().0)?;
         }
@@ -1369,9 +1337,7 @@ impl JsNode {
                 .base
                 .get_node(container)
                 .map_or_default(|node| node.children.iter().copied().collect());
-            // In tree order: drop empty Text nodes, merge contiguous runs
-            // into the first non-empty one
-            // (<https://dom.spec.whatwg.org/#dom-node-normalize>).
+            // https://dom.spec.whatwg.org/#dom-node-normalize
             let mut merged: Option<BlitzId> = None;
             for kid in kids {
                 let content =
@@ -1383,9 +1349,7 @@ impl JsNode {
                             NodeData::Text(data) => Some(data.content.clone()),
                             _ => None,
                         });
-                // Exclusive Text nodes only: CDATA sections hold text but
-                // are never merged or dropped
-                // (<https://dom.spec.whatwg.org/#dom-node-normalize>).
+                // https://dom.spec.whatwg.org/#dom-node-normalize
                 if matches!(
                     parsed.document.base.get_node(kid).map(|node| &node.data),
                     Some(NodeData::CDataSection { .. })
@@ -1418,9 +1382,7 @@ impl JsNode {
                         })
                         .unwrap_or_default();
                     let mut joined = DomString::from(previous_content.clone());
-                    // The merge target's current length is the accumulated
-                    // length the normalize steps shift points by
-                    // (<https://dom.spec.whatwg.org/#dom-node-normalize>).
+                    // https://dom.spec.whatwg.org/#dom-node-normalize
                     let length = u32::try_from(joined.units().len()).unwrap_or(u32::MAX);
                     joined.push_str(&content);
                     let target = NodeId {
@@ -1552,8 +1514,7 @@ impl JsNode {
         ctx: Ctx<'js>,
         options: node_generated::GetRootNodeOptions,
     ) -> Result<Value<'js>> {
-        // `composed: true` returns the shadow-including root
-        // (<https://dom.spec.whatwg.org/#dom-node-getrootnode>).
+        // https://dom.spec.whatwg.org/#dom-node-getrootnode
         let world = world(&ctx)?;
         let mut root = self.handle.get().0;
         {
@@ -1614,8 +1575,6 @@ impl JsNode {
                 "cannot clone a shadow root",
             ));
         }
-        // Known gap: form-state cloning (input checkedness/value) has no Blitz
-        // equivalent yet; deep clones carry structure only.
         let clone = if deep {
             let snapshot = world_rc
                 .borrow()
@@ -1640,18 +1599,13 @@ impl JsNode {
                 &snapshot,
             )
             .map_err(|err| throw_dom_error(&ctx, err))?;
-            // The cloning steps copy the already-started flag onto the clone,
-            // including every descendant (<https://html.spec.whatwg.org/multipage/scripting.html#script-processing-model:cloning-steps>).
-            // Without it a cloned `<script>` runs again when the clone is
-            // connected, so appending a cloned document element re-executes
-            // the page's inline scripts.
+            // https://html.spec.whatwg.org/multipage/scripting.html#script-processing-model:cloning-steps
             parsed
                 .document
                 .copy_script_started(self.handle.get().0.node, clone.node);
             drop(parsed);
             drop(world);
-            // Cloning copies the cryptographic nonce slots into the fresh
-            // subtree (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#nonce-attributes> cloning steps).
+            // https://html.spec.whatwg.org/multipage/urls-and-fetching.html#nonce-attributes — clears nonce content attribute on browsing-context connection regardless of CSP header, matching Chromium and WPT
             copy_nonce_subtree(&owner, self.handle.get().0, clone);
             clone
         } else {
@@ -1665,14 +1619,11 @@ impl JsNode {
                     .map_err(|err| throw_dom_error(&ctx, err))?;
             drop(parsed);
             drop(world);
-            // Cloning copies the cryptographic nonce slots into the fresh
-            // subtree (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#nonce-attributes> cloning steps).
+            // https://html.spec.whatwg.org/multipage/urls-and-fetching.html#nonce-attributes — clears nonce content attribute on browsing-context connection regardless of CSP header, matching Chromium and WPT
             copy_nonce_subtree(&world_rc, self.handle.get().0, clone);
             clone
         };
-        // Cloning copies the attributes without their change steps, so the
-        // copy's event handler content attributes need their steps run here
-        // (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes>).
+        // https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes
         super::super::install_parsed_handlers(&ctx, clone)?;
         wrap_node(&ctx, clone)
     }
@@ -1735,13 +1686,9 @@ impl JsNode {
         node: NodeReference,
         child: NodeReference,
     ) -> Result<Value<'js>> {
-        // Adoption copies by snapshot; pre-existing wrappers still point at the
-        // detached original instead of following the copy
-        // (https://dom.spec.whatwg.org/#concept-node-adopt).
+        // https://dom.spec.whatwg.org/#concept-node-adopt
         let parent = self.handle.get().0;
-        // `replace` excludes the child being replaced from the document
-        // content-model counts
-        // (<https://dom.spec.whatwg.org/#concept-node-replace>).
+        // https://dom.spec.whatwg.org/#concept-node-replace
         let exclude = child.tree().map(|id| id.node);
         let (node, _) = insertion_excluding(&ctx, parent, node, Some(child), exclude)?;
         let Some(child) = child.tree() else {
@@ -1849,9 +1796,6 @@ pub(in crate::js::bindings) fn insertion_tree_nodes(
     insertion_excluding_children(ctx, parent, node, child, &[])
 }
 
-/// Validates and stages one insertion, leaving `exclude` out of the
-/// parent's child counts so `replaceChildren` validates against the
-/// parent without its current children.
 pub(super) fn insertion_excluding(
     ctx: &Ctx<'_>,
     parent: NodeId,
@@ -1862,8 +1806,6 @@ pub(super) fn insertion_excluding(
     insertion_excluding_children(ctx, parent, node, child, exclude.as_slice())
 }
 
-/// Validates one insertion against an explicit exclusion set.
-/// [`insertion_excluding`] covers the single-exclusion callers.
 pub(super) fn insertion_excluding_children(
     ctx: &Ctx<'_>,
     parent: NodeId,
@@ -1885,13 +1827,12 @@ pub(super) fn insertion_excluding_children(
     })?;
     let owner = world_for_node(ctx, parent)?;
     let owner = owner.borrow();
-    // One document store backs every tree. Hold one document borrow at a time.
     let parent_is_document = {
         let parsed = owner
             .document(parent)
             .ok_or_else(|| Exception::throw_type(ctx, "stale parent"))?;
         let base = &parsed.document.base;
-        // <https://dom.spec.whatwg.org/#concept-node-ensure-pre-insert-validity>
+        // https://dom.spec.whatwg.org/#concept-node-ensure-pre-insert-validity
         let parent_is_document = base.root_node().id == parent.node;
         let parent_is_fragment = base.get_node(parent.node).is_some_and(|node| {
             matches!(
@@ -1908,13 +1849,10 @@ pub(super) fn insertion_excluding_children(
         }
         parent_is_document
     };
-    // The reference child must already be parented here.
     let reference = match child {
         Some(NodeReference::Tree(id)) => Some(id),
         Some(NodeReference::Attribute { .. }) | None => None,
     };
-    // Step 2 runs before the reference-child check (step 3): an ancestor
-    // throws HierarchyRequestError even when `child` is not a child of parent.
     // https://dom.spec.whatwg.org/#concept-node-ensure-pre-insert-validity
     {
         let parsed = owner
@@ -1930,12 +1868,10 @@ pub(super) fn insertion_excluding_children(
                 .map_err(|error| throw_dom_error(ctx, error))?;
         }
     }
-    // The node itself must be live, resolved in its own document.
     let inserted = {
         let node_parsed = owner
             .document(node)
             .ok_or_else(|| Exception::throw_type(ctx, "stale node"))?;
-        // A document (any document's root) can never be inserted.
         // https://dom.spec.whatwg.org/#concept-node-ensure-pre-insert-validity
         if node_parsed.document.base.root_node().id == node.node {
             return Err(throw_dom(
@@ -1946,7 +1882,6 @@ pub(super) fn insertion_excluding_children(
         }
         classify_inserted(&node_parsed.document, node.node)
     };
-    // Fragments, doctypes, elements, and character data insert.
     // https://dom.spec.whatwg.org/#concept-node-ensure-pre-insertion-validity
     if matches!(inserted, InsertedNode::Other) {
         return Err(throw_dom(
@@ -1955,7 +1890,6 @@ pub(super) fn insertion_excluding_children(
             "node cannot be inserted",
         ));
     }
-    // A doctype's parent is a document. Other parents return after that check.
     // https://dom.spec.whatwg.org/#concept-node-ensure-pre-insertion-validity
     if !parent_is_document {
         if matches!(inserted, InsertedNode::Doctype) {
@@ -2069,7 +2003,6 @@ pub(in crate::js::bindings) fn compare_node_position(
     )
 }
 
-/// Whether `node` is a `DocumentFragment`.
 pub(super) fn tree_is_fragment(ctx: &Ctx<'_>, node: NodeId) -> bool {
     world_for_node(ctx, node)
         .ok()
@@ -2082,7 +2015,6 @@ pub(super) fn tree_is_fragment(ctx: &Ctx<'_>, node: NodeId) -> bool {
         .unwrap_or(false)
 }
 
-/// The tree children of `node` as cross-document handles.
 pub(super) fn tree_children(ctx: &Ctx<'_>, node: NodeId) -> Result<Vec<NodeId>> {
     let owner = world_for_node(ctx, node)?;
     let world = owner.borrow();
@@ -2092,9 +2024,7 @@ pub(super) fn tree_children(ctx: &Ctx<'_>, node: NodeId) -> Result<Vec<NodeId>> 
     Ok(child_ids(&parsed.document.base, parsed.id, node.node))
 }
 
-/// Same-document insert returns `node`. A node from another document adopts
-/// into the parent's document, preserving fragments as fragments
-/// ([adopt](https://dom.spec.whatwg.org/#concept-node-adopt)).
+// https://dom.spec.whatwg.org/#concept-node-adopt
 pub(in crate::js::bindings) fn adopt_node(
     ctx: &Ctx<'_>,
     parent: NodeId,
@@ -2103,20 +2033,14 @@ pub(in crate::js::bindings) fn adopt_node(
     if node.document == parent.document {
         return Ok(node);
     }
-    // Insert adopts each child of a DocumentFragment, not the fragment
-    // (<https://dom.spec.whatwg.org/#concept-node-insert>).
+    // https://dom.spec.whatwg.org/#concept-node-insert
     if tree_is_fragment(ctx, node) {
         return Ok(node);
     }
     adopt_across_documents(ctx, parent, node)
 }
 
-/// Adopts each child of a fragment that lives in another document into
-/// `parent`'s document. The fragment itself never enters this document, so its
-/// arena ids are meaningless here and must not travel
-/// (<https://dom.spec.whatwg.org/#concept-node-adopt>).
-///
-/// Returns `None` when `node` is not such a fragment.
+// https://dom.spec.whatwg.org/#concept-node-adopt
 pub(super) fn adopt_foreign_fragment_children(
     ctx: &Ctx<'_>,
     parent: NodeId,
@@ -2133,9 +2057,7 @@ pub(super) fn adopt_foreign_fragment_children(
     Ok(Some(adopted))
 }
 
-/// The replacement `node` forms for a child of `parent`: `node` itself,
-/// adopted into `parent`'s document, or the children of a fragment
-/// (<https://dom.spec.whatwg.org/#concept-node-replace>).
+// https://dom.spec.whatwg.org/#concept-node-replace
 pub(super) fn replace_target(ctx: &Ctx<'_>, parent: NodeId, node: NodeId) -> Result<Replacement> {
     let node = adopt_node(ctx, parent, node)?;
     if let Some(adopted) = adopt_foreign_fragment_children(ctx, parent, node)? {
@@ -2156,13 +2078,8 @@ pub(super) fn replace_target(ctx: &Ctx<'_>, parent: NodeId, node: NodeId) -> Res
     })
 }
 
-/// `ParentNode.moveBefore` (<https://dom.spec.whatwg.org/#dom-parentnode-movebefore>).
-///
-/// `move` is a separate primitive from insert and remove: it does not adopt,
-/// and it does not run the insertion or removing steps
-/// (<https://dom.spec.whatwg.org/#move>). Live ranges ride the unlink and
-/// place adjustments; node iterators and shadow-tree slot assignment are
-/// absent here, so those loops are empty.
+// https://dom.spec.whatwg.org/#dom-parentnode-movebefore
+// https://dom.spec.whatwg.org/#move
 pub(super) fn move_before_node(
     ctx: &Ctx<'_>,
     parent: NodeId,
@@ -2207,13 +2124,8 @@ pub(super) fn move_before_node(
         };
         move_parsed(&mut parsed, parent, node, &target);
     }
-    // The `img`/`source` moving steps run inside the move, before custom
-    // element reactions and mutation records
-    // (<https://dom.spec.whatwg.org/#move>).
+    // https://dom.spec.whatwg.org/#move
     note_picture_move(ctx, node, old_parent, parent)?;
-    // A moved `iframe` container keeps its navigable but takes its new
-    // position among its siblings, so `window[i]` keeps following container
-    // tree order.
     reposition_moved_frame(ctx, node)?;
     let connected = world(ctx)?
         .borrow()
@@ -2222,7 +2134,6 @@ pub(super) fn move_before_node(
         })
         .unwrap_or(false);
     if connected {
-        // Custom-element move reactions, not the insertion/removing steps.
         // https://dom.spec.whatwg.org/#move
         // https://html.spec.whatwg.org/multipage/custom-elements.html#enqueue-a-custom-element-callback-reaction
         note_connected_move(ctx, node)?;
@@ -2230,18 +2141,9 @@ pub(super) fn move_before_node(
     schedule_mutation_delivery(ctx)
 }
 
-/// Runs the `img` and `source` moving steps for a node moved by
-/// `ParentNode.moveBefore`: a move across a `picture` boundary changes the
-/// image's source set, which counts as a relevant mutation and re-runs
-/// "update the image data" for the affected `img`
-/// (<https://html.spec.whatwg.org/multipage/embedded-content.html#the-img-element>,
-/// <https://html.spec.whatwg.org/multipage/embedded-content.html#the-source-element>,
-/// <https://html.spec.whatwg.org/multipage/images.html#relevant-mutations>).
-///
-/// The spec's moving steps name only the old parent, but a shipped engine
-/// reloads when the move brings the element under a `picture` too: Firefox
-/// fires a second `load` for an `img` moved into a `picture`, so both sides of
-/// the boundary count.
+// https://html.spec.whatwg.org/multipage/embedded-content.html#the-img-element
+// https://html.spec.whatwg.org/multipage/embedded-content.html#the-source-element
+// https://html.spec.whatwg.org/multipage/images.html#relevant-mutations — moving into or out of a picture element re-runs image data update, matching Firefox
 fn note_picture_move(
     ctx: &Ctx<'_>,
     moved: NodeId,
@@ -2283,8 +2185,6 @@ fn note_picture_move(
     Ok(())
 }
 
-/// Re-sorts the frame of a moved `iframe` container with its new siblings.
-/// Containers without a frame (never materialized) need nothing.
 pub(super) fn reposition_moved_frame(ctx: &Ctx<'_>, moved: NodeId) -> Result<()> {
     let world_rc = world(ctx)?;
     let frame = world_rc.borrow().frame_for_container(moved);
@@ -2302,9 +2202,6 @@ pub(super) fn reposition_moved_frame(ctx: &Ctx<'_>, moved: NodeId) -> Result<()>
     Ok(())
 }
 
-/// Asks the custom-element shim to enqueue `connectedMoveCallback` for `node`
-/// and its descendants. The shim also suppresses the removal/insertion
-/// reactions those mutation records would otherwise produce.
 pub(super) fn note_connected_move(ctx: &Ctx<'_>, node: NodeId) -> Result<()> {
     let Ok(hook) = crate::js::bridge::object(ctx)?.get::<_, Function>("__tbNoteConnectedMove")
     else {
@@ -2314,9 +2211,7 @@ pub(super) fn note_connected_move(ctx: &Ctx<'_>, node: NodeId) -> Result<()> {
     hook.call((wrapped,))
 }
 
-/// Asks the custom-element shim to upgrade elements parsed into `node` using
-/// the node document's registry
-/// (<https://dom.spec.whatwg.org/#concept-create-element>).
+// https://dom.spec.whatwg.org/#concept-create-element
 pub(super) fn upgrade_parsed_tree(ctx: &Ctx<'_>, node: NodeId) -> Result<()> {
     let Ok(hook) = crate::js::bridge::object(ctx)?.get::<_, Function>("__tbUpgradeParsedTree")
     else {
@@ -2326,18 +2221,12 @@ pub(super) fn upgrade_parsed_tree(ctx: &Ctx<'_>, node: NodeId) -> Result<()> {
     hook.call((wrapped,))
 }
 
-/// Inserts the adopted `node` into `parent` before `reference`, expanding
-/// fragments, journaling the move, and running the insertion fixups. The
-/// caller owns validity and adoption.
 pub(in crate::js::bindings) fn insert_converted_node(
     ctx: &Ctx<'_>,
     parent: NodeId,
     node: NodeId,
 ) -> Result<()> {
-    // Convert-nodes-into-a-node appends each node to a fragment. Records
-    // queue here; delivery waits for the caller so observers see every
-    // removal together
-    // (<https://dom.spec.whatwg.org/#convert-nodes-into-a-node>).
+    // https://dom.spec.whatwg.org/#convert-nodes-into-a-node
     insert_tree_node_inner(ctx, parent, node, None, false)
 }
 
@@ -2350,9 +2239,6 @@ pub(in crate::js::bindings) fn insert_tree_node(
     insert_tree_node_inner(ctx, parent, node, reference, true)
 }
 
-/// Runs the realm side of an insertion after the tree mutation: form-control
-/// fixups, HTML insertion steps (scripts, iframes, referrer policy, nonce
-/// clearing), then observer delivery. The tree work lives in `dom`.
 pub(super) fn apply_inserted(
     ctx: &Ctx<'_>,
     parent: NodeId,
@@ -2360,10 +2246,8 @@ pub(super) fn apply_inserted(
     deliver: bool,
 ) -> Result<()> {
     fixup_controls_on_insert(ctx, parent.document, moved)?;
-    // Insertion steps run while parent is connected. Queue mutation records
-    // first so an inserted script can `takeRecords` its own addition
-    // (<https://html.spec.whatwg.org/multipage/scripting.html#script-processing-model:html-element-insertion-steps>,
-    // <https://dom.spec.whatwg.org/#concept-node-insert>).
+    // https://html.spec.whatwg.org/multipage/scripting.html#script-processing-model:html-element-insertion-steps
+    // https://dom.spec.whatwg.org/#concept-node-insert
     run_html_insertion_steps(ctx, parent, moved)?;
     if deliver {
         schedule_mutation_delivery(ctx)?;
@@ -2371,7 +2255,6 @@ pub(super) fn apply_inserted(
     Ok(())
 }
 
-/// Inserts an adopted tree node, recording journal entries for observers.
 pub(super) fn insert_tree_node_inner(
     ctx: &Ctx<'_>,
     parent: NodeId,
@@ -2414,13 +2297,7 @@ pub(super) fn insert_tree_node_inner(
     apply_inserted(ctx, parent, &moved, deliver)
 }
 
-/// Records the executing script for inserted `<img>` and `<script>` elements,
-/// so a later CSP violation for their loads can report `sourceFile`,
-/// `lineNumber`, and `columnNumber`. Insertions that trigger no fetch
-/// (disconnected parents, non-URL elements) still record; the entry is only
-/// read when a violation fires. Parser-inserted content never passes through
-/// here, so it reports no source
-/// (<https://w3c.github.io/webappsec-csp/#create-violation-for-global>).
+// https://w3c.github.io/webappsec-csp/#create-violation-for-global
 fn note_inserted_creators(ctx: &Ctx<'_>, inserted: &[NodeId]) {
     let Ok(world_rc) = world(ctx) else {
         return;
@@ -2453,8 +2330,6 @@ fn note_inserted_creators(ctx: &Ctx<'_>, inserted: &[NodeId]) {
         }
         targets
     };
-    // Only capture a frame when an attribution target exists: most insertions
-    // are text and plain elements, and the lookup is pure overhead.
     if targets.is_empty() {
         return;
     }
@@ -2462,16 +2337,9 @@ fn note_inserted_creators(ctx: &Ctx<'_>, inserted: &[NodeId]) {
         return;
     };
     for target in targets {
-        // The entry lives in the element owner's world, where a later
-        // violation for its load looks it up: a script mutating another
-        // frame's DOM must not attribute to its own realm.
         let Ok(owner_rc) = world_for_node(ctx, target) else {
             continue;
         };
-        // The earliest trigger wins: a `src` set already recorded the
-        // mutation that chose the URL, and insertion only starts this load
-        // when nothing did. A disconnect clears the entry, so a moved
-        // element attributes its new load to the move.
         owner_rc
             .borrow_mut()
             .state
@@ -2484,13 +2352,10 @@ fn note_inserted_creators(ctx: &Ctx<'_>, inserted: &[NodeId]) {
     }
 }
 
-/// HTML insertion and script children-changed steps after a tree insert, in
-/// tree order: an earlier script must not observe a later iframe's browsing
-/// context, and an earlier iframe must already have one
-/// (<https://html.spec.whatwg.org/multipage/scripting.html#script-processing-model:html-element-insertion-steps>,
-/// <https://html.spec.whatwg.org/multipage/iframe-embed-object.html#the-iframe-element:html-element-insertion-steps>,
-/// <https://html.spec.whatwg.org/multipage/scripting.html#script-processing-model:css-element-children-changed-steps>,
-/// <https://dom.spec.whatwg.org/#concept-node-insert>).
+// https://html.spec.whatwg.org/multipage/scripting.html#script-processing-model:html-element-insertion-steps
+// https://html.spec.whatwg.org/multipage/iframe-embed-object.html#the-iframe-element:html-element-insertion-steps
+// https://html.spec.whatwg.org/multipage/scripting.html#script-processing-model:css-element-children-changed-steps
+// https://dom.spec.whatwg.org/#concept-node-insert
 pub(super) fn run_html_insertion_steps(
     ctx: &Ctx<'_>,
     parent: NodeId,
@@ -2523,11 +2388,7 @@ pub(super) fn run_html_insertion_steps(
         match step {
             InsertionStep::Iframe(id) => {
                 World::materialize_iframe(&world(ctx)?, id);
-                // The initial `load` is an element task, not part of the
-                // insertion steps: the engine fires it after the child frame's
-                // realm exists, so `contentWindow.location` is readable in the
-                // handler
-                // (<https://html.spec.whatwg.org/multipage/iframe-embed-object.html#the-iframe-element:html-element-insertion-steps>).
+                // https://html.spec.whatwg.org/multipage/iframe-embed-object.html#the-iframe-element:html-element-insertion-steps
             }
             InsertionStep::Script(id) => prepare_classic_script(ctx, id)?,
             InsertionStep::Meta(id) => {
@@ -2540,16 +2401,11 @@ pub(super) fn run_html_insertion_steps(
             }
         }
     }
-    // Spec gates this on a header-delivered CSP
-    // (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#nonce-attributes>).
-    // Chromium and `moveBefore/nonce.html` clear the content attribute
-    // whenever the element becomes browsing-context connected; `move` does
-    // not disconnect, so the attribute stays.
+    // https://html.spec.whatwg.org/multipage/urls-and-fetching.html#nonce-attributes — clears nonce content attribute on browsing-context connection regardless of CSP header, matching Chromium and WPT
     clear_nonce_on_connect(ctx, inserted)?;
     Ok(())
 }
 
-/// Wraps the first node `find` selects in `id`'s document, or `null`.
 pub(super) fn document_value<'js>(
     ctx: &Ctx<'js>,
     id: NodeId,
@@ -2560,8 +2416,6 @@ pub(super) fn document_value<'js>(
     child_value(ctx, found)
 }
 
-/// Map generated `(Node or DOMString)` members into the shared insertion
-/// representation. The enums differ per module but hold the same types.
 pub(super) fn union_nodes<'js, T>(nodes: Vec<T>) -> Vec<NodeOrString<'js>>
 where
     NodeOrString<'js>: From<T>,
@@ -2589,10 +2443,7 @@ pub(super) fn pi_target(ctx: &Ctx<'_>, id: NodeId) -> String {
         .unwrap_or_default()
 }
 
-/// The DOM-side pseudo-attribute map. Creation and data writes derive it from
-/// the data; an attribute write stores it as given, so it can hold names the
-/// XML grammar rejects. The style-sheet loader parses the data itself
-/// (<https://dom.spec.whatwg.org/#processinginstruction-initialize>).
+// https://dom.spec.whatwg.org/#processinginstruction-initialize
 pub(super) fn pi_attributes(ctx: &Ctx<'_>, id: NodeId) -> Result<Vec<(String, String)>> {
     let owner = world_for_node(ctx, id)?;
     Ok(owner
@@ -2639,15 +2490,7 @@ pub(super) fn doctype_field(
         .unwrap_or_default()
 }
 
-/// Splits a `Text` node at `offset`
-/// (<https://dom.spec.whatwg.org/#concept-text-split>).
-///
-/// The new node is always a `Text` node per the split-a-Text-node steps,
-/// even when `id` is a `CDATASection` (which inherits `Text`). The insert
-/// carries the generic range adjustment (spec step 7.1); the split steps
-/// then move node points over and bump the equal parent slot; the truncate
-/// writes without the generic replacement rule, which the split steps have
-/// already accounted for.
+// https://dom.spec.whatwg.org/#concept-text-split
 pub(in crate::js::bindings) fn split_text_node<'js>(
     ctx: &Ctx<'js>,
     id: NodeId,
@@ -2693,11 +2536,7 @@ pub(in crate::js::bindings) fn split_text_node<'js>(
         }
     };
     if let Some(parent) = parent {
-        // Spec order: the insert shifts parent points past the new node's
-        // slot (7.1), the split steps move node points over and bump the
-        // equal slot (7.2-7.5), then the truncate writes without the
-        // generic replacement rule
-        // (<https://dom.spec.whatwg.org/#concept-text-split>).
+        // https://dom.spec.whatwg.org/#concept-text-split
         {
             let world_rc = world(ctx)?;
             let world = world_rc.borrow();
@@ -2725,10 +2564,7 @@ pub(in crate::js::bindings) fn split_text_node<'js>(
             let Some(mut parsed) = world.document_mut(id) else {
                 return Err(Exception::throw_type(ctx, "stale node"));
             };
-            // Without a parent the split's range steps do not run at all, so
-            // the trailing `replace data` rule collapses the points past the
-            // split offset
-            // (<https://dom.spec.whatwg.org/#concept-text-split>).
+            // https://dom.spec.whatwg.org/#concept-text-split
             let offset_units = u32::try_from(offset).unwrap_or(u32::MAX);
             let count = u32::try_from(units.len().saturating_sub(offset)).unwrap_or(u32::MAX);
             crate::dom::range::adjust_for_replace_data(
@@ -2747,9 +2583,6 @@ pub(in crate::js::bindings) fn split_text_node<'js>(
     wrap_node(ctx, new_id)
 }
 
-/// Truncate `id`'s data to `kept` for `splitText`, recording the change. The
-/// range steps already ran, so this writes without the generic replacement
-/// rule that would corrupt a split. Other node kinds cannot reach a split.
 fn truncate_split_text(parsed: &mut crate::Parsed, id: NodeId, kept: &[u16], old_value: DomString) {
     let wrote = match parsed
         .document
@@ -2786,11 +2619,7 @@ fn truncate_split_text(parsed: &mut crate::Parsed, id: NodeId, kept: &[u16], old
     }
 }
 
-/// Concatenates the data of the contiguous `Text` nodes of `id`, in tree
-/// order (<https://dom.spec.whatwg.org/#contiguous-text-nodes>).
-///
-/// A `CDATASection` is a `Text` node, so it stays in the run. A comment or
-/// element sibling ends it.
+// https://dom.spec.whatwg.org/#contiguous-text-nodes
 pub(super) fn whole_text(ctx: &Ctx<'_>, id: NodeId) -> Result<DomString> {
     let world = world(ctx)?;
     Ok(world
@@ -2823,9 +2652,7 @@ pub(super) fn whole_text(ctx: &Ctx<'_>, id: NodeId) -> Result<DomString> {
         .unwrap_or_default())
 }
 
-/// Whether `id` is a text node for `wholeText`: `Text` or `CDATASection`,
-/// both in the contiguous run
-/// (<https://dom.spec.whatwg.org/#contiguous-text-nodes>).
+// https://dom.spec.whatwg.org/#contiguous-text-nodes
 pub(super) fn is_text_node(base: &blitz_dom::BaseDocument, id: BlitzId) -> bool {
     matches!(
         base.get_node(id).map(|node| &node.data),
@@ -2833,8 +2660,7 @@ pub(super) fn is_text_node(base: &blitz_dom::BaseDocument, id: BlitzId) -> bool 
     )
 }
 
-/// Appends `id`'s data to `out` when it is a text node, for `wholeText`
-/// (<https://dom.spec.whatwg.org/#dom-text-wholetext>).
+// https://dom.spec.whatwg.org/#dom-text-wholetext
 pub(super) fn append_text_data(
     doc: &crate::documents::BlitzDocument,
     id: BlitzId,

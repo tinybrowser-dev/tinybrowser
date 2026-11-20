@@ -1,6 +1,3 @@
-//! Form controls: forms, inputs, text areas, selects, options, buttons,
-//! and their value/selection state.
-
 use super::super::{
     CollectionKind, LegacyNullString, WebIdlCodeUnits, WebIdlString, WebIdlUnsignedLong,
     document_base_url_string, handler_target, host, live_collection, schedule_mutation_delivery,
@@ -54,7 +51,7 @@ impl<'js> html_input_element_generated::HTMLInputElement<'js> for JsNode {
         self.set_checked(ctx.clone(), value)
     }
 
-    /// <https://html.spec.whatwg.org/multipage/forms.html#dom-fae-form>
+    // https://html.spec.whatwg.org/multipage/forms.html#dom-fae-form
     fn get_form(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
         self.form(ctx.clone())
     }
@@ -107,9 +104,7 @@ impl<'js> html_input_element_generated::HTMLInputElement<'js> for JsNode {
         self.set_value(ctx.clone(), LegacyNullString(value.to_string()?))
     }
 
-    // `size` defaults to 20; zero or unparseable reads 20, setting zero
-    // throws
-    // (<https://html.spec.whatwg.org/multipage/input.html#dom-input-size>).
+    // https://html.spec.whatwg.org/multipage/input.html#dom-input-size
     fn get_size(&self, ctx: &Ctx<'js>) -> Result<usize> {
         let value = reflect_ulong(
             content_attr(ctx, self.handle.get().0, "size").as_deref(),
@@ -123,13 +118,10 @@ impl<'js> html_input_element_generated::HTMLInputElement<'js> for JsNode {
         if value == 0 {
             return Err(throw_dom(ctx, "IndexSizeError", "input size is zero"));
         }
-        // Out-of-range values write the default rather than the raw value.
         host::reflect_set_ulong_defaulting(ctx, self.handle.get().0, "size", value, 20)
     }
 
-    // Image-button dimensions default to zero, and read zero outside the
-    // image state; the setters are generated from `[ReflectSetter]`
-    // (<https://html.spec.whatwg.org/multipage/input.html#dom-input-width>).
+    // https://html.spec.whatwg.org/multipage/input.html#dom-input-width
     fn get_width(&self, ctx: &Ctx<'js>) -> Result<u32> {
         if !is_image_input(ctx, self.handle.get().0) {
             return Ok(0);
@@ -151,16 +143,11 @@ impl<'js> html_input_element_generated::HTMLInputElement<'js> for JsNode {
         ))
     }
 
-    // `autocomplete` reflects with a generated setter; the getter answers
-    // the content attribute
-    // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#attr-fe-autocomplete>).
+    // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#attr-fe-autocomplete
     fn get_autocomplete(&self, ctx: &Ctx<'js>) -> Result<rquickjs::String<'js>> {
         host::reflect_string(ctx, self.handle.get().0, "autocomplete")
     }
 
-    // Upstream selection accessors are nullable, keeping the spec-prose
-    // null for input types where selection does not apply. No selection state
-    // is stored (a known cutover gap), so applicable inputs answer zero.
     // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#textFieldSelection
 
     // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#dom-textarea/input-selectionstart
@@ -179,7 +166,6 @@ impl<'js> html_input_element_generated::HTMLInputElement<'js> for JsNode {
 
     // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#dom-textarea/input-selectionstart
     fn set_selection_start(&self, ctx: &Ctx<'js>, value: Option<u32>) -> Result<()> {
-        // Null converts as zero, matching the previous numeric conversion.
         self.set_selection_start(ctx.clone(), WebIdlUnsignedLong(value.unwrap_or(0)))
     }
 
@@ -199,7 +185,6 @@ impl<'js> html_input_element_generated::HTMLInputElement<'js> for JsNode {
 
     // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#dom-textarea/input-selectionend
     fn set_selection_end(&self, ctx: &Ctx<'js>, value: Option<u32>) -> Result<()> {
-        // Null converts as zero, matching the previous numeric conversion.
         self.set_selection_end(ctx.clone(), WebIdlUnsignedLong(value.unwrap_or(0)))
     }
 
@@ -224,8 +209,6 @@ impl<'js> html_input_element_generated::HTMLInputElement<'js> for JsNode {
         ctx: &Ctx<'js>,
         value: Option<rquickjs::String<'js>>,
     ) -> Result<()> {
-        // Null stringified to "null" before, which maps to no direction;
-        // answer "none" directly.
         let value = match value {
             Some(value) => value.to_string()?,
             None => "none".into(),
@@ -262,8 +245,6 @@ impl<'js> html_text_area_element_generated::HTMLTextAreaElement<'js> for JsNode 
         Ok(self.text_length(ctx.clone())? as usize)
     }
 
-    // Selection getters are non-nullable upstream, answering the stored
-    // range clamped to the control value.
     // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#textFieldSelection
 
     // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#dom-textarea/input-selectionstart
@@ -297,14 +278,12 @@ impl<'js> html_text_area_element_generated::HTMLTextAreaElement<'js> for JsNode 
         self.set_selection_direction(ctx.clone(), WebIdlString(value.to_string()?))
     }
 
-    /// <https://html.spec.whatwg.org/multipage/forms.html#dom-fae-form>
+    // https://html.spec.whatwg.org/multipage/forms.html#dom-fae-form
     fn get_form(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
         self.form(ctx.clone())
     }
 
-    // `autocomplete` reflects with a generated setter; the getter answers
-    // the content attribute
-    // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#attr-fe-autocomplete>).
+    // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#attr-fe-autocomplete
     fn get_autocomplete(&self, ctx: &Ctx<'js>) -> Result<rquickjs::String<'js>> {
         host::reflect_string(ctx, self.handle.get().0, "autocomplete")
     }
@@ -342,21 +321,19 @@ impl<'js> html_select_element_generated::HTMLSelectElement<'js> for JsNode {
         self.selected_options(ctx.clone())
     }
 
-    /// <https://html.spec.whatwg.org/multipage/forms.html#dom-fae-form>
+    // https://html.spec.whatwg.org/multipage/forms.html#dom-fae-form
     fn get_form(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
         self.form(ctx.clone())
     }
 
-    // `autocomplete` reflects with a generated setter; the getter answers
-    // the content attribute
-    // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#attr-fe-autocomplete>).
+    // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#attr-fe-autocomplete
     fn get_autocomplete(&self, ctx: &Ctx<'js>) -> Result<rquickjs::String<'js>> {
         host::reflect_string(ctx, self.handle.get().0, "autocomplete")
     }
 }
 
 impl<'js> html_option_element_generated::HTMLOptionElement<'js> for JsNode {
-    /// <https://html.spec.whatwg.org/multipage/form-elements.html#dom-option-form>
+    // https://html.spec.whatwg.org/multipage/form-elements.html#dom-option-form
     fn get_form(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
         self.option_form(ctx.clone())
     }
@@ -391,7 +368,6 @@ impl<'js> html_option_element_generated::HTMLOptionElement<'js> for JsNode {
 
     // https://html.spec.whatwg.org/multipage/form-elements.html#dom-option-text
     fn set_text(&self, ctx: &Ctx<'js>, value: rquickjs::String<'js>) -> Result<()> {
-        // DOMString keeps every code unit, including lone surrogates.
         self.set_text(
             ctx.clone(),
             WebIdlCodeUnits(crate::dom_string::DomString::from_utf16(value.to_utf16()?)),
@@ -417,7 +393,7 @@ impl<'js> html_data_list_element_generated::HTMLDataListElement<'js> for JsNode 
 }
 
 impl<'js> html_button_element_generated::HTMLButtonElement<'js> for JsNode {
-    /// <https://html.spec.whatwg.org/multipage/forms.html#dom-fae-form>
+    // https://html.spec.whatwg.org/multipage/forms.html#dom-fae-form
     fn get_form(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
         self.form(ctx.clone())
     }
@@ -451,14 +427,14 @@ impl<'js> html_button_element_generated::HTMLButtonElement<'js> for JsNode {
 }
 
 impl<'js> html_field_set_element_generated::HTMLFieldSetElement<'js> for JsNode {
-    /// <https://html.spec.whatwg.org/multipage/forms.html#dom-fae-form>
+    // https://html.spec.whatwg.org/multipage/forms.html#dom-fae-form
     fn get_form(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
         self.form(ctx.clone())
     }
 }
 
 impl<'js> html_output_element_generated::HTMLOutputElement<'js> for JsNode {
-    /// <https://html.spec.whatwg.org/multipage/forms.html#dom-fae-form>
+    // https://html.spec.whatwg.org/multipage/forms.html#dom-fae-form
     fn get_form(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
         self.form(ctx.clone())
     }
@@ -466,10 +442,6 @@ impl<'js> html_output_element_generated::HTMLOutputElement<'js> for JsNode {
 
 impl JsNode {
     // https://html.spec.whatwg.org/multipage/input.html#dom-input-value
-    //
-    // The current value, default value, and selectedness live in Blitz's
-    // control slots; this dispatches by element to the one the IDL attribute
-    // returns.
     pub(super) fn value(&self, ctx: Ctx<'_>) -> Result<String> {
         let world = world(&ctx)?;
         let world = world.borrow();
@@ -502,8 +474,7 @@ impl JsNode {
             "textarea" => crate::dom::forms::textarea_api_value(base, self.handle.get().0.node),
             "option" => crate::dom::forms::option_value(base, self.handle.get().0.node),
             "input" => crate::dom::input::current_value(&parsed, self.handle.get().0.node),
-            // Every other element reflects its `value` content attribute
-            // (<https://html.spec.whatwg.org/multipage/form-elements.html#dom-button-value>).
+            // https://html.spec.whatwg.org/multipage/form-elements.html#dom-button-value
             _ => attr(base, self.handle.get().0.node, "value")
                 .unwrap_or_default()
                 .to_owned(),
@@ -576,10 +547,7 @@ impl JsNode {
             }
             _ => set_attribute_sync(&ctx, self.handle.get().0, "value", &value.0),
         };
-        // A script assignment is not a user edit, and it ends any in-progress
-        // edit buffer or bad-input state. Only a successful assignment gets
-        // here: a rejected one leaves the control as it was
-        // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#suffering-from-being-too-long>).
+        // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#suffering-from-being-too-long
         if result.is_ok()
             && let Ok(world) = world(&ctx)
         {
@@ -590,21 +558,15 @@ impl JsNode {
         result
     }
 
-    /// Sets a textarea's dirty value. The children stay the default value
-    /// (<https://html.spec.whatwg.org/multipage/form-elements.html#dom-textarea-value>).
+    // https://html.spec.whatwg.org/multipage/form-elements.html#dom-textarea-value
     pub(super) fn set_textarea_value(&self, ctx: &Ctx<'_>, value: String) -> Result<()> {
-        // The API value normalizes CRLF and CR to LF before the dirty-value
-        // comparison, so setting the same normalized value leaves the
-        // selection alone
-        // (<https://html.spec.whatwg.org/multipage/form-elements.html#concept-textarea-api-value>).
+        // https://html.spec.whatwg.org/multipage/form-elements.html#concept-textarea-api-value
         let value = crate::dom::text::normalize_newlines(&value);
         let previous = self.value(ctx.clone())?;
         self.set_dirty_control_value(ctx, value, previous)
     }
 
-    /// Stores a text control's dirty value and collapses the caret to the end
-    /// when the value actually changes
-    /// (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#set-the-selection-range>).
+    // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#set-the-selection-range
     fn set_dirty_control_value(
         &self,
         ctx: &Ctx<'_>,
@@ -642,7 +604,6 @@ impl JsNode {
         Ok(())
     }
 
-    /// Replaces a textarea's children. `defaultValue` uses this.
     pub(super) fn set_textarea_default_value(&self, ctx: &Ctx<'_>, value: String) -> Result<()> {
         let world = world(ctx)?;
         let world = world.borrow();
@@ -665,8 +626,6 @@ impl JsNode {
         schedule_mutation_delivery(ctx)
     }
 
-    /// Selects the first option whose value is `value`, deselecting the rest;
-    /// with no match every option is deselected.
     pub(super) fn set_select_value(&self, ctx: &Ctx<'_>, value: String) -> Result<()> {
         let world = world(ctx)?;
         let world = world.borrow();
@@ -688,8 +647,7 @@ impl JsNode {
         let Some(parsed) = world.document(self.handle.get().0) else {
             return Err(Exception::throw_type(&ctx, "no document"));
         };
-        // The default value is the element's child text content
-        // (<https://html.spec.whatwg.org/multipage/form-elements.html#dom-textarea-defaultvalue>).
+        // https://html.spec.whatwg.org/multipage/form-elements.html#dom-textarea-defaultvalue
         Ok(crate::dom::text::child_text_content(
             &parsed.document.base,
             self.handle.get().0.node,
@@ -708,9 +666,7 @@ impl JsNode {
         let Some(parsed) = world.document(self.handle.get().0) else {
             return Ok(0);
         };
-        // The control's value (dirty value when set, otherwise the attribute
-        // or descendant text), in UTF-16 code units
-        // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#dom-textarea/input-textlength>).
+        // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#dom-textarea/input-textlength
         Ok(u32::try_from(crate::dom::forms::control_value_len(
             &parsed,
             self.handle.get().0.node,
@@ -727,8 +683,7 @@ impl JsNode {
         let id = self.handle.get().0;
         require_selection(&ctx, self.handle.get().0, "selectionStart")?;
         let (_, end, direction) = world(&ctx)?.borrow().selection_of(id);
-        // `end` is raised to the given start before the range is set
-        // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#dom-textarea/input-selectionstart>).
+        // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#dom-textarea/input-selectionstart
         set_selection_range(&ctx, id, value.0, end.max(value.0), direction)
     }
 
@@ -767,9 +722,7 @@ impl JsNode {
                 "reset is only available on a form",
             ));
         }
-        // The reset event is trusted and cancelable; a canceled event leaves
-        // every control untouched
-        // (<https://html.spec.whatwg.org/multipage/forms.html#concept-form-reset>).
+        // https://html.spec.whatwg.org/multipage/forms.html#concept-form-reset
         if !crate::js::events::fire_trusted_cancelable(
             &ctx,
             crate::js::world::EventTargetKey::Node(self.handle.get().0),
@@ -808,12 +761,7 @@ impl JsNode {
                     *control,
                     "output",
                 ) {
-                    // The reset algorithm replaces all of the output's
-                    // children with its default value as text, which also
-                    // drops any markup. A value-mode output restores its
-                    // frozen default; a default-mode one keeps the text it
-                    // has
-                    // (<https://html.spec.whatwg.org/multipage/form-elements.html#the-output-element>).
+                    // https://html.spec.whatwg.org/multipage/form-elements.html#the-output-element
                     let id = NodeId {
                         document: parsed.id,
                         node: *control,
@@ -831,9 +779,7 @@ impl JsNode {
             }
             (parsed.id, controls, outputs)
         };
-        // The reset algorithm restores each control's default value and clears
-        // its dirty and edit state
-        // (<https://html.spec.whatwg.org/multipage/input.html#the-input-element>).
+        // https://html.spec.whatwg.org/multipage/input.html#the-input-element
         {
             let mut world = world_rc.borrow_mut();
             for control in controls {
@@ -843,9 +789,7 @@ impl JsNode {
                 };
                 world.clear_control_edit_state(id);
                 if outputs.iter().any(|(output, _)| *output == control) {
-                    // The output's value-mode flag is clear and its override
-                    // is null, so its default value is now its text
-                    // (<https://html.spec.whatwg.org/multipage/form-elements.html#the-output-element>).
+                    // https://html.spec.whatwg.org/multipage/form-elements.html#the-output-element
                     let state = world.control(id);
                     state.output_value_mode = false;
                     state.output_default_value = None;
@@ -855,9 +799,7 @@ impl JsNode {
         if outputs.is_empty() {
             return Ok(());
         }
-        // The output's reset algorithm replaces its text with the restored
-        // default
-        // (<https://html.spec.whatwg.org/multipage/form-elements.html#the-output-element>).
+        // https://html.spec.whatwg.org/multipage/form-elements.html#the-output-element
         restore_outputs(&ctx, &world_rc, document, outputs)
     }
 
@@ -907,11 +849,7 @@ impl JsNode {
 
     // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#dom-fs-formmethod
     pub(super) fn form_method(&self, ctx: Ctx<'_>) -> &'static str {
-        // Enumerated without whitespace stripping: only an exact ASCII
-        // case-insensitive keyword matches
-        // (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#limited-to-only-known-values>).
-        // The form-submission plan and this getter share the engine's parser,
-        // so they cannot disagree about a value such as `" post"`.
+        // https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#limited-to-only-known-values
         match content_attr(&ctx, self.handle.get().0, "formmethod") {
             None => "",
             Some(raw) => blitz_dom::form::FormMethod::from_str(&raw)
@@ -926,8 +864,7 @@ impl JsNode {
 
     // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#dom-fs-formenctype
     pub(super) fn form_enctype(&self, ctx: Ctx<'_>) -> &'static str {
-        // Absent reads empty, like `formMethod`; no whitespace stripping
-        // (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#limited-to-only-known-values>).
+        // https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#limited-to-only-known-values
         match content_attr(&ctx, self.handle.get().0, "formenctype") {
             None => "",
             Some(raw) => blitz_dom::form::RequestContentType::from_str(&raw)
@@ -940,10 +877,7 @@ impl JsNode {
         self.set_attribute(ctx, WebIdlString("formenctype".into()), value)
     }
 
-    /// The form owner of an option's nearest ancestor `select`: an option has
-    /// no form owner of its own, and a `datalist`, `hr`, `option`, or second
-    /// `optgroup` between it and the select cuts the connection
-    /// (<https://html.spec.whatwg.org/multipage/form-elements.html#dom-option-form>).
+    // https://html.spec.whatwg.org/multipage/form-elements.html#dom-option-form
     pub(super) fn option_form<'js>(&self, ctx: Ctx<'js>) -> Result<Value<'js>> {
         let form = {
             let world = world(&ctx)?;
@@ -961,7 +895,7 @@ impl JsNode {
         }
     }
 
-    /// <https://html.spec.whatwg.org/multipage/forms.html#dom-fae-form>
+    // https://html.spec.whatwg.org/multipage/forms.html#dom-fae-form
     pub(super) fn form<'js>(&self, ctx: Ctx<'js>) -> Result<Value<'js>> {
         let form = {
             let world = world(&ctx)?;
@@ -995,9 +929,7 @@ impl JsNode {
     }
 
     pub(super) fn set_checked(&self, ctx: Ctx<'_>, value: bool) -> Result<()> {
-        // Setting a radio's checkedness unchecks its group. The content
-        // attribute is the default and is left alone
-        // (<https://html.spec.whatwg.org/multipage/input.html#dom-input-checked>).
+        // https://html.spec.whatwg.org/multipage/input.html#dom-input-checked
         let group = if value {
             let world = world(&ctx)?;
             let world = world.borrow();
@@ -1041,8 +973,7 @@ impl JsNode {
         for member in group {
             mutator.set_checkedness(member.node, false, Dirtiness::Keep);
         }
-        // The checked IDL attribute also sets the dirty checkedness flag
-        // (<https://html.spec.whatwg.org/multipage/input.html#dom-input-checked>).
+        // https://html.spec.whatwg.org/multipage/input.html#dom-input-checked
         mutator.set_checkedness(self.handle.get().0.node, value, Dirtiness::Set);
         Ok(())
     }
@@ -1125,8 +1056,7 @@ impl JsNode {
     }
 
     pub(super) fn set_text(&self, ctx: Ctx<'_>, value: WebIdlCodeUnits) -> Result<()> {
-        // An option's text setter replaces its children with one text node
-        // (<https://html.spec.whatwg.org/multipage/form-elements.html#dom-option-text>).
+        // https://html.spec.whatwg.org/multipage/form-elements.html#dom-option-text
         let text = value.0.to_string_lossy().into_owned();
         let world = world(&ctx)?;
         let world = world.borrow();
@@ -1223,13 +1153,8 @@ impl JsNode {
         )
     }
 }
-/// Runs the form-control insertion fixups for a batch of inserted nodes: the
-/// option insertion steps once per affected select, then the radio group's
-/// checkedness rule. Both snapshot the state the batch arrived with, because
-/// an earlier inserted control clears a later one before its own step runs;
-/// the last inserted checked control is the one left checked
-/// (<https://html.spec.whatwg.org/multipage/form-elements.html#the-select-element>,
-/// <https://html.spec.whatwg.org/multipage/input.html#radio-button-group>).
+// https://html.spec.whatwg.org/multipage/form-elements.html#the-select-element
+// https://html.spec.whatwg.org/multipage/input.html#radio-button-group
 pub(super) fn fixup_controls_on_insert(
     ctx: &Ctx<'_>,
     document: u32,
@@ -1254,8 +1179,6 @@ pub(super) fn fixup_controls_on_insert(
     }
     for (id, group) in radios {
         let mut mutator = parsed.document.base.mutate();
-        // An earlier radio's step may have cleared this one; the state it
-        // arrived with is what its own step acts on.
         mutator.set_checkedness(id, true, Dirtiness::Keep);
         for member in group {
             mutator.set_checkedness(member.node, false, Dirtiness::Keep);
@@ -1264,7 +1187,6 @@ pub(super) fn fixup_controls_on_insert(
     Ok(())
 }
 
-/// A control's stored selection start clamped to its value length.
 pub(super) fn selection_start_of(ctx: &rquickjs::Ctx<'_>, id: NodeId) -> rquickjs::Result<u32> {
     let world_rc = world(ctx)?;
     let world = world_rc.borrow();
@@ -1278,7 +1200,6 @@ pub(super) fn selection_start_of(ctx: &rquickjs::Ctx<'_>, id: NodeId) -> rquickj
     ))
 }
 
-/// A control's stored selection end clamped to its value length.
 pub(super) fn selection_end_of(ctx: &rquickjs::Ctx<'_>, id: NodeId) -> rquickjs::Result<u32> {
     let world_rc = world(ctx)?;
     let world = world_rc.borrow();
@@ -1291,7 +1212,6 @@ pub(super) fn selection_end_of(ctx: &rquickjs::Ctx<'_>, id: NodeId) -> rquickjs:
     ))
 }
 
-/// A control's stored selection direction code.
 pub(super) fn selection_direction_of(ctx: &rquickjs::Ctx<'_>, id: NodeId) -> rquickjs::Result<u8> {
     let world_rc = world(ctx)?;
     let world = world_rc.borrow();
@@ -1304,10 +1224,7 @@ pub(super) fn selection_direction_of(ctx: &rquickjs::Ctx<'_>, id: NodeId) -> rqu
     Ok(world.selection_of(id).2)
 }
 
-/// Rejects a selection operation on a control the text selection APIs do not
-/// apply to. A document that is already gone reads as "not applicable", which
-/// makes the caller's operation a no-op instead of a page-visible failure
-/// (<https://html.spec.whatwg.org/multipage/input.html#do-not-apply>).
+// https://html.spec.whatwg.org/multipage/input.html#do-not-apply
 fn require_selection(ctx: &Ctx<'_>, id: NodeId, name: &str) -> Result<()> {
     let world_rc = world(ctx)?;
     let world = world_rc.borrow();
@@ -1324,14 +1241,7 @@ fn require_selection(ctx: &Ctx<'_>, id: NodeId, name: &str) -> Result<()> {
     ))
 }
 
-/// "Set the selection range"
-/// (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#set-the-selection-range>).
-///
-/// Both edges clamp to the relevant value's length, `end` at or before `start`
-/// collapses to a caret at `end`, an unknown direction is "none", and the
-/// control's `select` event is queued only when the extent or direction
-/// actually changed. The event itself is an element task, not a synchronous
-/// dispatch.
+// https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#set-the-selection-range
 fn set_selection_range(
     ctx: &Ctx<'_>,
     node: NodeId,
@@ -1355,10 +1265,7 @@ fn set_selection_range(
         (start, end)
     };
     let previous = world_rc.borrow().selection_of(node);
-    // The selection is clamped whenever the relevant value changes, so an
-    // offset stored before the value shrank no longer names a different
-    // selection
-    // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#set-the-selection-range>).
+    // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#set-the-selection-range
     let clamped = (previous.0.min(length), previous.1.min(length), previous.2);
     if clamped == (start, end, direction) {
         if clamped != previous {
@@ -1374,11 +1281,7 @@ fn set_selection_range(
     Ok(())
 }
 
-/// `__tbSetSelectionRange`: the one entry point for the selection APIs the
-/// JavaScript shim owns (`select()`, `setSelectionRange()`, `setRangeText()`).
-/// The stored selection and its `select` task belong to the host, so the shim
-/// only converts the Web IDL arguments
-/// (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#textFieldSelection>).
+// https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#textFieldSelection
 pub(crate) fn set_selection_range_host<'js>(
     ctx: Ctx<'js>,
     node: Value<'js>,
@@ -1387,10 +1290,7 @@ pub(crate) fn set_selection_range_host<'js>(
     direction: Option<String>,
 ) -> Result<()> {
     let id = handler_target(&ctx, &node)?;
-    // No applicability check here: `select()` also applies to the states the
-    // selection attributes reject, and the shim enforces the throwing cases
-    // for `setSelectionRange()` and `setRangeText()`
-    // (<https://html.spec.whatwg.org/multipage/input.html#do-not-apply>).
+    // https://html.spec.whatwg.org/multipage/input.html#do-not-apply
     set_selection_range(
         &ctx,
         id,
@@ -1400,8 +1300,7 @@ pub(crate) fn set_selection_range_host<'js>(
     )
 }
 
-/// The `SelectionMode` direction name for the stored code
-/// (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#selection-direction>).
+// https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#selection-direction
 pub(super) fn direction_name(direction: u8) -> &'static str {
     match direction {
         1 => "forward",
@@ -1410,8 +1309,6 @@ pub(super) fn direction_name(direction: u8) -> &'static str {
     }
 }
 
-/// Maps a `selectionDirection` string to its stored code; anything but the two
-/// known keywords is "none".
 pub(super) fn direction_code(direction: &str) -> u8 {
     match direction {
         "forward" => 1,
@@ -1420,8 +1317,7 @@ pub(super) fn direction_code(direction: &str) -> u8 {
     }
 }
 
-/// Replaces each output's text with the default the reset algorithm restored
-/// (<https://html.spec.whatwg.org/multipage/form-elements.html#the-output-element>).
+// https://html.spec.whatwg.org/multipage/form-elements.html#the-output-element
 fn restore_outputs(
     ctx: &Ctx<'_>,
     world_rc: &std::rc::Rc<std::cell::RefCell<crate::js::World>>,
@@ -1435,9 +1331,7 @@ fn restore_outputs(
         };
         let mut iframes = Vec::new();
         for (control, text) in &outputs {
-            // "String replace all" with the empty string leaves no child, not
-            // an empty Text node
-            // (<https://html.spec.whatwg.org/multipage/form-elements.html#the-output-element>).
+            // https://html.spec.whatwg.org/multipage/form-elements.html#the-output-element
             let added = if text.is_empty() {
                 Vec::new()
             } else {
@@ -1459,7 +1353,6 @@ fn restore_outputs(
     schedule_mutation_delivery(ctx)
 }
 
-/// Form-associated elements whose form owner is `form`.
 fn form_controls(
     base: &blitz_dom::BaseDocument,
     document: u32,

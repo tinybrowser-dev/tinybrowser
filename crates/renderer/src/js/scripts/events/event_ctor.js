@@ -6,20 +6,15 @@
       throw new TypeError('Class constructor Event cannot be invoked without new');
     }
     const event = __tbConstruct(Native, arguments, new.target);
-    // [LegacyUnforgeable] own getter
-    // (<https://dom.spec.whatwg.org/#dom-event-istrusted>,
-    // <https://webidl.spec.whatwg.org/#dfn-unforgeable>).
+    // https://dom.spec.whatwg.org/#dom-event-istrusted
+    // https://webidl.spec.whatwg.org/#dfn-unforgeable
     __tbDefineProperty(event, 'isTrusted', {
       __proto__: null,
       get: isTrustedGet, enumerable: true, configurable: false,
     });
     return event;
   }
-  // Constants are `{writable:false, enumerable:true, configurable:false}` on
-  // both the interface object and its prototype
-  // (<https://webidl.spec.whatwg.org/#define-the-constants>). The generator
-  // already defines them on the native prototype; the wrapper function is a
-  // distinct object and needs its own copy.
+  // https://webidl.spec.whatwg.org/#define-the-constants
   function defineConstant(target, name, value) {
     Object.defineProperty(target, name, { value: value, writable: false, enumerable: true, configurable: false });
   }

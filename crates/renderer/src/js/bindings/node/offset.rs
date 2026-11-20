@@ -1,11 +1,4 @@
-//! CSSOM View element metrics: `offsetParent`, `offsetLeft`, `offsetTop`,
-//! `offsetWidth`, and `offsetHeight`
-//! (<https://drafts.csswg.org/cssom-view/#extensions-to-the-htmlelement-interface>).
-//!
-//! Blitz's `BaseDocument::offset_rect` owns the layout arithmetic, including the
-//! first fragment box of a non-atomic inline and the static-body rule. This
-//! module owns the CSSOM View rules around it: which elements have an associated
-//! box, which ancestor is the offset parent, and the body and table-part cases.
+// https://drafts.csswg.org/cssom-view/#extensions-to-the-htmlelement-interface
 
 use rquickjs::{Ctx, Result, Value};
 use style::values::computed::{PositionProperty, TransformStyle};
@@ -18,10 +11,8 @@ use crate::dom::tree::{BlitzId, NodeId, is_html_tag, shadow_including_ancestors}
 use super::super::{active_world, child_value};
 use super::scrolling;
 
-// https://drafts.csswg.org/cssom-view/#dom-htmlelement-offsetparent
+// https://drafts.csswg.org/cssom-view/#dom-htmlelement-offsetparent — fixed-positioned element stops at the nearest fixed-position containing block per spec (unlike Chrome), and every HTML body element uses the body offset rule (matching Chrome)
 pub(super) fn offset_parent<'js>(ctx: &Ctx<'js>, id: NodeId) -> Result<Value<'js>> {
-    // The document borrow must end before wrapping the node, because wrapping
-    // reads the realm's wrappers from the same store.
     let found = active_world(ctx, id).and_then(|world| {
         let world = world.borrow();
         let mut parsed = world.document_mut(id)?;
@@ -35,20 +26,13 @@ pub(super) fn offset_left(ctx: &Ctx<'_>, id: NodeId) -> i32 {
     offset_origin(ctx, id).map_or(0, |(x, _)| cssom_round(x))
 }
 
-// https://drafts.csswg.org/cssom-view/#dom-htmlelement-offsettop
+// https://drafts.csswg.org/cssom-view/#dom-htmlelement-offsettop — static body offset stays relative to the initial containing block, matching Blink
 pub(super) fn offset_top(ctx: &Ctx<'_>, id: NodeId) -> i32 {
     offset_origin(ctx, id).map_or(0, |(_, y)| cssom_round(y))
 }
 
-/// `HTMLImageElement.x`/`y`: the scaled coordinate of the first box's left or
-/// top border edge relative to the initial containing block origin, ignoring
-/// transforms, or zero when the element has no box
-/// (<https://drafts.csswg.org/cssom-view/#dom-htmlimageelement-x>,
-/// <https://drafts.csswg.org/cssom-view/#dom-htmlimageelement-y>).
-///
-/// The initial containing block origin is the document origin, so the
-/// viewport's scroll offset, which `get_client_bounding_rect` removes, is added
-/// back.
+// https://drafts.csswg.org/cssom-view/#dom-htmlimageelement-x
+// https://drafts.csswg.org/cssom-view/#dom-htmlimageelement-y
 pub(super) fn image_edge(ctx: &Ctx<'_>, id: NodeId, vertical: bool) -> i32 {
     measure(ctx, id, |base, node| {
         if !has_associated_box(base, node) {
@@ -75,19 +59,7 @@ pub(super) fn offset_height(ctx: &Ctx<'_>, id: NodeId) -> i32 {
     offset_rect(ctx, id).map_or(0, |rect| cssom_round(rect.height))
 }
 
-/// The element's border box, positioned relative to the offset parent's
-/// padding edge, or to the initial containing block when there is no offset
-/// parent
-/// (<https://drafts.csswg.org/cssom-view/#dom-htmlelement-offsettop>).
-///
-/// The rectangle is Blitz's, so its offset parent is the layout crate's
-/// (`is_offset_parent`), which does not know `table` or a `transform`-style
-/// fixed-position containing block. Inside such an ancestor the rectangle is
-/// measured from a different box than the `offsetParent` reported above
-/// (`docs/upstream.md`). For a static `body` ancestor the rectangle stays
-/// relative to the initial containing block instead of the body's padding edge,
-/// which is what Blink does even though the spec names the body's padding edge
-/// (`docs/upstream.md`).
+// https://drafts.csswg.org/cssom-view/#dom-htmlelement-offsettop — static body offset stays relative to the initial containing block, matching Blink
 fn offset_rect(ctx: &Ctx<'_>, id: NodeId) -> Option<blitz_dom::BoundingRect> {
     measure(ctx, id, |base, node| {
         if has_associated_box(base, node) {
@@ -98,10 +70,7 @@ fn offset_rect(ctx: &Ctx<'_>, id: NodeId) -> Option<blitz_dom::BoundingRect> {
     })
 }
 
-/// Converts a layout rectangle to the unscaled CSSOM View rectangle of
-/// `node`, whose `offsetLeft`/`offsetTop`/`offsetWidth`/`offsetHeight` report
-/// lengths divided by its effective zoom
-/// (<https://drafts.csswg.org/css-viewport/#zoom-dom-cssom>).
+// https://drafts.csswg.org/css-viewport/#zoom-dom-cssom
 fn unscaled(node: &blitz_dom::Node, rect: blitz_dom::BoundingRect) -> blitz_dom::BoundingRect {
     blitz_dom::BoundingRect {
         x: super::zoom::unscaled(node, rect.x),
@@ -111,13 +80,7 @@ fn unscaled(node: &blitz_dom::Node, rect: blitz_dom::BoundingRect) -> blitz_dom:
     }
 }
 
-/// The element's offset origin: the first box's top border edge for
-/// `offsetLeft`/`offsetTop`, which differs from the rectangle's union origin
-/// when an inline spans several line boxes
-/// (<https://drafts.csswg.org/cssom-view/#dom-htmlelement-offsettop>).
-///
-/// A zero-width non-atomic inline has no fragment box at all, so its position
-/// comes from `empty_inline_rect`.
+// https://drafts.csswg.org/cssom-view/#dom-htmlelement-offsettop — static body offset stays relative to the initial containing block, matching Blink
 fn offset_origin(ctx: &Ctx<'_>, id: NodeId) -> Option<(f64, f64)> {
     measure(ctx, id, |base, node| {
         if !has_associated_box(base, node) || is_html_body(node) {
@@ -130,12 +93,6 @@ fn offset_origin(ctx: &Ctx<'_>, id: NodeId) -> Option<(f64, f64)> {
     })
 }
 
-/// Runs `read` against this element's node after flushing style and layout,
-/// without holding the document borrow across the result.
-///
-/// Unlike `layout_metric` in `element.rs`, the offset metrics need the active
-/// document: an element in a `DOMParser` or `createHTMLDocument` result has no
-/// box, and these getters answer zero for it.
 fn measure<T>(
     ctx: &Ctx<'_>,
     id: NodeId,
@@ -150,18 +107,7 @@ fn measure<T>(
     read(base, node)
 }
 
-/// `HTMLElement.offsetParent`'s algorithm
-/// (<https://drafts.csswg.org/cssom-view/#dom-htmlelement-offsetparent>).
-///
-/// The walk is the shadow-including ancestor chain, because Blitz has no flat
-/// tree (`docs/limitations.md`). A fixed-positioned element whose containing
-/// block is an ancestor answers with the nearest ancestor that establishes a
-/// fixed-position containing block; every other element answers with the
-/// nearest containing block for absolutely positioned descendants, the body, or,
-/// when static, a `td`/`th`/`table`. Chrome does not stop at the fixed-position
-/// containing block for a fixed element when a positioned ancestor is nearer
-/// (probed), but the spec's condition is about the element's own containing
-/// block, so tinybrowser follows the spec (`docs/upstream.md`).
+// https://drafts.csswg.org/cssom-view/#dom-htmlelement-offsetparent — fixed-positioned element stops at the nearest fixed-position containing block per spec (unlike Chrome), and every HTML body element uses the body offset rule (matching Chrome)
 fn offset_parent_id(parsed: &mut Parsed, id: NodeId) -> Option<NodeId> {
     let root = scrolling::root_element(parsed)?;
     let base = &mut parsed.document.base;
@@ -178,9 +124,6 @@ fn offset_parent_id(parsed: &mut Parsed, id: NodeId) -> Option<NodeId> {
         return None;
     }
     shadow_including_ancestors(base, node.parent).find_map(|ancestor| {
-        // A boxless ancestor (`display: contents`) establishes no containing
-        // block. The element itself has a box, so no ancestor is
-        // `display: none`.
         if !ancestor.has_boxes() {
             return None;
         }
@@ -199,13 +142,7 @@ fn offset_parent_id(parsed: &mut Parsed, id: NodeId) -> Option<NodeId> {
     })
 }
 
-/// Whether a node has an associated box, which a `display: none` or
-/// `display: contents` element lacks, and so does every descendant of a
-/// `display: none` ancestor
-/// (<https://drafts.csswg.org/cssom-view/#dom-element-checkvisibility>).
-///
-/// Blitz's `Node::has_boxes` answers for the node alone, so the ancestor walk
-/// stays here rather than in the fork (`docs/upstream.md`).
+// https://drafts.csswg.org/cssom-view/#dom-element-checkvisibility
 pub(super) fn has_associated_box(base: &blitz_dom::BaseDocument, node: &blitz_dom::Node) -> bool {
     node.has_boxes()
         && !shadow_including_ancestors(base, node.parent).any(|ancestor| {
@@ -218,16 +155,7 @@ pub(super) fn has_associated_box(base: &blitz_dom::BaseDocument, node: &blitz_do
         })
 }
 
-/// The position of a zero-width non-atomic inline, which has no fragment box
-/// of its own
-/// (<https://drafts.csswg.org/cssom-view/#dom-htmlelement-offsettop>).
-///
-/// Blitz's inline layout flattens a non-atomic inline into style spans and
-/// records fragments only for glyphs and atomic inline boxes, so an empty span
-/// has none. Use the next boxed sibling's first fragment (where the caret would
-/// be) or, with no following sibling, the end of the previous one along the
-/// inline axis. The guess is wrong across a line break; the gap is recorded in
-/// `docs/upstream.md`.
+// https://drafts.csswg.org/cssom-view/#dom-htmlelement-offsettop — static body offset stays relative to the initial containing block, matching Blink
 fn empty_inline_rect(
     base: &blitz_dom::BaseDocument,
     node: &blitz_dom::Node,
@@ -243,10 +171,7 @@ fn empty_inline_rect(
         });
     }
     let rect = sibling_offset(base, node.id, false)?;
-    // The side the caret leaves from depends on the writing mode and
-    // direction: the block end is the right side in vertical-lr, the left side
-    // in vertical-rl, and the inline end is the left edge under RTL
-    // (<https://drafts.csswg.org/css-writing-modes-4/#logical-to-physical>).
+    // https://drafts.csswg.org/css-writing-modes-4/#logical-to-physical
     let writing_mode = node.primary_styles()?.writing_mode;
     let (x, y) = if writing_mode.swaps_axes() {
         (rect.x, rect.y + rect.height)
@@ -263,12 +188,7 @@ fn empty_inline_rect(
     })
 }
 
-/// The nearest element sibling's offset rectangle in `forward` order, for
-/// placing a zero-width non-atomic inline
-/// (<https://drafts.csswg.org/cssom-view/#dom-htmlelement-offsettop>).
-///
-/// A sibling without a box (another empty inline, or a `display: none` one) is
-/// skipped.
+// https://drafts.csswg.org/cssom-view/#dom-htmlelement-offsettop — static body offset stays relative to the initial containing block, matching Blink
 fn sibling_offset(
     base: &blitz_dom::BaseDocument,
     id: BlitzId,
@@ -294,9 +214,7 @@ fn sibling_offset(
     }
 }
 
-/// The containing blocks a node establishes for absolutely and fixed
-/// positioned descendants
-/// (<https://drafts.csswg.org/css-position/#def-cb>).
+// https://drafts.csswg.org/css-position/#def-cb
 struct ContainingBlock {
     absolute: bool,
     fixed: bool,
@@ -309,20 +227,13 @@ fn containing_block(node: &blitz_dom::Node) -> ContainingBlock {
             fixed: false,
         };
     };
-    // Transforms and containment do not apply to a non-atomic inline, so its
-    // fixed-position containing block comes only from a filter, a backdrop
-    // filter, or `will-change`
-    // (<https://drafts.csswg.org/css-transforms-1/#transformable-element>).
+    // https://drafts.csswg.org/css-transforms-1/#transformable-element
     let claims = if node.is_non_atomic_inline() {
         inline_containing_block_claims(&styles)
     } else {
         containing_block_claims(&styles)
     };
-    // `transform-style: preserve-3d` establishes a containing block for all
-    // descendants, absolutely and fixed positioned included
-    // (<https://drafts.csswg.org/css-transforms-2/#transform-style-property>),
-    // and the layout crate's predicate does not include it, so layout and
-    // `offsetParent` disagree inside such an ancestor (`docs/upstream.md`).
+    // https://drafts.csswg.org/css-transforms-2/#transform-style-property
     let preserve_3d = !node.is_non_atomic_inline()
         && styles.get_box().transform_style == TransformStyle::Preserve3d;
     ContainingBlock {
@@ -331,29 +242,18 @@ fn containing_block(node: &blitz_dom::Node) -> ContainingBlock {
     }
 }
 
-/// Whether a node is an HTML `body` element.
-///
-/// CSSOM View names "the body element" (`document.body`) in the offset
-/// algorithm, but browsers apply the body rule to every `body` element: a
-/// nested `body` answers 0 for `offsetTop`/`offsetLeft` and null for
-/// `offsetParent`, which `offsetParent-body-and-html.html` requires. Chrome
-/// agrees (probed), so tinybrowser follows the browser. A `body` ancestor is
-/// still the offset parent of a non-body descendant.
 fn is_html_body(node: &blitz_dom::Node) -> bool {
     is_html_tag(Some(&node.data), "body")
 }
 
-/// Whether a node is an HTML `td`, `th`, or `table` element, the ancestors that
-/// are offset parents for a static element
-/// (<https://drafts.csswg.org/cssom-view/#dom-htmlelement-offsetparent>).
+// https://drafts.csswg.org/cssom-view/#dom-htmlelement-offsetparent — fixed-positioned element stops at the nearest fixed-position containing block per spec (unlike Chrome), and every HTML body element uses the body offset rule (matching Chrome)
 fn is_html_table_part(node: &blitz_dom::Node) -> bool {
     ["td", "th", "table"]
         .iter()
         .any(|local| is_html_tag(Some(&node.data), local))
 }
 
-/// Rounds a layout coordinate to CSSOM's `long`
-/// (<https://drafts.csswg.org/cssom-view/#dom-htmlelement-offsettop>).
+// https://drafts.csswg.org/cssom-view/#dom-htmlelement-offsettop — static body offset stays relative to the initial containing block, matching Blink
 pub(super) fn cssom_round(value: f64) -> i32 {
     #[expect(
         clippy::cast_possible_truncation,

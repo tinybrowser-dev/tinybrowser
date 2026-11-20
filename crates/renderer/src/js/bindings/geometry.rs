@@ -1,10 +1,5 @@
-//! Geometry interfaces used by canvas and CSSOM View.
-//!
-//! `DOMPoint` and `DOMPointReadOnly` are dictionaries with identity in
-//! JavaScript; canvas consumes them as `DOMPointInit` when reading
-//! `roundRect` radii
-//! (<https://drafts.fxtf.org/geometry/#DOMPoint>,
-//! <https://drafts.fxtf.org/geometry/#dictdef-dompointinit>).
+// https://drafts.fxtf.org/geometry/#DOMPoint
+// https://drafts.fxtf.org/geometry/#dictdef-dompointinit
 
 use rquickjs::class::Trace;
 use rquickjs::prelude::Opt;
@@ -124,9 +119,7 @@ impl JsDomPointReadOnly {
     }
 }
 
-/// A `DOMRect` for interfaces that return geometry objects, such as
-/// `TextMetrics.getSelectionRects`.
-/// (<https://drafts.fxtf.org/geometry/#domrect>)
+// https://drafts.fxtf.org/geometry/#domrect
 #[derive(Trace, rquickjs::JsLifetime)]
 #[rquickjs::class(rename = "DOMRect")]
 pub(crate) struct JsDomRect {
@@ -208,7 +201,6 @@ impl JsDomRect {
     }
 }
 
-/// Creates a `DOMRect` instance for a Rust-side geometry result.
 pub(crate) fn dom_rect<'js>(
     ctx: &Ctx<'js>,
     x: f64,

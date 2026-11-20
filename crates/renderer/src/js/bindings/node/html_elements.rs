@@ -1,6 +1,3 @@
-//! Concrete HTML elements: tables, lists, text-level elements,
-//! links, metadata, and the empty marker interfaces.
-
 use super::super::{
     CollectionKind, WebIdlCodeUnits, collection_ids, document_base_url_string, dom_string,
     fixup_focus_after_removal, host, live_collection, schedule_mutation_delivery,
@@ -72,8 +69,7 @@ include!(concat!(env!("OUT_DIR"), "/HTMLTimeElement.rs"));
 include!(concat!(env!("OUT_DIR"), "/HTMLUListElement.rs"));
 
 impl<'js> htmlli_element_generated::HTMLLIElement<'js> for JsNode {
-    // `value` is a plain long defaulting to zero
-    // (<https://html.spec.whatwg.org/multipage/grouping-content.html#dom-li-value>).
+    // https://html.spec.whatwg.org/multipage/grouping-content.html#dom-li-value
     fn get_value(&self, ctx: &Ctx<'js>) -> Result<i32> {
         Ok(content_attr(ctx, self.handle.get().0, "value")
             .as_deref()
@@ -88,8 +84,7 @@ impl<'js> htmlli_element_generated::HTMLLIElement<'js> for JsNode {
 }
 
 impl<'js> htmlo_list_element_generated::HTMLOListElement<'js> for JsNode {
-    // `start` defaults to 1
-    // (<https://html.spec.whatwg.org/multipage/grouping-content.html#dom-ol-start>).
+    // https://html.spec.whatwg.org/multipage/grouping-content.html#dom-ol-start
     fn get_start(&self, ctx: &Ctx<'js>) -> Result<i32> {
         Ok(content_attr(ctx, self.handle.get().0, "start")
             .as_deref()
@@ -104,8 +99,7 @@ impl<'js> htmlo_list_element_generated::HTMLOListElement<'js> for JsNode {
 }
 
 impl<'js> html_pre_element_generated::HTMLPreElement<'js> for JsNode {
-    // `width` is a plain long defaulting to zero
-    // (<https://html.spec.whatwg.org/multipage/obsolete.html#dom-pre-width>).
+    // https://html.spec.whatwg.org/multipage/obsolete.html#dom-pre-width
     fn get_width(&self, ctx: &Ctx<'js>) -> Result<i32> {
         Ok(content_attr(ctx, self.handle.get().0, "width")
             .as_deref()
@@ -120,8 +114,7 @@ impl<'js> html_pre_element_generated::HTMLPreElement<'js> for JsNode {
 }
 
 impl<'js> html_table_cell_element_generated::HTMLTableCellElement<'js> for JsNode {
-    // `colSpan` parses 1..1000, defaulting to 1
-    // (<https://html.spec.whatwg.org/multipage/tables.html#dom-tdth-colspan>).
+    // https://html.spec.whatwg.org/multipage/tables.html#dom-tdth-colspan
     fn get_col_span(&self, ctx: &Ctx<'js>) -> Result<usize> {
         Ok(usize::try_from(reflect_clamped_ulong(
             content_attr(ctx, self.handle.get().0, "colspan").as_deref(),
@@ -137,8 +130,7 @@ impl<'js> html_table_cell_element_generated::HTMLTableCellElement<'js> for JsNod
         host::reflect_set_ulong_defaulting(ctx, self.handle.get().0, "colspan", value, 1)
     }
 
-    // `rowSpan` parses 0..65534, defaulting to 1
-    // (<https://html.spec.whatwg.org/multipage/tables.html#dom-tdth-rowspan>).
+    // https://html.spec.whatwg.org/multipage/tables.html#dom-tdth-rowspan
     fn get_row_span(&self, ctx: &Ctx<'js>) -> Result<usize> {
         Ok(usize::try_from(reflect_clamped_ulong(
             content_attr(ctx, self.handle.get().0, "rowspan").as_deref(),
@@ -156,8 +148,7 @@ impl<'js> html_table_cell_element_generated::HTMLTableCellElement<'js> for JsNod
 }
 
 impl<'js> html_table_col_element_generated::HTMLTableColElement<'js> for JsNode {
-    // `span` parses 1..1000, defaulting to 1
-    // (<https://html.spec.whatwg.org/multipage/tables.html#dom-col-span>).
+    // https://html.spec.whatwg.org/multipage/tables.html#dom-col-span
     fn get_span(&self, ctx: &Ctx<'js>) -> Result<usize> {
         Ok(usize::try_from(reflect_clamped_ulong(
             content_attr(ctx, self.handle.get().0, "span").as_deref(),
@@ -175,12 +166,8 @@ impl<'js> html_table_col_element_generated::HTMLTableColElement<'js> for JsNode 
 }
 
 impl<'js> html_base_element_generated::HTMLBaseElement<'js> for JsNode {
-    // Unlike generic URL reflection, an absent `href` falls back to the
-    // document base URL rather than the empty string
-    // (<https://html.spec.whatwg.org/multipage/semantics.html#dom-base-href>).
+    // https://html.spec.whatwg.org/multipage/semantics.html#dom-base-href
     fn get_href(&self, ctx: &Ctx<'js>) -> Result<crate::dom_string::DomString> {
-        // Probe the node's owner document, not the calling realm's: a node
-        // reached across documents must answer from its own attributes.
         let present = world_for_node(ctx, self.handle.get().0)
             .ok()
             .and_then(|owner| {
@@ -208,8 +195,7 @@ impl<'js> html_link_element_generated::HTMLLinkElement<'js> for JsNode {
         set_cross_origin(ctx, self.handle.get().0, value)
     }
 
-    // `[SameObject, PutForwards=value] readonly attribute DOMTokenList blocking`
-    // (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#blocking-attributes>).
+    // https://html.spec.whatwg.org/multipage/urls-and-fetching.html#blocking-attributes
     fn get_blocking(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
         self.token_list(
             ctx,
@@ -220,8 +206,7 @@ impl<'js> html_link_element_generated::HTMLLinkElement<'js> for JsNode {
 }
 
 impl<'js> html_style_element_generated::HTMLStyleElement<'js> for JsNode {
-    // `[SameObject, PutForwards=value] readonly attribute DOMTokenList blocking`
-    // (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#blocking-attributes>).
+    // https://html.spec.whatwg.org/multipage/urls-and-fetching.html#blocking-attributes
     fn get_blocking(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
         self.token_list(
             ctx,
@@ -247,10 +232,7 @@ impl<'js> html_dialog_element_generated::HTMLDialogElement<'js> for JsNode {
         )
     }
 
-    // The computed closed-by state: the attribute's keyword, with the Auto
-    // state reporting `closerequest` for a modal dialog and `none` otherwise.
-    // The generator owns the `[ReflectSetter]` setter
-    // (<https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:dom-dialog-closedby>).
+    // https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:dom-dialog-closedby
     fn get_closed_by(&self, ctx: &Ctx<'js>) -> Result<rquickjs::String<'js>> {
         let state = super::dialog::closed_by(ctx, self.handle.get().0);
         rquickjs::String::from_str(ctx.clone(), state)
@@ -297,8 +279,7 @@ impl<'js> html_script_element_generated::HTMLScriptElement<'js> for JsNode {
         set_cross_origin(ctx, self.handle.get().0, value)
     }
 
-    // `[SameObject, PutForwards=value] readonly attribute DOMTokenList blocking`
-    // (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#blocking-attributes>).
+    // https://html.spec.whatwg.org/multipage/urls-and-fetching.html#blocking-attributes
     fn get_blocking(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
         self.token_list(
             ctx,
@@ -309,9 +290,7 @@ impl<'js> html_script_element_generated::HTMLScriptElement<'js> for JsNode {
 
     // https://html.spec.whatwg.org/multipage/scripting.html#dom-script-text
     fn get_text(&self, ctx: &Ctx<'js>) -> Result<rquickjs::String<'js>> {
-        // `text` is the element's child text content: the text node children
-        // only, not the text inside a descendant element the way `textContent`
-        // answers (<https://html.spec.whatwg.org/multipage/scripting.html#dom-script-text>).
+        // https://html.spec.whatwg.org/multipage/scripting.html#dom-script-text
         let world_rc = world(ctx)?;
         let parsed = world_rc.borrow();
         let text = match parsed.document(self.handle.get().0) {
@@ -326,20 +305,18 @@ impl<'js> html_script_element_generated::HTMLScriptElement<'js> for JsNode {
 
     // https://html.spec.whatwg.org/multipage/scripting.html#dom-script-text
     fn set_text(&self, ctx: &Ctx<'js>, value: rquickjs::String<'js>) -> Result<()> {
-        // Setting replaces all children with one text node
-        // (<https://html.spec.whatwg.org/multipage/scripting.html#dom-script-text>).
+        // https://html.spec.whatwg.org/multipage/scripting.html#dom-script-text
         self.set_text_content(ctx, Some(value))
     }
 }
 
 impl<'js> html_object_element_generated::HTMLObjectElement<'js> for JsNode {
-    /// <https://html.spec.whatwg.org/multipage/forms.html#dom-fae-form>
+    // https://html.spec.whatwg.org/multipage/forms.html#dom-fae-form
     fn get_form(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
         self.form(ctx.clone())
     }
 
-    // Obsolete `hspace`/`vspace` default to zero
-    // (<https://html.spec.whatwg.org/multipage/obsolete.html#dom-object-hspace>).
+    // https://html.spec.whatwg.org/multipage/obsolete.html#dom-object-hspace
     fn get_hspace(&self, ctx: &Ctx<'js>) -> Result<usize> {
         Ok(usize::try_from(reflect_ulong(
             content_attr(ctx, self.handle.get().0, "hspace").as_deref(),
@@ -367,11 +344,8 @@ impl<'js> html_object_element_generated::HTMLObjectElement<'js> for JsNode {
         host::reflect_set_ulong_defaulting(ctx, self.handle.get().0, "vspace", value, 0)
     }
 
-    // `codeBase` resolves against the document base URL
-    // (<https://html.spec.whatwg.org/multipage/obsolete.html#dom-object-codebase>).
+    // https://html.spec.whatwg.org/multipage/obsolete.html#dom-object-codebase
     fn get_code_base(&self, ctx: &Ctx<'js>) -> Result<rquickjs::String<'js>> {
-        // `DOMString` preserves code units exactly: convert through UTF-16
-        // rather than lossy UTF-8.
         let resolved: crate::dom_string::DomString =
             host::reflect_url_string(ctx, self.handle.get().0, "codebase")?;
         rquickjs::String::from_utf16(ctx.clone(), &resolved.units())
@@ -384,7 +358,7 @@ impl<'js> html_object_element_generated::HTMLObjectElement<'js> for JsNode {
 }
 
 impl<'js> html_table_element_generated::HTMLTableElement<'js> for JsNode {
-    /// <https://html.spec.whatwg.org/multipage/tables.html#dom-table-tbodies>
+    // https://html.spec.whatwg.org/multipage/tables.html#dom-table-tbodies
     fn get_t_bodies(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
         live_collection(
             ctx,
@@ -394,7 +368,7 @@ impl<'js> html_table_element_generated::HTMLTableElement<'js> for JsNode {
         )
     }
 
-    /// <https://html.spec.whatwg.org/multipage/tables.html#dom-table-rows>
+    // https://html.spec.whatwg.org/multipage/tables.html#dom-table-rows
     fn get_rows(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
         live_collection(
             ctx,
@@ -404,14 +378,14 @@ impl<'js> html_table_element_generated::HTMLTableElement<'js> for JsNode {
         )
     }
 
-    /// <https://html.spec.whatwg.org/multipage/tables.html#dom-table-deleterow>
+    // https://html.spec.whatwg.org/multipage/tables.html#dom-table-deleterow
     fn delete_row(&self, ctx: Ctx<'js>, index: i32) -> Result<()> {
         delete_table_row(&ctx, self.handle.get().0, index)
     }
 }
 
 impl<'js> html_table_section_element_generated::HTMLTableSectionElement<'js> for JsNode {
-    /// <https://html.spec.whatwg.org/multipage/tables.html#dom-tbody-rows>
+    // https://html.spec.whatwg.org/multipage/tables.html#dom-tbody-rows
     fn get_rows(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
         live_collection(
             ctx,
@@ -423,7 +397,7 @@ impl<'js> html_table_section_element_generated::HTMLTableSectionElement<'js> for
 }
 
 impl<'js> html_table_row_element_generated::HTMLTableRowElement<'js> for JsNode {
-    /// <https://html.spec.whatwg.org/multipage/tables.html#dom-tr-cells>
+    // https://html.spec.whatwg.org/multipage/tables.html#dom-tr-cells
     fn get_cells(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
         live_collection(
             ctx,
@@ -443,9 +417,7 @@ impl JsNode {
             return rquickjs::String::from_str(ctx.clone(), "");
         };
         match document_title_element(&parsed) {
-            // The getter answers the title element's child text content with
-            // ASCII whitespace stripped and collapsed
-            // (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-title>).
+            // https://html.spec.whatwg.org/multipage/dom.html#dom-document-title
             Some(title) => dom_string(
                 ctx,
                 &parsed
@@ -473,17 +445,13 @@ impl JsNode {
         };
         let svg_root = element_is_svg_svg(&parsed.document, element.node);
         let html_document = matches!(parsed.content_type, "text/html" | "application/xhtml+xml");
-        // A document with no document element, or one that is neither HTML nor
-        // an SVG `svg`, cannot hold a title
-        // (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-title>).
+        // https://html.spec.whatwg.org/multipage/dom.html#dom-document-title
         if !html_document && !svg_root {
             return Ok(());
         }
         let title = match document_title_element(&parsed) {
             Some(title) => title,
             None if svg_root => {
-                // An SVG document's title is the first SVG `title` child of
-                // its document element.
                 let name = QualName::new(None, markup5ever::ns!(svg), LocalName::from("title"));
                 let title = parsed
                     .document
@@ -504,9 +472,6 @@ impl JsNode {
                 title
             }
             None if html_document => {
-                // An HTML document appends the new `title` to its `head`; a
-                // document with no head element has nowhere to put one, so
-                // the write does nothing.
                 let Some(head) = document_head_element(&parsed, element) else {
                     return Ok(());
                 };
@@ -542,13 +507,7 @@ impl JsNode {
     }
 }
 
-/// The document's title element
-/// (<https://html.spec.whatwg.org/multipage/dom.html#the-title-element>).
-///
-/// An SVG document (its document element is an SVG `svg`) uses an SVG `title`
-/// that is a child of the document element. Every other document uses the
-/// first `title` in the HTML namespace in tree order, which is why an HTML
-/// title still counts in an XML document.
+// https://html.spec.whatwg.org/multipage/dom.html#the-title-element
 fn document_title_element(parsed: &crate::Parsed) -> Option<NodeId> {
     let base = &parsed.document.base;
     let root = base.root_node().id;
@@ -597,13 +556,10 @@ fn document_title_element(parsed: &crate::Parsed) -> Option<NodeId> {
     None
 }
 
-/// Whether `node` is an element.
 fn is_element_node(node: &blitz_dom::Node) -> bool {
     node.data.downcast_element().is_some()
 }
 
-/// Whether `node` is an SVG `svg` element, which makes its document an SVG
-/// document for `document.title`.
 fn element_is_svg_svg(
     document: &crate::documents::BlitzDocument,
     node: blitz_traits::node_id::NodeId,
@@ -617,7 +573,6 @@ fn element_is_svg_svg(
         })
 }
 
-/// The `head` element of an HTML document, if the document element has one.
 fn document_head_element(parsed: &crate::Parsed, document_element: NodeId) -> Option<NodeId> {
     let base = &parsed.document.base;
     base.get_node(document_element.node)
@@ -635,9 +590,7 @@ fn document_head_element(parsed: &crate::Parsed, document_element: NodeId) -> Op
             node,
         })
 }
-/// Removes the `index`th row of `table` in `table.rows` order; `-1` is the
-/// last row. Out-of-range indexes throw `IndexSizeError`
-/// (<https://html.spec.whatwg.org/multipage/tables.html#dom-table-deleterow>).
+// https://html.spec.whatwg.org/multipage/tables.html#dom-table-deleterow
 pub(super) fn delete_table_row(ctx: &Ctx<'_>, table: NodeId, index: i32) -> Result<()> {
     let rows = collection_ids(ctx, table, &CollectionKind::TableRows)?;
     let length = i32::try_from(rows.len()).unwrap_or(i32::MAX);

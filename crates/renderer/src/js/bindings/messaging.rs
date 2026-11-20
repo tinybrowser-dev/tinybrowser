@@ -1,5 +1,3 @@
-//! Frame-tree and cross-realm messaging host functions.
-
 use super::{handler_target, throw_dom, world, world_for_node, wrap_node};
 
 use std::cell::RefCell;
@@ -17,12 +15,6 @@ use crate::protocol::TargetOrigin;
 
 use crate::protocol::FrameId;
 
-/// Installs the frame-tree and cross-realm messaging host functions the shim
-/// calls: posting window messages and channel messages, reading the frame
-/// tree, and moving channel endpoints between realms.
-///
-/// The calling realm's world comes from the realm registration, so every
-/// function is a plain item and its borrow of the world ends with the call.
 pub(crate) fn install_messaging(ctx: &Ctx<'_>) -> Result<()> {
     let globals = crate::js::bridge::object(ctx)?;
     let frame = world(ctx)?.borrow().frame();
@@ -59,7 +51,6 @@ pub(crate) fn install_messaging(ctx: &Ctx<'_>) -> Result<()> {
     Ok(())
 }
 
-/// The `WindowProxy` and frame-tree host functions the messaging shim reads.
 fn install_frame_functions(globals: &Object<'_>) -> Result<()> {
     globals.set(
         "__tbFrameParent",
@@ -148,12 +139,7 @@ fn install_frame_functions(globals: &Object<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Registers one `SharedArrayBuffer` block and returns the id its serialized
-/// form names.
-///
-/// The bytes are not copied: the message names the block, and a receiving
-/// realm, on this thread or a worker's, wraps the same memory
-/// (<https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal>).
+// https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal
 fn register_shared_buffer(ctx: Ctx<'_>, value: Value<'_>) -> Result<Option<u64>> {
     let Some(lease) = rquickjs::SharedBufferLease::new(&ctx, &value) else {
         return Ok(None);
@@ -163,12 +149,6 @@ fn register_shared_buffer(ctx: Ctx<'_>, value: Value<'_>) -> Result<Option<u64>>
     Ok(Some(world.runtime.shared_buffers.register(lease)))
 }
 
-/// Wraps a registered `SharedArrayBuffer` block in this realm's runtime.
-///
-/// `byte_length` and `max_byte_length` come from the serialized payload, which
-/// another realm's script can shape, so both are checked against the block's
-/// allocation before `QuickJS` sees them.
-/// `max_byte_length == 0` means the sender's buffer was fixed-length.
 fn create_shared_buffer(
     ctx: Ctx<'_>,
     id: u64,
@@ -197,23 +177,13 @@ fn create_shared_buffer(
         .map(Some)
 }
 
-/// Whether one structured-clone candidate is a typed array whose buffer is
-/// detached or out of bounds.
-///
-/// The structured-clone algorithm throws a `DataCloneError` for such a view,
-/// but the JavaScript getters report `0` for both `byteOffset` and
-/// `byteLength`, so the serializer cannot see it from script
-/// (<https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal>).
+// https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal
 fn is_out_of_bounds_view(value: rquickjs::Value<'_>) -> bool {
     rquickjs::is_out_of_bounds_view(&value)
 }
 
-/// Closes an auxiliary context from its opener, across origins.
-///
-/// `close` is a cross-origin-accessible `WindowProxy` member, but only the
-/// context's opener may use it on another window
-/// (<https://html.spec.whatwg.org/multipage/browsers.html#crossoriginproperties-(-o-)>,
-/// <https://html.spec.whatwg.org/multipage/window-object.html#dom-window-close>).
+// https://html.spec.whatwg.org/multipage/browsers.html#crossoriginproperties-(-o-
+// https://html.spec.whatwg.org/multipage/window-object.html#dom-window-close
 fn close_frame(ctx: Ctx<'_>, frame: f64) {
     let Some(frame) = protocol_id(frame) else {
         return;
@@ -229,19 +199,12 @@ fn close_frame(ctx: Ctx<'_>, frame: f64) {
             return;
         }
     }
-    // The closing window and every navigable it owns run their unload steps
-    // first, then the context is destroyed
-    // (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#unload>).
+    // https://html.spec.whatwg.org/multipage/browsing-the-web.html#unload
     world.borrow().close_auxiliary(frame);
 }
 
-/// The world an `EventTarget` call on `frame`'s window targets.
-///
-/// A `WindowProxy` is not a platform object in the calling realm, so
-/// `addEventListener` reached through it cannot pass the interface's receiver
-/// check. The target frame is named explicitly instead, as `postMessage` does
-/// (<https://html.spec.whatwg.org/multipage/window-object.html#the-windowproxy-exotic-object>,
-/// <https://dom.spec.whatwg.org/#interface-eventtarget>).
+// https://html.spec.whatwg.org/multipage/window-object.html#the-windowproxy-exotic-object
+// https://dom.spec.whatwg.org/#interface-eventtarget
 fn frame_event_target(ctx: &Ctx<'_>, frame: u64) -> Result<Rc<RefCell<World>>> {
     let current = world(ctx)?;
     let Some(target) = current.borrow().frame_world(FrameId::new(frame)) else {
@@ -254,10 +217,7 @@ fn frame_event_target(ctx: &Ctx<'_>, frame: u64) -> Result<Rc<RefCell<World>>> {
     Ok(target)
 }
 
-/// Whether `frame`'s document still owes a replay of the `WindowProxy` state
-/// other realms recorded for it. A call made now would land on a document the
-/// frame is about to replace, so the caller holds it instead
-/// (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-set>).
+// https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-set
 fn frame_awaiting_replay(ctx: Ctx<'_>, frame: f64) -> Result<bool> {
     let Some(frame) = protocol_id(frame) else {
         return Ok(false);
@@ -269,8 +229,7 @@ fn frame_awaiting_replay(ctx: Ctx<'_>, frame: f64) -> Result<bool> {
         .is_some_and(|target| target.borrow().needs_proxy_sets_replay()))
 }
 
-/// Window `addEventListener` addressed to `frame`
-/// (<https://dom.spec.whatwg.org/#dom-eventtarget-addeventlistener>).
+// https://dom.spec.whatwg.org/#dom-eventtarget-addeventlistener
 fn frame_add_event_listener<'js>(
     ctx: Ctx<'js>,
     frame: f64,
@@ -292,8 +251,7 @@ fn frame_add_event_listener<'js>(
     )
 }
 
-/// Window `removeEventListener` addressed to `frame`
-/// (<https://dom.spec.whatwg.org/#dom-eventtarget-removeeventlistener>).
+// https://dom.spec.whatwg.org/#dom-eventtarget-removeeventlistener
 fn frame_remove_event_listener<'js>(
     ctx: Ctx<'js>,
     frame: f64,
@@ -315,8 +273,7 @@ fn frame_remove_event_listener<'js>(
     )
 }
 
-/// Window `dispatchEvent` addressed to `frame`
-/// (<https://dom.spec.whatwg.org/#dom-eventtarget-dispatchevent>).
+// https://dom.spec.whatwg.org/#dom-eventtarget-dispatchevent
 fn frame_dispatch_event<'js>(
     ctx: Ctx<'js>,
     frame: f64,
@@ -329,9 +286,6 @@ fn frame_dispatch_event<'js>(
     crate::js::events::dispatch_event_for_window(&ctx, &target, &event)
 }
 
-/// Mints one `BroadcastChannel` id from the engine-wide counter. A post names
-/// its sender's channel so that channel does not receive its own message, and
-/// the comparison spans realms.
 fn broadcast_channel_id(ctx: Ctx<'_>) -> Result<f64> {
     let world = world(&ctx)?;
     let world = world.borrow();
@@ -339,21 +293,12 @@ fn broadcast_channel_id(ctx: Ctx<'_>) -> Result<f64> {
     Ok(crate::js::js_number(next))
 }
 
-/// Posts one `BroadcastChannel` message
-/// (<https://html.spec.whatwg.org/multipage/web-messaging.html#dom-broadcastchannel-postmessage>).
-///
-/// A tuple origin broadcasts through the browser, so every renderer process
-/// with the same storage key hears it. An opaque origin has no storage key:
-/// only realms in this engine that share the same opaque origin can hear it,
-/// which is exactly the agent cluster sharing rule, so the engine routes it
-/// itself.
+// https://html.spec.whatwg.org/multipage/web-messaging.html#dom-broadcastchannel-postmessage
 fn broadcast_post(ctx: Ctx<'_>, name: String, payload: String, channel: u64) {
     let Ok(world) = world(&ctx) else {
         return;
     };
     let world = world.borrow();
-    // A channel in a detached iframe must not reach live contexts. A worker
-    // has no frame-tree entry but is live while its realm is.
     if world.worker_id().is_none() && !world.is_attached() {
         return;
     }
@@ -375,11 +320,7 @@ fn broadcast_post(ctx: Ctx<'_>, name: String, payload: String, channel: u64) {
     }
 }
 
-/// Resolves one `targetOrigin` argument without posting. The shim calls this
-/// before `__tbEncode`, because the spec resolves the target and throws
-/// `SyntaxError` before it structured-serializes the message; doing the parse
-/// only in [`post_window_message`] would detach the transferables first
-/// (<https://html.spec.whatwg.org/multipage/web-messaging.html#window-post-message-steps>).
+// https://html.spec.whatwg.org/multipage/web-messaging.html#window-post-message-steps
 fn validate_target_origin(ctx: Ctx<'_>, target_origin: String) -> Result<()> {
     let origin = world(&ctx)?.borrow().origin.clone();
     TargetOrigin::parse(&target_origin, Some(&origin))
@@ -387,10 +328,7 @@ fn validate_target_origin(ctx: Ctx<'_>, target_origin: String) -> Result<()> {
         .ok_or_else(|| throw_dom(&ctx, "SyntaxError", "Invalid target origin"))
 }
 
-/// One window message: the target origin is resolved here, where `/` still
-/// names the sender's origin with its identity intact, and re-checked at
-/// delivery
-/// (<https://html.spec.whatwg.org/multipage/web-messaging.html#window-post-message-steps>).
+// https://html.spec.whatwg.org/multipage/web-messaging.html#window-post-message-steps
 fn post_window_message(
     ctx: Ctx<'_>,
     target: f64,
@@ -417,24 +355,16 @@ fn post_window_message(
             world.shared(),
         )
     };
-    // A page can call this host function directly, so every transferred
-    // endpoint must be one this frame detached; otherwise a hostile frame
-    // could hand another frame's in-transit port to a target of its choosing
-    // (<https://html.spec.whatwg.org/multipage/web-messaging.html#transfer-receiving-steps>).
+    // https://html.spec.whatwg.org/multipage/web-messaging.html#transfer-receiving-steps
     if !shared.borrow().ports.all_in_transit_from(&ports, source) {
         return Ok(());
     }
-    // `/` keeps the sender's origin identity, which a serialized `"null"`
-    // cannot carry, so the target is resolved here
-    // (<https://html.spec.whatwg.org/multipage/web-messaging.html#window-post-message-steps>).
+    // https://html.spec.whatwg.org/multipage/web-messaging.html#window-post-message-steps
     let Some(target_origin) = TargetOrigin::parse(&target_origin, Some(&origin_identity)) else {
-        // The shim validated this argument before serializing the message, so
-        // a failure here is an internal mismatch, not a page error.
         shared.borrow_mut().forget_endpoints(&ports);
         return Ok(());
     };
-    // The task is bound to the target window's document as of post time
-    // (<https://html.spec.whatwg.org/multipage/webappapis.html#queue-a-global-task>).
+    // https://html.spec.whatwg.org/multipage/webappapis.html#queue-a-global-task
     let Some(document) = shared.borrow().document_id(FrameId::new(target)) else {
         shared.borrow_mut().forget_endpoints(&ports);
         return Ok(());
@@ -454,11 +384,7 @@ fn post_window_message(
     Ok(())
 }
 
-/// Validates a worker `postMessage` transfer list the way a window message is
-/// validated: the payload must carry the shim's version marker and every
-/// endpoint must be one the calling realm detached. A message that fails is
-/// dropped, and `None` says so
-/// (<https://html.spec.whatwg.org/multipage/web-messaging.html#transfer-receiving-steps>).
+// https://html.spec.whatwg.org/multipage/web-messaging.html#transfer-receiving-steps
 pub(super) fn accept_worker_transfer(
     ctx: &Ctx<'_>,
     payload: &str,
@@ -512,8 +438,7 @@ fn port_post(ctx: Ctx<'_>, endpoint: f64, payload: String, ports: Vec<f64>) -> R
         (world.frame(), world.shared())
     };
     {
-        // Every transferred endpoint must be one this frame detached
-        // (<https://html.spec.whatwg.org/multipage/web-messaging.html#message-port-post-message-steps>).
+        // https://html.spec.whatwg.org/multipage/web-messaging.html#message-port-post-message-steps
         let shared = shared.borrow();
         if !shared.ports.all_in_transit_from(&ports, frame) {
             return Ok(());
@@ -665,10 +590,7 @@ fn frame_child(ctx: Ctx<'_>, frame: f64, index: f64) -> Result<Option<f64>> {
     Ok(Some(crate::js::js_number(child.get())))
 }
 
-/// The target frame's world and whether it shares this realm's origin. `None`
-/// when the frame is unknown or has no world. Every same-origin decision the
-/// `WindowProxy` makes goes through this one predicate
-/// (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-get>).
+// https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-get
 fn frame_world_with_origin(
     ctx: &Ctx<'_>,
     frame: u64,
@@ -677,17 +599,12 @@ fn frame_world_with_origin(
     let Some(target) = current.borrow().frame_world(FrameId::new(frame)) else {
         return Ok(None);
     };
-    // The WindowProxy's origin check is same origin-domain, so a pair of
-    // documents that both set `document.domain` to the same value can reach
-    // each other
-    // (<https://html.spec.whatwg.org/multipage/browsers.html#same-origin-domain>).
+    // https://html.spec.whatwg.org/multipage/browsers.html#same-origin-domain
     let same_origin = target.borrow().same_origin_domain_with(&current.borrow());
     Ok(Some((target, same_origin)))
 }
 
-/// Same-origin members forward through the target realm's window; a null
-/// answer means the member is blocked cross-origin
-/// (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-get>).
+// https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-get
 fn frame_global(ctx: Ctx<'_>, frame: f64) -> Result<Option<Object<'_>>> {
     let Some(frame) = protocol_id(frame) else {
         return Ok(None);
@@ -709,9 +626,7 @@ fn frame_global(ctx: Ctx<'_>, frame: f64) -> Result<Option<Object<'_>>> {
     Ok(Some(window.restore(&ctx)?))
 }
 
-/// `document` on a same-origin proxy wraps the target frame's active document
-/// in this realm; cross-origin access throws
-/// (<https://html.spec.whatwg.org/multipage/iframe-embed-object.html#dom-iframe-contentdocument>).
+// https://html.spec.whatwg.org/multipage/iframe-embed-object.html#dom-iframe-contentdocument
 pub(crate) fn frame_document(ctx: Ctx<'_>, frame: f64) -> Result<Value<'_>> {
     let Some(frame) = protocol_id(frame) else {
         return Ok(Value::new_null(ctx));
@@ -733,9 +648,7 @@ pub(crate) fn frame_document(ctx: Ctx<'_>, frame: f64) -> Result<Value<'_>> {
     }
 }
 
-/// Whether `frame`'s document is same-origin with the caller's; a frame whose
-/// realm has not started answers from its navigable
-/// (<https://html.spec.whatwg.org/multipage/browsers.html#same-origin>).
+// https://html.spec.whatwg.org/multipage/browsers.html#same-origin
 fn same_origin_with(ctx: &Ctx<'_>, frame: FrameId) -> Result<bool> {
     match frame_world_with_origin(ctx, frame.get())? {
         Some((_, same_origin)) => Ok(same_origin),
@@ -743,11 +656,7 @@ fn same_origin_with(ctx: &Ctx<'_>, frame: FrameId) -> Result<bool> {
     }
 }
 
-/// `window.frameElement` for the calling frame: the navigable container in the
-/// parent document, null when the frame has none (a top-level context or an
-/// auxiliary one), and a `SecurityError` when the parent document is
-/// cross-origin
-/// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-frameelement>).
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-frameelement
 fn frame_element(ctx: Ctx<'_>) -> Result<Value<'_>> {
     let world = world(&ctx)?;
     let frame = world.borrow().frame();
@@ -759,9 +668,7 @@ fn frame_element(ctx: Ctx<'_>) -> Result<Value<'_>> {
     let Some(container) = container else {
         return Ok(Value::new_null(ctx));
     };
-    // The container lives in the parent document, which supplies the origin
-    // the check compares against
-    // (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-frameelement>).
+    // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-frameelement
     if let Some(parent) = parent
         && !super::messaging::same_origin_with(&ctx, parent)?
     {
@@ -774,8 +681,7 @@ fn frame_element(ctx: Ctx<'_>) -> Result<Value<'_>> {
     wrap_node(&ctx, container)
 }
 
-/// The browsing context name of `frame` for `window.name`
-/// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-name>).
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-name
 fn frame_name(ctx: Ctx<'_>, frame: f64) -> Result<String> {
     let Some(frame) = protocol_id(frame) else {
         return Ok(String::new());
@@ -785,13 +691,8 @@ fn frame_name(ctx: Ctx<'_>, frame: f64) -> Result<String> {
     Ok(shared.borrow().tree.name(FrameId::new(frame)).to_owned())
 }
 
-/// Sets the browsing context name of `frame` for `window.name`
-/// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-name>).
-///
-/// The tab's main frame name also goes to the browser: it is what a
-/// `window.open` target lookup searches across tabs, and it has to survive the
-/// renderer that reported it
-/// (<https://html.spec.whatwg.org/multipage/document-sequences.html#the-rules-for-choosing-a-navigable>).
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-name
+// https://html.spec.whatwg.org/multipage/document-sequences.html#the-rules-for-choosing-a-navigable
 fn set_frame_name(ctx: Ctx<'_>, frame: f64, name: String) -> Result<()> {
     let Some(frame) = protocol_id(frame) else {
         return Ok(());
@@ -807,9 +708,6 @@ fn set_frame_name(ctx: Ctx<'_>, frame: f64, name: String) -> Result<()> {
         shared.tree.set_name(frame, name.clone());
         (services, changed)
     };
-    // The call is synchronous, so the world must not stay borrowed while it
-    // runs: a host that answered by re-entering this realm would panic on a
-    // second borrow. An unchanged name is not worth the round trip.
     if changed && frame == FrameId::MAIN {
         services.set_window_name(crate::protocol::NameChange::Assigned(
             crate::protocol::ContextName::parse(&name),
@@ -818,10 +716,7 @@ fn set_frame_name(ctx: Ctx<'_>, frame: f64, name: String) -> Result<()> {
     Ok(())
 }
 
-/// Whether `frame` has a browsing context, even when its realm is not
-/// materialized yet. A script that sets a member on a just-inserted iframe's
-/// `contentWindow` gets a stored write instead of a cross-origin error
-/// (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-set>).
+// https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-set
 fn frame_registered(ctx: Ctx<'_>, frame: f64) -> Result<bool> {
     let Some(frame) = protocol_id(frame) else {
         return Ok(false);
@@ -831,9 +726,7 @@ fn frame_registered(ctx: Ctx<'_>, frame: f64) -> Result<bool> {
     Ok(shared.borrow().tree.contains(FrameId::new(frame)))
 }
 
-/// A same-origin frame's world, whether or not its realm has started. `None`
-/// for a cross-origin, missing, or unknown frame
-/// (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-get>).
+// https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-get
 fn same_origin_frame(ctx: &Ctx<'_>, frame: f64) -> Result<Option<Rc<RefCell<World>>>> {
     let Some(frame) = protocol_id(frame) else {
         return Ok(None);
@@ -842,18 +735,12 @@ fn same_origin_frame(ctx: &Ctx<'_>, frame: f64) -> Result<Option<Rc<RefCell<Worl
         .and_then(|(target, same_origin)| if same_origin { Some(target) } else { None }))
 }
 
-/// Whether a not-yet-materialized frame is same-origin: an `iframe` whose
-/// document exists but whose `QuickJS` realm cannot start until the inserting
-/// script returns. The `WindowProxy` uses it to answer the target window's
-/// globals and `location` instead of returning `undefined`
-/// (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-get>).
+// https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-get
 fn frame_same_origin(ctx: Ctx<'_>, frame: f64) -> Result<bool> {
     Ok(same_origin_frame(&ctx, frame)?.is_some())
 }
 
-/// The viewport size `[width, height]` of a frame whose realm has not started,
-/// for its `visualViewport`
-/// (<https://drafts.csswg.org/cssom-view/#the-visualviewport-interface>).
+// https://drafts.csswg.org/cssom-view/#the-visualviewport-interface
 fn frame_viewport_size(ctx: Ctx<'_>, frame: f64) -> Vec<f64> {
     let Ok(Some(target)) = same_origin_frame(&ctx, frame) else {
         return vec![0.0, 0.0];
@@ -862,9 +749,7 @@ fn frame_viewport_size(ctx: Ctx<'_>, frame: f64) -> Vec<f64> {
     vec![f64::from(width), f64::from(height)]
 }
 
-/// The viewport scroll offset `[x, y]` of a frame whose realm has not started,
-/// for its `visualViewport`
-/// (<https://drafts.csswg.org/cssom-view/#dom-visualviewport-pageleft>).
+// https://drafts.csswg.org/cssom-view/#dom-visualviewport-pageleft
 fn frame_viewport_scroll(ctx: Ctx<'_>, frame: f64) -> Vec<f64> {
     let Ok(Some(target)) = same_origin_frame(&ctx, frame) else {
         return vec![0.0, 0.0];
@@ -881,9 +766,7 @@ fn frame_viewport_scroll(ctx: Ctx<'_>, frame: f64) -> Vec<f64> {
     vec![scroll.x, scroll.y]
 }
 
-/// Scrolls the viewport of a frame whose realm has not started, for a
-/// `scroll`/`scrollTo`/`scrollBy` call through its `WindowProxy`
-/// (<https://drafts.csswg.org/cssom-view/#dom-window-scrollto>).
+// https://drafts.csswg.org/cssom-view/#dom-window-scrollto
 fn frame_scroll_viewport(ctx: Ctx<'_>, frame: f64, x: f64, y: f64, behavior: String) {
     let Ok(Some(target)) = same_origin_frame(&ctx, frame) else {
         return;
@@ -907,9 +790,7 @@ fn frame_scroll_viewport(ctx: Ctx<'_>, frame: f64, x: f64, y: f64, behavior: Str
     parsed.document.base.scroll_to(root.node, x, y, behavior);
 }
 
-/// The target window's `Location` for a frame whose realm has not started,
-/// built in the caller's realm but bound to the target frame's world
-/// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#the-location-interface>).
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#the-location-interface
 fn frame_location(ctx: Ctx<'_>, frame: f64) -> Result<Option<Object<'_>>> {
     let Some(target) = same_origin_frame(&ctx, frame)? else {
         return Ok(None);
@@ -917,10 +798,7 @@ fn frame_location(ctx: Ctx<'_>, frame: f64) -> Result<Option<Object<'_>>> {
     Ok(Some(super::window::build_location(&ctx, &target)?))
 }
 
-/// The `Window.location` setter for a frame whose realm has not started: it
-/// parses the URL against the entry settings object and queues the target's
-/// navigation, throwing the same `SyntaxError` as the installed accessor
-/// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-href>).
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-href
 fn frame_set_location(ctx: Ctx<'_>, frame: f64, value: Value<'_>) -> Result<()> {
     let Some(target) = same_origin_frame(&ctx, frame)? else {
         return Err(throw_dom(
@@ -932,15 +810,11 @@ fn frame_set_location(ctx: Ctx<'_>, frame: f64, value: Value<'_>) -> Result<()> 
     super::window::set_location_href(&target, value)
 }
 
-/// Event handler property names whose values live in the world, so a wrapper
-/// can be collected without losing `element.onload`
-/// (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-idl-attributes>).
+// https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-idl-attributes
 pub(crate) const HANDLER_ATTRIBUTES: &[&str] = &[
     "onabort",
-    // CSS Animations and Transitions: the unprefixed handlers sit beside the
-    // `webkit`-prefixed legacy aliases, which stay separate properties
-    // (<https://drafts.csswg.org/css-animations-1/#extensions-to-the-globaleventhandlers-mixin>,
-    // <https://drafts.csswg.org/css-transitions-1/#extensions-to-the-globaleventhandlers-mixin>).
+    // https://drafts.csswg.org/css-animations-1/#extensions-to-the-globaleventhandlers-mixin
+    // https://drafts.csswg.org/css-transitions-1/#extensions-to-the-globaleventhandlers-mixin
     "onanimationcancel",
     "onanimationend",
     "onanimationiteration",
@@ -997,8 +871,7 @@ pub(crate) const HANDLER_ATTRIBUTES: &[&str] = &[
     "onpause",
     "onplay",
     "onplaying",
-    // Pointer Events extends GlobalEventHandlers
-    // (<https://w3c.github.io/pointerevents/#extensions-to-the-globaleventhandlers-mixin>).
+    // https://w3c.github.io/pointerevents/#extensions-to-the-globaleventhandlers-mixin
     "onpointercancel",
     "onpointerdown",
     "onpointerenter",
@@ -1030,8 +903,7 @@ pub(crate) const HANDLER_ATTRIBUTES: &[&str] = &[
     "onsuspend",
     "ontimeupdate",
     "ontoggle",
-    // Touch Events extends GlobalEventHandlers
-    // (<https://w3c.github.io/touch-events/#extensions-to-the-globaleventhandlers-mixin>).
+    // https://w3c.github.io/touch-events/#extensions-to-the-globaleventhandlers-mixin
     "ontouchcancel",
     "ontouchend",
     "ontouchmove",
@@ -1049,9 +921,7 @@ pub(crate) const HANDLER_ATTRIBUTES: &[&str] = &[
     "onwheel",
 ];
 
-/// `WindowEventHandlers` names. A `div` has no such handler; `body` and
-/// `frameset` expose them by forwarding to their document's window
-/// (<https://html.spec.whatwg.org/multipage/webappapis.html#windoweventhandlers>).
+// https://html.spec.whatwg.org/multipage/webappapis.html#windoweventhandlers
 pub(crate) const WINDOW_HANDLER_NAMES: &[&str] = &[
     "onafterprint",
     "onbeforeprint",
@@ -1073,26 +943,19 @@ pub(crate) const WINDOW_HANDLER_NAMES: &[&str] = &[
     "onunload",
 ];
 
-/// The six `GlobalEventHandlers` names a `body` or `frameset` element replaces
-/// with its window's handler, in addition to every `WindowEventHandlers` name
-/// (<https://html.spec.whatwg.org/multipage/webappapis.html#window-reflecting-body-element-event-handler-set>).
+// https://html.spec.whatwg.org/multipage/webappapis.html#window-reflecting-body-element-event-handler-set
 pub(crate) const BODY_WINDOW_HANDLERS: &[&str] = &[
     "onblur", "onerror", "onfocus", "onload", "onresize", "onscroll",
 ];
 
-/// Whether a `body` or `frameset` element forwards `name` to its document's
-/// window instead of keeping a slot of its own.
 pub(crate) fn is_window_reflecting_handler(name: &str) -> bool {
     BODY_WINDOW_HANDLERS.contains(&name) || WINDOW_HANDLER_NAMES.contains(&name)
 }
 
-/// Event handler attributes `Document` declares itself, outside
-/// `GlobalEventHandlers` and `WindowEventHandlers`. They are installed on
-/// `Document.prototype` only, so an element has no such property
-/// (<https://html.spec.whatwg.org/multipage/dom.html#the-document-object>,
-/// <https://w3c.github.io/page-lifecycle/#sec-api>,
-/// <https://fullscreen.spec.whatwg.org/#api>,
-/// <https://w3c.github.io/pointerlock/#extensions-to-the-document-interface>).
+// https://html.spec.whatwg.org/multipage/dom.html#the-document-object
+// https://w3c.github.io/page-lifecycle/#sec-api
+// https://fullscreen.spec.whatwg.org/#api
+// https://w3c.github.io/pointerlock/#extensions-to-the-document-interface
 pub(crate) const DOCUMENT_HANDLER_NAMES: &[&str] = &[
     "onfullscreenchange",
     "onfullscreenerror",
@@ -1123,15 +986,8 @@ pub(crate) fn set_node_handler<'js>(
     set_handler(&ctx, Some(id), &name, value)
 }
 
-/// The stored value of a handler a `body` or `frameset` element mirrors from
-/// its document's window.
-///
-/// The `HTMLBodyElement`/`HTMLFrameSetElement` prototypes route every
-/// `WindowEventHandlers` attribute and the six `GlobalEventHandlers` in the
-/// window-reflecting set here, so the element has no slot of its own. A
-/// document with no browsing context answers null, and a set is ignored
-/// (<https://html.spec.whatwg.org/multipage/webappapis.html#window-reflecting-body-element-event-handler-set>,
-/// <https://html.spec.whatwg.org/multipage/dom.html#body-element-event-handlers>).
+// https://html.spec.whatwg.org/multipage/webappapis.html#window-reflecting-body-element-event-handler-set
+// https://html.spec.whatwg.org/multipage/dom.html#body-element-event-handlers
 pub(crate) fn get_window_reflecting_handler<'js>(
     ctx: Ctx<'js>,
     node: Value<'js>,
@@ -1139,10 +995,6 @@ pub(crate) fn get_window_reflecting_handler<'js>(
 ) -> Result<Value<'js>> {
     let id = handler_target(&ctx, &node)?;
     match super::owning_world(&ctx, id) {
-        // Only the realm's active document has a window to forward to. A
-        // document created by `DOMParser` or `new Document()` belongs to the
-        // realm for wrapper bookkeeping but has no browsing context, so its
-        // body reads null.
         Some(world) if world.borrow().main_document_id() == Some(id.document_id()) => {
             get_handler_in(&world, None, &name, &ctx)
         }
@@ -1150,8 +1002,6 @@ pub(crate) fn get_window_reflecting_handler<'js>(
     }
 }
 
-/// Stores a handler a `body` or `frameset` element mirrors from its window; a
-/// document with no browsing context ignores the write.
 pub(crate) fn set_window_reflecting_handler<'js>(
     ctx: Ctx<'js>,
     node: Value<'js>,
@@ -1182,8 +1032,6 @@ pub(crate) fn set_window_handler<'js>(
     Ok(())
 }
 
-/// The stored value of the handler property `name` on the window (`None`
-/// target) or on `target`.
 fn get_handler<'js>(ctx: &Ctx<'js>, target: Option<NodeId>, name: &str) -> Result<Value<'js>> {
     let world = match target {
         Some(id) => world_for_node(ctx, id)?,
@@ -1201,9 +1049,7 @@ fn get_handler_in<'js>(
     crate::js::events::current_handler_value(ctx, world, target, name)
 }
 
-/// Stores the handler property `name` on the window (`None` target) or on
-/// `target`. A non-object clears it, including `null` and `undefined`
-/// (<https://webidl.spec.whatwg.org/#LegacyTreatNonObjectAsNull>).
+// https://webidl.spec.whatwg.org/#LegacyTreatNonObjectAsNull
 fn set_handler<'js>(
     ctx: &Ctx<'js>,
     target: Option<NodeId>,
@@ -1225,11 +1071,8 @@ fn set_handler_in<'js>(
     value: Value<'js>,
     ctx: &Ctx<'js>,
 ) {
-    // An event handler IDL attribute converts through a callback type marked
-    // `[LegacyTreatNonObjectAsNull]`: any value that is not an object
-    // deactivates the handler instead of being stored or throwing
-    // (<https://webidl.spec.whatwg.org/#LegacyTreatNonObjectAsNull>,
-    // <https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-idl-attributes>).
+    // https://webidl.spec.whatwg.org/#LegacyTreatNonObjectAsNull
+    // https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-idl-attributes
     if value.is_object() {
         world.borrow_mut().set_handler_value(
             target,
@@ -1242,12 +1085,7 @@ fn set_handler_in<'js>(
     }
 }
 
-/// Whether the calling realm's frame owns `endpoint`.
-///
-/// The `__tb*` host functions are reachable from page script, so every
-/// endpoint operation is checked against the caller's frame; otherwise a page
-/// could close or steal another frame's port by guessing its id
-/// (<https://html.spec.whatwg.org/multipage/web-messaging.html#transfer-receiving-steps>).
+// https://html.spec.whatwg.org/multipage/web-messaging.html#transfer-receiving-steps
 fn endpoint_owned(world: &Rc<RefCell<World>>, endpoint: u64) -> bool {
     let (frame, shared) = {
         let world = world.borrow();
@@ -1256,7 +1094,6 @@ fn endpoint_owned(world: &Rc<RefCell<World>>, endpoint: u64) -> bool {
     shared.borrow().ports.owner(endpoint) == Some(frame)
 }
 
-/// A JS number naming a protocol id, read as an `unsigned long long`.
 fn protocol_id(value: f64) -> Option<u64> {
     crate::js::bridge::enforce_range_u64(value)
 }

@@ -1,10 +1,5 @@
-//! Qualified-name comparisons for attributes and elements.
-//!
-//! Moved with the Blitz cutover: pure name logic with no tree dependency.
-
 use markup5ever::QualName;
 
-/// Whether `name`'s serialization (`prefix:local` or `local`) equals `query`.
 #[must_use]
 pub(crate) fn qualified_name_eq(name: &QualName, query: &str) -> bool {
     match name.prefix.as_ref() {

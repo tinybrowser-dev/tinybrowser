@@ -1,11 +1,4 @@
-//! `Path2D`: path geometry that survives independent of a context.
-//!
-//! The path members are the same algorithms as the context's current path.
-//! A `Path2D` keeps a path-only [`Canvas2D`] (1x1, identity transform), so
-//! its segments stay in user space; the context applies its CTM when it
-//! paints them.
-//!
-//! Spec: <https://html.spec.whatwg.org/multipage/canvas.html#path2d-objects>
+// https://html.spec.whatwg.org/multipage/canvas.html#path2d-objects
 
 use std::cell::RefCell;
 
@@ -52,8 +45,6 @@ impl JsPath2D {
         transform: Opt<Value<'js>>,
     ) -> Result<()> {
         let matrix = add_path_transform(&ctx, transform.0.as_ref())?;
-        // End the source borrows before touching self: `addPath(p)` on the
-        // same object shares one RefCell.
         let source_path = {
             let source = path.borrow();
             let source = source.canvas.borrow();
@@ -68,7 +59,6 @@ impl JsPath2D {
             }
             let mut target = self.canvas.borrow_mut();
             target.append_path(&source_path);
-            // Step 8: start a new subpath at the copied path's last point.
             if let Some(current) = target.current_point() {
                 target.move_to(current.x, current.y);
             }
@@ -280,10 +270,7 @@ impl JsPath2D {
     }
 }
 
-/// Reads `addPath`'s optional `DOMMatrix2DInit`. Missing members use the
-/// identity values; any non-finite member returns no transform, which leaves
-/// the source path unchanged
-/// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-path2d-addpath>).
+// https://html.spec.whatwg.org/multipage/canvas.html#dom-path2d-addpath
 fn add_path_transform<'js>(
     ctx: &Ctx<'js>,
     value: Option<&Value<'js>>,

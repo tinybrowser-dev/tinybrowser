@@ -1,10 +1,6 @@
-  // `window` viewport metrics track the live document viewport, so CDP
-  // emulation changes are visible without re-installing globals
-  // (<https://drafts.csswg.org/cssom-view/#dom-window-innerwidth>).
+  // https://drafts.csswg.org/cssom-view/#dom-window-innerwidth
   const __tbViewportSize = () => host.__tb_viewport_size();
-  // A `[Replaceable]` attribute is enumerable, and assigning it replaces the
-  // accessor with an own data property
-  // (<https://webidl.spec.whatwg.org/#dfn-replaceable>).
+  // https://webidl.spec.whatwg.org/#dfn-replaceable
   const __tbReplaceable = (name, get) => {
     Object.defineProperty(globalThis, name, {
       get,
@@ -18,15 +14,11 @@
   };
   __tbReplaceable('innerWidth', () => __tbViewportSize()[0]);
   __tbReplaceable('innerHeight', () => __tbViewportSize()[1]);
-  // No browser chrome exists, so the outer window equals the inner viewport
-  // (<https://drafts.csswg.org/cssom-view/#dom-window-outerwidth>).
+  // https://drafts.csswg.org/cssom-view/#dom-window-outerwidth
   __tbReplaceable('outerWidth', () => __tbViewportSize()[0]);
   __tbReplaceable('outerHeight', () => __tbViewportSize()[1]);
 
-  // ── screen ───────────────────────────────────────────────────────────
-  // There is no physical display or browser chrome, so the web-exposed screen
-  // is the viewport and the available area equals it
-  // (<https://drafts.csswg.org/cssom-view/#the-screen-interface>).
+  // https://drafts.csswg.org/cssom-view/#the-screen-interface
   const __tbScreen = (() => {
     function Screen() {
       throw new TypeError('Illegal constructor');
@@ -43,7 +35,6 @@
       ['availHeight', () => size()[1]],
       ['width', () => size()[0]],
       ['height', () => size()[1]],
-      // 24-bit sRGB is the headless compositor's color depth.
       ['colorDepth', () => 24],
       ['pixelDepth', () => 24],
     ]) {
@@ -56,23 +47,17 @@
     });
     return Object.create(Screen.prototype);
   })();
-  // `screen` is `[SameObject, Replaceable]`: the getter returns one object, and
-  // assigning replaces the accessor with an own property
-  // (<https://webidl.spec.whatwg.org/#dfn-replaceable>).
+  // https://webidl.spec.whatwg.org/#dfn-replaceable
   __tbReplaceable('screen', () => __tbScreen);
 
-  // ── viewport scrolling ───────────────────────────────────────────────
-  // `scrollX`/`scrollY` and their `page*Offset` aliases report the viewport's
-  // scroll offset, which in quirks mode is the body element's
-  // (<https://drafts.csswg.org/cssom-view/#dom-window-scrollx>).
+  // https://drafts.csswg.org/cssom-view/#dom-window-scrollx
   const __tbViewportScroll = () => host.__tb_viewport_scroll();
   __tbReplaceable('scrollX', () => __tbViewportScroll()[0]);
   __tbReplaceable('pageXOffset', () => __tbViewportScroll()[0]);
   __tbReplaceable('scrollY', () => __tbViewportScroll()[1]);
   __tbReplaceable('pageYOffset', () => __tbViewportScroll()[1]);
 
-  // An IDL `ScrollBehavior`; an unknown spelling is a conversion failure
-  // (<https://drafts.csswg.org/cssom-view/#enumdef-scrollbehavior>).
+  // https://drafts.csswg.org/cssom-view/#enumdef-scrollbehavior
   const __tbScrollBehavior = value => {
     if (value === undefined) return 'auto';
     const behavior = __tbToDOMString(value);
@@ -82,10 +67,8 @@
     return behavior;
   };
 
-  // `unrestricted double` conversion: ToNumber, and "normalize non-finite
-  // values" replaces NaN and the infinities with zero
-  // (<https://webidl.spec.whatwg.org/#es-unrestricted-double>,
-  // <https://drafts.csswg.org/cssom-view/#normalize-non-finite-values>).
+  // https://webidl.spec.whatwg.org/#es-unrestricted-double
+  // https://drafts.csswg.org/cssom-view/#normalize-non-finite-values
   const __tbUnrestrictedDouble = value => {
     if (typeof value === 'bigint') {
       throw new TypeError('Cannot convert a BigInt value to a number');
@@ -94,9 +77,7 @@
     return Number.isFinite(number) ? number : 0;
   };
 
-  // Convert one argument as `ScrollToOptions`. A non-object is a conversion
-  // failure, which the scroll methods report by rejecting their promise
-  // (<https://webidl.spec.whatwg.org/#es-dictionary>).
+  // https://webidl.spec.whatwg.org/#es-dictionary
   const __tbScrollOptions = value => {
     if (value === undefined || value === null) return { behavior: 'auto' };
     if (typeof value !== 'object' && typeof value !== 'function') {
@@ -108,29 +89,17 @@
     return options;
   };
 
-  // The shared body of `scroll`/`scrollTo`/`scrollBy` for both the element and
-  // the window: an overload set of one optional dictionary and one
-  // `(unrestricted double, unrestricted double)` pair
-  // (<https://drafts.csswg.org/cssom-view/#dom-element-scroll>).
+  // https://drafts.csswg.org/cssom-view/#dom-element-scroll
   const __tbScroll = (target, receiver, args, relative, receiverCheck) => {
     try {
-      // A null or undefined `this` is replaced with the realm's global object
-      // before the interface check, which is why a bare `scrollTo(...)` in a
-      // sloppy-mode script (where `this` is the global object) and in a strict
-      // one (where it is undefined) both work
-      // (<https://webidl.spec.whatwg.org/#es-operations>).
+      // https://webidl.spec.whatwg.org/#es-operations
       if (receiver === null || receiver === undefined) receiver = globalThis;
-      // The receiver check comes first, and a failure rejects like every other
-      // error in a promise-returning operation
-      // (<https://webidl.spec.whatwg.org/#es-operations>).
+      // https://webidl.spec.whatwg.org/#es-operations
       if (!receiverCheck(receiver)) throw new TypeError('Illegal invocation');
       let x;
       let y;
       let behavior;
       if (args.length >= 2) {
-        // The two-argument overload is chosen by argument count, then each
-        // argument converts as `unrestricted double`, so a numeric string or
-        // `null` is accepted and a BigInt rejects.
         x = __tbUnrestrictedDouble(args[0]);
         y = __tbUnrestrictedDouble(args[1]);
         behavior = 'auto';
@@ -140,9 +109,6 @@
         x = options.left;
         y = options.top;
       }
-      // `scrollBy` adds each member that was given to the current position; an
-      // absent member leaves its axis where it is. `scroll` treats an absent
-      // member the same way, by resolving it to the current position.
       if (relative) {
         x = target.current(receiver, false) + (x === undefined ? 0 : x);
         y = target.current(receiver, true) + (y === undefined ? 0 : y);
@@ -153,8 +119,7 @@
       target.scrollTo(receiver, x, y, behavior);
       return Promise.resolve(undefined);
     } catch (error) {
-      // A promise-returning operation rejects on a conversion failure instead
-      // of throwing (<https://webidl.spec.whatwg.org/#es-operations>).
+      // https://webidl.spec.whatwg.org/#es-operations
       return Promise.reject(error);
     }
   };
@@ -164,9 +129,7 @@
     scrollTo: (_receiver, x, y, behavior) => host.__tb_scroll_viewport(x, y, behavior),
   };
 
-  // The Web IDL receiver check happens before argument conversion, so a
-  // misused method throws instead of returning a rejected promise
-  // (<https://webidl.spec.whatwg.org/#es-operations>).
+  // https://webidl.spec.whatwg.org/#es-operations
   const __tbDefineScrollMethods = (object, target, receiverCheck) => {
     const method = (name, relative) => ({
       [name](...args) {
@@ -185,32 +148,20 @@
     });
   };
 
-  // Another frame's `contentWindow` is a proxy whose `window` points at
-  // itself, so accept it as a Window too; its members forward to the target
-  // realm (<https://html.spec.whatwg.org/multipage/window-object.html#the-windowproxy-exotic-object>).
+  // https://html.spec.whatwg.org/multipage/window-object.html#the-windowproxy-exotic-object
   __tbDefineScrollMethods(
     globalThis, __tbWindowScrollTarget,
     receiver => receiver === globalThis || (receiver !== null && receiver.window === receiver));
-  // Declare the element operations here rather than through the IDL contract:
-  // the binder emits one implementation per operation name, and these have
-  // two overloads that the shared `__tbScroll` dispatches
-  // (<https://drafts.csswg.org/cssom-view/#extension-to-the-element-interface>).
+  // https://drafts.csswg.org/cssom-view/#extension-to-the-element-interface
   __tbDefineScrollMethods(globalThis.Element.prototype, {
     current: (element, vertical) => host.__tb_element_scroll_position(element, vertical),
     scrollTo: (element, x, y, behavior) => host.__tb_scroll_element(element, x, y, behavior),
   }, receiver => globalThis.Element.prototype.isPrototypeOf(receiver));
 
-// Constructable stylesheet surface used by component libraries, plus the
-// associated CSS style sheet for `<style>` and `<link rel=stylesheet>`.
 // https://drafts.csswg.org/cssom/#the-cssstylesheet-interface
-// Addressing helpers the fonts shim reads: a CSS rule's own address, and the
-// rule object an address names. Assigned inside the block below, which owns
-// the sheet and rule registries they read.
 let __tbCssomRuleAddress;
 let __tbCssomRuleAt;
 {
-  // Captured at realm init so a page-patched builtin cannot retarget a rule
-  // path or swallow an exception.
   const __tbReflectGet = Reflect.get;
   const __tbReflectHas = Reflect.has;
   const __tbReflectSet = Reflect.set;
@@ -219,11 +170,7 @@ let __tbCssomRuleAt;
   const __tbDomException = globalThis.DOMException;
   const __tbCharCodeAt = String.prototype.charCodeAt;
   const __tbSheetsById = new Map();
-  // The node a host call addresses the document through. An associated sheet
-  // uses its owner element; a sheet the `CSSStyleSheet` constructor built, or
-  // one reached through `@import`, has no owner and keeps the document wrapper
-  // as its address
-  // (<https://drafts.csswg.org/cssom/#dom-cssstylesheet-cssstylesheet>).
+  // https://drafts.csswg.org/cssom/#dom-cssstylesheet-cssstylesheet
   const __tbSheetAddress = sheet => sheet.__tbAddress ?? sheet.__tbOwner;
   const __tbRulePath = path => __tbArray.join(path, ',');
   function __tbIllegal() {
@@ -239,12 +186,9 @@ let __tbCssomRuleAt;
   function CSSFontFaceRule() { __tbIllegal(); }
   function CSSKeyframesRule() { __tbIllegal(); }
   function CSSKeyframeRule() { __tbIllegal(); }
-  // Rule interfaces the style engine can report but that had no global. Each
-  // inherits per its own specification; the rule's `type` still comes from
-  // the engine's snapshot
-  // (<https://drafts.csswg.org/cssom/#the-cssrule-interface>,
-  // <https://drafts.csswg.org/css-page-3/#omitted>,
-  // <https://drafts.csswg.org/css-cascade-5/#layer-rule>).
+  // https://drafts.csswg.org/cssom/#the-cssrule-interface
+  // https://drafts.csswg.org/css-page-3/#omitted
+  // https://drafts.csswg.org/css-cascade-5/#layer-rule
   function CSSNamespaceRule() { __tbIllegal(); }
   function CSSPageRule() { __tbIllegal(); }
   function CSSCounterStyleRule() { __tbIllegal(); }
@@ -287,10 +231,8 @@ let __tbCssomRuleAt;
   ]) {
     ctor.prototype = Object.create(CSSRule.prototype);
   }
-  // `CSSRule`'s rule-type constants. WebIDL exposes a constant on both the
-  // interface object and the interface prototype object
-  // (<https://webidl.spec.whatwg.org/#idl-constants>,
-  // <https://drafts.csswg.org/cssom/#the-cssrule-interface>).
+  // https://webidl.spec.whatwg.org/#idl-constants
+  // https://drafts.csswg.org/cssom/#the-cssrule-interface
   for (const [name, value] of [
     ['STYLE_RULE', 1],
     ['CHARSET_RULE', 2],
@@ -311,15 +253,12 @@ let __tbCssomRuleAt;
       });
     }
   }
-  // `CSSRuleList` is an interface object with no constructor; a live list is
-  // its instance (<https://drafts.csswg.org/cssom/#the-cssrulelist-interface>).
+  // https://drafts.csswg.org/cssom/#the-cssrulelist-interface
   function CSSRuleList() { __tbIllegal(); }
   Object.defineProperty(globalThis, 'CSSRuleList', {
     value: CSSRuleList, writable: true, configurable: true,
   });
-  // Each interface owns its `constructor`, so `rule.constructor.name` names
-  // the rule's real interface instead of inheriting `CSSRule`
-  // (<https://webidl.spec.whatwg.org/#interface-object>).
+  // https://webidl.spec.whatwg.org/#interface-object
   for (const ctor of [
     CSSStyleRule, CSSGroupingRule, CSSConditionRule, CSSMediaRule, CSSSupportsRule,
     CSSImportRule, CSSFontFaceRule, CSSKeyframesRule, CSSKeyframeRule,
@@ -334,10 +273,7 @@ let __tbCssomRuleAt;
       value: ctor, writable: true, configurable: true,
     });
   }
-  // The sheet an `@import` rule loaded. The engine answers a CSSOM sheet record
-  // for the imported sheet, which has no owner element: host calls address the
-  // document through the importing sheet's owner, while `ownerNode` stays null
-  // (<https://drafts.csswg.org/cssom/#dom-cssimportrule-stylesheet>).
+  // https://drafts.csswg.org/cssom/#dom-cssimportrule-stylesheet
   const __tbImportedSheet = entry => {
     const id = host.__tb_sheet_import_sheet(
       __tbSheetAddress(entry.sheet), entry.sheet.__tbId, __tbRulePath(entry.path),
@@ -346,17 +282,13 @@ let __tbCssomRuleAt;
     const sheet = Object.create(CSSStyleSheet.prototype);
     sheet.__tbRules = [];
     sheet.__tbId = id;
-    // Host calls need a node to reach the document; the imported sheet is not
-    // owned by one, so `ownerNode` reports null while the importing sheet's
-    // owner is only an address
     sheet.__tbAddress = __tbSheetAddress(entry.sheet);
     sheet.__tbParent = entry.sheet;
     sheet.__tbOwnerRule = entry.rule;
     sheet.__tbOwnerRuleEntry = entry;
     const info = entry.read();
     sheet.__tbHref = info && info.href ? info.href : null;
-    // `CSSImportRule.media` and the imported sheet's `media` are the same
-    // object (<https://drafts.csswg.org/cssom/#dom-cssimportrule-media>).
+    // https://drafts.csswg.org/cssom/#dom-cssimportrule-media
     sheet.__tbMedia = entry.rule.media;
     return sheet;
   };
@@ -364,16 +296,13 @@ let __tbCssomRuleAt;
     get() {
       const entry = __tbRuleState(this);
       if (entry.detached) return null;
-      // An import that has not loaded yet answers null, and is retried next
-      // time rather than cached
-      // (<https://drafts.csswg.org/cssom/#dom-cssimportrule-stylesheet>).
+      // https://drafts.csswg.org/cssom/#dom-cssimportrule-stylesheet
       if (entry.importedSheet == null) entry.importedSheet = __tbImportedSheet(entry) ?? undefined;
       return entry.importedSheet ?? null;
     },
     enumerable: true, configurable: true,
   });
-  // CSSRule's own attributes are accessors on the interface prototype
-  // (<https://drafts.csswg.org/cssom/#the-cssrule-interface>).
+  // https://drafts.csswg.org/cssom/#the-cssrule-interface
   __tbDefineProperty(CSSRule.prototype, 'type', {
     get() {
       const entry = __tbRuleState(this);
@@ -400,9 +329,7 @@ let __tbCssomRuleAt;
     },
     enumerable: true, configurable: true,
   });
-  // One accessor per string attribute an interface exposes. The property
-  // exists even when the current snapshot omits the value, as WebIDL requires
-  // (<https://webidl.spec.whatwg.org/#idl-attributes>).
+  // https://webidl.spec.whatwg.org/#idl-attributes
   const __tbRuleStringAttribute = (ctor, names) => {
     for (const name of names) {
       __tbDefineProperty(ctor.prototype, name, {
@@ -432,9 +359,7 @@ let __tbCssomRuleAt;
   __tbRuleStringAttribute(CSSPositionTryRule, ['name']);
   __tbRuleStringAttribute(CSSCustomMediaRule, ['name']);
   __tbRuleStringAttribute(CSSViewTransitionRule, ['types']);
-  // The keyframes name is settable and serialization quotes it when it is
-  // not a valid `<custom-ident>`
-  // (<https://drafts.csswg.org/css-animations-1/#dom-csskeyframesrule-name>).
+  // https://drafts.csswg.org/css-animations-1/#dom-csskeyframesrule-name
   __tbDefineProperty(CSSKeyframesRule.prototype, 'name', {
     get() {
       const next = __tbRuleState(this).read();
@@ -449,9 +374,7 @@ let __tbCssomRuleAt;
     },
     enumerable: true, configurable: true,
   });
-  // A keyframe's selectors are settable; an invalid list is a `SyntaxError`
-  // and leaves the rule unchanged
-  // (<https://drafts.csswg.org/css-animations-1/#dom-csskeyframerule-keytext>).
+  // https://drafts.csswg.org/css-animations-1/#dom-csskeyframerule-keytext
   __tbDefineProperty(CSSKeyframeRule.prototype, 'keyText', {
     get() {
       const next = __tbRuleState(this).read();
@@ -466,9 +389,7 @@ let __tbCssomRuleAt;
     },
     enumerable: true, configurable: true,
   });
-  // A valid selector list replaces the rule's selectors and re-enters the
-  // cascade; an invalid one leaves the rule unchanged without throwing
-  // (<https://drafts.csswg.org/cssom/#dom-cssstylerule-selectortext>).
+  // https://drafts.csswg.org/cssom/#dom-cssstylerule-selectortext
   for (const ctor of [CSSStyleRule, CSSPageRule]) {
     __tbDefineProperty(ctor.prototype, 'selectorText', {
       get() {
@@ -485,9 +406,7 @@ let __tbCssomRuleAt;
       enumerable: true, configurable: true,
     });
   }
-  // `style` is `[SameObject, PutForwards=cssText]`: the getter answers one
-  // declaration object, and assignment replaces that object's text
-  // (<https://webidl.spec.whatwg.org/#dfn-put-forwards>).
+  // https://webidl.spec.whatwg.org/#dfn-put-forwards
   for (const ctor of [
     CSSStyleRule, CSSPageRule, CSSFontFaceRule, CSSKeyframeRule, CSSMarginRule,
     CSSPositionTryRule, CSSNestedDeclarations,
@@ -502,10 +421,7 @@ let __tbCssomRuleAt;
       enumerable: true, configurable: true,
     });
   }
-  // `media` is `[SameObject]` on a media rule and `[SameObject,
-  // PutForwards=mediaText]` on an import rule: both answer one `MediaList`
-  // backed by the rule's query list
-  // (<https://drafts.csswg.org/cssom/#dom-cssmediarule-media>).
+  // https://drafts.csswg.org/cssom/#dom-cssmediarule-media
   const __tbRuleMedia = (ctor, putForwards) => {
     __tbDefineProperty(ctor.prototype, 'media', {
       get() {
@@ -554,14 +470,9 @@ let __tbCssomRuleAt;
       __tbDelete(entry.sheet, entry.path, index, arguments.length);
     };
   };
-  // A style rule in a nesting context and a grouping rule both answer
-  // `cssRules`, `insertRule`, and `deleteRule` by index
-  // (<https://drafts.csswg.org/css-nesting-1/#cssom>).
+  // https://drafts.csswg.org/css-nesting-1/#cssom
   for (const ctor of [CSSGroupingRule, CSSStyleRule]) __tbRuleChildList(ctor);
-  // A keyframes rule's `cssRules` is its keyframe list, reached by index
-  // through `length` and the indexed getter, and edited by selector through
-  // `appendRule`, `deleteRule`, and `findRule`
-  // (<https://drafts.csswg.org/css-animations-1/#interface-csskeyframesrule>).
+  // https://drafts.csswg.org/css-animations-1/#interface-csskeyframesrule
   __tbDefineProperty(CSSKeyframesRule.prototype, 'cssRules', {
     get() {
       const entry = __tbRuleState(this);
@@ -578,9 +489,7 @@ let __tbCssomRuleAt;
     if (arguments.length < 1) throw new TypeError('appendRule requires 1 argument');
     const entry = __tbRuleState(this);
     if (entry.detached) return;
-    // An invalid rule appends nothing and throws nothing (the IDL lists no
-    // exceptions)
-    // (<https://drafts.csswg.org/css-animations-1/#dom-csskeyframesrule-appendrule>).
+    // https://drafts.csswg.org/css-animations-1/#dom-csskeyframesrule-appendrule
     try {
       __tbInsert(entry.sheet, entry.path, String(rule), this.cssRules.length, 2);
     } catch (error) {
@@ -623,10 +532,7 @@ let __tbCssomRuleAt;
       value: CSSStyleDeclaration, writable: true, configurable: true,
     });
   }
-  // Every declaration object is iterable over its property names: WebIDL's
-  // `iterable<CSSOMString>` gives `keys`, `values`, `entries`, `forEach`, and
-  // `Symbol.iterator` (the same function as `values`)
-  // (<https://webidl.spec.whatwg.org/#idl-iterable>).
+  // https://webidl.spec.whatwg.org/#idl-iterable
   const __tbDeclarationIterator = (style, kind) => {
     let index = 0;
     const iterator = {
@@ -701,9 +607,7 @@ let __tbCssomRuleAt;
         if (entry.detached) return '';
         return host.__tb_sheet_style_css_text(__tbSheetAddress(sheet), sheet.__tbId, pathKey());
       },
-      // The setter parses the value as a declaration block and replaces the
-      // block whole, keeping the properties that parse
-      // (<https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-csstext>).
+      // https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-csstext
       set(value) {
         if (entry.detached) return;
         host.__tb_sheet_style_set_css_text(
@@ -737,9 +641,7 @@ let __tbCssomRuleAt;
         value == null ? '' : String(value), String(priority) === 'important',
       );
     };
-    // Removing a property through the same host setter: an empty value is the
-    // engine's remove path, and the call answers the previous serialized value
-    // (<https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-removeproperty>).
+    // https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-removeproperty
     style.removeProperty = function(name) {
       if (entry.detached) return '';
       const property = String(name);
@@ -756,13 +658,9 @@ let __tbCssomRuleAt;
       index = index >>> 0;
       return index < names.length ? names[index] : '';
     };
-    // `stringifier attribute CSSOMString cssText` gives every declaration
-    // object a `toString` that answers its serialization
-    // (<https://drafts.csswg.org/cssom/#the-cssstyledeclaration-interface>).
+    // https://drafts.csswg.org/cssom/#the-cssstyledeclaration-interface
     style.toString = function() { return this.cssText; };
-    // The CSS property IDL attributes (`margin`, `borderTopWidth`, …) sit on
-    // top of the operations, exactly as on an inline style
-    // (<https://drafts.csswg.org/cssom/#css-property-to-idl-attribute>).
+    // https://drafts.csswg.org/cssom/#css-property-to-idl-attribute
     const idlName = property => property === 'cssFloat'
       ? 'float'
       : property.replace(/[A-Z]/g, letter => '-' + letter.toLowerCase());
@@ -784,10 +682,7 @@ let __tbCssomRuleAt;
       },
     });
   }
-  // Per-instance state for a rule, kept under a symbol: WebIDL puts the
-  // interface's accessors on its prototype, so the rule object itself owns no
-  // IDL attribute
-  // (<https://webidl.spec.whatwg.org/#interface-prototype-object>).
+  // https://webidl.spec.whatwg.org/#interface-prototype-object
   const __tbRuleEntry = Symbol('CSSRule entry');
   __tbCssomRuleAddress = rule => {
     const entry = rule[__tbRuleEntry];
@@ -825,15 +720,12 @@ let __tbCssomRuleAt;
     const ctor = __tbRulePrototype[info.interface] || CSSRule;
     __tbSetPrototypeOf(rule, ctor.prototype);
     __tbDefineProperty(rule, __tbRuleEntry, { value: entry });
-    // A keyframes rule also answers its keyframes through the indexed getter
-    // (<https://drafts.csswg.org/css-animations-1/#dom-csskeyframesrule-index>).
+    // https://drafts.csswg.org/css-animations-1/#dom-csskeyframesrule-index
     entry.rule = ctor === CSSKeyframesRule ? new Proxy(rule, __tbKeyframeIndexHandler) : rule;
     sheet.__tbRules.push(entry);
     return entry.rule;
   }
-  // The indexed getter of a keyframes rule reads its `cssRules` list; every
-  // other member is the rule object's own
-  // (<https://webidl.spec.whatwg.org/#idl-indexed-properties>).
+  // https://webidl.spec.whatwg.org/#idl-indexed-properties
   const __tbKeyframeIndexHandler = {
     get(target, property, receiver) {
       if (__tbCanonicalIndex(property)) {
@@ -850,8 +742,7 @@ let __tbCssomRuleAt;
       return __tbApply(__tbReflectHas, Reflect, [target, property]);
     },
   };
-  // Live `CSSRuleList`. `item` returns the same CSSRule for as long as that
-  // rule exists (<https://drafts.csswg.org/cssom/#the-cssrulelist-interface>).
+  // https://drafts.csswg.org/cssom/#the-cssrulelist-interface
   function __tbLiveRuleList(sheet, parentEntry, parentRule) {
     const listPath = () => parentEntry ? parentEntry.path : [];
     const list = {
@@ -914,10 +805,7 @@ let __tbCssomRuleAt;
       if (entry.path[listPath.length] > index) entry.path[listPath.length] -= 1;
     }
   }
-  // `MediaList` behind `StyleSheet.media`. An associated sheet's list reads
-  // and writes its owner element's `media` content attribute; a constructable
-  // sheet keeps its own text
-  // (<https://drafts.csswg.org/cssom/#the-medialist-interface>).
+  // https://drafts.csswg.org/cssom/#the-medialist-interface
   const __tbMediaListSlots = host.slots('MediaList');
   function MediaList() { __tbIllegal(); }
   Object.defineProperty(globalThis, 'MediaList', {
@@ -962,10 +850,7 @@ let __tbCssomRuleAt;
     },
     writable: true, enumerable: true, configurable: true,
   });
-  // A medium is compared in its normalized form: the engine lowercases media
-  // types and collapses whitespace, and CSSOM compares the parsed queries, so
-  // matching ignores case and runs of whitespace
-  // (<https://drafts.csswg.org/cssom/#dom-medialist-appendmedium>).
+  // https://drafts.csswg.org/cssom/#dom-medialist-appendmedium
   const __tbNormalizedMedium = value =>
     String(value).trim().toLowerCase().replace(/\s+/g, ' ');
   const __tbMediumEntries = text => {
@@ -1013,10 +898,7 @@ let __tbCssomRuleAt;
     const slot = { text: '', get: null, set: null };
     const owner = sheet.__tbOwner;
     if (sheet.__tbConstructable === true) {
-      // A constructable sheet owns its media query list, which the engine
-      // parsed from the constructor's `media` member; the cascade consults it
-      // when the sheet is adopted
-      // (<https://drafts.csswg.org/cssom/#dom-stylesheet-media>).
+      // https://drafts.csswg.org/cssom/#dom-stylesheet-media
       const address = __tbSheetAddress(sheet);
       slot.get = () => host.__tb_sheet_media_text(address, sheet.__tbId);
       slot.set = value => { host.__tb_set_sheet_media_text(address, sheet.__tbId, value); };
@@ -1024,9 +906,7 @@ let __tbCssomRuleAt;
       slot.get = () => slot.text;
       slot.set = value => { slot.text = value; };
     } else {
-      // The owner's `media` attribute is the live source, so a script that
-      // changes it is visible through the list
-      // (<https://drafts.csswg.org/cssom/#dom-medialist-mediatext>).
+      // https://drafts.csswg.org/cssom/#dom-medialist-mediatext
       slot.get = () => owner.getAttribute('media') ?? '';
       slot.set = value => {
         if (value === '') owner.removeAttribute('media');
@@ -1039,11 +919,7 @@ let __tbCssomRuleAt;
   }
   class CSSStyleSheet {
     constructor(options) {
-      // `CSSStyleSheetInit`'s members: `baseURL` resolves relative references
-      // and an invalid one is a `NotAllowedError`, `media` seeds the media
-      // query list, and `disabled` seeds the disabled flag. `title` and
-      // `alternate` are ignored
-      // (<https://drafts.csswg.org/cssom/#dom-cssstylesheet-cssstylesheet>).
+      // https://drafts.csswg.org/cssom/#dom-cssstylesheet-cssstylesheet
       const init = options === undefined || options === null ? {} : Object(options);
       let baseURL = null;
       if (init.baseURL !== undefined) {
@@ -1063,76 +939,56 @@ let __tbCssomRuleAt;
       }
       this.__tbId = id;
       this.__tbBaseURL = baseURL;
-      // A constructable sheet has no owner node; host calls address the
-      // document that created it
-      // (<https://drafts.csswg.org/cssom/#dom-cssstylesheet-cssstylesheet>).
+      // https://drafts.csswg.org/cssom/#dom-cssstylesheet-cssstylesheet
       this.__tbAddress = document;
       this.__tbConstructable = true;
     }
-    // `rules` is the legacy alias of `cssRules`, and both read the same live
-    // list
-    // (<https://drafts.csswg.org/cssom/#dom-cssstylesheet-rules>).
+    // https://drafts.csswg.org/cssom/#dom-cssstylesheet-rules
     get rules() {
       return this.cssRules;
     }
     get cssRules() {
-      // One list object for the sheet's lifetime: a `replace` swaps the rules
-      // behind it rather than replacing the list
-      // (<https://drafts.csswg.org/cssom/#dom-cssstylesheet-cssrules>).
+      // https://drafts.csswg.org/cssom/#dom-cssstylesheet-cssrules
       if (this.__tbList === undefined) this.__tbList = __tbLiveRuleList(this, null, null);
       return this.__tbList;
     }
-    // The StyleSheet interface properties. An associated sheet reads its
-    // owner `<style>`/`<link>`; a constructable sheet has no owner and no URL
-    // (<https://drafts.csswg.org/cssom/#the-stylesheet-interface>).
+    // https://drafts.csswg.org/cssom/#the-stylesheet-interface
     get type() {
       return 'text/css';
     }
     get href() {
-      // An imported sheet's URL is the one its `@import` rule names
-      // (<https://drafts.csswg.org/cssom/#dom-stylesheet-href>).
+      // https://drafts.csswg.org/cssom/#dom-stylesheet-href
       if (this.__tbHref !== undefined) return this.__tbHref;
       const owner = this.__tbOwner;
       if (owner === undefined) return null;
-      // Only a `<link rel=stylesheet>` sheet has a URL; an inline `<style>`'s
-      // sheet has none
-      // (<https://drafts.csswg.org/cssom/#dom-stylesheet-href>).
+      // https://drafts.csswg.org/cssom/#dom-stylesheet-href
       if (owner.localName !== 'link') return null;
       return owner.href;
     }
     get ownerNode() {
       const owner = this.__tbOwner;
       if (owner === undefined) return null;
-      // Removing the element removes its sheet; the sheet object stays
-      // readable but loses its owner
-      // (<https://drafts.csswg.org/cssom/#remove-a-css-style-sheet>).
+      // https://drafts.csswg.org/cssom/#remove-a-css-style-sheet
       return host.__tb_node_sheet_id(owner) === this.__tbId ? owner : null;
     }
     get parentStyleSheet() {
-      // An imported sheet's parent is the sheet whose `@import` rule loaded
-      // it; deleting that rule unlinks the child
-      // (<https://drafts.csswg.org/cssom/#dom-stylesheet-parentstylesheet>).
+      // https://drafts.csswg.org/cssom/#dom-stylesheet-parentstylesheet
       if (this.__tbOwnerRuleEntry !== undefined && this.__tbOwnerRuleEntry.detached) return null;
       return this.__tbParent ?? null;
     }
     get ownerRule() {
-      // An imported sheet is owned by its `CSSImportRule`, not an element, and
-      // deleting the rule releases it
-      // (<https://drafts.csswg.org/cssom/#dom-stylesheet-ownerrule>).
+      // https://drafts.csswg.org/cssom/#dom-stylesheet-ownerrule
       if (this.__tbOwnerRuleEntry !== undefined && this.__tbOwnerRuleEntry.detached) return null;
       return this.__tbOwnerRule ?? null;
     }
     get title() {
-      // An imported or constructable sheet has no title of its own
-      // (<https://drafts.csswg.org/cssom/#dom-stylesheet-title>).
+      // https://drafts.csswg.org/cssom/#dom-stylesheet-title
       const owner = this.__tbOwner;
       if (owner === undefined) return null;
       return owner.getAttribute('title');
     }
     get disabled() {
-      // `disabled` applies to an owner sheet; an imported sheet is never
-      // disabled and assigning to the attribute does nothing
-      // (<https://drafts.csswg.org/cssom/#dom-stylesheet-disabled>).
+      // https://drafts.csswg.org/cssom/#dom-stylesheet-disabled
       if (this.__tbOwnerRule !== undefined) return false;
       if (this.__tbConstructable === true) {
         return host.__tb_cssom_sheet_disabled(__tbSheetAddress(this), this.__tbId);
@@ -1157,13 +1013,10 @@ let __tbCssomRuleAt;
       if (this.__tbMedia === undefined) this.__tbMedia = __tbSheetMediaList(this);
       return this.__tbMedia;
     }
-    // `[PutForwards=mediaText]`: assigning the attribute replaces the list's
-    // text (<https://drafts.csswg.org/cssom/#dom-stylesheet-media>).
+    // https://drafts.csswg.org/cssom/#dom-stylesheet-media
     set media(value) { this.media.mediaText = value; }
     replaceSync(text) {
-      // Only a sheet the constructor built has a rule list a script may
-      // replace; an associated sheet keeps its parsed sheet
-      // (<https://drafts.csswg.org/cssom/#dom-cssstylesheet-replacesync>).
+      // https://drafts.csswg.org/cssom/#dom-cssstylesheet-replacesync
       if (this.__tbConstructable !== true) {
         throw new __tbDomException('associated sheet is not constructable', 'NotAllowedError');
       }
@@ -1173,9 +1026,7 @@ let __tbCssomRuleAt;
       if (!replaced) {
         throw new __tbDomException('cannot replace stylesheet', 'InvalidStateError');
       }
-      // `replace` detaches every rule object already handed out, so a stale
-      // rule's `parentStyleSheet` and `parentRule` become null
-      // (<https://drafts.csswg.org/cssom/#dom-cssstylesheet-replacesync>).
+      // https://drafts.csswg.org/cssom/#dom-cssstylesheet-replacesync
       for (const entry of this.__tbRules) {
         if (entry.detached) continue;
         const info = host.__tb_sheet_rule_info(
@@ -1199,9 +1050,7 @@ let __tbCssomRuleAt;
     deleteRule(index) {
       __tbDelete(this, [], index, arguments.length);
     }
-    // Legacy members: `addRule` builds `<selector> { <block> }` and inserts
-    // it at `index` (or appends), returning -1; `removeRule` is `deleteRule`
-    // (<https://drafts.csswg.org/cssom/#legacy-css-style-sheet-members>).
+    // https://drafts.csswg.org/cssom/#legacy-css-style-sheet-members
     addRule(selector, block, index) {
       let rule = selector === undefined ? 'undefined' : String(selector);
       rule += ' { ';
@@ -1218,21 +1067,10 @@ let __tbCssomRuleAt;
   Object.defineProperty(globalThis, 'CSSStyleSheet', {
     value: CSSStyleSheet, writable: true, configurable: true,
   });
-  // Associated CSS style sheet for `<style>` and `<link rel=stylesheet>`
-  // (<https://drafts.csswg.org/cssom/#associated-css-style-sheet>,
-  // <https://html.spec.whatwg.org/multipage/semantics.html#the-style-element:create-a-css-style-sheet>,
-  // <https://html.spec.whatwg.org/multipage/semantics.html#the-link-element:create-a-css-style-sheet>).
-  // Created while the element is connected so an earlier script in the same
-  // insert can observe `sheet` after the style/link node's insertion steps
-  // and before that script's post-connection steps. `cssRules` reads the
-  // style engine's parsed list for that owner node.
-  // The brand check uses the node kind. Pages may replace the global
-  // afterwards.
+  // https://drafts.csswg.org/cssom/#associated-css-style-sheet
+  // https://html.spec.whatwg.org/multipage/semantics.html#the-style-element:create-a-css-style-sheet
+  // https://html.spec.whatwg.org/multipage/semantics.html#the-link-element:create-a-css-style-sheet
   const __tbCssomBrand = value => {
-    // Realm-agnostic: cross-realm elements fail `instanceof` against this
-    // realm's `Element`, so check the node kind instead. A forged
-    // `{nodeType: 1}` passes here but the Rust `require_interface("Element")`
-    // rejects it authoritatively (page prototypes never grant brand).
     if ((value === null || (typeof value !== 'object' && typeof value !== 'function'))
       || value.nodeType !== 1) throw new TypeError('Illegal invocation');
     return value;
@@ -1271,11 +1109,7 @@ let __tbCssomRuleAt;
     enumerable: true,
     configurable: true,
   });
-  // `document.styleSheets`: every author sheet whose owner node is in the
-  // document, in tree order
-  // (<https://drafts.csswg.org/cssom/#dom-document-stylesheets>). The list
-  // reads the owner set on every access, so a sheet inserted or removed after
-  // the list was first observed is reflected without rebuilding it.
+  // https://drafts.csswg.org/cssom/#dom-document-stylesheets
   function StyleSheetList() { __tbIllegal(); }
   Object.defineProperty(globalThis, 'StyleSheetList', {
     value: StyleSheetList, writable: true, configurable: true,
@@ -1305,8 +1139,6 @@ let __tbCssomRuleAt;
   });
   const __tbStyleSheetLists = new WeakMap();
   function __tbCssomDocumentBrand(value) {
-    // A `Document` is the only node with nodeType 9; a forged object still
-    // fails the Rust `host_node_id` check authoritatively.
     if (value === null || typeof value !== 'object' || value.nodeType !== 9) {
       throw new TypeError('Illegal invocation');
     }
@@ -1337,12 +1169,8 @@ let __tbCssomRuleAt;
     enumerable: true,
     configurable: true,
   });
-  // `adoptedStyleSheets` is an observable array of constructable sheets that
-  // apply after every document sheet, in list order. Every in-place mutation
-  // (`push`, `splice`, `reverse`, an index or `length` write) validates the
-  // list and hands it to the engine, so cascade order and application follow
-  // the array (<https://drafts.csswg.org/cssom/#dom-document-adoptedstylesheets>,
-  // <https://github.com/WICG/observable-array>).
+  // https://drafts.csswg.org/cssom/#dom-document-adoptedstylesheets
+  // https://github.com/WICG/observable-array
   const __tbAdoptedMutators = new Set([
     'push', 'pop', 'shift', 'unshift', 'splice', 'reverse', 'sort', 'fill', 'copyWithin',
   ]);
@@ -1361,15 +1189,11 @@ let __tbCssomRuleAt;
       target.length = 0;
       for (const sheet of snapshot) __tbArray.push(target, sheet);
     };
-    // Validate the whole list before the engine sees it, so a rejected
-    // mutation leaves the observable array unchanged
     const commit = () => {
       const sheets = [];
       for (const sheet of target) sheets.push(__tbAdoptedSheet(sheet));
       apply(sheets);
     };
-    // A mutator like `push` is several index writes plus a `length` write; one
-    // engine update at the end covers the whole call
     let running = false;
     return new Proxy(target, {
       get(list, property) {
@@ -1436,9 +1260,7 @@ let __tbCssomRuleAt;
   Object.defineProperty(globalThis.Document.prototype, 'adoptedStyleSheets', {
     get() { return __tbAdoptedStyleSheets(this); },
     set(value) {
-      // The setter replaces the observable array's contents in place, so the
-      // array object a page already holds keeps tracking the document
-      // (<https://drafts.csswg.org/cssom/#dom-document-adoptedstylesheets>).
+      // https://drafts.csswg.org/cssom/#dom-document-adoptedstylesheets
       const list = __tbAdoptedStyleSheets(this);
       const sheets = [];
       if (value !== null && value !== undefined) {
@@ -1450,9 +1272,7 @@ let __tbCssomRuleAt;
     enumerable: true,
     configurable: true,
   });
-  // Namespace members are writable and configurable, and the namespace
-  // object is ordinary rather than frozen
-  // (<https://webidl.spec.whatwg.org/#namespace-object>).
+  // https://webidl.spec.whatwg.org/#namespace-object
   const css = {
     // https://drafts.csswg.org/cssom/#dom-css-escape
     escape(value) {
@@ -1486,15 +1306,9 @@ let __tbCssomRuleAt;
       }
       return result;
     },
-    // `supports(property, value)` tests one declaration; the single
-    // argument form parses and evaluates a supports condition, including a
-    // bare declaration
-    // (<https://drafts.csswg.org/css-conditional-3/#the-css-namespace>).
-    // Two overloads share one function, so its `length` is the shortest
-    // required argument list: 1. Both arguments are `CSSOMString`, whose
-    // conversion throws on a symbol
-    // (<https://webidl.spec.whatwg.org/#overload-set>,
-    // <https://webidl.spec.whatwg.org/#es-DOMString>).
+    // https://drafts.csswg.org/css-conditional-3/#the-css-namespace
+    // https://webidl.spec.whatwg.org/#overload-set
+    // https://webidl.spec.whatwg.org/#es-DOMString
     supports(property, ...rest) {
       if (arguments.length < 1) {
         throw new TypeError("Failed to execute 'supports' on 'CSS': 1 argument required, but only 0 present.");
@@ -1506,20 +1320,13 @@ let __tbCssomRuleAt;
         __tbToDOMString(property), __tbToDOMString(rest[0]));
     },
   };
-  // A namespace object's class string is its identifier, and its members are
-  // writable and configurable
-  // (<https://webidl.spec.whatwg.org/#namespace-object>).
+  // https://webidl.spec.whatwg.org/#namespace-object
   __tbDefineProperty(css, Symbol.toStringTag, { value: 'CSS', configurable: true });
   Object.defineProperty(globalThis, 'CSS', {
     value: css,
     writable: true, configurable: true, enumerable: false,
   });
-  // A computed style always resolves: an unset property reports its initial
-  // value, not the empty string
-  // (<https://drafts.csswg.org/cssom/#resolved-values>). The style engine's
-  // resolved value is authoritative when it has one; the inline style and then
-  // the initial-value table below cover what it does not resolve (custom
-  // properties, properties outside the supported set).
+  // https://drafts.csswg.org/cssom/#resolved-values
   const __tbInitialValues = {
     visibility: 'visible',
     display: 'inline',
@@ -1558,9 +1365,7 @@ let __tbCssomRuleAt;
     'text-align': 'start',
     'white-space': 'normal',
   };
-  // A read-only declaration is the answer for an element that has no
-  // computed style and for a pseudo-element argument that names none
-  // (<https://drafts.csswg.org/cssom/#dom-window-getcomputedstyle>).
+  // https://drafts.csswg.org/cssom/#dom-window-getcomputedstyle
   const __tbReadOnlyDeclaration = () => {
     throw new __tbDomException('The declaration is read-only', 'NoModificationAllowedError');
   };
@@ -1588,11 +1393,7 @@ let __tbCssomRuleAt;
   });
   Object.defineProperty(globalThis, 'getComputedStyle', {
     value: function(element, pseudoElt) {
-      // A pseudo-element argument is parsed as a `<pseudo-element-selector>`
-      // only when it starts with a colon. Anything else names the element
-      // itself, and one that names a pseudo-element the style engine does not
-      // cascade gets an empty declaration
-      // (<https://drafts.csswg.org/cssom/#dom-window-getcomputedstyle>).
+      // https://drafts.csswg.org/cssom/#dom-window-getcomputedstyle
       let pseudo = 0;
       if (arguments.length > 1 && pseudoElt !== undefined && pseudoElt !== null) {
         const text = String(pseudoElt);
@@ -1601,10 +1402,7 @@ let __tbCssomRuleAt;
           if (pseudo < 0) return __tbEmptyComputedStyle();
         }
       }
-      // An element with no computed style gets an empty read-only
-      // declaration: not in the flat tree, not connected, or in a document
-      // whose browsing context is not rendered
-      // (<https://drafts.csswg.org/cssom/#dom-window-getcomputedstyle>).
+      // https://drafts.csswg.org/cssom/#dom-window-getcomputedstyle
       if (!element || typeof element.nodeType !== 'number'
           || !host.__tb_has_computed_style(element)) {
         return __tbEmptyComputedStyle();
@@ -1617,16 +1415,9 @@ let __tbCssomRuleAt;
         if (!element || typeof element.nodeType !== 'number') return '';
         return host.__tb_resolved_style(element, name, pseudo);
       };
-      // Every longhand the engine supports, then the element's custom
-      // properties, in the order CSSOM gives for a computed style
-      // (<https://drafts.csswg.org/cssom/#dom-window-getcomputedstyle>).
+      // https://drafts.csswg.org/cssom/#dom-window-getcomputedstyle
       const names = () => host.__tb_computed_style_names(element, pseudo);
       const read = name => {
-        // The resolved value comes first: it carries the cascade, `!important`
-        // declarations, and layout-dependent used values. The inline
-        // declaration is only a fallback for elements the engine has no style
-        // for (a property outside its tables), and it never applies to a
-        // pseudo-element.
         // https://drafts.csswg.org/cssom/#dom-window-getcomputedstyle
         const engine = resolved(name);
         if (engine !== '') return engine;
@@ -1639,9 +1430,7 @@ let __tbCssomRuleAt;
       return new Proxy(inline, {
         get(target, property, receiver) {
           if (typeof property !== 'string') {
-            // The declaration iterable surface must read this declaration's
-            // own `length` and `item`, not the inline style it wraps
-            // (<https://webidl.spec.whatwg.org/#idl-iterable>).
+            // https://webidl.spec.whatwg.org/#idl-iterable
             const member = Reflect.get(CSSStyleDeclaration.prototype, property);
             return typeof member === 'function' ? member.bind(receiver) : member;
           }
@@ -1661,16 +1450,12 @@ let __tbCssomRuleAt;
             return index < list.length ? list[index] : undefined;
           }
           if (property === 'toString') return () => '';
-          // A computed style carries no priority flags, so no declaration it
-          // reports is `!important`
-          // (<https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-getpropertypriority>).
+          // https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-getpropertypriority
           if (property === 'getPropertyPriority') return () => '';
           if (property === 'setProperty' || property === 'removeProperty') {
             return __tbReadOnlyDeclaration;
           }
-          // `cssFloat` is the one IDL name that does not map to its dashed
-          // spelling: it reads the `float` property
-          // (<https://drafts.csswg.org/cssom/#dom-cssstyleproperties-cssfloat>).
+          // https://drafts.csswg.org/cssom/#dom-cssstyleproperties-cssfloat
           const kebab = property === 'cssFloat'
             ? 'float'
             : property.replace(/[A-Z]/g, letter => '-' + letter.toLowerCase());
@@ -1682,9 +1467,7 @@ let __tbCssomRuleAt;
           if (kebab in __tbInitialValues) return __tbInitialValues[kebab];
           return value;
         },
-        // A computed style declaration is immutable: CSSOM throws
-        // `NoModificationAllowedError` for every write
-        // (<https://drafts.csswg.org/cssom/#dom-window-getcomputedstyle>).
+        // https://drafts.csswg.org/cssom/#dom-window-getcomputedstyle
         set() { __tbReadOnlyDeclaration(); },
         defineProperty() { __tbReadOnlyDeclaration(); },
         deleteProperty() { __tbReadOnlyDeclaration(); },
@@ -1692,8 +1475,6 @@ let __tbCssomRuleAt;
     },
     writable: true, configurable: true,
   });
-  // Viewport and color-scheme queries used by pages and by CSSOM tests.
-  // Color scheme must match Stylo's Device `PrefersColorScheme::Dark`.
   // https://drafts.csswg.org/cssom-view/#dom-window-matchmedia
   // https://drafts.csswg.org/mediaqueries-5/#mq-syntax
   const __tbColorScheme = 'dark';
@@ -1787,15 +1568,12 @@ let __tbCssomRuleAt;
         matches = false;
       }
     }
-    // Unknown features stay false under `not`
-    // (<https://drafts.csswg.org/mediaqueries-5/#error-handling>).
+    // https://drafts.csswg.org/mediaqueries-5/#error-handling
     if (!known) return false;
     return negated ? !matches : matches;
   };
   const __tbMediaQueryList = (text) => __tbSplitMedia(String(text), ',').some(__tbMediaQuery);
-  // `MediaQueryList` is an `EventTarget` with the legacy listener pair
-  // (<https://drafts.csswg.org/cssom-view/#mediaquerylist>). The constructor
-  // is captured here so a page-replaced `EventTarget` cannot build the list.
+  // https://drafts.csswg.org/cssom-view/#mediaquerylist
   const __tbMediaSlots = host.slots('MediaQueryList');
   const __tbMediaLists = [];
   const __tbEventTarget = globalThis.EventTarget;
@@ -1843,11 +1621,6 @@ let __tbCssomRuleAt;
   Object.defineProperty(MediaQueryList.prototype, 'removeListener', {
     value: __tbMediaRemoveListener, writable: true, enumerable: true, configurable: true,
   });
-  // The dispatcher already calls a target's `on<type>` property after the
-  // listener list (`crates/renderer/src/js/events.rs`), so the slot is the only
-  // registration: adding the handler as a listener too would fire it twice
-  // (`MediaQueryList-extends-EventTarget.html`, "onchange removes listener").
-  // A non-callable value becomes null, as event handler IDL attributes do.
   Object.defineProperty(MediaQueryList.prototype, 'onchange', {
     get() { return __tbMediaBrand(this).onchange; },
     set(value) {
@@ -1855,10 +1628,7 @@ let __tbCssomRuleAt;
     },
     enumerable: true, configurable: true,
   });
-  // `MediaQueryListEvent` carries the query text and its result
-  // (<https://drafts.csswg.org/cssom-view/#mediaquerylistevent>). It extends
-  // the captured `Event`, so a page-replaced global cannot change the shape of
-  // a change event.
+  // https://drafts.csswg.org/cssom-view/#mediaquerylistevent
   const __tbMediaEventSlots = host.slots('MediaQueryListEvent');
   function __tbMediaEventBrand(event) {
     const slot = __tbMediaEventSlots.get(event);
@@ -1914,12 +1684,7 @@ let __tbCssomRuleAt;
     writable: true, configurable: true,
   });
 
-  // ── visualViewport ──────────────────────────────────────────────────
-  // This engine has no pinch zoom and no visual chrome that scrolls apart from
-  // the layout viewport, so the visual viewport always coincides with it: its
-  // offset is zero and its scale is 1. `width`/`height` are the layout
-  // viewport's, and `pageLeft`/`pageTop` are the page's scroll offset
-  // (<https://drafts.csswg.org/cssom-view/#the-visualviewport-interface>).
+  // https://drafts.csswg.org/cssom-view/#the-visualviewport-interface
   const __tbVisualViewportSlots = host.slots('VisualViewport');
   function VisualViewport() {
     throw new TypeError('Illegal constructor');
@@ -1935,8 +1700,6 @@ let __tbCssomRuleAt;
     if (!slot) throw new TypeError('Illegal invocation');
     return slot;
   }
-  // A viewport bound to another frame reads that frame's metrics through
-  // `frame`; this realm's own viewport reads them from the current world
   const __tbVisualViewportSize = (slot) => slot.frame === undefined
     ? __tbViewportSize()
     : host.__tbFrameViewportSize(slot.frame);
@@ -1957,9 +1720,6 @@ let __tbCssomRuleAt;
       enumerable: true, configurable: true,
     });
   }
-  // The handler attributes are plain properties on the target, which the
-  // dispatcher reads after the listener list, exactly like `MediaQueryList`'s
-  // `onchange`.
   for (const name of ['onresize', 'onscroll', 'onscrollend']) {
     __tbDefineProperty(VisualViewport.prototype, name, {
       get() { return __tbVisualViewportBrand(this)[name]; },
@@ -1973,8 +1733,6 @@ let __tbCssomRuleAt;
     const viewport = __tbConstruct(__tbEventTarget, [], VisualViewport);
     const size = __tbViewportSize();
     __tbVisualViewportSlots.set(viewport, {
-      // The size the last `resize` reported, so a layout that does not move
-      // the viewport fires nothing.
       width: size[0],
       height: size[1],
       onresize: null,
@@ -1984,9 +1742,7 @@ let __tbCssomRuleAt;
     return viewport;
   })();
   __tbReplaceable('visualViewport', () => __tbVisualViewport);
-  // `[SameObject]`: a frame answers the same `VisualViewport` every read, and
-  // its getters read the target frame's live metrics
-  // (<https://drafts.csswg.org/cssom-view/#dom-window-visualviewport>).
+  // https://drafts.csswg.org/cssom-view/#dom-window-visualviewport
   const __tbFrameVisualViewports = new __tbPrivateMap();
   host.__tbFrameVisualViewport = function __tbFrameVisualViewport(frame) {
     const cached = __tbFrameVisualViewports.get(frame);
@@ -2003,10 +1759,7 @@ let __tbCssomRuleAt;
     __tbFrameVisualViewports.set(frame, viewport);
     return viewport;
   };
-  // The `scroll`/`scrollTo`/`scrollBy` of a frame whose realm has not started:
-  // they scroll the target frame's viewport, which is what the WindowProxy's
-  // own method would do
-  // (<https://drafts.csswg.org/cssom-view/#dom-window-scrollto>).
+  // https://drafts.csswg.org/cssom-view/#dom-window-scrollto
   host.__tbFrameScrollMethod = (frame, relative) => function(...args) {
     return __tbScroll({
       current: (_receiver, vertical) =>
@@ -2015,9 +1768,7 @@ let __tbCssomRuleAt;
         host.__tbFrameScrollViewport(frame, x, y, behavior),
     }, this, args, relative, () => true);
   };
-  // Dispatches `resize` when the viewport size changed since the last report,
-  // which is what the spec's "run the resize steps" does for the visual
-  // viewport (<https://drafts.csswg.org/cssom-view/#run-the-resize-steps>).
+  // https://drafts.csswg.org/cssom-view/#run-the-resize-steps
   function __tbReportVisualViewportChanges() {
     const slot = __tbVisualViewportSlots.get(__tbVisualViewport);
     if (!slot) return;
@@ -2028,9 +1779,7 @@ let __tbCssomRuleAt;
     __tbApply(__tbDispatchEvent, __tbVisualViewport, [new __tbEvent('resize')]);
   }
   host.__tbReportVisualViewportChanges = __tbReportVisualViewportChanges;
-  // The visual viewport scrolls with the page, so it reports the same
-  // `scroll`/`scrollend` the viewport does, at its own event target
-  // (<https://drafts.csswg.org/cssom-view/#scrolling-events>).
+  // https://drafts.csswg.org/cssom-view/#scrolling-events
   host.__tbVisualViewportScroll = function __tbVisualViewportScroll(type) {
     __tbApply(__tbDispatchEvent, __tbVisualViewport, [new __tbEvent(String(type))]);
   };

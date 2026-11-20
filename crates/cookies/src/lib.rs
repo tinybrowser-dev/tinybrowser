@@ -1,16 +1,4 @@
-//! Cookie storage and the site identity its rules are written in terms of.
-//!
-//! A [`CookieJar`] is pure logic over URLs and time: no sockets, no
-//! filesystem, no async runtime. Both the native browser process and the
-//! WebAssembly component keep one, so the storage model, `SameSite` handling,
-//! and public-suffix checks live here once.
-//!
-//! [`site`] answers which registrable domain a URL belongs to, which is also
-//! what renderer isolation locks on; the two uses share one definition of site
-//! on purpose, because they disagreeing would be a security bug.
-//!
-//! Behavior follows
-//! [draft-ietf-httpbis-rfc6265bis](https://httpwg.org/http-extensions/draft-ietf-httpbis-rfc6265bis.html).
+// https://httpwg.org/http-extensions/draft-ietf-httpbis-rfc6265bis.html
 
 use std::collections::HashMap;
 use std::fmt;
@@ -27,13 +15,10 @@ const MAX_LIFETIME: Duration = Duration::from_hours(9600);
 const MAX_COOKIES_PER_DOMAIN: usize = 50;
 const MAX_COOKIES: usize = 3000;
 
-/// Which initiator owns an HTTP request.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum InitiatorKind {
-    /// Top-level navigation.
     #[default]
     Navigation,
-    /// Scripted `fetch()`.
     Fetch,
 }
 
@@ -45,18 +30,11 @@ enum SameSite {
     Default,
 }
 
-/// Which `SameSite` cookies one operation may read or write.
-///
-/// A `SharedWorker`'s `sameSiteCookies` option restricts every request and
-/// response its global scope triggers. `none` permits only `SameSite=None`
-/// cookies; `all` is the ordinary jar behavior
-/// (<https://privacycg.github.io/saa-non-cookie-storage/#shared-worker>).
+// https://privacycg.github.io/saa-non-cookie-storage/#shared-worker
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SameSiteCookiePolicy {
-    /// Every cookie the request's own `SameSite` rules allow.
     #[default]
     All,
-    /// Only the cookies marked `SameSite=None`.
     NoneOnly,
 }
 
@@ -73,17 +51,10 @@ struct StoredCookie {
     secure: bool,
     http_only: bool,
     same_site: SameSite,
-    /// The top-level site this cookie is partitioned under, or `None` for an
-    /// ordinary unpartitioned cookie
-    /// (<https://github.com/privacycg/CHIPS>).
+    // https://github.com/privacycg/CHIPS
     partition_key: Option<String>,
 }
 
-/// The cookies one browser profile holds, keyed by domain and path.
-///
-/// The jar has no clock of its own: every operation takes `now` from its
-/// [`CookieOp`], so callers stay in control of time and tests stay
-/// deterministic.
 #[derive(Clone, Default)]
 pub struct CookieJar {
     cookies: Vec<StoredCookie>,
@@ -97,59 +68,29 @@ impl fmt::Debug for CookieJar {
     }
 }
 
-/// Everything one cookie operation needs that the jar cannot infer.
 #[derive(Clone, Copy)]
 pub struct CookieOp<'a> {
-    /// URL being requested, or the URL a `Set-Cookie` line arrived from.
     pub url: &'a Url,
-    /// Wall clock to evaluate expiry against.
     pub now: SystemTime,
-    /// Whether the operation reached the jar over HTTP or through script.
-    ///
-    /// Script cannot see or set `HttpOnly` cookies.
     pub kind: RetrievalKind,
-    /// What the request is for; `SameSite=Lax` treats a top-level navigation
-    /// differently from a subresource request.
     pub initiator_kind: InitiatorKind,
-    /// Whether the request's method is safe per
-    /// [RFC 9110](https://www.rfc-editor.org/rfc/rfc9110#section-9.2.1):
-    /// `GET`, `HEAD`, `OPTIONS`, or `TRACE`.
-    ///
-    /// Only consulted for a top-level navigation, where `SameSite=Lax`
-    /// cookies go with a cross-site request only when its method is safe;
-    /// callers must pass the real method's safety.
+    // https://www.rfc-editor.org/rfc/rfc9110#section-9.2.1
     pub method_is_safe: bool,
-    /// The request's initiator origin, or `None` when the user agent started
-    /// it: a request with no initiating context is same-site
-    /// (<https://httpwg.org/http-extensions/draft-ietf-httpbis-rfc6265bis.html#name-same-site-requests>).
+    // https://httpwg.org/http-extensions/draft-ietf-httpbis-rfc6265bis.html#name-same-site-requests
     pub initiator: Option<&'a Origin>,
-    /// Whether a redirect chain has crossed sites before this request.
     pub cross_site_redirect: bool,
-    /// Which `SameSite` values this operation may use.
     pub same_site_policy: SameSiteCookiePolicy,
-    /// The site of the top-level document this operation belongs to, which is
-    /// the partition key a `Partitioned` cookie is stored under and matched
-    /// against. `None` when the caller has no top-level site (a `WebDriver`
-    /// view, a local scheme)
-    /// (<https://github.com/privacycg/CHIPS#algorithm>).
+    // https://github.com/privacycg/CHIPS#algorithm
     pub partition_key: Option<&'a str>,
 }
 
-/// How a cookie operation reached the jar.
 #[derive(Clone, Copy)]
 pub enum RetrievalKind {
-    /// An HTTP request or response, which can carry `HttpOnly` cookies.
     Http,
-    /// The `document.cookie` getter or setter, which cannot.
     NonHttp,
 }
 
 impl CookieJar {
-    /// Stores one `Set-Cookie` line, reporting whether it was stored.
-    ///
-    /// Rejection is not an error: a malformed line, a public-suffix domain, or
-    /// a `SameSite` cookie set from a cross-site context all mean "keep the
-    /// existing state".
     pub fn store(&mut self, set_cookie: &str, op: CookieOp<'_>) -> bool {
         let Some(parsed) = parse_set_cookie(set_cookie) else {
             return false;
@@ -157,12 +98,7 @@ impl CookieJar {
         self.store_parsed(parsed, op)
     }
 
-    /// Stores one cookie a `CookieStore` operation already validated and whose
-    /// attributes are typed, not a `Set-Cookie` line. The Cookie Store API's
-    /// step 20 appends the `Path` value verbatim, which a line cannot carry
-    /// when the value holds U+003B (;): the line parser would read it as the
-    /// start of the next attribute
-    /// (<https://cookiestore.spec.whatwg.org/#set-a-cookie>).
+    // https://cookiestore.spec.whatwg.org/#set-a-cookie
     pub fn store_script(&mut self, write: &ScriptCookieWrite, op: CookieOp<'_>) {
         let _ = self.store_parsed(
             ParsedSetCookie {
@@ -187,10 +123,7 @@ impl CookieJar {
         let Some(stored) = receive_cookie(parsed, &op, &self.cookies, trustworthy) else {
             return false;
         };
-        // A scope restricted to `SameSite=None` also refuses to store the
-        // other values: a `Set-Cookie` its requests carry is as much a cookie
-        // operation as a read
-        // (<https://privacycg.github.io/saa-non-cookie-storage/#shared-worker>).
+        // https://privacycg.github.io/saa-non-cookie-storage/#shared-worker
         if op.same_site_policy == SameSiteCookiePolicy::NoneOnly
             && stored.same_site != SameSite::None
         {
@@ -205,8 +138,6 @@ impl CookieJar {
         true
     }
 
-    /// The `Cookie` header value for `op`: matching cookies, longest path
-    /// first, older cookies first within one path.
     pub fn cookie_string(&mut self, op: CookieOp<'_>) -> String {
         self.evict_expired(op.now);
         let Some(host) = canonicalize_host(op.url) else {
@@ -248,14 +179,9 @@ impl CookieJar {
         out
     }
 
-    /// Cookies that would be sent for `op`, including session and `HttpOnly`
-    /// cookies. This is the `WebDriver` view of the jar
-    /// (<https://w3c.github.io/webdriver/#get-all-cookies>).
-    ///
-    /// The order is the retrieval model's: longest path first, then oldest
-    /// first, which is what `CookieStore.get()` returns as its first item
-    /// (<https://cookiestore.spec.whatwg.org/#query-cookies>,
-    /// <https://httpwg.org/http-extensions/draft-ietf-httpbis-rfc6265bis.html#section-5.4>).
+    // https://w3c.github.io/webdriver/#get-all-cookies
+    // https://cookiestore.spec.whatwg.org/#query-cookies
+    // https://httpwg.org/http-extensions/draft-ietf-httpbis-rfc6265bis.html#section-5.4
     pub fn records_for(&mut self, op: CookieOp<'_>) -> Vec<CookieRecord> {
         self.evict_expired(op.now);
         let Some(host) = canonicalize_host(op.url) else {
@@ -278,8 +204,7 @@ impl CookieJar {
         matched.into_iter().map(StoredCookie::record).collect()
     }
 
-    /// Drops every cookie, session or persistent
-    /// (<https://w3c.github.io/webdriver/#delete-all-cookies>).
+    // https://w3c.github.io/webdriver/#delete-all-cookies
     pub fn clear(&mut self) {
         self.cookies.clear();
     }
@@ -302,16 +227,12 @@ impl CookieJar {
         }
     }
 
-    /// Every live cookie in the jar, session and persistent, in storage
-    /// order. This is the `WebDriver` cookie view, which is not scoped to a
-    /// URL and includes `HttpOnly` cookies
-    /// (<https://w3c.github.io/webdriver/#get-all-cookies>).
+    // https://w3c.github.io/webdriver/#get-all-cookies
     pub fn all_records(&mut self, now: SystemTime) -> Vec<CookieRecord> {
         self.evict_expired(now);
         self.cookies.iter().map(StoredCookie::record).collect()
     }
 
-    /// Persistent cookies from the live jar. Session cookies are omitted.
     #[must_use]
     pub fn snapshot(&self) -> Vec<CookieRecord> {
         self.cookies
@@ -321,24 +242,7 @@ impl CookieJar {
             .collect()
     }
 
-    /// Loads `records` into the live jar, replacing matching identities.
-    ///
-    /// Records come from storage a caller controls, so each one is re-checked
-    /// against the rules [`CookieJar::store`] applies to a parsed line: a
-    /// name and value the `Cookie` header can carry (not both empty, no
-    /// control characters other than TAB, no `;` in either, no `=` in the
-    /// name, at most 4096 bytes together), a rooted path, a canonical domain
-    /// of at most 1024 bytes that is not a public suffix or IP address unless
-    /// host-only, the prefix requirements, `SameSite=None` needing `Secure`,
-    /// and no weakening of a live cookie's `Secure` flag. Unlike
-    /// [`CookieJar::store`], that last rule holds even for a secure request: a
-    /// record has no request URL to judge. Expired records are dropped, expiry
-    /// is capped, and the storage-model caps apply. Rejected records are
-    /// skipped without error.
     pub fn restore(&mut self, records: Vec<CookieRecord>, now: SystemTime) {
-        // Expired cookies are gone before anything looks at the live jar, so a
-        // dead cookie cannot block or weaken the records that follow. This is
-        // the same ordering [`CookieJar::store`] uses.
         self.evict_expired(now);
         for record in records {
             let Some(stored) = self.sanitize(record, now) else {
@@ -351,7 +255,6 @@ impl CookieJar {
         self.evict_excess();
     }
 
-    /// The stored form of a record, or `None` when the rules reject it.
     fn sanitize(&self, record: CookieRecord, now: SystemTime) -> Option<StoredCookie> {
         if record.expiry.is_some_and(|expiry| expiry <= now) {
             return None;
@@ -368,14 +271,7 @@ impl CookieJar {
         if !record.path.starts_with('/') {
             return None;
         }
-        // No length cap on the path. The 1024-byte limit is a parse-time rule
-        // on the `Path` attribute; a cookie with no attribute stores the
-        // request URI's directory, which has no such cap:
         // https://httpwg.org/http-extensions/draft-ietf-httpbis-rfc6265bis.html#name-storage-model
-        // The record names its own domain, so require the canonical form the
-        // jar writes rather than trusting a raw attribute. Host-only IPv6
-        // stores `ip.to_string()` (`::1`, no brackets); `Host::parse` only
-        // accepts IPv6 in brackets, so canonicalize an IP literal first.
         let domain = match record.domain.parse::<std::net::IpAddr>() {
             Ok(ip) => ip.to_string(),
             Err(_) => canonicalize_domain_attr(&record.domain)?,
@@ -387,9 +283,7 @@ impl CookieJar {
         if same_site == SameSite::None && !record.secure {
             return None;
         }
-        // A partitioned cookie requires `Secure`; the record's key is a site
-        // string, bounded like the storage-model's other string fields
-        // (<https://github.com/privacycg/CHIPS#partitioned-requires-secure>).
+        // https://github.com/privacycg/CHIPS#partitioned-requires-secure
         if record.partition_key.is_some() && !record.secure {
             return None;
         }
@@ -439,43 +333,25 @@ impl CookieJar {
     }
 }
 
-/// One persistent cookie. Session cookies (`expiry` absent) are omitted on export.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CookieRecord {
-    /// Cookie name.
     pub name: String,
-    /// Cookie value.
     pub value: String,
-    /// Absolute expiry. `None` is a session cookie.
     pub expiry: Option<SystemTime>,
-    /// Canonical domain.
     pub domain: String,
-    /// Path prefix.
     pub path: String,
-    /// Creation time.
     pub created: SystemTime,
-    /// Last access time.
     pub last_access: SystemTime,
-    /// Host-only flag from the storage model.
     pub host_only: bool,
-    /// Secure-only flag.
     pub secure: bool,
-    /// `HttpOnly` flag.
     pub http_only: bool,
-    /// `SameSite` attribute.
     pub same_site: CookieSameSite,
-    /// The top-level site this cookie is partitioned under, or `None` for an
-    /// ordinary unpartitioned cookie
-    /// (<https://github.com/privacycg/CHIPS>).
+    // https://github.com/privacycg/CHIPS
     pub partition_key: Option<String>,
 }
 
 impl CookieRecord {
-    /// The storage slot this cookie occupies: its domain, path, partition
-    /// key, and host-only flag. A `CookieStore` change event compares two
-    /// snapshots slot by slot, because a cookie with the same name can live in
-    /// several slots at once
-    /// (<https://cookiestore.spec.whatwg.org/#observable-changes>).
+    // https://cookiestore.spec.whatwg.org/#observable-changes
     #[must_use]
     pub fn slot(&self) -> String {
         format!(
@@ -487,11 +363,7 @@ impl CookieRecord {
         )
     }
 
-    /// Everything about the cookie a change event observes: its value and its
-    /// stored attributes, but not its slot (which [`Self::slot`] owns) or its
-    /// last access time (which every read updates). Two values that compare
-    /// unequal mean the cookie changed
-    /// (<https://cookiestore.spec.whatwg.org/#observable-changes>).
+    // https://cookiestore.spec.whatwg.org/#observable-changes
     #[must_use]
     pub fn state(&self) -> String {
         let same_site = match self.same_site {
@@ -516,43 +388,24 @@ impl CookieRecord {
     }
 }
 
-/// One cookie a `CookieStore` operation asks the jar to store, with every
-/// attribute already validated by the API's algorithm
-/// (<https://cookiestore.spec.whatwg.org/#set-a-cookie>).
-///
-/// Typed rather than a `Set-Cookie` line: the API's `path` is stored verbatim,
-/// and a line would split a `path` holding U+003B (;) into extra attributes.
+// https://cookiestore.spec.whatwg.org/#set-a-cookie
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ScriptCookieWrite {
-    /// Cookie name.
     pub name: String,
-    /// Cookie value.
     pub value: String,
-    /// `Expires` as Unix milliseconds; `None` when absent.
     pub expires_millis: Option<i64>,
-    /// `Max-Age` in seconds; `None` when absent.
     pub max_age: Option<i64>,
-    /// The `Domain` attribute, already lowercased by the API; `None` means
-    /// host-only.
     pub domain: Option<String>,
-    /// The `Path` attribute, always present because the API defaults it.
     pub path: String,
-    /// The `SameSite` attribute, always present because the API defaults it.
     pub same_site: CookieSameSite,
-    /// Whether the `Partitioned` attribute is present.
     pub partitioned: bool,
 }
 
-/// `SameSite` value stored with a cookie.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CookieSameSite {
-    /// `SameSite=Strict`.
     Strict,
-    /// `SameSite=Lax`.
     Lax,
-    /// `SameSite=None`.
     None,
-    /// No `SameSite` attribute; default Lax-like behavior in the jar.
     Default,
 }
 
@@ -631,8 +484,7 @@ struct ParsedSetCookie {
     secure: bool,
     http_only: bool,
     same_site: Option<SameSite>,
-    /// Whether the `Partitioned` attribute was present
-    /// (<https://github.com/privacycg/CHIPS#the-partitioned-attribute>).
+    // https://github.com/privacycg/CHIPS#the-partitioned-attribute
     partitioned: bool,
 }
 
@@ -687,8 +539,6 @@ fn parse_set_cookie(input: &str) -> Option<ParsedSetCookie> {
                 parsed.expires = Some(t);
             }
         } else if aname.eq_ignore_ascii_case("Domain") {
-            // An empty value is the last Domain attribute too, and it leaves
-            // the cookie host-only:
             // https://httpwg.org/http-extensions/draft-ietf-httpbis-rfc6265bis.html#name-storage-model
             let d = avalue.strip_prefix('.').unwrap_or(avalue);
             if d.len() <= 1024 {
@@ -751,12 +601,7 @@ fn receive_cookie(
     if http_only && matches!(kind, RetrievalKind::NonHttp) {
         return None;
     }
-    // CHIPS: a `Partitioned` cookie is double-keyed on the site of the
-    // top-level document the request belongs to, and the attribute requires
-    // `Secure`. A context with no top-level site cannot derive the key, so the
-    // cookie is refused rather than stored unpartitioned, which would widen
-    // its scope
-    // (<https://github.com/privacycg/CHIPS#using-set-cookie-with-partitioned>).
+    // https://github.com/privacycg/CHIPS#using-set-cookie-with-partitioned
     let partition_key = if parsed.partitioned {
         if !secure {
             return None;
@@ -926,7 +771,6 @@ fn cookie_prefixes_ok(
 }
 
 impl StoredCookie {
-    /// The storage-model view of this cookie.
     fn record(&self) -> CookieRecord {
         CookieRecord {
             name: self.name.clone(),
@@ -962,10 +806,7 @@ impl StoredCookie {
         if !path_match(request_path, &self.path) {
             return false;
         }
-        // A partitioned cookie is only visible inside the partition it was
-        // stored under; an unpartitioned cookie has no key and matches every
-        // request
-        // (<https://github.com/privacycg/CHIPS#attaching-a-partitioned-cookie-to-a-request>).
+        // https://github.com/privacycg/CHIPS#attaching-a-partitioned-cookie-to-a-request
         if let Some(key) = &self.partition_key
             && Some(key.as_str()) != op.partition_key
         {
@@ -1021,12 +862,7 @@ impl CookieOp<'_> {
     }
 }
 
-/// Whether two URLs share a site: same scheme and registrable domain.
-///
-/// Follows the `SameSite` definition in
-/// <https://httpwg.org/http-extensions/draft-ietf-httpbis-rfc6265bis.html#name-same-site-and-cross-site>.
-/// The `ws` and `wss` schemes name the `http` and `https` sites. Opaque URLs,
-/// and schemes outside that family, are never same-site with anything.
+// https://httpwg.org/http-extensions/draft-ietf-httpbis-rfc6265bis.html#name-same-site-and-cross-site
 #[must_use]
 pub fn schemeful_same_site(a: &Url, b: &Url) -> bool {
     match (site_tuple(a), site_tuple(b)) {
@@ -1035,15 +871,8 @@ pub fn schemeful_same_site(a: &Url, b: &Url) -> bool {
     }
 }
 
-/// Whether two origins share a site: same scheme and registrable domain.
-///
-/// The origin form of [`schemeful_same_site`], for the places that compare
-/// origins rather than URLs: `Sec-Fetch-Site`
-/// (<https://w3c.github.io/webappsec-fetch-metadata/#abstract-opdef-set-site>)
-/// and the blob-URL opener rule
-/// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#get-noopener-for-window-open>).
-/// An opaque origin is same-site with nothing, including another opaque
-/// origin: opaque origins are never equal unless they come from one document.
+// https://w3c.github.io/webappsec-fetch-metadata/#abstract-opdef-set-site
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#get-noopener-for-window-open
 #[must_use]
 pub fn origins_same_site(a: &Origin, b: &Origin) -> bool {
     match (origin_site_tuple(a), origin_site_tuple(b)) {
@@ -1052,23 +881,12 @@ pub fn origins_same_site(a: &Origin, b: &Origin) -> bool {
     }
 }
 
-/// Site identity for renderer isolation: scheme plus registrable domain.
-///
-/// Returns `None` for opaque URLs and for schemes outside the HTTP family;
-/// callers keep those in an opaque instance. The `ws` and `wss` schemes are
-/// the `http` and `https` sites.
 #[must_use]
 pub fn site(url: &Url) -> Option<String> {
     let (scheme, domain) = site_tuple(url)?;
     Some(format!("{scheme}://{domain}"))
 }
 
-/// The site one tuple origin names, or `None` for an opaque or non-network
-/// origin.
-///
-/// This is the same rule as [`site`] without constructing a URL: the origin's
-/// tuple already carries the scheme and host the registrable-domain lookup
-/// needs.
 #[must_use]
 pub fn site_for_origin(origin: &Origin) -> Option<String> {
     let (scheme, domain) = origin_site_tuple(origin)?;
@@ -1093,8 +911,6 @@ fn origin_site_tuple(origin: &Origin) -> Option<(String, String)> {
     ))
 }
 
-/// The HTTP-family scheme whose site `scheme` names, per the `SameSite`
-/// definition: `ws` and `wss` name the `http` and `https` sites.
 fn site_scheme(scheme: &str) -> Option<&'static str> {
     match scheme {
         "http" | "ws" => Some("http"),
@@ -1108,18 +924,12 @@ fn registrable_domain(host: &str) -> String {
         return host.to_owned();
     }
     let host = host.trim_matches('.');
-    // A host with no registrable domain is its own site: a public suffix, or a
-    // single label. The cookie rules and the renderer lock both key on that
-    // answer, so the fallback is the host itself rather than nothing.
     suffix_list()
         .domain(host.as_bytes())
         .and_then(|domain| std::str::from_utf8(domain.as_bytes()).ok())
         .map_or_else(|| host.to_owned(), str::to_owned)
 }
 
-/// A Unix millisecond timestamp as a `SystemTime`. Every `i64` millisecond
-/// value fits every platform's `SystemTime`, whose range is at least the
-/// `i64`-second range that 9.2e15 seconds needs.
 fn unix_millis(millis: i64) -> SystemTime {
     let magnitude = Duration::from_millis(millis.unsigned_abs());
     if millis < 0 {
@@ -1133,9 +943,7 @@ fn unix_millis(millis: i64) -> SystemTime {
     }
 }
 
-/// Whether `domain` is exactly a public suffix, which no `Domain` attribute
-/// may name and no site may span
-/// (<https://httpwg.org/http-extensions/draft-ietf-httpbis-rfc6265bis.html#section-5.1.3>).
+// https://httpwg.org/http-extensions/draft-ietf-httpbis-rfc6265bis.html#section-5.1.3
 #[must_use]
 pub fn is_public_suffix(domain: &str) -> bool {
     let d = domain.trim_matches('.');
@@ -1145,11 +953,7 @@ pub fn is_public_suffix(domain: &str) -> bool {
             .is_some_and(|suffix| suffix.as_bytes() == d.as_bytes())
 }
 
-/// The vendored Public Suffix List, parsed once per process.
-///
-/// Refresh it with `tools/update-public-suffix-list`; a stale list would let
-/// two tenants of one private suffix share a site, a cookie jar, and a
-/// renderer (<https://publicsuffix.org/list/>).
+// https://publicsuffix.org/list/
 fn suffix_list() -> &'static publicsuffix::List {
     static LIST: OnceLock<publicsuffix::List> = OnceLock::new();
     LIST.get_or_init(|| {
@@ -1421,7 +1225,6 @@ mod tests {
         CookieJar, CookieOp, CookieRecord, CookieSameSite, InitiatorKind, RetrievalKind,
         schemeful_same_site, site, site_for_origin,
     };
-    /// 2026-10-12T00:00:00Z.
     const NOW: u64 = 1_791_763_200;
     const DAY: Duration = Duration::from_hours(24);
 
@@ -1429,8 +1232,6 @@ mod tests {
         Url::parse(raw).expect("test URL parses")
     }
 
-    /// The site of a tuple origin is the same rule as the site of the URL it
-    /// serializes to, without building the throwaway URL.
     #[test]
     fn an_origin_names_its_site() {
         let address = url("https://ads.example.co.uk/page").origin();
@@ -1464,7 +1265,6 @@ mod tests {
         op(url, now, RetrievalKind::Http)
     }
 
-    /// An operation that belongs to `top_site`'s partition.
     fn partitioned<'a>(url: &'a Url, now: SystemTime, top_site: &'a str) -> CookieOp<'a> {
         CookieOp {
             partition_key: Some(top_site),
@@ -1472,9 +1272,6 @@ mod tests {
         }
     }
 
-    /// A read bumps `last_access`, which is not observable, while a value
-    /// change keeps the slot and changes the state. This is what the change
-    /// event's diff compares.
     #[test]
     fn a_change_state_ignores_access_time_but_sees_the_value() {
         let site = url("https://example.com/");
@@ -1485,8 +1282,6 @@ mod tests {
             .into_iter()
             .next()
             .expect("cookie stored");
-        // A request that carries the cookie bumps `last_access`; the change
-        // state must not notice.
         assert_eq!(jar.cookie_string(http(&site, at(NOW + 20))), "a=1");
         let later = jar
             .records_for(http(&site, at(NOW + 20)))
@@ -1507,8 +1302,6 @@ mod tests {
         assert_ne!(changed.state(), first.state());
     }
 
-    /// A host-only cookie and a `Domain` cookie with the same name and path
-    /// live in different slots, so a change event reports both.
     #[test]
     fn a_change_slot_separates_host_only_and_domain_cookies() {
         let site = url("https://example.com/");
@@ -1523,9 +1316,7 @@ mod tests {
         assert_ne!(records[0].slot(), records[1].slot());
     }
 
-    /// `CookieStore.get()` returns the first record, which RFC 6265's
-    /// retrieval model orders longest path first
-    /// (<https://cookiestore.spec.whatwg.org/#query-cookies>).
+    // https://cookiestore.spec.whatwg.org/#query-cookies
     #[test]
     fn records_follow_the_retrieval_order() {
         let root = url("https://example.com/");
@@ -1558,8 +1349,6 @@ mod tests {
             jar.cookie_string(partitioned(&site, at(NOW), "https://b.test")),
             ""
         );
-        // A view with no top-level site is not any partition, so the cookie is
-        // withheld there too.
         assert_eq!(jar.cookie_string(http(&site, at(NOW))), "");
     }
 
@@ -1601,7 +1390,6 @@ mod tests {
             jar.cookie_string(partitioned(&site, at(NOW), "https://b.test")),
             "__Host-p=b"
         );
-        // Deleting in one partition leaves the other alone.
         assert!(jar.store(
             "__Host-p=; Secure; Path=/; SameSite=None; Partitioned; Max-Age=0",
             partitioned(&site, at(NOW), "https://a.test"),
@@ -1702,9 +1490,6 @@ mod tests {
         );
     }
 
-    /// A private suffix (`surge.sh` and its neighbours) separates tenants, so
-    /// one tenant cannot plant a `Domain=` cookie on another. The list comes
-    /// from the `psl` crate, and this is the case the old snapshot missed.
     #[test]
     fn private_suffixes_name_separate_sites() {
         for suffix in ["surge.sh", "cloud.run", "retool.app"] {
@@ -1722,9 +1507,6 @@ mod tests {
         }
     }
 
-    /// The origin form agrees with the URL form, including the tuple fields a
-    /// URL keeps but an origin drops: path, query, and fragment never decide a
-    /// site, and a non-default port does not either.
     #[test]
     fn origins_share_a_site_exactly_when_their_urls_do() {
         use super::origins_same_site;
@@ -1748,8 +1530,6 @@ mod tests {
         }
     }
 
-    /// Opaque origins are never same-site, not even with themselves: the
-    /// `Origin::Opaque` identity is unique per document.
     #[test]
     fn an_opaque_origin_is_same_site_with_nothing() {
         use super::origins_same_site;
@@ -1965,9 +1745,6 @@ mod tests {
 
     #[test]
     fn restore_keeps_a_cookie_whose_effective_path_exceeds_1024_bytes() {
-        // The 1024-byte cap is a parse-time rule on the `Path` attribute. A
-        // cookie with no attribute stores the request URI's directory, which
-        // has no such cap, so the round trip must preserve it.
         let page = url(&format!("https://example.com/{}/x", "p".repeat(1030)));
         let mut jar = CookieJar::default();
         assert!(jar.store("a=1; Max-Age=3600", http(&page, at(NOW))));
@@ -1997,9 +1774,6 @@ mod tests {
 
     #[test]
     fn restore_ignores_an_expired_live_cookie_when_replacing() {
-        // `restore` evicts expired cookies before `sanitize` consults the live
-        // jar for the secure overlay, so a dead Secure cookie cannot block the
-        // replacement a record brings.
         let page = url("https://example.com/");
         let mut jar = CookieJar::default();
         assert!(jar.store("a=1; Secure; Max-Age=1", http(&page, at(NOW))));
@@ -2101,11 +1875,7 @@ mod tests {
         assert_eq!(jar.cookie_string(cross_site(false)), "");
     }
 
-    /// `SameSite` compares sites, so which same-site origin the renderer names
-    /// as the initiator cannot change the decision. That is why the browser
-    /// bounding that claim by the site lock is enough for cookies: every origin
-    /// it can name is either same-site with the target or not, alike
-    /// (<https://httpwg.org/http-extensions/draft-ietf-httpbis-rfc6265bis.html#name-same-site-and-cross-site>).
+    // https://httpwg.org/http-extensions/draft-ietf-httpbis-rfc6265bis.html#name-same-site-and-cross-site
     #[test]
     fn samesite_reads_the_initiators_site_not_its_origin() {
         let page = url("https://api.example.com/");

@@ -1,9 +1,4 @@
-//! Node equality for `Node.isEqualNode` and `Node.isSameNode`.
-//!
-//! `isEqualNode` compares two nodes across documents, so both sides are
-//! copied into a comparison view first and the two documents are never
-//! borrowed at the same time
-//! (<https://dom.spec.whatwg.org/#concept-node-equals>).
+// https://dom.spec.whatwg.org/#concept-node-equals
 
 use blitz_dom::NodeData;
 use blitz_traits::node_id::NodeId as BlitzId;
@@ -13,8 +8,7 @@ use crate::documents::{BlitzDocument, DocumentStore};
 use crate::dom::tree::NodeId;
 use crate::dom_string::DomString;
 
-/// One node's equality inputs, copied out so two documents are never borrowed
-/// together (<https://dom.spec.whatwg.org/#concept-node-equals>).
+// https://dom.spec.whatwg.org/#concept-node-equals
 struct EqualView {
     kind: EqualKind,
     children: Vec<BlitzId>,
@@ -42,8 +36,6 @@ enum EqualKind {
     Other,
 }
 
-/// The comparison view of `id` for `isEqualNode`: its kind (with live
-/// character data) and its children.
 fn equal_view(doc: &BlitzDocument, id: BlitzId) -> Option<EqualView> {
     let (kind, children) = {
         let node = doc.base.get_node(id)?;
@@ -61,10 +53,6 @@ fn equal_view(doc: &BlitzDocument, id: BlitzId) -> Option<EqualView> {
             },
             NodeData::Text(_) => EqualKind::Text(DomString::default()),
             NodeData::Comment { .. } => EqualKind::Comment(DomString::default()),
-            // Doctype compares name, public id, and system id. A
-            // processing instruction compares target and data. A CDATA
-            // section implements `Text` and `CDATASection`, so it is not
-            // equal to a `Text` node with the same data.
             NodeData::Doctype {
                 name,
                 public_id,
@@ -96,8 +84,6 @@ fn equal_view(doc: &BlitzDocument, id: BlitzId) -> Option<EqualView> {
     Some(EqualView { kind, children })
 }
 
-/// Whether two comparison kinds match: attributes compare on namespace,
-/// local name, and value, never prefix.
 fn kinds_equal(left: &EqualKind, right: &EqualKind) -> bool {
     match (left, right) {
         (EqualKind::Document, EqualKind::Document) | (EqualKind::Fragment, EqualKind::Fragment) => {
@@ -113,9 +99,7 @@ fn kinds_equal(left: &EqualKind, right: &EqualKind) -> bool {
                 attributes: right_attributes,
             },
         ) => {
-            // Elements compare namespace, prefix, and local name. Each
-            // attribute compares namespace, local name, and value — not
-            // prefix (<https://dom.spec.whatwg.org/#concept-node-equals>).
+            // https://dom.spec.whatwg.org/#concept-node-equals
             left_name == right_name
                 && left_attributes.len() == right_attributes.len()
                 && left_attributes.iter().all(|(name, value)| {
@@ -155,12 +139,7 @@ fn kinds_equal(left: &EqualKind, right: &EqualKind) -> bool {
     }
 }
 
-/// Structural `isEqualNode`
-/// (<https://dom.spec.whatwg.org/#concept-node-equals>).
-///
-/// Doctype compares name, public id, and system id. A processing instruction
-/// compares target and data. A CDATA section implements `Text` and
-/// `CDATASection`, so it is not equal to a `Text` node with the same data.
+// https://dom.spec.whatwg.org/#concept-node-equals
 pub(crate) fn nodes_equal(store: &DocumentStore, left: NodeId, right: NodeId) -> bool {
     let left_view = store
         .get(left.document)

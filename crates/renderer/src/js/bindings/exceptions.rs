@@ -1,8 +1,6 @@
-//! `DOMException` payload and behavior. Its JS surface lives in Web IDL.
-
 use rquickjs::{Ctx, Result, String, class::Trace};
 
-/// <https://webidl.spec.whatwg.org/#idl-DOMException>
+// https://webidl.spec.whatwg.org/#idl-DOMException
 #[derive(Trace, rquickjs::JsLifetime)]
 pub struct JsDomException<'js> {
     pub(crate) name: String<'js>,

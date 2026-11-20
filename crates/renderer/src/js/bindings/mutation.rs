@@ -1,5 +1,3 @@
-//! Mutation records, observers, and the mutation delivery queue.
-
 use super::{CollectionKind, child_value, live_collection, world, wrap_node};
 
 use crate::dom::tree::NodeId;
@@ -13,7 +11,7 @@ use rquickjs::{
 
 use crate::js::world::{Handle, ObserverOptions, ReadyObserver, RealmRegistry, RecordData};
 
-/// `MutationRecord` (<https://dom.spec.whatwg.org/#interface-mutationrecord>).
+// https://dom.spec.whatwg.org/#interface-mutationrecord
 #[derive(Trace, rquickjs::JsLifetime)]
 pub struct JsMutationRecord<'js> {
     record: RecordData,
@@ -94,10 +92,7 @@ fn node_list<'js>(ctx: &Ctx<'js>, scope: NodeId, nodes: Vec<Handle>) -> Result<V
     live_collection(ctx, scope, CollectionKind::Static(nodes), None)
 }
 
-/// `MutationObserver` (<https://dom.spec.whatwg.org/#interface-mutationobserver>).
-///
-/// The JS surface lives in Web IDL; these are the platform algorithms the
-/// generated dispatcher calls.
+// https://dom.spec.whatwg.org/#interface-mutationobserver
 #[derive(Trace, rquickjs::JsLifetime)]
 pub struct JsMutationObserver {
     pub(crate) id: u64,
@@ -139,9 +134,7 @@ impl<'js> mutation_observer_generated::MutationObserver<'js> for JsMutationObser
         target: super::host::NodeReference,
         options: mutation_observer_generated::MutationObserverInit,
     ) -> Result<()> {
-        // Dictionary presence ignores explicit `undefined`: `{attributes:
-        // undefined}` behaves as absent
-        // (<https://webidl.spec.whatwg.org/#es-dictionary>).
+        // https://webidl.spec.whatwg.org/#es-dictionary
         let attributes_present = options.attributes.is_some();
         let attributes = options.attributes.unwrap_or(false);
         let attribute_old_value_present = options.attribute_old_value.is_some();
@@ -227,9 +220,7 @@ impl<'js> mutation_observer_generated::MutationObserver<'js> for JsMutationObser
     }
 }
 
-/// Delivers queued records to observer callbacks; installed as a global and
-/// scheduled as a microtask after every mutation
-/// (<https://dom.spec.whatwg.org/#notify-mutation-observers>).
+// https://dom.spec.whatwg.org/#notify-mutation-observers
 pub(crate) fn deliver_mutations(ctx: Ctx<'_>) -> Result<()> {
     let runtime = world(&ctx)?.borrow().runtime.clone();
     let pending = runtime
@@ -246,16 +237,9 @@ pub(crate) fn deliver_mutations(ctx: Ctx<'_>) -> Result<()> {
     Ok(())
 }
 
-/// One observer's queued records, invoked in its callback's home realm
-/// (<https://dom.spec.whatwg.org/#notify-mutation-observers>). A throwing
-/// callback is reported to its own realm's window and does not stop the
-/// remaining observers; setup failures report to the delivering realm.
+// https://dom.spec.whatwg.org/#notify-mutation-observers
 fn deliver_observer(delivery: &Ctx<'_>, observer: ReadyObserver) {
     let step: Result<()> = (|| {
-        // The entry realm is whoever runs the microtask, which can be a
-        // different window's realm (an iframe observing a parent node, or the
-        // reverse). Rebind through the callback's own realm so its globals,
-        // prototypes, and error reporting are the ones it closed over.
         let home = observer.callback.clone().restore(delivery)?.realm()?;
         let callback = observer.callback.restore(&home)?;
         let records = observer
@@ -268,8 +252,6 @@ fn deliver_observer(delivery: &Ctx<'_>, observer: ReadyObserver) {
             .collect::<Result<Vec<_>>>()?;
         let array = super::host::sequence(&home, records)?;
         let object = observer.object.restore(&home)?;
-        // The callback's `this` value and second argument are the observer
-        // object.
         if let Err(error) = callback.call::<_, ()>((This(object.clone()), array, object)) {
             super::host::report_callback_error(&home, &error);
         }
@@ -280,17 +262,7 @@ fn deliver_observer(delivery: &Ctx<'_>, observer: ReadyObserver) {
     }
 }
 
-/// Schedules one microtask that delivers queued records, if needed.
-///
-/// Matching runs here, not at delivery time: a mutation's observer scope is
-/// decided by the tree shape it happened in, and a moved or newly attached
-/// node must not retroactively pull an earlier mutation into a different
-/// observer (`<https://dom.spec.whatwg.org/#queue-a-mutation-record>` picks
-/// interested observers when the mutation is queued).
-/// Moves queued journal entries into observer record queues without
-/// scheduling the notify microtask. Insertion steps that run scripts need
-/// the records visible to `takeRecords` first
-/// (<https://dom.spec.whatwg.org/#queue-a-mutation-record>).
+// https://dom.spec.whatwg.org/#queue-a-mutation-record
 pub(crate) fn drain_mutation_journal(ctx: &Ctx<'_>) -> Result<()> {
     let runtime = world(ctx)?.borrow().runtime.clone();
     runtime
@@ -322,7 +294,6 @@ pub(crate) fn schedule_mutation_delivery(ctx: &Ctx<'_>) -> Result<()> {
         if !registry.observers.needs_notification() && !observed {
             return Ok(());
         }
-        // A microtask is already pending for this turn.
         if registry.observers.scheduled {
             return Ok(());
         }

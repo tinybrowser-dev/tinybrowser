@@ -1,21 +1,12 @@
-// Form-control infrastructure that is pure Web IDL sugar: length reflection
-// and the constraint validation API. Host state that touches the tree stays a
-// Rust binding (docs/engines.md), so this file only reads
-// attributes and the `value` IDL attribute.
 (function() {
-  // Rules for parsing non-negative integers live in the engine's one
-  // microsyntax implementation
-  // (<https://infra.spec.whatwg.org/#rules-for-parsing-non-negative-integers>).
+  // https://infra.spec.whatwg.org/#rules-for-parsing-non-negative-integers
   const parseNonNegative = value => host.__tbParseNonNegativeInteger(String(value));
 
-  // ASCII whitespace stripping only: Unicode `trim()` would strip NBSP and
-  // friends that the infra grammars must reject
-  // (<https://infra.spec.whatwg.org/#ascii-whitespace>).
+  // https://infra.spec.whatwg.org/#ascii-whitespace
   const asciiTrim = value => String(value).replace(/^[\t\n\f\r ]+|[\t\n\f\r ]+$/g, '');
 
-  // Web IDL `long` conversion (<https://webidl.spec.whatwg.org/#es-long>).
+  // https://webidl.spec.whatwg.org/#es-long
   const toLong = value => {
-    // Explicit `Number()` converts BigInts; WebIDL's `ToNumber` throws.
     if (typeof value === 'bigint') {
       throw new TypeError('Cannot convert a BigInt value to a number');
     }
@@ -24,10 +15,7 @@
     return Math.trunc(number) | 0;
   };
 
-  // The color state's `alpha` and `colorSpace` IDL attributes reflect their
-  // content attributes. The comparison for `colorSpace` is ASCII
-  // case-insensitive, and the setter stores the string as authored
-  // (<https://html.spec.whatwg.org/multipage/input.html#dom-input-colorspace>).
+  // https://html.spec.whatwg.org/multipage/input.html#dom-input-colorspace
   Object.defineProperties(globalThis.HTMLInputElement.prototype, {
     alpha: {
       configurable: true,
@@ -53,8 +41,7 @@
     },
   });
 
-  // Content attributes whose absence is `-1` and whose setter rejects a
-  // negative value (<https://html.spec.whatwg.org/multipage/input.html#dom-input-maxlength>).
+  // https://html.spec.whatwg.org/multipage/input.html#dom-input-maxlength
   const lengthProperty = name => ({
     get: function() {
       const raw = this.getAttribute(name);
@@ -80,9 +67,7 @@
     'text', 'search', 'tel', 'url', 'email', 'password', 'date', 'month',
     'week', 'time', 'datetime-local', 'number',
   ]);
-  // The text-selection APIs apply only to these input types (plus textarea);
-  // notably email and number are excluded
-  // (<https://html.spec.whatwg.org/multipage/input.html#do-not-apply>).
+  // https://html.spec.whatwg.org/multipage/input.html#do-not-apply
   const SELECTION_TYPES = new Set(['text', 'search', 'tel', 'url', 'password']);
   const BARRED_TYPES = new Set(['hidden', 'button', 'reset', 'image']);
 
@@ -90,10 +75,8 @@
   const isTextControl = element =>
     element.tagName === 'TEXTAREA' || (isInput(element) && VALUE_MODE_TYPES.has(element.type));
 
-  // <https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#barred-from-constraint-validation>
-  // A control is disabled by a disabled fieldset ancestor, unless it is inside
-  // the fieldset's first legend
-  // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#concept-fe-disabled>).
+  // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#barred-from-constraint-validation
+  // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#concept-fe-disabled
   const fieldsetDisabled = element => {
     for (let ancestor = element.parentElement; ancestor; ancestor = ancestor.parentElement) {
       if (ancestor.tagName === 'FIELDSET' && ancestor.hasAttribute('disabled')) {
@@ -107,8 +90,7 @@
 
   const barredFromValidation = element => {
     if (element.disabled || fieldsetDisabled(element)) return true;
-    // A control inside a `datalist` is barred
-    // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#barred-from-constraint-validation>).
+    // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#barred-from-constraint-validation
     for (let ancestor = element.parentElement; ancestor; ancestor = ancestor.parentElement) {
       if (ancestor.tagName === 'DATALIST') return true;
     }
@@ -126,9 +108,7 @@
     }
   };
 
-  // The scope a radio button group lives in: its form owner, or the root of
-  // its tree (which may be detached)
-  // (<https://html.spec.whatwg.org/multipage/input.html#radio-button-group>).
+  // https://html.spec.whatwg.org/multipage/input.html#radio-button-group
   const radioRoot = element => {
     if (element.form) return element.form;
     if (typeof element.getRootNode === 'function') return element.getRootNode();
@@ -154,10 +134,7 @@
     return false;
   };
 
-  // A radio button group is required when any member has the `required`
-  // attribute; every member then suffers from being missing while none is
-  // checked
-  // (<https://html.spec.whatwg.org/multipage/input.html#radio-button-state-(type=radio):suffering-from-being-missing>).
+  // https://html.spec.whatwg.org/multipage/input.html#radio-button-state-(type=radio
   const radioGroupRequired = element => {
     if (element.required) return true;
     const name = element.name;
@@ -169,20 +146,15 @@
     return false;
   };
 
-  // A control is mutable when it is neither disabled nor readonly
-  // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#mutability>).
+  // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#mutability
   const isMutable = element =>
     !element.disabled && !fieldsetDisabled(element) && !element.readOnly;
 
-  // <https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#suffering-from-being-missing>
+  // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#suffering-from-being-missing
   const valueMissing = element => {
-    // A radio group is missing while no member is checked, for every member
-    // of a group that has any required member
-    // (<https://html.spec.whatwg.org/multipage/input.html#radio-button-state-(type=radio):suffering-from-being-missing>).
+    // https://html.spec.whatwg.org/multipage/input.html#radio-button-state-(type=radio
     if (element.tagName === 'INPUT' && element.type === 'radio') {
-      // A radio with an empty name is not part of a radio button group, so
-      // the radio-group clause does not apply
-      // (<https://html.spec.whatwg.org/multipage/input.html#radio-button-state-(type=radio)>).
+      // https://html.spec.whatwg.org/multipage/input.html#radio-button-state-(type=radio
       if (element.name === '') return false;
       return radioGroupRequired(element) && !anyRadioChecked(element);
     }
@@ -190,8 +162,6 @@
     switch (element.tagName) {
       case 'INPUT':
         switch (element.type) {
-          // The checkedness and filename clauses do not require a mutable
-          // control; only the value-mode clause does.
           case 'checkbox': return !element.checked;
           case 'file': return element.files.length === 0;
           case 'hidden': return false;
@@ -200,20 +170,14 @@
       case 'TEXTAREA':
         return isMutable(element) && element.value === '';
       case 'SELECT': {
-        // A required select is missing when no option is selected, or when
-        // the first option is its placeholder label option: the first option
-        // element child of the select with an empty value. A listbox
-        // (`multiple` or `size` greater than one) has no placeholder
-        // (<https://html.spec.whatwg.org/multipage/form-elements.html#the-select-element:attr-select-required-4>).
+        // https://html.spec.whatwg.org/multipage/form-elements.html#the-select-element:attr-select-required-4
         const options = Array.from(element.options);
         if (element.multiple || element.size > 1) {
           return !options.some(option => option.selected);
         }
         if (options.length === 0) return true;
         const first = options[0];
-        // A wrapper element does not stop the first option from being the
-        // placeholder; an `optgroup` does
-        // (<https://html.spec.whatwg.org/multipage/form-elements.html#placeholder-label-option>).
+        // https://html.spec.whatwg.org/multipage/form-elements.html#placeholder-label-option
         const grouped = first.closest('optgroup') !== null;
         return first.selected && !grouped && first.value === '';
       }
@@ -236,16 +200,14 @@
 
   const inputType = element => (isInput(element) ? element.type : '');
 
-  // An email/url control whose value does not match its type
-  // (<https://html.spec.whatwg.org/multipage/input.html#the-email-state-(type=email)>).
+  // https://html.spec.whatwg.org/multipage/input.html#the-email-state-(type=email
   const typeMismatch = element => {
     const value = element.value;
     if (value === '') return false;
     const type = inputType(element);
     if (type === 'email') {
       const address = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/;
-      // A comma separates addresses only with the `multiple` attribute
-      // (<https://html.spec.whatwg.org/multipage/input.html#attr-input-multiple>).
+      // https://html.spec.whatwg.org/multipage/input.html#attr-input-multiple
       if (element.hasAttribute('multiple')) {
         return value.split(',').some(part => !address.test(asciiTrim(part)));
       }
@@ -257,10 +219,7 @@
     return false;
   };
 
-  // QuickJS's `v` implementation rejects a few characters that the spec allows
-  // as literals (`/`, and `-` outside a character class); translate them to
-  // equivalent escapes so the pattern still compiles
-  // (<https://html.spec.whatwg.org/multipage/input.html#the-pattern-attribute>).
+  // https://html.spec.whatwg.org/multipage/input.html#the-pattern-attribute
   const translatePattern = pattern => {
     let translated = '';
     let depth = 0;
@@ -280,9 +239,7 @@
     return translated;
   };
 
-  // The `pattern` attribute compiled with the `v` flag; a pattern that does
-  // not compile is ignored
-  // (<https://html.spec.whatwg.org/multipage/input.html#the-pattern-attribute>).
+  // https://html.spec.whatwg.org/multipage/input.html#the-pattern-attribute
   const compiledPattern = element => {
     const pattern = element.getAttribute('pattern');
     if (pattern === null || pattern === '') return null;
@@ -299,18 +256,14 @@
     if (element.value === '') return false;
     const expression = compiledPattern(element);
     if (expression === null) return false;
-    // For a multiple email control the pattern applies to each address
-    // (<https://html.spec.whatwg.org/multipage/input.html#attr-input-multiple>).
+    // https://html.spec.whatwg.org/multipage/input.html#attr-input-multiple
     if (inputType(element) === 'email' && element.hasAttribute('multiple')) {
       return element.value.split(',').some(part => !expression.test(asciiTrim(part)));
     }
     return !expression.test(element.value);
   };
 
-  // The value interpreted in its state's step unit (days, months, weeks, or
-  // seconds), or `null` when the string is not valid in that state. The engine
-  // owns the one copy of the microsyntax grammar
-  // (<https://html.spec.whatwg.org/multipage/input.html#dom-input-valueasnumber>).
+  // https://html.spec.whatwg.org/multipage/input.html#dom-input-valueasnumber
   const parseValue = (type, value) =>
     value === null ? null : host.__tbValueInUnits(type, value);
   const valueAsNumber = element => parseValue(inputType(element), element.value);
@@ -320,8 +273,6 @@
     const min = parseValue(type, element.getAttribute('min'));
     const max = parseValue(type, element.getAttribute('max'));
     if (value === null || min === null) return false;
-    // A reversed range (min greater than max) accepts everything outside the
-    // open interval (max, min).
     if (max !== null && min > max) return value > max && value < min;
     return value < min;
   };
@@ -334,9 +285,7 @@
     if (min !== null && min > max) return value > max && value < min;
     return value > max;
   };
-  // A `step` attribute by the engine's floating-point grammar: anything
-  // unparseable or non-positive falls back to the default step
-  // (<https://html.spec.whatwg.org/multipage/input.html#the-step-attribute>).
+  // https://html.spec.whatwg.org/multipage/input.html#the-step-attribute
   const parseStep = (raw, fallback) => {
     if (raw === null) return fallback;
     const parsed = host.__tbParseFloat(asciiTrim(raw));
@@ -398,7 +347,6 @@
   };
 
   const validationMessageOf = element => {
-    // A barred control has no validation message.
     if (barredFromValidation(element)) return '';
     const custom = host.__tbCustomValidity(element);
     if (custom !== '') return custom;
@@ -447,8 +395,7 @@
     },
     setCustomValidity: {
       value: function(message) {
-        // The message is normalized to LF line breaks by the binding
-        // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#dom-cva-setcustomvalidity>).
+        // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#dom-cva-setcustomvalidity
         host.__tbSetCustomValidity(this, String(message));
       },
       writable: true,
@@ -476,12 +423,7 @@
     });
   }
 
-  // ── Text control selection ─────────────────────────────────────────────
-
-  // Web IDL `unsigned long` conversion.
   const toUnsignedLong = value => {
-    // Explicit `Number()` converts BigInts; WebIDL's `ToNumber` throws
-    // (and `Number(Symbol)` throws already).
     if (typeof value === 'bigint') {
       throw new TypeError('Cannot convert a BigInt value to a number');
     }
@@ -498,11 +440,8 @@
     element.tagName === 'TEXTAREA' ||
     (isInput(element) && SELECTION_TYPES.has(element.type));
 
-  // `select()` applies to every state that renders text and to the date-like
-  // states, but not to the states the selection attributes reject; a state
-  // with no selectable text makes the call a no-op rather than an exception
-  // (<https://html.spec.whatwg.org/multipage/input.html#do-not-apply>,
-  // <https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#dom-textarea/input-select>).
+  // https://html.spec.whatwg.org/multipage/input.html#do-not-apply
+  // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#dom-textarea/input-select
   const SELECTABLE_TYPES = new Set([
     ...SELECTION_TYPES, 'email', 'date', 'month', 'week', 'time',
     'datetime-local', 'number',
@@ -511,11 +450,7 @@
     element.tagName === 'TEXTAREA' ||
     (isInput(element) && SELECTABLE_TYPES.has(element.type));
 
-  // "Set the selection range" algorithm
-  // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#set-the-selection-range>).
-  // The host owns the stored selection, its clamping, and the `select` task a
-  // change queues, so the shim only converts the arguments. `direction` is
-  // optional; a missing or unknown value means "none".
+  // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#set-the-selection-range
   const applySelection = (element, start, end, direction) => {
     host.__tbSetSelectionRange(
       element,
@@ -541,9 +476,7 @@
     },
     select: {
       value: function() {
-        // A control with no selectable text is a no-op, not an
-        // `InvalidStateError`
-        // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#dom-textarea/input-select>).
+        // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#dom-textarea/input-select
         if (!selectApplies(this)) return;
         applySelection(this, 0, this.value.length);
       },
@@ -551,9 +484,7 @@
     },
     setRangeText: {
       value: function(replacement, start, end, selectionMode) {
-        // No overload takes zero arguments, so the Web IDL layer throws before
-        // the method body runs
-        // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#dom-textarea/input-setrangetext>).
+        // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#dom-textarea/input-setrangetext
         if (arguments.length === 0) {
           throw new TypeError('setRangeText: at least 1 argument required');
         }
@@ -580,9 +511,7 @@
         this.value =
           this.value.slice(0, rangeStart) + replacement + this.value.slice(rangeEnd);
         const newEnd = rangeStart + replacement.length;
-        // Every mode ends with "set the selection range with selection start
-        // and selection end", with no direction, which resets it to "none"
-        // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#dom-textarea/input-setrangetext>).
+        // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#dom-textarea/input-setrangetext
         if (mode === 'select') {
           applySelection(this, rangeStart, newEnd);
         } else if (mode === 'start') {
@@ -590,7 +519,6 @@
         } else if (mode === 'end') {
           applySelection(this, newEnd, newEnd);
         } else {
-          // "preserve": shift the old selection by the replacement's delta.
           const delta = replacement.length - (rangeEnd - rangeStart);
           let nextStart = selectionStart;
           let nextEnd = selectionEnd;
@@ -611,11 +539,7 @@
     Object.defineProperties(constructor.prototype, selectionMethods);
   }
 
-  // ── textarea sizing reflection ─────────────────────────────────────────
-
-  // `[ReflectPositiveWithFallback]` unsigned long: an absent, invalid, or zero
-  // attribute reports the fallback
-  // (<https://html.spec.whatwg.org/multipage/form-elements.html#dom-textarea-rows>).
+  // https://html.spec.whatwg.org/multipage/form-elements.html#dom-textarea-rows
   const positiveFallback = (name, fallback) => ({
     get: function() {
       const raw = this.getAttribute(name);
@@ -632,21 +556,16 @@
   });
 
   if (globalThis.HTMLTextAreaElement && globalThis.HTMLTextAreaElement.prototype) {
-    // `rows`/`cols` are numeric `[Reflect]` the generator does not
-    // auto-generate, so this shim owns them until it does. (`wrap` is plain
-    // string `[Reflect]` and stays generated in Rust: no shim here.)
     Object.defineProperties(globalThis.HTMLTextAreaElement.prototype, {
       rows: positiveFallback('rows', 2),
       cols: positiveFallback('cols', 20),
     });
   }
 
-  // ── submit events and submission ───────────────────────────────────────
-
   const SUBMITTER = host.slots('tb-submit-submitter');
   const FORMDATA = host.slots('tb-formdata-event-data');
 
-  // <https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#submitevent>
+  // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#submitevent
   function SubmitEvent(type) {
     if (new.target === undefined) {
       throw new TypeError('Class constructor SubmitEvent cannot be invoked without new');
@@ -655,8 +574,7 @@
     const event = Reflect.construct(globalThis.Event, arguments, new.target);
     const submitter = (init === undefined || init === null || init.submitter === undefined)
       ? null : init.submitter;
-    // `HTMLElement? submitter` refuses any other value during conversion
-    // (<https://webidl.spec.whatwg.org/#es-nullable-type>).
+    // https://webidl.spec.whatwg.org/#es-nullable-type
     if (submitter !== null && !(submitter instanceof globalThis.HTMLElement)) {
       throw new TypeError('The submitter member must be an HTMLElement or null');
     }
@@ -678,7 +596,7 @@
     value: SubmitEvent, writable: true, configurable: true,
   });
 
-  // <https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#formdataevent>
+  // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#formdataevent
   function FormDataEvent(type) {
     if (new.target === undefined) {
       throw new TypeError('Class constructor FormDataEvent cannot be invoked without new');
@@ -687,9 +605,8 @@
     if (init === undefined || init === null || init.formData === undefined || init.formData === null) {
       throw new TypeError('FormDataEventInit requires formData');
     }
-    // `required FormData formData` refuses any other value during conversion
-    // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#the-formdataevent-interface>,
-    // <https://webidl.spec.whatwg.org/#es-dictionary>).
+    // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#the-formdataevent-interface
+    // https://webidl.spec.whatwg.org/#es-dictionary
     if (!(init.formData instanceof globalThis.FormData)) {
       throw new TypeError('The formData member must be a FormData');
     }
@@ -712,12 +629,8 @@
     value: FormDataEvent, writable: true, configurable: true,
   });
 
-  // application/x-www-form-urlencoded: LF is normalized to CRLF, a space
-  // becomes `+`, and the `!'()~` set is percent-encoded
-  // (<https://url.spec.whatwg.org/#concept-urlencoded-serializer>).
-  // The submission encoding: the first label in `accept-charset` that resolves
-  // to an encoding, else UTF-8
-  // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#attr-fs-accept-charset>).
+  // https://url.spec.whatwg.org/#concept-urlencoded-serializer
+  // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#attr-fs-accept-charset
   const charsetLabel = form => {
     for (const label of (form.acceptCharset || '').split(/[\t\n\f\r ]+/)) {
       if (label === '') continue;
@@ -726,19 +639,13 @@
     }
     return 'UTF-8';
   };
-  // Text crosses to the engine's one Encoding Standard implementation, which
-  // also turns an unrepresentable character into a numeric character reference
-  // (<https://encoding.spec.whatwg.org/#encode>).
+  // https://encoding.spec.whatwg.org/#encode
   const charsetBytes = (text, label) =>
     host.__tbEncodeFormBytes(toWellFormed(String(text)), label);
-  // Percent-encode already encoded bytes for application/x-www-form-urlencoded
-  // (<https://url.spec.whatwg.org/#concept-urlencoded-byte-serializer>).
+  // https://url.spec.whatwg.org/#concept-urlencoded-byte-serializer
   const urlEncodeByte = (text, label) =>
     host.__tbUrlEncodeForm(toWellFormed(String(text)), label);
-  // A JS string with a lone surrogate cannot cross to Rust as UTF-8; replace
-  // lone surrogates with U+FFFD, the same replacement the Encoding Standard's
-  // `encode` applies
-  // (<https://encoding.spec.whatwg.org/#encode>).
+  // https://encoding.spec.whatwg.org/#encode
   const toWellFormed = text => {
     let out = '';
     for (let index = 0; index < text.length; index++) {
@@ -759,10 +666,7 @@
     }
     return out;
   };
-  // The DOM side stores UTF-8, so a lone surrogate must become U+FFFD
-  // before it crosses the JS boundary; the form data set conversion and the
-  // attribute setters both apply the same replacement
-  // (<https://infra.spec.whatwg.org/#javascript-string-convert>).
+  // https://infra.spec.whatwg.org/#javascript-string-convert
   const wellFormedSetter = (prototype, property, nullToEmpty = false) => {
     if (!prototype) return;
     const descriptor = Object.getOwnPropertyDescriptor(prototype, property);
@@ -771,8 +675,7 @@
       get: descriptor.get,
       set(value) {
         const text = nullToEmpty && value === null ? '' : String(value);
-        // The value binding clears the edit state after it stores the string
-        // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#suffering-from-being-too-long>).
+        // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#suffering-from-being-too-long
         descriptor.set.call(this, toWellFormed(text));
       },
       enumerable: descriptor.enumerable,
@@ -785,9 +688,7 @@
   wellFormedSetter(globalThis.HTMLSelectElement && globalThis.HTMLSelectElement.prototype, 'value', true);
   wellFormedSetter(globalThis.HTMLTextAreaElement && globalThis.HTMLTextAreaElement.prototype, 'value', true);
   wellFormedSetter(globalThis.HTMLOptionElement && globalThis.HTMLOptionElement.prototype, 'value');
-  // The tentative `switch` attribute on a checkbox is a reflected boolean;
-  // the stable IDL has no member for it yet
-  // (<https://html.spec.whatwg.org/multipage/input.html#attr-input-switch>).
+  // https://html.spec.whatwg.org/multipage/input.html#attr-input-switch
   if (globalThis.HTMLInputElement && globalThis.HTMLInputElement.prototype) {
     Object.defineProperty(globalThis.HTMLInputElement.prototype, 'switch', {
       get() { return this.hasAttribute('switch'); },
@@ -799,8 +700,7 @@
       configurable: true,
     });
   }
-  // A `File`/`Blob` entry serializes as its file name
-  // (<https://url.spec.whatwg.org/#concept-urlencoded-serializer>).
+  // https://url.spec.whatwg.org/#concept-urlencoded-serializer
   const entryValueString = value =>
     (value !== null && typeof value === 'object' && typeof value.name === 'string')
       ? value.name
@@ -815,23 +715,18 @@
     return parts.join('&');
   };
 
-  // multipart/form-data with a generated boundary
-  // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#multipart-form-data>).
-  // The multipart name/filename escape: CR, LF, and `"` become percent
-  // escapes (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#multipart-form-data>).
+  // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#multipart-form-data
   const escapeMultipartName = value =>
     String(value)
       .replace(/\r\n|\r|\n/g, '\r\n')
       .replace(/\r/g, '%0D')
       .replace(/\n/g, '%0A')
       .replace(/"/g, '%22');
-  // A filename's newlines are not normalized first, only escaped.
   const escapeMultipartFilename = value =>
     String(value)
       .replace(/\r/g, '%0D')
       .replace(/\n/g, '%0A')
       .replace(/"/g, '%22');
-  // Text is encoded once; the navigation body crosses as a `Uint8Array`.
   const encoder = new TextEncoder();
   const concatBytes = chunks => {
     let total = 0;
@@ -897,11 +792,7 @@
     return concatBytes(chunks);
   };
 
-  // The submitter's method: its own `formmethod` when that attribute is
-  // present, otherwise the form's `method`. Both are enumerated attributes
-  // whose keywords are `get`, `post`, and `dialog`, with `get` as the
-  // invalid-value default
-  // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#attr-fs-method>).
+  // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#attr-fs-method
   const formMethod = (form, submitter) => {
     const attribute = submitter !== undefined && submitter !== null
         && submitter.hasAttribute('formmethod')
@@ -912,11 +803,7 @@
     return keyword === 'post' || keyword === 'dialog' ? keyword : 'get';
   };
 
-  // A `method=dialog` submission closes the form's nearest ancestor dialog
-  // instead of navigating. The result starts as null, so closing without a
-  // submitter or without a `value` attribute leaves the dialog's return value
-  // alone
-  // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#form-submission-algorithm>).
+  // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#form-submission-algorithm
   const submitDialogForm = (form, submitter) => {
     const dialog = form.closest('dialog');
     if (dialog === null) return;
@@ -926,9 +813,6 @@
       const isSubmit = tag === 'BUTTON'
         ? submitter.type === 'submit'
         : tag === 'INPUT' && (submitter.type === 'submit' || submitter.type === 'image');
-      // An image button's result would be its selected coordinate; this engine
-      // does not track the click position, so it closes with the previous
-      // return value (recorded in docs/limitations.md).
       if (isSubmit && submitter.type !== 'image' && submitter.hasAttribute('value')) {
         result = submitter.value;
       }
@@ -937,14 +821,9 @@
     else dialog.close(result);
   };
 
-  // A submit button overrides its form's action/method/enctype/target through
-  // its `form*` attributes; the engine resolves all four, including the
-  // submitter's state, so the form and the button cannot disagree
-  // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#form-submission-algorithm>).
+  // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#form-submission-algorithm
   const submitForm = (form, formData, submitter) => {
-    // `method=dialog` never navigates, and the engine's navigation plan
-    // reports no plan for it, so it is handled here
-    // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#form-submission-algorithm>).
+    // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#form-submission-algorithm
     if (formMethod(form, submitter) === 'dialog') {
       submitDialogForm(form, submitter);
       return;
@@ -956,14 +835,11 @@
     const enctype = plan[2];
     const target = plan[3];
     const label = charsetLabel(form);
-    // A `_charset_` control carries the submission encoding's name
-    // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#attr-fe-name-charset>).
+    // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#attr-fe-name-charset
     if (formData.has('_charset_')) formData.set('_charset_', label);
     if (method === 'get') {
       const encoded = urlEncode(formData, label);
-      // Mutate the action URL: replace the query component, keeping the
-      // fragment; an empty entry list still produces an empty query
-      // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#submit-mutate-action>).
+      // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#submit-mutate-action
       const hash = action.indexOf('#');
       const fragment = hash === -1 ? '' : action.slice(hash);
       const withoutFragment = hash === -1 ? action : action.slice(0, hash);
@@ -972,8 +848,7 @@
       host.__tbFormNavigate(base + '?' + encoded + fragment, target, 'GET', new __tbUint8Array(0), null, form);
       return;
     }
-    // POST: the entries become the request body, encoded per `enctype`
-    // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#submit-mutate-action>).
+    // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#submit-mutate-action
     let body;
     let contentType;
     if (enctype === 'multipart/form-data') {
@@ -988,19 +863,14 @@
     host.__tbFormNavigate(action, target, 'POST', body, contentType, form);
   };
 
-  // The submission algorithm's entry-list step: the FormData constructor
-  // fires `formdata`, whose handler may extend the list, then we submit it.
-  // `form.submit()` runs this without the `submit` event; `requestSubmit()`
-  // fires that first
-  // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#constructing-form-data-set>).
+  // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#constructing-form-data-set
   const runSubmission = (form, submitter) => {
-    // The entry list includes the submitter before `formdata` fires
-    // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#constructing-form-data-set>).
+    // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#constructing-form-data-set
     const formData = new globalThis.FormData(form, submitter ?? null);
     submitForm(form, formData, submitter);
   };
 
-  // <https://html.spec.whatwg.org/multipage/forms.html#dom-fs-action>
+  // https://html.spec.whatwg.org/multipage/forms.html#dom-fs-action
   Object.defineProperty(globalThis.HTMLFormElement.prototype, 'action', {
     get() {
       const attribute = this.getAttribute('action');
@@ -1011,12 +881,10 @@
     enumerable: true, configurable: true,
   });
 
-  // <https://html.spec.whatwg.org/multipage/forms.html#dom-form-submit>
+  // https://html.spec.whatwg.org/multipage/forms.html#dom-form-submit
   Object.defineProperty(globalThis.HTMLFormElement.prototype, 'submit', {
     value: function() {
-      // A form that is not connected (or whose document navigated away) has
-      // no browsing context to submit to
-      // (<https://html.spec.whatwg.org/multipage/forms.html#dom-form-submit>).
+      // https://html.spec.whatwg.org/multipage/forms.html#dom-form-submit
       if (!host.__tbFormCanSubmit(this)) return;
       runSubmission(this);
     },
@@ -1025,7 +893,7 @@
     configurable: true,
   });
 
-  // <https://html.spec.whatwg.org/multipage/forms.html#dom-form-checkvalidity>
+  // https://html.spec.whatwg.org/multipage/forms.html#dom-form-checkvalidity
   const formValidation = form => {
     let valid = true;
     for (const control of listedElements(form)) {
@@ -1045,15 +913,10 @@
     },
   });
 
-  // The form's "firing submission events" flag: a nested submission attempt
-  // while validation or the `submit` event runs returns without firing again
-  // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#form-submission-algorithm>).
+  // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#form-submission-algorithm
   const formsFiringSubmission = host.slots('tb-form-firing-submission');
 
-  // The internal submit algorithm. Native activation calls this through
-  // `host.__tbRequestSubmit`, so a page that replaces
-  // `HTMLFormElement.prototype.requestSubmit` cannot intercept a button click
-  // (<https://html.spec.whatwg.org/multipage/input.html#submit-button-state-(type=submit)>).
+  // https://html.spec.whatwg.org/multipage/input.html#submit-button-state-(type=submit
   const requestSubmitInternal = (form, submitter) => {
     if (!host.__tbFormCanSubmit(form)) return;
     if (formsFiringSubmission.has(form)) return;
@@ -1069,17 +932,13 @@
         throw new DOMException('submitter must belong to this form', 'NotFoundError');
       }
     }
-    // Interactive validation runs before the submit event and can stop the
-    // submission; a submitter's `formnovalidate` skips it
-    // (<https://html.spec.whatwg.org/multipage/forms.html#interactively-validate-the-constraints>).
+    // https://html.spec.whatwg.org/multipage/forms.html#interactively-validate-the-constraints
     const noValidate = form.noValidate
       || (submitter !== undefined && submitter !== null && submitter.formNoValidate);
     formsFiringSubmission.add(form);
     try {
       if (!noValidate && !form.checkValidity()) return;
-      // The event itself must carry the trust bit, which only the engine can
-      // set, so the shim builds it and the host dispatches it
-      // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#form-submission-algorithm>).
+      // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#form-submission-algorithm
       const event = new SubmitEvent('submit', {
         submitter: submitter === undefined ? null : submitter,
         bubbles: true,
@@ -1096,7 +955,7 @@
     writable: false, enumerable: false, configurable: false,
   });
 
-  // <https://html.spec.whatwg.org/multipage/forms.html#dom-form-requestsubmit>
+  // https://html.spec.whatwg.org/multipage/forms.html#dom-form-requestsubmit
   Object.defineProperty(globalThis.HTMLFormElement.prototype, 'requestSubmit', {
     value: function(submitter) { return requestSubmitInternal(this, submitter); },
     writable: true,
@@ -1104,9 +963,7 @@
     configurable: true,
   });
 
-  // ── select helpers ─────────────────────────────────────────────────────
-
-  // <https://html.spec.whatwg.org/multipage/form-elements.html#dom-option>
+  // https://html.spec.whatwg.org/multipage/form-elements.html#dom-option
   function Option(text, value, defaultSelected, selected) {
     if (new.target === undefined) {
       throw new TypeError('Class constructor Option cannot be invoked without new');
@@ -1115,9 +972,7 @@
     if (text !== undefined) option.text = String(text);
     if (value !== undefined) option.value = String(value);
     if (defaultSelected !== undefined) option.defaultSelected = Boolean(defaultSelected);
-    // The `selected` argument sets selectedness without the dirty flag, so a
-    // later `selected` attribute change still updates it
-    // (<https://html.spec.whatwg.org/multipage/form-elements.html#dom-option-option>).
+    // https://html.spec.whatwg.org/multipage/form-elements.html#dom-option-option
     host.__tbSetOptionSelectedness(option, selected !== undefined && Boolean(selected));
     return option;
   }
@@ -1133,11 +988,7 @@
       value: function() { showPicker(this); },
       writable: true, enumerable: true, configurable: true,
     },
-    // `[Reflect, ReflectDefault=0] attribute unsigned long size`: numeric
-    // `[Reflect]` is not auto-generated, so this shim owns the property
-    // until the generator lowers it (like `rows`/`cols` below). The getter
-    // parses non-negative integers, defaulting to 0
-    // (<https://html.spec.whatwg.org/multipage/form-elements.html#dom-select-size>).
+    // https://html.spec.whatwg.org/multipage/form-elements.html#dom-select-size
     size: {
       get: function() {
         const raw = this.getAttribute('size');
@@ -1156,11 +1007,8 @@
       set: function(value) { this.options.length = value; },
       enumerable: true, configurable: true,
     },
-    // Both delegate to the options collection
-    // (<https://html.spec.whatwg.org/multipage/form-elements.html#dom-select-item>,
-    // <https://html.spec.whatwg.org/multipage/form-elements.html#dom-select-nameditem>).
-    // `item` takes `unsigned long`, so a negative index wraps out of range and
-    // returns null instead of reaching the host's `usize` conversion.
+    // https://html.spec.whatwg.org/multipage/form-elements.html#dom-select-item
+    // https://html.spec.whatwg.org/multipage/form-elements.html#dom-select-nameditem
     item: {
       value: function(index) { return this.options.item((+index) >>> 0); },
       writable: true, enumerable: true, configurable: true,
@@ -1169,12 +1017,11 @@
       value: function(name) { return this.options.namedItem(name); },
       writable: true, enumerable: true, configurable: true,
     },
-    // <https://html.spec.whatwg.org/multipage/form-elements.html#dom-select-add>
+    // https://html.spec.whatwg.org/multipage/form-elements.html#dom-select-add
     add: {
       value: function(element, before) {
         if (element === undefined) throw new TypeError('add requires an element');
-        // Adding a node before itself is a no-op
-        // (<https://html.spec.whatwg.org/multipage/form-elements.html#dom-select-add>).
+        // https://html.spec.whatwg.org/multipage/form-elements.html#dom-select-add
         if (element === before) return;
         if (before === undefined || before === null) {
           this.appendChild(element);
@@ -1209,8 +1056,6 @@
     },
   });
 
-  // ── input valueAsNumber / valueAsDate / stepUp / stepDown ──────────────
-
   const DATE_LIKE = new Set(['date', 'month', 'week', 'time', 'datetime-local']);
 
   const civilFromDays = days => {
@@ -1229,8 +1074,7 @@
     return { year: year + (month <= 2 ? 1 : 0), month, day };
   };
   const pad = (number, width) => String(number).padStart(width, '0');
-  // Days since 1970-01-01 for a civil date, the inverse of `civilFromDays`
-  // (<https://howardhinnant.github.io/date_algorithms.html#days_from_civil>).
+  // https://howardhinnant.github.io/date_algorithms.html#days_from_civil
   const daysFromCivil = (year, month, day) => {
     const y = year - (month <= 2 ? 1 : 0);
     const era = Math.floor((y >= 0 ? y : y - 399) / 400);
@@ -1240,15 +1084,10 @@
       + Math.floor(yearOfEra / 4) - Math.floor(yearOfEra / 100) + dayOfYear;
     return era * 146097 + dayOfEra - 719468;
   };
-  // Monday is 0 ... Sunday is 6; 1970-01-01 was a Thursday.
   const weekdayFromDays = days => (((days % 7) + 10) % 7);
-  // The Monday of the week containing 1970-01-01, three days before day zero,
-  // is the week-numbering origin
-  // (<https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#week-number-of-the-last-day>).
+  // https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#week-number-of-the-last-day
   const epochMonday = -3;
-  // Date objects stop at 275760-09-13; a valueAsNumber outside that range
-  // serializes to the empty string
-  // (<https://html.spec.whatwg.org/multipage/input.html#dom-input-valueasnumber>).
+  // https://html.spec.whatwg.org/multipage/input.html#dom-input-valueasnumber
   const representableYear = year => year >= 1 && year <= 275760;
   const formatDate = days => {
     const { year, month, day } = civilFromDays(days);
@@ -1280,9 +1119,7 @@
     return millis === 0 ? withSeconds : `${withSeconds}.${pad(millis, 3).replace(/0+$/, '')}`;
   };
 
-  // The input's value as a number in each state's scale, or NaN
-  // (<https://html.spec.whatwg.org/multipage/input.html#dom-input-valueasnumber>).
-  // The engine owns the single grammar and the per-state unit.
+  // https://html.spec.whatwg.org/multipage/input.html#dom-input-valueasnumber
   const valueAsNumberOf = element => {
     const value = host.__tbValueAsNumber(inputType(element), element.value);
     return value === null ? NaN : value;
@@ -1312,8 +1149,7 @@
 
   const setValueAsNumber = (element, value) => {
     const number = Number(value);
-    // An infinite value throws before the applicability check
-    // (<https://html.spec.whatwg.org/multipage/input.html#dom-input-valueasnumber>).
+    // https://html.spec.whatwg.org/multipage/input.html#dom-input-valueasnumber
     if (number === Infinity || number === -Infinity) {
       throw new TypeError('valueAsNumber must be finite');
     }
@@ -1324,8 +1160,7 @@
     element.value = Number.isNaN(number) ? '' : formatValueAsNumber(type, number);
   };
 
-  // `valueAsDate` applies to date, month, week, and time
-  // (<https://html.spec.whatwg.org/multipage/input.html#dom-input-valueasdate>).
+  // https://html.spec.whatwg.org/multipage/input.html#dom-input-valueasdate
   const DATE_VALUE_TYPES = new Set(['date', 'month', 'week', 'time']);
   const valueAsDateOf = element => {
     const type = inputType(element);
@@ -1369,7 +1204,6 @@
     }
   };
 
-  // The value serialized in each state's `parseValue` unit, for `stepUp`.
   const formatValueInUnit = (type, value) => {
     switch (type) {
       case 'number': case 'range': return String(value);
@@ -1385,21 +1219,16 @@
     }
   };
 
-  // Moves the value by `count` steps
-  // (<https://html.spec.whatwg.org/multipage/input.html#dom-input-stepup>).
+  // https://html.spec.whatwg.org/multipage/input.html#dom-input-stepup
   const stepBy = (element, count, direction) => {
     const type = inputType(element);
-    // The engine owns the per-state default-step table, so `stepUp` and the
-    // validity flag cannot disagree about which states step or by how much
-    // (<https://html.spec.whatwg.org/multipage/input.html#the-step-attribute>).
+    // https://html.spec.whatwg.org/multipage/input.html#the-step-attribute
     const fallback = host.__tbDefaultStep(type);
     if (fallback === null) {
       throw new DOMException('stepUp is not applicable', 'InvalidStateError');
     }
     const raw = element.getAttribute('step');
-    // The step attribute's `any` keyword is an ASCII case-insensitive match on
-    // the attribute value, not a trimmed token
-    // (<https://html.spec.whatwg.org/multipage/input.html#the-step-attribute>).
+    // https://html.spec.whatwg.org/multipage/input.html#the-step-attribute
     if (raw !== null && __tbAsciiLower(raw) === 'any') {
       throw new DOMException('step is any', 'InvalidStateError');
     }
@@ -1407,13 +1236,11 @@
     const min = parseValue(type, element.getAttribute('min'));
     const max = parseValue(type, element.getAttribute('max'));
     if (min !== null && max !== null && min > max) return;
-    // The step base is the min attribute, else the value attribute, else 0.
     let base = min;
     if (base === null) base = parseValue(type, element.getAttribute('value'));
     if (base === null) base = 0;
     const alignUp = value => base + Math.ceil((value - base) / step - 1e-9) * step;
     const alignDown = value => base + Math.floor((value - base) / step + 1e-9) * step;
-    // Nothing in [min, max] is representable: nothing to do.
     if (min !== null && max !== null && alignUp(min) > max + 1e-9) return;
     const parsed = parseValue(type, element.value);
     const wasEmpty = parsed === null;
@@ -1421,7 +1248,6 @@
     const valueBefore = value;
     const quotient = (value - base) / step;
     if (Math.abs(quotient - Math.round(quotient)) > 1e-9) {
-      // Snap to the nearest representable value in the stepping direction.
       value = direction > 0 ? alignUp(value) : alignDown(value);
     } else {
       value += direction * step * count;
@@ -1433,9 +1259,7 @@
       if (direction > 0 && value < valueBefore) return;
     }
     if (type === 'number' || type === 'range') {
-      // Round binary floating-point noise back to the step's decimal scale,
-      // so 1.2 - 0.3 serializes as 0.9
-      // (<https://html.spec.whatwg.org/multipage/input.html#dom-input-stepdown>).
+      // https://html.spec.whatwg.org/multipage/input.html#dom-input-stepdown
       const text = raw === null ? String(fallback) : asciiTrim(raw);
       const scale = host.__tbDecimalScale(text);
       if (scale === null || scale <= 20) value = Number(value.toFixed(scale ?? 0));
@@ -1443,8 +1267,7 @@
     element.value = formatValueInUnit(type, value);
   };
 
-  // Autofill field names
-  // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#autofill-field>).
+  // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#autofill-field
   const autofillFields = new Set([
     'name', 'honorific-prefix', 'given-name', 'additional-name', 'family-name',
     'honorific-suffix', 'nickname', 'username', 'new-password',
@@ -1512,9 +1335,7 @@
     });
   }
 
-  // A control is mutable unless disabled; an input with `readonly` is also
-  // immutable in the states where the attribute applies
-  // (<https://html.spec.whatwg.org/multipage/input.html#the-readonly-attribute>).
+  // https://html.spec.whatwg.org/multipage/input.html#the-readonly-attribute
   const readonlyApplies = new Set([
     'text', 'search', 'tel', 'url', 'email', 'password', 'date', 'month',
     'week', 'time', 'datetime-local', 'number',
@@ -1526,9 +1347,7 @@
     }
     return true;
   };
-  // The rendered check only guards `select.showPicker()`. A `display: none`
-  // box or a `content-visibility: hidden` ancestor means no box is rendered
-  // (<https://drafts.csswg.org/css-display-4/#becoming-visible>).
+  // https://drafts.csswg.org/css-display-4/#becoming-visible
   const isBeingRendered = element => {
     if (!element.isConnected) return false;
     for (let node = element; node !== null; node = node.parentElement) {
@@ -1539,15 +1358,12 @@
     }
     return true;
   };
-  // <https://html.spec.whatwg.org/multipage/input.html#dom-input-showpicker>
+  // https://html.spec.whatwg.org/multipage/input.html#dom-input-showpicker
   const showPicker = element => {
-    // The steps run in spec order: mutability, origin, activation, rendered.
     if (!controlIsMutable(element)) {
       throw new DOMException('The element is not mutable', 'InvalidStateError');
     }
-    // A `file` or `color` input skips the origin check: its activation
-    // behaviour has always shown the picker
-    // (<https://html.spec.whatwg.org/multipage/input.html#dom-input-showpicker>).
+    // https://html.spec.whatwg.org/multipage/input.html#dom-input-showpicker
     const exemptFromOriginCheck = element.localName === 'input'
       && (element.type === 'file' || element.type === 'color');
     if (!exemptFromOriginCheck && !host.__tbSameOriginWithTop()) {
@@ -1560,9 +1376,7 @@
     if (element.localName === 'select' && !isBeingRendered(element)) {
       throw new DOMException('The element is not being rendered', 'NotSupportedError');
     }
-    // Showing the picker is optional, but the activation is consumed whether
-    // or not this engine draws one
-    // (<https://html.spec.whatwg.org/multipage/form-elements.html#show-the-picker,-if-applicable>).
+    // https://html.spec.whatwg.org/multipage/form-elements.html#show-the-picker
     host.__tbConsumeUserActivation();
   };
   Object.defineProperties(globalThis.HTMLInputElement.prototype, {
@@ -1590,9 +1404,7 @@
     },
   });
 
-  // The first element in `root`'s tree with that ID. An element root has no
-  // `getElementById`, so the descendants are searched in tree order
-  // (<https://dom.spec.whatwg.org/#concept-id>).
+  // https://dom.spec.whatwg.org/#concept-id
   const firstElementWithId = (root, id) => {
     if (id === '') return null;
     if (root.nodeType === 1 && root.getAttribute('id') === id) return root;
@@ -1603,9 +1415,7 @@
     return null;
   };
 
-  // The `list` attribute's datalist, or null. The id is resolved in the
-  // input's own tree, so a detached tree still finds its datalist
-  // (<https://html.spec.whatwg.org/multipage/input.html#dom-input-list>).
+  // https://html.spec.whatwg.org/multipage/input.html#dom-input-list
   Object.defineProperty(globalThis.HTMLInputElement.prototype, 'list', {
     get() {
       const id = this.getAttribute('list');
@@ -1617,11 +1427,7 @@
     configurable: true,
   });
 
-  // `output.value` follows its text content, with a value-mode flag that
-  // freezes `defaultValue` once the value is set directly; resetting restores
-  // the frozen default. The flag and the frozen default live in the engine's
-  // control state
-  // (<https://html.spec.whatwg.org/multipage/form-elements.html#dom-output-defaultvalue>).
+  // https://html.spec.whatwg.org/multipage/form-elements.html#dom-output-defaultvalue
   if (globalThis.HTMLOutputElement) {
     Object.defineProperties(globalThis.HTMLOutputElement.prototype, {
       type: {
@@ -1636,10 +1442,7 @@
         },
         set(value) {
           const text = __tbToDOMString(value);
-          // While the value mode flag is clear, the default is the text, so
-          // the setter writes the text; a frozen override exists only in value
-          // mode
-          // (<https://html.spec.whatwg.org/multipage/form-elements.html#dom-output-defaultvalue>).
+          // https://html.spec.whatwg.org/multipage/form-elements.html#dom-output-defaultvalue
           if (host.__tbOutputValueMode(this)) host.__tbSetOutputDefaultValue(this, text);
           else this.textContent = text;
         },
@@ -1660,17 +1463,13 @@
     });
   }
   const nativeFormReset = globalThis.HTMLFormElement.prototype.reset;
-  // The engine's reset algorithm, captured before page scripts can replace
-  // the prototype method. Native activation calls it through
-  // `host.__tbResetForm`, so a page that replaces
-  // `HTMLFormElement.prototype.reset` cannot intercept a reset button
-  // (<https://html.spec.whatwg.org/multipage/input.html#reset-button-state-(type=reset)>).
+  // https://html.spec.whatwg.org/multipage/input.html#reset-button-state-(type=reset
   Object.defineProperty(host, '__tbResetForm', {
     value: form => nativeFormReset.call(form),
     writable: false, enumerable: false, configurable: false,
   });
 
-  // <https://html.spec.whatwg.org/multipage/form-elements.html#dom-progress-position>
+  // https://html.spec.whatwg.org/multipage/form-elements.html#dom-progress-position
   if (globalThis.HTMLProgressElement) {
     Object.defineProperty(globalThis.HTMLProgressElement.prototype, 'position', {
       get() {
@@ -1685,7 +1484,7 @@
     });
   }
 
-  // <https://html.spec.whatwg.org/multipage/form-elements.html#dom-legend-form>
+  // https://html.spec.whatwg.org/multipage/form-elements.html#dom-legend-form
   if (globalThis.HTMLLegendElement) {
     Object.defineProperty(globalThis.HTMLLegendElement.prototype, 'form', {
       get() {
@@ -1696,7 +1495,7 @@
     });
   }
 
-  // <https://html.spec.whatwg.org/multipage/form-elements.html#dom-fieldset-type>
+  // https://html.spec.whatwg.org/multipage/form-elements.html#dom-fieldset-type
   const fieldSetElements = new WeakMap();
   if (globalThis.HTMLFieldSetElement) {
     Object.defineProperties(globalThis.HTMLFieldSetElement.prototype, {
@@ -1722,8 +1521,6 @@
     });
   }
 
-  // ── labels and labelable elements ──────────────────────────────────────
-
   const LABELABLE = new Set(['BUTTON', 'METER', 'OUTPUT', 'PROGRESS', 'SELECT', 'TEXTAREA']);
   const isLabelable = element => {
     const tag = element.tagName;
@@ -1731,17 +1528,14 @@
     return LABELABLE.has(tag);
   };
 
-  // `label.htmlFor` reflects the `for` attribute
-  // (<https://html.spec.whatwg.org/multipage/forms.html#dom-label-htmlfor>).
+  // https://html.spec.whatwg.org/multipage/forms.html#dom-label-htmlfor
   Object.defineProperty(globalThis.HTMLLabelElement.prototype, 'htmlFor', {
     get() { return this.getAttribute('for') ?? ''; },
     set(value) { this.setAttribute('for', __tbToDOMString(value)); },
     enumerable: true, configurable: true,
   });
 
-  // `label.control`: the element named by `for`, or the first labelable
-  // descendant
-  // (<https://html.spec.whatwg.org/multipage/forms.html#dom-label-control>).
+  // https://html.spec.whatwg.org/multipage/forms.html#dom-label-control
   Object.defineProperty(globalThis.HTMLLabelElement.prototype, 'control', {
     get() {
       if (this.hasAttribute('for')) {
@@ -1763,8 +1557,7 @@
     configurable: true,
   });
 
-  // A label's `form` is its labeled control's form owner
-  // (<https://html.spec.whatwg.org/multipage/forms.html#dom-label-form>).
+  // https://html.spec.whatwg.org/multipage/forms.html#dom-label-form
   Object.defineProperty(globalThis.HTMLLabelElement.prototype, 'form', {
     get() {
       const control = this.control;
@@ -1773,10 +1566,7 @@
     configurable: true,
   });
 
-  // `labels` is `[SameObject]`, so one NodeList serves every access for the
-  // element's lifetime. The collection stays live: it reads the label set on
-  // each access and answers empty once the element stops being labelable
-  // (<https://html.spec.whatwg.org/multipage/forms.html#dom-labels>).
+  // https://html.spec.whatwg.org/multipage/forms.html#dom-labels
   const labelLists = new WeakMap();
   const labelsOf = element => {
     if (!isLabelable(element)) return null;
@@ -1805,23 +1595,16 @@
     });
   }
 
-  // ── form controls collection ───────────────────────────────────────────
-
   const LISTED = 'button, fieldset, input, object, output, select, textarea';
 
-  // The form's listed elements, in tree order: every matching control whose
-  // form owner is the form
-  // (<https://html.spec.whatwg.org/multipage/forms.html#category-listed>).
+  // https://html.spec.whatwg.org/multipage/forms.html#category-listed
   const listedElements = form =>
     Array.from(form.ownerDocument.querySelectorAll(LISTED))
       .filter(element => element.form === form)
-      // An image button is excluded from the controls collection for historical
-      // reasons (<https://html.spec.whatwg.org/multipage/forms.html#dom-form-elements>).
+      // https://html.spec.whatwg.org/multipage/forms.html#dom-form-elements
       .filter(element => !(element.tagName === 'INPUT' && element.type === 'image'));
 
-  // Collection interfaces. The engine may already publish `HTMLCollection`;
-  // reuse it so both brands share one prototype chain
-  // (<https://html.spec.whatwg.org/multipage/forms.html#htmlformcontrolscollection>).
+  // https://html.spec.whatwg.org/multipage/forms.html#htmlformcontrolscollection
   const collectionInterface = name => {
     const existing = globalThis[name];
     if (existing !== undefined && existing !== null) return existing;
@@ -1838,16 +1621,12 @@
   const FormControlsInterface = collectionInterface('HTMLFormControlsCollection');
   const RadioNodeListInterface = collectionInterface('RadioNodeList');
   Object.setPrototypeOf(FormControlsInterface.prototype, HTMLCollectionInterface.prototype);
-  // `RadioNodeList` extends `NodeList`, not `HTMLCollection`
-  // (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#radionodelist>).
+  // https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#radionodelist
   Object.setPrototypeOf(
     RadioNodeListInterface.prototype,
     globalThis.NodeList.prototype,
   );
 
-  // A live, named, indexed collection. `getList` recomputes on each access so
-  // the collection tracks DOM changes; the proxy's prototype reports the right
-  // interface for `instanceof`.
   const collectionOf = (getList, prototype, radioList) =>
     new Proxy({}, {
       get(target, property, receiver) {
@@ -1893,10 +1672,7 @@
       },
     });
 
-  // A canonical array index string: `ToString(ToUint32(P)) === P` and the
-  // value below 2^32 - 1. "03" is a name, not an index, so an element called
-  // "03" answers through the named getter
-  // (<https://tc39.es/ecma262/#array-index>).
+  // https://tc39.es/ecma262/#array-index
   const isArrayIndex = property => {
     if (!/^(?:0|[1-9][0-9]*)$/.test(property)) return false;
     const index = Number(property);
@@ -1913,9 +1689,7 @@
     return collectionOf(matches, RadioNodeListInterface.prototype, true);
   };
 
-  // The form owner of a form-associated `img`, which has no `form` IDL
-  // attribute of its own
-  // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#form-owner>).
+  // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#form-owner
   const imageFormOwner = element => {
     const id = element.getAttribute('form');
     if (id === null) return element.closest('form');
@@ -1924,9 +1698,7 @@
     return found !== null && found.localName === 'form' ? found : null;
   };
 
-  // The live matches of a form's named getter, for the RadioNodeList it
-  // answers when a name matches several controls
-  // (<https://html.spec.whatwg.org/multipage/forms.html#dom-form-nameditem>).
+  // https://html.spec.whatwg.org/multipage/forms.html#dom-form-nameditem
   const formNamedMatches = (form, name) => {
     const listed = listedElements(form).filter(
       element => element.id === name || element.getAttribute('name') === name,
@@ -1941,8 +1713,7 @@
     () => formNamedMatches(form, name), RadioNodeListInterface.prototype, true,
   );
 
-  // `document.forms` is a generated `[SameObject] HTMLCollection` member
-  // (<https://html.spec.whatwg.org/multipage/obsolete.html#dom-document-forms>).
+  // https://html.spec.whatwg.org/multipage/obsolete.html#dom-document-forms
 
   const elementsCache = host.slots();
   Object.defineProperties(globalThis.HTMLFormElement.prototype, {

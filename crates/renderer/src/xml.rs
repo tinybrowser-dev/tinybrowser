@@ -1,13 +1,3 @@
-//! XML parsing for `DOMParser`'s XML MIME types.
-//!
-//! Delegates to `blitz-html`'s XML path, which keeps real doctype,
-//! processing-instruction, CDATA, and `xmlns` nodes and expands internal
-//! general entities up front. Well-formedness violations drain into a
-//! `parsererror` document below. Entity expansion covers internal general
-//! entities only: undefined or external references fail closed to
-//! `parsererror`; attribute-value references expand; duplicate declarations
-//! keep the first; `NDATA` declarations never expand.
-
 use std::collections::HashSet;
 use std::sync::Mutex;
 
@@ -15,18 +5,9 @@ use crate::Parsed;
 
 static MIME_ESSENCES: Mutex<Option<HashSet<&'static str>>> = Mutex::new(None);
 
-/// The namespace of the `parsererror` document element, shared by the
-/// document builder here and the XHR `responseXML` failure check (which must
-/// compare namespace, not just the local name: a well-formed `<parsererror/>`
-/// response is a valid document, not a failure).
 pub(crate) const PARSERERROR_NS: &str = "http://www.mozilla.org/newlayout/xml/parsererror.xml";
 
-/// Parses `input` as an XML document with the given content type.
-///
-/// Used only by `DOMParser`, whose results are plain `Document`s, never
-/// `XMLDocument`s
-/// (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-domparser-parsefromstring>).
-/// Navigated XML goes through `parse_navigated` and keeps the XML kind.
+// https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-domparser-parsefromstring
 pub(crate) fn parse_document(
     input: &str,
     content_type: &'static str,
@@ -47,10 +28,7 @@ pub(crate) fn parse_document(
     )
 }
 
-/// Parses a navigated XML response with the frame's document config.
-///
-/// XML documents are always no-quirks
-/// (<https://dom.spec.whatwg.org/#concept-document-quirks>).
+// https://dom.spec.whatwg.org/#concept-document-quirks
 pub(crate) fn parse_navigated(
     input: &str,
     content_type: &'static str,
@@ -65,11 +43,7 @@ pub(crate) fn parse_navigated(
     )
 }
 
-/// Parses `input` with the shared XML configuration: the sink keeps real
-/// doctype, processing-instruction, CDATA, and `xmlns` nodes, with internal
-/// entities expanded up front. A non-well-formed input yields a `parsererror`
-/// document instead of the partial tree
-/// (<https://html.spec.whatwg.org/multipage/xhtml.html#parsing-xhtml-documents>).
+// https://html.spec.whatwg.org/multipage/xhtml.html#parsing-xhtml-documents
 fn parse_with_config(
     input: &str,
     content_type: &'static str,
@@ -77,8 +51,6 @@ fn parse_with_config(
     xml_document: bool,
     config: blitz_dom::DocumentConfig,
 ) -> Parsed {
-    // The sink keeps real doctype, processing-instruction, CDATA, and xmlns
-    // nodes, with internal entities expanded up front.
     let base: blitz_dom::BaseDocument = blitz_html::HtmlDocument::from_xml(input, config).into();
     let mut document = crate::documents::BlitzDocument::from_base(base);
     let errors = document.base.take_parse_errors();
@@ -93,29 +65,14 @@ fn parse_with_config(
         xml_document,
         ready_state,
         url: None,
-        // `&str` input is already decoded: DOMParser keeps UTF-8 (correct).
-        // Navigated responses overwrite this from the sniffed decoder in
-        // `document/mod.rs`, so a future "fix" unifying the two breaks
-        // `document.characterSet`.
         character_set: "UTF-8",
     };
-    // XML parsing creates elements with their attributes, so the control
-    // slots need the same initial sanitization the HTML parser's do
-    // (<https://html.spec.whatwg.org/multipage/input.html#the-input-element>).
+    // https://html.spec.whatwg.org/multipage/input.html#the-input-element
     crate::dom::forms::initialize_controls(&mut parsed);
     parsed
 }
 
-/// Rebuilds the parsed document as a `parsererror` document for a
-/// non-well-formed XML input: the same content type, base URL, and providers,
-/// whose document element is a single `parsererror` element in
-/// [`PARSERERROR_NS`] describing the failure
-/// (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-domparser-parsefromstring>).
-///
-/// Reuses the parsed document instead of building a fresh one: a fresh build
-/// would lose the base URL and providers the caller configured, so a failed
-/// navigated response would resolve URLs differently than the same response
-/// parsed cleanly.
+// https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-domparser-parsefromstring
 fn parser_error_document(
     mut document: crate::documents::BlitzDocument,
     content_type: &'static str,
@@ -149,11 +106,7 @@ fn parser_error_document(
     }
 }
 
-/// The document content type when `header` is an XML MIME type, otherwise
-/// `None` so the response stays on the HTML parser.
-///
-/// An XML MIME type has essence `text/xml` or `application/xml`, or a subtype
-/// ending in `+xml` (<https://mimesniff.spec.whatwg.org/#xml-mime-type>).
+// https://mimesniff.spec.whatwg.org/#xml-mime-type
 pub(crate) fn navigated_content_type(header: &str) -> Option<&'static str> {
     let essence = header.split(';').next()?.trim().to_ascii_lowercase();
     let (kind, subtype) = essence.split_once('/')?;
@@ -164,19 +117,12 @@ pub(crate) fn navigated_content_type(header: &str) -> Option<&'static str> {
         "text/xml" => "text/xml",
         "application/xhtml+xml" => "application/xhtml+xml",
         "image/svg+xml" => "image/svg+xml",
-        // `application/xml` and every other XML MIME type.
         _ => "application/xml",
     })
 }
 
-/// The [document's content type] from a navigated response's `Content-Type`.
-///
-/// XML MIME types keep the values [`navigated_content_type`] already
-/// interned. Other essences are interned so `Document.contentType` can
-/// report them without changing `Parsed::content_type` off `&'static str`.
-///
-/// <https://html.spec.whatwg.org/multipage/nav-history-apis.html#concept-document-content-type>
-/// <https://html.spec.whatwg.org/multipage/dom.html#dom-document-contenttype>
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#concept-document-content-type
+// https://html.spec.whatwg.org/multipage/dom.html#dom-document-contenttype
 pub(crate) fn document_content_type(header: &str) -> &'static str {
     if let Some(xml) = navigated_content_type(header) {
         return xml;
@@ -203,13 +149,7 @@ pub(crate) fn document_content_type(header: &str) -> &'static str {
     }
 }
 
-/// Interns an arbitrary MIME essence for `Parsed::content_type`, which is
-/// `&'static str`.
 fn intern_mime_essence(essence: String) -> &'static str {
-    // Bounded interning: essences arrive from response `Content-Type`
-    // headers, so an unbounded table is a memory leak on attacker input.
-    // Past the cap, unknown essences report as the generic binary type;
-    // every essence the specs name is a fixed static above and unaffected.
     const MAX_INTERNED_ESSENCES: usize = 1024;
     let mut guard = MIME_ESSENCES
         .lock()

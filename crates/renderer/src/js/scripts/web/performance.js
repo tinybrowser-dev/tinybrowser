@@ -1,32 +1,20 @@
-// High Resolution Time, the Performance Timeline, User Timing, Navigation
-// Timing, and Resource Timing
-// (<https://w3c.github.io/hr-time/#the-performance-interface>,
-// <https://w3c.github.io/performance-timeline/>,
-// <https://w3c.github.io/user-timing/>,
-// <https://w3c.github.io/navigation-timing/>,
-// <https://w3c.github.io/resource-timing/>).
-//
-// The native object supplies the monotonic clock; the shim keeps that reader
-// before replacing the global, so a page that patches `performance.now`
-// cannot move the timeline. `timeOrigin` is the epoch instant the document
-// started, which is what Event.timeStamp is measured against.
+// https://w3c.github.io/hr-time/#the-performance-interface
+// https://w3c.github.io/performance-timeline/
+// https://w3c.github.io/user-timing/
+// https://w3c.github.io/navigation-timing/
+// https://w3c.github.io/resource-timing/
 {
   const __tbNativePerformance = globalThis.performance;
   const __tbNativeNow = __tbNativePerformance && typeof __tbNativePerformance.now === 'function'
     ? () => __tbNativePerformance.now()
     : () => Date.now();
-  // `performance.now()` and `Event.timeStamp` report the same clock at the same
-  // resolution: 100 microseconds, or 5 in a cross-origin isolated document.
-  // Rounding down keeps an event created between two reads inside them
-  // (<https://w3c.github.io/hr-time/#dfn-current-high-resolution-time>).
+  // https://w3c.github.io/hr-time/#dfn-current-high-resolution-time
   const __tbResolutionMicros = host.__tbTimeResolutionMicros;
   const __tbClampTime = value => __tbResolutionMicros <= 1
     ? value
     : Math.floor(value * 1000 / __tbResolutionMicros) * __tbResolutionMicros / 1000;
   const __tbNow = () => __tbClampTime(__tbNativeNow());
-  // The epoch instant this realm's timeline starts from. The native clock is
-  // monotonic, not epoch-based, so subtract it from the wall clock once
-  // (<https://w3c.github.io/hr-time/#dom-performance-timeorigin>).
+  // https://w3c.github.io/hr-time/#dom-performance-timeorigin
   const __tbTimeOrigin = Date.now() - __tbNow();
 
   const __tbEntryData = host.slots('tinybrowser.performanceentry');
@@ -35,16 +23,12 @@
   const __tbHandlerData = host.slots('tinybrowser.performancehandlers');
   const __tbInternal = __tbObjectCreate(null);
 
-  // A `Window` exposes the navigation entry and the obsolete
-  // `performance.timing` view; a worker has a `location` but no document
-  // (<https://w3c.github.io/navigation-timing/#sec-PerformanceNavigationTiming>).
+  // https://w3c.github.io/navigation-timing/#sec-PerformanceNavigationTiming
   const __tbIsWindow = typeof globalThis.document === 'object'
     && globalThis.document !== null
     && typeof globalThis.document.createElement === 'function';
 
-  // The performance entry buffer map: one tuple per entry type, each with its
-  // buffer, maximum size, `availableFromTimeline` flag, and dropped entries
-  // count (<https://w3c.github.io/performance-timeline/#performance-entry-buffer-map>).
+  // https://w3c.github.io/performance-timeline/#performance-entry-buffer-map
   const __tbBuffers = __tbObjectCreate(null);
   const __tbRegisterType = (type, maxBufferSize, availableFromTimeline) => {
     __tbBuffers[type] = {
@@ -52,14 +36,12 @@
       maxBufferSize,
       availableFromTimeline,
       dropped: 0,
-      // Resource Timing's overflow buffer
-      // (<https://w3c.github.io/resource-timing/#dfn-resource-timing-secondary-buffer>).
+      // https://w3c.github.io/resource-timing/#dfn-resource-timing-secondary-buffer
       secondary: [],
       bufferFullPending: false,
     };
   };
-  // The registry maximum buffer sizes
-  // (<https://w3c.github.io/timing-entrytypes-registry/#registry>).
+  // https://w3c.github.io/timing-entrytypes-registry/#registry
   __tbRegisterType('mark', Infinity, true);
   __tbRegisterType('measure', Infinity, true);
   if (__tbIsWindow) __tbRegisterType('navigation', Infinity, true);
@@ -70,9 +52,7 @@
       : ['mark', 'measure', 'resource'],
   );
 
-  // The readonly attributes of the obsolete `PerformanceTiming` interface. A
-  // mark name equal to one of them is invalid
-  // (<https://w3c.github.io/user-timing/#dom-performancemark-performancemark>).
+  // https://w3c.github.io/user-timing/#dom-performancemark-performancemark
   const __tbTimingNames = __tbFreeze([
     'navigationStart', 'unloadEventStart', 'unloadEventEnd', 'redirectStart',
     'redirectEnd', 'fetchStart', 'domainLookupStart', 'domainLookupEnd',
@@ -90,9 +70,7 @@
 
   const __tbIsObject = value =>
     (typeof value === 'object' && value !== null) || typeof value === 'function';
-  // WebIDL dictionary conversion: a non-object, non-null argument is a
-  // TypeError; `undefined` and `null` read as the empty dictionary
-  // (<https://webidl.spec.whatwg.org/#es-dictionary>).
+  // https://webidl.spec.whatwg.org/#es-dictionary
   const __tbDictionary = (value, what) => {
     if (value === undefined || value === null) return {};
     if (!__tbIsObject(value)) throw new TypeError(what + ' is not a dictionary');
@@ -110,25 +88,17 @@
   };
   const __tbCloneDetail = value =>
     value === undefined || value === null ? null : structuredClone(value);
-  // WebIDL sequence conversion accepts only an object with an iterator: a
-  // primitive string is a TypeError, not a one-element sequence
-  // (<https://webidl.spec.whatwg.org/#es-sequence>).
+  // https://webidl.spec.whatwg.org/#es-sequence
   const __tbIsIterable = value =>
     __tbIsObject(value) && typeof value[__tbIteratorSymbol] === 'function';
 
-  // The spec generates an id per global object from a random starting value
-  // (<https://w3c.github.io/performance-timeline/#generate-an-id>).
+  // https://w3c.github.io/performance-timeline/#generate-an-id
   let __tbLastEntryId = 100 + Math.floor(Math.random() * 9900);
   const __tbNextId = () => (__tbLastEntryId += 1);
-  // Entries other than the navigation entry carry the most recent
-  // navigation's id
-  // (<https://w3c.github.io/performance-timeline/#queue-a-performanceentry>).
+  // https://w3c.github.io/performance-timeline/#queue-a-performanceentry
   let __tbNavigationId = 0;
 
-  // One observer callback task per observer, coalescing every entry queued
-  // before it runs. The callback options carry the dropped entries count only
-  // on the first callback after an `observe()` call
-  // (<https://w3c.github.io/performance-timeline/#queue-the-performanceobserver-task>).
+  // https://w3c.github.io/performance-timeline/#queue-the-performanceobserver-task
   const __tbScheduleObserver = (observer, data) => {
     if (data.scheduled) return;
     data.scheduled = true;
@@ -145,9 +115,7 @@
       }
       const entries = data.records;
       data.records = [];
-      // A callback with nothing to deliver still runs while it owes a
-      // dropped-entries report
-      // (<https://w3c.github.io/performance-timeline/#queue-the-performanceobserver-task>).
+      // https://w3c.github.io/performance-timeline/#queue-the-performanceobserver-task
       if (entries.length === 0 && (droppedEntriesCount === null || droppedEntriesCount === 0)) {
         return;
       }
@@ -159,9 +127,7 @@
       try {
         data.callback.call(observer, list, observer, callbackOptions);
       } catch (error) {
-        // A callback's exception is reported to the page, never back into
-        // the API call that queued the entry
-        // (<https://w3c.github.io/performance-timeline/#queue-the-performanceobserver-task>).
+        // https://w3c.github.io/performance-timeline/#queue-the-performanceobserver-task
         if (typeof globalThis.reportError === 'function') globalThis.reportError(error);
       }
     });
@@ -196,8 +162,7 @@
     __tbNotifyObservers(entry);
     const tuple = __tbBuffers[data.entryType];
     if (tuple !== undefined) {
-      // Determine if this entry type's buffer is full
-      // (<https://w3c.github.io/performance-timeline/#determine-if-a-performance-entry-buffer-is-full>).
+      // https://w3c.github.io/performance-timeline/#determine-if-a-performance-entry-buffer-is-full
       if (tuple.buffer.length < tuple.maxBufferSize) {
         __tbArray.push(tuple.buffer, entry);
       } else {
@@ -207,9 +172,7 @@
     }
   };
 
-  // Resource Timing keeps overflow entries in a secondary buffer and fires
-  // `resourcetimingbufferfull` so the page can grow the buffer
-  // (<https://w3c.github.io/resource-timing/#dfn-add-a-performanceresourcetiming-entry>).
+  // https://w3c.github.io/resource-timing/#dfn-add-a-performanceresourcetiming-entry
   const __tbOverflowResource = (tuple, entry) => {
     __tbArray.push(tuple.secondary, entry);
     if (tuple.bufferFullPending) return;
@@ -235,8 +198,7 @@
     }, 0);
   };
 
-  // Default toJSON: every IDL attribute of the entry's interface
-  // (<https://webidl.spec.whatwg.org/#default-tojson-operation>).
+  // https://webidl.spec.whatwg.org/#default-tojson-operation
   const __tbEntryJSON = (entry, fields) => {
     const data = __tbEntryData.get(entry);
     const json = {
@@ -277,8 +239,7 @@
         throw new TypeError("Failed to construct 'PerformanceMark': 1 argument required, but only 0 present.");
       }
       const name = String(markName);
-      // A Window's mark name may not shadow a `PerformanceTiming` attribute
-      // (<https://w3c.github.io/user-timing/#dom-performancemark-performancemark>).
+      // https://w3c.github.io/user-timing/#dom-performancemark-performancemark
       if (__tbIsWindow && __tbIsTimingName(name)) {
         throw new DOMException("'" + name + "' is a PerformanceTiming attribute", 'SyntaxError');
       }
@@ -320,8 +281,7 @@
     value: 'PerformanceMeasure', writable: false, enumerable: false, configurable: true,
   });
 
-  // The attributes of `PerformanceResourceTiming` beyond `PerformanceEntry`
-  // (<https://w3c.github.io/resource-timing/#sec-performanceresourcetiming>).
+  // https://w3c.github.io/resource-timing/#sec-performanceresourcetiming
   const __tbResourceFields = __tbFreeze([
     'initiatorType', 'deliveryType', 'nextHopProtocol', 'workerStart',
     'redirectStart', 'redirectEnd', 'fetchStart', 'domainLookupStart',
@@ -353,10 +313,7 @@
     value: 'PerformanceResourceTiming', writable: false, enumerable: false, configurable: true,
   });
 
-  // A resource entry records the request start and completion. The engine does
-  // not expose per-phase timings, so a phase it did not measure is 0 and
-  // `fetchStart`/`requestStart` name the recorded start
-  // (<https://w3c.github.io/resource-timing/#attribute-descriptions>).
+  // https://w3c.github.io/resource-timing/#attribute-descriptions
   const __tbResourceEntry = (name, initiatorType, startTime, endTime, responseStatus, encodedBodySize, decodedBodySize) => {
     return new PerformanceResourceTiming(__tbInternal, {
       id: 0,
@@ -380,9 +337,7 @@
       requestStart: startTime,
       finalResponseHeadersStart: endTime,
       firstInterimResponseStart: 0,
-      // `responseStart` is the first interim response start when there was
-      // one, otherwise the final response headers start
-      // (<https://w3c.github.io/resource-timing/#dom-performanceresourcetiming-responsestart>).
+      // https://w3c.github.io/resource-timing/#dom-performanceresourcetiming-responsestart
       responseStart: endTime,
       responseEnd: endTime,
       workerRouterEvaluationStart: 0,
@@ -403,11 +358,7 @@
   const __tbConvertMark = mark => {
     if (typeof mark === 'string') {
       if (__tbIsWindow && __tbIsTimingName(mark)) {
-        // Convert a name to a timestamp: `navigationStart` is 0 and every
-        // other timing is relative to it. This engine records every
-        // navigation phase at the time origin, so the difference is 0; a
-        // timing whose value is 0 is an `InvalidAccessError`
-        // (<https://w3c.github.io/user-timing/#convert-a-name-to-a-timestamp>).
+        // https://w3c.github.io/user-timing/#convert-a-name-to-a-timestamp
         if (mark === 'navigationStart') return 0;
         return __tbTimingValue(mark);
       }
@@ -435,15 +386,9 @@
     }
   };
 
-  // The obsolete `PerformanceTiming` view. Every navigation phase is recorded
-  // at the time origin, so each attribute is the epoch instant navigation
-  // started
-  // (<https://w3c.github.io/navigation-timing/#sec-PerformanceTiming>).
+  // https://w3c.github.io/navigation-timing/#sec-PerformanceTiming
   const __tbNavigationStart = Math.floor(__tbTimeOrigin);
   const __tbTimingValue = name => {
-    // Every recorded phase starts at the time origin, so the value relative
-    // to `navigationStart` is 0. An unrecorded phase would be 0 itself and
-    // is an `InvalidAccessError`; this engine records all of them.
     void name;
     return 0;
   };
@@ -542,8 +487,7 @@
         __tbArray.push(entries, entry);
       }
     }
-    // Chronological order, stable for equal timestamps
-    // (<https://w3c.github.io/performance-timeline/#dfn-filter-buffer-map-by-name-and-type>).
+    // https://w3c.github.io/performance-timeline/#dfn-filter-buffer-map-by-name-and-type
     __tbArray.sort(entries, (left, right) => left.startTime - right.startTime);
     return entries;
   };
@@ -602,8 +546,6 @@
         durationOption = options.duration !== undefined;
         detailOption = options.detail !== undefined;
       } else if (startOrMeasureOptions !== undefined && startOrMeasureOptions !== null) {
-        // A union of `DOMString` and a dictionary converts every other
-        // primitive to its string form
         startIsString = true;
       }
       if (options !== null && (startOption || endOption || durationOption || detailOption)) {
@@ -740,8 +682,7 @@
         throw new TypeError('type or entryTypes is required');
       }
       const buffered = options.buffered === true;
-      // The observer type is fixed by the first observe() call
-      // (<https://w3c.github.io/performance-timeline/#dom-performanceobserver-observe>).
+      // https://w3c.github.io/performance-timeline/#dom-performanceobserver-observe
       if (data.multiple === undefined) data.multiple = hasEntryTypes;
       if (data.multiple !== hasEntryTypes) {
         throw new DOMException(
@@ -761,8 +702,7 @@
             __tbArray.push(types, type);
           }
         }
-        // entryTypes replaces the observed list on every call
-        // (<https://w3c.github.io/performance-timeline/#dom-performanceobserver-observe>).
+        // https://w3c.github.io/performance-timeline/#dom-performanceobserver-observe
         data.observed = types;
       } else {
         const type = String(options.type);
@@ -787,9 +727,7 @@
           }
         }
       }
-      // Only a buffered registration queues the observer task on its own; a
-      // plain `observe()` waits for the next entry
-      // (<https://w3c.github.io/performance-timeline/#dom-performanceobserver-observe>).
+      // https://w3c.github.io/performance-timeline/#dom-performanceobserver-observe
       if (buffered) __tbScheduleObserver(this, data);
     }
     disconnect() {
@@ -815,10 +753,7 @@
 
   const __tbPerformanceObject = new Performance(__tbInternal);
 
-  // The navigation entry is created with the document, added to the buffer,
-  // and queued to observers when the document finishes loading, so a script
-  // that registers an observer during parsing sees it without `buffered`
-  // (<https://w3c.github.io/navigation-timing/#marking-navigation-timing>).
+  // https://w3c.github.io/navigation-timing/#marking-navigation-timing
   let __tbNavigationEntry = null;
   if (__tbIsWindow) {
     __tbNavigationEntry = new PerformanceNavigationTiming(__tbInternal, {
@@ -877,8 +812,7 @@
   host.__tbQueueNavigationTiming = () => {
     if (__tbNavigationEntry === null) return;
     const navigationData = __tbEntryData.get(__tbNavigationEntry);
-    // The document is complete: its load timing ends now
-    // (<https://w3c.github.io/navigation-timing/#performancenavigationtiming>).
+    // https://w3c.github.io/navigation-timing/#performancenavigationtiming
     navigationData.loadEventEnd = __tbNow();
     navigationData.loadEventStart = navigationData.loadEventEnd;
     navigationData.domComplete = navigationData.loadEventEnd;
@@ -886,8 +820,7 @@
     __tbNotifyObservers(__tbNavigationEntry);
   };
 
-  // Resource entries are created on fetch completion by the renderer
-  // (<https://w3c.github.io/resource-timing/#dfn-add-a-performanceresourcetiming-entry>).
+  // https://w3c.github.io/resource-timing/#dfn-add-a-performanceresourcetiming-entry
   host.__tbQueueResourceTiming = (
     name, initiatorType, startTime, endTime, responseStatus, encodedBodySize, decodedBodySize,
   ) => {
@@ -912,8 +845,7 @@
     });
   }
   if (__tbIsWindow) {
-    // `timing` and `navigation` are a Window-only partial interface
-    // (<https://w3c.github.io/navigation-timing/#sec-PerformanceNavigationTiming>).
+    // https://w3c.github.io/navigation-timing/#sec-PerformanceNavigationTiming
     __tbDefineProperty(Performance.prototype, 'timing', {
       get() { return __tbTiming; }, enumerable: true, configurable: true,
     });

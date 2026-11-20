@@ -1,15 +1,3 @@
-//! CDP adapter over [`browser::BrowserHandle`].
-//!
-//! Honest first subsets of Browser, Target, Page, and Runtime. Unsupported
-//! methods return method-not-found. Flattened `sessionId` routing on the
-//! browser socket.
-//! Hyper serves the loopback HTTP and WebSocket endpoints. The synchronous
-//! [`Client`] used by the CLI and tests stays on tungstenite.
-//!
-//! Names: the wire object is a CDP **page target** (`"type": "page"`,
-//! `Page.*`); it maps to a [`browser::TabHandle`]. CDP's experimental **tab
-//! target** is the browser-UI container and is not modeled.
-
 use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -47,30 +35,40 @@ use dispatch::{
     runtime_release_object_group, target_id, target_info, wait_for_navigation, ws_io,
 };
 
-/// One default browser context; Playwright requires `browserContextId` on
-/// attached targets.
 const DEFAULT_BROWSER_CONTEXT_ID: &str = "tinybrowser-default";
-/// Fallback wait for `awaitPromise` when the client sends no `timeout`
-/// (<https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-evaluate>).
-/// The protocol's own `timeout` parameter, when present, wins.
+// https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-evaluate
 const AWAIT_PROMISE_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Serves CDP HTTP discovery and WebSocket endpoints on `listener`.
-///
-/// Returns when [`browser::BrowserHandle::close`] runs through `Browser.close`.
-///
-/// # Errors
-///
-/// Returns when the listener cannot be converted or serving fails.
+#[derive(Clone)]
+pub struct Router {
+    state: AppState,
+}
+
+impl Router {
+    #[must_use]
+    pub fn new(browser: BrowserHandle, bound: SocketAddr, shutdown: Shutdown) -> Self {
+        Self {
+            state: AppState {
+                browser,
+                bound,
+                stop: shutdown,
+            },
+        }
+    }
+
+    pub async fn handle(&self, request: Request) -> Response {
+        serve_request(request, self.state.clone()).await
+    }
+}
+
 pub async fn serve(listener: &TcpListener, browser: &BrowserHandle) -> io::Result<()> {
     let bound = listener.local_addr()?;
     let shutdown = Shutdown::new();
-    let state = AppState {
-        browser: browser.clone(),
-        bound,
-        stop: shutdown.clone(),
-    };
-    server::serve(listener, shutdown, state, serve_request).await
+    let router = Router::new(browser.clone(), bound, shutdown.clone());
+    server::serve(listener, shutdown, router, |request, router| async move {
+        router.handle(request).await
+    })
+    .await
 }
 
 async fn serve_request(request: Request, state: AppState) -> Response {
@@ -93,8 +91,6 @@ async fn serve_request(request: Request, state: AppState) -> Response {
     }
 }
 
-/// A known path answers a method it does not accept with 405 + `Allow:
-/// GET,HEAD` and an empty body; HEAD bodies are hyper's job to strip.
 fn get_only(request: &Request, response: Response) -> Response {
     if request.method() == Method::GET || request.method() == Method::HEAD {
         return response;
@@ -106,8 +102,6 @@ fn json_route(payload: &Value) -> Response {
     server::json(StatusCode::OK, payload)
 }
 
-/// Legacy CDP clients (Playwright included) append a trailing slash to
-/// discovery URLs; both spellings route the same way.
 fn route_path(path: &str) -> &str {
     if path.len() > 1
         && let Some(stripped) = path.strip_suffix('/')
@@ -117,9 +111,7 @@ fn route_path(path: &str) -> &str {
     path
 }
 
-/// Routes a websocket request: validates the handshake per RFC 6455
-/// (<https://www.rfc-editor.org/rfc/rfc6455#section-4.2.1>), resolves a page
-/// target when `raw` carries one, then answers the 101 and runs the socket.
+// https://www.rfc-editor.org/rfc/rfc6455#section-4.2.1
 async fn upgrade_route(request: Request, state: AppState, raw: Option<String>) -> Response {
     let key = match upgrade_key(&request) {
         Ok(key) => key,
@@ -137,18 +129,12 @@ async fn upgrade_route(request: Request, state: AppState, raw: Option<String>) -
     serve_upgraded(request, &key, state, None)
 }
 
-/// Why a websocket upgrade was refused, with the response it maps to.
 #[derive(Clone, Copy)]
 enum HandshakeRejection {
-    /// Not an HTTP/1.1 request.
     HttpVersion,
-    /// Not a GET request.
     Method,
-    /// Missing or non-websocket `Upgrade`/`Connection` headers.
     NotWebsocket,
-    /// Missing `Sec-WebSocket-Key`.
     MissingKey,
-    /// `Sec-WebSocket-Version` is absent or not 13.
     VersionUnsupported,
 }
 
@@ -200,8 +186,6 @@ fn rejection_response(rejection: HandshakeRejection) -> Response {
         HandshakeRejection::MissingKey => {
             status_response(StatusCode::BAD_REQUEST, "missing websocket key")
         }
-        // RFC 6455 §4.4: a supported-version server answers a version
-        // mismatch with 426 and its own `Sec-WebSocket-Version`.
         HandshakeRejection::VersionUnsupported => {
             let mut response = status_response(
                 StatusCode::UPGRADE_REQUIRED,
@@ -305,7 +289,6 @@ async fn list_json(state: &AppState) -> Value {
     Value::Array(targets)
 }
 
-/// Client for the browser WebSocket.
 pub struct Client {
     socket: ClientSocket<TcpStream>,
     next_id: i64,
@@ -313,29 +296,14 @@ pub struct Client {
 }
 
 impl Client {
-    /// Connects to `ws://host:port/devtools/browser`.
-    ///
-    /// # Errors
-    ///
-    /// Transport or handshake failure.
     pub fn connect(addr: SocketAddr) -> io::Result<Self> {
         connect_ws(addr, "/devtools/browser")
     }
 
-    /// Connects to `ws://host:port{path}`.
-    ///
-    /// # Errors
-    ///
-    /// Transport or handshake failure.
     pub fn connect_path(addr: SocketAddr, path: &str) -> io::Result<Self> {
         connect_ws(addr, path)
     }
 
-    /// Sends `method` and waits for the matching id.
-    ///
-    /// # Errors
-    ///
-    /// Transport failure or a CDP error object.
     pub fn call(
         &mut self,
         method: &str,
@@ -375,11 +343,6 @@ impl Client {
         }
     }
 
-    /// Reads the next protocol event, returning `None` when `timeout` elapses.
-    ///
-    /// # Errors
-    ///
-    /// Transport or JSON decoding failure.
     pub fn read_event(&mut self, timeout: Duration) -> io::Result<Option<Value>> {
         if let Some(event) = self.events.pop_front() {
             return Ok(Some(event));
@@ -446,7 +409,6 @@ fn connect_ws(addr: SocketAddr, path: &str) -> io::Result<Client> {
     })
 }
 
-/// Per-WebSocket async protocol state.
 struct Conn {
     browser: BrowserHandle,
     sessions: HashMap<String, Target>,
@@ -460,12 +422,9 @@ struct Conn {
     auto_attach: bool,
     events: Vec<Value>,
     loader_ids: HashMap<TabId, String>,
-    /// Loader id of each tab's current document, kept across commit for
-    /// lifecycle events
-    /// (<https://chromedevtools.github.io/devtools-protocol/tot/Page/#event-lifecycleEvent>).
+    // https://chromedevtools.github.io/devtools-protocol/tot/Page/#event-lifecycleEvent
     current_loaders: HashMap<TabId, String>,
-    /// Whether the client asked for `Page.lifecycleEvent` notifications
-    /// (<https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-setLifecycleEventsEnabled>).
+    // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-setLifecycleEventsEnabled
     lifecycle_events: bool,
     isolated_worlds: HashMap<TabId, Vec<String>>,
     next_loader: u64,
@@ -485,7 +444,6 @@ struct ConnEvent {
     event: TabEvent,
 }
 
-/// One text reply plus whether the socket closes after it.
 struct Outcome {
     reply: Value,
     close: bool,
@@ -497,8 +455,6 @@ enum RuntimeEntry {
 }
 
 impl RuntimeEntry {
-    /// Decodes this entry's params once: the script and the settings both
-    /// `Runtime.evaluate` and `Runtime.callFunctionOn` carry.
     fn decode(
         self,
         params: &Value,
@@ -625,23 +581,18 @@ impl Conn {
         messages
     }
 
-    /// The tab's current document loader id, for lifecycle events that arrive
-    /// after commit
-    /// (<https://chromedevtools.github.io/devtools-protocol/tot/Page/#event-lifecycleEvent>).
+    // https://chromedevtools.github.io/devtools-protocol/tot/Page/#event-lifecycleEvent
     fn current_loader(&self, tab: TabId) -> String {
         self.current_loaders.get(&tab).cloned().unwrap_or_default()
     }
 
-    /// Mints a fresh loader id for a navigation
-    /// (<https://chromedevtools.github.io/devtools-protocol/tot/Page/#type-Frame>).
+    // https://chromedevtools.github.io/devtools-protocol/tot/Page/#type-Frame
     fn next_loader_id(&mut self) -> String {
         let id = format!("{}", self.next_loader);
         self.next_loader = self.next_loader.saturating_add(1);
         id
     }
 
-    /// Emits the commit event set: frame commit plus the new document's
-    /// execution contexts (default and every known isolated world).
     async fn push_navigated(
         &mut self,
         messages: &mut Vec<Value>,
@@ -650,15 +601,12 @@ impl Conn {
     ) {
         let tab_id = tab.id();
         let frame_id = tab_id.to_string();
-        // A browser-initiated `Page.navigate` stored its loader id; a
-        // renderer-initiated navigation has none and mints a fresh one
-        // (<https://chromedevtools.github.io/devtools-protocol/tot/Page/#type-Frame>).
+        // https://chromedevtools.github.io/devtools-protocol/tot/Page/#type-Frame
         let loader_id = match self.loader_ids.remove(&tab_id) {
             Some(id) => id,
             None => self.next_loader_id(),
         };
         self.current_loaders.insert(tab_id, loader_id.clone());
-        // Final URL after redirects, not the requested one.
         let url = tab.document_url().await.unwrap_or_default();
         let mut navigated = json!({
             "method": "Page.frameNavigated",
@@ -671,17 +619,12 @@ impl Conn {
         });
         attach_session(&mut navigated, session);
         messages.push(navigated);
-        // The new document is a new realm: drop announced contexts so clients
-        // (Playwright) re-create their utility world.
         let mut cleared = json!({
             "method": "Runtime.executionContextsCleared",
             "params": {},
         });
         attach_session(&mut cleared, session);
         messages.push(cleared);
-        // The outgoing realm's object handles die with it; clear the new
-        // realm's table too so a handle minted before the event cannot outlive
-        // the context it belongs to.
         let _ = tab.execute_browser_script(RUNTIME_CLEAR_HANDLES).await;
         let mut worlds = vec![String::new()];
         if let Some(isolated) = self.isolated_worlds.get(&tab_id) {
@@ -710,7 +653,6 @@ impl Conn {
         }
     }
 
-    /// Resolves the requested target (or the first live one) for `Target.getTargetInfo`.
     async fn target_info_for(&mut self, params: &Value) -> Result<Value, DispatchError> {
         let params: params::GetTargetInfo = params::parse(params)?;
         let id = match params.target_id {
@@ -730,7 +672,6 @@ impl Conn {
         Ok(json!({"targetInfo": target_info(&self.browser, id).await}))
     }
 
-    /// Enables or disables auto-attach and announces existing targets.
     async fn set_auto_attach(
         &mut self,
         params: &Value,
@@ -750,7 +691,6 @@ impl Conn {
         Ok(json!({}))
     }
 
-    /// Registers a flattened session and returns its id.
     fn mint(&mut self, session: Target) -> String {
         let session_id = format!("s{}", self.next_session);
         self.next_session = self.next_session.saturating_add(1);
@@ -758,8 +698,6 @@ impl Conn {
         session_id
     }
 
-    /// Queues `Target.attachedToTarget` for auto-attach clients, on the session
-    /// that asked for auto-attach.
     async fn push_attached(&mut self, session: Option<&str>, session_id: &str, tab: &TabHandle) {
         let mut info = target_info(&self.browser, tab.id()).await;
         if let Some(object) = info.as_object_mut() {
@@ -800,8 +738,6 @@ impl Conn {
             };
         };
         let empty = json!({});
-        // A client may send `"params": null` for a method that takes none;
-        // that is the same as omitting the object.
         let params = parsed
             .get("params")
             .filter(|value| !value.is_null())
@@ -886,8 +822,6 @@ impl Conn {
             },
             Handler::Page(handler) => match target {
                 Target::Page(tab) => self.dispatch_page(handler, params, tab, session).await,
-                // `route` answers a page handler only for a page target, so a
-                // browser target cannot reach here.
                 Target::Browser => Err(DispatchError::MethodNotFound),
             },
             Handler::Browser(handler) => self.dispatch_browser(handler, params, session).await,
@@ -985,8 +919,6 @@ impl Conn {
         }
     }
 
-    /// `Page.createIsolatedWorld`: announce a new execution context for the
-    /// requested world name.
     fn create_isolated_world(
         &mut self,
         params: &Value,
@@ -1022,10 +954,7 @@ impl Conn {
         Ok(json!({"executionContextId": context_id}))
     }
 
-    /// `Page.navigateToHistoryEntry`: activates the named entry. The entry id
-    /// is the browser's own identity, so it travels to the browser unchanged;
-    /// the browser decides whether it still holds that entry
-    /// (<https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-navigateToHistoryEntry>).
+    // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-navigateToHistoryEntry
     async fn navigate_to_history_entry(
         &mut self,
         params: &Value,
@@ -1069,10 +998,6 @@ impl Conn {
                 let params: params::AttachToTarget = params::parse(params)?;
                 let id = target_id(&params.target_id)?;
                 if params.flatten != Some(true) {
-                    // The protocol marks `flatten` optional, so a client that
-                    // omits it is asking for a valid mode this adapter does
-                    // not implement; that is a failed request, not a malformed
-                    // one.
                     return Err(DispatchError::Failed(
                         "attachToTarget requires flatten".into(),
                     ));
@@ -1098,8 +1023,6 @@ impl Conn {
         }
     }
 
-    /// `Target.createTarget`: open a tab, navigate it, and auto-attach when the
-    /// client asked for it.
     async fn create_target(
         &mut self,
         params: &Value,
@@ -1123,8 +1046,6 @@ impl Conn {
         Ok(json!({ "targetId": tab.id().to_string() }))
     }
 
-    /// `Target.closeTarget`: announce auto-attached sessions before closing the
-    /// tab and dropping its per-target state.
     async fn close_target(
         &mut self,
         params: &Value,
@@ -1171,7 +1092,6 @@ impl Conn {
         Ok(json!({ "success": true }))
     }
 
-    /// Every open tab as a `Target.targetInfo` list.
     async fn target_list(&self) -> Result<Value, DispatchError> {
         let mut target_infos = Vec::new();
         for id in self
@@ -1198,8 +1118,7 @@ impl Conn {
             open_url(tab, url).await?;
             return Ok(json!({"frameId": frame_id, "loaderId": loader_id}));
         }
-        // Store the id so the `frameNavigated` event reports the same loader id
-        // (<https://chromedevtools.github.io/devtools-protocol/tot/Page/#event-frameNavigated>).
+        // https://chromedevtools.github.io/devtools-protocol/tot/Page/#event-frameNavigated
         self.loader_ids.insert(tab.id(), loader_id.clone());
         let events = tab
             .subscribe()
@@ -1215,15 +1134,12 @@ impl Conn {
         }
     }
 
-    /// Queues an event for one session (or the direct page socket).
     fn push_session_event(&mut self, session: Option<&str>, method: &str, params: &Value) {
         let mut message = json!({"method": method, "params": params});
         attach_session(&mut message, session);
         self.events.push(message);
     }
 
-    /// `Runtime.evaluate` / `Runtime.callFunctionOn` with value or handle
-    /// semantics. Handles are retained in private renderer realm state.
     async fn dispatch_runtime(
         &mut self,
         source: RuntimeSource,
@@ -1234,17 +1150,12 @@ impl Conn {
         let return_by_value = options.return_by_value.unwrap_or(false);
         let await_promise = options.await_promise.unwrap_or(false);
         let object_group = options.object_group.as_deref().unwrap_or("");
-        // `Runtime.evaluate` carries an optional `timeout` in milliseconds;
-        // `Runtime.callFunctionOn` has none, so the fallback applies. An
-        // out-of-range value is a CDP error, not a panic in the server task.
         let await_timeout = match options.timeout.filter(|millis| *millis > 0.0) {
             Some(millis) => Duration::try_from_secs_f64(millis / 1000.0)
                 .map_err(|_| DispatchError::InvalidParams("timeout".to_owned()))?,
             None => AWAIT_PROMISE_TIMEOUT,
         };
         let source = match source {
-            // `expression` is a script (statements allowed); indirect eval keeps
-            // its completion value without parenthesizing a trailing `;`.
             RuntimeSource::Evaluate { expression } => {
                 format!("host.evaluatePage({})", json_string(&expression))
             }
@@ -1276,9 +1187,7 @@ impl Conn {
         }
     }
 
-    /// Awaits a thenable and returns its CDP `RemoteObject`, storing objects
-    /// as handles: the `evaluateHandle` shape of
-    /// <https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-callFunctionOn>.
+    // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-callFunctionOn
     async fn runtime_handle_awaited(
         &mut self,
         tab: &TabHandle,
@@ -1309,8 +1218,6 @@ impl Conn {
         }
     }
 
-    /// Stores the result in a page-side handle and returns its `objectId`;
-    /// primitives are serializable and returned inline.
     async fn runtime_handle(
         &mut self,
         tab: &TabHandle,
@@ -1340,8 +1247,6 @@ impl Conn {
         exception_text_reply("unexpected script result")
     }
 
-    /// Resolves the value (awaiting a thenable via the waiter) and serializes
-    /// it to a CDP `RemoteObject`.
     async fn runtime_value(
         tab: &TabHandle,
         frame: FrameId,
@@ -1358,10 +1263,6 @@ impl Conn {
         }
     }
 
-    /// Schedules `source` into `host.<slot>[id]`, waits for it to settle (or
-    /// for a main-frame navigation to destroy the realm), cleans up on
-    /// timeout, reads the serialized slot via `read`, and surfaces any page
-    /// error as a CDP exception reply.
     async fn await_runtime_slot(
         tab: &TabHandle,
         frame: FrameId,
@@ -1386,11 +1287,7 @@ impl Conn {
             return Err(exception_reply(&error));
         }
         let ready = format!("Boolean(host.{slot} && host.{slot}[{id}] && host.{slot}[{id}].done)");
-        // A navigation replaces the main frame's realm, so an awaited slot in
-        // the old realm never settles. Stop waiting as soon as the navigation
-        // commits instead of polling until the timeout, which would also hold
-        // back the tab events the socket loop is waiting to deliver
-        // (<https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-callFunctionOn>).
+        // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-callFunctionOn
         let mut events = tab.subscribe().ok();
         let run = tab.run_until_js_true(RunUntilJsTrueOptions {
             frame,
@@ -1413,8 +1310,6 @@ impl Conn {
         match settled {
             Ok(true) => {}
             Ok(false) => {
-                // Drop the slot so a late settle cannot pile up results; the
-                // promise closure keeps its own reference to the slot.
                 let _ = tab
                     .execute_script(ExecuteScriptOptions {
                         frame,
@@ -1518,8 +1413,6 @@ impl Conn {
     }
 }
 
-/// Receives the next tab event, or pends forever once the subscription is
-/// dropped so a closed channel does not spin.
 async fn next_tab_event(receiver: &mut Option<mpsc::Receiver<TabEvent>>) -> Option<TabEvent> {
     match receiver {
         Some(receiver) => receiver.recv().await,

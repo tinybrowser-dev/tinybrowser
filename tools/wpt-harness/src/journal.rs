@@ -1,17 +1,3 @@
-//! Per-file progress journal, so a process that dies mid-run resumes.
-//!
-//! Every file runs in one process, and a page can end it without unwinding:
-//! a layout recursion overflows the stack, a `QuickJS` runtime aborts, a page
-//! spins inside a drain that never returns to the harness loop. A panic is
-//! one file's ERROR, but an abort used to be the whole chunk's.
-//!
-//! The journal records a line before a file starts and a line with its verdict
-//! when it ends. The driver restarts the process after an abort, and the
-//! journal says which files finished (report them again, do not run them) and
-//! which were in flight (they get one file's ERROR or TIMEOUT). Lines are
-//! written straight to the file rather than buffered, because the write that
-//! matters most is the one immediately before an abort.
-
 use std::collections::{BTreeSet, HashMap};
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
@@ -21,49 +7,30 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use wpt_report::Outcome;
 
-/// How a file a previous attempt left in flight is recorded.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Stale {
-    /// The process died: a panic, an abort, or a signal.
     Died,
-    /// The driver's watchdog cut a process that stopped returning.
     TimedOut,
 }
 
-/// One journal line.
 #[derive(Deserialize, Serialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 enum Record {
-    /// The file is about to run.
     Start { id: String },
-    /// The file has a verdict.
     Done { outcome: Outcome },
 }
 
-/// What an earlier attempt left behind.
 #[derive(Default)]
 pub struct Resumed {
-    /// Verdicts the earlier attempt finished.
     pub done: HashMap<String, Outcome>,
-    /// Files the earlier attempt started but never finished.
     pub stale: BTreeSet<String>,
 }
 
-/// The append-only progress log.
 pub struct Journal {
     file: Mutex<File>,
 }
 
 impl Journal {
-    /// Opens `path`, creating it when absent, and reads what an earlier attempt
-    /// wrote.
-    ///
-    /// A line that does not parse is a torn write from the abort that ended
-    /// the attempt: it is skipped, and the file it named (if any) runs again.
-    ///
-    /// # Errors
-    ///
-    /// The journal cannot be opened or read.
     pub fn open(path: &Path) -> io::Result<(Self, Resumed)> {
         let resumed = read(path)?;
         let file = OpenOptions::new()
@@ -79,23 +46,16 @@ impl Journal {
         ))
     }
 
-    /// Records that `id` is about to run.
     pub fn start(&self, id: &str) {
         self.append(&Record::Start { id: id.to_owned() });
     }
 
-    /// Records `outcome` as `id`'s verdict.
     pub fn finish(&self, outcome: &Outcome) {
         self.append(&Record::Done {
             outcome: outcome.clone(),
         });
     }
 
-    /// Appends one line and hands it to the kernel.
-    ///
-    /// A write failure costs crash recovery, not the run: the verdicts already
-    /// in memory still become the report. It is reported once per call so a
-    /// full disk is visible in the log instead of silent.
     fn append(&self, record: &Record) {
         let Ok(mut line) = serde_json::to_vec(record) else {
             return;
@@ -111,7 +71,6 @@ impl Journal {
     }
 }
 
-/// Reads the records an earlier attempt left.
 fn read(path: &Path) -> io::Result<Resumed> {
     let mut resumed = Resumed::default();
     let file = match File::open(path) {
@@ -141,7 +100,6 @@ fn read(path: &Path) -> io::Result<Resumed> {
     Ok(resumed)
 }
 
-/// Why a stale file has no verdict.
 #[must_use]
 pub fn stale_message(stale: Stale) -> &'static str {
     match stale {
@@ -178,8 +136,6 @@ mod tests {
         }
     }
 
-    /// A finished file is read back with its verdict and is not stale, so a
-    /// resumed attempt reports it instead of running it again.
     #[test]
     fn a_finished_file_is_resumed_with_its_verdict() {
         let path = scratch("finished");
@@ -196,8 +152,6 @@ mod tests {
         std::fs::remove_file(&path).expect("removed");
     }
 
-    /// A file that started and never finished is stale exactly once: after the
-    /// resumed attempt writes its verdict, a third attempt has no stale file.
     #[test]
     fn an_unfinished_file_is_stale_once() {
         let path = scratch("stale");
@@ -222,8 +176,6 @@ mod tests {
         std::fs::remove_file(&path).expect("removed");
     }
 
-    /// An abort can cut the last line in half; it names nothing, so that file
-    /// runs again instead of inheriting a verdict nobody wrote.
     #[test]
     fn a_torn_line_is_ignored() {
         let path = scratch("torn");

@@ -1,8 +1,5 @@
-// CSS Color API objects accepted by canvas fillStyle/strokeStyle.
 // https://drafts.csswg.org/css-color-5/#color-function
 (function () {
-  // The generated CSS namespace is non-extensible. Copy it so the color
-  // helpers can be added without mutating (or replacing in place) that object.
   var CSS = globalThis.CSS;
   if (!CSS || typeof CSS !== 'object' || !Object.isExtensible(CSS)) {
     var copy = {};

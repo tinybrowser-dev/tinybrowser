@@ -1,21 +1,8 @@
-//! One declaration form for an enumerated keyword set.
-//!
-//! The variant list is the only copy: it expands into the enum, `KEYWORDS`,
-//! `keyword()`, `parse()`, and the `Enumerated` impl. A duplicate spelling is a
-//! compile error, so a keyword cannot appear twice or be missing from the
-//! table without the code saying so.
-
-/// One enumerated keyword set.
 pub trait Enumerated: Copy + 'static {
-    /// Every keyword, in spec order.
     const KEYWORDS: &'static [Self];
 
-    /// The canonical spelling of the keyword.
     fn keyword(self) -> &'static str;
 
-    /// Parses one keyword, ASCII case-insensitively and untrimmed. Enumerated
-    /// attributes and header list members trim in their own parsers, so a
-    /// stray space is not a keyword here.
     fn parse(value: &str) -> Option<Self> {
         Self::KEYWORDS
             .iter()
@@ -24,10 +11,6 @@ pub trait Enumerated: Copy + 'static {
     }
 }
 
-/// Whether two keywords are the same spelling, ASCII case-insensitively.
-///
-/// The macro runs this at compile time, where `str::eq_ignore_ascii_case` is
-/// not available.
 #[doc(hidden)]
 #[must_use]
 pub const fn keywords_equal(left: &str, right: &str) -> bool {
@@ -46,10 +29,6 @@ pub const fn keywords_equal(left: &str, right: &str) -> bool {
     true
 }
 
-/// Declares one keyword set.
-///
-/// The invocation's attributes go on the enum; `Clone`, `Copy`, `Debug`, `Eq`,
-/// and `PartialEq` are always derived.
 #[macro_export]
 macro_rules! enumerated {
     (

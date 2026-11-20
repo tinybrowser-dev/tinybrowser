@@ -1,4 +1,3 @@
-// Minimal DOMMatrix for canvas APIs that accept or return a matrix.
 // https://drafts.fxtf.org/geometry/#DOMMatrix
 (function () {
   if (typeof globalThis.DOMMatrix === 'function') {
@@ -13,7 +12,6 @@
     var matrix = identity();
     if (Array.isArray(init)) {
       if (init.length === 6) {
-        // 2D sequence order: m11, m12, m21, m22, m41, m42.
         matrix[0] = Number(init[0]);
         matrix[1] = Number(init[1]);
         matrix[4] = Number(init[2]);

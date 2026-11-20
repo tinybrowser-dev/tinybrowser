@@ -72,9 +72,6 @@ struct DateTimeFormatInput {
 
 const ICU_DATA: &[u8] = include_bytes!("intl_data.postcard");
 
-// ECMA-402 defines the constructor surface and option algorithms. Firefox uses
-// the same boundary we use here: SpiderMonkey validates options into internal
-// slots, then creates a native formatter from that normalized record.
 // https://402.ecma-international.org/#sec-intl-object
 // https://searchfox.org/firefox-main/source/js/src/builtin/intl/NumberFormat.cpp#1128-1307
 // https://searchfox.org/firefox-main/source/js/src/builtin/intl/NumberFormat.cpp#1652-1689
@@ -82,7 +79,6 @@ const ICU_DATA: &[u8] = include_bytes!("intl_data.postcard");
 const INSTALL_INTL_DEFLATE: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/js_blobs/intl.deflate"));
 
-/// The Intl shim, inflated once per process.
 fn install_intl_js(ctx: &Ctx<'_>) -> Result<&'static str> {
     static CACHE: std::sync::OnceLock<Box<str>> = std::sync::OnceLock::new();
     super::blob::decompress(ctx, INSTALL_INTL_DEFLATE, &CACHE)
@@ -94,9 +90,6 @@ struct IntlData {
 }
 
 thread_local! {
-    // `JsRealm::new` installs Intl once per realm, but the ICU payloads behind
-    // canonicalization and fallback are immutable and independent of the realm.
-    // Deserialize them once per renderer thread instead of once per document.
     static INTL_DATA: RefCell<Option<IntlData>> = const { RefCell::new(None) };
 }
 
@@ -162,10 +155,6 @@ pub(super) fn install(ctx: &Ctx<'_>) -> Result<()> {
 }
 
 fn resolve_locale(tag: &str) -> String {
-    // `BestAvailableMatcher` gate and match in one: the provider carries full
-    // ICU data with fallback, so every well-formed tag is available and
-    // matches itself. Structurally invalid tags match nothing (the wrapper
-    // falls back to the default locale).
     tag.parse::<Locale>()
         .map_or_default(|locale| locale.to_string())
 }
@@ -222,10 +211,6 @@ fn format_date_time_args(
     format_date_time(ctx, provider, &input)
 }
 
-// ECMA-402 formats the exact mathematical value of strings parsed with the
-// ECMA-262 `StringNumericLiteral` grammar, which accepts a decimal point with
-// no digit on one side (`".5"`, `"1."`). `fixed_decimal` 0.7.2 requires a
-// digit on both sides, so adapt the exact string at this boundary.
 // https://402.ecma-international.org/#sec-tointlmathematicalvalue
 // https://262.ecma-international.org/#sec-stringnumericliteral
 fn parse_exact_decimal(ctx: &Ctx<'_>, value: &str) -> Result<Decimal> {
@@ -403,7 +388,6 @@ fn currency_digits(ctx: &Ctx<'_>, provider: &IntlProvider, currency: &str) -> Re
     Ok(fractions.get().resolve(currency).digits)
 }
 
-/// Formats `decimal` with one currency formatter construction.
 macro_rules! format_currency_value {
     ($formatter:expr, $decimal:expr) => {
         $formatter.map(|formatter| {
@@ -415,8 +399,6 @@ macro_rules! format_currency_value {
     };
 }
 
-/// Builds one fixed-calendar formatter for the locale, formats `value` with
-/// it, and maps a provider failure to the realm's internal exception.
 macro_rules! format_fixed_calendar {
     ($ctx:expr, $provider:expr, $locale:expr, $fieldset:expr, $value:expr) => {
         FixedCalendarDateTimeFormatter::<Gregorian, _>::try_new_with_buffer_provider(

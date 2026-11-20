@@ -1,8 +1,3 @@
-//! Browser-owned live networking: one [`net::Agent`] behind a value-only handle.
-//!
-//! Tab coordinators receive [`TabNetworkHandle`]. They do not expose or own
-//! [`net::Agent`].
-
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -21,8 +16,7 @@ use url::Url;
 use crate::actor::NavigationInitiator;
 use crate::wire::RendererAssignmentId;
 
-/// In-flight keepalive request bytes across every realm in this process
-/// (<https://fetch.spec.whatwg.org/#keepalive-flag>).
+// https://fetch.spec.whatwg.org/#keepalive-flag
 const KEEPALIVE_QUOTA: usize = 65_536;
 static KEEPALIVE_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
 
@@ -66,30 +60,22 @@ impl Drop for KeepaliveReservation {
     }
 }
 
-/// The answer from one dial once the response head is in.
 enum DialProgress {
-    /// The dial has its answer: a refused redirect or a 304 merged into the
-    /// stored entry.
     Done(Box<DialOutcome>),
-    /// The head is in and the body is still on the wire.
     Response {
         response: Box<net::Response>,
         permits: DialPermits,
     },
 }
 
-/// Everything a dial outcome reports except its body lives in the shared
-/// [`dial`] adapter, which the WPT harness also runs.
 pub(crate) use dial::dial_failure;
 use dial::{DialHead, outbound_request};
 
-/// The browser-wide and per-tab permits one dial holds until its body is done.
 struct DialPermits {
     _global: tokio::sync::OwnedSemaphorePermit,
     _tab: tokio::sync::OwnedSemaphorePermit,
 }
 
-/// The bytes a buffered outcome holds, for the cache tests.
 #[cfg(test)]
 fn stored_bytes(outcome: &DialOutcome) -> usize {
     match &outcome.body {
@@ -104,7 +90,6 @@ enum StreamMessage {
     Error(DialFailure),
 }
 
-/// Chunks a body task may buffer ahead of the renderer's next read.
 const STREAM_CHUNK_DEPTH: usize = 16;
 
 struct StreamEntry {
@@ -115,38 +100,27 @@ struct StreamEntry {
 
 type StreamMap = Arc<Mutex<HashMap<StreamId, StreamEntry>>>;
 
-/// Aborts the body task of a stream removed from the table, so the task stops
-/// reading and releases its dial permits.
 fn abort_stream(entry: Option<StreamEntry>) {
     if let Some(entry) = entry {
         entry.task.abort();
     }
 }
 
-/// One completed navigation dial: the response head the tab mounts plus the
-/// streaming body.
 pub(crate) struct NavOutcome {
     pub head: renderer::ResponseHead,
     pub body: net::Body,
     _permit: tokio::sync::OwnedSemaphorePermit,
 }
 
-/// Live network state for one storage partition.
 pub(crate) struct NetworkContext {
     agent: Agent,
     permits: NetworkPermits,
-    /// The HTTP cache stamps and reads entries with the clock an embedder
-    /// injects through [`AgentOptions`], so freshness agrees with it. Dial
-    /// deadlines stay on the reactor clock, which is what drives tokio timers.
     cache: Arc<HttpCache>,
     streams: StreamMap,
     next_stream: Arc<AtomicU64>,
 }
 
 impl NetworkContext {
-    /// Builds the partition network from caller `options`. The only default is
-    /// `timeout_per_call`: the identity comes from `options`, whose own default
-    /// is the built-in one.
     pub(crate) fn new(mut options: AgentOptions) -> Self {
         if options.timeout_per_call.is_none() {
             options.timeout_per_call = Some(dial::PAGE_FETCH_TIMEOUT);
@@ -161,7 +135,6 @@ impl NetworkContext {
         }
     }
 
-    /// Network capability for one tab, with its own per-tab cap.
     #[must_use]
     pub(crate) fn tab_handle(&self) -> TabNetworkHandle {
         TabNetworkHandle {
@@ -179,30 +152,23 @@ impl NetworkContext {
         self.agent.clone()
     }
 
-    /// The identity this partition was built with, for the renderers it
-    /// spawns.
     pub(crate) fn identity(&self) -> net::ValidIdentity {
         self.agent.identity().clone()
     }
 
-    /// Cookies visible to `url`, including session and `HttpOnly` cookies.
     pub(crate) fn cookie_records(&self, url: &Url) -> Vec<net::CookieRecord> {
         self.agent.cookie_records(url)
     }
 
-    /// Drops every cookie from the live jar.
     pub(crate) fn clear_cookies(&self) {
         self.agent.clear_cookies();
     }
 
-    /// Stores one `Set-Cookie` line for `url` with HTTP-level rules,
-    /// returning whether it was stored.
     pub(crate) fn add_cookie(&self, cookie: &str, url: &Url) -> bool {
         self.agent.store_cookie_http(cookie, url)
     }
 }
 
-/// Limits for in-flight dials: browser-wide and per reserved class.
 #[derive(Clone)]
 struct NetworkPermits {
     global: Arc<Semaphore>,
@@ -222,9 +188,6 @@ const MAX_GLOBAL_DIALS: usize = 32;
 const MAX_NAVIGATION_DIALS: usize = 8;
 const MAX_TAB_DIALS: usize = 8;
 
-/// Cloneable network capability for one tab.
-///
-/// Completions return to the tab coordinator as renderer events.
 #[derive(Clone)]
 pub(crate) struct TabNetworkHandle {
     agent: Agent,
@@ -233,33 +196,21 @@ pub(crate) struct TabNetworkHandle {
     cache: Arc<HttpCache>,
     streams: StreamMap,
     next_stream: Arc<AtomicU64>,
-    /// Style sheet URLs this tab's network served, keyed by the origin of the
-    /// document that asked for them: final URL and request URL, fragments
-    /// stripped. A request a sheet initiates sends the sheet's URL as its
-    /// referrer, which is cross-origin to both the document and the target, so
-    /// the browser authorizes an explicit referrer against the sheets *that
-    /// document* loaded instead of against the document's own origin. Keying
-    /// by origin is what stops document B from naming a sheet document A
-    /// loaded, which would leak another principal's cross-origin URLs and the
-    /// referrer policy they came with
-    /// (<https://w3c.github.io/webappsec-referrer-policy/#integration-with-css>).
+    // https://w3c.github.io/webappsec-referrer-policy/#integration-with-css
     sheets: Arc<Mutex<HashMap<url::Origin, HashSet<Url>>>>,
 }
 
 impl TabNetworkHandle {
-    /// `document.cookie` getter for `url` in one cookie partition.
     #[must_use]
     pub(crate) fn cookies_for(&self, url: &Url, partition_key: Option<&str>) -> String {
         self.agent.cookies_for_partition(url, partition_key)
     }
 
-    /// `document.cookie` setter for `url` in one cookie partition.
     pub(crate) fn set_cookie(&self, value: &str, url: &Url, partition_key: Option<&str>) {
         let _stored = self.agent.set_cookie_partition(value, url, partition_key);
     }
 
-    /// Script-visible cookies for a `CookieStore` query
-    /// (<https://cookiestore.spec.whatwg.org/#query-cookies>).
+    // https://cookiestore.spec.whatwg.org/#query-cookies
     #[must_use]
     pub(crate) fn cookie_store_records(
         &self,
@@ -273,8 +224,7 @@ impl TabNetworkHandle {
             .collect()
     }
 
-    /// Stores one typed `CookieStore` write
-    /// (<https://cookiestore.spec.whatwg.org/#set-a-cookie>).
+    // https://cookiestore.spec.whatwg.org/#set-a-cookie
     pub(crate) fn cookie_store_store(
         &self,
         write: &net::ScriptCookieWrite,
@@ -285,13 +235,6 @@ impl TabNetworkHandle {
             .set_script_cookie_partition(write, url, partition_key);
     }
 
-    /// Spawns one navigation dial and returns its task handle. The caller
-    /// aborts the handle to cancel the request. The completion returns on
-    /// `reply` tagged with `epoch`.
-    ///
-    /// `initiator` is the document that started it, when one did. A
-    /// browser-issued navigation passes `None`: it sends no referrer,
-    /// `Sec-Fetch-Site: none`, and same-site cookies.
     pub(crate) fn dial_navigation(
         &self,
         epoch: u64,
@@ -316,9 +259,6 @@ impl TabNetworkHandle {
         url: &Url,
         source: Option<&NavigationInitiator>,
     ) -> Result<NavOutcome, DialFailure> {
-        // Browser-seam timeline for `profile` in tools/wpt: a stalled test is
-        // read from these records. The macro tests the level before it formats
-        // anything, so an off level costs one check and the clock read below.
         let started = Instant::now();
         logging::trace!(target: "browser::net", "nav start {url}");
         let deadline = started + dial::PAGE_FETCH_TIMEOUT;
@@ -326,10 +266,7 @@ impl TabNetworkHandle {
         let mut request = Request::new(Method::GET, url.clone());
         dial::apply_navigation_headers(&mut request, url);
         request.initiator_kind = InitiatorKind::Navigation;
-        // One initiator origin feeds `Sec-Fetch-Site`, the cookie context, and
-        // the request origin. `None` means a fresh opaque origin: no document
-        // speaks for this navigation and none of the three may pretend one
-        // does (<https://w3c.github.io/webappsec-fetch-metadata/#abstract-opdef-set-site>).
+        // https://w3c.github.io/webappsec-fetch-metadata/#abstract-opdef-set-site
         request.initiator = source.map(|source| source.origin.clone());
         request.cors = net::cors::CorsSettings {
             mode: net::cors::RequestMode::Navigate,
@@ -339,10 +276,7 @@ impl TabNetworkHandle {
         };
         request.deadline = Some(deadline);
         if let Some(source) = source {
-            // The referrer source is the calling document's URL, not the
-            // request origin: a `srcdoc` document's own URL cannot be a
-            // referrer, so the renderer already walked to its parent's
-            // (<https://w3c.github.io/webappsec-referrer-policy/#determine-requests-referrer>).
+            // https://w3c.github.io/webappsec-referrer-policy/#determine-requests-referrer
             request.referrer = match &source.referrer {
                 Some(referrer) => net::Referrer::Client(net::ReferrerClient {
                     origin: source.origin.clone(),
@@ -370,10 +304,7 @@ impl TabNetworkHandle {
             "nav head {url} -> {status} {final_url} in {:?}",
             started.elapsed()
         );
-        // One head reader for both dial paths, so the top-level document and a
-        // fetch outcome cannot disagree about which header becomes policy,
-        // endpoints, or the nosniff flag
-        // (<https://html.spec.whatwg.org/multipage/document-lifecycle.html#initialise-the-document-object>).
+        // https://html.spec.whatwg.org/multipage/document-lifecycle.html#initialise-the-document-object
         let head = DialHead::internal(&response).into_document_head();
         let body = response.into_body().await;
         Ok(NavOutcome {
@@ -383,7 +314,6 @@ impl TabNetworkHandle {
         })
     }
 
-    /// Async HTTP request for one renderer service call.
     pub(crate) async fn dial_request(
         &self,
         request: &DialRequest,
@@ -395,10 +325,6 @@ impl TabNetworkHandle {
             .map(|outcome| orb_filter(request, outcome))
     }
 
-    /// The dial itself. Its answer is the *internal* response for engine
-    /// consumers, so [`dial_request`](Self::dial_request) filters it before it
-    /// leaves the browser. Cache writes and sheet bookkeeping see the
-    /// unfiltered answer, which is what a later same-origin request reuses.
     async fn dial_request_unfiltered(
         &self,
         request: &DialRequest,
@@ -409,9 +335,7 @@ impl TabNetworkHandle {
         let _keepalive = KeepaliveReservation::acquire(request)?;
         let deadline = Instant::now() + dial::budget(request);
         let outbound = self.build_outbound(request, initiator, deadline)?;
-        // `Vary` names headers this host adds below the renderer, so the cache
-        // compares the list that is about to be sent, not the page's
-        // (<https://www.rfc-editor.org/rfc/rfc9111#section-4.1>).
+        // https://www.rfc-editor.org/rfc/rfc9111#section-4.1
         let sent = dial::sent_headers(&outbound);
         let (stored, validators) = match self.cache.read(request, &sent, initiator, owner.get())? {
             CacheDecision::Hit(hit) => {
@@ -479,7 +403,6 @@ impl TabNetworkHandle {
         result
     }
 
-    /// Sends the request and reads the response head.
     async fn send_head(
         &self,
         request: &DialRequest,
@@ -507,10 +430,7 @@ impl TabNetworkHandle {
         if response.status() == 304
             && let Some(stored) = stored
         {
-            // A 304 that names no representation this dial made conditional
-            // cannot update the entry, and treating it as a response would
-            // hand the page a body the server never sent
-            // (<https://www.rfc-editor.org/rfc/rfc9111#section-4.3.4>).
+            // https://www.rfc-editor.org/rfc/rfc9111#section-4.3.4
             let merged = HttpCache::merge_not_modified(stored, &response, validators)
                 .ok_or(DialFailure::Connect)?;
             return Ok(DialProgress::Done(Box::new(merged)));
@@ -524,8 +444,6 @@ impl TabNetworkHandle {
         })
     }
 
-    /// Registers the body stream with a task that owns the permits and the
-    /// cache write for its bytes.
     fn start_stream(
         &self,
         request: &DialRequest,
@@ -538,13 +456,9 @@ impl TabNetworkHandle {
         let head = DialHead::read(request, &response);
         let opaque = head.null_body();
         let mut outcome = head.into_outcome(ResponseBody::Bytes(Vec::new()));
-        // An unsafe method's successful response invalidates what the cache
-        // holds for the URL as soon as its head arrives
-        // (<https://www.rfc-editor.org/rfc/rfc9111#section-4.4>). A `no-cors`
-        // response is opaque with a null body and still invalidates.
+        // https://www.rfc-editor.org/rfc/rfc9111#section-4.4
         self.cache.invalidate_unsafe(request, owner.get(), &outcome);
-        // A page-visible opaque response has a null body, so there is nothing
-        // to stream (<https://fetch.spec.whatwg.org/#concept-filtered-response-opaque>).
+        // https://fetch.spec.whatwg.org/#concept-filtered-response-opaque
         if opaque {
             return outcome;
         }
@@ -635,8 +549,6 @@ impl TabNetworkHandle {
         abort_stream(streams.remove(&id));
     }
 
-    /// Aborts every stream an assignment owns, so a released renderer leaves
-    /// no body task reading into memory for nobody.
     pub(crate) fn release_streams(&self, owner: RendererAssignmentId) {
         let mut streams = self
             .streams
@@ -652,10 +564,7 @@ impl TabNetworkHandle {
         }
     }
 
-    /// Records a successful style sheet response's URLs, so a later explicit
-    /// referrer naming the sheet can be authorized. A sheet that failed or
-    /// never arrived is not recorded: nothing it contained can issue a request
-    /// (<https://w3c.github.io/webappsec-referrer-policy/#integration-with-css>).
+    // https://w3c.github.io/webappsec-referrer-policy/#integration-with-css
     fn remember_sheet(
         &self,
         request: &DialRequest,
@@ -666,13 +575,7 @@ impl TabNetworkHandle {
         if request.policy.kind() != DialKind::Stylesheet || !(200..300).contains(&status) {
             return;
         }
-        // Every opaque initiator is a fresh unique origin, so a sheet it loads
-        // could never authorize a later referrer; recording it would only grow
-        // the map. A later request from such a document falls back to sending
-        // no referrer, which is what the strip-for-use algorithm answers for a
-        // URL with no host anyway
-        // (<https://w3c.github.io/webappsec-referrer-policy/#strip-url>).
-        // `url`'s `Origin` names opaque origins by not being a tuple.
+        // https://w3c.github.io/webappsec-referrer-policy/#strip-url
         if !initiator.is_tuple() {
             return;
         }
@@ -682,18 +585,13 @@ impl TabNetworkHandle {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let loaded = sheets.entry(initiator.clone()).or_default();
         for url in [&request.url, final_url] {
-            // A referrer never carries a fragment, and the sheet URL the
-            // renderer names is the one it was loaded from
-            // (<https://w3c.github.io/webappsec-referrer-policy/#strip-url>).
+            // https://w3c.github.io/webappsec-referrer-policy/#strip-url
             let mut url = url.clone();
             url.set_fragment(None);
             loaded.insert(url);
         }
     }
 
-    /// Builds one outbound request with this tab's style sheet set as the
-    /// explicit-referrer authority. The lock is taken and released inside the
-    /// call, so no guard lives across an await.
     fn build_outbound(
         &self,
         request: &DialRequest,
@@ -724,16 +622,7 @@ impl TabNetworkHandle {
     }
 }
 
-/// Applies Opaque Response Blocking to one engine-facing opaque response, and
-/// trims the head such a response delivers to what its consumer can use.
-///
-/// A page `fetch` already receives the filtered view, whose body is null and
-/// whose headers are masked. Every other dial receives the unsafe internal
-/// response so the engine can decode an image, compile a script, or parse a
-/// sheet, and without this check it could ask for any cross-origin document and
-/// read it. Chromium runs ORB in the network service before a byte reaches a
-/// renderer; this is the same boundary
-/// (<https://github.com/annevk/orb>).
+// https://github.com/annevk/orb
 fn orb_filter(request: &DialRequest, outcome: DialOutcome) -> DialOutcome {
     if request.policy.exposes_response() || !outcome.response_type.is_opaque() {
         return outcome;
@@ -746,9 +635,6 @@ fn orb_filter(request: &DialRequest, outcome: DialOutcome) -> DialOutcome {
     });
     let body = match &outcome.body {
         ResponseBody::Bytes(bytes) => Some(bytes.as_slice()),
-        // An undecodable body has no readable bytes, and a streamed one has
-        // not been read yet: the MIME-type rules still apply, and the sniffing
-        // rules wait for bytes that never arrive (Chromium's `SniffMore`).
         ResponseBody::Undecodable | ResponseBody::Streamed(_) => None,
     };
     if net::orb::blocks(outcome.content_type.as_deref(), nosniff, body) {
@@ -759,9 +645,6 @@ fn orb_filter(request: &DialRequest, outcome: DialOutcome) -> DialOutcome {
             ..outcome
         };
     }
-    // An opaque head carries the whole served header list, which names
-    // cookies, cache policy, and origins the consumer has no say over. The
-    // engine may only act on what decides how the body is interpreted.
     let headers = outcome
         .headers
         .iter()
@@ -774,7 +657,6 @@ fn orb_filter(request: &DialRequest, outcome: DialOutcome) -> DialOutcome {
     DialOutcome { headers, ..outcome }
 }
 
-/// The cache write a streamed body performs once its bytes are complete.
 struct PendingStore {
     outcome: DialOutcome,
     cache: Arc<HttpCache>,
@@ -784,8 +666,6 @@ struct PendingStore {
     partition: u64,
 }
 
-/// Everything one streamed body task owns until its bytes are done: the
-/// response, the permits it borrows, and the cache write it may finish.
 struct StreamJob {
     response: net::Response,
     integrity: Option<String>,
@@ -874,11 +754,6 @@ fn trace_dial_result(
     }
 }
 
-/// A fresh opaque origin.
-///
-/// A browser-initiated navigation has no initiating document, so nothing can
-/// claim its origin. The `url` crate mints an opaque origin for a non-special
-/// URL, and every mint is distinct, which is exactly "no principal".
 fn opaque_origin() -> url::Origin {
     net::about_blank().origin()
 }
@@ -896,11 +771,7 @@ mod tests {
         DialRequest::new(policy, &url, &initiator.origin())
     }
 
-    /// A sheet's referrer authority belongs to the origin that loaded it.
-    /// Another document in the same tab must not be able to name that URL and
-    /// leak it (with the policy it was served under) to a target of its
-    /// choosing
-    /// (<https://w3c.github.io/webappsec-referrer-policy/#integration-with-css>).
+    // https://w3c.github.io/webappsec-referrer-policy/#integration-with-css
     #[test]
     fn a_sheet_referrer_belongs_to_the_document_that_loaded_it() {
         let loader = Url::parse("http://a.test/page").expect("page URL").origin();
@@ -924,10 +795,7 @@ mod tests {
         );
     }
 
-    /// A cross-origin `no-cors` subresource receives the *internal* response,
-    /// so without ORB a page could label a dial an image and read a
-    /// cross-origin document
-    /// (<https://github.com/annevk/orb>).
+    // https://github.com/annevk/orb
     #[test]
     fn orb_stops_an_opaque_document_and_trims_an_opaque_head() {
         fn opaque(content_type: &str, body: &[u8]) -> DialOutcome {
@@ -976,8 +844,6 @@ mod tests {
             "an opaque head keeps only what decides how the body is read"
         );
 
-        // A page `fetch` reads the filtered view, which the fetch layer already
-        // masks; ORB must not touch it twice.
         let fetch = dial(
             RequestPolicy::Fetch(renderer::CorsRequest {
                 mode: renderer::CorsMode::NoCors,
@@ -1004,11 +870,6 @@ mod tests {
         )
     }
 
-    /// What each policy actually puts on the wire: the CORS triple, the
-    /// fetch-metadata destination and mode, and the origin the browser
-    /// authorized. The renderer's table is only a claim until this holds.
-    /// One row of the wire table: the policy, its resolved CORS triple, and
-    /// the fetch-metadata mode and destination the browser writes.
     type WireCase = (
         RequestPolicy,
         net::cors::RequestMode,
@@ -1111,11 +972,7 @@ mod tests {
         table
     }
 
-    /// Module fetches: a graph is `cors`, a module worker's root script is
-    /// `same-origin`, and both carry the credentials mode of their script fetch
-    /// options
-    /// (<https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script>,
-    /// step 4).
+    // https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script
     fn wire_module_table() -> [WireCase; 2] {
         use net::cors::{CredentialsMode, RedirectMode, RequestMode};
 
@@ -1180,9 +1037,7 @@ mod tests {
         }
     }
 
-    /// A `no-cors` body's type goes through the same guard as every other
-    /// field, so it cannot smuggle a type that would have needed a preflight
-    /// (<https://fetch.spec.whatwg.org/#concept-headers-guard>).
+    // https://fetch.spec.whatwg.org/#concept-headers-guard
     #[test]
     fn a_no_cors_body_cannot_smuggle_a_non_safelisted_content_type() {
         use net::cors::{CredentialsMode, RedirectMode};
@@ -1216,8 +1071,6 @@ mod tests {
             "a safelisted type still reaches the wire"
         );
 
-        // The guard is the page's. A `report-uri` delivery is `no-cors` too,
-        // and CSP gives it a non-safelisted type by construction.
         let mut report = dial(RequestPolicy::CspReportUri, "http://b.test/report");
         report.method = net::Method::POST;
         report.content_type = Some("application/csp-report".to_owned());
@@ -1312,10 +1165,7 @@ mod tests {
         server.abort();
     }
 
-    /// A cross-origin `no-cors` subresource that is really a document never
-    /// reaches the engine, and the opaque head it does see is trimmed to what
-    /// decides how a body is interpreted
-    /// (<https://github.com/annevk/orb>).
+    // https://github.com/annevk/orb
     #[tokio::test]
     async fn orb_blocks_a_cross_origin_document_before_the_engine_reads_it() {
         use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -1366,10 +1216,7 @@ mod tests {
         server.abort();
     }
 
-    /// A `no-cors` subresource reads the unsafe response — body, status, and
-    /// headers — because the engine consumes it, while the same request made
-    /// by page script is an opaque filtered response
-    /// (<https://fetch.spec.whatwg.org/#concept-internal-response>).
+    // https://fetch.spec.whatwg.org/#concept-internal-response
     #[tokio::test]
     async fn an_opaque_subresource_is_readable_by_the_engine_and_not_by_script() {
         use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -1447,9 +1294,6 @@ mod tests {
         server.abort();
     }
 
-    /// A stored `ETag` holds isomorphic-decoded bytes, so writing it back must
-    /// keep one byte per code point. UTF-8 would send `0xC3 0xA9` where the
-    /// server sent `0xE9`, and every revalidation would answer 200.
     #[tokio::test]
     async fn revalidation_sends_a_non_ascii_etag_as_one_byte_per_code_point() {
         use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -1563,9 +1407,7 @@ mod tests {
                 .expect("permit after release");
     }
 
-    /// The identity hints are written by the agent, so this builder names only
-    /// the preference hint it owns, and only over a trustworthy transport
-    /// (<https://wicg.github.io/user-preference-media-features-headers/#sec-ch-prefers-color-scheme>).
+    // https://wicg.github.io/user-preference-media-features-headers/#sec-ch-prefers-color-scheme
     #[test]
     fn chrome_navigation_headers_are_limited_to_trustworthy_urls() {
         let secure = Url::parse("https://example.com/").expect("https url");
@@ -1594,8 +1436,6 @@ mod tests {
             "the Fetch metadata group is built here and reaches trustworthy hops"
         );
         assert!(insecure_request.headers.get("accept").is_some());
-        // The group is stripped per hop, where the redirect chain is known, so
-        // this builder still writes it for a plain-http navigation too
-        // (<https://w3c.github.io/webappsec-fetch-metadata/#fetch-integration>).
+        // https://w3c.github.io/webappsec-fetch-metadata/#fetch-integration
     }
 }

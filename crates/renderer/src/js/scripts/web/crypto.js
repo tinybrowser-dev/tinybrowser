@@ -1,12 +1,9 @@
-// Web Crypto entropy and UUID generation. Algorithms remain absent until the
-// engine can implement them faithfully.
 // https://w3c.github.io/webcrypto/#Crypto-interface
 {
   const Exception = DOMException;
   const QuotaExceeded = globalThis.QuotaExceededError;
   const hexDigits = '0123456789abcdef';
-  // Both algorithms fill here, so neither consults a page method
-  // (<https://w3c.github.io/webcrypto/#Crypto-method-getRandomValues>).
+  // https://w3c.github.io/webcrypto/#Crypto-method-getRandomValues
   const fill = bytes => {
     __tbApply(__tbIDLTypedArraySet, bytes, [
       host.__tbRandomBytes(__tbApply(__tbIDLTypedArrayByteLength, bytes, [])),
@@ -28,18 +25,14 @@
         return false;
     }
   };
-  // `Crypto` is not constructible; `crypto` is its one instance.
   const [Crypto, crypto] = __tbInstallInterface(class Crypto {
     getRandomValues(array) {
-      // A float typed array or a `DataView` is an `ArrayBufferView`, so the
-      // conversion accepts it and this step rejects it
-      // (<https://w3c.github.io/webcrypto/#Crypto-method-getRandomValues>).
+      // https://w3c.github.io/webcrypto/#Crypto-method-getRandomValues
       if (!isIntegerType(__tbApply(__tbIDLTypedArrayTag, array, []))) {
         throw new Exception('destination must be an integer TypedArray', 'TypeMismatchError');
       }
       const length = __tbApply(__tbIDLTypedArrayByteLength, array, []);
       if (length > 65536) throw new QuotaExceeded('random byte quota exceeded');
-      // Constructing the view also rejects a detached destination buffer.
       const bytes = new __tbUint8Array(
         __tbApply(__tbIDLTypedArrayBuffer, array, []),
         __tbApply(__tbIDLTypedArrayByteOffset, array, []),
@@ -65,8 +58,7 @@
   __tbDefineProperty(globalThis, 'Crypto', {
     __proto__: null, value: Crypto, writable: true, enumerable: false, configurable: true,
   });
-  // `[SameObject] readonly attribute Crypto crypto`
-  // (<https://w3c.github.io/webcrypto/#WindowOrWorkerGlobalScope-partial>).
+  // https://w3c.github.io/webcrypto/#WindowOrWorkerGlobalScope-partial
   __tbDefineProperty(globalThis, 'crypto', {
     __proto__: null, get: () => crypto, enumerable: true, configurable: true,
   });

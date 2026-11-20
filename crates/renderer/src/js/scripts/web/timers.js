@@ -2,10 +2,7 @@ const __tbEventConstructor = globalThis.Event;
 const __tbEventTargetConstructor = globalThis.EventTarget;
 host.array = __tbPrivateArray;
 host.push = __tbArray.push;
-// Timer handles are positive integers and the table index is the handle, so
-// slot 0 stays unused: Chromium's first `setTimeout` returns 1 and WPT reads
-// that value
-// (<https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#dom-settimeout>).
+// https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#dom-settimeout — slot 0 stays unused so the first setTimeout handle is 1, matching Chromium and WPT
 host.__tb_timeouts = [null];
 __tbSetPrototypeOf(host.__tb_timeouts, null);
 host.__tb_intervals = Object.create(null);
@@ -17,9 +14,7 @@ globalThis.clearTimeout = function(id) {
   delete host.__tb_intervals[id];
   host.__cancelTimeout(Number(id));
 };
-// Both clear methods remove IDs from the same timer map, and an interval
-// reschedules with its original ID after invoking its handler.
-// <https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#timer-initialisation-steps>
+// https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#timer-initialisation-steps
 const __tbTimer = (handler, ms, args, repeat) => {
   var delay = Math.max(0, Number(ms) | 0);
   var callback;
@@ -27,10 +22,7 @@ const __tbTimer = (handler, ms, args, repeat) => {
     callback = handler;
   } else {
     callback = String(handler);
-    // The timer initialization steps compile a string handler when the timer
-    // is created and return 0 when compilation fails, which is what CSP
-    // blocking an evaluation does
-    // (<https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#timer-initialisation-steps>).
+    // https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#timer-initialisation-steps
     if (!host.__tbCspAllowsEval(callback)) {
       return 0;
     }
@@ -38,7 +30,7 @@ const __tbTimer = (handler, ms, args, repeat) => {
   var id = host.__tb_timeouts.length;
   var nesting;
   function schedule() {
-    // Chromium increments before clamping (crbug.com/1108877); HTML clamps first.
+    // https://crbug.com/1108877 — HTML clamps nesting level before incrementing; Chromium increments first
     var timeout = __tbTimerNesting > 5 ? Math.max(4, delay) : delay;
     nesting = __tbTimerNesting + 1;
     host.__scheduleTimeout(id, timeout);
@@ -50,9 +42,7 @@ const __tbTimer = (handler, ms, args, repeat) => {
       if (typeof callback === 'function') {
         __tbApply(callback, globalThis, args);
       } else {
-        // The string was checked when the timer was created; running it is
-        // not a second compilation
-        // (<https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#timer-initialisation-steps>).
+        // https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#timer-initialisation-steps
         host.__tbTimerStringBegin();
         try {
           (0, eval)(callback);
@@ -84,12 +74,7 @@ globalThis.setInterval = function(handler, ms, ...args) {
   return __tbTimer(handler, ms, args, true);
 };
 globalThis.clearInterval = globalThis.clearTimeout;
-// The engine has no rendering pipeline; a frame callback is a 16ms timer
-// (<https://html.spec.whatwg.org/multipage/imagebitmap-and-animations.html#dom-animationframeprovider-requestanimationframe>).
-// Deviations: callbacks queued in the same frame do not share a
-// DOMHighResTimeStamp (each gets `Date.now()`), handles share the timer
-// table with the +1 offset, and `cancelAnimationFrame` of a plain
-// `setTimeout` handle cancels that timer.
+// https://html.spec.whatwg.org/multipage/imagebitmap-and-animations.html#dom-animationframeprovider-requestanimationframe
 let pendingFrameCallbacks = 0;
 globalThis.requestAnimationFrame = function(fn) {
   if (typeof fn !== 'function') {
@@ -102,19 +87,12 @@ globalThis.requestAnimationFrame = function(fn) {
   }, 16, [], false) + 1;
 };
 globalThis.cancelAnimationFrame = function(id) {
-  // A cancelled callback stays counted: the harness only uses the count to
-  // decide whether to give the page a frame before a screenshot, and it
-  // bounds that to a few frames.
   globalThis.clearTimeout(Number(id) - 1);
 };
-// Whether the page has animation-frame callbacks queued. A host that is about
-// to paint (the reftest harness) runs them first, because a screenshot is a
-// rendering opportunity
-// (<https://html.spec.whatwg.org/multipage/imagebitmap-and-animations.html#run-the-animation-frame-callbacks>).
+// https://html.spec.whatwg.org/multipage/imagebitmap-and-animations.html#run-the-animation-frame-callbacks
 globalThis.__tbPendingFrameCallbacks = function() {
   return pendingFrameCallbacks;
 };
-// A no-op console: enough for scripts that only log, without a logging pipe.
 if (typeof globalThis.console === 'undefined') {
   const noop = function() {};
   globalThis.console = {
@@ -123,10 +101,7 @@ if (typeof globalThis.console === 'undefined') {
     assert: noop, time: noop, timeEnd: noop, count: noop,
   };
 }
-// `document.cookie` lives on the interface, not the instance, so every
-// Document answers it. A cookie-averse document (no browsing context, or a URL
-// that is not HTTP(S)) answers the empty string and ignores writes
-// (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-cookie>).
+// https://html.spec.whatwg.org/multipage/dom.html#dom-document-cookie
 if (globalThis.document && globalThis.Document) {
   Object.defineProperty(globalThis.Document.prototype, 'cookie', {
     get() {
@@ -135,9 +110,7 @@ if (globalThis.document && globalThis.Document) {
     },
     set(v) {
       if (host.__tbCookieAverse(this)) return;
-      // The write is a cookie store change like any other, so the host
-      // queues the observation in every realm
-      // (<https://cookiestore.spec.whatwg.org/#process-cookie-changes>).
+      // https://cookiestore.spec.whatwg.org/#process-cookie-changes
       host.__cookieSet(String(v));
     },
     enumerable: true,

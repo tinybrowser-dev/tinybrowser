@@ -1,15 +1,3 @@
-//! Page engine for one document: Blitz parsing and trees plus `QuickJS`
-//! behind a value-only browser interface.
-//!
-//! The engine owns the frame actor (`document::Document`) and never links `net`.
-//! The browser process owns the tab, navigation, the network, and cookies.
-//! Style, layout, and paint live in the `render` module via Blitz: one-shot
-//! screenshot and geometry through `blitz-dom`/`blitz-paint` and the
-//! `anyrender_tiny_skia` backend. A carrier drives this crate: the browser's
-//! child transport on a native build, the WebAssembly component on a wasm
-//! build. Both feed the same [`Engine`], and both implement [`BrowserServices`]
-//! to supply effects.
-
 use std::sync::Arc;
 
 use markup5ever::interface::QuirksMode;
@@ -43,31 +31,10 @@ pub use embedded::EmbeddedRenderer;
 pub use engine::{DEFAULT_VIEWPORT, Engine, decode_data_url, decode_data_url_bounded};
 pub use render::RgbaImage;
 
-/// A system font database engines on one thread can share.
-///
-/// Building one walks the installed fonts (tens of milliseconds on every
-/// engine construction); cloning it is a reference-count bump. A harness that
-/// mounts thousands of documents should build one per worker and hand a clone
-/// to every engine it creates.
 #[derive(Clone, Default)]
 pub struct Fonts(parley::FontContext);
 
 impl Fonts {
-    /// Registers every face in `data`, which must be a font file.
-    ///
-    /// The bytes are shared, not copied: the collection keeps the arc. The
-    /// count is one per family the data's faces name — a family the
-    /// collection already holds is counted again — and zero when nothing
-    /// parses, arbitrary bytes included, so `0` is the caller's signal that
-    /// no face registered.
-    ///
-    /// ```
-    /// use renderer::Fonts;
-    /// use std::sync::Arc;
-    ///
-    /// let mut fonts = Fonts::default();
-    /// assert_eq!(fonts.register_font(Arc::new(b"not a font".to_vec())), 0);
-    /// ```
     pub fn register_font(&mut self, data: Arc<dyn AsRef<[u8]> + Send + Sync>) -> usize {
         self.0
             .collection
@@ -75,9 +42,6 @@ impl Fonts {
             .len()
     }
 
-    /// Registers a host-supplied font (sfnt, WOFF, or WOFF2) and appends its
-    /// families to the generic fallback lists so documents render text even in
-    /// environments without system fonts (such as WebAssembly).
     pub fn register_fallback_font(&mut self, data: Vec<u8>) -> usize {
         use parley::fontique::{Blob, GenericFamily};
 
@@ -122,12 +86,7 @@ pub use protocol::{
 pub use remote::RemoteValue;
 pub use storage::PendingStorageEvent;
 
-/// The document animation timeline, in seconds.
-///
-/// It follows the clock the page's timers use (`tokio::time`, which the WPT
-/// harness advances virtually), so a CSS transition and a smooth scroll make
-/// progress as frames run rather than only with the wall clock
-/// (<https://drafts.csswg.org/cssom-view/#scroll-an-element>).
+// https://drafts.csswg.org/cssom-view/#scroll-an-element
 pub(crate) fn animation_seconds() -> f64 {
     static EPOCH: std::sync::OnceLock<tokio::time::Instant> = std::sync::OnceLock::new();
     EPOCH
@@ -136,54 +95,31 @@ pub(crate) fn animation_seconds() -> f64 {
         .as_secs_f64()
 }
 
-/// The current document readiness
-/// (<https://html.spec.whatwg.org/multipage/dom.html#current-document-readiness>).
+// https://html.spec.whatwg.org/multipage/dom.html#current-document-readiness
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ReadyState {
-    /// The parser is still running.
     Loading,
-    /// Parsing finished; `DOMContentLoaded` has fired.
     Interactive,
-    /// The document is completely loaded; the `load` event has fired.
     Complete,
 }
 
-/// The result of parsing one document.
 pub(crate) struct Parsed {
-    /// The store id, assigned on insert; `0` means unassigned.
     pub id: u32,
-    /// The parsed tree plus its mutation journal.
     pub document: BlitzDocument,
-    /// Compatibility mode selected by the doctype (or its absence).
     pub quirks_mode: QuirksMode,
-    /// MIME type this document reports from `document.contentType`.
     pub content_type: &'static str,
-    /// Whether this object implements `XMLDocument`
-    /// (<https://dom.spec.whatwg.org/#xmldocument>).
-    ///
-    /// `new Document()` and `DOMParser` create XML documents that are still
-    /// plain `Document`s
-    /// (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-domparser-parsefromstring>).
-    /// Navigated XML, `new XMLDocument()`, and `createDocument()` use
-    /// `XMLDocument`.
+    // https://dom.spec.whatwg.org/#xmldocument
+    // https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-domparser-parsefromstring
     pub xml_document: bool,
-    /// The document's readiness; parsed documents start at [`ReadyState::Loading`]
-    /// while documents created by script start complete
-    /// (<https://html.spec.whatwg.org/multipage/dom.html#current-document-readiness>).
+    // https://html.spec.whatwg.org/multipage/dom.html#current-document-readiness
     pub ready_state: ReadyState,
-    /// The document's URL when it differs from the world's active document,
-    /// such as a `DOMParser` result
-    /// (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-domparser-parsefromstring>).
+    // https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-domparser-parsefromstring
     pub url: Option<String>,
-    /// The encoding name `document.characterSet` reports
-    /// (<https://encoding.spec.whatwg.org/#dom-document-characterset>).
+    // https://encoding.spec.whatwg.org/#dom-document-characterset
     pub character_set: &'static str,
 }
 
 impl Parsed {
-    /// An empty script-created document: never rendered, so no UA sheets and
-    /// no providers; shares the process font context for speed (a fresh
-    /// scan costs ~25ms per document).
     pub(crate) fn script(content_type: &'static str, font_ctx: parley::FontContext) -> Self {
         let config = blitz_dom::DocumentConfig {
             font_ctx: Some(font_ctx),
@@ -204,24 +140,13 @@ impl Parsed {
     }
 }
 
-/// Parses a full HTML document into a fresh tree.
-///
-/// Broken markup recovery is html5ever's job (through `blitz-html`).
-/// Script interleaving runs in tree order in `document`.
-/// Scripting is enabled, so `noscript` parses as text. The sniffed quirks
-/// mode is locked into the style engine before parsing, because html5ever
-/// treats an empty system identifier differently from
-/// [`sniff_quirks_mode`], and `document.compatMode` follows the sniff
-/// (<https://html.spec.whatwg.org/multipage/parsing.html#the-initial-insertion-mode>).
+// https://html.spec.whatwg.org/multipage/parsing.html#the-initial-insertion-mode — treats an empty HTML 4.01 system identifier as missing (quirks mode), matching the spec and Chromium over html5ever
 #[must_use]
 pub(crate) fn parse_html(input: &str, mut config: blitz_dom::DocumentConfig) -> Parsed {
     let quirks_mode = sniff_quirks_mode(input);
     config.quirks_mode = Some(style_quirks(quirks_mode));
     let base: blitz_dom::BaseDocument = blitz_html::HtmlDocument::from_html(input, config).into();
     let document = BlitzDocument::from_base(base);
-    // The sink appends the doctype as a real document child now. HTML never
-    // produces PI nodes (`<?...?>` is a bogus comment); the tree derives a
-    // processing instruction's pseudo-attributes when it creates the node.
     let mut parsed = Parsed {
         id: 0,
         document,
@@ -244,8 +169,6 @@ fn style_quirks(mode: QuirksMode) -> blitz_dom::StyleQuirksMode {
     }
 }
 
-// Quirks-mode public-identifier prefixes, ASCII case-insensitive
-// (lowercase here; `sniff_quirks_mode` lowercases the public identifier).
 const QUIRKS_PREFIXES: &[&str] = &[
     "+//silmaril//dtd html pro v0r11 19970101//",
     "-//advasoft ltd//dtd html 3.0 aswedit + extensions//",
@@ -303,40 +226,21 @@ const QUIRKS_PREFIXES: &[&str] = &[
     "-//webtechs//dtd mozilla html 2.0//",
     "-//webtechs//dtd mozilla html//",
 ];
-// Quirks-mode public identifiers matched exactly (ASCII
-// case-insensitive), not by prefix: `PUBLIC "HTML5"` is standards.
 const QUIRKS_EXACT: &[&str] = &[
     "-//w3o//dtd w3 html strict 3.0//en//",
     "-/w3c/dtd html 4.0 transitional/en",
     "html",
 ];
-// Limited-quirks prefixes regardless of the system identifier.
 const LIMITED_PREFIXES: &[&str] = &[
     "-//w3c//dtd xhtml 1.0 frameset//",
     "-//w3c//dtd xhtml 1.0 transitional//",
 ];
-// HTML 4.01 frameset/transitional: quirks when the system identifier is
-// missing or empty, limited quirks otherwise.
 const HTML4_PREFIXES: &[&str] = &[
     "-//w3c//dtd html 4.01 frameset//",
     "-//w3c//dtd html 4.01 transitional//",
 ];
 
-/// Compatibility mode from the doctype
-/// (<https://html.spec.whatwg.org/multipage/parsing.html#the-initial-insertion-mode>,
-/// quirks-mode table): a missing doctype, a non-`html` name, or a
-/// force-quirks token means quirks. Otherwise the public identifier selects
-/// quirks by prefix or exact match, the IBM system identifier selects
-/// quirks, the XHTML frameset/transitional prefixes select limited quirks
-/// regardless of the system identifier, and the HTML 4.01 frameset/
-/// transitional prefixes select quirks when the system identifier is missing
-/// or empty and limited quirks otherwise.
-/// Everything else means no quirks.
-///
-/// html5ever's `doctype_error_and_quirks` still treats an empty system
-/// identifier as present (limited quirks for HTML 4.01); Chromium's
-/// `HTMLConstructionSite::SetCompatibilityModeFromDoctype` tests
-/// `system_id.empty()` and matches the spec, so this follows the spec.
+// https://html.spec.whatwg.org/multipage/parsing.html#the-initial-insertion-mode — treats an empty HTML 4.01 system identifier as missing (quirks mode), matching the spec and Chromium over html5ever
 fn sniff_quirks_mode(input: &str) -> QuirksMode {
     let Some((name, public, system)) = parse_doctype_ids(input) else {
         return QuirksMode::Quirks;
@@ -375,12 +279,6 @@ fn sniff_quirks_mode(input: &str) -> QuirksMode {
     QuirksMode::NoQuirks
 }
 
-/// The doctype name and public/system identifiers from leading markup, if a
-/// complete `<!DOCTYPE ...>` token is present. Whitespace and closed
-/// comments may precede it; quoted identifiers keep their quotes stripped.
-/// Anything malformed bails to `None` (quirks): a `>` inside a quoted
-/// identifier (abrupt-doctype-identifier), a quoted identifier with no
-/// `PUBLIC`/`SYSTEM` keyword (bogus doctype), or a truncated token.
 fn parse_doctype_ids(input: &str) -> Option<(String, String, Option<String>)> {
     let rest = skip_ignored_prefix(input);
     if rest.len() < 9
@@ -419,10 +317,6 @@ fn parse_doctype_ids(input: &str) -> Option<(String, String, Option<String>)> {
     let (mut public, mut system) = (String::new(), None);
     if word.eq_ignore_ascii_case("public") {
         public = quoted_string(&mut chars)?;
-        // After `PUBLIC "..."`, only whitespace and `>` may follow without
-        // a system identifier; anything else must be a quoted identifier
-        // (a missing quote is a missing-quote parse error, which sets
-        // force-quirks).
         while chars.peek().is_some_and(char::is_ascii_whitespace) {
             chars.next();
         }
@@ -430,38 +324,22 @@ fn parse_doctype_ids(input: &str) -> Option<(String, String, Option<String>)> {
             system = Some(quoted_string(&mut chars)?);
         }
     } else if word.eq_ignore_ascii_case("system") {
-        // A `SYSTEM` keyword requires a quoted identifier; its absence is a
-        // missing-doctype-system-identifier parse error (force-quirks).
         system = Some(quoted_string(&mut chars)?);
-    } else if !word.is_empty() {
-        return None;
-    } else if matches!(chars.peek(), Some('"' | '\'')) {
-        // A quoted identifier with no keyword is a bogus doctype, not an
-        // empty public identifier.
+    } else if !word.is_empty() || matches!(chars.peek(), Some('"' | '\'')) {
         return None;
     }
-    // The token must terminate: truncated markup is not a doctype.
     if !chars.any(|char| char == '>') {
         return None;
     }
     Some((name, public, system))
 }
 
-/// Leading whitespace, BOM, and closed comments, which may precede the
-/// doctype without forcing quirks. Abruptly-closed comments (`<!-->`,
-/// `<!--->`) and `--!>`-closed comments are closed comments too, so
-/// scanning continues past them; an unterminated comment stops the scan so
-/// the doctype check fails.
 fn skip_ignored_prefix(mut input: &str) -> &str {
     loop {
         let trimmed = input.trim_start_matches(['\u{feff}', ' ', '\t', '\n', '\x0c', '\r']);
         let Some(comment) = trimmed.strip_prefix("<!--") else {
             return trimmed;
         };
-        // Abruptly-closed comments (`<!-->`, `<!--->`) close at the first
-        // `>`: check them before the longer terminators, then take the
-        // earliest `-->`/`--!>` close. A later terminator never wins over
-        // character data produced by an earlier close.
         if let Some(rest) = comment
             .strip_prefix('>')
             .or_else(|| comment.strip_prefix("->"))
@@ -479,8 +357,6 @@ fn skip_ignored_prefix(mut input: &str) -> &str {
     }
 }
 
-/// One single- or double-quoted string after optional whitespace, or `None`
-/// when the next token is not quoted.
 fn quoted_string(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Option<String> {
     while chars.peek().is_some_and(char::is_ascii_whitespace) {
         chars.next();
@@ -495,8 +371,6 @@ fn quoted_string(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Option
         if char == quote {
             return Some(value);
         }
-        // A `>` inside the identifier is an abrupt-doctype-identifier parse
-        // error, which sets force-quirks.
         if char == '>' {
             return None;
         }
@@ -509,16 +383,12 @@ fn quoted_string(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Option
 mod tests {
     use super::{QuirksMode, sniff_quirks_mode};
 
-    // The quirks table: quirks and limited-quirks public identifiers with
-    // and without system identifiers
-    // (<https://html.spec.whatwg.org/multipage/parsing.html#the-initial-insertion-mode>).
+    // https://html.spec.whatwg.org/multipage/parsing.html#the-initial-insertion-mode — treats an empty HTML 4.01 system identifier as missing (quirks mode), matching the spec and Chromium over html5ever
     #[test]
     fn quirks_sniff_follows_the_spec_table() {
         let cases = [
             ("<!DOCTYPE html>", QuirksMode::NoQuirks),
             ("<!doctype html>", QuirksMode::NoQuirks),
-            // XHTML transitional/frameset: limited quirks with or without a
-            // system identifier.
             (
                 "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Transitional//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd\">",
                 QuirksMode::LimitedQuirks,
@@ -531,8 +401,6 @@ mod tests {
                 "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Frameset//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-frameset.dtd\">",
                 QuirksMode::LimitedQuirks,
             ),
-            // HTML 4.01 transitional/frameset: quirks when the system
-            // identifier is missing or empty, limited quirks otherwise.
             (
                 "<!DOCTYPE html PUBLIC \"-//W3C//DTD HTML 4.01 Transitional//EN\">",
                 QuirksMode::Quirks,
@@ -545,15 +413,12 @@ mod tests {
                 "<!DOCTYPE html PUBLIC \"-//W3C//DTD HTML 4.01 Frameset//EN\" \"\">",
                 QuirksMode::Quirks,
             ),
-            // Exact-match quirks identifiers: no prefix matching, so `HTML5`
-            // stays standards.
             ("<!DOCTYPE html PUBLIC \"HTML\">", QuirksMode::Quirks),
             ("<!DOCTYPE html PUBLIC \"HTML5\">", QuirksMode::NoQuirks),
             (
                 "<!DOCTYPE html PUBLIC \"-//W3O//DTD W3 HTML Strict 3.0//EN//\">",
                 QuirksMode::Quirks,
             ),
-            // Prefix quirks identifiers, ASCII case-insensitive.
             (
                 "<!DOCTYPE html PUBLIC \"-//W3C//DTD HTML 4.0 Transitional//EN\">",
                 QuirksMode::Quirks,
@@ -566,7 +431,6 @@ mod tests {
                 "<!DOCTYPE html PUBLIC \"-//IETF//DTD HTML 2.0//EN\" \"anything\">",
                 QuirksMode::Quirks,
             ),
-            // The IBM system identifier, ASCII case-insensitive.
             (
                 "<!DOCTYPE html SYSTEM \"http://www.ibm.com/data/dtd/v11/ibmxhtml1-transitional.dtd\">",
                 QuirksMode::Quirks,
@@ -576,23 +440,14 @@ mod tests {
                 QuirksMode::Quirks,
             ),
             ("<!DOCTYPE svg>", QuirksMode::Quirks),
-            // Tokenizer-level force-quirks: `>` inside a quoted identifier,
-            // a quoted identifier with no keyword, comments before the
-            // doctype (including abruptly-closed ones).
             ("<!DOCTYPE html PUBLIC \"foo>bar\">", QuirksMode::Quirks),
             ("<!DOCTYPE html \"foo\">", QuirksMode::Quirks),
             ("<!-- comment --><!DOCTYPE html>", QuirksMode::NoQuirks),
             ("<!--><!DOCTYPE html>", QuirksMode::NoQuirks),
             ("<!---><!DOCTYPE html>", QuirksMode::NoQuirks),
             ("<!-- x --!><!DOCTYPE html>", QuirksMode::NoQuirks),
-            // An abrupt close wins over a later `-->`/`--!>`: `<!-->`
-            // closes at the first `>`, leaving character data before the
-            // doctype (quirks).
             ("<!--> x --><!DOCTYPE html>", QuirksMode::Quirks),
             ("<!-- a --!> b --><!DOCTYPE html>", QuirksMode::Quirks),
-            // A `SYSTEM` keyword without a quoted identifier, and trailing
-            // garbage where the system identifier belongs, are tokenizer
-            // force-quirks inputs.
             ("<!DOCTYPE html SYSTEM>", QuirksMode::Quirks),
             ("<!DOCTYPE html PUBLIC \"x\" foo>", QuirksMode::Quirks),
         ];
@@ -601,8 +456,6 @@ mod tests {
         }
     }
 
-    // The quirks sniff slices near attacker-controlled bytes; none of these
-    // inputs may panic, whatever mode they return.
     #[test]
     fn quirks_sniff_never_panics_on_partial_or_multibyte_input() {
         let inputs = [
@@ -625,7 +478,6 @@ mod tests {
         ];
         for input in inputs {
             let _ = sniff_quirks_mode(input);
-            // Quirks is the only mode the exact-`html` production escapes.
             if input == "\u{feff}<!DOCTYPE html>" {
                 assert_eq!(sniff_quirks_mode(input), QuirksMode::NoQuirks);
             }

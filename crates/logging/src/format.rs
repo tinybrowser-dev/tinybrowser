@@ -1,15 +1,8 @@
-//! One-line record rendering and RFC 3339 timestamps.
-//!
-//! A record is `timestamp LEVEL target message`. The message is the last
-//! field, so it may contain spaces; line breaks are escaped to keep one
-//! record on one physical line.
-
 use std::fmt::{self, Write as _};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::Level;
 
-/// Renders one record at `time`, ending in `\n`.
 pub(crate) fn record(
     time: SystemTime,
     level: Level,
@@ -27,8 +20,6 @@ pub(crate) fn record(
     line
 }
 
-/// Renders one forwarded line, ending in `\n`, with its terminator trimmed and
-/// its line breaks escaped.
 pub(crate) fn forwarded(line: &str) -> String {
     let mut out = String::with_capacity(line.len() + 1);
     let _ = write!(Escaped(&mut out), "{}", line.trim_end_matches(['\r', '\n']));
@@ -36,10 +27,7 @@ pub(crate) fn forwarded(line: &str) -> String {
     out
 }
 
-/// RFC 3339 UTC with milliseconds, for example `2026-09-12T00:00:00.123Z`.
 pub(crate) fn timestamp(time: SystemTime) -> String {
-    // Pre-epoch clocks clamp to the epoch instead of rendering a negative
-    // year; system clocks before 1970 are not a case worth carrying.
     let since_epoch = time.duration_since(UNIX_EPOCH).unwrap_or_default();
     let seconds = since_epoch.as_secs();
     let millis = since_epoch.subsec_millis();
@@ -52,9 +40,6 @@ pub(crate) fn timestamp(time: SystemTime) -> String {
     format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z")
 }
 
-/// Days since the Unix epoch to a proleptic Gregorian date.
-///
-/// Howard Hinnant's `civil_from_days`, shifted for the Unix epoch.
 fn civil_from_days(days: u64) -> (u64, u64, u64) {
     let z = days + 719_468;
     let era = z / 146_097;
@@ -68,8 +53,6 @@ fn civil_from_days(days: u64) -> (u64, u64, u64) {
     (if month <= 2 { year + 1 } else { year }, month, day)
 }
 
-/// Escapes line breaks as they are formatted, so one record stays one line
-/// without a second buffer.
 struct Escaped<'a>(&'a mut String);
 
 impl fmt::Write for Escaped<'_> {

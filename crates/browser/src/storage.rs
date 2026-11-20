@@ -1,17 +1,5 @@
-//! Browser-owned per-origin key/value areas.
-//!
-//! `localStorage` and `indexedDB` each keep one area per origin, shared by
-//! every document in the profile and persisted with it
-//! (<https://html.spec.whatwg.org/multipage/webstorage.html#the-localstorage-attribute>,
-//! <https://w3c.github.io/IndexedDB/#database>).
-//! The browser process owns the maps so independent renderers observe one
-//! store; renderers call in over the service path. `sessionStorage` is scoped
-//! to one top-level browsing context and remains browser-owned across renderer
-//! swaps.
-//!
-//! The mutation methods implement the spec's `Storage` algorithms and return
-//! the change a `storage` event needs; `None` means the mutation was a no-op.
-//! A caller of `indexedDB` ignores the change and writes opaque encoded rows.
+// https://html.spec.whatwg.org/multipage/webstorage.html#the-localstorage-attribute
+// https://w3c.github.io/IndexedDB/#database
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,14 +10,12 @@ use webstorage::StorageArea;
 
 use crate::actor::TabId;
 
-/// One profile's per-origin string areas.
 #[derive(Default)]
 pub(crate) struct StorageAreas {
     areas: Mutex<HashMap<StorageKey, StorageArea>>,
     dirty: AtomicBool,
 }
 
-/// Ephemeral storage namespaces keyed by top-level browsing context.
 #[derive(Default)]
 pub(crate) struct SessionStorage {
     namespaces: Mutex<HashMap<TabId, HashMap<StorageKey, StorageArea>>>,
@@ -44,8 +30,7 @@ impl SessionStorage {
             .or_default();
     }
 
-    /// Copies a top-level browsing context's session-storage namespace
-    /// (<https://html.spec.whatwg.org/multipage/document-sequences.html#copy-session-storage>).
+    // https://html.spec.whatwg.org/multipage/document-sequences.html#copy-session-storage
     pub(crate) fn copy(&self, source: TabId, target: TabId) {
         let mut namespaces = self
             .namespaces
@@ -122,8 +107,7 @@ impl SessionStorage {
 }
 
 impl StorageAreas {
-    /// `Storage.getItem(key)`
-    /// (<https://html.spec.whatwg.org/multipage/webstorage.html#dom-storage-getitem>).
+    // https://html.spec.whatwg.org/multipage/webstorage.html#dom-storage-getitem
     pub(crate) fn get(&self, origin: &StorageKey, key: &str) -> Option<String> {
         self.areas
             .lock()
@@ -132,7 +116,6 @@ impl StorageAreas {
             .and_then(|area| area.get(key))
     }
 
-    /// `Storage.key(index)` support: every key, in this area's iteration order.
     pub(crate) fn keys(&self, origin: &StorageKey) -> Vec<String> {
         self.areas
             .lock()
@@ -141,8 +124,7 @@ impl StorageAreas {
             .map_or_default(StorageArea::keys)
     }
 
-    /// `Storage.setItem(key, value)`
-    /// (<https://html.spec.whatwg.org/multipage/webstorage.html#dom-storage-setitem>).
+    // https://html.spec.whatwg.org/multipage/webstorage.html#dom-storage-setitem
     pub(crate) fn set(
         &self,
         origin: &StorageKey,
@@ -160,8 +142,7 @@ impl StorageAreas {
         Ok(Some(change))
     }
 
-    /// `Storage.removeItem(key)`
-    /// (<https://html.spec.whatwg.org/multipage/webstorage.html#dom-storage-removeitem>).
+    // https://html.spec.whatwg.org/multipage/webstorage.html#dom-storage-removeitem
     pub(crate) fn remove(&self, origin: &StorageKey, key: &str) -> Option<StorageChange> {
         let mut areas = self.areas.lock().unwrap_or_else(PoisonError::into_inner);
         let change = areas.get_mut(origin)?.remove(key)?;
@@ -170,8 +151,7 @@ impl StorageAreas {
         Some(change)
     }
 
-    /// `Storage.clear()`
-    /// (<https://html.spec.whatwg.org/multipage/webstorage.html#dom-storage-clear>).
+    // https://html.spec.whatwg.org/multipage/webstorage.html#dom-storage-clear
     pub(crate) fn clear(&self, origin: &StorageKey) -> Option<StorageChange> {
         let mut areas = self.areas.lock().unwrap_or_else(PoisonError::into_inner);
         let area = areas.get_mut(origin)?;
@@ -181,7 +161,6 @@ impl StorageAreas {
         Some(change)
     }
 
-    /// Whether unsaved mutations happened since the last [`Self::mark_clean`].
     pub(crate) fn is_dirty(&self) -> bool {
         self.dirty.load(Ordering::SeqCst)
     }
@@ -190,10 +169,6 @@ impl StorageAreas {
         self.dirty.store(false, Ordering::SeqCst);
     }
 
-    /// Every `(origin, key, value)` row, for the profile store.
-    ///
-    /// Rows are sorted by origin then key, so the persisted bytes do not
-    /// depend on hash iteration order.
     pub(crate) fn export(&self) -> Vec<(String, String, String)> {
         let areas = self.areas.lock().unwrap_or_else(PoisonError::into_inner);
         let mut rows = Vec::new();
@@ -206,13 +181,6 @@ impl StorageAreas {
         rows
     }
 
-    /// Replaces the areas with the profile store's rows.
-    ///
-    /// A stored origin is parsed back into a [`StorageKey`], which normalizes
-    /// every spelling of one origin to one area and drops a row that names no
-    /// tuple origin. A profile written before the key was typed may hold
-    /// `https://example.test/path` or `about:blank`, and neither becomes a
-    /// second area.
     pub(crate) fn import(&self, rows: impl IntoIterator<Item = (String, String, String)>) {
         let mut areas = self.areas.lock().unwrap_or_else(PoisonError::into_inner);
         areas.clear();
@@ -231,10 +199,6 @@ mod tests {
     use super::StorageAreas;
     use renderer::StorageKey;
 
-    /// One origin spelled four ways is one area, and a profile written before
-    /// the key was typed normalizes on load: a full URL becomes its origin and
-    /// `about:blank` (which names no tuple origin) is dropped instead of
-    /// standing for every opaque document.
     #[test]
     fn storage_normalizes_every_spelling_of_one_origin() {
         let storage = StorageAreas::default();

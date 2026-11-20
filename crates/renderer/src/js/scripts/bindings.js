@@ -198,8 +198,7 @@ const __tbInstallInterface = (implementation, name, construction, members) => {
   const realm = { Uint8Array: __tbUint8Array };
   const secureContext = host.__tbSecureContext === true;
   const algorithms = __tbIDLDescriptors(implementation.prototype);
-  // The class body is the algorithm store; the interface prototype is
-  // generated (<https://webidl.spec.whatwg.org/#interface-prototype-object>).
+  // https://webidl.spec.whatwg.org/#interface-prototype-object
   const prototype = {};
   for (const member of members) {
     if (member.exposure.secureContext && !secureContext) continue;
@@ -234,9 +233,7 @@ const __tbInstallInterface = (implementation, name, construction, members) => {
     if (new.target === undefined || construction === null) throw new TypeError('Illegal constructor');
     if (args.length < construction[0]) throw new TypeError(name + ': insufficient arguments');
     const converted = construction[1](args);
-    // OrdinaryCreateFromConstructor reads new.target's prototype once and
-    // falls back to the interface prototype when it is not an object
-    // (<https://webidl.spec.whatwg.org/#internally-create-a-new-object-implementing-the-interface>).
+    // https://webidl.spec.whatwg.org/#internally-create-a-new-object-implementing-the-interface
     const target = __tbIDLGet(new.target, 'prototype');
     const value = __tbConstruct(implementation, [converted], implementation);
     const chosen = target !== null && (typeof target === 'object' || typeof target === 'function')
@@ -259,10 +256,7 @@ const __tbInstallInterface = (implementation, name, construction, members) => {
   return constructor;
 };
 const __tbInstallGlobal = (implementation, name, construction, members, secureOnly) => {
-  // The generator owns the global registration so a `[SecureContext]`
-  // interface can be built internally and still keep its global off an
-  // insecure page's global object
-  // (<https://webidl.spec.whatwg.org/#es-interfaces>).
+  // https://webidl.spec.whatwg.org/#es-interfaces
   const value = __tbInstallInterface(implementation, name, construction, members);
   if (!secureOnly || host.__tbSecureContext === true) {
     const global = construction === null ? value[0] : value;

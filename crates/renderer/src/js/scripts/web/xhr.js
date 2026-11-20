@@ -1,7 +1,5 @@
 // https://xhr.spec.whatwg.org/#the-xmlhttprequest-interface
 const __tbXhrData = host.slots('tinybrowser.xhr');
-// One helper for the `responseDocument` sentinel discipline: `undefined`
-// means uncached (not yet computed), `null` means cached-empty.
 const __tbXhrResetDocument = (data, value) => { data.responseDocument = value; };
 const __tbXhrCancel = data => {
   data.generation++;
@@ -10,8 +8,7 @@ const __tbXhrCancel = data => {
   if (data.timer !== null) clearTimeout(data.timer);
   data.timer = null;
 };
-// State after a failed request: done, not sent, and a network error as the
-// response (<https://xhr.spec.whatwg.org/#request-error-steps>).
+// https://xhr.spec.whatwg.org/#request-error-steps
 const __tbXhrResetResponse = data => {
   __tbXhrCancel(data);
   data.sent = false;
@@ -29,9 +26,7 @@ const __tbXhrError = (xhr, data, type) => {
   xhr.dispatchEvent(new ProgressEvent(type));
   xhr.dispatchEvent(new ProgressEvent('loadend'));
 };
-// A synchronous request reports the same failure by throwing: its whole
-// lifecycle is inside `send`, so there is no later event to listen for
-// (<https://xhr.spec.whatwg.org/#request-error-steps>).
+// https://xhr.spec.whatwg.org/#request-error-steps
 const __tbXhrSyncError = (data, message) => {
   __tbXhrResetResponse(data);
   throw new DOMException(message, 'NetworkError');
@@ -48,9 +43,7 @@ const __tbXhrTimeout = (xhr, data) => {
   };
   host.__scheduleTimeout(data.timer, Math.max(0, data.started + data.timeout - Date.now()));
 };
-// Synchronous `send` cannot await body extraction. Blob bytes are already in
-// the slot; other body types match the async extractor
-// (<https://fetch.spec.whatwg.org/#bodyinit-safely-extract>).
+// https://fetch.spec.whatwg.org/#bodyinit-safely-extract
 const __tbSyncRequestBody = body => {
   if (body === null || body === undefined) return { bytes: new __tbUint8Array(0), type: null };
   if (typeof Blob === 'function' && body instanceof Blob) {
@@ -76,10 +69,8 @@ const __tbSyncRequestBody = body => {
     type: 'text/plain;charset=UTF-8',
   };
 };
-// "get a final MIME type": the override MIME type when one is set, otherwise
-// the response MIME type, whose extraction failure is `text/xml`
-// (<https://xhr.spec.whatwg.org/#final-mime-type>,
-// <https://xhr.spec.whatwg.org/#response-mime-type>).
+// https://xhr.spec.whatwg.org/#final-mime-type
+// https://xhr.spec.whatwg.org/#response-mime-type
 const __tbXhrFinalMime = data => {
   if (data.overrideMimeType !== null) return data.overrideMimeType;
   const header = __tbApply(__tbHeadersGet, data.responseHeaders, ['content-type']);
@@ -96,12 +87,9 @@ const __tbXhrFinish = (xhr, data, generation, status, bytes, url, fields, sync) 
   }
   data.status = status;
   data.responseURL = url;
-  // The response header list stays as served: nothing is sniffed into it
-  // (<https://fetch.spec.whatwg.org/#concept-response-header-list>).
+  // https://fetch.spec.whatwg.org/#concept-response-header-list
   data.responseHeaders = new __tbHeadersConstructor(fields);
-  // A synchronous send pauses inside `send` and then runs end-of-body.
-  // It does not visit headers-received or loading, and it does not fire
-  // `progress` (<https://xhr.spec.whatwg.org/#handle-response-end-of-body>).
+  // https://xhr.spec.whatwg.org/#handle-response-end-of-body
   if (sync) {
     data.responseBytes = host.slots.bytes(bytes);
   } else {
@@ -147,8 +135,7 @@ globalThis.XMLHttpRequest = class XMLHttpRequest extends EventTarget {
   get timeout() { return __tbBrand(this, __tbXhrData).timeout; }
   set timeout(value) {
     const data = __tbBrand(this, __tbXhrData);
-    // A Window synchronous request cannot carry a timeout
-    // (<https://xhr.spec.whatwg.org/#the-timeout-attribute>).
+    // https://xhr.spec.whatwg.org/#the-timeout-attribute
     if (data.sync) throw new DOMException('Synchronous requests do not support timeout', 'InvalidAccessError');
     data.timeout = Number(value) >>> 0;
     __tbXhrTimeout(this, data);
@@ -162,13 +149,10 @@ globalThis.XMLHttpRequest = class XMLHttpRequest extends EventTarget {
   get responseType() { return __tbBrand(this, __tbXhrData).responseType; }
   set responseType(value) {
     const data = __tbBrand(this, __tbXhrData);
-    // <https://xhr.spec.whatwg.org/#the-responsetype-attribute>
+    // https://xhr.spec.whatwg.org/#the-responsetype-attribute
     if (data.state >= 3) throw new DOMException('Response loading', 'InvalidStateError');
     const next = String(value);
-    // The spec declares this attribute as the `XMLHttpRequestResponseType`
-    // enum, so WebIDL conversion would throw a TypeError for an unknown value.
-    // Chrome and Firefox silently ignore it instead, and
-    // `xhr/response-invalid-responsetype.htm` pins that behavior.
+    // https://xhr.spec.whatwg.org/#dom-xmlhttprequest-responsetype — unknown values are silently ignored rather than throwing WebIDL TypeError, matching Chrome and Firefox
     if (!['', 'text', 'json', 'arraybuffer', 'blob', 'document'].includes(next)) return;
     if (data.sync) throw new DOMException('Synchronous requests do not support responseType', 'InvalidAccessError');
     data.responseType = next;
@@ -185,8 +169,7 @@ globalThis.XMLHttpRequest = class XMLHttpRequest extends EventTarget {
     if (data.state !== 4) return null;
     if (data.responseType === 'arraybuffer') return __tbBytesCopy(data.responseBytes).buffer;
     if (data.responseType === 'blob') {
-      // The Blob type is the final MIME type for this
-      // (<https://xhr.spec.whatwg.org/#the-response-attribute>).
+      // https://xhr.spec.whatwg.org/#the-response-attribute
       return __tbMakeBlob(__tbBytesCopy(data.responseBytes), __tbXhrFinalMime(data));
     }
     if (data.responseType === 'json') {
@@ -198,9 +181,6 @@ globalThis.XMLHttpRequest = class XMLHttpRequest extends EventTarget {
   }
   get responseXML() {
     // https://xhr.spec.whatwg.org/#response-xml
-    // A worker global has no document response: the attribute is null even
-    // for an XML body
-    // (<https://xhr.spec.whatwg.org/#response-xml>).
     if (globalThis.document === undefined) return null;
     const data = __tbBrand(this, __tbXhrData);
     if (data.responseType !== '' && data.responseType !== 'document') {
@@ -223,9 +203,6 @@ globalThis.XMLHttpRequest = class XMLHttpRequest extends EventTarget {
     }
     let source;
     try {
-      // Decoded the way navigations decode: BOM, then the transport charset
-      // or the XML declaration, then UTF-8. Fatal: undecodable bytes mean no
-      // document, not replacement text.
       source = host.__tbDecodeXmlResponse(data.responseBytes, header);
     } catch (_) {
       __tbXhrResetDocument(data, null);
@@ -233,27 +210,19 @@ globalThis.XMLHttpRequest = class XMLHttpRequest extends EventTarget {
     }
     let parsed;
     try {
-      // The document takes the response's URL, not the realm's, so the XHR
-      // path uses its own parse entry point rather than `DOMParser`
-      // (<https://xhr.spec.whatwg.org/#document-response>).
+      // https://xhr.spec.whatwg.org/#document-response
       parsed = host.__tbXhrParseDocument(source, type, data.responseURL);
     } catch (_) {
       parsed = null;
     }
-    // An empty body parses to no document element; a `parsererror`
-    // document element in the parsererror namespace means the body was not
-    // well-formed, so there is no document either
-    // (<https://xhr.spec.whatwg.org/#document-response>). The namespace
-    // check matters: a well-formed `<parsererror/>` response is a valid
-    // document, not a failure. Anything else the parser accepts is the
-    // document.
+    // https://xhr.spec.whatwg.org/#document-response
     if (parsed !== null && parsed.documentElement !== null
       && parsed.documentElement.localName === 'parsererror'
       && parsed.documentElement.namespaceURI === 'http://www.mozilla.org/newlayout/xml/parsererror.xml') parsed = null;
     data.responseDocument = parsed !== null && parsed.documentElement !== null ? parsed : null;
     return data.responseDocument;
   }
-  // https://xhr.spec.whatwg.org/#the-open()-method
+  // https://xhr.spec.whatwg.org/#the-open(
   open(method, url, async) {
     const data = __tbBrand(this, __tbXhrData);
     const verb = String(method);
@@ -261,9 +230,7 @@ globalThis.XMLHttpRequest = class XMLHttpRequest extends EventTarget {
     if (/^(CONNECT|TRACE|TRACK)$/i.test(verb)) throw new DOMException('Forbidden HTTP method', 'SecurityError');
     const parsed = host.__tbResolveUrl(String(url), undefined);
     if (parsed == null) throw new DOMException('Invalid URL', 'SyntaxError');
-    // Omitted stays true. An explicit `undefined` is the boolean false, which
-    // legacy content depends on
-    // (<https://xhr.spec.whatwg.org/#the-open()-method>).
+    // https://xhr.spec.whatwg.org/#the-open(
     const asynchronous = arguments.length < 3 ? true : Boolean(async);
     if (!asynchronous && (data.timeout !== 0 || data.responseType !== '')) {
       throw new DOMException('Synchronous requests do not support timeout or responseType', 'InvalidAccessError');
@@ -284,13 +251,11 @@ globalThis.XMLHttpRequest = class XMLHttpRequest extends EventTarget {
       this.dispatchEvent(new Event('readystatechange'));
     }
   }
-  // https://xhr.spec.whatwg.org/#the-setrequestheader()-method
+  // https://xhr.spec.whatwg.org/#the-setrequestheader(
   setRequestHeader(name, value) {
     const data = __tbBrand(this, __tbXhrData);
     if (data.state !== 1 || data.sent) throw new DOMException('Request not open', 'InvalidStateError');
-    // ByteString conversion comes first, so a code unit above 0xFF is a
-    // TypeError; an invalid header name or value is a SyntaxError
-    // (<https://xhr.spec.whatwg.org/#dom-xmlhttprequest-setrequestheader>).
+    // https://xhr.spec.whatwg.org/#dom-xmlhttprequest-setrequestheader
     const headerName = __tbByteString(name);
     const headerValue = __tbByteString(value).replace(/^[\t\n\r ]+|[\t\n\r ]+$/g, '');
     if (!__tbIsHeaderName(headerName) || !__tbIsHeaderValue(headerValue)) {
@@ -298,7 +263,7 @@ globalThis.XMLHttpRequest = class XMLHttpRequest extends EventTarget {
     }
     __tbHeadersAppendRaw(data.headers, headerName, headerValue);
   }
-  // https://xhr.spec.whatwg.org/#the-send()-method
+  // https://xhr.spec.whatwg.org/#the-send(
   send(body = null) {
     const data = __tbBrand(this, __tbXhrData);
     if (data.state !== 1 || data.sent) throw new DOMException('Request not open', 'InvalidStateError');
@@ -309,18 +274,12 @@ globalThis.XMLHttpRequest = class XMLHttpRequest extends EventTarget {
     this.dispatchEvent(new ProgressEvent('loadstart'));
     if (data.state !== 1 || !data.sent || data.generation !== generation) return;
     if (data.sync) {
-      // The async path checks connect policy in the dial queue; a synchronous
-      // send cannot reach the queue before it returns, so it checks the
-      // reinstated hook here
-      // (<https://w3c.github.io/webappsec-csp/#should-request-be-blocked-by-content-security-policy>).
-      // Every failure throws a NetworkError DOMException instead of firing an
-      // event: the request's whole lifecycle is inside `send`
-      // (<https://xhr.spec.whatwg.org/#request-error-steps>).
+      // https://w3c.github.io/webappsec-csp/#should-request-be-blocked-by-content-security-policy
+      // https://xhr.spec.whatwg.org/#request-error-steps
       if (host.__tbCspAllowsConnect(data.url) === false) {
         __tbXhrSyncError(data, 'The request was blocked by Content Security Policy.');
       }
-      // `blob:` is resolved in this realm. The carrier only speaks http(s)
-      // and `data:` (<https://fetch.spec.whatwg.org/#scheme-fetch>).
+      // https://fetch.spec.whatwg.org/#scheme-fetch
       if (data.url.indexOf('blob:') === 0) {
         if (data.method !== 'GET') {
           __tbXhrSyncError(data, 'The request failed due to a network error.');
@@ -330,8 +289,7 @@ globalThis.XMLHttpRequest = class XMLHttpRequest extends EventTarget {
           __tbXhrSyncError(data, 'The request failed due to a network error.');
         }
         const bytes = __tbUtf8Encode(String(entry.contents));
-        // The blob URL response's header list carries the blob's type
-        // (<https://fetch.spec.whatwg.org/#scheme-fetch>).
+        // https://fetch.spec.whatwg.org/#scheme-fetch
         __tbXhrFinish(this, data, generation, 200, bytes, data.url, [['content-type', entry.type]], true);
         return;
       }
@@ -341,9 +299,7 @@ globalThis.XMLHttpRequest = class XMLHttpRequest extends EventTarget {
       }
       const type = __tbApply(__tbHeadersGet, data.headers, ['content-type']) === null ? payload.type : null;
       const fields = __tbArray.map(__tbHeadersList(data.headers), entry => [entry[0], entry[1]]);
-      // XHR's referrer is the client document; the host resolves it against
-      // the authorized origin
-      // (<https://xhr.spec.whatwg.org/#the-send()-method>).
+      // https://xhr.spec.whatwg.org/#the-send(
       const result = host.__tbSyncFetch(data.url, data.method, payload.bytes, type, fields, { referrer: 'about:client', withCredentials: data.withCredentials === true }, data.timeout);
       if (result === null || result === undefined) {
         __tbXhrSyncError(data, 'The request failed due to a network error.');
@@ -351,10 +307,7 @@ globalThis.XMLHttpRequest = class XMLHttpRequest extends EventTarget {
       __tbXhrFinish(this, data, generation, result[0], result[1], result[2], result[3], true);
       return;
     }
-    // An async XHR of a `blob:` URL resolves in this realm, like `fetch`: the
-    // carrier only speaks http(s) and `data:`
-    // (<https://fetch.spec.whatwg.org/#scheme-fetch>). The completion is
-    // queued as a task so the events never fire inside `send()`.
+    // https://fetch.spec.whatwg.org/#scheme-fetch
     if (data.url.indexOf('blob:') === 0) {
       const generation = data.generation;
       const entry = data.method === 'GET' ? __tbLookupObjectUrl(data.url) : null;
@@ -385,7 +338,7 @@ globalThis.XMLHttpRequest = class XMLHttpRequest extends EventTarget {
     }, 'xmlhttprequest');
     __tbXhrTimeout(this, data);
   }
-  // https://xhr.spec.whatwg.org/#the-abort()-method
+  // https://xhr.spec.whatwg.org/#the-abort(
   abort() {
     const data = __tbBrand(this, __tbXhrData);
     if (data.sent || data.state === 2 || data.state === 3) {
@@ -413,12 +366,11 @@ globalThis.XMLHttpRequest = class XMLHttpRequest extends EventTarget {
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([name, value]) => name + ': ' + value + '\r\n').join('');
   }
-  // https://xhr.spec.whatwg.org/#the-overridemimetype()-method
+  // https://xhr.spec.whatwg.org/#the-overridemimetype(
   overrideMimeType(value) {
     const data = __tbBrand(this, __tbXhrData);
     if (data.state >= 3) throw new DOMException('Response loading', 'InvalidStateError');
-    // A MIME type that does not parse becomes `application/octet-stream`
-    // (<https://xhr.spec.whatwg.org/#the-overridemimetype()-method>).
+    // https://xhr.spec.whatwg.org/#the-overridemimetype(
     const parsed = host.__tbParseMimeType(String(value));
     data.overrideMimeType = parsed === '' ? 'application/octet-stream' : parsed;
   }

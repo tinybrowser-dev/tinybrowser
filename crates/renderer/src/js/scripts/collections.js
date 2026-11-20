@@ -4,11 +4,8 @@
   delete host.__tbWindowNamedValue;
   delete host.__tbWindowNamedHas;
   const native = globalThis.NodeList.prototype;
-  // Static snapshots (`querySelectorAll`, mutation records) are ordinary
-  // objects with this prototype so indexed and `length` reads stay in JS.
-  // Live lists remain exotic platform objects
-  // (<https://dom.spec.whatwg.org/#interface-nodelist>,
-  // <https://webidl.spec.whatwg.org/#legacy-platform-object-getownproperty>).
+  // https://dom.spec.whatwg.org/#interface-nodelist — NodeList uses Array.prototype iterator methods, matching Chromium, WebKit, and WPT
+  // https://webidl.spec.whatwg.org/#legacy-platform-object-getownproperty
   {
     const lengthDesc = Object.getOwnPropertyDescriptor(native, 'length');
     const nativeLength = lengthDesc.get;
@@ -46,12 +43,7 @@
       new StaticNodeList(list, length);
     };
   }
-  // Value iterators for `iterable<T>` on `DOMTokenList`
-  // (<https://webidl.spec.whatwg.org/#es-iterable>). `@@iterator` is the
-  // same function object as `values`. `NodeList` instead shares
-  // `Array.prototype` iteration: under the length-tamper tests an own
-  // `length` and `Array` iteration intentionally disagree (static `item()`
-  // serves tampered entries while iteration honors the live length).
+  // https://webidl.spec.whatwg.org/#es-iterable
   function installValueIterable(ctor) {
     const proto = ctor.prototype;
     const lengthGet = Object.getOwnPropertyDescriptor(proto, 'length').get;
@@ -119,11 +111,8 @@
       configurable: true,
     });
   }
-  // `NodeList` is `iterable<Node>`. Chromium and WebKit put the Array
-  // prototype methods on the instance, and WPT checks identity against
-  // `Array.prototype`
-  // (<https://webidl.spec.whatwg.org/#es-iterable>,
-  // <https://dom.spec.whatwg.org/#interface-nodelist>).
+  // https://webidl.spec.whatwg.org/#es-iterable
+  // https://dom.spec.whatwg.org/#interface-nodelist — NodeList uses Array.prototype iterator methods, matching Chromium, WebKit, and WPT
   {
     const proto = globalThis.NodeList.prototype;
     for (const name of ['values', 'keys', 'entries', 'forEach']) {
@@ -141,8 +130,6 @@
     });
   }
   installValueIterable(globalThis.DOMTokenList);
-  // `NamedNodeMap` and `HTMLCollection` are not `iterable<>` in the DOM IDL.
-  // The iterator below is the existing indexed walk those callers already use.
   function values() {
     let index = 0;
     const collection = this;
@@ -178,9 +165,6 @@
   Object.defineProperty(proto, Symbol.toStringTag, {
     value: 'HTMLCollection', writable: false, enumerable: false, configurable: true,
   });
-  // `HTMLOptionsCollection` inherits natively from `HTMLCollection`; the
-  // remaining shim only preserves `SameObject` identity for the live
-  // `select.options` and `select.selectedOptions` collections.
   for (const name of ['options', 'selectedOptions']) {
     const nativeGetter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, name).get;
     const cache = host.slots();
@@ -196,15 +180,7 @@
       enumerable: true, configurable: true,
     });
   }
-  // NamedNodeMap exposes indexed and named properties through the
-  // generated exotic hooks; interface members and prototype methods always
-  // win.
-  // Named access on the Window object
-  // (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#named-access-on-the-window-object>):
-  // a named properties object sits between the global and its prototype. It
-  // exposes an element for a name, or an `HTMLCollection` when several named
-  // objects share the name. The name test is an O(1) index lookup; only a
-  // name that is present pays for the value scan.
+  // https://html.spec.whatwg.org/multipage/nav-history-apis.html#named-access-on-the-window-object
   {
     const originalProto = Object.getPrototypeOf(globalThis);
     const target = Object.create(originalProto);
@@ -234,11 +210,7 @@
         }
         return Reflect.getOwnPropertyDescriptor(inner, property);
       },
-      // WebIDL keeps the named properties object immutable: it rejects
-      // defining and deleting properties, preventing extensions, and changing
-      // the prototype
-      // (<https://webidl.spec.whatwg.org/#named-properties-object>). Named
-      // properties are not real own properties, so there is no ownKeys trap.
+      // https://webidl.spec.whatwg.org/#named-properties-object
       defineProperty: function() { return false; },
       deleteProperty: function() { return false; },
       preventExtensions: function() { return false; },

@@ -1,27 +1,13 @@
-//! The `features` argument of `window.open`, tokenized and read as the
-//! window-open steps need it
-//! (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#concept-window-open-features-tokenize>).
-//!
-//! Only `noopener` and `noreferrer` are read today, and both are booleans, so
-//! the tokenized map is two flags whose last value wins. A feature the window
-//! open steps never ask about — a size, `popup` — is tokenized and dropped; add
-//! its storage when something reads it.
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#concept-window-open-features-tokenize
 
 use crate::protocol::OpenerPolicy;
 
-/// A feature separator: ASCII whitespace, U+003D, or U+002C
-/// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#dfn-feature-separator>).
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#dfn-feature-separator
 fn is_separator(byte: u8) -> bool {
     byte.is_ascii_whitespace() || byte == b'=' || byte == b','
 }
 
-/// A boolean feature's value: absent or empty is true, `yes` and `true` are
-/// true, and anything else is true only when its integer form is non-zero
-/// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#parse-a-boolean-feature>).
-///
-/// The feature tokenizer lowercases every value, so the words are matched
-/// without case. An integer wider than any integer type still parses: one
-/// non-zero digit decides it.
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#parse-a-boolean-feature
 fn parse_boolean(value: &str) -> bool {
     if value.is_empty() || value.eq_ignore_ascii_case("yes") || value.eq_ignore_ascii_case("true") {
         return true;
@@ -34,9 +20,7 @@ fn parse_boolean(value: &str) -> bool {
         .any(|digit| digit != b'0')
 }
 
-/// The `noopener` and `noreferrer` features, keeping the last value a repeated
-/// name gives them
-/// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#tokenize-the-features-argument>).
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#tokenize-the-features-argument
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct WindowFeatures {
     noopener: bool,
@@ -44,12 +28,9 @@ pub(crate) struct WindowFeatures {
 }
 
 impl WindowFeatures {
-    /// Tokenizes one `features` argument
-    /// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#tokenize-the-features-argument>).
+    // https://html.spec.whatwg.org/multipage/nav-history-apis.html#tokenize-the-features-argument
     pub(crate) fn parse(features: &str) -> Self {
         let mut parsed = Self::default();
-        // Every separator is ASCII, so byte positions are character
-        // boundaries and the slices below are always valid UTF-8.
         let bytes = features.as_bytes();
         let mut position = 0;
         while position < bytes.len() {
@@ -61,7 +42,6 @@ impl WindowFeatures {
                 position += 1;
             }
             let name = &features[name_start..position];
-            // Skip to the first `=` but never past a `,` or a name character.
             while position < bytes.len() && bytes[position] != b'=' {
                 if bytes[position] == b',' || !is_separator(bytes[position]) {
                     break;
@@ -94,18 +74,7 @@ impl WindowFeatures {
         parsed
     }
 
-    /// What the parsed `noopener` and `noreferrer` features do to the context
-    /// this call opens. `noreferrer` implies `noopener`, so the three states
-    /// are exhaustive by construction
-    /// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#get-noopener-for-window-open>).
-    ///
-    /// `blob_origin` is the origin of `url`'s blob URL entry, when `url` is a
-    /// blob URL this renderer's store knows. Step 1 of "get noopener" severs
-    /// the opener for a blob from another site *before* it reads the feature,
-    /// against `top_level_origin` rather than the calling frame's origin, so a
-    /// same-origin blob opened from a cross-site iframe still severs it. Both
-    /// origins being opaque is not same-site: an opaque blob can never be
-    /// attributed to the top-level document's site.
+    // https://html.spec.whatwg.org/multipage/nav-history-apis.html#get-noopener-for-window-open
     pub(crate) fn opener_policy(
         self,
         blob_origin: Option<&url::Origin>,
@@ -134,15 +103,11 @@ mod tests {
         Url::parse(raw).expect("test URL").origin()
     }
 
-    /// The feature list alone, from a document whose top level is
-    /// `https://a.test`.
     fn policy(features: &str) -> OpenerPolicy {
         WindowFeatures::parse(features).opener_policy(None, &origin("https://a.test/"))
     }
 
-    /// The four disagreements between the shim's comma split and the browser's
-    /// whitespace split, plus the tokenizer's own cases
-    /// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#concept-window-open-features-tokenize>).
+    // https://html.spec.whatwg.org/multipage/nav-history-apis.html#concept-window-open-features-tokenize
     #[test]
     fn a_window_feature_list_reads_the_way_the_standard_says() {
         assert_eq!(policy(""), OpenerPolicy::Keep);
@@ -168,10 +133,7 @@ mod tests {
         );
     }
 
-    /// Step 1 of "get noopener": a blob URL whose entry is from another site
-    /// severs the opener even when the feature list says nothing, and even
-    /// when `noopener=0` asks to keep it
-    /// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#get-noopener-for-window-open>).
+    // https://html.spec.whatwg.org/multipage/nav-history-apis.html#get-noopener-for-window-open
     #[test]
     fn a_blob_from_another_site_severs_the_opener() {
         let top = origin("https://a.test/");
@@ -189,8 +151,6 @@ mod tests {
             WindowFeatures::parse("").opener_policy(Some(&same_site), &top),
             OpenerPolicy::Keep
         );
-        // The blob rule returns before the feature list is read, so
-        // `noreferrer` still keeps its stronger answer.
         assert_eq!(
             WindowFeatures::parse("noreferrer").opener_policy(Some(&cross_site), &top),
             OpenerPolicy::NoReferrer

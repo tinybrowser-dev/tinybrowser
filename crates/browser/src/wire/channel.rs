@@ -1,97 +1,24 @@
-//! Length-prefixed frames for the renderer platform channel.
-//!
-//! One private full-duplex channel per renderer process. Every frame starts
-//! with a fixed 16-byte header:
-//!
-//! ```text
-//! version: u8 | kind: u8 | flags: u16 (zero) | request id: u64 | length: u32
-//! ```
-//!
-//! The version byte is [`PROTOCOL_VERSION`]; a mismatch fails closed. Control
-//! payloads are postcard-encoded and capped at [`MAX_CONTROL_BYTES`]. Stream
-//! chunks are raw bytes and capped at [`MAX_BODY_CHUNK_BYTES`]. Readers validate
-//! the header and length before they allocate or read the payload, so a corrupt
-//! or hostile peer cannot force an unbounded allocation.
-//!
-//! The first frame in each direction is the handshake: the browser sends
-//! [`HostNotice::Hello`](crate::wire::HostNotice::Hello) and the renderer replies
-//! [`RendererNotice::Ready`](crate::wire::RendererNotice::Ready).
-
 use std::io::{self, Read, Write};
 
 use serde::{Serialize, de::DeserializeOwned};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-/// Framing and message ABI version for the renderer channel.
-///
-/// Version 5 added the storage service calls and the browser-broadcast
-/// `storage` event. Version 6 added `window.open`/`window.close`. Version 7
-/// added cross-tab messaging, session copies, and remote session reads.
-/// Version 8 added `BroadcastChannel`. Version 9 replaced operation-specific
-/// body messages with directional exchange stream chunks. Version 10 dropped
-/// `content_language` from mount, response-start, and dial outcomes. Version 11
-/// replaced JSON control payloads with postcard. Version 12 replaced
-/// response-start's flat metadata fields with one shared response head.
-/// Version 13 folded a dial outcome's body and stream into one
-/// [`ResponseBody`](renderer::ResponseBody), made the request method a typed
-/// value, and renumbered `BodyDelivery` (now `Buffer` = 0, `Stream` = 1) with
-/// the removal of `Discard`. Version 14 replaced a request's kind and optional
-/// CORS parameters with one [`RequestPolicy`](renderer::RequestPolicy), and a
-/// page request's mode with [`CorsMode`](renderer::CorsMode), which has no
-/// `navigate`. Version 15 made the handshake carry the browser identity, so
-/// every page and CDP answer reports the same product as the request headers.
-/// Version 16 typed the values a navigation and a window open carry (origins,
-/// the window-open target and URL) and added the named-tab lookup and
-/// navigation calls. Version 17 put the secure-context bit on the policy
-/// container. Version 18 gave a mount and a streamed response the browsing
-/// context state the browser owns (target name, opener relationship, popup
-/// sandboxing flag set) and added the tab rename call. Version 19 made the
-/// calling document's sandbox set part of a navigation source and dropped the
-/// `window.open` flags the browser now derives from its own copy. Version 20
-/// typed browsing-context names (non-empty, never a keyword) and merged the
-/// name lookup and navigation into one call. Version 21 separates a
-/// `window.name` assignment, which writes the active history entry, from the
-/// cross-origin reset. Version 22 adds the error for a history entry a
-/// traversal names but the tab no longer holds. Version 23 reports frame
-/// creation and teardown so the browser owns every frame's sandbox flags, and
-/// drops the renderer-supplied sandbox set from a navigation source. Version
-/// 24 moved session history into one browser-owned joint list and added the
-/// per-frame history commands. Version 25 puts the owning tab id on a mount so
-/// a popup tab closes itself through the same path as its opener.
-// Bumped for the browser-owned joint session history (child navigation-start
-// events and per-frame history snapshots) and for the tab id a mount carries
-// so a popup tab can close itself.
 pub const PROTOCOL_VERSION: u8 = 26;
 
-/// Fixed frame header size in bytes.
 pub const HEADER_BYTES: usize = 16;
 
-/// Maximum encoded size of one control payload.
-///
-/// Storage is the largest legal control payload. One origin may hold
-/// [`webstorage::STORAGE_QUOTA_BYTES`] (5 MiB) of encoded keys and values, and a
-/// `storage` event carries both the old and the new encoded value, so the worst
-/// legal frame is roughly twice the quota plus field overhead. A cap below that
-/// bound turns a legal `setItem` into a transport error, and an oversize control
-/// frame stops the renderer, so the cap keeps 2.4× headroom over the bound until
-/// bulk payloads move to the chunk lane.
 pub const MAX_CONTROL_BYTES: usize = 24 * 1024 * 1024;
 
-/// Maximum size of one raw response-body chunk.
 pub const MAX_BODY_CHUNK_BYTES: usize = 64 * 1024;
 
 const KIND_CONTROL: u8 = 0;
 const KIND_REQUEST_CHUNK: u8 = 1;
 const KIND_RESPONSE_CHUNK: u8 = 2;
 
-/// Payload class of one frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FrameKind {
-    /// Encoded control message.
     Control,
-    /// Raw bytes uploaded with a request.
     RequestChunk,
-    /// Raw bytes downloaded with a response.
     ResponseChunk,
 }
 
@@ -121,40 +48,22 @@ impl FrameKind {
     }
 }
 
-/// One decoded frame header.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Frame {
-    /// Payload class.
     pub kind: FrameKind,
-    /// Request this frame belongs to; zero for control frames.
     pub request: u64,
 }
 
-/// Writes one control message as a postcard frame.
-///
-/// # Errors
-///
-/// Serialization failure or a payload larger than [`MAX_CONTROL_BYTES`].
 pub fn write_control<T: Serialize>(writer: &mut impl Write, message: &T) -> io::Result<()> {
     let payload = postcard::to_allocvec(message).map_err(io::Error::other)?;
     write_frame(writer, FrameKind::Control, 0, &payload)
 }
 
-/// Writes one raw body chunk for `request`.
-///
-/// # Errors
-///
-/// A payload larger than [`MAX_BODY_CHUNK_BYTES`] or write failure.
 #[cfg(test)]
 pub fn write_body(writer: &mut impl Write, request: u64, payload: &[u8]) -> io::Result<()> {
     write_frame(writer, FrameKind::ResponseChunk, request, payload)
 }
 
-/// Writes one frame with the fixed header.
-///
-/// # Errors
-///
-/// A payload larger than the kind limit or write failure.
 pub fn write_frame(
     writer: &mut impl Write,
     kind: FrameKind,
@@ -167,11 +76,6 @@ pub fn write_frame(
     writer.flush()
 }
 
-/// Writes one control message as a postcard frame on an async writer.
-///
-/// # Errors
-///
-/// Serialization failure or a payload larger than [`MAX_CONTROL_BYTES`].
 pub async fn write_control_async<W: AsyncWrite + Unpin + ?Sized>(
     writer: &mut W,
     message: &impl Serialize,
@@ -180,11 +84,6 @@ pub async fn write_control_async<W: AsyncWrite + Unpin + ?Sized>(
     write_frame_async(writer, FrameKind::Control, 0, &payload).await
 }
 
-/// Writes one frame with the fixed header on an async writer.
-///
-/// # Errors
-///
-/// A payload larger than the kind limit or write failure.
 pub async fn write_frame_async<W: AsyncWrite + Unpin + ?Sized>(
     writer: &mut W,
     kind: FrameKind,
@@ -206,7 +105,6 @@ fn encode_header(kind: FrameKind, request: u64, length: usize) -> io::Result<[u8
     let mut header = [0u8; HEADER_BYTES];
     header[0] = PROTOCOL_VERSION;
     header[1] = kind.wire();
-    // header[2..4] is a zero flags field; readers reject nonzero values.
     header[4..12].copy_from_slice(&request.to_be_bytes());
     header[12..16].copy_from_slice(&length.to_be_bytes());
     Ok(header)
@@ -231,15 +129,6 @@ fn decode_header(header: &[u8; HEADER_BYTES]) -> io::Result<(FrameKind, u64, usi
     Ok((kind, request, length))
 }
 
-/// Reads one frame header and payload into `payload`.
-///
-/// `Ok(None)` is a clean peer close at a frame boundary. Every other failure is
-/// deterministic: an unknown version or kind, nonzero flags, an oversized
-/// length, or a truncated header or payload leaves the channel unusable.
-///
-/// # Errors
-///
-/// I/O failure or a protocol violation.
 pub fn read_frame(reader: &mut impl Read, payload: &mut Vec<u8>) -> io::Result<Option<Frame>> {
     let mut header = [0u8; HEADER_BYTES];
     if reader.read(&mut header[..1])? == 0 {
@@ -253,13 +142,6 @@ pub fn read_frame(reader: &mut impl Read, payload: &mut Vec<u8>) -> io::Result<O
     Ok(Some(Frame { kind, request }))
 }
 
-/// Reads one frame header and payload into `payload` on an async reader.
-///
-/// `Ok(None)` is a clean peer close at a frame boundary.
-///
-/// # Errors
-///
-/// I/O failure or a protocol violation.
 pub async fn read_frame_async<R: AsyncRead + Unpin + ?Sized>(
     reader: &mut R,
     payload: &mut Vec<u8>,
@@ -276,11 +158,6 @@ pub async fn read_frame_async<R: AsyncRead + Unpin + ?Sized>(
     Ok(Some(Frame { kind, request }))
 }
 
-/// Reads one control message.
-///
-/// # Errors
-///
-/// I/O failure, a body frame, an invalid payload, or a protocol violation.
 #[cfg(test)]
 pub fn read_control<T: DeserializeOwned>(
     reader: &mut impl Read,
@@ -296,11 +173,6 @@ pub fn read_control<T: DeserializeOwned>(
     }
 }
 
-/// Reads one raw body chunk, returning its request id.
-///
-/// # Errors
-///
-/// I/O failure, a control frame, or a protocol violation.
 #[cfg(test)]
 pub fn read_body(reader: &mut impl Read, buffer: &mut Vec<u8>) -> io::Result<Option<u64>> {
     match read_frame(reader, buffer)? {
@@ -313,15 +185,6 @@ pub fn read_body(reader: &mut impl Read, buffer: &mut Vec<u8>) -> io::Result<Opt
     }
 }
 
-/// Decodes one control-frame payload after its frame header has been read.
-///
-/// The frame length is the payload's exact extent, so anything left over after
-/// the message is a framing bug, not slack. `postcard::from_bytes` would drop
-/// the remainder silently.
-///
-/// # Errors
-///
-/// Invalid postcard bytes, a payload that does not match `T`, or trailing bytes.
 pub fn decode_control<T: DeserializeOwned>(payload: &[u8]) -> io::Result<T> {
     let (message, trailing) = postcard::take_from_bytes(payload)
         .map_err(|error| invalid(format!("invalid renderer IPC payload: {error}")))?;
@@ -365,7 +228,6 @@ mod tests {
 
     use super::*;
 
-    /// One message through the real frame codec and back.
     fn round_trip<T: serde::Serialize + serde::de::DeserializeOwned>(message: &T) -> T {
         let mut bytes = Vec::new();
         write_control(&mut bytes, message).expect("write");
@@ -411,10 +273,6 @@ mod tests {
 
     #[test]
     fn every_remote_value_variant_survives_the_wire() {
-        // Postcard is not self-describing and rejects `deserialize_any`, so a
-        // value shape it cannot decode fails only when it first crosses, not at
-        // compile time. The JSON codec's `serde(with)` number shim was exactly
-        // that trap; walk every variant through the real frame codec.
         let values = [
             renderer::RemoteValue::Undefined,
             renderer::RemoteValue::Null,
@@ -450,14 +308,10 @@ mod tests {
             let crate::wire::Reply::Value(Ok(back)) = reply else {
                 panic!("expected a value reply");
             };
-            // `Debug` keeps `NaN` comparable and distinguishes `-0.0`.
             assert_eq!(format!("{back:?}"), expected, "round trip");
         }
     }
 
-    /// Every request policy survives the wire unchanged. The enum is the
-    /// record of what a dial is, so a variant that cannot round-trip is a dial
-    /// the browser would send with another mode.
     #[test]
     fn a_dial_request_round_trips_every_policy() {
         use renderer::{CorsMode, CorsRequest, RequestPolicy};
@@ -488,8 +342,6 @@ mod tests {
             RequestPolicy::CspReportUri,
         ] {
             let url = url::Url::parse("https://a.test/x").expect("URL");
-            // A different origin from the request URL, so the round trip
-            // proves the initiator travels on its own field
             let initiator = url::Url::parse("https://b.test/").expect("origin");
             let request = renderer::DialRequest::new(policy, &url, &initiator.origin());
             let message: crate::wire::FromRenderer = crate::exchange::Frame::Call {
@@ -522,9 +374,6 @@ mod tests {
         }
     }
 
-    /// Both response-head shapes survive the postcard wire. The origin variant
-    /// decides whether the document has HTTP status and policy headers, so a
-    /// decoder that could not name it would drop every navigation.
     #[test]
     fn a_response_head_round_trips_both_origins() {
         use renderer::{ResponseHead, ResponseSource};
@@ -606,9 +455,6 @@ mod tests {
         }
     }
 
-    /// A posted message survives the wire for every origin shape, including
-    /// the opaque `"null"` sender and an exact opaque target. The target was
-    /// once rejected on decode, which stopped the whole read loop.
     #[test]
     fn a_posted_message_round_trips_every_origin_shape() {
         use renderer::{PostedMessage, SerializedOrigin, TargetOrigin, WindowId};
@@ -687,9 +533,7 @@ mod tests {
         }
     }
 
-    /// The handshake carries the identity, so the renderer's pages, its CSP
-    /// reports, and CDP answers report the product the request headers do
-    /// (<https://wicg.github.io/ua-client-hints/#http-ua-hints>).
+    // https://wicg.github.io/ua-client-hints/#http-ua-hints
     #[test]
     fn a_handshake_carries_the_browser_identity() {
         let identity = net::ValidIdentity::try_from(net::Identity {
@@ -865,9 +709,7 @@ mod tests {
         );
     }
 
-    /// Every field of a `window.open` call crosses the wire: the source, the
-    /// target, the URL (present or absent), and the opener policy
-    /// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps>).
+    // https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps
     #[test]
     fn a_window_open_caller_survives_the_wire() {
         let source = renderer::NavigationSource {

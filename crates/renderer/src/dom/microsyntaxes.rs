@@ -1,12 +1,7 @@
-//! HTML common microsyntaxes shared by form controls and script plumbing.
-//!
-//! The algorithms follow the spec section on common microsyntaxes
-//! (<https://html.spec.whatwg.org/multipage/common-microsyntaxes.html>), with
-//! the number serializer following ECMAScript `Number::toString`
-//! (<https://tc39.es/ecma262/#sec-numeric-types-number-tostring>).
+// https://html.spec.whatwg.org/multipage/common-microsyntaxes.html
+// https://tc39.es/ecma262/#sec-numeric-types-number-tostring
 
-/// Parses a whole string as a valid floating-point number
-/// (<https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#valid-floating-point-number>).
+// https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#valid-floating-point-number
 pub(crate) fn valid_float(value: &str) -> Option<f64> {
     let bytes = value.as_bytes();
     let mut position = 0;
@@ -61,9 +56,7 @@ pub(crate) fn valid_float(value: &str) -> Option<f64> {
         .filter(|number| number.is_finite())
 }
 
-/// The best representation of a number as a floating-point number, i.e.
-/// ECMAScript `Number::toString` for radix 10
-/// (<https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#best-representation-of-the-number-as-a-floating-point-number>).
+// https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#best-representation-of-the-number-as-a-floating-point-number
 pub(crate) fn format_number(value: f64) -> String {
     if value.is_nan() {
         return "NaN".to_owned();
@@ -144,8 +137,7 @@ fn parse_two_digits(value: &str) -> Option<u64> {
     value.parse::<u64>().ok()
 }
 
-/// A valid date string: year > 0, a real month, and a day in that month
-/// (<https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#valid-date-string>).
+// https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#valid-date-string
 pub(crate) fn valid_date(value: &str) -> bool {
     let mut parts = value.split('-');
     let Some(year) = parts.next().and_then(parse_year) else {
@@ -163,8 +155,7 @@ pub(crate) fn valid_date(value: &str) -> bool {
     (1..=days_in_month(year, month)).contains(&day)
 }
 
-/// A valid month string: year > 0 and a month in 1..=12
-/// (<https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#valid-month-string>).
+// https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#valid-month-string
 pub(crate) fn valid_month(value: &str) -> bool {
     let mut parts = value.split('-');
     let Some(_year) = parts.next().and_then(parse_year) else {
@@ -176,18 +167,13 @@ pub(crate) fn valid_month(value: &str) -> bool {
     parts.next().is_none() && (1..=12).contains(&month)
 }
 
-/// The day of the week for January 1, with Monday = 0. Year 1 started on a
-/// Monday in the proleptic Gregorian calendar.
 fn january_first_weekday(year: u64) -> u64 {
     let previous = u128::from(year - 1);
     let days = 365 * previous + previous / 4 - previous / 100 + previous / 400;
     u64::try_from(days % 7).unwrap_or(0)
 }
 
-/// A valid week string: year > 0, uppercase `W`, and a week present in that
-/// week-year. A year has 53 weeks exactly when January 1 is a Thursday or a
-/// leap-year Wednesday
-/// (<https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#valid-week-string>).
+// https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#valid-week-string
 pub(crate) fn valid_week(value: &str) -> bool {
     let Some((year, rest)) = value.split_once('-') else {
         return false;
@@ -208,7 +194,6 @@ pub(crate) fn valid_week(value: &str) -> bool {
     (1..=weeks).contains(&week)
 }
 
-/// A parsed time: hour, minute, second, and milliseconds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Time {
     pub(crate) hour: u64,
@@ -217,9 +202,6 @@ pub(crate) struct Time {
     pub(crate) millis: u64,
 }
 
-/// Days since 1970-01-01 for a proleptic Gregorian date (Howard Hinnant's
-/// `days_from_civil`). The microsyntax allows any year above zero, so the
-/// arithmetic is i128: a huge year must not overflow and panic.
 fn days_from_civil(year: u64, month: u64, day: u64) -> i128 {
     let year = i128::from(year);
     let month = i128::from(month);
@@ -233,8 +215,7 @@ fn days_from_civil(year: u64, month: u64, day: u64) -> i128 {
     era * 146_097 + day_of_era - 719_468
 }
 
-/// Days since the epoch for a valid date string
-/// (<https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#valid-date-string>).
+// https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#valid-date-string
 pub(crate) fn date_value(value: &str) -> Option<i128> {
     let mut parts = value.split('-');
     let year = parts.next().and_then(parse_year)?;
@@ -249,8 +230,7 @@ pub(crate) fn date_value(value: &str) -> Option<i128> {
     Some(days_from_civil(year, month, day))
 }
 
-/// Months since 1970-01 for a valid month string
-/// (<https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#valid-month-string>).
+// https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#valid-month-string
 pub(crate) fn month_value(value: &str) -> Option<i128> {
     let mut parts = value.split('-');
     let year = parts.next().and_then(parse_year)?;
@@ -261,17 +241,13 @@ pub(crate) fn month_value(value: &str) -> Option<i128> {
     Some((i128::from(year) - 1970) * 12 + i128::from(month) - 1)
 }
 
-/// The Monday of the week containing 1970-01-01, as days since the epoch.
 const EPOCH_MONDAY: i128 = -3;
 
-/// The weekday of a count of days since the epoch, with Monday as 0
-/// (1970-01-01 was a Thursday).
 fn weekday_from_days(days: i128) -> i128 {
     ((days % 7) + 10) % 7
 }
 
-/// Weeks since [`EPOCH_MONDAY`] for a valid week string
-/// (<https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#valid-week-string>).
+// https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#valid-week-string
 pub(crate) fn week_value(value: &str) -> Option<i128> {
     let (year, rest) = value.split_once('-')?;
     let week = rest.strip_prefix('W').and_then(parse_two_digits)?;
@@ -291,9 +267,7 @@ pub(crate) fn week_value(value: &str) -> Option<i128> {
     Some((monday_of_week_one - EPOCH_MONDAY) / 7 + i128::from(week) - 1)
 }
 
-/// Seconds since midnight for a valid time string, with any millisecond
-/// fraction
-/// (<https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#valid-time-string>).
+// https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#valid-time-string
 #[expect(
     clippy::cast_precision_loss,
     reason = "all four fields are at most 59 or 999, far below 2^53"
@@ -308,9 +282,7 @@ pub(crate) fn time_value(value: &str) -> Option<f64> {
     )
 }
 
-/// Days since the epoch (with a fractional part) for a valid local date and
-/// time string
-/// (<https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#valid-local-date-and-time-string>).
+// https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#valid-local-date-and-time-string
 #[expect(
     clippy::cast_precision_loss,
     reason = "f64 represents any day count the microsyntax allows"
@@ -323,9 +295,7 @@ pub(crate) fn local_datetime_value(value: &str) -> Option<f64> {
     Some(days as f64 * 86_400.0 + seconds)
 }
 
-/// A valid time string: `hh:mm`, optional `:ss`, and a fraction only after
-/// the seconds component
-/// (<https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#valid-time-string>).
+// https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#valid-time-string
 pub(crate) fn valid_time(value: &str) -> Option<Time> {
     let (clock, fraction) = match value.split_once('.') {
         Some((clock, fraction)) => (clock, Some(fraction)),
@@ -373,8 +343,7 @@ pub(crate) fn valid_time(value: &str) -> Option<Time> {
     })
 }
 
-/// A valid local date and time string, split into its date and time
-/// (<https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#valid-local-date-and-time-string>).
+// https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#valid-local-date-and-time-string
 pub(crate) fn valid_local_datetime(value: &str) -> Option<(&str, Time)> {
     let separator = value.find(['T', ' '])?;
     let (date, rest) = value.split_at(separator);
@@ -382,9 +351,7 @@ pub(crate) fn valid_local_datetime(value: &str) -> Option<(&str, Time)> {
     valid_date(date).then_some((date, time))
 }
 
-/// The shortest time string for a parsed time: seconds and fractions are
-/// omitted when zero, and trailing fraction zeros are dropped
-/// (<https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#valid-normalized-local-date-and-time-string>).
+// https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#valid-normalized-local-date-and-time-string
 pub(crate) fn normalized_time(time: Time) -> String {
     let seconds = if time.second != 0 || time.millis != 0 {
         format!(":{:02}", time.second)
@@ -400,9 +367,6 @@ pub(crate) fn normalized_time(time: Time) -> String {
     format!("{:02}:{:02}{seconds}{fraction}", time.hour, time.minute)
 }
 
-/// The decimal scale authored in a whole-string floating-point literal: the
-/// fraction digit count minus the exponent, clamped at zero. Step rounding
-/// uses it to snap binary noise back to the step's decimal place.
 pub(crate) fn authored_decimal_scale(text: &str) -> Option<u32> {
     let bytes = text.as_bytes();
     let mut position = 0;
@@ -457,15 +421,10 @@ pub(crate) fn authored_decimal_scale(text: &str) -> Option<u32> {
     if position != bytes.len() {
         return None;
     }
-    // A scale beyond u32 is treated as "too large to round", not as malformed:
-    // the caller skips rounding beyond 20 anyway.
     Some(u32::try_from(fraction_digits.saturating_sub(exponent).max(0)).unwrap_or(u32::MAX))
 }
 
-/// An exact decimal parsed from a floating-point attribute. Step alignment is
-/// defined over decimal numbers, not binary floats, so `0.1 + 0.2` must not
-/// produce `0.30000000000000004`
-/// (<https://html.spec.whatwg.org/multipage/input.html#attr-input-step>).
+// https://html.spec.whatwg.org/multipage/input.html#attr-input-step
 #[derive(Clone, Debug)]
 pub(crate) struct Decimal {
     negative: bool,
@@ -499,7 +458,6 @@ impl Decimal {
         self.digits == "0"
     }
 
-    /// The signed mantissa at `scale`, or `None` when it does not fit i128.
     pub(crate) fn mantissa_at(&self, scale: u32) -> Option<i128> {
         let zeros = scale.checked_sub(self.scale)?;
         let zeros = usize::try_from(zeros).ok()?;
@@ -510,7 +468,6 @@ impl Decimal {
         Some(if self.negative { -magnitude } else { magnitude })
     }
 
-    /// The decimal scale (digits after the point) of the normalized value.
     pub(crate) fn scale(&self) -> u32 {
         self.scale
     }
@@ -553,9 +510,6 @@ impl Decimal {
     }
 }
 
-/// Parses the longest decimal prefix with the rules for parsing
-/// floating-point number values. The caller decides whether trailing junk is
-/// allowed (attributes) or the whole string must be a valid number (values).
 pub(crate) fn parse_decimal(input: &str) -> Option<Decimal> {
     let bytes = input.as_bytes();
     let mut position = 0;
@@ -618,11 +572,7 @@ pub(crate) fn parse_decimal(input: &str) -> Option<Decimal> {
             exponent = -exponent;
         }
     }
-    // A value that rounds to infinity is a parse error, and one that rounds
-    // to zero is zero. Bound the exponent before expanding it, so an
-    // attribute such as `min="1e99999999999999999999"` cannot allocate an
-    // enormous digit string or abort the renderer
-    // (<https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#rules-for-parsing-floating-point-number-values>).
+    // https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#rules-for-parsing-floating-point-number-values
     let significant = digits.trim_start_matches('0');
     if significant.is_empty() {
         return Some(Decimal::zero());
@@ -650,9 +600,7 @@ pub(crate) fn parse_decimal(input: &str) -> Option<Decimal> {
         scale: u32::try_from(scale).ok()?,
     };
     decimal.normalize();
-    // The parsing rules reject a value that rounds to infinity and return zero
-    // for one that rounds to zero
-    // (<https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#rules-for-parsing-floating-point-number-values>).
+    // https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#rules-for-parsing-floating-point-number-values
     let number = decimal.to_f64();
     if !number.is_finite() {
         return None;
@@ -663,11 +611,7 @@ pub(crate) fn parse_decimal(input: &str) -> Option<Decimal> {
     Some(decimal)
 }
 
-/// The exact range state value: default when invalid, then the nearest step
-/// on the grid that stays inside `[min, max]`
-/// (<https://html.spec.whatwg.org/multipage/input.html#range-state-(type=range)>).
-/// Returns `None` when the operands do not fit i128, so the caller can use the
-/// floating-point fallback.
+// https://html.spec.whatwg.org/multipage/input.html#range-state-(type=range
 pub(crate) fn align_range(
     minimum: &Decimal,
     maximum: &Decimal,
@@ -692,7 +636,6 @@ pub(crate) fn align_range(
     if step_at <= 0 {
         return None;
     }
-    // floor((n / d) + 0.5): ties round toward positive infinity.
     let numerator = value_at
         .checked_sub(step_base_at)?
         .checked_mul(2)?
@@ -716,9 +659,7 @@ pub(crate) fn align_range(
         aligned = aligned.checked_add(steps.checked_mul(step_at)?)?;
     }
     if aligned < minimum_at || aligned > maximum_at {
-        // No grid point is inside the interval. The value still clamps to the
-        // interval, as the overflow and underflow steps run before stepping
-        // (<https://html.spec.whatwg.org/multipage/input.html#range-state-(type=range)>).
+        // https://html.spec.whatwg.org/multipage/input.html#range-state-(type=range
         return Some(Decimal::from_mantissa(
             value_at.clamp(minimum_at, maximum_at),
             scale,
@@ -727,8 +668,6 @@ pub(crate) fn align_range(
     Some(Decimal::from_mantissa(aligned, scale))
 }
 
-/// The range state's default value: the midpoint of `[min, max]`, or `min`
-/// when the interval is inverted.
 pub(crate) fn range_default(minimum: &Decimal, maximum: &Decimal) -> Decimal {
     if maximum
         .compare(minimum)
@@ -746,7 +685,6 @@ pub(crate) fn range_default(minimum: &Decimal, maximum: &Decimal) -> Decimal {
     let Some(difference) = maximum_at.checked_sub(minimum_at) else {
         return minimum.clone();
     };
-    // (min + (max - min) / 2) at one extra decimal place.
     let Some(half_scaled) = minimum_at.checked_mul(10).and_then(|minimum| {
         difference
             .checked_mul(5)
@@ -767,8 +705,6 @@ mod tests {
         week_value,
     };
 
-    /// The epoch, a leap day, and a year far past the Date range (the
-    /// microsyntax allows any year above zero, so this must not overflow).
     #[test]
     fn a_date_value_is_days_since_the_epoch() {
         assert_eq!(date_value("1970-01-01"), Some(0));
@@ -777,12 +713,9 @@ mod tests {
         assert_eq!(date_value("2016-02-29"), Some(16_860));
         assert_eq!(date_value("0000-01-01"), None);
         assert_eq!(date_value("2019-02-29"), None);
-        // The microsyntax allows any year above zero, so a huge one must stay
-        // a number rather than overflow the day arithmetic.
         assert!(date_value("30000000000000000-01-01").is_some());
     }
 
-    /// Month arithmetic counts from 1970-01 and rejects a bad month.
     #[test]
     fn a_month_value_is_months_since_1970_01() {
         assert_eq!(month_value("1970-01"), Some(0));
@@ -792,8 +725,6 @@ mod tests {
         assert!(month_value("30000000000000000-12").is_some());
     }
 
-    /// Week 53 exists only in years that have it, and week 1 starts on the
-    /// Monday of the week containing January 4.
     #[test]
     fn a_week_value_is_weeks_since_the_epoch_monday() {
         assert_eq!(week_value("1970-W01"), Some(0));
@@ -804,7 +735,6 @@ mod tests {
         assert_eq!(week_value("2021-W53"), None);
     }
 
-    /// Seconds keep the fraction only after the seconds component.
     #[test]
     fn a_time_value_is_seconds_since_midnight() {
         assert_eq!(time_value("00:00"), Some(0.0));
@@ -814,7 +744,6 @@ mod tests {
         assert_eq!(time_value("01:02.5"), None);
     }
 
-    /// A local date-time accepts `T` or a space and combines the two units.
     #[test]
     fn a_local_datetime_value_combines_days_and_seconds() {
         assert_eq!(local_datetime_value("1970-01-01T00:00"), Some(0.0));
@@ -822,7 +751,6 @@ mod tests {
         assert_eq!(local_datetime_value("1970-01-01T24:00"), None);
     }
 
-    /// The authored scale is the fraction minus the exponent, clamped at zero.
     #[test]
     fn an_authored_decimal_scale_counts_decimal_places() {
         assert_eq!(authored_decimal_scale("1"), Some(0));
@@ -830,7 +758,6 @@ mod tests {
         assert_eq!(authored_decimal_scale("1e2"), Some(0));
         assert_eq!(authored_decimal_scale("1.2e2"), Some(0));
         assert_eq!(authored_decimal_scale("1.2e-2"), Some(3));
-        // A scale past u32 means "too large to round", not "malformed".
         assert_eq!(
             authored_decimal_scale("1e-99999999999999999999"),
             Some(u32::MAX)

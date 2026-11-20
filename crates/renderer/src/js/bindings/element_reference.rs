@@ -1,11 +1,4 @@
-//! Reflected element references and element reference lists
-//! (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes:element>).
-//!
-//! An IDL setter stores the element or elements itself, not just the IDREF
-//! the content attribute holds: the content attribute is always set to the
-//! empty string, and the getter answers the stored reference while it is in
-//! scope. A direct content-attribute write clears the stored reference, so
-//! the attribute is again the only source.
+// https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes:element
 
 use rquickjs::{Array, Ctx, Exception, Function, Object, Result, Symbol, Value};
 
@@ -17,7 +10,6 @@ use crate::js::bindings::{
 };
 use crate::js::world::ElementReferenceCache;
 
-/// `attribute` getter for an `Element?` reflection.
 pub(crate) fn get_element_reference<'js>(
     ctx: &Ctx<'js>,
     element: NodeId,
@@ -37,11 +29,7 @@ pub(crate) fn get_element_reference<'js>(
     }
 }
 
-/// `attribute` getter for a `FrozenArray<Element>?` reflection.
-///
-/// The frozen array is cached by contents, so an unchanged reference list
-/// answers the same object on every read
-/// (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes:element>).
+// https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes:element
 pub(crate) fn get_element_reference_list<'js>(
     ctx: &Ctx<'js>,
     element: NodeId,
@@ -84,7 +72,6 @@ pub(crate) fn get_element_reference_list<'js>(
     Ok(value)
 }
 
-/// `attribute` setter for an `Element?` reflection.
 pub(crate) fn set_element_reference<'js>(
     ctx: &Ctx<'js>,
     element: NodeId,
@@ -95,9 +82,7 @@ pub(crate) fn set_element_reference<'js>(
         return remove_attribute_sync(ctx, element, "", content, false);
     }
     let target = element_argument(ctx, &value)?;
-    // The content attribute is always the empty string: the reference lives
-    // in the IDL attribute, not in an IDREF
-    // (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes:element>).
+    // https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes:element
     set_attribute_sync(ctx, element, content, "")?;
     let world = world_for_node(ctx, element)?;
     if let Some(mut parsed) = world.borrow().document_mut(element) {
@@ -108,7 +93,6 @@ pub(crate) fn set_element_reference<'js>(
     Ok(())
 }
 
-/// `attribute` setter for a `FrozenArray<Element>?` reflection.
 pub(crate) fn set_element_reference_list<'js>(
     ctx: &Ctx<'js>,
     element: NodeId,
@@ -129,8 +113,7 @@ pub(crate) fn set_element_reference_list<'js>(
     Ok(())
 }
 
-/// The spec's "get the attr-associated element"
-/// (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes:element>).
+// https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes:element
 fn attr_associated_element(
     parsed: &crate::Parsed,
     element: NodeId,
@@ -146,8 +129,7 @@ fn attr_associated_element(
     element_with_id(base, parsed.id, element.node, value)
 }
 
-/// The spec's "get the attr-associated elements"
-/// (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes:element>).
+// https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes:element
 fn attr_associated_elements(
     parsed: &crate::Parsed,
     element: NodeId,
@@ -175,12 +157,8 @@ fn attr_associated_elements(
     )
 }
 
-/// Whether `candidate` is a descendant of one of `element`'s shadow-including
-/// ancestors, which is what makes a stored reference observable
-/// (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes:element>).
+// https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes:element
 fn in_reflection_scope(base: &blitz_dom::BaseDocument, element: NodeId, candidate: NodeId) -> bool {
-    // Blitz ids are per tree, so an id from another document names an
-    // unrelated node here.
     if element.document != candidate.document {
         return false;
     }
@@ -194,7 +172,6 @@ fn in_reflection_scope(base: &blitz_dom::BaseDocument, element: NodeId, candidat
     false
 }
 
-/// Whether `node` is `ancestor` or one of its tree descendants.
 fn is_inclusive_descendant(
     base: &blitz_dom::BaseDocument,
     ancestor: BlitzId,
@@ -210,8 +187,7 @@ fn is_inclusive_descendant(
     false
 }
 
-/// The first element in `element`'s tree with `id`, in tree order
-/// (<https://dom.spec.whatwg.org/#concept-id>).
+// https://dom.spec.whatwg.org/#concept-id
 fn element_with_id(
     base: &blitz_dom::BaseDocument,
     document: u32,
@@ -221,7 +197,6 @@ fn element_with_id(
     find_element_by_id(base, document, tree_root(base, element), id)
 }
 
-/// The root of `node`'s tree, which a shadow root terminates.
 fn tree_root(base: &blitz_dom::BaseDocument, node: BlitzId) -> BlitzId {
     let mut root = node;
     while let Some(parent) = base.get_node(root).and_then(|node| node.parent) {
@@ -230,8 +205,7 @@ fn tree_root(base: &blitz_dom::BaseDocument, node: BlitzId) -> BlitzId {
     root
 }
 
-/// Convert one `Element` IDL argument, rejecting null and non-elements
-/// (<https://webidl.spec.whatwg.org/#es-interface>).
+// https://webidl.spec.whatwg.org/#es-interface
 fn element_argument<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<NodeId> {
     let node = host_node_id(ctx, value)
         .ok_or_else(|| Exception::throw_type(ctx, "value is not an Element"))?;
@@ -250,8 +224,7 @@ fn element_argument<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<NodeId> {
     Ok(node)
 }
 
-/// Convert a `FrozenArray<Element>?` IDL argument through its iterator
-/// (<https://webidl.spec.whatwg.org/#es-frozen-array>).
+// https://webidl.spec.whatwg.org/#es-frozen-array
 fn element_list_argument<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Vec<NodeId>> {
     let not_iterable = || Exception::throw_type(ctx, "value is not iterable");
     let object = value.as_object().ok_or_else(not_iterable)?;
@@ -274,8 +247,7 @@ fn element_list_argument<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Vec<
     }
 }
 
-/// Freeze the array the getter hands to script
-/// (<https://webidl.spec.whatwg.org/#es-frozen-array>).
+// https://webidl.spec.whatwg.org/#es-frozen-array
 fn freeze<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Value<'js>> {
     let object: Object = ctx.globals().get("Object")?;
     let freeze: Function = object.get("freeze")?;

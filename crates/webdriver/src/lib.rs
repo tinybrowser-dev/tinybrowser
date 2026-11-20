@@ -1,10 +1,4 @@
-//! Classic `WebDriver` HTTP server for wptrunner.
-//!
-//! Speaks the W3C HTTP protocol
-//! ([WebDriver](https://w3c.github.io/webdriver/)) enough for testharness:
-//! session, navigate, execute script, windows. Adapter over
-//! [`BrowserHandle`]; it does not own Browser, tabs,
-//! or the cookie jar.
+// https://w3c.github.io/webdriver/
 
 use std::collections::HashMap;
 use std::net::TcpListener;
@@ -26,22 +20,39 @@ const ELEMENT_KEY: &str = "element-6066-11e4-a52e-4f735466cecf";
 const DEFAULT_SCRIPT_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_PAGE_LOAD_TIMEOUT: Duration = Duration::from_secs(300);
 
-/// Serves classic `WebDriver` on `listener` until the process exits.
-///
-/// One active HTTP session. Pages live on `browser`.
-///
-/// # Errors
-///
-/// Returns when the listener cannot be converted or serving fails.
+#[derive(Clone)]
+pub struct Router {
+    state: AppState,
+}
+
+impl Router {
+    #[must_use]
+    pub fn new(browser: BrowserHandle) -> Self {
+        let sessions = Arc::new(Mutex::new(Sessions {
+            browser,
+            next_session: 0,
+            next_window: 0,
+            open: HashMap::new(),
+        }));
+        Self {
+            state: AppState { sessions },
+        }
+    }
+
+    pub async fn handle(&self, request: Request) -> Response {
+        serve_request(request, self.state.clone()).await
+    }
+}
+
 pub async fn serve(listener: &TcpListener, browser: &BrowserHandle) -> std::io::Result<()> {
-    let sessions = Arc::new(Mutex::new(Sessions {
-        browser: browser.clone(),
-        next_session: 0,
-        next_window: 0,
-        open: HashMap::new(),
-    }));
-    let state = AppState { sessions };
-    server::serve(listener, Shutdown::new(), state, serve_request).await
+    let router = Router::new(browser.clone());
+    server::serve(
+        listener,
+        Shutdown::new(),
+        router,
+        |request, router| async move { router.handle(request).await },
+    )
+    .await
 }
 
 #[derive(Clone)]
@@ -49,7 +60,6 @@ struct AppState {
     sessions: Arc<Mutex<Sessions>>,
 }
 
-/// The body cap the served endpoints accept before answering 413.
 const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 
 async fn serve_request(request: Request, state: AppState) -> Response {
@@ -59,9 +69,6 @@ async fn serve_request(request: Request, state: AppState) -> Response {
     if server::has_origin(&request) {
         return server::text(StatusCode::FORBIDDEN, "Origin header rejected");
     }
-    // Reject browser-safelisted non-JSON Content-Types (e.g. `text/plain`,
-    // `application/x-www-form-urlencoded`). An absent `Content-Type` is
-    // allowed because wptrunner's Python WebDriver client omits it on POST.
     if matches!(
         *request.method(),
         Method::POST | Method::PUT | Method::PATCH
@@ -103,11 +110,7 @@ struct Session {
     implicit_timeout: Duration,
     script_timeout: Duration,
     page_load_timeout: Duration,
-    /// Virtual window rectangle. The engine has no window system, so
-    /// `Set Window Rect` records the request and reports it back.
     window_rect: [f64; 4],
-    /// Recorded permission states by descriptor name. Nothing enforces them
-    /// yet; recording makes success mean the state was stored.
     permissions: HashMap<String, String>,
 }
 
@@ -116,10 +119,7 @@ struct Window {
 }
 
 impl Sessions {
-    /// Adopts tabs that page script opened and forgets tabs that closed, so
-    /// `GET /window/handles` reports a `window.open` popup and
-    /// `POST /window` can select it
-    /// (<https://w3c.github.io/webdriver/#get-window-handles>).
+    // https://w3c.github.io/webdriver/#get-window-handles
     async fn sync_windows(&mut self, session: &str) {
         let browser = self.browser.clone();
         let Ok(ids) = browser.tabs().await else {
@@ -166,14 +166,34 @@ impl Sessions {
     async fn create(&mut self) -> Result<String, String> {
         self.next_session += 1;
         let id = format!("s{}", self.next_session);
-        self.next_window += 1;
-        let handle = format!("w{}", self.next_window);
-        let window = self.blank_window().await?;
+        let mut windows = HashMap::new();
+        let mut current = None;
+        if let Ok(ids) = self.browser.tabs().await {
+            for tab_id in ids {
+                if let Ok(tab) = self.browser.tab(tab_id).await {
+                    self.next_window += 1;
+                    let handle = format!("w{}", self.next_window);
+                    if current.is_none() {
+                        current = Some(handle.clone());
+                    }
+                    windows.insert(handle, Window { tab });
+                }
+            }
+        }
+        let current = if let Some(handle) = current {
+            handle
+        } else {
+            self.next_window += 1;
+            let handle = format!("w{}", self.next_window);
+            let window = self.blank_window().await?;
+            windows.insert(handle.clone(), window);
+            handle
+        };
         self.open.insert(
             id.clone(),
             Session {
-                current: handle.clone(),
-                windows: HashMap::from([(handle, window)]),
+                current,
+                windows,
                 implicit_timeout: Duration::ZERO,
                 script_timeout: DEFAULT_SCRIPT_TIMEOUT,
                 page_load_timeout: DEFAULT_PAGE_LOAD_TIMEOUT,
@@ -187,9 +207,7 @@ impl Sessions {
 
 async fn dispatch(method: &str, path: &str, body: &str, sessions: &mut Sessions) -> (u16, Value) {
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-    // A page can open or close a tab from script, so the browser's live tab
-    // list is the source of truth for the session's window handles before any
-    // command runs (<https://w3c.github.io/webdriver/#get-window-handles>).
+    // https://w3c.github.io/webdriver/#get-window-handles
     if let ["session", session, ..] = segments.as_slice() {
         sessions.sync_windows(session).await;
     }
@@ -251,8 +269,6 @@ async fn dispatch(method: &str, path: &str, body: &str, sessions: &mut Sessions)
             window_op(sessions, session)
         }
         ("POST", ["session", session, "actions"]) => perform_actions(sessions, session, body).await,
-        // Release Actions ([WebDriver] release-actions). No input state can
-        // exist while Perform Actions is unsupported, so releasing is a no-op.
         ("DELETE", ["session", session, "actions"]) => {
             if sessions.open.contains_key(*session) {
                 ok(Value::Null)
@@ -306,8 +322,7 @@ async fn current_url(sessions: &Sessions, session: &str) -> (u16, Value) {
     }
 }
 
-/// W3C Take Screenshot: the value is a base64 PNG of the viewport
-/// (<https://w3c.github.io/webdriver/#take-screenshot>).
+// https://w3c.github.io/webdriver/#take-screenshot
 async fn take_screenshot(sessions: &Sessions, session: &str) -> (u16, Value) {
     match current(sessions, session) {
         Some(window) => {
@@ -511,16 +526,13 @@ fn encode(value: &RemoteValue) -> Value {
     }
 }
 
-/// The shared body of "Find Element" and "Find Elements"
-/// (<https://w3c.github.io/webdriver/#find-elements>): validate the location
-/// strategy and return the engine id of every match.
+// https://w3c.github.io/webdriver/#find-elements
 async fn find_matches(
     sessions: &Sessions,
     session: &str,
     body: &str,
 ) -> Result<Vec<u64>, (u16, Value)> {
-    // The session is validated before the request body
-    // (<https://w3c.github.io/webdriver/#processing-model>).
+    // https://w3c.github.io/webdriver/#processing-model
     if current(sessions, session).is_none() {
         return Err(error(404, "invalid session id", session));
     }
@@ -542,10 +554,7 @@ async fn find_matches(
     let Some(window) = current(sessions, session) else {
         return Err(error(404, "invalid session id", session));
     };
-    // Element retrieval is bounded by the session's implicit-wait timeout; an
-    // unset implicit wait keeps the script execution bound instead of running
-    // page code without any deadline
-    // (<https://w3c.github.io/webdriver/#dfn-implicit-wait>).
+    // https://w3c.github.io/webdriver/#dfn-implicit-wait
     let (implicit_timeout, script_timeout) = sessions
         .open
         .get(session)
@@ -588,8 +597,7 @@ async fn find_matches(
     }
 }
 
-/// `POST /session/{id}/element`: find the first element matching a CSS
-/// selector (<https://w3c.github.io/webdriver/#find-element>).
+// https://w3c.github.io/webdriver/#find-element
 async fn find_element(sessions: &Sessions, session: &str, body: &str) -> (u16, Value) {
     let Some(handle) = current_handle(sessions, session) else {
         return error(404, "invalid session id", session);
@@ -603,8 +611,7 @@ async fn find_element(sessions: &Sessions, session: &str, body: &str) -> (u16, V
     }
 }
 
-/// `POST /session/{id}/elements`: every match
-/// (<https://w3c.github.io/webdriver/#find-elements>).
+// https://w3c.github.io/webdriver/#find-elements
 async fn find_elements(sessions: &Sessions, session: &str, body: &str) -> (u16, Value) {
     let Some(handle) = current_handle(sessions, session) else {
         return error(404, "invalid session id", session);
@@ -620,14 +627,8 @@ async fn find_elements(sessions: &Sessions, session: &str, body: &str) -> (u16, 
     }
 }
 
-/// The `(window handle, engine id)` carried by an `WebDriver` element
-/// reference. A reference from another window is unknown here
-/// (<https://w3c.github.io/webdriver/#elements>).
-///
-/// A detached or navigated-away element answers `no such element` instead of
-/// the spec's distinct `stale element reference`
-/// (<https://w3c.github.io/webdriver/#dfn-stale-element-reference>): the
-/// session does not track issued references yet.
+// https://w3c.github.io/webdriver/#elements
+// https://w3c.github.io/webdriver/#dfn-stale-element-reference
 fn element_remote(element: &str) -> Result<(&str, u64), (u16, Value)> {
     let Some((handle, id)) = element.rsplit_once(':') else {
         return Err(error(404, "no such element", "unknown element id"));
@@ -638,13 +639,11 @@ fn element_remote(element: &str) -> Result<(&str, u64), (u16, Value)> {
     Ok((handle, id))
 }
 
-/// Whether `handle` is the window currently selected in `session`.
 fn is_current_handle(sessions: &Sessions, session: &str, handle: &str) -> bool {
     current_handle(sessions, session).is_some_and(|current| current == handle)
 }
 
-/// `POST /session/{id}/element/{element id}/click`
-/// (<https://w3c.github.io/webdriver/#element-click>).
+// https://w3c.github.io/webdriver/#element-click
 async fn element_click(sessions: &Sessions, session: &str, element: &str) -> (u16, Value) {
     let Some(window) = current(sessions, session) else {
         return error(404, "invalid session id", session);
@@ -667,8 +666,7 @@ async fn element_click(sessions: &Sessions, session: &str, element: &str) -> (u1
     }
 }
 
-/// `POST /session/{id}/element/{element id}/value`
-/// (<https://w3c.github.io/webdriver/#element-send-keys>).
+// https://w3c.github.io/webdriver/#element-send-keys
 async fn element_send_keys(
     sessions: &Sessions,
     session: &str,
@@ -706,12 +704,7 @@ async fn element_send_keys(
     }
 }
 
-/// `POST /session/{id}/permissions` (`WebDriver` permissions extension).
-///
-/// Validates the descriptor and state, then records the state on the session.
-/// Nothing enforces permissions yet; success means the state was stored, not
-/// that it takes effect
-/// (<https://w3c.github.io/permissions/#webdriver-command-set-permission>).
+// https://w3c.github.io/permissions/#webdriver-command-set-permission
 fn set_permission(sessions: &mut Sessions, session: &str, body: &str) -> (u16, Value) {
     let parsed: Value = match serde_json::from_str(body) {
         Ok(value) => value,
@@ -738,12 +731,7 @@ fn set_permission(sessions: &mut Sessions, session: &str, body: &str) -> (u16, V
     ok(Value::Null)
 }
 
-/// `POST /session/{id}/actions` (Perform Actions)
-/// (<https://w3c.github.io/webdriver/#perform-actions>).
-///
-/// Element origins are resolved against the current window and rewritten to
-/// the engine's remote element number; the page-side performer then runs the
-/// tick sequence.
+// https://w3c.github.io/webdriver/#perform-actions
 async fn perform_actions(sessions: &Sessions, session: &str, body: &str) -> (u16, Value) {
     let parsed: Value = match serde_json::from_str(body) {
         Ok(value) => value,
@@ -789,7 +777,6 @@ async fn perform_actions(sessions: &Sessions, session: &str, body: &str) -> (u16
     }
 }
 
-/// The URL of the current top-level browsing context.
 async fn context_url(sessions: &Sessions, session: &str) -> Result<url::Url, (u16, Value)> {
     let Some(window) = current(sessions, session) else {
         return Err(error(404, "invalid session id", session));
@@ -802,8 +789,7 @@ async fn context_url(sessions: &Sessions, session: &str) -> Result<url::Url, (u1
     url::Url::parse(&spec).map_err(|err| error(500, "unknown error", &err.to_string()))
 }
 
-/// One cookie in the `WebDriver` serialization
-/// (<https://w3c.github.io/webdriver/#cookie>).
+// https://w3c.github.io/webdriver/#cookie
 fn cookie_json(record: &CookieRecord) -> Value {
     let mut map = serde_json::Map::new();
     map.insert("name".into(), json!(record.name));
@@ -815,9 +801,7 @@ fn cookie_json(record: &CookieRecord) -> Value {
     let same_site = match record.same_site {
         CookieSameSite::Strict => "Strict",
         CookieSameSite::Lax => "Lax",
-        // WebDriver serializes the storage model's default (no attribute) as
-        // "None"; the Lax-like request behavior is separate
-        // (<https://w3c.github.io/webdriver/#cookies>).
+        // https://w3c.github.io/webdriver/#cookies
         CookieSameSite::None | CookieSameSite::Default => "None",
     };
     map.insert("sameSite".into(), json!(same_site));
@@ -829,8 +813,7 @@ fn cookie_json(record: &CookieRecord) -> Value {
     Value::Object(map)
 }
 
-/// `GET /session/{id}/cookie`
-/// (<https://w3c.github.io/webdriver/#get-all-cookies>).
+// https://w3c.github.io/webdriver/#get-all-cookies
 async fn get_cookies(sessions: &Sessions, session: &str) -> (u16, Value) {
     let url = match context_url(sessions, session).await {
         Ok(url) => url,
@@ -842,8 +825,7 @@ async fn get_cookies(sessions: &Sessions, session: &str) -> (u16, Value) {
     }
 }
 
-/// `GET /session/{id}/cookie/{name}`
-/// (<https://w3c.github.io/webdriver/#get-named-cookie>).
+// https://w3c.github.io/webdriver/#get-named-cookie
 async fn get_named_cookie(sessions: &Sessions, session: &str, name: &str) -> (u16, Value) {
     let url = match context_url(sessions, session).await {
         Ok(url) => url,
@@ -858,8 +840,7 @@ async fn get_named_cookie(sessions: &Sessions, session: &str, name: &str) -> (u1
     }
 }
 
-/// Builds the `Set-Cookie` line for a `WebDriver` cookie object
-/// (<https://w3c.github.io/webdriver/#dfn-adding-a-cookie>).
+// https://w3c.github.io/webdriver/#dfn-adding-a-cookie
 fn set_cookie_line(cookie: &Value) -> Result<String, (u16, Value)> {
     let invalid = |message| error(400, "invalid argument", message);
     let Some(name) = cookie.get("name").and_then(Value::as_str) else {
@@ -877,8 +858,7 @@ fn set_cookie_line(cookie: &Value) -> Result<String, (u16, Value)> {
             line.push_str("; Path=");
             line.push_str(path);
         }
-        // The cookie conversion table defaults an omitted path to "/"
-        // (<https://w3c.github.io/webdriver/#dfn-table-for-cookie-conversion>).
+        // https://w3c.github.io/webdriver/#dfn-table-for-cookie-conversion
         None => line.push_str("; Path=/"),
     }
     if let Some(domain) = cookie.get("domain") {
@@ -911,13 +891,9 @@ fn set_cookie_line(cookie: &Value) -> Result<String, (u16, Value)> {
         let expiry = expiry
             .as_u64()
             .ok_or_else(|| invalid("cookie expiry must be a non-negative integer"))?;
-        // WebDriver caps expiry at 2^53 - 1.
         if expiry > 9_007_199_254_740_991 {
             return Err(invalid("cookie expiry is out of range"));
         }
-        // The jar parses `Max-Age`; converting from the absolute expiry can
-        // drift by a second at a boundary, which only matters for exact
-        // expiry assertions.
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |since| since.as_secs());
@@ -927,8 +903,7 @@ fn set_cookie_line(cookie: &Value) -> Result<String, (u16, Value)> {
     Ok(line)
 }
 
-/// `POST /session/{id}/cookie`
-/// (<https://w3c.github.io/webdriver/#add-cookie>).
+// https://w3c.github.io/webdriver/#add-cookie
 async fn add_cookie(sessions: &Sessions, session: &str, body: &str) -> (u16, Value) {
     if current(sessions, session).is_none() {
         return error(404, "invalid session id", session);
@@ -948,11 +923,9 @@ async fn add_cookie(sessions: &Sessions, session: &str, body: &str) -> (u16, Val
         Ok(url) => url,
         Err(reply) => return reply,
     };
-    // A domain attribute must domain-match the active document
-    // (<https://w3c.github.io/webdriver/#add-cookie>).
+    // https://w3c.github.io/webdriver/#add-cookie
     if let Some(domain) = cookie.get("domain").and_then(Value::as_str) {
-        // A leading dot is allowed and the comparison is case-insensitive
-        // (<https://w3c.github.io/webdriver/#add-cookie>).
+        // https://w3c.github.io/webdriver/#add-cookie
         let domain = domain.strip_prefix('.').unwrap_or(domain);
         let host = url.host_str().unwrap_or_default();
         if !host.eq_ignore_ascii_case(domain)
@@ -974,12 +947,7 @@ async fn add_cookie(sessions: &Sessions, session: &str, body: &str) -> (u16, Val
     }
 }
 
-/// `DELETE /session/{id}/cookie`
-/// (<https://w3c.github.io/webdriver/#delete-all-cookies>).
-///
-/// The spec deletes only the active document's associated cookies; the live
-/// jar is profile-wide, and this empties it, matching Chrome's browser-scoped
-/// `clearBrowsingData("cookies")` behavior for a driver-managed profile.
+// https://w3c.github.io/webdriver/#delete-all-cookies — empties the profile-wide cookie jar, matching Chrome's browser-scoped clearBrowsingData
 async fn delete_cookies(sessions: &Sessions, session: &str) -> (u16, Value) {
     if current(sessions, session).is_none() {
         return error(404, "invalid session id", session);
@@ -990,8 +958,6 @@ async fn delete_cookies(sessions: &Sessions, session: &str) -> (u16, Value) {
     }
 }
 
-/// The session's virtual window rectangle, matching the engine's
-/// `innerWidth`/`innerHeight` and the element geometry stand-in.
 fn rect_number(value: f64) -> Value {
     #[expect(
         clippy::cast_possible_truncation,
@@ -1013,10 +979,7 @@ fn session_rect(found: &Session) -> Value {
     })
 }
 
-/// `GET /session/{id}/window/rect`
-/// (<https://w3c.github.io/webdriver/#get-window-rect>), also the reply for
-/// minimize/maximize/fullscreen. The engine has no window system, so these
-/// change only the virtual rectangle.
+// https://w3c.github.io/webdriver/#get-window-rect
 fn window_rect(sessions: &Sessions, session: &str) -> (u16, Value) {
     match sessions.open.get(session) {
         Some(found) => ok(session_rect(found)),
@@ -1024,13 +987,11 @@ fn window_rect(sessions: &Sessions, session: &str) -> (u16, Value) {
     }
 }
 
-/// Minimize, maximize, and fullscreen report the virtual rectangle.
 fn window_op(sessions: &Sessions, session: &str) -> (u16, Value) {
     window_rect(sessions, session)
 }
 
-/// `POST /session/{id}/window/rect`
-/// (<https://w3c.github.io/webdriver/#set-window-rect>).
+// https://w3c.github.io/webdriver/#set-window-rect
 fn set_window_rect(sessions: &mut Sessions, session: &str, body: &str) -> (u16, Value) {
     let Some(found) = sessions.open.get_mut(session) else {
         return error(404, "invalid session id", session);
@@ -1039,9 +1000,7 @@ fn set_window_rect(sessions: &mut Sessions, session: &str, body: &str) -> (u16, 
         Ok(value) => value,
         Err(err) => return error(400, "invalid argument", &err.to_string()),
     };
-    // Validate every present field before applying any, so a failed command
-    // cannot partially mutate the rectangle
-    // (<https://w3c.github.io/webdriver/#set-window-rect>).
+    // https://w3c.github.io/webdriver/#set-window-rect
     let mut updated = found.window_rect;
     for (key, index) in [("x", 0), ("y", 1), ("width", 2), ("height", 3)] {
         if let Some(value) = parsed.get(key) {
@@ -1067,8 +1026,7 @@ fn set_window_rect(sessions: &mut Sessions, session: &str, body: &str) -> (u16, 
     ok(session_rect(found))
 }
 
-/// `GET /session/{id}/element/{element id}/rect`
-/// (<https://w3c.github.io/webdriver/#get-element-rect>).
+// https://w3c.github.io/webdriver/#get-element-rect
 async fn element_rect(sessions: &Sessions, session: &str, element: &str) -> (u16, Value) {
     let Some(window) = current(sessions, session) else {
         return error(404, "invalid session id", session);
@@ -1205,10 +1163,7 @@ async fn new_window(sessions: &mut Sessions, session: &str) -> (u16, Value) {
     ok(json!({"handle": handle, "type": "window"}))
 }
 
-/// `DELETE /session/{id}`
-/// (<https://w3c.github.io/webdriver/#delete-session>).
-///
-/// An unknown session is already gone, so this still succeeds.
+// https://w3c.github.io/webdriver/#delete-session
 async fn delete_session(sessions: &mut Sessions, session: &str) -> (u16, Value) {
     let Some(found) = sessions.open.remove(session) else {
         return ok(Value::Null);
@@ -1219,12 +1174,7 @@ async fn delete_session(sessions: &mut Sessions, session: &str) -> (u16, Value) 
     ok(Value::Null)
 }
 
-/// `DELETE /session/{id}/window`
-/// (<https://w3c.github.io/webdriver/#close-window>).
-///
-/// Known deviation: closing the selected window selects another one instead
-/// of leaving the session without a top-level browsing context, so later
-/// commands answer on the other window rather than `no such window`.
+// https://w3c.github.io/webdriver/#close-window
 async fn close_window(sessions: &mut Sessions, session: &str) -> (u16, Value) {
     let (tab_id, remaining) = {
         let Some(found) = sessions.open.get_mut(session) else {
@@ -1247,7 +1197,6 @@ async fn close_window(sessions: &mut Sessions, session: &str) -> (u16, Value) {
     ok(json!(remaining))
 }
 
-/// The window handle currently selected in `session`.
 fn current_handle(sessions: &Sessions, session: &str) -> Option<String> {
     sessions
         .open

@@ -1,5 +1,3 @@
-//! Shared JS world for the renderer.
-
 use std::cell::{Cell, Ref, RefCell, RefMut};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::Write as _;
@@ -30,10 +28,6 @@ pub(crate) use crate::protocol::PolicyContainer;
 use crate::storage::PendingStorageEvent;
 use crate::{Parsed, ReadyState};
 
-/// Renderer-process realm bookkeeping shared by every frame.
-///
-/// Owned by the page engine and dropped while its `QuickJS` runtime is still
-/// alive, so cached wrappers never outlive the heap.
 #[derive(Default)]
 pub(crate) struct RealmRegistry {
     pub(crate) realm_contexts: Vec<usize>,
@@ -42,54 +36,24 @@ pub(crate) struct RealmRegistry {
     pub(crate) reactions: super::reactions::CustomElementReactions,
     pub(crate) private_slots: Option<PrivateSlots>,
     budget: Rc<RefCell<ResourceBudget>>,
-    /// The World that owns each document id, for wrapper realm resolution.
     documents: HashMap<u32, Weak<RefCell<World>>>,
-    /// The World that owns each frame, for `window.parent` and `event.source`.
     frames: HashMap<FrameId, Weak<RefCell<World>>>,
-    /// One wrapper per node, shared by every realm in this renderer process.
-    /// The persistent holds a `WeakRef`, so an unreferenced wrapper can still
-    /// be collected.
     wrappers: WrapperCache<NodeId>,
-    /// One platform object per `[SameObject]` member, shared by every realm
-    /// in this renderer process like the node wrappers themselves: the
-    /// member object belongs to the node, not to the realm that first read
-    /// it.
     same_object: WrapperCache<(NodeId, SameObject)>,
-    /// The active child document for each connected iframe container.
     frame_documents: HashMap<NodeId, NodeId>,
-    /// The realm that created each node. Adoption changes the node document
-    /// but not this realm
-    /// (<https://dom.spec.whatwg.org/#concept-node-adopt>,
-    /// <https://github.com/whatwg/dom/issues/977>).
+    // https://dom.spec.whatwg.org/#concept-node-adopt
+    // https://github.com/whatwg/dom/issues/977
     creation_realms: HashMap<NodeId, Weak<RefCell<World>>>,
-    /// Adopted node ids follow the destination copy so live collections still
-    /// rooted at the pre-adopt handle walk the live tree
-    /// (<https://dom.spec.whatwg.org/#concept-node-adopt>).
+    // https://dom.spec.whatwg.org/#concept-node-adopt
     adopted_ids: HashMap<NodeId, NodeId>,
-    /// `WebDriver` element ids, allocated across every world and frame so a
-    /// reference cannot alias between browsing contexts.
     next_remote: u64,
-    /// Canvas bitmaps keyed by an opaque id. The id names the bitmap, not a
-    /// DOM node, so an `OffscreenCanvas` needs no element.
     canvases: HashMap<CanvasId, CanvasSlot>,
-    /// The bitmap a `<canvas>` element draws into, once it has a context.
     canvas_nodes: HashMap<NodeId, CanvasId>,
     next_canvas: u64,
-    /// Identifies this realm among the worlds sharing the registry, so a
-    /// documentless realm can own offscreen canvases.
     next_realm: u64,
-    /// Decoded `ImageBitmap` pixels, keyed by an opaque id. The id is exposed
-    /// on the JS object; the pixels are not, so a page cannot read a
-    /// cross-origin image through the bitmap's internal storage.
     bitmaps: HashMap<u64, BitmapPixels>,
-    /// Rasters of vector image sources, bounded by entry count and bytes.
-    /// The entry keeps the parsed tree alive so a tree pointer cannot be
-    /// reused by a later parse while its raster is cached.
     pub(crate) svg_rasters: super::canvas::SvgRasterCache,
     next_bitmap: u64,
-    /// `TextDecoder` session ids, allocated across every world and frame so
-    /// a freed id can never alias a live session, even if a finalizer runs
-    /// under another realm.
     next_decoder: u64,
 }
 
@@ -98,13 +62,6 @@ pub(crate) struct PrivateSlots {
     pub(crate) realms: HashSet<usize>,
 }
 
-/// Cached JS platform objects, keyed by whatever identifies the object: a
-/// node for the shared wrapper, a `(node, member)` pair for the
-/// lazily-created same-object members.
-///
-/// A cache entry holds a `WeakRef` (a `Persistent` to a weak wrapper), so an
-/// unreferenced object can still be collected; callers dereference with
-/// `deref_weak` and rebuild on a miss.
 pub(crate) struct WrapperCache<K> {
     entries: HashMap<K, Persistent<Value<'static>>>,
 }
@@ -126,9 +83,7 @@ impl<K: Eq + Hash> WrapperCache<K> {
         self.entries.insert(key, value);
     }
 
-    /// Moves an entry to a new key; adoption retargets the caller's wrapper
-    /// to the destination copy
-    /// (<https://dom.spec.whatwg.org/#concept-node-adopt>).
+    // https://dom.spec.whatwg.org/#concept-node-adopt
     pub(crate) fn rekey(&mut self, from: &K, to: K) {
         if let Some(value) = self.entries.remove(from) {
             self.entries.insert(to, value);
@@ -144,46 +99,25 @@ impl<K: Eq + Hash> WrapperCache<K> {
     }
 }
 
-/// A lazily-created member whose identity is one per node
-/// (`[SameObject]` in IDL).
-///
-/// The cache is keyed by node and member, not by interface: `Document.children`
-/// and `Document.scripts` are both `HTMLCollection`, and `classList`/`relList`
-/// are both `DOMTokenList`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum SameObject {
-    /// `Element.classList`.
     ClassList,
-    /// `link`/`script`/`style` `blocking`.
     Blocking,
-    /// `HTMLIFrameElement.sandbox`.
     Sandbox,
-    /// `Element.attributes`.
     Attributes,
-    /// `HTMLElement.style`.
     Style,
-    /// `HTMLElement.dataset`.
     Dataset,
-    /// `Node.childNodes`.
     ChildNodes,
-    /// `Document.scripts`.
     Scripts,
-    /// `Document.links`.
     Links,
-    /// `Document.images`.
     Images,
-    /// `Document.forms`.
     Forms,
-    /// `Document.embeds` and `Document.plugins`, which are the same collection.
     Embeds,
-    /// `HTMLCanvasElement.getContext("2d")`.
     Canvas2d,
-    /// `HTMLCanvasElement.getContext("bitmaprenderer")`.
     CanvasBitmap,
 }
 
 impl SameObject {
-    /// Every member, for rekeying the cache on adoption.
     pub(crate) const ALL: [SameObject; 14] = [
         SameObject::ClassList,
         SameObject::Blocking,
@@ -202,13 +136,8 @@ impl SameObject {
     ];
 }
 
-/// Largest canvas backing store the renderer allocates. A page controls
-/// `canvas.width` and `canvas.height`, so an unchecked `width * height * 4`
-/// is a process abort, not a rendering bug.
 pub(crate) const MAX_CANVAS_BYTES: usize = 64 * 1024 * 1024;
 
-/// Byte length of a `width` x `height` RGBA bitmap, or `None` when it exceeds
-/// [`MAX_CANVAS_BYTES`] or would overflow.
 pub(crate) fn canvas_bytes(width: u32, height: u32) -> Option<usize> {
     usize::try_from(width)
         .ok()?
@@ -224,22 +153,15 @@ pub(crate) struct BitmapPixels {
     pub(crate) origin_clean: bool,
 }
 
-/// Which platform object owns one canvas bitmap.
-///
-/// An element slot follows its node through adoption and dies with the node's
-/// document; an offscreen slot belongs to the realm that constructed it, even
-/// when that realm has no document
-/// (<https://html.spec.whatwg.org/multipage/canvas.html#offscreencanvas>).
+// https://html.spec.whatwg.org/multipage/canvas.html#offscreencanvas
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum CanvasOwner {
     Element(NodeId),
     Offscreen { realm: u64, document: Option<u32> },
 }
 
-/// The context mode of a canvas bitmap. `OffscreenCanvas` uses the full set;
-/// `<canvas>` only reaches `TwoD` or `Bitmap` through `getContext`
-/// (<https://html.spec.whatwg.org/multipage/canvas.html#concept-canvas-context-mode>,
-/// <https://html.spec.whatwg.org/multipage/canvas.html#offscreencanvas-context-mode>).
+// https://html.spec.whatwg.org/multipage/canvas.html#concept-canvas-context-mode
+// https://html.spec.whatwg.org/multipage/canvas.html#offscreencanvas-context-mode
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CanvasMode {
     None,
@@ -248,9 +170,6 @@ pub(crate) enum CanvasMode {
     Detached,
 }
 
-/// One bitmap and the dimension of its backing store. `Canvas2D` is allocated
-/// on first drawing, so creating a context neither reserves pixels nor fails
-/// for a canvas that is never painted.
 pub(crate) struct CanvasSlot {
     pub(crate) owner: CanvasOwner,
     pub(crate) mode: CanvasMode,
@@ -295,22 +214,17 @@ impl RealmRegistry {
         self.bitmaps.remove(&id);
     }
 
-    /// The next bitmap id. Ids are opaque and never reused, so a stale
-    /// `__tbCanvasId` cannot reach a later canvas.
     fn allocate_canvas(&mut self) -> CanvasId {
         self.next_canvas = self.next_canvas.saturating_add(1);
         CanvasId(self.next_canvas)
     }
 
-    /// A realm id for a documentless `OffscreenCanvas` owner.
     pub(crate) fn allocate_realm(&mut self) -> u64 {
         self.next_realm = self.next_realm.saturating_add(1);
         self.next_realm
     }
 
-    /// The bitmap a `<canvas>` element draws into, created on its first
-    /// `getContext` call
-    /// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-canvas-getcontext>).
+    // https://html.spec.whatwg.org/multipage/canvas.html#dom-canvas-getcontext
     pub(crate) fn element_canvas(&mut self, node: NodeId, width: u32, height: u32) -> CanvasId {
         if let Some(id) = self.canvas_nodes.get(&node) {
             return *id;
@@ -330,8 +244,7 @@ impl RealmRegistry {
         id
     }
 
-    /// A detached bitmap for `OffscreenCanvas`
-    /// (<https://html.spec.whatwg.org/multipage/canvas.html#offscreencanvas>).
+    // https://html.spec.whatwg.org/multipage/canvas.html#offscreencanvas
     pub(crate) fn offscreen_canvas(
         &mut self,
         realm: u64,
@@ -353,13 +266,10 @@ impl RealmRegistry {
         id
     }
 
-    /// The bitmap a `<canvas>` element already draws into, if any.
     pub(crate) fn canvas_id_for_node(&self, node: NodeId) -> Option<CanvasId> {
         self.canvas_nodes.get(&node).copied()
     }
 
-    /// Whether this realm may reach `id`. Element slots follow the node they
-    /// belong to; offscreen slots follow the realm that constructed them.
     pub(crate) fn owns_canvas(&self, id: CanvasId, world: &World) -> bool {
         let Some(slot) = self.canvases.get(&id) else {
             return false;
@@ -385,17 +295,12 @@ impl RealmRegistry {
         self.canvases.get(&id).map(|slot| slot.mode)
     }
 
-    /// The context mode already chosen for an element, even after its context
-    /// object was collected. `getContext` must keep refusing a second mode
-    /// (<https://html.spec.whatwg.org/multipage/canvas.html#concept-canvas-context-mode>).
+    // https://html.spec.whatwg.org/multipage/canvas.html#concept-canvas-context-mode
     pub(crate) fn canvas_mode_for_node(&self, node: NodeId) -> Option<CanvasMode> {
         let id = self.canvas_nodes.get(&node)?;
         self.canvases.get(id).map(|slot| slot.mode)
     }
 
-    /// Drops every offscreen canvas a realm owns. A realm with no document
-    /// never reaches `forget_document`, so its bitmaps would otherwise stay
-    /// for the life of the tab.
     pub(crate) fn forget_realm(&mut self, realm: u64) {
         self.canvases.retain(|_, slot| {
             !matches!(slot.owner, CanvasOwner::Offscreen { realm: owner, .. } if owner == realm)
@@ -408,7 +313,6 @@ impl RealmRegistry {
         }
     }
 
-    /// The element backing a canvas, or `None` for an `OffscreenCanvas`.
     pub(crate) fn canvas_node(&self, id: CanvasId) -> Option<NodeId> {
         match self.canvases.get(&id)?.owner {
             CanvasOwner::Element(node) => Some(node),
@@ -420,9 +324,7 @@ impl RealmRegistry {
         self.canvases.get(&id).map(|slot| (slot.width, slot.height))
     }
 
-    /// Drops the bitmap and context state. Setting `canvas.width` or
-    /// `canvas.height` resets the context even when the value is unchanged
-    /// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-canvas-width>).
+    // https://html.spec.whatwg.org/multipage/canvas.html#dom-canvas-width
     pub(crate) fn reset_canvas(&mut self, id: NodeId, width: u32, height: u32) {
         let Some(canvas_id) = self.canvas_nodes.get(&id).copied() else {
             return;
@@ -430,7 +332,6 @@ impl RealmRegistry {
         self.resize_canvas(canvas_id, width, height);
     }
 
-    /// Replaces the bitmap dimensions and resets a live 2D context.
     pub(crate) fn resize_canvas(&mut self, id: CanvasId, width: u32, height: u32) {
         let Some(slot) = self.canvases.get_mut(&id) else {
             return;
@@ -442,7 +343,6 @@ impl RealmRegistry {
         }
     }
 
-    /// The transfer steps leave the sender without a bitmap.
     pub(crate) fn detach_canvas(&mut self, id: CanvasId) {
         if let Some(slot) = self.canvases.get_mut(&id) {
             slot.mode = CanvasMode::Detached;
@@ -452,7 +352,6 @@ impl RealmRegistry {
         }
     }
 
-    /// The 2D context state for `id`, allocated on first drawing.
     pub(crate) fn canvas_mut(&mut self, id: CanvasId) -> Option<&mut Canvas2D> {
         let slot = self.canvases.get_mut(&id)?;
         if slot.mode == CanvasMode::Detached {
@@ -472,8 +371,6 @@ impl RealmRegistry {
             .is_some_and(Canvas2D::has_open_layer)
     }
 
-    /// The origin-clean flag of a live canvas, or `None` when it has no
-    /// context yet.
     pub(crate) fn canvas_origin_clean(&self, id: CanvasId) -> Option<bool> {
         self.canvases
             .get(&id)
@@ -493,8 +390,6 @@ impl RealmRegistry {
         self.canvases.get(&id)?.canvas.as_ref()?.to_jpeg(quality)
     }
 
-    /// Replaces the bitmap with a fresh transparent one without touching the
-    /// drawing state.
     pub(crate) fn clear_canvas_bitmap(&mut self, id: CanvasId) -> bool {
         let Some(slot) = self.canvases.get_mut(&id) else {
             return false;
@@ -506,7 +401,6 @@ impl RealmRegistry {
         true
     }
 
-    /// A straight-RGBA copy of a canvas bitmap, for `drawImage` and patterns.
     pub(crate) fn canvas_snapshot(&self, id: CanvasId) -> Option<SourceImage> {
         let canvas = self.canvases.get(&id)?.canvas.as_ref()?;
         Some(SourceImage {
@@ -519,9 +413,6 @@ impl RealmRegistry {
         })
     }
 
-    /// Straight-alpha RGBA snapshots for every `<canvas>` element in `doc_id`
-    /// that has a live 2D bitmap, so the paint pass can composite them into
-    /// Blitz's `SpecialElementData::Image` slot.
     pub(crate) fn document_canvas_snapshots(
         &self,
         doc_id: u32,
@@ -548,8 +439,7 @@ impl RealmRegistry {
         snapshots
     }
 
-    /// A gradient defined on another canvas, for cross-canvas styles
-    /// (<https://html.spec.whatwg.org/multipage/canvas.html#canvasgradient>).
+    // https://html.spec.whatwg.org/multipage/canvas.html#canvasgradient
     pub(crate) fn canvas_gradient(&self, id: CanvasId, resource: u32) -> Option<Gradient> {
         self.canvases
             .get(&id)?
@@ -558,8 +448,7 @@ impl RealmRegistry {
             .gradient_definition(resource)
     }
 
-    /// A pattern defined on another canvas, for cross-canvas styles
-    /// (<https://html.spec.whatwg.org/multipage/canvas.html#canvaspattern>).
+    // https://html.spec.whatwg.org/multipage/canvas.html#canvaspattern
     pub(crate) fn canvas_pattern(&self, id: CanvasId, resource: u32) -> Option<Pattern> {
         self.canvases
             .get(&id)?
@@ -568,20 +457,12 @@ impl RealmRegistry {
             .pattern_definition(resource)
     }
 
-    /// The next process-unique `WebDriver` element id.
-    ///
-    /// Ids keep counting past the range a JS number holds exactly, because
-    /// [`crate::js::bridge::js_number`] turns such an id into `NaN` rather than
-    /// a neighbouring one; the shim then answers no such element, so two nodes
-    /// never share a page-side id. The `WebDriver` string form carries the id
-    /// as decimal text and still addresses it
-    /// (<https://tc39.es/ecma262/#sec-number.max_safe_integer>).
+    // https://tc39.es/ecma262/#sec-number.max_safe_integer
     pub(crate) fn allocate_remote(&mut self) -> u64 {
         self.next_remote = self.next_remote.saturating_add(1);
         self.next_remote
     }
 
-    /// The next process-unique `TextDecoder` session id.
     pub(crate) fn allocate_decoder(&mut self) -> u64 {
         self.next_decoder = self.next_decoder.saturating_add(1);
         self.next_decoder
@@ -594,7 +475,6 @@ struct ResourceBudget {
     object_url_bytes: usize,
 }
 
-/// Releases the stream budget reserved for one queued `document.write`.
 pub(crate) struct StreamReservation {
     budget: Rc<RefCell<ResourceBudget>>,
     bytes: usize,
@@ -607,7 +487,6 @@ impl Drop for StreamReservation {
     }
 }
 
-/// One queued `document.write` body and the budget it reserved.
 pub(crate) struct HtmlWrite {
     pub(crate) html: String,
     _reservation: StreamReservation,
@@ -616,9 +495,7 @@ pub(crate) struct HtmlWrite {
 const MAX_PENDING_STREAM_BYTES: usize = 8 * 1024 * 1024;
 const MAX_OBJECT_URL_BYTES: usize = 8 * 1024 * 1024;
 
-/// A version-4 UUID for one object URL, so the URL keeps the File API's shape
-/// and never repeats across realms
-/// (<https://w3c.github.io/FileAPI/#dfn-createObjectURL>).
+// https://w3c.github.io/FileAPI/#dfn-createObjectURL
 fn object_url_id() -> Option<String> {
     let mut bytes = [0u8; 16];
     getrandom::fill(&mut bytes).ok()?;
@@ -635,42 +512,33 @@ fn object_url_id() -> Option<String> {
 }
 
 impl RealmRegistry {
-    /// Remembers that `world` owns the document `id`.
     pub(crate) fn insert_document(&mut self, id: u32, world: &Rc<RefCell<World>>) {
         self.documents.insert(id, Rc::downgrade(world));
     }
 
-    /// Remembers that `world` is the realm of `frame`.
     pub(crate) fn insert_frame(&mut self, frame: FrameId, world: &Rc<RefCell<World>>) {
         self.frames.insert(frame, Rc::downgrade(world));
     }
 
-    /// The realm of `frame`, while it is alive.
     pub(crate) fn frame_world(&self, frame: FrameId) -> Option<Rc<RefCell<World>>> {
         self.frames.get(&frame).and_then(Weak::upgrade)
     }
 
-    /// Drops the realm association for a frame that is gone.
     pub(crate) fn forget_frame_world(&mut self, frame: FrameId) {
         self.frames.remove(&frame);
     }
 
-    /// Every realm with a live browsing context in this renderer, in no
-    /// particular order. A realm whose frame is gone is not a Window any more
-    /// and observes nothing
-    /// (<https://cookiestore.spec.whatwg.org/#process-cookie-changes>).
+    // https://cookiestore.spec.whatwg.org/#process-cookie-changes
     pub(crate) fn live_worlds(&self) -> Vec<Rc<RefCell<World>>> {
         self.frames.values().filter_map(Weak::upgrade).collect()
     }
 
-    /// The realm that owns the document `id` points into, if still alive.
     pub(crate) fn owner_world(&self, id: NodeId) -> Option<Rc<RefCell<World>>> {
         self.documents
             .get(&id.document_id())
             .and_then(Weak::upgrade)
     }
 
-    /// Drops every realm and wrapper association for a document that is gone.
     pub(crate) fn forget_document(&mut self, id: u32) {
         self.attributes.forget_document(id);
         self.documents.remove(&id);
@@ -690,12 +558,10 @@ impl RealmRegistry {
             .retain(|from, to| from.document_id() != id && to.document_id() != id);
     }
 
-    /// The shared wrapper cache entry for `id`, when one exists.
     pub(crate) fn wrapper(&self, id: NodeId) -> Option<Persistent<Value<'static>>> {
         self.wrappers.get(&id)
     }
 
-    /// The cached `[SameObject]` member for `(id, member)`, when one exists.
     pub(crate) fn same_object(
         &self,
         id: NodeId,
@@ -704,7 +570,6 @@ impl RealmRegistry {
         self.same_object.get(&(id, member))
     }
 
-    /// Publishes the cached `[SameObject]` member.
     pub(crate) fn intern_same_object(
         &mut self,
         id: NodeId,
@@ -714,23 +579,16 @@ impl RealmRegistry {
         self.same_object.insert((id, member), value);
     }
 
-    /// Publishes the wrapper cache entry for `id`.
     pub(crate) fn intern_wrapper(&mut self, id: NodeId, value: Persistent<Value<'static>>) {
         self.wrappers.insert(id, value);
     }
 
-    /// Moves the shared wrapper cache entry from `from` to `to`.
-    ///
-    /// Adoption copies the node into another tree and retargets the existing
-    /// wrapper so the caller's object is the adopted node
-    /// (<https://dom.spec.whatwg.org/#concept-node-adopt>).
+    // https://dom.spec.whatwg.org/#concept-node-adopt
     pub(crate) fn rekey_wrapper(&mut self, from: NodeId, to: NodeId) {
         if from != to {
             self.adopted_ids.insert(from, to);
         }
         self.wrappers.rekey(&from, to);
-        // The member objects follow the node too, so a held `classList` stays
-        // the element's `classList` across adoption.
         for member in SameObject::ALL {
             self.same_object.rekey(&(from, member), (to, member));
         }
@@ -747,25 +605,16 @@ impl RealmRegistry {
         }
     }
 
-    /// Records the realm that created `id` the first time it is seen.
     pub(crate) fn stamp_creation_realm(&mut self, id: NodeId, world: &Rc<RefCell<World>>) {
         self.creation_realms
             .entry(id)
             .or_insert_with(|| Rc::downgrade(world));
     }
 
-    /// The realm that created `id`, while that realm is alive.
     pub(crate) fn creation_realm(&self, id: NodeId) -> Option<Rc<RefCell<World>>> {
         self.creation_realms.get(&id).and_then(Weak::upgrade)
     }
 
-    /// The current id of a node that may have been adopted since `id` was
-    /// captured. Chains compress on read: repeated adopts of one wrapper
-    /// would otherwise walk a link per generation on every live-collection
-    /// query, and entries only shrink on document death. A cycle returns the
-    /// entry point uncompressed (wrong id, loudly visible as a stale wrapper)
-    /// rather than looping; rekey targets are freshly materialized ids, so
-    /// cycles should not arise outside double-adopt races under test.
     pub(crate) fn live_node_id(&mut self, mut id: NodeId) -> NodeId {
         let mut path = Vec::new();
         let mut cyclic = false;
@@ -797,7 +646,6 @@ impl RealmRegistry {
         self.frame_documents.remove(&container);
     }
 
-    /// Drops every cached wrapper; called while the runtime is still alive.
     pub(crate) fn clear(&mut self) {
         super::bindings::forget_registry_contexts(&self.realm_contexts);
         self.realm_contexts.clear();
@@ -821,39 +669,20 @@ impl RealmRegistry {
     }
 }
 
-/// A child frame navigation queued from inside a script, applied after it
-/// stops: the `iframe`'s `src` changed (or the element just connected).
-/// Where a queued navigation lands.
 #[derive(Clone)]
 pub(crate) enum NavigationTarget {
-    /// The child frame whose container is this node.
     Container(NodeId),
-    /// The frame with this identity, chosen by `window.open` before the
-    /// navigation was queued.
     Frame(FrameId),
-    /// The `target` of a link or form, parsed once at the boundary. The
-    /// engine applies the rules for choosing a navigable once the script
-    /// stops, so a queued navigation never carries a second spelling of the
-    /// same choice.
     Target(crate::protocol::TargetName),
 }
 
-/// Where a navigation's referrer comes from.
-///
-/// `noreferrer` cannot be combined with a policy, so no caller has to decide
-/// which one wins
-/// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-open>).
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-open
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum NavigationReferrer {
-    /// Determine the referrer from the initiator document, under this
-    /// element's policy when it names one.
     Client {
-        /// The navigating element's `hyperlink referrer policy`, `None` when
-        /// the initiator document's policy stays in force
-        /// (<https://html.spec.whatwg.org/multipage/links.html#hyperlink-referrer-policy>).
+        // https://html.spec.whatwg.org/multipage/links.html#hyperlink-referrer-policy
         policy: Option<ReferrerPolicy>,
     },
-    /// `noreferrer`: the navigation sends no referrer at all.
     NoReferrer,
 }
 
@@ -865,38 +694,21 @@ impl Default for NavigationReferrer {
 
 #[derive(Clone)]
 pub(crate) struct FrameNavigation {
-    /// The frame to navigate.
     pub(crate) target: NavigationTarget,
-    /// The spec to navigate to, absolute or resolvable against the queuing
-    /// document.
     pub(crate) spec: String,
-    /// The `srcdoc` markup that replaces the spec, navigating to
-    /// `about:srcdoc`
-    /// (<https://html.spec.whatwg.org/multipage/iframe-embed-object.html#attr-iframe-srcdoc>).
+    // https://html.spec.whatwg.org/multipage/iframe-embed-object.html#attr-iframe-srcdoc
     pub(crate) srcdoc: Option<String>,
-    /// HTTP method; `GET` for every navigation but a form submission.
     pub(crate) method: net::Method,
-    /// Request body, empty for a GET.
     pub(crate) body: Vec<u8>,
-    /// `Content-Type` for `body`, when there is one.
     pub(crate) content_type: Option<String>,
-    /// Where this navigation's referrer comes from.
     pub(crate) referrer: NavigationReferrer,
-    /// The sandboxing flags the target frame's container imposes on the
-    /// document this navigation commits, carried here so a failed or replaced
-    /// navigation never changes the current document's flags
-    /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#determine-navigation-params>).
+    // https://html.spec.whatwg.org/multipage/browsing-the-web.html#determine-navigation-params
     pub(crate) sandbox: SandboxFlags,
-    /// The document that started the navigation when it is not the one the
-    /// navigation was queued on: a cross-frame `Location` setter takes its
-    /// referrer, policy container, and sandbox rules from the incumbent
-    /// document, not from the target
-    /// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-href>).
+    // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-href
     pub(crate) source: Option<FrameId>,
 }
 
 impl FrameNavigation {
-    /// A GET navigation, the shape of every navigation but a form submission.
     pub(crate) fn get(target: NavigationTarget, spec: String) -> Self {
         Self {
             target,
@@ -911,18 +723,13 @@ impl FrameNavigation {
         }
     }
 
-    /// A `srcdoc` navigation: the markup loads as the frame's
-    /// `about:srcdoc` document
-    /// (<https://html.spec.whatwg.org/multipage/iframe-embed-object.html#attr-iframe-srcdoc>).
+    // https://html.spec.whatwg.org/multipage/iframe-embed-object.html#attr-iframe-srcdoc
     pub(crate) fn srcdoc(target: NavigationTarget, markup: String) -> Self {
         let mut navigation = Self::get(target, String::new());
         navigation.srcdoc = Some(markup);
         navigation
     }
 
-    /// The policy this navigation's referrer is determined under, overriding
-    /// the initiator document's for this navigation alone. A navigation
-    /// already marked no-referrer keeps that decision.
     pub(crate) fn with_referrer_policy(mut self, policy: Option<ReferrerPolicy>) -> Self {
         if let NavigationReferrer::Client { policy: current } = &mut self.referrer {
             *current = policy;
@@ -930,21 +737,16 @@ impl FrameNavigation {
         self
     }
 
-    /// The sandboxing flags the target frame's container imposes at commit.
     pub(crate) fn with_sandbox(mut self, sandbox: SandboxFlags) -> Self {
         self.sandbox = sandbox;
         self
     }
 
-    /// Marks this navigation as sending no referrer (`window.open`'s
-    /// `noreferrer` feature).
     pub(crate) fn without_referrer(mut self) -> Self {
         self.referrer = NavigationReferrer::NoReferrer;
         self
     }
 
-    /// Records the document that started the navigation when it is not the
-    /// document the navigation runs on.
     pub(crate) fn with_source(mut self, source: FrameId) -> Self {
         self.source = Some(source);
         self
@@ -957,7 +759,6 @@ pub(crate) enum DocumentStreamCommand {
     Close,
 }
 
-/// One DOM node handle owned by the JS world.
 #[derive(Clone, Copy, rquickjs::JsLifetime)]
 pub(crate) struct Handle(pub(crate) NodeId);
 
@@ -965,8 +766,6 @@ impl<'js> Trace<'js> for Handle {
     fn trace<'a>(&self, _tracer: rquickjs::class::Tracer<'a, 'js>) {}
 }
 
-/// `MutationObserver` options, already normalized. The booleans mirror the
-/// `MutationObserverInit` dictionary one-for-one.
 #[expect(
     clippy::struct_excessive_bools,
     reason = "each bool is a MutationObserverInit dictionary member"
@@ -989,7 +788,6 @@ pub(crate) struct Observation {
     pub order: u64,
 }
 
-/// Both native representations implementing Node.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum NodeReference {
     Tree(NodeId),
@@ -1011,7 +809,6 @@ impl NodeReference {
     }
 }
 
-/// One queued `MutationRecord`, ready to wrap for JS.
 #[derive(Clone, rquickjs::JsLifetime, Trace)]
 pub(crate) struct RecordData {
     pub typ: String,
@@ -1022,14 +819,11 @@ pub(crate) struct RecordData {
     pub next: Option<Handle>,
     pub attribute_name: Option<String>,
     pub attribute_namespace: Option<String>,
-    /// Not traced: a `DomString` holds no JavaScript value.
     #[qjs(skip_trace)]
     pub old_value: Option<crate::dom_string::DomString>,
 }
 
 impl RecordData {
-    /// A record of one mutation type on one target, with every payload
-    /// collection empty.
     pub(crate) fn new(typ: &str, target: Handle) -> Self {
         Self {
             typ: typ.to_owned(),
@@ -1048,22 +842,14 @@ impl RecordData {
 pub(crate) struct ObserverState {
     pub owner: FrameId,
     pub callback: Persistent<Function<'static>>,
-    /// The observer platform object, for the callback's `this` value and
-    /// second argument
-    /// (<https://dom.spec.whatwg.org/#notify-mutation-observers>). Present
-    /// while the observer is registered; cleared by `disconnect`.
+    // https://dom.spec.whatwg.org/#notify-mutation-observers
     pub object: Option<Persistent<Object<'static>>>,
     pub observations: Vec<Observation>,
-    /// Transient registered observers: registrations copied onto a node that
-    /// was removed from an observed subtree, so mutations inside the removed
-    /// subtree stay observed until mutation observers are notified. `order`
-    /// is the source registration's order, which is what `observe` drops
-    /// (<https://dom.spec.whatwg.org/#mutation-observers>).
+    // https://dom.spec.whatwg.org/#mutation-observers
     pub transient: Vec<Observation>,
     pub queue: Vec<RecordData>,
 }
 
-/// One observer with queued records, ready for callback delivery.
 pub(crate) struct ReadyObserver {
     pub callback: Persistent<Function<'static>>,
     pub object: Persistent<Object<'static>>,
@@ -1077,13 +863,9 @@ pub(crate) struct Listener {
     pub once: bool,
     pub passive: bool,
     pub signal: Option<Persistent<Object<'static>>>,
-    /// Cleared when the listener is removed; a clone taken for dispatch still
-    /// sees the removal (<https://dom.spec.whatwg.org/#concept-event-listener>).
+    // https://dom.spec.whatwg.org/#concept-event-listener
     pub removed: Cell<bool>,
-    /// Set for the listener an event handler registers on activation. Such a
-    /// listener has no callback: dispatch runs the HTML event handler
-    /// processing algorithm instead
-    /// (<https://html.spec.whatwg.org/multipage/webappapis.html#the-event-handler-processing-algorithm>).
+    // https://html.spec.whatwg.org/multipage/webappapis.html#the-event-handler-processing-algorithm
     pub handler_name: Option<String>,
 }
 
@@ -1091,12 +873,7 @@ pub(crate) struct Listener {
 pub(crate) enum EventTargetKey {
     Window,
     Node(NodeId),
-    /// Attr registry identity: immutable creation scope and agent-issued id.
-    Attribute {
-        scope: NodeId,
-        id: u64,
-    },
-    /// A constructible `EventTarget`, numbered per world.
+    Attribute { scope: NodeId, id: u64 },
     Standalone(u64),
 }
 
@@ -1106,11 +883,8 @@ impl From<Option<NodeId>> for EventTargetKey {
     }
 }
 
-/// One `blob:` URL's data and the `Blob.type` it was created from, so a
-/// fetch of the URL can carry a `Content-Type`. `origin` is the creator, and
-/// a lookup from another origin is a miss
-/// (<https://w3c.github.io/FileAPI/#blob-url>,
-/// <https://w3c.github.io/FileAPI/#blob-url-store>).
+// https://w3c.github.io/FileAPI/#blob-url
+// https://w3c.github.io/FileAPI/#blob-url-store
 pub(crate) struct ObjectUrlEntry {
     pub(crate) contents: Arc<str>,
     pub(crate) content_type: Arc<str>,
@@ -1119,8 +893,7 @@ pub(crate) struct ObjectUrlEntry {
     document: Option<u32>,
 }
 
-/// The Blob URL Store key: the URL without its fragment
-/// (<https://w3c.github.io/FileAPI/#blob-url-store>).
+// https://w3c.github.io/FileAPI/#blob-url-store
 pub(crate) fn object_url_key(url: &str) -> &str {
     url.split_once('#').map_or(url, |(head, _)| head)
 }
@@ -1133,8 +906,6 @@ pub(crate) fn same_document_url(document_url: &Url, url: &Url) -> bool {
     own == other
 }
 
-/// Opaque captured-origin match: never `Url::origin()`, which is a new
-/// `Origin::Opaque` for `about:blank`, `data:`, and `file:`.
 fn opaque_url_matches(
     document_url: &Url,
     captured: &url::Origin,
@@ -1195,81 +966,51 @@ pub(crate) struct WeakReferences {
     pub(crate) deref: Persistent<Function<'static>>,
 }
 
-/// Builds a child navigable's initial document for one `iframe`.
 pub(crate) type ChildFrameHost = Rc<dyn Fn(&Rc<RefCell<World>>, FrameId, NodeId)>;
 
-/// Builds an auxiliary top-level context's initial document.
 pub(crate) type AuxiliaryFrameHost =
     Rc<dyn Fn(&Rc<RefCell<World>>, FrameId, crate::protocol::OpenerPolicy)>;
 
-/// Builds the documents the `document` layer owns when a realm asks for one.
-/// Installed by that layer, so the realm asks for a browsing context's
-/// document without naming a document type.
 #[derive(Clone)]
 pub(crate) struct FrameHost {
     pub(crate) child: ChildFrameHost,
     pub(crate) auxiliary: AuxiliaryFrameHost,
 }
 
-/// One face's width, style, and weight, as fontique identifies it.
 pub(crate) type FontFaceKey = (
     parley::fontique::FontWidth,
     parley::fontique::FontStyle,
     parley::fontique::FontWeight,
 );
 
-/// Every face added for one family.
 pub(crate) type FontFamilyEntry = (parley::fontique::FamilyId, Vec<FontFaceKey>);
 
-/// One call to `__tbRegisterFont`, with the exact faces added to each
-/// collection so `__tbUnregisterFont` can remove only those faces. The
-/// document and runtime collections are separate clones, so their face lists
-/// are kept apart: removing a key from one must never touch the other.
 pub(crate) struct FontRegistration {
     pub(crate) document: Option<u32>,
     pub(crate) document_fonts: Vec<FontFamilyEntry>,
     pub(crate) runtime_fonts: Vec<FontFamilyEntry>,
 }
 
-/// The request inputs an element's own attributes supply: its `crossorigin`
-/// CORS settings state and its `referrerpolicy` override
-/// (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#cors-settings-attributes>,
-/// <https://html.spec.whatwg.org/multipage/urls-and-fetching.html#referrer-policy-attributes>).
-///
-/// Both are the attribute's state as the engine parses it; the dial's wire
-/// types are a translation at the call site.
+// https://html.spec.whatwg.org/multipage/urls-and-fetching.html#cors-settings-attributes
+// https://html.spec.whatwg.org/multipage/urls-and-fetching.html#referrer-policy-attributes
 #[derive(Default)]
 pub(crate) struct SubresourceOptions {
-    /// The `crossorigin` CORS settings state; `None` is the `No CORS` state.
     pub(crate) crossorigin: Option<blitz_traits::net::CorsSetting>,
-    /// The element's `referrerpolicy`, when it names one.
     pub(crate) referrer_policy: Option<blitz_traits::net::ReferrerPolicy>,
 }
 
-/// Which global a realm exposes.
-///
-/// A document realm is the Window the page runs in. A dedicated worker realm
-/// has no document, no browsing context, and a `DedicatedWorkerGlobalScope`
-/// instead of a Window
-/// (<https://html.spec.whatwg.org/multipage/workers.html#dedicatedworkerglobalscope>).
+// https://html.spec.whatwg.org/multipage/workers.html#dedicatedworkerglobalscope
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum GlobalKind {
     Document,
     DedicatedWorker {
         id: crate::worker::WorkerId,
-        /// The document frame that constructed the worker: the worker's only
-        /// message destination and the owner of its `Worker` object.
         parent: FrameId,
         name: String,
-        /// Whether the worker was constructed with `{type: "module"}`. A
-        /// module worker's `importScripts()` throws a `TypeError`
-        /// (<https://html.spec.whatwg.org/multipage/workers.html#dom-workerglobalscope-importscripts>).
+        // https://html.spec.whatwg.org/multipage/workers.html#dom-workerglobalscope-importscripts
         module: bool,
     },
-    /// A shared worker realm: no document, and a `SharedWorkerGlobalScope`.
-    /// It has no single owner; every connection reaches it over its own
-    /// routed port
-    /// (<https://html.spec.whatwg.org/multipage/workers.html#shared-workers-and-the-sharedworkerglobalscope-interface>).
+    // https://html.spec.whatwg.org/multipage/workers.html#shared-workers-and-the-sharedworkerglobalscope-interface
     SharedWorker {
         id: crate::worker::WorkerId,
         name: String,
@@ -1277,261 +1018,106 @@ pub(crate) enum GlobalKind {
     },
 }
 
-/// The site context a child realm's parent provides: the parent's origin and
-/// whether the parent itself is first-party.
-///
-/// A realm is first-party exactly when its parent is and its own site matches
-/// the parent's, which folds the whole ancestor chain into one value.
 #[derive(Clone, Debug)]
 pub(crate) struct ParentContext {
     pub(crate) origin: url::Origin,
     pub(crate) first_party: bool,
 }
 
-/// Whether the `WindowProxy` state other realms recorded for a document has
-/// been replayed into the realm that document started
-/// (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-set>).
+// https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-set
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ProxyReplay {
-    /// A realm starts after the script that created its frame returns, and a
-    /// queued navigation replaces the document the state would land on, so in
-    /// both cases the replay has to wait
-    /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate>).
+    // https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate
     Owed,
-    /// The recorded state reached this realm.
     Done,
 }
 
 pub(crate) struct World {
-    /// The handles every frame of this renderer process shares: trees,
-    /// registry and wrapper cache, ports, JS heap, wake handle, and stop flag.
     pub(crate) runtime: FrameRuntime,
-    /// The frame this realm belongs to. A worker uses a synthetic id outside
-    /// the frame namespace because it has no browsing context.
     frame: FrameId,
-    /// The kind of global this realm exposes.
     pub(crate) kind: GlobalKind,
-    /// The browser tab this document belongs to, when a browser owns it. A
-    /// popup tab's `close()` names it; a child frame or an embedded carrier
-    /// has none.
     pub(crate) own_window: Option<crate::protocol::WindowId>,
-    /// This realm's id in the shared registry. It owns offscreen canvases even
-    /// when the realm has no document.
     realm: u64,
-    /// Page-scoped scripts registered through CDP to run in every new realm
-    /// of this tab, shared by every frame's world, with their identifiers
-    /// (<https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-addScriptToEvaluateOnNewDocument>).
+    // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-addScriptToEvaluateOnNewDocument
     pub(crate) init_scripts: Rc<RefCell<Vec<(u64, String)>>>,
-    /// The frame's persistent viewport size in device pixels, readable
-    /// without an active document.
     pub(crate) viewport_size: Cell<(u32, u32)>,
-    /// Frames whose browsing context was registered inside a script but whose
-    /// realm cannot be created until JS execution has stopped.
     pending_frames: Vec<(FrameId, NodeId)>,
-    /// Classic inline scripts inserted into this document from another realm
-    /// while this realm did not exist yet. The engine runs them through
-    /// `prepare_classic_script` once the realm is created.
     deferred_scripts: Vec<NodeId>,
-    /// Creates a child frame's document when an `iframe` connects, and an
-    /// auxiliary context's initial document when `window.open` runs. The
-    /// `document` layer installs this hook; the realm asks for a document and
-    /// never names one.
     frame_host: Option<FrameHost>,
-    /// The active document of the frame this realm belongs to.
     document: Option<u32>,
-    /// The realm's own context, kept so a script inserted from another realm
-    /// can run in this document's realm while the caller's script is still on
-    /// the stack. Cleared when the realm is torn down, so it never keeps an
-    /// old realm alive.
     pub(crate) realm_context: Option<rquickjs::Context>,
-    /// `close()` was called inside this worker realm. The worker thread reads
-    /// it after each task, because the realm cannot reach its own handle
-    /// (<https://html.spec.whatwg.org/multipage/workers.html#dom-dedicatedworkerglobalscope-close>).
+    // https://html.spec.whatwg.org/multipage/workers.html#dom-dedicatedworkerglobalscope-close
     pub(crate) worker_close_requested: Rc<Cell<bool>>,
-    /// Set while the engine compiles an event handler content attribute into a
-    /// function. That compilation is HTML's, and CSP governs the handler with
-    /// its inline check rather than the `unsafe-eval` rule that applies to
-    /// page script compiling strings
-    /// (<https://w3c.github.io/webappsec-csp/#can-compile-strings>).
-    ///
-    /// A `Cell` because the string-compilation hook reads it from a shared
-    /// borrow while the handler's constructor call is in flight.
+    // https://w3c.github.io/webappsec-csp/#can-compile-strings
     pub(crate) compiling_handler: Cell<bool>,
-    /// Set for the one compilation a timer's string handler performs. The
-    /// handler is checked once when the timer is created, not every time it
-    /// fires, so the hook admits this compilation and then resumes normal
-    /// checking for any `eval` the handler itself runs
-    /// (<https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#timer-initialisation-steps>).
+    // https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#timer-initialisation-steps
     pub(crate) timer_string: Cell<bool>,
-    /// Document ids this realm created. Its logs feed every realm's
-    /// observers through the union drain.
     owned: HashSet<u32>,
     pub document_url: Url,
-    /// The URL the document was created with. A same-document history update
-    /// changes [`Self::document_url`] but not this one, and `CookieStore`
-    /// resolves its default path and its `url` option against it
-    /// (<https://cookiestore.spec.whatwg.org/#dom-cookiestore-get>).
+    // https://cookiestore.spec.whatwg.org/#dom-cookiestore-get
     pub(crate) creation_url: Url,
-    /// The cookie URL a document that inherits its origin uses: the creator's
-    /// cookie URL, captured when the `about:blank` or `about:srcdoc` document
-    /// was installed. `None` for an ordinary document, whose own creation URL
-    /// is its cookie URL. It never follows a later `<base href>`, which is
-    /// what makes it different from the document base URL
-    /// (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-cookie>).
+    // https://html.spec.whatwg.org/multipage/dom.html#dom-document-cookie
     pub(crate) inherited_cookie_url: Option<Url>,
-    /// The URL the `"client"` referrer branch reads. It is the document URL,
-    /// except for an `iframe srcdoc` document, where the spec walks to the
-    /// container document's URL
-    /// (<https://w3c.github.io/webappsec-referrer-policy/#determine-requests-referrer>).
+    // https://w3c.github.io/webappsec-referrer-policy/#determine-requests-referrer
     pub(crate) referrer_url: Url,
-    /// The document's own referrer: the serialization of the navigation
-    /// request's referrer once `Determine request's Referrer` ran, or the
-    /// creator's URL for a document made locally. `document.referrer` reads
-    /// it, and policy never un-redacts it
-    /// (<https://html.spec.whatwg.org/multipage/document-lifecycle.html#creating-and-initializing-a-document-object>).
+    // https://html.spec.whatwg.org/multipage/document-lifecycle.html#creating-and-initializing-a-document-object
     pub(crate) document_referrer: Option<Url>,
-    /// The creator document's base URL while this document is an `iframe
-    /// srcdoc document`. Its own URL cannot be a base, so its fallback base
-    /// URL — what relative URLs resolve against — is the creator's
-    /// (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#fallback-base-url>).
+    // https://html.spec.whatwg.org/multipage/urls-and-fetching.html#fallback-base-url
     pub(crate) base_url: Option<Url>,
-    /// Origin captured for this document. `Url::origin()` on `about:blank`,
-    /// `data:`, and `file:` yields a fresh `Origin::Opaque` each call, so
-    /// blob lookups and same-origin checks must reuse this value
-    /// (<https://html.spec.whatwg.org/multipage/browsers.html#concept-origin>).
+    // https://html.spec.whatwg.org/multipage/browsers.html#concept-origin
     pub(crate) origin: url::Origin,
-    /// The origin's domain, set by `document.domain`; `None` until a script
-    /// assigns it. Only a tuple origin has one, and a navigation replaces it
-    /// along with the origin. An `about:blank` or `srcdoc` document inherits
-    /// its creator's *origin*, which is why the cell is shared with the
-    /// creator: a later assignment on either document is visible to both
-    /// (<https://html.spec.whatwg.org/multipage/browsers.html#relaxing-the-same-origin-restriction>).
+    // https://html.spec.whatwg.org/multipage/browsers.html#relaxing-the-same-origin-restriction
     pub(crate) domain: Rc<RefCell<Option<String>>>,
-    /// The top-level traversable's origin, recorded when a child realm is
-    /// created; `None` for a top-level realm, which answers its own origin
-    /// (<https://html.spec.whatwg.org/multipage/webappapis.html#concept-environment-top-level-origin>).
+    // https://html.spec.whatwg.org/multipage/webappapis.html#concept-environment-top-level-origin
     pub(crate) top_level: Option<url::Origin>,
-    /// Whether this document is in a first-party site context: its site is
-    /// same-site with every ancestor's site, so no cross-site frame embeds it.
-    ///
-    /// The `SharedWorker` `sameSiteCookies` default and the `all` value both
-    /// read this
-    /// (<https://privacycg.github.io/storage-access/#first-party-site-context>).
+    // https://privacycg.github.io/storage-access/#first-party-site-context
     pub(crate) first_party: bool,
-    /// The parent browsing context's site context, recorded when a child
-    /// realm is created; `None` for a top-level context, which nothing embeds
-    /// and which is therefore always first-party.
-    ///
-    /// Keeping the parent's origin and verdict lets [`Self::refresh_first_party`]
-    /// answer for the whole ancestor chain, since every ancestor's verdict is
-    /// already folded into its parent's.
     parent_context: Option<ParentContext>,
-    /// Which `SameSite` cookies this realm's requests may send and store.
-    ///
-    /// Documents keep [`net::SameSiteCookiePolicy::All`]. A shared worker's
-    /// `sameSiteCookies` option sets the whole global scope
-    /// (<https://privacycg.github.io/saa-non-cookie-storage/#shared-worker>).
+    // https://privacycg.github.io/saa-non-cookie-storage/#shared-worker
     pub(crate) same_site_cookie_policy: net::SameSiteCookiePolicy,
-    /// This document's policy container.
     pub(crate) policy: PolicyContainer,
-    /// The sandboxing flags this frame's documents obey, from the `iframe`
-    /// `sandbox` attribute that created it
-    /// (<https://html.spec.whatwg.org/multipage/browsers.html#sandboxing-flag-set>).
+    // https://html.spec.whatwg.org/multipage/browsers.html#sandboxing-flag-set
     pub(crate) sandbox: SandboxFlags,
     pub(crate) history: crate::protocol::HistorySnapshot,
-    /// The realm's outgoing work, drained once per turn by the document.
     pub(crate) outbox: Outbox,
-    /// Files a script set on an `input[type=file]` through `input.files`, so
-    /// the form entry list reads them without depending on JS wrapper identity
-    /// (<https://html.spec.whatwg.org/multipage/input.html#dom-input-files>).
+    // https://html.spec.whatwg.org/multipage/input.html#dom-input-files
     input_files: HashMap<NodeId, Vec<Persistent<Value<'static>>>>,
-    /// Fonts registered by `FontFaceSet.add`, keyed by the token returned to
-    /// the shim. `delete`/`clear` unregister exactly these faces.
     pub(crate) font_registrations: HashMap<u32, FontRegistration>,
     pub(crate) next_font_registration: u32,
     budget: Rc<RefCell<ResourceBudget>>,
     pub parser_active: bool,
-    /// The realm's event-target graph: window object, listener registries,
-    /// standalone targets, and event handler attributes.
     events: EventTargetState,
-    /// State that belongs to the documents this realm owns.
     pub(crate) state: DocumentState,
-    /// Elements whose `click()` is running, so a nested `click()` returns
-    /// (<https://html.spec.whatwg.org/multipage/interaction.html#dom-click>).
+    // https://html.spec.whatwg.org/multipage/interaction.html#dom-click
     clicks_in_progress: HashSet<NodeId>,
-    /// When the realm's transient activation expires, or `None` once it was
-    /// consumed or never granted
-    /// (<https://html.spec.whatwg.org/multipage/interaction.html#transient-activation>).
+    // https://html.spec.whatwg.org/multipage/interaction.html#transient-activation
     transient_activation: Option<Instant>,
-    /// Whether the realm was ever activated, exposed as
-    /// `navigator.userActivation.hasBeenActive`
-    /// (<https://html.spec.whatwg.org/multipage/interaction.html#dom-useractivation-hasbeenactive>).
+    // https://html.spec.whatwg.org/multipage/interaction.html#dom-useractivation-hasbeenactive
     sticky_activation: bool,
-    /// Whether the `WindowProxy` writes and calls other realms made for this
-    /// document have been replayed into it
-    /// (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-set>).
+    // https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-set
     proxy_replay: ProxyReplay,
     brands: HashMap<String, Persistent<Object<'static>>>,
     pub(crate) bridge: Option<Persistent<Object<'static>>>,
-    /// The realm's `Location` object. `window.location` is
-    /// `[LegacyUnforgeable]` and returns the same object on every read, but the
-    /// global accessor's closure must not hold the object: a JS value captured
-    /// by a Rust closure outlives the context teardown and trips `QuickJS`'s
-    /// live-object assertion. A `Persistent` dies with the realm instead.
     pub(crate) location_object: Option<Persistent<Object<'static>>>,
-    /// The realm window's current event, which `window.event` returns while a
-    /// listener of this realm runs
-    /// (<https://dom.spec.whatwg.org/#concept-event-listener-inner-invoke>).
-    /// `None` is the initial undefined. It lives on the world, not the global
-    /// object, because `window.event` is `[Replaceable]`: a page that assigns
-    /// it must shadow the accessor rather than change what dispatch stores.
+    // https://dom.spec.whatwg.org/#concept-event-listener-inner-invoke
     pub(crate) current_event: Option<Persistent<Value<'static>>>,
-    /// The realm's `performance.now()` value and the `Instant` sampled with
-    /// it. `Event.timeStamp` is measured from that time origin
-    /// (<https://dom.spec.whatwg.org/#dom-event-timestamp>).
+    // https://dom.spec.whatwg.org/#dom-event-timestamp
     pub(crate) event_clock: (Instant, f64),
-    /// Containers whose insertion steps already fired `load` (src-less
-    /// iframes). A later container navigation clears the entry when it
-    /// starts, so that navigation's own `load` still fires; `finish_frame_load`
-    /// consumes whatever remains instead of re-reading the current `src` and
-    /// `srcdoc` attributes
-    /// (<https://html.spec.whatwg.org/multipage/iframe-embed-object.html#the-iframe-element:html-element-insertion-steps>).
+    // https://html.spec.whatwg.org/multipage/iframe-embed-object.html#the-iframe-element:html-element-insertion-steps
     pub(crate) insertion_load_fired: HashSet<NodeId>,
-    /// Registered `MutationObserver`s, keyed by their platform id.
-    /// Pristine intrinsics captured at install, before page script runs.
-    /// `WebIDL` conversions and scheduling must use these, never
-    /// `ctx.globals()`: a page that replaces `String`/`Number`/`Boolean` (or
-    /// deletes `queueMicrotask`) must not change conversion behavior, which
-    /// follows the realm's original intrinsics.
     pub(crate) pristine_number: Option<Persistent<Function<'static>>>,
     pub(crate) pristine_boolean: Option<Persistent<Function<'static>>>,
     pub(crate) pristine_reflect_set: Option<Persistent<Function<'static>>>,
     pub(crate) pristine_queue_microtask: Option<Persistent<Function<'static>>>,
-    /// The pristine `EvalError` constructor, so a refused string compilation
-    /// raises the realm's own exception: a page that swaps `EvalError` must
-    /// neither run code inside the bindings nor substitute another value.
     pub(crate) pristine_eval_error: Option<Persistent<Function<'static>>>,
-    /// The pristine `Blob` constructor, captured after the web bundle. Canvas
-    /// serialization builds its Blob here so a page that replaces `Blob`
-    /// cannot reroute `toBlob`/`convertToBlob`.
     pub(crate) pristine_blob: Option<Persistent<Constructor<'static>>>,
-    /// The pristine `setTimeout`, captured with the web bundle. `toBlob` queues
-    /// its callback through this value instead of a page-replaceable global.
     pub(crate) pristine_set_timeout: Option<Persistent<Function<'static>>>,
-    /// The realm's own event-interface constructors, captured after the web
-    /// bundle installs them and before page script runs. `createEvent` uses
-    /// these, never `globals[interface]`: a page that replaces the global
-    /// must not stamp its own prototype onto the event.
     pub(crate) event_ctors: HashMap<String, Persistent<Object<'static>>>,
     pub(crate) weak_references: Option<WeakReferences>,
-    /// The realm's own mutation-delivery entry point, so scheduling never
-    /// depends on a page-deletable global.
     pub(crate) deliver_mutations_fn: Option<Persistent<Function<'static>>>,
 }
 
-/// The value of one event handler: absent, a JavaScript value, or the raw
-/// source of a content attribute that has not been compiled yet
-/// (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-value>).
+// https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-value
 #[derive(Clone)]
 pub(crate) enum HandlerValue {
     Null,
@@ -1539,50 +1125,29 @@ pub(crate) enum HandlerValue {
     Raw(String),
 }
 
-/// One entry of a target's event handler map: its value and the listener
-/// registered while the handler is active
-/// (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-map>).
+// https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-map
 #[derive(Clone)]
 pub(crate) struct EventHandlerSlot {
     pub(crate) value: HandlerValue,
     pub(crate) listener: Option<Rc<Listener>>,
 }
 
-/// The realm's event-target graph.
-///
-/// The maps are keyed by document (`None` keys are the window), so the two
-/// teardowns — a navigation drops the old document's registrations, a
-/// forgotten document drops its elements' handlers — live here with them
-/// (<https://dom.spec.whatwg.org/#interface-eventtarget>,
-/// <https://html.spec.whatwg.org/multipage/webappapis.html#event-handlers>).
+// https://dom.spec.whatwg.org/#interface-eventtarget
+// https://html.spec.whatwg.org/multipage/webappapis.html#event-handlers
 #[derive(Default)]
 pub(crate) struct EventTargetState {
-    /// The realm's window object, for event targets that belong to this
-    /// world but are reached from another realm's call frame.
     window: Option<Persistent<Object<'static>>>,
     listeners: HashMap<EventTargetKey, Vec<Rc<Listener>>>,
-    /// The `EventTarget` object behind each `EventTargetKey::Standalone`.
     standalone_targets: HashMap<u64, Persistent<Object<'static>>>,
     next_standalone_target: u64,
-    /// Event handler properties (`element.onload`, `window.onmessage`) live
-    /// here rather than on the wrapper, which may be collected while the node
-    /// stays alive. Keyed by `(None, name)` for the window and
-    /// `(Some(node), name)` for an element
-    /// (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handlers>).
+    // https://html.spec.whatwg.org/multipage/webappapis.html#event-handlers
     handlers: HashMap<(Option<NodeId>, String), EventHandlerSlot>,
 }
 
 impl EventTargetState {
-    /// A navigation keeps the realm's window object, so window-scoped
-    /// handlers survive it; the old document's element handlers must not
-    /// fire in the new document, and neither must its listener
-    /// registrations
-    /// (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handlers>).
+    // https://html.spec.whatwg.org/multipage/webappapis.html#event-handlers
     fn reset_for_navigation(&mut self) {
         self.listeners.clear();
-        // A retained window handler keeps its map entry, but the listener's
-        // registration did not survive the cleared list, so it must be
-        // rebuilt rather than left pointing at nothing.
         self.handlers.retain(|(node, _), slot| {
             if node.is_none() {
                 slot.listener = None;
@@ -1593,13 +1158,11 @@ impl EventTargetState {
         });
     }
 
-    /// Drops every handler of one document's elements.
     fn forget_document(&mut self, document: u32) {
         self.handlers
             .retain(|(node, _), _| node.is_none_or(|node| node.document_id() != document));
     }
 
-    /// Drops the whole graph, window object included; the realm is going.
     fn clear_realm(&mut self) {
         self.listeners.clear();
         self.standalone_targets.clear();
@@ -1609,13 +1172,6 @@ impl EventTargetState {
     }
 }
 
-/// One piece of realm work waiting for the document to apply it.
-///
-/// The realm does not run document tasks itself. Timers, fetch submissions and
-/// aborts, script starts, history updates, CSP reports, and
-/// `document.write` text land here in enqueue order. The document drains the
-/// queue at the start of a turn. `document.open` and `document.close` stay on
-/// the engine's stream queue because applying them republishes the frame.
 pub(crate) enum RealmRequest {
     Timer(super::TimeoutRequest),
     ClearTimer(super::PageTimerId),
@@ -1630,76 +1186,40 @@ pub(crate) enum RealmRequest {
     HistoryTraverse {
         delta: i32,
     },
-    /// A same-document fragment navigation. The setter already moved the
-    /// document URL and the history mirror; the document fires `hashchange`,
-    /// updates the realm's `history` view, and records the joint step
-    /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate-to-a-fragment>).
+    // https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate-to-a-fragment
     FragmentNavigation {
-        /// The document URL before the assignment, for `hashchange.oldURL`.
         old_url: String,
-        /// The URL the assignment named, parsed once by the setter.
         url: Url,
-        /// Whether the assignment appended or replaced the active entry.
         handling: crate::protocol::HistoryHandling,
     },
-    /// The cookie jar changed: process the observable changes now, in this
-    /// realm's own turn
-    /// (<https://cookiestore.spec.whatwg.org/#process-cookie-changes>).
+    // https://cookiestore.spec.whatwg.org/#process-cookie-changes
     CookieChanges,
-    /// A text control's selection changed extent or direction; the document
-    /// queues its `select` task.
     SelectionChanged(NodeId),
-    /// A `details` element's `open` attribute changed, or a `dialog` showed or
-    /// closed; the document queues its `toggle` task with the states the
-    /// element moved between
-    /// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-details-toggle-event-task>,
-    /// <https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-dialog-toggle-event-task>).
+    // https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-details-toggle-event-task
+    // https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-dialog-toggle-event-task
     ToggleEvent {
         id: NodeId,
         old_state: String,
         new_state: String,
     },
-    /// A closed dialog's queued `close` event
-    /// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:close-event>).
+    // https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:close-event
     DialogClose(NodeId),
-    /// One policy's violations, queued because the check ran where no event
-    /// can be dispatched directly. `Some` names the node the event belongs
-    /// to; `None` means the realm has no document — a worker — and the
-    /// creator's document reports them
-    /// (<https://w3c.github.io/webappsec-csp/#report-violation>).
+    // https://w3c.github.io/webappsec-csp/#report-violation
     CspViolation(Option<NodeId>, Vec<crate::csp::Violation>),
-    /// A worker script URL its creator's policy blocks. The worker object
-    /// exists, so the document reports the violations and then the plain
-    /// `error` event at that object; the realm never starts
-    /// (<https://w3c.github.io/webappsec-csp/#should-block-request>,
-    /// <https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>).
+    // https://w3c.github.io/webappsec-csp/#should-block-request
+    // https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model
     WorkerBlocked(crate::worker::WorkerId, Vec<crate::csp::Violation>),
-    /// A `meta http-equiv=refresh` value the document should run the shared
-    /// declarative refresh steps on. The realm cannot schedule a navigation
-    /// itself; the document owns the timer
-    /// (<https://html.spec.whatwg.org/multipage/semantics.html#attr-meta-http-equiv-refresh>).
+    // https://html.spec.whatwg.org/multipage/semantics.html#attr-meta-http-equiv-refresh
     DeclarativeRefresh(String),
     HtmlWrite(HtmlWrite),
     DocumentStream(DocumentStreamCommand),
-    /// A promise rejection list is ready for its `unhandledrejection` /
-    /// `rejectionhandled` task
-    /// (<https://html.spec.whatwg.org/multipage/webappapis.html#notify-about-rejected-promises>).
+    // https://html.spec.whatwg.org/multipage/webappapis.html#notify-about-rejected-promises
     RejectionTasks,
 }
 
-/// The realm's outgoing work, shared with the host functions that push into it.
 pub(crate) type Outbox = Rc<RefCell<VecDeque<RealmRequest>>>;
 
-/// Realm state that belongs to the documents this realm owns.
-///
-/// A navigation installs a fresh document and a forgotten document takes its
-/// entries with it, so the concern owns both teardowns: `reset` for the
-/// wholesale replacement and `forget_document` for one document's id-keyed
-/// maps. Every field here is dropped by one of the two, which is why the
-/// call sites no longer list fields.
-/// The contents and frozen array object one reflected element reference list
-/// last answered
-/// (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes:element>).
+// https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes:element
 pub(crate) struct ElementReferenceCache {
     pub(crate) nodes: Vec<NodeId>,
     pub(crate) object: Persistent<Value<'static>>,
@@ -1707,196 +1227,78 @@ pub(crate) struct ElementReferenceCache {
 
 #[derive(Default)]
 pub(crate) struct DocumentState {
-    /// `meta` elements whose policy was already appended.
     pub(crate) applied_csp_metas: HashSet<NodeId>,
-    /// `base` elements a `base-uri` policy refused. The document URL stays
-    /// the base, and a later `base` element is not consulted: HTML freezes
-    /// the first one that carries an `href`
-    /// (<https://w3c.github.io/webappsec-csp/#is-base-allowed-for-document>).
+    // https://w3c.github.io/webappsec-csp/#is-base-allowed-for-document
     pub(crate) blocked_bases: HashSet<NodeId>,
-    /// The `href` each `base` element was last checked with, so a resumed
-    /// parse walk does not repeat a check that already ran for the same
-    /// value (<https://html.spec.whatwg.org/multipage/semantics.html#the-base-element>).
+    // https://html.spec.whatwg.org/multipage/semantics.html#the-base-element
     pub(crate) base_href_seen: HashMap<NodeId, Option<String>>,
-    /// The frozen array `document`-level element reference lists returned,
-    /// keyed by `(element, content attribute)`, with the contents it was built
-    /// from. An unchanged list answers the same object, which is the spec's
-    /// caching layer
-    /// (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes:element>).
+    // https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes:element
     pub(crate) element_reference_cache: HashMap<(NodeId, String), ElementReferenceCache>,
-    /// The `HTMLCollection` each Document named property last answered, keyed by
-    /// `(document node, name)`. The collection is live, so only its identity is
-    /// cached; a name that stops naming several elements stops resolving here
-    /// (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-nameditem>).
+    // https://html.spec.whatwg.org/multipage/dom.html#dom-document-nameditem
     pub(crate) document_named: HashMap<(NodeId, String), Persistent<Value<'static>>>,
-    /// The base URL each `base` element may freeze, or `None` when its
-    /// `href` is refused or unusable.
     base_results: HashMap<NodeId, Option<Url>>,
     frame_navigations: Vec<FrameNavigation>,
-    /// Script elements the HTML parser inserted; script insertion clears the
-    /// bit (<https://html.spec.whatwg.org/multipage/scripting.html#parser-inserted>).
+    // https://html.spec.whatwg.org/multipage/scripting.html#parser-inserted
     pub(crate) parser_inserted: HashSet<NodeId>,
-    /// Streaming `TextDecoder` sessions, keyed by platform id. The decoder
-    /// object buffers partial sequences internally across `decode()` calls,
-    /// exactly as the Encoding Standard's streaming decoder does; the entry
-    /// dies with the realm, and `FinalizationRegistry` frees it earlier when
-    /// the engine runs the callback
-    /// (<https://encoding.spec.whatwg.org/#dom-textdecoder-decode>).
+    // https://encoding.spec.whatwg.org/#dom-textdecoder-decode
     pub(crate) decoders: HashMap<u64, DecoderSession>,
-    /// The script element whose code is running, which
-    /// `document.currentScript` reports. A module script leaves it unset: the
-    /// attribute is null while a module evaluates
-    /// (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-currentscript>).
+    // https://html.spec.whatwg.org/multipage/dom.html#dom-document-currentscript
     pub current_script: Option<NodeId>,
-    /// The element that started the module graph being fetched. Every fetch in
-    /// the graph reads its `crossorigin` and `referrerpolicy`, while
-    /// `current_script` stays unset so `document.currentScript` is null
-    /// (<https://html.spec.whatwg.org/multipage/webappapis.html#fetch-the-descendants-of-and-link-a-module-script>).
+    // https://html.spec.whatwg.org/multipage/webappapis.html#fetch-the-descendants-of-and-link-a-module-script
     pub(crate) module_fetch_root: Option<NodeId>,
-    /// The URL of the script or module currently evaluating. `QuickJS` labels
-    /// code it compiles from a string `<input>`, so a dynamic `import()` in
-    /// `eval` resolves against this URL instead
-    /// (<https://tc39.es/ecma262/#sec-hostresolveimportedmodule>).
+    // https://tc39.es/ecma262/#sec-hostresolveimportedmodule
     pub(crate) current_script_url: Option<Url>,
-    /// The fetch client origin for a worker's top-level module graph. A worker
-    /// created from a `data:` URL has an opaque origin, but its graph is
-    /// fetched with the outside settings' origin; a later dynamic `import()`
-    /// uses the worker's own origin
-    /// (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>).
+    // https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model
     pub(crate) module_client_origin: Option<url::Origin>,
-    /// The credentials mode every module fetch in a module worker's graph
-    /// uses. It comes from `WorkerOptions.credentials` and replaces the
-    /// `crossorigin`-derived mode a document's module graph uses
-    /// (<https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script>).
+    // https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script
     pub(crate) module_credentials: Option<net::cors::CredentialsMode>,
-    /// Whether a module is declaring, so a fetch it starts is resolving a static
-    /// import and takes the referencing module's URL as its referrer. A
-    /// dynamic `import()` runs after this clears and names the worker's own
-    /// script instead
-    /// (<https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script>).
+    // https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script
     pub(crate) declaring_module: bool,
-    /// The `Referrer-Policy` of a worker's own script response, which governs
-    /// the dynamic imports its body runs. Static imports keep the policy the
-    /// worker inherited from its creator
-    /// (<https://w3c.github.io/webappsec-referrer-policy/#integration-with-html>).
+    // https://w3c.github.io/webappsec-referrer-policy/#integration-with-html
     pub(crate) worker_referrer_policy: Option<net::ReferrerPolicy>,
-    /// The content security policies a worker's own script response carried,
-    /// appended to the ones it inherited from its creator. They govern the
-    /// dynamic imports its body runs, while its static imports stay under the
-    /// creator's policy
-    /// (<https://html.spec.whatwg.org/multipage/browsers.html#initialize-a-policy-container-from-a-fetch-response>).
+    // https://html.spec.whatwg.org/multipage/browsers.html#initialize-a-policy-container-from-a-fetch-response
     pub(crate) worker_module_csp: Option<crate::csp::List>,
-    /// The creator's policy container, which a worker's script graph is
-    /// fetched under: the outside settings object owns the graph fetch, while
-    /// the worker global scope's own policy comes from the script response
-    /// (<https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script>,
-    /// <https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>).
+    // https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script
+    // https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model
     pub(crate) worker_owner_csp: Option<crate::csp::List>,
 
-    /// Existing elements being synchronously upgraded by a custom-element
-    /// constructor. `HTMLElement()` consumes the top candidate.
     pub(crate) custom_construction: Vec<NodeId>,
-    /// One `DOMImplementation` per document, for identity.
     implementations: HashMap<u32, Persistent<Value<'static>>>,
-    /// The focused element of each document
-    /// (<https://html.spec.whatwg.org/multipage/interaction.html#focused-area-of-the-document>).
+    // https://html.spec.whatwg.org/multipage/interaction.html#focused-area-of-the-document
     active_elements: HashMap<u32, NodeId>,
-    /// Text selection per control `(start, end, direction code)`: the
-    /// selection APIs clamp to the control's value length on read.
     selections: HashMap<NodeId, (u32, u32, u8)>,
-    /// Stable `WebDriver` element ids for nodes, and the reverse lookup.
     remote_ids: HashMap<NodeId, u64>,
     remote_nodes: HashMap<u64, NodeId>,
-    /// Per-element cryptographic nonce slots, set by the `nonce` IDL setter
-    /// without touching the content attribute
-    /// (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#nonce-attributes>).
-    /// Invariant: the slot mirrors the spec's `[[CryptographicNonce]]`.
-    /// Content-attribute writes feed it through `set_attribute_sync`, and
-    /// removals clear it through `remove_attribute_sync` (the attribute
-    /// change steps, where `null` resets the slot). Parser-created `nonce`
-    /// attributes bypass both hooks, so a missing entry falls back to the
-    /// content attribute in `nonce_of` — which matches the spec state for
-    /// every transition except a remove-after-parse with no intervening
-    /// write, closed by clearing on removal. Clones copy the slot, adopts
-    /// retarget it, and `forget_document` drops a dead document's entries.
+    // https://html.spec.whatwg.org/multipage/urls-and-fetching.html#nonce-attributes
     pub(crate) nonce_slots: HashMap<NodeId, String>,
-    /// Per-dialog `returnValue`, which is element state rather than a
-    /// reflected content attribute. It starts empty and is only written by
-    /// the IDL setter or by closing the dialog with a value
-    /// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:dom-dialog-returnvalue>).
+    // https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:dom-dialog-returnvalue
     pub(crate) dialog_return_values: HashMap<NodeId, crate::dom_string::DomString>,
-    /// The element each shown dialog focuses again when it closes, captured
-    /// before the dialog focusing steps run
-    /// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:previously-focused-element>).
+    // https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:previously-focused-element
     pub(crate) dialog_previously_focused: HashMap<NodeId, Option<NodeId>>,
-    /// Each form's past names map: the names a single-control named getter
-    /// answer left behind, in insertion order (the map's age order)
-    /// (<https://html.spec.whatwg.org/multipage/forms.html#past-names-map>).
+    // https://html.spec.whatwg.org/multipage/forms.html#past-names-map
     pub(crate) form_past_names: std::cell::RefCell<HashMap<NodeId, Vec<(String, NodeId)>>>,
-    /// The live `RadioNodeList` each form named getter answered, keyed by
-    /// `(form, name)`. The collection is live, so only its identity is cached;
-    /// a name that stops naming several controls stops resolving here
-    /// (<https://html.spec.whatwg.org/multipage/forms.html#dom-form-nameditem>).
+    // https://html.spec.whatwg.org/multipage/forms.html#dom-form-nameditem
     pub(crate) form_named_lists: HashMap<(NodeId, String), Persistent<Value<'static>>>,
-    /// The executing script's URL, line, and column captured when a
-    /// subresource URL entered an element: a `src` set, or an insertion when
-    /// no set chose the URL. A later CSP violation for that element's load
-    /// reports these as `sourceFile`, `lineNumber`, and `columnNumber`
-    /// (<https://w3c.github.io/webappsec-csp/#create-violation-for-global>).
+    // https://w3c.github.io/webappsec-csp/#create-violation-for-global
     pub(crate) creator_stacks: HashMap<NodeId, CreatorInfo>,
-    /// The last handler attribute value the inline check reported, per element
-    /// and attribute. A handler is checked when its attribute is set or parsed
-    /// and again when it is invoked, because this engine compiles `on*`
-    /// attributes lazily at dispatch; the remembered value keeps the second
-    /// check from reporting the same blocked handler twice
-    /// (<https://w3c.github.io/webappsec-csp/#report-violation>).
+    // https://w3c.github.io/webappsec-csp/#report-violation
     pub(crate) reported_handlers: HashMap<(NodeId, String), String>,
-    /// Per form-associated element state: the flags and edit buffers that are
-    /// neither content attributes nor part of Blitz's sanitized value slot.
-    /// They live here so every path that changes a control (a value set, a
-    /// type change, a reset) updates them together instead of leaving a JS
-    /// `WeakMap` behind.
-    ///
-    /// Entries deliberately outlive a node's removal: custom validity and a
-    /// user edit survive a temporary detach and reinsertion. Only document
-    /// teardown prunes them, so the bound is one entry per element that ever
-    /// used a form API in this document.
     pub(crate) controls: HashMap<NodeId, ControlState>,
 }
 
-/// The mutable state of one form-associated element.
-///
-/// The value itself (and its dirty flag) stays in Blitz's sanitized slot; this
-/// is everything the validity and editing algorithms derive from or maintain
-/// beside it
-/// (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#the-constraint-validation-api>).
+// https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#the-constraint-validation-api
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ControlState {
-    /// The value was last changed by a user edit, so `maxlength`/`minlength`
-    /// apply.
     pub(crate) user_edited: bool,
-    /// The value cannot be converted to its state's value.
     pub(crate) bad_input: bool,
-    /// The message from `setCustomValidity`, as UTF-16 units so a lone
-    /// surrogate survives the round trip through `validationMessage`.
     pub(crate) custom_validity: Vec<u16>,
-    /// The `number` state's in-progress edit buffer, which can hold a partial
-    /// number the exposed value does not.
     pub(crate) number_buffer: Option<String>,
-    /// The caret for a control without a real selection API.
     pub(crate) caret: Option<u32>,
-    /// `<output>`'s value mode; when set, the text is the value and the
-    /// frozen default lives beside it.
     pub(crate) output_value_mode: bool,
-    /// `<output>`'s frozen default value, as UTF-16 units so a lone surrogate
-    /// survives the round trip through `defaultValue`. `None` while the value
-    /// mode flag is clear: the text itself is then the default.
     pub(crate) output_default_value: Option<Vec<u16>>,
 }
 
 impl ControlState {
-    /// Drops the state a reset, a script value set, or a type change ends.
-    /// Custom validity is not an edit and survives all three.
     pub(crate) fn clear_edit_state(&mut self) {
         self.user_edited = false;
         self.bad_input = false;
@@ -1904,9 +1306,6 @@ impl ControlState {
         self.caret = None;
     }
 
-    /// Drops the edit position and buffer that a cross-document adoption
-    /// invalidates. The value-derived state (the user-edit flag and bad input)
-    /// and custom validity stay: adoption does not change the value.
     pub(crate) fn clear_edit_position(&mut self) {
         self.number_buffer = None;
         self.caret = None;
@@ -1914,10 +1313,6 @@ impl ControlState {
 }
 
 impl DocumentState {
-    /// Drops everything keyed to the active document, which a navigation is
-    /// about to replace. Entries of *other* documents this realm still owns
-    /// (`owned`) survive, so `nonce_slots`, `creator_stacks`, and `controls`
-    /// are pruned by id in [`Self::forget_document`] instead.
     fn reset(&mut self) {
         self.applied_csp_metas.clear();
         self.blocked_bases.clear();
@@ -1949,7 +1344,6 @@ impl DocumentState {
         self.form_named_lists.clear();
     }
 
-    /// Drops the entries one document's nodes left behind.
     fn forget_document(&mut self, document: u32) {
         self.blocked_bases.retain(|node| node.document != document);
         self.base_href_seen
@@ -1978,9 +1372,6 @@ impl DocumentState {
     }
 }
 
-/// The top JS frame that triggered a subresource fetch: the script URL as
-/// written (fragments and credentials stripped at report time), with 1-based
-/// line and column. Zero line or column means unknown.
 #[derive(Clone, Debug)]
 pub(crate) struct CreatorInfo {
     pub url: String,
@@ -1988,11 +1379,6 @@ pub(crate) struct CreatorInfo {
     pub column: u32,
 }
 
-/// One streaming `TextDecoder` session: the decoder plus what recreates it.
-/// A `last=true` call ends the decoder (`encoding_rs` panics on reuse), so
-/// every non-streaming `decode()` replaces it with a fresh one. `carry`
-/// holds input bytes past a fatal error for the next call: the error itself
-/// is consumed, but the queue behind it is not.
 pub(crate) struct DecoderSession {
     pub(crate) decoder: encoding_rs::Decoder,
     pub(crate) encoding: &'static encoding_rs::Encoding,
@@ -2023,20 +1409,12 @@ impl Drop for World {
     }
 }
 
-/// What one `window.open` call resolved to before any context exists
-/// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps>).
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps
 pub(crate) struct WindowOpenPlan {
-    /// The URL encoded against this document, or `None` when the call named
-    /// no URL.
     pub(crate) url: Option<Url>,
-    /// What `noopener`, `noreferrer`, and the blob rule do to the opener.
     pub(crate) opener: crate::protocol::OpenerPolicy,
-    /// Whether the call returns no `WindowProxy` even though the context it
-    /// selected exists: `noopener` withholds everything but this context and
-    /// the ancestors it may target directly
-    /// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps>).
+    // https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps
     pub(crate) withholds: bool,
-    /// The navigation a browser-hosted tab's first request runs under.
     pub(crate) source: crate::protocol::NavigationSource,
 }
 
@@ -2115,12 +1493,7 @@ impl World {
         }
     }
 
-    /// Builds the realm for a dedicated worker.
-    ///
-    /// The worker owns no document and no browsing context; its global is a
-    /// `DedicatedWorkerGlobalScope` sharing the page engine's `QuickJS`
-    /// runtime and services with its creator
-    /// (<https://html.spec.whatwg.org/multipage/workers.html#dedicated-workers-and-the-dedicatedworkerglobalscope-interface>).
+    // https://html.spec.whatwg.org/multipage/workers.html#dedicated-workers-and-the-dedicatedworkerglobalscope-interface
     pub(crate) fn new_worker(
         document_url: Url,
         frame: FrameId,
@@ -2145,12 +1518,7 @@ impl World {
         world
     }
 
-    /// Builds the realm for a shared worker.
-    ///
-    /// A shared worker has no single owner and no browsing context: its global
-    /// is a `SharedWorkerGlobalScope`, and every connection arrives as a
-    /// `connect` event carrying its own port
-    /// (<https://html.spec.whatwg.org/multipage/workers.html#shared-workers-and-the-sharedworkerglobalscope-interface>).
+    // https://html.spec.whatwg.org/multipage/workers.html#shared-workers-and-the-sharedworkerglobalscope-interface
     pub(crate) fn new_shared_worker(
         document_url: Url,
         frame: FrameId,
@@ -2169,13 +1537,10 @@ impl World {
         world
     }
 
-    /// Whether this realm is a shared worker.
     pub(crate) fn is_shared_worker(&self) -> bool {
         matches!(self.kind, GlobalKind::SharedWorker { .. })
     }
 
-    /// Whether this realm is a module worker, which `importScripts()` must
-    /// refuse.
     pub(crate) fn worker_is_module(&self) -> bool {
         match &self.kind {
             GlobalKind::Document => false,
@@ -2184,8 +1549,6 @@ impl World {
         }
     }
 
-    /// The worker name a worker global reports, or `None` for a document
-    /// realm.
     pub(crate) fn worker_name(&self) -> Option<&str> {
         match &self.kind {
             GlobalKind::Document => None,
@@ -2195,8 +1558,6 @@ impl World {
         }
     }
 
-    /// The worker identity a worker global reports, or `None` for a document
-    /// realm.
     pub(crate) fn worker_id(&self) -> Option<crate::worker::WorkerId> {
         match &self.kind {
             GlobalKind::Document => None,
@@ -2206,8 +1567,6 @@ impl World {
         }
     }
 
-    /// The creator frame a dedicated worker global posts to, or `None` for a
-    /// document realm or a shared worker.
     pub(crate) fn worker_parent(&self) -> Option<FrameId> {
         match &self.kind {
             GlobalKind::Document | GlobalKind::SharedWorker { .. } => None,
@@ -2223,7 +1582,6 @@ impl World {
             .forget_frame(self.frame, &mut self.runtime.documents.borrow_mut());
     }
 
-    /// Installs `parsed` as the active document and returns its id.
     pub(crate) fn replace_document(&mut self, parsed: Parsed) -> u32 {
         self.drop_active_document();
         let id = self.runtime.documents.borrow_mut().insert(parsed);
@@ -2231,23 +1589,14 @@ impl World {
         self.owned.insert(id);
         self.clear_outbox();
         self.state.reset();
-        // Navigation keeps the realm's window object, so window-scoped
-        // handlers survive; the old document's listeners and element handlers
-        // must not fire in the new document
-        // (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handlers>).
+        // https://html.spec.whatwg.org/multipage/webappapis.html#event-handlers
         self.events.reset_for_navigation();
-        // The window object and its handler values survive a navigation, so
-        // its handler listeners are registered again in the fresh list
-        // (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handlers>).
+        // https://html.spec.whatwg.org/multipage/webappapis.html#event-handlers
         crate::js::events::reactivate_window_handlers(self);
-        // A new realm owns fresh observers; navigation drops the old ones.
         self.clear_observers();
         id
     }
 
-    /// Installs the frame's active document without clearing realm caches.
-    /// Returns the document id, reusing the parsed document's id when it
-    /// carries one (take-and-reinsert cycles keep wrapper identity).
     pub(crate) fn set_document(&mut self, parsed: Parsed) -> u32 {
         let id = self.runtime.documents.borrow_mut().insert(parsed);
         if self.document != Some(id) {
@@ -2272,8 +1621,6 @@ impl World {
         }
     }
 
-    /// Drops realm and wrapper associations for every document this realm
-    /// owns; called when the frame goes away.
     pub(crate) fn forget_owned_documents(&mut self) {
         let ids: Vec<u32> = self.owned.drain().collect();
         for id in ids {
@@ -2281,8 +1628,6 @@ impl World {
             self.runtime.documents.borrow_mut().remove(id);
             self.runtime.registry.borrow_mut().forget_document(id);
             self.state.forget_document(id);
-            // The realm is going away; its window handlers go with it when
-            // the realm tears down (`clear_listeners`).
             self.events.forget_document(id);
         }
         self.runtime
@@ -2292,33 +1637,27 @@ impl World {
         self.document = None;
     }
 
-    /// The registry every realm of this renderer process shares.
     pub(crate) fn registry(&self) -> Rc<RefCell<RealmRegistry>> {
         Rc::clone(&self.runtime.registry)
     }
 
-    /// The realm that owns the document `id` points into, when alive.
     pub(crate) fn owner_world(&self, id: NodeId) -> Option<Rc<RefCell<World>>> {
         self.runtime.registry.borrow().owner_world(id)
     }
 
-    /// The shared wrapper cached for `id`, when one exists.
     pub(crate) fn shared_wrapper(&self, id: NodeId) -> Option<Persistent<Value<'static>>> {
         self.runtime.registry.borrow().wrapper(id)
     }
 
-    /// Publishes the shared wrapper cached for `id`.
     pub(crate) fn intern_shared_wrapper(&self, id: NodeId, value: Persistent<Value<'static>>) {
         self.runtime.registry.borrow_mut().intern_wrapper(id, value);
     }
 
-    /// The active document of the frame this realm belongs to.
     pub(crate) fn main_document(&self) -> Option<Ref<'_, Parsed>> {
         let id = self.document?;
         Ref::filter_map(self.runtime.documents.borrow(), |store| store.get(id)).ok()
     }
 
-    /// Mutable access to the active document.
     pub(crate) fn main_document_mut(&self) -> Option<RefMut<'_, Parsed>> {
         let id = self.document?;
         RefMut::filter_map(self.runtime.documents.borrow_mut(), |store| {
@@ -2327,7 +1666,6 @@ impl World {
         .ok()
     }
 
-    /// One `DOMImplementation` object per document, for identity.
     pub(crate) fn implementation(&self, id: NodeId) -> Option<Persistent<Value<'static>>> {
         self.state.implementations.get(&id.document_id()).cloned()
     }
@@ -2336,7 +1674,6 @@ impl World {
         self.state.implementations.insert(id.document_id(), value);
     }
 
-    /// The document tree that owns `id`.
     pub(crate) fn document(&self, id: NodeId) -> Option<Ref<'_, Parsed>> {
         Ref::filter_map(self.runtime.documents.borrow(), |store| {
             store.get(id.document_id())
@@ -2344,15 +1681,8 @@ impl World {
         .ok()
     }
 
-    /// The fetch-relevant attributes of a subresource element: its
-    /// `crossorigin` state and its `referrerpolicy` override, read from one
-    /// document lookup.
-    ///
-    /// Both are per-request inputs, not reflected properties the load path may
-    /// re-derive, so one helper keeps the load and every reader of the
-    /// attribute in agreement
-    /// (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#cors-settings-attributes>,
-    /// <https://html.spec.whatwg.org/multipage/urls-and-fetching.html#referrer-policy-attribute>).
+    // https://html.spec.whatwg.org/multipage/urls-and-fetching.html#cors-settings-attributes
+    // https://html.spec.whatwg.org/multipage/urls-and-fetching.html#referrer-policy-attribute
     pub(crate) fn subresource_options(&self, element: NodeId) -> SubresourceOptions {
         let Some(parsed) = self.document(element) else {
             return SubresourceOptions::default();
@@ -2366,22 +1696,14 @@ impl World {
         }
     }
 
-    /// The tree store, for realm-free algorithms that take `&DocumentStore`.
     pub(crate) fn store(&self) -> Ref<'_, DocumentStore> {
         self.runtime.documents.borrow()
     }
 
-    /// Whether this realm created the document `id` belongs to. Canvas
-    /// identity is carried by page-visible properties, so a forged pair must
-    /// not reach another frame's registry entry.
     pub(crate) fn owns_node(&self, id: NodeId) -> bool {
         self.owned.contains(&id.document)
     }
 
-    /// Runs `reader` against the tree owning `id`.
-    ///
-    /// Prefer this to [`World::document`] when a guard would outlive the
-    /// caller's `World` borrow; the tree borrow ends with the closure.
     pub(crate) fn with_document<R>(
         &self,
         id: NodeId,
@@ -2391,14 +1713,12 @@ impl World {
         store.get(id.document_id()).map(reader)
     }
 
-    /// Runs `reader` against the frame's active document.
     pub(crate) fn with_main_document<R>(&self, reader: impl FnOnce(&Parsed) -> R) -> Option<R> {
         let id = self.document?;
         let store = self.runtime.documents.borrow();
         store.get(id).map(reader)
     }
 
-    /// Mutable version of [`World::document`].
     pub(crate) fn document_mut(&self, id: NodeId) -> Option<RefMut<'_, Parsed>> {
         RefMut::filter_map(self.runtime.documents.borrow_mut(), |store| {
             store.get_mut(id.document_id())
@@ -2406,8 +1726,6 @@ impl World {
         .ok()
     }
 
-    /// Mutable access to a document by store id, without a node handle, for
-    /// state (such as live ranges) keyed by document alone.
     pub(crate) fn document_mut_by_id(&self, document: u32) -> Option<RefMut<'_, Parsed>> {
         RefMut::filter_map(self.runtime.documents.borrow_mut(), |store| {
             store.get_mut(document)
@@ -2415,12 +1733,7 @@ impl World {
         .ok()
     }
 
-    /// Frees a live-range slot when the document store is free.
-    ///
-    /// The range finalizer runs at an arbitrary point, possibly inside a
-    /// borrow of the store, so a busy store silently leaves the slot to the
-    /// document's own teardown
-    /// (<https://dom.spec.whatwg.org/#concept-range>).
+    // https://dom.spec.whatwg.org/#concept-range
     pub(crate) fn try_free_range(&self, document: u32, slot: usize) {
         let Ok(mut documents) = self.runtime.documents.try_borrow_mut() else {
             return;
@@ -2430,7 +1743,6 @@ impl World {
         }
     }
 
-    /// Stores a secondary document and returns its root id.
     pub(crate) fn add_document(&mut self, parsed: Parsed) -> NodeId {
         let node = parsed.document.base.root_node().id;
         let document = self.runtime.documents.borrow_mut().insert(parsed);
@@ -2442,52 +1754,36 @@ impl World {
         self.runtime.registry.borrow().frame_document(container)
     }
 
-    /// This realm's registry id, the owner of its offscreen canvases.
     pub(crate) fn realm_id(&self) -> u64 {
         self.realm
     }
 
-    /// The active document id without borrowing the tree store.
     pub(crate) fn main_document_id(&self) -> Option<u32> {
         self.document
     }
 
-    /// The frame this realm belongs to.
     pub(crate) fn frame(&self) -> FrameId {
         self.frame
     }
 
-    /// The `iframe` that owns this realm's frame, when it is a child
-    /// navigable. A top-level traversable and an auxiliary context have no
-    /// container
-    /// (<https://html.spec.whatwg.org/multipage/document-sequences.html#nav-container>).
+    // https://html.spec.whatwg.org/multipage/document-sequences.html#nav-container
     pub(crate) fn container(&self) -> Option<NodeId> {
         self.runtime.shared.borrow().tree.container(self.frame)
     }
 
-    /// Whether this realm's frame still has a browsing context. A `Location`
-    /// object can outlive its navigable, and every setter is then a no-op
-    /// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-href>).
+    // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-href
     pub(crate) fn has_browsing_context(&self) -> bool {
         self.runtime.shared.borrow().tree.is_alive(self.frame)
     }
 
-    /// The origin of this frame's top-level traversable
-    /// (<https://html.spec.whatwg.org/multipage/webappapis.html#concept-environment-top-level-origin>).
-    ///
-    /// A top-level realm answers its own origin. A child's is recorded when
-    /// the child realm is created, so it cannot be missing or change under the
-    /// caller.
+    // https://html.spec.whatwg.org/multipage/webappapis.html#concept-environment-top-level-origin
     pub(crate) fn top_level_origin(&self) -> url::Origin {
         self.top_level
             .clone()
             .unwrap_or_else(|| self.origin.clone())
     }
 
-    /// Records the parent browsing context this child realm is embedded in, so
-    /// its first-party verdict can be recomputed whenever its own origin
-    /// changes
-    /// (<https://privacycg.github.io/storage-access/#first-party-site-context>).
+    // https://privacycg.github.io/storage-access/#first-party-site-context
     pub(crate) fn set_parent_context(&mut self, parent: &Self) {
         self.parent_context = Some(ParentContext {
             origin: parent.origin.clone(),
@@ -2496,48 +1792,27 @@ impl World {
         self.refresh_first_party();
     }
 
-    /// Recomputes [`Self::first_party`]: a top-level context is never embedded
-    /// and so is first-party, and a child is first-party only when its parent
-    /// is and its own site is same-site with the parent's.
-    ///
-    /// A navigation that changes this realm's origin calls this, because a
-    /// cross-site frame stops being first-party even though its ancestors do
-    /// not change.
     fn refresh_first_party(&mut self) {
         self.first_party = self.parent_context.as_ref().is_none_or(|parent| {
             parent.first_party && net::origins_same_site(&self.origin, &parent.origin)
         });
     }
 
-    /// The cookie partition key this realm's requests and `document.cookie`
-    /// operations use: the site of its top-level document, or `None` when that
-    /// origin is opaque
-    /// (<https://github.com/privacycg/CHIPS#computing-the-cookie-partition-key>).
+    // https://github.com/privacycg/CHIPS#computing-the-cookie-partition-key
     pub(crate) fn partition_key(&self) -> Option<String> {
         net::site_for_origin(&self.top_level_origin())
     }
 
-    /// Whether this realm's environment is a secure context. The model is
-    /// Chromium's, not HTML's text; the disagreement is in
-    /// `docs/upstream.md`.
     pub(crate) fn is_secure_context(&self) -> bool {
         self.policy.secure_context
     }
 
-    /// Whether this realm may use APIs gated by cross-origin isolation.
-    ///
-    /// The bit is computed when the response installs and inherits through the
-    /// policy container, so a worker reads the creator's decision
-    /// (<https://html.spec.whatwg.org/multipage/webappapis.html#concept-settings-object-cross-origin-isolated-capability>).
+    // https://html.spec.whatwg.org/multipage/webappapis.html#concept-settings-object-cross-origin-isolated-capability
     pub(crate) fn is_cross_origin_isolated(&self) -> bool {
         self.policy.cross_origin_isolated
     }
 
-    /// The resolution, in microseconds, that this realm's high resolution
-    /// clocks report: 5 for a cross-origin isolated document, 100 otherwise.
-    /// The ceiling bounds the precision a timing side channel can observe, and
-    /// is why an isolated document must opt in before it gets the finer clock
-    /// (<https://w3c.github.io/hr-time/#dfn-current-high-resolution-time>).
+    // https://w3c.github.io/hr-time/#dfn-current-high-resolution-time
     pub(crate) fn time_resolution_micros(&self) -> u32 {
         if self.is_cross_origin_isolated() {
             5
@@ -2546,17 +1821,12 @@ impl World {
         }
     }
 
-    /// Whether this realm's frame is still attached to its document. A
-    /// removed iframe's frame may still sit in the tree until the engine
-    /// reconciles, so the container's connectedness decides.
     pub(crate) fn is_attached(&self) -> bool {
         if self.frame == FrameId::MAIN {
             return true;
         }
         let container = self.runtime.shared.borrow().tree.container(self.frame);
         let Some(container) = container else {
-            // An auxiliary context has no container; it stays attached until
-            // its browsing context is closed.
             return self.runtime.shared.borrow().tree.contains(self.frame);
         };
         self.owner_world(container).is_some_and(|owner| {
@@ -2567,18 +1837,10 @@ impl World {
         })
     }
 
-    /// The renderer-process state shared by every realm.
     pub(crate) fn shared(&self) -> SharedHandle {
         self.runtime.shared.clone()
     }
 
-    /// Registers a browsing context for every connected `iframe` in this
-    /// frame's document that does not have one yet.
-    ///
-    /// Safe to call while a script runs: it allocates frame identities and
-    /// tree entries only. The document and its realm are created later, by
-    /// the frame host the `document` layer installs, because `QuickJS`
-    /// forbids entering a new realm while another realm executes.
     pub(crate) fn register_pending_frames(&mut self, before: Option<NodeId>) -> Vec<NodeId> {
         let mut created = Vec::new();
         let containers = self.iframe_containers_before(before);
@@ -2590,12 +1852,7 @@ impl World {
         created
     }
 
-    /// Creates a browsing context for one connected `iframe` if it does not
-    /// already have one
-    /// (<https://html.spec.whatwg.org/multipage/iframe-embed-object.html#the-iframe-element:html-element-insertion-steps>).
-    ///
-    /// Allocates the frame identity only. The nested document is created
-    /// later, by the frame host the `document` layer installs.
+    // https://html.spec.whatwg.org/multipage/iframe-embed-object.html#the-iframe-element:html-element-insertion-steps
     pub(crate) fn register_frame_for_container(&mut self, container: NodeId) -> bool {
         if self
             .runtime
@@ -2624,8 +1881,6 @@ impl World {
                     .to_owned()
             })
             .unwrap_or_default();
-        // `window[i]` sorts by container tree order: the new frame goes
-        // before the first following sibling that already has one.
         let before = self.frame_sort_before(container);
         let frame = {
             let mut shared = self.runtime.shared.borrow_mut();
@@ -2642,14 +1897,7 @@ impl World {
         true
     }
 
-    /// The frame that sorts immediately after `container`'s frame in document
-    /// tree order: the first following container in a pre-order walk that
-    /// already has a frame, if any. Sibling order is not enough: after
-    /// `a.appendChild(iframe)`, the moved frame belongs before `b`'s frame
-    /// in tree order but has no following sibling. Both insertion and
-    /// `moveBefore` sort through this, so `window[i]` follows container
-    /// tree order
-    /// (<https://html.spec.whatwg.org/multipage/document-sequences.html#document-tree-child-navigable>).
+    // https://html.spec.whatwg.org/multipage/document-sequences.html#document-tree-child-navigable
     pub(crate) fn frame_sort_before(&self, container: NodeId) -> Option<FrameId> {
         self.with_document(container, |parsed| {
             let base = &parsed.document.base;
@@ -2676,14 +1924,7 @@ impl World {
         })?
     }
 
-    /// Creates the initial `about:blank` document for one connected `iframe`
-    /// so `contentDocument` is available in the inserting script
-    /// (<https://html.spec.whatwg.org/multipage/iframe-embed-object.html#the-iframe-element:html-element-insertion-steps>).
-    ///
-    /// The nested realm is deferred: `QuickJS` cannot enter a new context while
-    /// the parent script still runs. Document creation belongs to the frame
-    /// host the `document` layer installs; a realm built without one just
-    /// leaves the frame registered for a later drain (test worlds).
+    // https://html.spec.whatwg.org/multipage/iframe-embed-object.html#the-iframe-element:html-element-insertion-steps
     pub(crate) fn materialize_iframe(world_rc: &Rc<RefCell<World>>, container: NodeId) -> bool {
         world_rc
             .borrow_mut()
@@ -2717,51 +1958,31 @@ impl World {
         true
     }
 
-    /// Installs the hook that builds child documents for this realm's
-    /// `iframe`s. Called by the `document` layer when the frame is created.
     pub(crate) fn set_frame_host(&mut self, host: FrameHost) {
         self.frame_host = Some(host);
     }
 
-    /// Installs the active sandboxing flag set a commit imposes on this
-    /// document: the creation flags unioned with the popup sandboxing flag set
-    /// of this document's browsing context.
-    ///
-    /// A child navigable's creation flags already include its embedder's active
-    /// set, so its popup set is empty and the union is a no-op. A top-level
-    /// context's creation flags name no embedder: the union is what makes the
-    /// popup set, whether the auxiliary context's or a browser tab's, apply to
-    /// every document that context commits, not only the first
-    /// (<https://html.spec.whatwg.org/multipage/browsers.html#determining-the-creation-sandboxing-flags>,
-    /// <https://html.spec.whatwg.org/multipage/browsers.html#popup-sandboxing-flag-set>).
+    // https://html.spec.whatwg.org/multipage/browsers.html#determining-the-creation-sandboxing-flags
+    // https://html.spec.whatwg.org/multipage/browsers.html#popup-sandboxing-flag-set
     pub(crate) fn install_sandbox(&mut self, created: SandboxFlags) {
         let popup = self.runtime.shared.borrow().tree.popup_sandbox(self.frame);
         self.sandbox = created.union(popup);
     }
 
-    /// Whether a sandboxed document may create an auxiliary context
-    /// (`allow-popups`)
-    /// (<https://html.spec.whatwg.org/multipage/browsers.html#sandboxed-auxiliary-navigation-browsing-context-flag>).
+    // https://html.spec.whatwg.org/multipage/browsers.html#sandboxed-auxiliary-navigation-browsing-context-flag
     pub(crate) fn allows_auxiliary_navigation(&self) -> bool {
         !self.sandbox.contains(SandboxFlag::AuxiliaryNavigation)
     }
 
-    /// Reads one `window.open` call: the URL encoded against this document, and
-    /// the feature list, the blob-URL opener rule, and the calling document's
-    /// navigation inputs, each read once
-    /// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps>,
-    /// <https://html.spec.whatwg.org/multipage/nav-history-apis.html#get-noopener-for-window-open>).
-    ///
-    /// `None` when the URL cannot be encoded against this document.
+    // https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps
+    // https://html.spec.whatwg.org/multipage/nav-history-apis.html#get-noopener-for-window-open
     pub(crate) fn plan_window_open(
         &self,
         url: &str,
         target: &TargetName,
         features: &str,
     ) -> Option<WindowOpenPlan> {
-        // A null `urlRecord` is the window open steps' "no URL": an existing
-        // context is not navigated, and a new one starts on `about:blank`
-        // (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps>).
+        // https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps
         let url = if url.is_empty() {
             None
         } else {
@@ -2786,10 +2007,7 @@ impl World {
         })
     }
 
-    /// Navigates the context a `target` name already selected in this
-    /// renderer, queuing the navigation so it runs after the caller's script
-    /// stops. A `None` `url` navigates nothing
-    /// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps>).
+    // https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps
     pub(crate) fn navigate_selected(
         world_rc: &Rc<RefCell<World>>,
         frame: FrameId,
@@ -2806,14 +2024,7 @@ impl World {
         world_rc.borrow_mut().queue_frame_navigation(navigation);
     }
 
-    /// Creates an auxiliary top-level browsing context for `target`.
-    ///
-    /// `None` means this renderer cannot host it: either the calling document
-    /// is sandboxed without `allow-popups`, or the URL belongs to another site
-    /// and `allow_cross_origin` is false, so the caller falls back to a browser
-    /// tab. The navigation is queued and applied after the caller's script
-    /// stops, so the auxiliary document exists first
-    /// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps>).
+    // https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps
     pub(crate) fn create_auxiliary(
         world_rc: &Rc<RefCell<World>>,
         url: Option<&Url>,
@@ -2864,18 +2075,7 @@ impl World {
         Some(frame)
     }
 
-    /// Whether a new auxiliary context for `url` may stay in this renderer.
-    ///
-    /// A context with no URL starts on `about:blank`; one on the opener's own
-    /// origin keeps the opener's realm reachable as `window.opener` and as a
-    /// same-origin `WindowProxy`. Every other URL normally stays with the
-    /// browser tab's cross-origin context
-    /// (<https://html.spec.whatwg.org/multipage/browsers.html#concept-origin>).
-    /// `allow_cross_origin` is the host's answer to
-    /// [`BrowserServices::opens_window_as_tab`]: a host with no tab carrier
-    /// keeps the context here whatever its origin.
-    ///
-    /// [`BrowserServices::opens_window_as_tab`]: crate::protocol::BrowsingContextHost::opens_window_as_tab
+    // https://html.spec.whatwg.org/multipage/browsers.html#concept-origin
     fn may_host_auxiliary(&self, url: Option<&Url>, allow_cross_origin: bool) -> bool {
         if allow_cross_origin {
             return true;
@@ -2885,35 +2085,24 @@ impl World {
                 return true;
             }
             if url.scheme() == "blob" {
-                // A blob's origin is its store entry's, which re-parsing the
-                // URL cannot recover for an opaque creator. The store already
-                // answers only for an entry this document may use.
                 return self.object_url_origin(url.as_str()).is_some();
             }
             url.origin() == self.origin
         })
     }
 
-    /// Queues a classic inline script that could not run in the realm that
-    /// inserted it (`window.open`'s document has no realm until the opening
-    /// script returns).
     pub(crate) fn queue_deferred_script(&mut self, id: NodeId) {
         self.deferred_scripts.push(id);
     }
 
-    /// Takes the inline scripts waiting for this realm to exist.
     pub(crate) fn take_deferred_scripts(&mut self) -> Vec<NodeId> {
         std::mem::take(&mut self.deferred_scripts)
     }
 
-    /// Takes every registered frame waiting for a document, for the frame host
-    /// to materialize.
     pub(crate) fn take_pending_frames(&mut self) -> Vec<(FrameId, NodeId)> {
         std::mem::take(&mut self.pending_frames)
     }
 
-    /// Connected `iframe`s in tree order that precede `before`, or every
-    /// connected iframe when `before` is `None`.
     fn iframe_containers_before(&self, before: Option<NodeId>) -> Vec<NodeId> {
         self.with_main_document(|parsed| {
             let base = &parsed.document.base;
@@ -2939,13 +2128,11 @@ impl World {
         .unwrap_or_default()
     }
 
-    /// The realm of `frame`, while it is alive.
     pub(crate) fn frame_world(&self, frame: FrameId) -> Option<Rc<RefCell<World>>> {
         self.runtime.registry.borrow().frame_world(frame)
     }
 
-    /// The child frame owned by `container`, when its browsing context
-    /// exists (<https://html.spec.whatwg.org/multipage/iframe-embed-object.html#dom-iframe-contentwindow>).
+    // https://html.spec.whatwg.org/multipage/iframe-embed-object.html#dom-iframe-contentwindow
     pub(crate) fn frame_for_container(&self, container: NodeId) -> Option<FrameId> {
         self.runtime
             .shared
@@ -2954,26 +2141,14 @@ impl World {
             .frame_for_container(container)
     }
 
-    /// Destroys the child navigable of each `iframe` container.
-    ///
-    /// HTML's iframe removing steps run destroy-a-child-navigable, whose note
-    /// says no unload events fire
-    /// (<https://html.spec.whatwg.org/multipage/iframe-embed-object.html#the-iframe-element:html-element-removing-steps>).
-    /// Every browser fires them synchronously anyway, and script depends on it:
-    /// a `keepalive` fetch started from an iframe's `unload` handler is how
-    /// pages report on teardown, and WPT asserts it
-    /// (`fetch/api/basic/keepalive.any.js`,
-    /// <https://github.com/whatwg/html/issues/10194>). The document is
-    /// destroyed after its own unload steps, so script still sees a live
-    /// document.
+    // https://html.spec.whatwg.org/multipage/iframe-embed-object.html#the-iframe-element:html-element-removing-steps
+    // https://github.com/whatwg/html/issues/10194
     pub(crate) fn destroy_child_navigables(&self, containers: &[NodeId]) {
         for container in containers {
             let Some(frame) = self.frame_for_container(*container) else {
                 continue;
             };
             self.fire_frame_unload(frame);
-            // `unload` runs script, which can destroy this navigable, a later
-            // one in `containers`, or connect a new frame to the container.
             let mut shared = self.runtime.shared.borrow_mut();
             if shared.tree.frame_for_container(*container) == Some(frame) {
                 shared.remove_child_navigable(frame, *container);
@@ -2981,11 +2156,7 @@ impl World {
         }
     }
 
-    /// Closes an auxiliary context its opener closed. Closing a top-level
-    /// traversable unloads its active document and its inclusive descendant
-    /// navigables, so each of them runs its unload steps before the tree drops
-    /// it
-    /// (<https://html.spec.whatwg.org/multipage/document-sequences.html#definitely-close-a-top-level-traversable>).
+    // https://html.spec.whatwg.org/multipage/document-sequences.html#definitely-close-a-top-level-traversable
     pub(crate) fn close_auxiliary(&self, frame: FrameId) {
         let victims = {
             let shared = self.runtime.shared.borrow();
@@ -3006,8 +2177,7 @@ impl World {
         self.runtime.shared.borrow_mut().close_auxiliary(frame);
     }
 
-    /// Runs a frame's unload steps in that frame's own realm
-    /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#unload>).
+    // https://html.spec.whatwg.org/multipage/browsing-the-web.html#unload
     pub(crate) fn fire_frame_unload(&self, frame: FrameId) {
         let Some(world) = self.runtime.registry.borrow().frame_world(frame) else {
             return;
@@ -3022,38 +2192,27 @@ impl World {
         });
     }
 
-    /// The serialized origin of this realm's document
-    /// (<https://html.spec.whatwg.org/multipage/browsers.html#concept-origin>).
+    // https://html.spec.whatwg.org/multipage/browsers.html#concept-origin
     pub(crate) fn origin_string(&self) -> String {
         self.origin.ascii_serialization()
     }
 
-    /// Replaces the document URL and captures a new origin for that document.
     pub(crate) fn set_url(&mut self, url: Url) {
         let origin = url.origin();
         self.set_url_with_origin(url, origin);
     }
 
-    /// Replaces the document URL and stores `origin` as the captured origin.
-    ///
-    /// `about:blank` and `blob:` documents inherit an origin. `Url::origin()`
-    /// would allocate a fresh `Origin::Opaque` for those URLs, so the child
-    /// would not match its parent
-    /// (<https://html.spec.whatwg.org/multipage/browsers.html#determining-the-origin>).
+    // https://html.spec.whatwg.org/multipage/browsers.html#determining-the-origin
     pub(crate) fn set_url_with_origin(&mut self, url: Url, origin: url::Origin) {
         self.referrer_url = url.clone();
         self.document_url = url;
         self.origin = origin;
-        // A new document starts with a null domain; the origin is the one the
-        // navigation determined
-        // (<https://html.spec.whatwg.org/multipage/browsers.html#relaxing-the-same-origin-restriction>).
+        // https://html.spec.whatwg.org/multipage/browsers.html#relaxing-the-same-origin-restriction
         self.domain = Rc::new(RefCell::new(None));
         self.refresh_first_party();
     }
 
-    /// The origin's effective domain: its `document.domain` value when one is
-    /// set, its host otherwise, or `None` for an opaque origin
-    /// (<https://html.spec.whatwg.org/multipage/browsers.html#concept-origin-effective-domain>).
+    // https://html.spec.whatwg.org/multipage/browsers.html#concept-origin-effective-domain
     pub(crate) fn effective_domain(&self) -> Option<String> {
         match &self.origin {
             url::Origin::Tuple(_, host, _) => Some(
@@ -3066,10 +2225,7 @@ impl World {
         }
     }
 
-    /// Whether this realm's origin and `other`'s are same origin-domain: same
-    /// scheme and equal non-null domains, or same origin with both domains
-    /// null
-    /// (<https://html.spec.whatwg.org/multipage/browsers.html#same-origin-domain>).
+    // https://html.spec.whatwg.org/multipage/browsers.html#same-origin-domain
     pub(crate) fn same_origin_domain_with(&self, other: &Self) -> bool {
         match (&self.origin, &other.origin) {
             (url::Origin::Tuple(left_scheme, _, _), url::Origin::Tuple(right_scheme, _, _)) => {
@@ -3086,10 +2242,7 @@ impl World {
         }
     }
 
-    /// Resolves `spec` against this document's URL, falling back to the
-    /// creator's base URL for an `about:srcdoc` document, whose own URL
-    /// cannot be a base
-    /// (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#fallback-base-url>).
+    // https://html.spec.whatwg.org/multipage/urls-and-fetching.html#fallback-base-url
     pub(crate) fn resolve_relative(&self, spec: &str) -> Option<Url> {
         Url::parse(spec).ok().or_else(|| {
             self.document_url
@@ -3099,11 +2252,6 @@ impl World {
         })
     }
 
-    /// Whether `url` is same-origin with this document's captured origin.
-    /// Tuple origins compare with `Url::origin()`. Opaque origins cannot:
-    /// `about:blank`, `data:`, and `file:` each allocate a new `Origin::Opaque`.
-    /// Those match only this document's own URL, or a blob URL whose stored
-    /// origin is this captured origin.
     pub(crate) fn url_matches_origin(&self, url: &Url) -> bool {
         match self.origin {
             url::Origin::Tuple(..) => url.origin() == self.origin,
@@ -3118,20 +2266,16 @@ impl World {
         }
     }
 
-    /// The origin scoping this realm's storage areas, or `None` for an opaque
-    /// origin, where the storage getters must throw `SecurityError`
-    /// (<https://html.spec.whatwg.org/multipage/webstorage.html#the-localstorage-attribute>).
+    // https://html.spec.whatwg.org/multipage/webstorage.html#the-localstorage-attribute
     pub(crate) fn storage_origin(&self) -> Option<StorageKey> {
         StorageKey::from_origin(&self.origin)
     }
 
-    /// `Storage.getItem(key)`.
     pub(crate) fn storage_get(&self, kind: StorageKind, key: &str) -> Option<String> {
         let origin = self.storage_origin()?;
         self.runtime.services.storage_get(kind, &origin, key)
     }
 
-    /// The keys of one storage area, in the area's iteration order.
     pub(crate) fn storage_keys(&self, kind: StorageKind) -> Vec<String> {
         let Some(origin) = self.storage_origin() else {
             return Vec::new();
@@ -3139,10 +2283,7 @@ impl World {
         self.runtime.services.storage_keys(kind, &origin)
     }
 
-    /// `Storage.setItem(key, value)`; `Ok(None)` means no change and the error
-    /// is a refused write. A change queues the `storage` event for every other
-    /// same-origin frame of the engine
-    /// (<https://html.spec.whatwg.org/multipage/webstorage.html#concept-storage-broadcast>).
+    // https://html.spec.whatwg.org/multipage/webstorage.html#concept-storage-broadcast
     pub(crate) fn storage_set(
         &self,
         kind: StorageKind,
@@ -3166,7 +2307,6 @@ impl World {
         Ok(change)
     }
 
-    /// `Storage.removeItem(key)`; `None` means the key was absent.
     pub(crate) fn storage_remove(&self, kind: StorageKind, key: &str) -> Option<StorageChange> {
         let origin = self.storage_origin()?;
         let change = self.runtime.services.storage_remove(
@@ -3182,7 +2322,6 @@ impl World {
         change
     }
 
-    /// `Storage.clear()`; `None` means the area was empty.
     pub(crate) fn storage_clear(&self, kind: StorageKind) -> Option<StorageChange> {
         let origin = self.storage_origin()?;
         let change = self.runtime.services.storage_clear(
@@ -3197,9 +2336,6 @@ impl World {
         change
     }
 
-    /// Queues the event for a change this engine made. Only `sessionStorage`
-    /// needs it: `localStorage` changes return as a browser broadcast, which
-    /// excludes the source frame.
     fn queue_storage_event(&self, kind: StorageKind, origin: &StorageKey, change: &StorageChange) {
         if kind != StorageKind::Session {
             return;
@@ -3218,7 +2354,6 @@ impl World {
             });
     }
 
-    /// The root node of the frame's active document.
     pub(crate) fn main_document_root(&self) -> Option<NodeId> {
         let document = self.document?;
         self.main_document().map(|parsed| NodeId {
@@ -3227,12 +2362,7 @@ impl World {
         })
     }
 
-    /// The URL `document.URL` reports for `id`
-    /// (<https://dom.spec.whatwg.org/#dom-document-url>).
-    ///
-    /// Script-created documents carry their own URL (a `DOMParser` result
-    /// takes the realm's URL); everything else falls back to the world's
-    /// document.
+    // https://dom.spec.whatwg.org/#dom-document-url
     pub(crate) fn document_url_of(&self, id: NodeId) -> String {
         if let Some(url) = self.document(id).and_then(|parsed| parsed.url.clone()) {
             return url;
@@ -3243,14 +2373,8 @@ impl World {
         "about:blank".to_owned()
     }
 
-    /// Runs HTML's set-the-frozen-base-URL for one `base` element: resolve
-    /// its `href` against the fallback base URL and run the `base-uri` check
-    /// (<https://html.spec.whatwg.org/multipage/semantics.html#the-base-element>,
-    /// <https://w3c.github.io/webappsec-csp/#is-base-allowed-for-document>).
-    ///
-    /// Returns the base URL the element may freeze. A repeated call with the
-    /// same `href` reuses the earlier answer, so a resumed parse walk neither
-    /// repeats the check nor the violation.
+    // https://html.spec.whatwg.org/multipage/semantics.html#the-base-element
+    // https://w3c.github.io/webappsec-csp/#is-base-allowed-for-document
     pub(crate) fn apply_base_element(&mut self, id: NodeId) -> Option<Url> {
         let href = self.document(id).and_then(|parsed| {
             crate::dom::tree::attr(&parsed.document.base, id.node, "href").map(str::to_owned)
@@ -3265,9 +2389,7 @@ impl World {
             return None;
         };
         let fallback = self.document_base_url(id);
-        // HTML returns the fallback before CSP runs when the value is not a
-        // URL or names a `data:`/`javascript:` resource
-        // (<https://html.spec.whatwg.org/multipage/semantics.html#the-base-element>).
+        // https://html.spec.whatwg.org/multipage/semantics.html#the-base-element
         let Some(url) = fallback
             .join(&href)
             .ok()
@@ -3297,21 +2419,16 @@ impl World {
         }
     }
 
-    /// The document's base URL: the first `base` element's `href` resolved
-    /// against the fallback base URL, or the fallback itself
-    /// (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#document-base-url>).
+    // https://html.spec.whatwg.org/multipage/urls-and-fetching.html#document-base-url
     pub(crate) fn document_base_url_of(&self, id: NodeId) -> String {
         self.document_base_url(id).to_string()
     }
 
-    /// This realm's document base URL, resolved from the frozen base URL
-    /// (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#document-base-url>).
+    // https://html.spec.whatwg.org/multipage/urls-and-fetching.html#document-base-url
     pub(crate) fn document_base_url(&self, id: NodeId) -> Url {
         let document_url = self.document_url_of(id);
         let parsed = Url::parse(&document_url).ok();
-        // An `about:srcdoc` document's fallback base URL is the creator's base
-        // URL; its own URL cannot be a base
-        // (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#fallback-base-url>).
+        // https://html.spec.whatwg.org/multipage/urls-and-fetching.html#fallback-base-url
         let fallback = self
             .is_main_document(id)
             .then(|| self.base_url.clone())
@@ -3324,9 +2441,7 @@ impl World {
         let Some(href) = self.frozen_base_href(&parsed) else {
             return fallback;
         };
-        // A `data:` or `javascript:` href is not a base, and an unparseable
-        // one leaves the fallback in place
-        // (<https://html.spec.whatwg.org/multipage/semantics.html#the-base-element>).
+        // https://html.spec.whatwg.org/multipage/semantics.html#the-base-element
         fallback
             .join(&href)
             .ok()
@@ -3334,18 +2449,13 @@ impl World {
             .unwrap_or(fallback)
     }
 
-    /// The URL the document's cookies belong to: its own creation URL, or the
-    /// creator's cookie URL when the document inherits its origin. A `<base
-    /// href>` never moves it
-    /// (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-cookie>).
+    // https://html.spec.whatwg.org/multipage/dom.html#dom-document-cookie
     pub(crate) fn cookie_url(&self) -> Url {
         self.inherited_cookie_url
             .clone()
             .unwrap_or_else(|| self.creation_url.clone())
     }
 
-    /// This realm's main document base URL, for a caller that only has the
-    /// realm.
     pub(crate) fn main_base_url(&self) -> Url {
         let fallback = self
             .base_url
@@ -3364,14 +2474,8 @@ impl World {
             .unwrap_or(fallback)
     }
 
-    /// The frozen base URL's `href`: the first `base` element in tree order
-    /// that carries one and that no `base-uri` policy refused
-    /// (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#document-base-url>,
-    /// <https://w3c.github.io/webappsec-csp/#is-base-allowed-for-document>).
-    ///
-    /// A refused element stays the one whose `href` defines the frozen base
-    /// URL, so the walk does not move on to the next `base`: the document
-    /// falls back to its fallback base URL instead.
+    // https://html.spec.whatwg.org/multipage/urls-and-fetching.html#document-base-url
+    // https://w3c.github.io/webappsec-csp/#is-base-allowed-for-document
     pub(crate) fn frozen_base_href(&self, parsed: &Parsed) -> Option<String> {
         let base = &parsed.document.base;
         let mut stack = vec![base.root_node().id];
@@ -3399,15 +2503,10 @@ impl World {
     }
 
     pub(crate) fn queue_frame_navigation(&mut self, navigation: FrameNavigation) {
-        // The navigation replaces the target's document. A `WindowProxy` write
-        // or call made from now on belongs to the document that replaces it, so
-        // the target owes a replay even though its current realm still runs
-        // (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate>).
+        // https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate
         let target = match &navigation.target {
             NavigationTarget::Frame(frame) => Some(*frame),
             NavigationTarget::Container(container) => self.frame_for_container(*container),
-            // The engine chooses the frame once the script stops, too late to
-            // mark it here; its own replay runs when that document commits.
             NavigationTarget::Target(_) => None,
         };
         if let Some(frame) = target
@@ -3423,38 +2522,25 @@ impl World {
         std::mem::take(&mut self.state.frame_navigations)
     }
 
-    /// Whether the `WindowProxy` state other realms recorded for this realm
-    /// still owes a replay into it.
-    ///
-    /// A frame's realm starts after the script that created it returns, and a
-    /// queued navigation replaces the document it would otherwise land on, so
-    /// the write or call waits for the document that survives both
-    /// (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-set>).
+    // https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-set
     pub(crate) fn needs_proxy_sets_replay(&self) -> bool {
         self.proxy_replay == ProxyReplay::Owed
     }
 
-    /// Records that the state recorded for this realm reached it.
     pub(crate) fn mark_proxy_sets_replayed(&mut self) {
         self.proxy_replay = ProxyReplay::Done;
     }
 
-    /// Marks that this document is being replaced, so a `WindowProxy` write or
-    /// call belongs to the document that replaces it
-    /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate>).
+    // https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate
     pub(crate) fn await_proxy_sets_replay(&mut self) {
         self.proxy_replay = ProxyReplay::Owed;
     }
 
-    /// Whether a queued navigation has not been handed to the engine yet.
     pub(crate) fn has_frame_navigations(&self) -> bool {
         !self.state.frame_navigations.is_empty()
     }
 
-    /// Queues this realm for the cookie-change observation a jar write owes it.
-    /// A request already at the back of the queue is enough: both would diff
-    /// the same jar, and only the second would find nothing
-    /// (<https://cookiestore.spec.whatwg.org/#process-cookie-changes>).
+    // https://cookiestore.spec.whatwg.org/#process-cookie-changes
     pub(crate) fn queue_cookie_changes(&self) {
         let mut outbox = self.outbox.borrow_mut();
         if matches!(outbox.back(), Some(RealmRequest::CookieChanges)) {
@@ -3463,16 +2549,7 @@ impl World {
         outbox.push_back(RealmRequest::CookieChanges);
     }
 
-    /// Queues "process cookie changes" in every live realm of this renderer
-    /// except this one, when this realm is a Window: the caller processes its
-    /// own realm so its observers see the change before the operation that
-    /// made it returns. The jar is shared by the tab's frames, so a change one
-    /// realm made or received is one every Window observes
-    /// (<https://cookiestore.spec.whatwg.org/#process-cookie-changes>).
-    ///
-    /// A request queued for a document that is then replaced dies with it:
-    /// a navigation installs a fresh realm whose observer starts from the jar
-    /// it sees, so there is no change left for it to report.
+    // https://cookiestore.spec.whatwg.org/#process-cookie-changes
     pub(crate) fn notify_cookie_changes(&self) {
         let worlds = self.runtime.registry.borrow().live_worlds();
         for world in worlds {
@@ -3483,34 +2560,26 @@ impl World {
         }
     }
 
-    /// Queues a connected `<script src>` element for its fetch prepare steps.
     pub(crate) fn queue_script(&mut self, element: NodeId) {
         self.outbox
             .borrow_mut()
             .push_back(RealmRequest::Script(element));
     }
 
-    /// Queues a declarative refresh value from a `meta http-equiv=refresh` the
-    /// realm inserted or changed. The document owns the timer and the
-    /// navigation.
     pub(crate) fn queue_declarative_refresh(&mut self, value: String) {
         self.outbox
             .borrow_mut()
             .push_back(RealmRequest::DeclarativeRefresh(value));
     }
 
-    /// Queues the `select` task of a selection change.
     pub(crate) fn queue_selection_changed(&mut self, id: NodeId) {
         self.outbox
             .borrow_mut()
             .push_back(RealmRequest::SelectionChanged(id));
     }
 
-    /// Queues the `toggle` task of a `details` element whose `open` attribute
-    /// changed or of a `dialog` that showed or closed, so the event fires
-    /// after the current script finishes
-    /// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-details-toggle-event-task>,
-    /// <https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-dialog-toggle-event-task>).
+    // https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-details-toggle-event-task
+    // https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-dialog-toggle-event-task
     pub(crate) fn queue_toggle_task(&mut self, id: NodeId, old_state: &str, new_state: &str) {
         self.outbox
             .borrow_mut()
@@ -3521,17 +2590,13 @@ impl World {
             });
     }
 
-    /// Queues the `close` event a dialog fires on the user interaction task
-    /// source
-    /// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:close-event>).
+    // https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:close-event
     pub(crate) fn queue_dialog_close(&mut self, id: NodeId) {
         self.outbox
             .borrow_mut()
             .push_back(RealmRequest::DialogClose(id));
     }
 
-    /// Queues violations for targets the caller cannot dispatch into (the
-    /// module loader runs inside `QuickJS`).
     pub(crate) fn queue_csp_violations(
         &mut self,
         target: Option<NodeId>,
@@ -3542,9 +2607,7 @@ impl World {
             .push_back(RealmRequest::CspViolation(target, violations));
     }
 
-    /// Queues a worker's blocked-script violations for the document, which
-    /// reports them and fails the worker object
-    /// (<https://w3c.github.io/webappsec-csp/#report-violation>).
+    // https://w3c.github.io/webappsec-csp/#report-violation
     pub(crate) fn queue_worker_blocked(
         &self,
         worker: crate::worker::WorkerId,
@@ -3555,8 +2618,6 @@ impl World {
             .push_back(RealmRequest::WorkerBlocked(worker, violations));
     }
 
-    /// Queues one `document.write` body, reserving the shared stream budget
-    /// until the document consumes or drops it.
     pub(crate) fn queue_write(&mut self, html: String) -> std::result::Result<(), ()> {
         if !self.reserve_stream_bytes(html.len()) {
             return Err(());
@@ -3574,16 +2635,11 @@ impl World {
         Ok(())
     }
 
-    /// Pops the oldest outgoing request, in enqueue order.
     pub(crate) fn pop_outbox(&self) -> Option<RealmRequest> {
         self.outbox.borrow_mut().pop_front()
     }
 
-    /// Removes the queued `keepalive` fetches, leaving every other request in
-    /// order. A `keepalive` request has to reach the network even when the
-    /// environment drops its queue before the next turn, so a realm that is
-    /// going away starts these first
-    /// (<https://fetch.spec.whatwg.org/#keepalive-flag>).
+    // https://fetch.spec.whatwg.org/#keepalive-flag
     pub(crate) fn take_queued_keepalive_fetches(&self) -> Vec<RealmRequest> {
         let mut outbox = self.outbox.borrow_mut();
         let mut taken = Vec::new();
@@ -3603,8 +2659,6 @@ impl World {
         !self.outbox.borrow().is_empty()
     }
 
-    /// Drops work the replaced document owns. Cancellations and history
-    /// updates still belong to the realm, so they survive the swap.
     pub(crate) fn clear_outbox(&self) {
         let mut outbox = self.outbox.borrow_mut();
         outbox.retain(|request| {
@@ -3618,9 +2672,6 @@ impl World {
         });
     }
 
-    /// Drops the old document's realm work before `document.open`, but keeps
-    /// writes the same script queued after the open control so they reach the
-    /// parser the open creates.
     pub(crate) fn clear_outbox_for_open(&self) {
         let mut outbox = self.outbox.borrow_mut();
         outbox.retain(|request| {
@@ -3636,8 +2687,7 @@ impl World {
         });
     }
 
-    /// Appends one in-head `meta` policy the first time it is seen
-    /// (<https://w3c.github.io/webappsec-csp/#meta-element>).
+    // https://w3c.github.io/webappsec-csp/#meta-element
     pub(crate) fn apply_meta_policy(&mut self, id: NodeId) {
         if self.state.applied_csp_metas.contains(&id) {
             return;
@@ -3652,13 +2702,11 @@ impl World {
         }
     }
 
-    /// Marks a script element the HTML parser inserted
-    /// (<https://html.spec.whatwg.org/multipage/scripting.html#parser-inserted>).
+    // https://html.spec.whatwg.org/multipage/scripting.html#parser-inserted
     pub(crate) fn mark_parser_inserted(&mut self, id: NodeId) {
         self.state.parser_inserted.insert(id);
     }
 
-    /// Clears the parser-inserted flag: script insertion unsets it.
     pub(crate) fn clear_parser_inserted(&mut self, id: NodeId) {
         self.state.parser_inserted.remove(&id);
     }
@@ -3667,45 +2715,34 @@ impl World {
         self.state.parser_inserted.contains(&id)
     }
 
-    /// Records the file list a script assigned to a `type=file` input.
     pub(crate) fn set_input_files(&mut self, id: NodeId, files: Vec<Persistent<Value<'static>>>) {
         self.input_files.insert(id, files);
     }
 
-    /// The file list a script assigned to a `type=file` input, if any.
     pub(crate) fn input_files(&self, id: NodeId) -> Option<&[Persistent<Value<'static>>]> {
         self.input_files.get(&id).map(Vec::as_slice)
     }
 
-    /// The form-associated element's state, created on first use.
     pub(crate) fn control(&mut self, id: NodeId) -> &mut ControlState {
         self.state.controls.entry(id).or_default()
     }
 
-    /// The form-associated element's state, when something already created it.
     pub(crate) fn control_state(&self, id: NodeId) -> Option<&ControlState> {
         self.state.controls.get(&id)
     }
 
-    /// Drops the edit state a reset, a script value set, or a type change
-    /// ends, keeping the element's custom validity message.
     pub(crate) fn clear_control_edit_state(&mut self, id: NodeId) {
         if let Some(control) = self.state.controls.get_mut(&id) {
             control.clear_edit_state();
         }
     }
 
-    /// The `<img>` request `id`'s pixels belong to, cloned out of Blitz's
-    /// per-node record. Blitz owns request identity, so `currentSrc`,
-    /// `complete`, `naturalWidth`, and `drawImage` read this instead of
-    /// keeping parallel maps
-    /// (<https://html.spec.whatwg.org/multipage/images.html#updating-the-image-data>).
+    // https://html.spec.whatwg.org/multipage/images.html#updating-the-image-data
     pub(crate) fn image_request(&self, id: NodeId) -> Option<blitz_dom::ImageRequestState> {
         let parsed = self.document(id)?;
         parsed.document.base.image_request(id.node).cloned()
     }
 
-    /// The decoded size Blitz holds for `id`, when its current request loaded.
     pub(crate) fn image_size(&self, id: NodeId) -> Option<(u32, u32)> {
         let parsed = self.document(id)?;
         let node = parsed.document.base.get_node(id.node)?;
@@ -3769,7 +2806,6 @@ impl World {
         self.runtime.object_url_type(url, &self.origin)
     }
 
-    /// The creator origin stored for `url`, when this document may use it.
     pub(crate) fn object_url_origin(&self, url: &str) -> Option<url::Origin> {
         self.runtime.object_url_origin(url, &self.origin)
     }
@@ -3793,9 +2829,7 @@ impl World {
     }
 
     pub(crate) fn revoke_object_url(&mut self, url: &str) {
-        // Same-partition check: a cross-origin caller must not remove the
-        // entry or refund bytes it did not allocate
-        // (<https://w3c.github.io/FileAPI/#dfn-revokeObjectURL>).
+        // https://w3c.github.io/FileAPI/#dfn-revokeObjectURL
         if self.runtime.object_url_origin(url, &self.origin).is_none() {
             return;
         }
@@ -3826,8 +2860,7 @@ impl World {
             .push(listener);
     }
 
-    /// A clone of one target's listener list, taken when dispatch invokes the
-    /// target (<https://dom.spec.whatwg.org/#concept-event-listener-invoke>).
+    // https://dom.spec.whatwg.org/#concept-event-listener-invoke
     pub(crate) fn listener_snapshot(&self, target: EventTargetKey) -> Vec<Rc<Listener>> {
         if let EventTargetKey::Attribute { id, .. } = target {
             return self
@@ -3846,8 +2879,6 @@ impl World {
             .unwrap_or_default()
     }
 
-    /// Drops one listener from a target's list; the listener's `removed` flag
-    /// is what a concurrent dispatch checks, so both happen together.
     pub(crate) fn remove_listener(&mut self, target: EventTargetKey, listener: &Rc<Listener>) {
         if let EventTargetKey::Attribute { id, .. } = target {
             if let Some(entry) = self
@@ -3887,8 +2918,6 @@ impl World {
         self.events.standalone_targets.get(&id).cloned()
     }
 
-    /// The window object of this realm; event dispatch uses it when a target
-    /// from this world is reached from another realm's call frame.
     pub(crate) fn set_window(&mut self, window: Persistent<Object<'static>>) {
         self.events.window = Some(window);
     }
@@ -3897,8 +2926,7 @@ impl World {
         self.events.window.clone()
     }
 
-    /// The active document's readiness
-    /// (<https://html.spec.whatwg.org/multipage/dom.html#current-document-readiness>).
+    // https://html.spec.whatwg.org/multipage/dom.html#current-document-readiness
     pub(crate) fn main_ready_state(&self) -> ReadyState {
         self.main_document()
             .map_or(ReadyState::Complete, |parsed| parsed.ready_state)
@@ -3910,7 +2938,6 @@ impl World {
         }
     }
 
-    /// The parent of `id` in its tree, if any.
     pub(crate) fn node_parent(&self, id: NodeId) -> Option<NodeId> {
         self.document(id).and_then(|parsed| {
             parsed
@@ -3925,14 +2952,12 @@ impl World {
         })
     }
 
-    /// Whether `id` is the root document node of its tree.
     pub(crate) fn node_is_document(&self, id: NodeId) -> bool {
         self.document(id)
             .is_some_and(|parsed| parsed.document.base.root_node().id == id.node)
     }
 
-    /// The host of shadow root `id`, when `id` is a shadow root
-    /// (<https://dom.spec.whatwg.org/#concept-shadow-root>).
+    // https://dom.spec.whatwg.org/#concept-shadow-root
     pub(crate) fn shadow_root_host(&self, id: NodeId) -> Option<NodeId> {
         self.document(id).and_then(|parsed| {
             crate::dom::tree::shadow_root_host(&parsed.document.base, id.node).map(|host| NodeId {
@@ -3948,19 +2973,10 @@ impl World {
         self.brands.clear();
         self.clear_observers();
         self.current_event = None;
-        // `set_input_files` roots the page's `File` objects so a form upload
-        // keeps them alive. Left in place, those roots keep the realm's
-        // context alive, the context keeps the globals (and their `Rc<World>`
-        // closures) alive, and the cycle never frees the runtime
-        // (<https://w3c.github.io/FileAPI/#file>).
+        // https://w3c.github.io/FileAPI/#file
         self.input_files.clear();
     }
 
-    /// Drops the captured host primitives. Like every other JS-holding field,
-    /// they must go before the realm's context does: a `Persistent` keeps its
-    /// context alive, and a live context keeps the globals (which own
-    /// `Rc<World>` closures) alive, so an unreleased primitive deadlocks
-    /// teardown and trips `JS_FreeRuntime`'s live-object assertion.
     pub(crate) fn release_host_primitives(&mut self) {
         self.runtime
             .registry
@@ -3982,8 +2998,6 @@ impl World {
         self.current_event = None;
     }
 
-    /// The cached `[SameObject]` member for `(id, member)`, when this
-    /// renderer process created one.
     pub(crate) fn same_object(
         &self,
         id: NodeId,
@@ -3992,7 +3006,6 @@ impl World {
         self.runtime.registry.borrow().same_object(id, member)
     }
 
-    /// Caches one `[SameObject]` member for the node.
     pub(crate) fn intern_same_object(
         &mut self,
         id: NodeId,
@@ -4005,26 +3018,19 @@ impl World {
             .intern_same_object(id, member, value);
     }
 
-    /// The focused element of a document, if any.
     pub(crate) fn active_element(&self, document: u32) -> Option<NodeId> {
         self.state.active_elements.get(&document).copied()
     }
 
-    /// A control's `(start, end, direction)` selection, defaulting to a
-    /// collapsed caret at 0.
     pub(crate) fn selection_of(&self, id: NodeId) -> (u32, u32, u8) {
         self.state.selections.get(&id).copied().unwrap_or((0, 0, 0))
     }
 
-    /// Stores a control's `(start, end, direction)` selection.
     pub(crate) fn set_selection(&mut self, id: NodeId, start: u32, end: u32, direction: u8) {
         self.state.selections.insert(id, (start, end, direction));
     }
 
-    /// The stable `WebDriver` element id for `node`, allocating one on first
-    /// use. Ids come from the process-wide registry so they cannot alias
-    /// between windows
-    /// (<https://w3c.github.io/webdriver/#elements>).
+    // https://w3c.github.io/webdriver/#elements
     pub(crate) fn remote_id(&mut self, node: NodeId) -> u64 {
         if let Some(&remote) = self.state.remote_ids.get(&node) {
             return remote;
@@ -4035,20 +3041,16 @@ impl World {
         remote
     }
 
-    /// The node behind a `WebDriver` element id.
     pub(crate) fn node_for_remote(&self, remote: u64) -> Option<NodeId> {
         self.state.remote_nodes.get(&remote).copied()
     }
 
-    /// Whether `node` is the realm's active document, which is what decides
-    /// `document.defaultView`
-    /// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-document-defaultview>).
+    // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-document-defaultview
     pub(crate) fn is_main_document(&self, node: NodeId) -> bool {
         self.document == Some(node.document_id())
     }
 
-    /// One event handler map entry, cloned so the caller works outside the
-    /// borrow (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-map>).
+    // https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-map
     pub(crate) fn handler_slot(
         &self,
         node: Option<NodeId>,
@@ -4057,7 +3059,6 @@ impl World {
         self.events.handlers.get(&(node, name.to_owned())).cloned()
     }
 
-    /// Replaces one event handler's value, keeping its listener.
     pub(crate) fn set_handler_value(
         &mut self,
         node: Option<NodeId>,
@@ -4075,10 +3076,7 @@ impl World {
         entry.value = value;
     }
 
-    /// Records the listener an active event handler registered. The entry is
-    /// created when missing, so a listener can never be orphaned in the
-    /// target's listener list
-    /// (<https://html.spec.whatwg.org/multipage/webappapis.html#activate-an-event-handler>).
+    // https://html.spec.whatwg.org/multipage/webappapis.html#activate-an-event-handler
     pub(crate) fn set_handler_listener(
         &mut self,
         node: Option<NodeId>,
@@ -4096,8 +3094,6 @@ impl World {
         entry.listener = listener;
     }
 
-    /// The names of every handler map entry of one target, for adoption to
-    /// move the whole map with the node.
     pub(crate) fn handler_names(&self, node: Option<NodeId>) -> Vec<String> {
         self.events
             .handlers
@@ -4107,11 +3103,7 @@ impl World {
             .collect()
     }
 
-    /// Deactivates one event handler: its value becomes null and its listener
-    /// leaves the listener list, while the map entry stays. Keeping the entry
-    /// is what makes an explicitly cleared handler stay cleared, instead of
-    /// the next parse or insertion pass resurrecting its content attribute
-    /// (<https://html.spec.whatwg.org/multipage/webappapis.html#deactivate-an-event-handler>).
+    // https://html.spec.whatwg.org/multipage/webappapis.html#deactivate-an-event-handler
     pub(crate) fn deactivate_handler_slot(&mut self, node: Option<NodeId>, name: &str) {
         if let Some(entry) = self.events.handlers.get_mut(&(node, name.to_owned())) {
             entry.value = HandlerValue::Null;
@@ -4127,8 +3119,6 @@ impl World {
         }
     }
 
-    /// Removes one event handler map entry, for adoption to move it to the
-    /// copy that replaces the node.
     pub(crate) fn take_handler(
         &mut self,
         node: Option<NodeId>,
@@ -4146,8 +3136,7 @@ impl World {
                 self.state.active_elements.remove(&document);
             }
         }
-        // Mirror into the document so `:focus` and `:focus-within` match
-        // (<https://drafts.csswg.org/selectors-4/#the-focus-pseudo>).
+        // https://drafts.csswg.org/selectors-4/#the-focus-pseudo
         if let Some(parsed) = self.runtime.documents.borrow_mut().get_mut(document) {
             match node {
                 Some(focused) => {
@@ -4158,12 +3147,10 @@ impl World {
         }
     }
 
-    /// Whether `node`'s `click()` is already running.
     pub(crate) fn click_in_progress(&self, node: NodeId) -> bool {
         self.clicks_in_progress.contains(&node)
     }
 
-    /// Marks `node`'s `click()` as running; the caller clears it when done.
     pub(crate) fn set_click_in_progress(&mut self, node: NodeId, running: bool) {
         if running {
             self.clicks_in_progress.insert(node);
@@ -4172,29 +3159,22 @@ impl World {
         }
     }
 
-    /// Grants transient activation and sets the sticky flag for a trusted
-    /// user interaction
-    /// (<https://html.spec.whatwg.org/multipage/interaction.html#activation-notification>).
+    // https://html.spec.whatwg.org/multipage/interaction.html#activation-notification
     pub(crate) fn activate_user(&mut self) {
-        // The transient activation duration is implementation-defined; the
-        // HTML Standard's non-normative guidance suggests a few seconds.
         self.transient_activation = Some(Instant::now() + Duration::from_secs(5));
         self.sticky_activation = true;
     }
 
-    /// Whether the realm has transient activation that has not expired.
     pub(crate) fn user_activation_active(&self) -> bool {
         self.transient_activation
             .is_some_and(|expires| Instant::now() < expires)
     }
 
-    /// Whether the realm was ever activated.
     pub(crate) fn user_activation_sticky(&self) -> bool {
         self.sticky_activation
     }
 
-    /// Consumes transient activation, returning whether it was active
-    /// (<https://html.spec.whatwg.org/multipage/interaction.html#consume-user-activation>).
+    // https://html.spec.whatwg.org/multipage/interaction.html#consume-user-activation
     pub(crate) fn consume_user_activation(&mut self) -> bool {
         if self.user_activation_active() {
             self.transient_activation = None;
@@ -4217,10 +3197,7 @@ impl World {
     }
 }
 
-/// Rounds `millis` down to a multiple of `resolution_micros`. `performance.now()`
-/// and `Event.timeStamp` read the same clock through this, so an event created
-/// between two `now()` reads still reports a timestamp inside them
-/// (<https://w3c.github.io/hr-time/#dfn-current-high-resolution-time>).
+// https://w3c.github.io/hr-time/#dfn-current-high-resolution-time
 pub(crate) fn clamp_time(millis: f64, resolution_micros: u32) -> f64 {
     if resolution_micros <= 1 {
         return millis;
@@ -4229,13 +3206,7 @@ pub(crate) fn clamp_time(millis: f64, resolution_micros: u32) -> f64 {
     ((millis * 1000.0) / step).floor() * step / 1000.0
 }
 
-/// Whether `mutation` is observable by `observer`, producing a record when
-/// it is (<https://dom.spec.whatwg.org/#concept-mo-queue>).
-///
-/// Every in-scope, enabled registration contributes; one observer gets one
-/// record per mutation, and it carries the old value when *any* interested
-/// registration asked for it (the spec's `interestedObservers` map folds the
-/// registrations per observer).
+// https://dom.spec.whatwg.org/#concept-mo-queue
 pub(super) fn match_observation(
     base: &blitz_dom::BaseDocument,
     document: u32,
@@ -4253,13 +3224,7 @@ pub(super) fn match_observation(
     let mut first_registration = None;
     let mut want_attribute_old_value = false;
     let mut want_character_data_old_value = false;
-    // A transient registration observes the same way as its source, but is
-    // rooted at a node that has left the observed tree, so the ancestor walk
-    // starts from the removed node instead of the original target.
     for observation in observer.observations.iter().chain(&observer.transient) {
-        // `Attr` targets never match: journal records target elements and
-        // `Attr` nodes are ancestors of nothing, so observing one registers
-        // successfully but legitimately never fires.
         let Some(root) = observation.target.tree() else {
             continue;
         };
@@ -4277,9 +3242,7 @@ pub(super) fn match_observation(
             1 => {
                 observation.options.attributes
                     && match (&observation.options.attribute_filter, entry) {
-                        // A filter only ever matches unnamespaced attributes;
-                        // namespaced ones are always skipped
-                        // (<https://dom.spec.whatwg.org/#queue-a-mutation-record>).
+                        // https://dom.spec.whatwg.org/#queue-a-mutation-record
                         (
                             Some(filter),
                             JournalEntry::Attributes {
@@ -4318,7 +3281,6 @@ pub(super) fn match_observation(
     })
 }
 
-/// One recorded tree mutation, in observer-delivery shape.
 fn record(
     want_attribute_old_value: bool,
     want_character_data_old_value: bool,
@@ -4359,13 +3321,6 @@ fn record(
     }
 }
 
-/// Whether `entry`'s target is at or below one of `observer`'s registration
-/// roots, regardless of whether the options care about this mutation type.
-///
-/// A mutation outside every observed region can never queue a record nor
-/// become the source of a transient registration, so it does not need a
-/// notify microtask. This is what keeps an unrelated detached tree from
-/// starting one.
 pub(super) fn observes_region(
     base: &blitz_dom::BaseDocument,
     document: u32,
@@ -4409,7 +3364,6 @@ fn ancestor_distance(
     None
 }
 
-/// Identity of one `Attr` platform object.
 #[derive(Clone)]
 pub(crate) struct AttrState {
     pub scope: NodeId,
@@ -4422,9 +3376,7 @@ pub(crate) struct AttrState {
     pub qualified: String,
 }
 
-/// Agent-owned Attr identities, attachment indexes, and weak wrappers.
-/// Adoption changes the node document, never the creation scope or id
-/// (<https://dom.spec.whatwg.org/#concept-element-attributes-append>).
+// https://dom.spec.whatwg.org/#concept-element-attributes-append
 #[derive(Default)]
 pub(crate) struct AttributeRegistry {
     entries: HashMap<u64, AttrEntry>,
@@ -4507,9 +3459,7 @@ impl AttributeRegistry {
         }
     }
 
-    /// Validates the source identity and owner before mutating the destination,
-    /// then publishes replacement and adoption in the same registry borrow.
-    /// <https://dom.spec.whatwg.org/#concept-element-attributes-set>
+    // https://dom.spec.whatwg.org/#concept-element-attributes-set
     pub(crate) fn attach(
         &mut self,
         id: u64,
@@ -4571,9 +3521,6 @@ impl AttributeRegistry {
 mod control_state_tests {
     use super::ControlState;
 
-    /// Ending an edit drops only the edit-derived state; a custom validity
-    /// message and `<output>`'s value mode survive, matching the reset and
-    /// script-value-set rules.
     #[test]
     fn clearing_an_edit_keeps_custom_validity_and_output_state() {
         let mut state = ControlState {

@@ -1,13 +1,8 @@
-//! Image request lifecycle: what the element reports for a broken source, and
-//! whether the document's `load` event waits for image requests.
-
 use serde_json::json;
 
 use crate::fixture::{PIXEL, TestServer, evaluate, ok, open_page, poll_until, redirect, server};
 
-/// An empty `src` is a broken image request: the element fires `error` and the
-/// document's `load` event does not wait for a request that can never settle
-/// (<https://html.spec.whatwg.org/multipage/images.html#updating-the-image-data>).
+// https://html.spec.whatwg.org/multipage/images.html#updating-the-image-data
 #[test]
 fn an_empty_src_fires_error_and_does_not_hold_load() {
     let page = r#"<!doctype html><body>
@@ -21,7 +16,6 @@ image.addEventListener('load', () => window.__events.push('load'));
 "#;
     let (listener, origin) = server();
     TestServer::serve_on(listener, vec![("/", ok("text/html", page.as_bytes()))]);
-    // A document whose load event never fires fails this call.
     let (_fixture, mut client, session) =
         open_page("tinybrowser-image-empty-src", &format!("http://{origin}/"));
     assert_eq!(
@@ -38,9 +32,7 @@ image.addEventListener('load', () => window.__events.push('load'));
     );
 }
 
-/// Moving an image in the tree keeps its request: insertion only restarts when
-/// the element's request state changed
-/// (<https://html.spec.whatwg.org/multipage/images.html#reacting-to-dom-mutations>).
+// https://html.spec.whatwg.org/multipage/images.html#reacting-to-dom-mutations
 #[test]
 fn moving_a_loaded_image_does_not_reload_it() {
     let foreign = TestServer::start(vec![("/pixel.png", ok("image/png", PIXEL))], None);
@@ -77,11 +69,8 @@ image.addEventListener('load', () => window.__loads++);
     );
 }
 
-/// `currentSrc` reports the response's final URL after a redirect, not the URL
-/// the element asked for: the current request's current URL is updated when a
-/// response arrives
-/// (<https://html.spec.whatwg.org/multipage/embedded-content.html#dom-img-currentsrc>,
-/// <https://html.spec.whatwg.org/multipage/images.html#updating-the-image-data>).
+// https://html.spec.whatwg.org/multipage/embedded-content.html#dom-img-currentsrc
+// https://html.spec.whatwg.org/multipage/images.html#updating-the-image-data
 #[test]
 fn current_src_follows_the_response_redirect() {
     let page = r#"<!doctype html><body>
@@ -113,9 +102,7 @@ image.addEventListener('load', () => window.__current = image.currentSrc);
     );
 }
 
-/// Reassigning the same source while its request is in flight joins that
-/// request: the element fires one `load`, not one per assignment
-/// (<https://html.spec.whatwg.org/multipage/images.html#updating-the-image-data>).
+// https://html.spec.whatwg.org/multipage/images.html#updating-the-image-data
 #[test]
 fn reassigning_the_same_source_fires_one_load() {
     let page = r#"<!doctype html><body><img id="img">"#;
@@ -141,17 +128,12 @@ fn reassigning_the_same_source_fires_one_load() {
     poll_until("the load", || {
         (evaluate(&mut client, &session, "window.__loads") == json!(1)).then_some(())
     });
-    // A duplicate settlement would arrive on the next turn.
     std::thread::sleep(std::time::Duration::from_millis(200));
     assert_eq!(evaluate(&mut client, &session, "window.__loads"), json!(1));
 }
 
-/// `complete` is false while a request is in flight, and true when the element
-/// has no source at all. A malformed source is still a request until its
-/// failure task runs; an empty source and a removed source are complete
-/// immediately, and removing a source aborts the request without an event
-/// (<https://html.spec.whatwg.org/multipage/embedded-content.html#dom-img-complete>,
-/// <https://html.spec.whatwg.org/multipage/images.html#updating-the-image-data>).
+// https://html.spec.whatwg.org/multipage/embedded-content.html#dom-img-complete
+// https://html.spec.whatwg.org/multipage/images.html#updating-the-image-data
 #[test]
 fn complete_reads_the_source_and_the_live_request() {
     let page = r#"<!doctype html><body><img id="img"><script>
@@ -178,12 +160,10 @@ document.getElementById('img').addEventListener('error', () => window.__errors++
         )
     };
 
-    // A source starts a request synchronously: incomplete.
     assert_eq!(
         set(&mut client, &session, "image.src = '/slow.png';"),
         json!("false")
     );
-    // Removing it aborts that request and completes the element at once.
     assert_eq!(
         set(&mut client, &session, "image.removeAttribute('src');"),
         json!("true")
@@ -195,7 +175,6 @@ document.getElementById('img').addEventListener('error', () => window.__errors++
         "aborting a source-less update fires no error"
     );
 
-    // A malformed URL is a request too: incomplete until its failure task.
     assert_eq!(
         set(&mut client, &session, "image.src = 'http://malformed:url';"),
         json!("false")
@@ -212,19 +191,11 @@ document.getElementById('img').addEventListener('error', () => window.__errors++
         json!("true")
     );
 
-    // An empty source is complete without a request.
     assert_eq!(set(&mut client, &session, "image.src = '';"), json!("true"));
 }
 
-/// A source set this engine cannot select from, and a slow image, must not
-/// hold the document's `load` event: the broken request settles with `error`
-/// and the slow request with `load`
-/// (<https://html.spec.whatwg.org/multipage/images.html#updating-the-image-data>).
-///
-/// The width descriptor is a parse error because this engine does not support
-/// `sizes`, which is the spec's own branch for a user agent that ships
-/// `srcset` before `sizes`
-/// (<https://html.spec.whatwg.org/multipage/images.html#parsing-a-srcset-attribute>).
+// https://html.spec.whatwg.org/multipage/images.html#updating-the-image-data
+// https://html.spec.whatwg.org/multipage/images.html#parsing-a-srcset-attribute
 #[test]
 fn an_unselectable_source_set_does_not_hold_the_document_load() {
     let page = r#"<!doctype html><body>
@@ -243,17 +214,13 @@ document.getElementById('slow').src = '/slow.png';
         ],
         std::time::Duration::from_millis(300),
     );
-    // `open_page` waits for `load`; a request that never settles times it out.
     let (_fixture, _client, _session) = open_page(
         "tinybrowser-image-srcset-load",
         &format!("http://{origin}/"),
     );
 }
 
-/// `srcset` picks the candidate for the device pixel ratio, and `currentSrc`
-/// reports that candidate, not `src`. At the default ratio of 1 the 1x entry
-/// wins; `src` is only the 1x fallback when the set has no 1x entry
-/// (<https://html.spec.whatwg.org/multipage/images.html#selecting-an-image-source>).
+// https://html.spec.whatwg.org/multipage/images.html#selecting-an-image-source
 #[test]
 fn srcset_selects_the_candidate_for_the_device_pixel_ratio() {
     let page = r#"<!doctype html><body>
@@ -298,10 +265,7 @@ fallback.srcset = '/four.png 2x';
     );
 }
 
-/// A failure queued for a source that names no URL must not reach a request
-/// the element started afterwards in the same task. Each update-the-image-data
-/// run owns its own generation, and only the current one may fail the element
-/// (<https://html.spec.whatwg.org/multipage/images.html#updating-the-image-data>).
+// https://html.spec.whatwg.org/multipage/images.html#updating-the-image-data
 #[test]
 fn a_stale_source_failure_does_not_fail_the_next_request() {
     let page = r"<!doctype html><body><script>

@@ -1,6 +1,3 @@
-//! Document interfaces: `Document`, `DocumentFragment`, `ShadowRoot`,
-//! templates, and framed documents.
-
 use super::super::{
     CollectionKind, JsImplementation, LegacyNullString, NodeContext, OptString, WebIdlCodeUnits,
     WebIdlString, attr_wrapper, child_value, deref_weak, document_base_url_string,
@@ -137,17 +134,17 @@ impl<'js> document_generated::Document<'js> for JsNode {
         rquickjs::String::from_str(ctx.clone(), &mode)
     }
 
-    /// <https://encoding.spec.whatwg.org/#dom-document-characterset>
+    // https://encoding.spec.whatwg.org/#dom-document-characterset
     fn get_character_set(&self, ctx: &Ctx<'js>) -> Result<rquickjs::String<'js>> {
         rquickjs::String::from_str(ctx.clone(), self.character_set(ctx))
     }
 
-    /// <https://encoding.spec.whatwg.org/#dom-document-charset>
+    // https://encoding.spec.whatwg.org/#dom-document-charset
     fn get_charset(&self, ctx: &Ctx<'js>) -> Result<rquickjs::String<'js>> {
         self.get_character_set(ctx)
     }
 
-    /// <https://encoding.spec.whatwg.org/#dom-document-inputencoding>
+    // https://encoding.spec.whatwg.org/#dom-document-inputencoding
     fn get_input_encoding(&self, ctx: &Ctx<'js>) -> Result<rquickjs::String<'js>> {
         self.get_character_set(ctx)
     }
@@ -194,17 +191,14 @@ impl<'js> document_generated::Document<'js> for JsNode {
 
     // https://html.spec.whatwg.org/multipage/dom.html#dom-document-title
     fn set_title(&self, ctx: &Ctx<'js>, value: rquickjs::String<'js>) -> Result<()> {
-        // `document.title` keeps every code unit, including lone surrogates.
         self.set_title(
             ctx,
             WebIdlCodeUnits(crate::dom_string::DomString::from_utf16(value.to_utf16()?)),
         )
     }
 
-    // `document.dir` reflects the `dir` attribute of the document element
-    // (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-dir>).
+    // https://html.spec.whatwg.org/multipage/dom.html#dom-document-dir
     fn get_dir(&self, ctx: &Ctx<'js>) -> Result<rquickjs::String<'js>> {
-        // Shared borrows nest: `content_attr` borrows the same world.
         let owner = world_for_node(ctx, self.handle.get().0)?;
         let value = owner
             .borrow()
@@ -230,9 +224,7 @@ impl<'js> document_generated::Document<'js> for JsNode {
         Ok(())
     }
 
-    // Obsolete document color attributes reflect the matching `body`
-    // content attributes
-    // (<https://html.spec.whatwg.org/multipage/obsolete.html#dom-document-bgcolor>).
+    // https://html.spec.whatwg.org/multipage/obsolete.html#dom-document-bgcolor
     fn get_fg_color(&self, ctx: &Ctx<'js>) -> Result<rquickjs::String<'js>> {
         document_body_attr(ctx, self.handle.get().0, "text")
     }
@@ -418,8 +410,6 @@ impl<'js> document_generated::Document<'js> for JsNode {
         arg_0: NodeReference,
         arg_1: document_generated::BooleanOrImportNodeOptions,
     ) -> Result<Value<'js>> {
-        // `ImportNodeOptions` inverts the boolean form: selecting only the
-        // node itself is a shallow import.
         let deep = match arg_1 {
             document_generated::BooleanOrImportNodeOptions::Boolean(deep) => deep,
             document_generated::BooleanOrImportNodeOptions::ImportNodeOptions(options) => {
@@ -438,8 +428,6 @@ impl<'js> document_generated::Document<'js> for JsNode {
     }
 
     // https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-document-open
-    // Both arguments are ignored upstream; the navigation overload stays
-    // absent with the rest of navigation.
     fn open(
         &self,
         ctx: Ctx<'js>,
@@ -617,9 +605,7 @@ impl<'js> html_template_element_generated::HTMLTemplateElement<'js> for JsNode {
             crate::dom::adoption::materialize_children(&mut inert.document, 0, &snapshots)
                 .map_err(|err| throw_dom_error(ctx, err))?;
         let root = owner.borrow_mut().add_document(inert);
-        // Register the owner so a wrapper can resolve it later; a document
-        // added without a registry entry reads back as a stale node
-        // (<https://dom.spec.whatwg.org/#concept-node-adopt>).
+        // https://dom.spec.whatwg.org/#concept-node-adopt
         owner
             .borrow()
             .registry()
@@ -644,9 +630,7 @@ impl<'js> html_template_element_generated::HTMLTemplateElement<'js> for JsNode {
                 mutator.remove_node(child);
             }
         }
-        // The inert document's contents need their host, which lives in the
-        // template's own document
-        // (<https://html.spec.whatwg.org/multipage/scripting.html#template-contents>).
+        // https://html.spec.whatwg.org/multipage/scripting.html#template-contents
         if let Some(mut inert) = owner.borrow_mut().document_mut(fragment) {
             inert
                 .document
@@ -672,8 +656,7 @@ impl<'js> htmli_frame_element_generated::HTMLIFrameElement<'js> for JsNode {
         self.content_window(ctx.clone())
     }
 
-    // `srcdoc` answers the content attribute
-    // (<https://html.spec.whatwg.org/multipage/iframe-embed-object.html#dom-iframe-srcdoc>).
+    // https://html.spec.whatwg.org/multipage/iframe-embed-object.html#dom-iframe-srcdoc
     fn get_srcdoc(&self, ctx: &Ctx<'js>) -> Result<rquickjs::String<'js>> {
         host::reflect_string(ctx, self.handle.get().0, "srcdoc")
     }
@@ -697,13 +680,7 @@ impl<'js> html_frame_element_generated::HTMLFrameElement<'js> for JsNode {
 }
 
 impl JsNode {
-    /// `document.domain`: the origin's effective domain, which is the domain a
-    /// previous assignment stored or the origin's host
-    /// (<https://html.spec.whatwg.org/multipage/browsers.html#dom-document-domain>).
-    ///
-    /// A document a script created has no origin of its own, so it answers its
-    /// realm's effective domain, as the getter's "this Document's origin" step
-    /// reads for the realm's document.
+    // https://html.spec.whatwg.org/multipage/browsers.html#dom-document-domain
     pub(super) fn domain_string(&self, ctx: &Ctx<'_>) -> String {
         let id = self.handle.get().0;
         let Ok(owner) = world_for_node(ctx, id) else {
@@ -712,19 +689,10 @@ impl JsNode {
         owner.borrow().effective_domain().unwrap_or_default()
     }
 
-    /// The `document.domain` setter
-    /// (<https://html.spec.whatwg.org/multipage/browsers.html#dom-document-domain>).
-    ///
-    /// Every rejection is a `SecurityError`: a document without a browsing
-    /// context, a sandboxed document, an opaque origin, and a value that is not
-    /// a registrable domain suffix of the effective domain. The last rule is
-    /// what stops two unrelated sites from joining their origins.
+    // https://html.spec.whatwg.org/multipage/browsers.html#dom-document-domain
     pub(super) fn set_document_domain(&self, ctx: &Ctx<'_>, value: String) -> Result<()> {
         let id = self.handle.get().0;
         let owner = world_for_node(ctx, id)?;
-        // The throw builds a `DOMException` in the realm, which installs its
-        // prototype and borrows the world again, so the world must not stay
-        // borrowed across it.
         let rejection = {
             let world = owner.borrow_mut();
             if !world.is_main_document(id) || !world.has_browsing_context() {
@@ -785,9 +753,7 @@ impl JsNode {
 
     // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-document-defaultview
     pub(super) fn default_view<'js>(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
-        // Return this document's browsing-context WindowProxy, not the
-        // calling realm's `globalThis`
-        // (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-document-defaultview>).
+        // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-document-defaultview
         let Ok(owner) = world_for_node(ctx, self.handle.get().0) else {
             return Ok(Value::new_null(ctx.clone()));
         };
@@ -813,8 +779,7 @@ impl JsNode {
         x: f64,
         y: f64,
     ) -> Result<Value<'js>> {
-        // A document with no browsing context has no viewport, and nothing to
-        // hit (<https://drafts.csswg.org/cssom-view/#dom-document-elementfrompoint>).
+        // https://drafts.csswg.org/cssom-view/#dom-document-elementfrompoint
         let id = self.handle.get().0;
         if !world_for_node(&ctx, id)?.borrow().is_main_document(id) {
             return Ok(Value::new_null(ctx));
@@ -904,8 +869,6 @@ impl JsNode {
             return Err(throw_dom(&ctx, "InvalidCharacterError", "data contains ?>"));
         }
         // https://dom.spec.whatwg.org/#processinginstruction-initialize
-        // The current algorithm checks the Name production and `?>`. It does
-        // not reject an `xml` target.
         let text = data.0.to_string_lossy().into_owned();
         let target = target.0;
         create_node(&ctx, self.handle.get().0, |parsed| {
@@ -921,10 +884,8 @@ impl JsNode {
         ctx: Ctx<'js>,
         data: WebIdlCodeUnits,
     ) -> Result<Value<'js>> {
-        // An HTML document is one whose content type is `text/html`. An
-        // XHTML document is an XML document and can have CDATA sections
-        // (<https://dom.spec.whatwg.org/#html-document>,
-        // <https://dom.spec.whatwg.org/#dom-document-createcdatasection>).
+        // https://dom.spec.whatwg.org/#html-document
+        // https://dom.spec.whatwg.org/#dom-document-createcdatasection
         if document_is_html_content(&ctx, self.handle.get().0) {
             return Err(throw_dom(
                 &ctx,
@@ -951,8 +912,7 @@ impl JsNode {
         ctx: Ctx<'js>,
         name: WebIdlString,
     ) -> Result<Value<'js>> {
-        // An HTML document ASCII-lowercases the name before the Name check
-        // (<https://dom.spec.whatwg.org/#dom-document-createattribute>).
+        // https://dom.spec.whatwg.org/#dom-document-createattribute
         let name = if document_is_html_content(&ctx, self.handle.get().0) {
             name.0.to_ascii_lowercase()
         } else {
@@ -1059,9 +1019,7 @@ impl JsNode {
             .map_err(|err| throw_dom_error(&ctx, err))?;
         drop(target);
         drop(world);
-        // Importing copies the attributes without their change steps, so the
-        // copy's event handler content attributes need their steps run here
-        // (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes>).
+        // https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes
         super::super::install_parsed_handlers(&ctx, id)?;
         wrap_node(&ctx, id)
     }
@@ -1076,8 +1034,7 @@ impl JsNode {
 
     // https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#document-write-steps
     pub(super) fn write(&self, ctx: Ctx<'_>, text: Vec<WebIdlString>) -> Result<()> {
-        // Every argument stringifies and concatenates in order
-        // (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-document-write>).
+        // https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-document-write
         let html: String = text.iter().map(|part| part.0.as_str()).collect();
         world_for_node(&ctx, self.handle.get().0)?
             .borrow_mut()
@@ -1087,8 +1044,7 @@ impl JsNode {
 
     // https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-document-writeln
     pub(super) fn writeln(&self, ctx: Ctx<'_>, text: Vec<WebIdlString>) -> Result<()> {
-        // `writeln` writes the concatenation followed by a newline
-        // (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-document-writeln>).
+        // https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-document-writeln
         let mut html: String = text.iter().map(|part| part.0.as_str()).collect();
         html.push('\n');
         world_for_node(&ctx, self.handle.get().0)?
@@ -1147,9 +1103,7 @@ impl JsNode {
     pub(super) fn body<'js>(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
         document_value(ctx, self.handle.get().0, |parsed| {
             let root = document_first_child(parsed, |data| matches!(data, NodeData::Element(_)))?;
-            // The body element is only exposed while the root element is an
-            // HTML `html` element
-            // (<https://html.spec.whatwg.org/multipage/dom.html#the-body-element>).
+            // https://html.spec.whatwg.org/multipage/dom.html#the-body-element
             let html_root = parsed
                 .document
                 .base
@@ -1164,7 +1118,6 @@ impl JsNode {
 
     // https://html.spec.whatwg.org/multipage/dom.html#dom-document-body
     pub(super) fn set_body<'js>(&self, ctx: &Ctx<'js>, value: Value<'js>) -> Result<()> {
-        // A string or other non-node throws, like any interface conversion.
         let Some(id) = host_node_id(ctx, &value) else {
             return Err(Exception::throw_type(ctx, "body must be an element"));
         };
@@ -1208,7 +1161,6 @@ impl JsNode {
             let Some(parsed) = world.document(self.handle.get().0) else {
                 return Err(Exception::throw_type(ctx, "no document"));
             };
-            // The new body cannot live inside the subtree it joins.
             if node.document == self.handle.get().0.document {
                 let base = &parsed.document.base;
                 let mut cursor = Some(root_element.node);
@@ -1351,7 +1303,7 @@ impl JsNode {
         Ok(Value::new_null(ctx.clone()))
     }
 
-    /// <https://encoding.spec.whatwg.org/#dom-document-characterset>
+    // https://encoding.spec.whatwg.org/#dom-document-characterset
     pub(super) fn character_set(&self, ctx: &Ctx<'_>) -> &'static str {
         document_character_set(ctx, self.handle.get().0)
     }
@@ -1417,9 +1369,7 @@ impl JsNode {
                         && element.shadow_root.is_none()
                 });
             if !eligible {
-                // A non-HTML element, a name that cannot host a shadow, or an
-                // element that already hosts one
-                // (<https://dom.spec.whatwg.org/#dom-element-attachshadow>).
+                // https://dom.spec.whatwg.org/#dom-element-attachshadow
                 return Err(throw_dom(
                     &ctx,
                     "NotSupportedError",
@@ -1509,9 +1459,7 @@ impl JsNode {
         let root = world.borrow().frame_document(self.handle.get().0);
         match root {
             Some(root) => {
-                // `contentDocument` compares same origin-domain, so setting
-                // `document.domain` on both documents exposes the child to the
-                // parent (<https://html.spec.whatwg.org/multipage/iframe-embed-object.html#dom-iframe-contentdocument>).
+                // https://html.spec.whatwg.org/multipage/iframe-embed-object.html#dom-iframe-contentdocument
                 let same_origin = world
                     .borrow()
                     .owner_world(root)
@@ -1543,11 +1491,7 @@ impl JsNode {
         }
     }
 
-    /// `HTMLIFrameElement.sandbox`: the `DOMTokenList` over the `sandbox`
-    /// content attribute. `[SameObject]` keeps one list per element, so
-    /// `iframe.sandbox === iframe.sandbox` and a mutation through one handle
-    /// shows through the other
-    /// (<https://html.spec.whatwg.org/multipage/iframe-embed-object.html#dom-iframe-sandbox>).
+    // https://html.spec.whatwg.org/multipage/iframe-embed-object.html#dom-iframe-sandbox
     pub(super) fn sandbox<'js>(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
         let world_rc = world(ctx)?;
         if let Some(saved) = world_rc
@@ -1601,8 +1545,6 @@ pub(in crate::js::bindings) fn construct_node_in_frame<'js>(
     construct_node_in_owner(&ctx, &owner, &name, args)
 }
 
-/// The shared construction backend: allocates in `owner`'s document and
-/// wraps for the calling realm.
 pub(super) fn construct_node_in_owner<'js>(
     ctx: &Ctx<'js>,
     owner: &Rc<RefCell<World>>,
@@ -1636,16 +1578,14 @@ pub(super) fn construct_node_in_owner<'js>(
         "Range" => crate::js::bindings::range::new_range(ctx, document()?),
         "StaticRange" => crate::js::bindings::range::new_static_range(ctx, first),
         "Document" => {
-            // The `Document` constructor creates an XML document that still
-            // implements `Document`, not `XMLDocument`
-            // (<https://dom.spec.whatwg.org/#dom-document-document>).
+            // https://dom.spec.whatwg.org/#dom-document-document
             let font_ctx = owner.borrow().runtime.font_ctx.clone();
             let mut parsed = crate::Parsed::script("application/xml", font_ctx);
             parsed.xml_document = false;
             wrap_new_document_in_world(ctx, parsed, owner)
         }
         "XMLDocument" => {
-            // <https://dom.spec.whatwg.org/#dom-xmldocument-xmldocument>
+            // https://dom.spec.whatwg.org/#dom-xmldocument-xmldocument
             let font_ctx = owner.borrow().runtime.font_ctx.clone();
             wrap_new_document_in_world(
                 ctx,
@@ -1655,8 +1595,6 @@ pub(super) fn construct_node_in_owner<'js>(
         }
         "HTMLElement" => {
             // https://html.spec.whatwg.org/multipage/custom-elements.html#html-element-constructors
-            // During upgrade, the construction stack supplies the existing
-            // element rather than allocating a second wrapper.
             let id = world(ctx)?
                 .borrow_mut()
                 .state
@@ -1711,8 +1649,6 @@ pub(super) fn discard_custom_construction<'js>(ctx: Ctx<'js>, value: Value<'js>)
     Ok(())
 }
 
-/// Constructor `DOMString` that keeps every UTF-16 code unit, for the
-/// character-data constructors (`new Text(…)`).
 pub(super) fn constructor_units<'js>(
     ctx: &Ctx<'js>,
     value: Option<Value<'js>>,
@@ -1726,8 +1662,6 @@ pub(super) fn constructor_units<'js>(
     }
 }
 
-/// Creates a detached node in `document`'s tree and wraps it. Detached
-/// creation records no mutation: no observer can watch a node with no parent.
 pub(in crate::js::bindings) fn create_node<'js>(
     ctx: &Ctx<'js>,
     document: NodeId,
@@ -1754,8 +1688,7 @@ pub(super) fn create_html_element<'js>(
     document: NodeId,
     tag: &str,
 ) -> Result<Value<'js>> {
-    // https://dom.spec.whatwg.org/#dom-document-createelement: validate, then
-    // lowercase for an HTML document.
+    // https://dom.spec.whatwg.org/#dom-document-createelement
     if !valid_element_local_name(tag) {
         return Err(throw_dom(
             ctx,
@@ -1763,9 +1696,7 @@ pub(super) fn create_html_element<'js>(
             "tag name is not a valid element local name",
         ));
     }
-    // XHTML documents use the HTML namespace but keep case; only text/html
-    // is an "HTML document" for lowercasing
-    // (<https://dom.spec.whatwg.org/#internal-createelementns-steps>).
+    // https://dom.spec.whatwg.org/#internal-createelementns-steps
     let namespace = if document_is_html(ctx, document) {
         html_namespace()
     } else {
@@ -1795,10 +1726,7 @@ pub(super) fn create_element_named<'js>(
     Ok(value)
 }
 
-/// The context string the HTML fragment parser expects for an element with
-/// this qualified name: html5lib's `svg `/`math ` prefixes for foreign
-/// namespaces
-/// (<https://html.spec.whatwg.org/multipage/parsing.html#html-fragment-parsing-algorithm>).
+// https://html.spec.whatwg.org/multipage/parsing.html#html-fragment-parsing-algorithm
 pub(in crate::js::bindings) fn html_fragment_context(name: &QualName) -> String {
     if name.ns == svg_namespace() {
         format!("svg {}", name.local)
@@ -1807,17 +1735,11 @@ pub(in crate::js::bindings) fn html_fragment_context(name: &QualName) -> String 
     } else if name.ns == html_namespace() {
         name.local.to_string()
     } else {
-        // Preserve foreign-namespace contexts through the `ns:` roundtrip so
-        // fragment parsing sees the real context element name instead of an
-        // HTML impostor
-        // (<https://html.spec.whatwg.org/multipage/parsing.html#html-fragment-parsing-algorithm>).
+        // https://html.spec.whatwg.org/multipage/parsing.html#html-fragment-parsing-algorithm
         format!("ns:{}|{}", name.ns, name.local)
     }
 }
 
-/// Places fragment children for the non-`beforebegin` `insertAdjacentHTML`
-/// positions: `afterbegin` prepends, `afterend` appends after the target,
-/// `beforeend` appends inside.
 pub(super) fn place_adjacent_rest(
     ctx: &Ctx<'_>,
     parsed: &mut crate::Parsed,
@@ -1872,9 +1794,6 @@ pub(super) fn place_adjacent_rest(
     Ok(())
 }
 
-/// The base URL and shared font context a fragment scratch document parses
-/// under: the live document's base, so eager subresource loads resolve
-/// instead of panicking in Blitz. Falls back closed when the document is gone.
 pub(in crate::js::bindings) fn fragment_base_url(
     ctx: &Ctx<'_>,
     id: NodeId,
@@ -1898,20 +1817,13 @@ pub(in crate::js::bindings) fn fragment_base_url(
         })
 }
 
-/// Parses `markup` as an HTML fragment in `context` and snapshots the
-/// resulting nodes for insertion into a document.
 pub(in crate::js::bindings) fn parse_html_fragment_snapshots(
     markup: &str,
     context: &str,
     base_url: &str,
     font_ctx: parley::FontContext,
 ) -> Vec<ImportSnapshot> {
-    // The fragment parses into a scratch context element; only the parsed
-    // children are snapshotted for insertion into a live document
-    // (<https://html.spec.whatwg.org/multipage/parsing.html#html-fragment-parsing-algorithm>).
-    // The scratch document carries the live base URL so eager subresource
-    // loads resolve instead of panicking in Blitz. It never renders, so it
-    // shares fonts and skips UA sheets.
+    // https://html.spec.whatwg.org/multipage/parsing.html#html-fragment-parsing-algorithm
     let context_name = fragment_context_name(context);
     let mut base = blitz_dom::BaseDocument::new(blitz_dom::DocumentConfig {
         base_url: Some(base_url.to_owned()),
@@ -1930,8 +1842,6 @@ pub(in crate::js::bindings) fn parse_html_fragment_snapshots(
         context_id
     };
     let scratch = crate::documents::BlitzDocument::from_base(base);
-    // Fragment parsing into a template context fills the context's
-    // template contents, not its children: snapshot from the contents.
     let children: Vec<BlitzId> =
         scratch
             .base
@@ -1967,10 +1877,6 @@ pub(in crate::js::bindings) fn parse_html_fragment_snapshots(
         .collect()
 }
 
-/// The context element name for fragment parsing: html5lib's `svg `/`math `
-/// prefixes select the foreign namespace. An `ns:<namespace>|<local>` spec
-/// selects an arbitrary namespace, so foreign-namespace contexts keep their
-/// identity instead of collapsing to HTML.
 pub(in crate::js::bindings) fn fragment_context_name(spec: &str) -> QualName {
     const SVG: &str = "http://www.w3.org/2000/svg";
     const MATHML: &str = "http://www.w3.org/1998/Math/MathML";
@@ -1988,15 +1894,8 @@ pub(in crate::js::bindings) fn fragment_context_name(spec: &str) -> QualName {
     }
 }
 
-/// The current `body`/`frameset` child of the document element owning
-/// `root`, if any.
-/// The first `body` or `frameset` child of `root` in the HTML namespace, which
-/// is what `document.body` returns and what `document.body`'s setter replaces
-/// (<https://html.spec.whatwg.org/multipage/dom.html#the-body-element-2>).
-/// The head element of the document whose root element is `root`: the first
-/// HTML `head` child. The root element must be the HTML `html` element, because
-/// the head element is defined as a child of it
-/// (<https://html.spec.whatwg.org/multipage/dom.html#the-head-element-2>).
+// https://html.spec.whatwg.org/multipage/dom.html#the-body-element-2
+// https://html.spec.whatwg.org/multipage/dom.html#the-head-element-2
 pub(super) fn head_child(parsed: &crate::Parsed, root: NodeId) -> Option<NodeId> {
     let base = &parsed.document.base;
     let html_root = base
@@ -2052,7 +1951,6 @@ pub(super) fn current_body_child(
     Ok(body_child(&parsed, root))
 }
 
-/// The first node matching `selector` under `parsed`'s document root.
 pub(super) fn document_first(parsed: &crate::Parsed, selector: &str) -> Option<NodeId> {
     let root = parsed.document.base.root_node().id;
     parsed
@@ -2083,8 +1981,6 @@ pub(super) fn document_first_child(
     })
 }
 
-/// The character set of `id`'s document for encoding-aware APIs, UTF-8
-/// when the node has no document.
 pub(super) fn document_character_set(ctx: &Ctx<'_>, id: NodeId) -> &'static str {
     world(ctx)
         .ok()
@@ -2112,12 +2008,7 @@ pub(super) fn element_by_id<'js>(ctx: &Ctx<'js>, root: NodeId, id: &str) -> Resu
     }
 }
 
-/// Registers browsing contexts for iframes inserted by markup setters.
-/// Those paths skip script insertion steps (innerHTML must not run scripts)
-/// but still create iframe browsing contexts. The iframe insertion steps
-/// only run for an iframe that became connected, so roots outside a
-/// document (template contents, detached subtrees) are skipped
-/// (<https://html.spec.whatwg.org/multipage/iframe-embed-object.html#the-iframe-element:html-element-insertion-steps>).
+// https://html.spec.whatwg.org/multipage/iframe-embed-object.html#the-iframe-element:html-element-insertion-steps
 pub(super) fn register_inserted_iframes(ctx: &Ctx<'_>, inserted: &[NodeId]) -> Result<()> {
     let mut steps = Vec::new();
     {
@@ -2137,15 +2028,9 @@ pub(super) fn register_inserted_iframes(ctx: &Ctx<'_>, inserted: &[NodeId]) -> R
         match step {
             InsertionStep::Iframe(id) => {
                 World::materialize_iframe(&world(ctx)?, id);
-                // The initial `load` is an element task, not part of the
-                // insertion steps: the engine fires it after the child frame's
-                // realm exists, so `contentWindow.location` is readable in the
-                // handler
-                // (<https://html.spec.whatwg.org/multipage/iframe-embed-object.html#the-iframe-element:html-element-insertion-steps>).
+                // https://html.spec.whatwg.org/multipage/iframe-embed-object.html#the-iframe-element:html-element-insertion-steps
             }
-            // Markup inserted through the parser's own paths runs the base
-            // check in the parse walk; script-created markup runs it here
-            // (<https://w3c.github.io/webappsec-csp/#is-base-allowed-for-document>).
+            // https://w3c.github.io/webappsec-csp/#is-base-allowed-for-document
             InsertionStep::Base(id) => {
                 world(ctx)?.borrow_mut().apply_base_element(id);
             }
@@ -2155,9 +2040,8 @@ pub(super) fn register_inserted_iframes(ctx: &Ctx<'_>, inserted: &[NodeId]) -> R
     Ok(())
 }
 
-/// `meta name=referrer` insertion steps set the document's policy
-/// (<https://html.spec.whatwg.org/multipage/semantics.html#meta-referrer>,
-/// <https://w3c.github.io/webappsec-referrer-policy/#parse-referrer-policy-from-meta>).
+// https://html.spec.whatwg.org/multipage/semantics.html#meta-referrer
+// https://w3c.github.io/webappsec-referrer-policy/#parse-referrer-policy-from-meta
 pub(crate) fn apply_meta_referrer(ctx: &Ctx<'_>, id: NodeId) {
     let policy = {
         let world = world(ctx);
@@ -2186,9 +2070,7 @@ pub(crate) fn apply_meta_referrer(ctx: &Ctx<'_>, id: NodeId) {
     world.borrow_mut().policy.referrer_policy = Some(policy);
 }
 
-/// `meta http-equiv=refresh` insertion or attribute change runs the shared
-/// declarative refresh steps with the element's current content
-/// (<https://html.spec.whatwg.org/multipage/semantics.html#attr-meta-http-equiv-refresh>).
+// https://html.spec.whatwg.org/multipage/semantics.html#attr-meta-http-equiv-refresh
 pub(crate) fn apply_meta_refresh(ctx: &Ctx<'_>, id: NodeId) {
     let Ok(world) = world(ctx) else {
         return;
@@ -2216,8 +2098,7 @@ pub(crate) fn apply_meta_refresh(ctx: &Ctx<'_>, id: NodeId) {
     world.borrow_mut().queue_declarative_refresh(value);
 }
 
-/// `meta http-equiv=content-security-policy` insertion appends one policy
-/// (<https://html.spec.whatwg.org/multipage/semantics.html#attr-meta-http-equiv-content-security-policy>).
+// https://html.spec.whatwg.org/multipage/semantics.html#attr-meta-http-equiv-content-security-policy
 pub(super) fn apply_meta_csp(ctx: &Ctx<'_>, id: NodeId) {
     let Ok(world) = world(ctx) else {
         return;
@@ -2225,10 +2106,7 @@ pub(super) fn apply_meta_csp(ctx: &Ctx<'_>, id: NodeId) {
     world.borrow_mut().apply_meta_policy(id);
 }
 
-/// [Prepares](https://html.spec.whatwg.org/multipage/webappapis.html#prepare-the-script-element)
-/// a script element a script connected. An inline classic script runs here.
-/// Every other kind is queued for the element's own document, which resolves
-/// the source and runs it in its own turn.
+// https://html.spec.whatwg.org/multipage/webappapis.html#prepare-the-script-element
 pub(crate) fn prepare_classic_script(ctx: &Ctx<'_>, id: NodeId) -> Result<()> {
     enum Kind {
         Inline(String, u32),
@@ -2255,23 +2133,15 @@ pub(crate) fn prepare_classic_script(ctx: &Ctx<'_>, id: NodeId) -> Result<()> {
             Some(crate::js::Script::Classic(crate::js::ScriptElementSource::Src(_))) => {
                 Kind::External
             }
-            // A module script is always deferred: its graph is fetched as a
-            // script request, and the element's `load` waits for it
-            // (<https://html.spec.whatwg.org/multipage/scripting.html#attr-script-type-module>).
+            // https://html.spec.whatwg.org/multipage/scripting.html#attr-script-type-module
             Some(crate::js::Script::Module(_)) => Kind::Module,
             _ => return Ok(()),
         }
     };
-    // Script insertion clears the parser-inserted flag
-    // (<https://html.spec.whatwg.org/multipage/scripting.html#parser-inserted>).
+    // https://html.spec.whatwg.org/multipage/scripting.html#parser-inserted
     world(ctx)?.borrow_mut().clear_parser_inserted(id);
     let (source, base_line) = match kind {
         Kind::Inline(source, line) => {
-            // The script runs in its own document's realm, not the caller's.
-            // Enter that realm now when it exists; the nested-context fork
-            // permits it while the caller's script is still on the stack. Only
-            // a document with no realm at all (a `window.open()` document the
-            // engine has not installed yet) defers to its own drain.
             let caller = world(ctx)?;
             let owner = world_for_node(ctx, id)?;
             if !Rc::ptr_eq(&caller, &owner) {
@@ -2285,12 +2155,7 @@ pub(crate) fn prepare_classic_script(ctx: &Ctx<'_>, id: NodeId) -> Result<()> {
             (source, line)
         }
         Kind::External | Kind::Module => {
-            // Parser-inserted scripts never reach this path; the parser
-            // runs them from `Document::run_scripts`. The fetch for a
-            // script-inserted element starts in `Document::adopt_js_work`,
-            // which marks already-started at launch so a second prepare
-            // schedules nothing
-            // (<https://html.spec.whatwg.org/multipage/scripting.html#prepare-the-script-element>).
+            // https://html.spec.whatwg.org/multipage/scripting.html#prepare-the-script-element
             let world = world(ctx)?;
             world.borrow_mut().queue_script(id);
             return Ok(());
@@ -2335,8 +2200,6 @@ pub(crate) fn prepare_classic_script(ctx: &Ctx<'_>, id: NodeId) -> Result<()> {
     world(ctx)?.borrow_mut().state.current_script = Some(id);
     let mut options = EvalOptions::default();
     options.strict = false;
-    // Text-set scripts run under the document URL so their stacks attribute
-    // to page script, matching parser-inserted scripts.
     let filename = world_for_node(ctx, id)?
         .borrow()
         .document_url
@@ -2344,23 +2207,13 @@ pub(crate) fn prepare_classic_script(ctx: &Ctx<'_>, id: NodeId) -> Result<()> {
         .to_owned();
     options.filename = Some(filename.clone());
     if let Err(error) = ctx.eval_with_options::<Value, _>(source, options) {
-        // A script inserted from script reports through the same pipeline as
-        // a parser script: the exception reaches `window.onerror` and the
-        // `error` event instead of staying pending
-        // (<https://html.spec.whatwg.org/multipage/webappapis.html#run-a-classic-script>).
+        // https://html.spec.whatwg.org/multipage/webappapis.html#run-a-classic-script
         crate::js::report_script_error(ctx, &error, base_line, &filename);
     }
     world(ctx)?.borrow_mut().state.current_script = previous;
     Ok(())
 }
 
-/// Sets the `nonce` content attribute to the empty string on HTML, SVG, and
-/// `MathML` elements that just became browsing-context connected. An
-/// IDL-set slot survives: only the content attribute clears, so a later IDL
-/// read still answers the assigned nonce. Without a slot, the current
-/// attribute value seeds the slot first (matching the attribute-change
-/// steps, where the value feeds the slot). No script runs between the
-/// clear and the restore, so the transient slot is unobservable.
 pub(super) fn clear_nonce_on_connect(ctx: &Ctx<'_>, inserted: &[NodeId]) -> Result<()> {
     let mut ids = Vec::new();
     {
@@ -2395,17 +2248,8 @@ pub(super) fn clear_nonce_on_connect(ctx: &Ctx<'_>, inserted: &[NodeId]) -> Resu
     Ok(())
 }
 
-/// Whether `id` is an HTML `iframe` or `frame` container.
-///
-/// The getter does not create a browsing context: that is the iframe
-/// element's insertion steps, which run in tree order with script insertion
-/// steps so an earlier script cannot observe a later sibling's
-/// `contentWindow`
-/// (<https://html.spec.whatwg.org/multipage/iframe-embed-object.html#dom-iframe-contentwindow>,
-/// <https://html.spec.whatwg.org/multipage/iframe-embed-object.html#the-iframe-element:html-element-insertion-steps>).
-/// `frame` shares the lookup: the engine has no frameset navigation pipeline,
-/// so no frame document ever exists yet and the callers below return null,
-/// matching the pre-migration binary.
+// https://html.spec.whatwg.org/multipage/iframe-embed-object.html#dom-iframe-contentwindow
+// https://html.spec.whatwg.org/multipage/iframe-embed-object.html#the-iframe-element:html-element-insertion-steps
 pub(super) fn iframe_frame(ctx: &Ctx<'_>, id: NodeId) -> Result<bool> {
     let owner = world_for_node(ctx, id)?;
     Ok(owner.borrow().document(id).is_some_and(|parsed| {
@@ -2414,8 +2258,6 @@ pub(super) fn iframe_frame(ctx: &Ctx<'_>, id: NodeId) -> Result<bool> {
     }))
 }
 
-/// One `body` content attribute of `document`, or the empty string when the
-/// body or attribute is missing.
 pub(super) fn document_body_attr<'js>(
     ctx: &Ctx<'js>,
     document: NodeId,
@@ -2431,7 +2273,6 @@ pub(super) fn document_body_attr<'js>(
     rquickjs::String::from_str(ctx.clone(), &value)
 }
 
-/// Writes one `body` content attribute of `document`, ignoring a missing body.
 pub(super) fn set_document_body_attr(
     ctx: &Ctx<'_>,
     document: NodeId,
@@ -2485,7 +2326,7 @@ impl JsNode {
         Ok(value)
     }
 
-    /// <https://html.spec.whatwg.org/multipage/dom.html#dom-document-links>
+    // https://html.spec.whatwg.org/multipage/dom.html#dom-document-links
     pub(super) fn get_links<'js>(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
         let world_rc = world(ctx)?;
         if let Some(saved) = world_rc
@@ -2510,28 +2351,26 @@ impl JsNode {
         Ok(value)
     }
 
-    /// <https://html.spec.whatwg.org/multipage/dom.html#dom-document-images>
+    // https://html.spec.whatwg.org/multipage/dom.html#dom-document-images
     pub(super) fn get_images<'js>(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
         self.same_object_collection(ctx, SameObject::Images, CollectionKind::HtmlImages)
     }
 
-    /// <https://html.spec.whatwg.org/multipage/dom.html#dom-document-forms>
+    // https://html.spec.whatwg.org/multipage/dom.html#dom-document-forms
     pub(super) fn get_forms<'js>(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
         self.same_object_collection(ctx, SameObject::Forms, CollectionKind::HtmlForms)
     }
 
-    /// <https://html.spec.whatwg.org/multipage/dom.html#dom-document-embeds>
+    // https://html.spec.whatwg.org/multipage/dom.html#dom-document-embeds
     pub(super) fn get_embeds<'js>(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
         self.same_object_collection(ctx, SameObject::Embeds, CollectionKind::HtmlEmbeds)
     }
 
-    /// <https://html.spec.whatwg.org/multipage/dom.html#dom-document-plugins>
+    // https://html.spec.whatwg.org/multipage/dom.html#dom-document-plugins
     pub(super) fn get_plugins<'js>(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
-        // `plugins` is the same collection as `embeds`.
         self.get_embeds(ctx)
     }
 
-    /// A document's `[SameObject]` live `HTMLCollection` member.
     fn same_object_collection<'js>(
         &self,
         ctx: &Ctx<'js>,
@@ -2554,7 +2393,7 @@ impl JsNode {
         Ok(value)
     }
 
-    /// <https://dom.spec.whatwg.org/#dom-document-adoptnode>
+    // https://dom.spec.whatwg.org/#dom-document-adoptnode
     pub(super) fn adopt_node<'js>(
         &self,
         ctx: Ctx<'js>,
@@ -2573,9 +2412,8 @@ impl JsNode {
     }
 }
 
-/// Names that may host a shadow root, plus a valid custom element name
-/// (<https://html.spec.whatwg.org/multipage/dom.html#valid-shadow-host-name>,
-/// <https://html.spec.whatwg.org/multipage/custom-elements.html#valid-custom-element-name>).
+// https://html.spec.whatwg.org/multipage/dom.html#valid-shadow-host-name
+// https://html.spec.whatwg.org/multipage/custom-elements.html#valid-custom-element-name
 fn valid_shadow_host(local: &str) -> bool {
     matches!(
         local,
@@ -2601,7 +2439,7 @@ fn valid_shadow_host(local: &str) -> bool {
     ) || valid_custom_element_name(local)
 }
 
-/// `PCENChar` (<https://html.spec.whatwg.org/multipage/custom-elements.html#prod-pcenchar>).
+// https://html.spec.whatwg.org/multipage/custom-elements.html#prod-pcenchar
 fn is_pcen_char(ch: char) -> bool {
     matches!(ch, '-' | '.' | '0'..='9' | '_' | 'a'..='z' | '\u{00B7}')
         || ('\u{00C0}'..='\u{00D6}').contains(&ch)
@@ -2632,8 +2470,7 @@ fn valid_custom_element_name(local: &str) -> bool {
     if FORBIDDEN.contains(&local) {
         return false;
     }
-    // PotentialCustomElementName is `[a-z] PCENChar* '-' PCENChar*`
-    // (<https://html.spec.whatwg.org/multipage/custom-elements.html#valid-custom-element-name>).
+    // https://html.spec.whatwg.org/multipage/custom-elements.html#valid-custom-element-name
     let mut chars = local.chars();
     let Some(first) = chars.next() else {
         return false;
@@ -2653,8 +2490,7 @@ fn valid_custom_element_name(local: &str) -> bool {
     hyphen
 }
 
-/// Fragment context for `innerHTML`: the element itself, or a shadow root's host
-/// (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-shadowroot-innerhtml>).
+// https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-shadowroot-innerhtml
 pub(super) fn inner_html_fragment_context(ctx: &Ctx<'_>, id: NodeId) -> Result<String> {
     let owner = world_for_node(ctx, id)?;
     let parsed = owner.borrow();
@@ -2683,17 +2519,10 @@ pub(super) fn inner_html_fragment_context(ctx: &Ctx<'_>, id: NodeId) -> Result<S
     Ok(html_fragment_context(&name))
 }
 
-/// The domain a `document.domain` assignment stores, or `None` when the value
-/// is not a registrable domain suffix of, or equal to, `original`
-/// (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#is-a-registrable-domain-suffix-of-or-is-equal-to>).
-///
-/// A host suffix that is a public suffix cannot be named: that is what stops
-/// `document.domain = "com"`, and the check is why the public suffix list is
-/// needed rather than a plain label-boundary comparison.
+// https://html.spec.whatwg.org/multipage/urls-and-fetching.html#is-a-registrable-domain-suffix-of-or-is-equal-to
 fn registrable_domain_suffix(value: &str, original: &str) -> Option<String> {
     let host = url::Host::parse(value).ok()?;
     let url::Host::Domain(host) = &host else {
-        // An IP address is not a domain, so it has no registrable suffix.
         return None;
     };
     let parsed_original = url::Host::parse(original).ok()?;
@@ -2709,8 +2538,6 @@ fn registrable_domain_suffix(value: &str, original: &str) -> Option<String> {
     if net::is_public_suffix(host) {
         return None;
     }
-    // The spec's second rejection: the suffix itself reaches into the
-    // original host's public suffix from below.
     let suffix = public_suffix(parsed_original)?;
     if suffix.ends_with(&format!(".{host}")) {
         return None;
@@ -2718,9 +2545,7 @@ fn registrable_domain_suffix(value: &str, original: &str) -> Option<String> {
     Some(host.clone())
 }
 
-/// The longest suffix of `host` that is itself a public suffix, which is the
-/// URL standard's `host` public suffix
-/// (<https://url.spec.whatwg.org/#host-public-suffix>).
+// https://url.spec.whatwg.org/#host-public-suffix
 fn public_suffix(host: &str) -> Option<&str> {
     let mut candidate = host;
     loop {
@@ -2736,9 +2561,7 @@ fn public_suffix(host: &str) -> Option<&str> {
 mod domain_tests {
     use super::registrable_domain_suffix;
 
-    /// The setter accepts the document's own host and a label-boundary suffix,
-    /// and rejects a public suffix, another site, and an IP address
-    /// (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#is-a-registrable-domain-suffix-of-or-is-equal-to>).
+    // https://html.spec.whatwg.org/multipage/urls-and-fetching.html#is-a-registrable-domain-suffix-of-or-is-equal-to
     #[test]
     fn registrable_domain_suffixes() {
         assert_eq!(

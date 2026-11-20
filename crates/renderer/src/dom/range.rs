@@ -1,9 +1,4 @@
-//! Live ranges: boundary points, comparison, and mutation adjustment
-//! (<https://dom.spec.whatwg.org/#ranges>).
-//!
-//! Realm-free algorithms over one document's tree: node ids and offsets only.
-//! Callers split `&base` from `&mut ranges` so adjustment borrows stay
-//! disjoint. The binding layer owns wrappers and converts values.
+// https://dom.spec.whatwg.org/#ranges
 
 use std::cmp::Ordering;
 
@@ -11,34 +6,21 @@ use blitz_dom::NodeData;
 
 use crate::dom::tree::{NodeId, child_ids};
 
-/// One boundary point: a node and an offset into it
-/// (<https://dom.spec.whatwg.org/#concept-range-bp>).
+// https://dom.spec.whatwg.org/#concept-range-bp
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct BoundaryPoint {
     pub(crate) node: NodeId,
     pub(crate) offset: u32,
 }
 
-/// A boundary point inside an attribute.
-///
-/// Attributes are not tree nodes, so the point's root is the attribute
-/// itself, no tree mutation can move it, and a range in one is always
-/// collapsed (<https://dom.spec.whatwg.org/#concept-range-bp>).
+// https://dom.spec.whatwg.org/#concept-range-bp
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct AttrPoint {
-    /// The element the attribute belongs to, which supplies the document.
     pub(crate) scope: NodeId,
-    /// The attribute registry id the wrapper reports.
     pub(crate) id: u64,
 }
 
-/// A live range's start and end.
-///
-/// `attr` is set when both points live in one attribute; `start` and `end`
-/// then hold a collapsed placeholder at the attribute's scope element so the
-/// tree-point algorithms stay valid. Slots live in the document that owns the
-/// boundary points and free with it
-/// (<https://dom.spec.whatwg.org/#concept-range>).
+// https://dom.spec.whatwg.org/#concept-range
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct RangeState {
     pub(crate) start: BoundaryPoint,
@@ -47,7 +29,6 @@ pub(crate) struct RangeState {
 }
 
 impl RangeState {
-    /// A collapsed range at a tree point.
     pub(crate) fn collapsed(point: BoundaryPoint) -> Self {
         Self {
             start: point,
@@ -56,7 +37,6 @@ impl RangeState {
         }
     }
 
-    /// A collapsed range in an attribute.
     pub(crate) fn attribute(attr: AttrPoint) -> Self {
         let placeholder = BoundaryPoint {
             node: attr.scope,
@@ -69,7 +49,6 @@ impl RangeState {
         }
     }
 
-    /// The document that owns the boundary points, and so the slot.
     pub(crate) fn document(&self) -> u32 {
         match self.attr {
             Some(attr) => attr.scope.document,
@@ -78,14 +57,7 @@ impl RangeState {
     }
 }
 
-/// One document's live-range slots.
-///
-/// A slot is `None` once freed: the wrapper was collected, or the range
-/// re-registered in another document because `setStart`/`setEnd` moved its
-/// boundary points there. Freed slots are reused, so a page that creates
-/// ranges in a loop does not grow the table, and a document with no live
-/// ranges scans nothing on mutation
-/// (<https://dom.spec.whatwg.org/#concept-range>).
+// https://dom.spec.whatwg.org/#concept-range
 #[derive(Default)]
 pub(crate) struct RangeTable {
     slots: Vec<Option<RangeState>>,
@@ -94,7 +66,6 @@ pub(crate) struct RangeTable {
 }
 
 impl RangeTable {
-    /// Registers a live range, returning its slot index.
     pub(crate) fn alloc(&mut self, state: RangeState) -> usize {
         self.live += 1;
         if let Some(slot) = self.free.pop() {
@@ -106,12 +77,10 @@ impl RangeTable {
         }
     }
 
-    /// The state at `slot`, or `None` for a freed slot.
     pub(crate) fn get(&self, slot: usize) -> Option<RangeState> {
         self.slots.get(slot).copied().flatten()
     }
 
-    /// Overwrites a live slot. Returns false when the slot is freed.
     pub(crate) fn set(&mut self, slot: usize, state: RangeState) -> bool {
         match self.slots.get_mut(slot) {
             Some(entry) if entry.is_some() => {
@@ -122,7 +91,6 @@ impl RangeTable {
         }
     }
 
-    /// Frees `slot` for reuse. Freeing a freed slot is a no-op.
     pub(crate) fn free(&mut self, slot: usize) {
         if let Some(entry) = self.slots.get_mut(slot)
             && entry.take().is_some()
@@ -132,12 +100,10 @@ impl RangeTable {
         }
     }
 
-    /// Whether the document has no live ranges.
     pub(crate) fn is_empty(&self) -> bool {
         self.live == 0
     }
 
-    /// Every live range, in slot order.
     pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = &mut RangeState> {
         self.slots.iter_mut().flatten()
     }
@@ -147,8 +113,7 @@ fn utf16_length(text: &str) -> u32 {
     u32::try_from(text.encode_utf16().count()).unwrap_or(u32::MAX)
 }
 
-/// The length of a node: child count, character-data length in UTF-16 code
-/// units, or zero (<https://dom.spec.whatwg.org/#concept-node-length>).
+// https://dom.spec.whatwg.org/#concept-node-length
 pub(crate) fn node_length(base: &blitz_dom::BaseDocument, id: NodeId) -> u32 {
     let Some(node) = base.get_node(id.node) else {
         return 0;
@@ -167,7 +132,6 @@ pub(crate) fn node_length(base: &blitz_dom::BaseDocument, id: NodeId) -> u32 {
     }
 }
 
-/// Whether `id` is a `Text` node for range text: `Text` or `CDATASection`.
 pub(crate) fn is_text(base: &blitz_dom::BaseDocument, id: NodeId) -> bool {
     matches!(
         base.get_node(id.node).map(|node| &node.data),
@@ -175,10 +139,7 @@ pub(crate) fn is_text(base: &blitz_dom::BaseDocument, id: NodeId) -> bool {
     )
 }
 
-/// Whether `id` is character data: `Text`, `CDATASection`, `Comment`, or
-/// `ProcessingInstruction`. The mutation algorithms address all four;
-/// stringification only counts `Text`
-/// (<https://dom.spec.whatwg.org/#interface-characterdata>).
+// https://dom.spec.whatwg.org/#interface-characterdata
 pub(crate) fn is_character_data(base: &blitz_dom::BaseDocument, id: NodeId) -> bool {
     matches!(
         base.get_node(id.node).map(|node| &node.data),
@@ -191,9 +152,7 @@ pub(crate) fn is_character_data(base: &blitz_dom::BaseDocument, id: NodeId) -> b
     )
 }
 
-/// The range's text: a same-node substring, or the partial start, every
-/// fully contained `Text` node in tree order, and the partial end
-/// (<https://dom.spec.whatwg.org/#dom-range-stringifier>).
+// https://dom.spec.whatwg.org/#dom-range-stringifier
 pub(crate) fn range_text(
     document: &crate::documents::BlitzDocument,
     _document_id: u32,
@@ -222,8 +181,6 @@ pub(crate) fn range_text(
     units
 }
 
-/// Append every `Text` node contained in the range under `ancestor`, in tree
-/// order. Boundary nodes never satisfy containment, so they cannot recur.
 fn append_contained_text(
     document: &crate::documents::BlitzDocument,
     state: &RangeState,
@@ -242,8 +199,7 @@ fn append_contained_text(
     }
 }
 
-/// Whether `id` is a doctype, which can never hold a boundary point
-/// (<https://dom.spec.whatwg.org/#concept-range-bp>).
+// https://dom.spec.whatwg.org/#concept-range-bp
 pub(crate) fn is_doctype(base: &blitz_dom::BaseDocument, id: NodeId) -> bool {
     matches!(
         base.get_node(id.node).map(|node| &node.data),
@@ -260,8 +216,6 @@ fn parent_of(base: &blitz_dom::BaseDocument, id: NodeId) -> Option<NodeId> {
         })
 }
 
-/// Whether `possible` is `node` or an ancestor of it, staying in one arena.
-/// Stale ids compare false.
 pub(crate) fn is_inclusive_ancestor(
     base: &blitz_dom::BaseDocument,
     possible: NodeId,
@@ -282,14 +236,11 @@ pub(crate) fn is_inclusive_ancestor(
     }
 }
 
-/// Whether `possible` is an inclusive descendant of `node`.
 fn is_inclusive_descendant(base: &blitz_dom::BaseDocument, possible: NodeId, node: NodeId) -> bool {
     is_inclusive_ancestor(base, node, possible)
 }
 
-/// The position of `(node_a, offset_a)` relative to `(node_b, offset_b)`.
-/// Both points must share a root; callers check that first
-/// (<https://dom.spec.whatwg.org/#concept-range-bp-after>).
+// https://dom.spec.whatwg.org/#concept-range-bp-after
 pub(crate) fn position(
     base: &blitz_dom::BaseDocument,
     document: u32,
@@ -299,7 +250,6 @@ pub(crate) fn position(
     if a.node == b.node {
         return a.offset.cmp(&b.offset);
     }
-    // If A follows B, decide the reverse and flip.
     if crate::dom::tree::tree_order(base, document, b.node.node, a.node.node) == Ordering::Less {
         return position(base, document, b, a).reverse();
     }
@@ -324,8 +274,6 @@ pub(crate) fn position(
     Ordering::Less
 }
 
-/// Whether two points share a root. Points in different arenas never do, and
-/// a stale id has no root to share.
 pub(crate) fn same_root(base: &blitz_dom::BaseDocument, a: NodeId, b: NodeId) -> bool {
     if a.document != b.document {
         return false;
@@ -336,9 +284,7 @@ pub(crate) fn same_root(base: &blitz_dom::BaseDocument, a: NodeId, b: NodeId) ->
     crate::dom::tree::root_of(base, a.node) == crate::dom::tree::root_of(base, b.node)
 }
 
-/// The node furthest from the document that contains both `a` and `b`.
-/// Callers only invoke this on points that share a root
-/// (<https://dom.spec.whatwg.org/#concept-range-common-ancestor>).
+// https://dom.spec.whatwg.org/#concept-range-common-ancestor
 pub(crate) fn common_ancestor(base: &blitz_dom::BaseDocument, a: NodeId, b: NodeId) -> NodeId {
     let mut container = a;
     while !is_inclusive_ancestor(base, container, b) {
@@ -350,9 +296,7 @@ pub(crate) fn common_ancestor(base: &blitz_dom::BaseDocument, a: NodeId, b: Node
     container
 }
 
-/// Whether `node` is contained in the range: same root, after start, and the
-/// end of the node before end
-/// (<https://dom.spec.whatwg.org/#concept-range-contained>).
+// https://dom.spec.whatwg.org/#concept-range-contained
 pub(crate) fn is_contained(
     base: &blitz_dom::BaseDocument,
     document: u32,
@@ -380,8 +324,7 @@ pub(crate) fn is_contained(
         ) == Ordering::Less
 }
 
-/// Whether `node` is an inclusive ancestor of exactly one end
-/// (<https://dom.spec.whatwg.org/#concept-range-partially-contained>).
+// https://dom.spec.whatwg.org/#concept-range-partially-contained
 pub(crate) fn is_partially_contained(
     base: &blitz_dom::BaseDocument,
     state: &RangeState,
@@ -391,11 +334,6 @@ pub(crate) fn is_partially_contained(
         != is_inclusive_ancestor(base, node, state.end.node)
 }
 
-/// The children of `ancestor` to visit for cloning, extraction, or
-/// surrounding: the first and last partially contained children plus the
-/// fully contained ones. `want_first`/`want_last` follow the spec's guards:
-/// no first partial when the start covers the end, and vice versa. Returns
-/// `None` when the endpoints are disconnected from `ancestor`.
 pub(crate) fn ancestor_span(
     base: &blitz_dom::BaseDocument,
     document: u32,
@@ -427,8 +365,7 @@ pub(crate) fn ancestor_span(
     Some((first, contained, last))
 }
 
-/// Shift boundary points in `parent` past an insertion of `count` children
-/// at `index` (<https://dom.spec.whatwg.org/#concept-node-insert>).
+// https://dom.spec.whatwg.org/#concept-node-insert
 pub(crate) fn adjust_for_insert(ranges: &mut RangeTable, parent: NodeId, index: u32, count: u32) {
     for range in ranges.iter_mut() {
         for point in [&mut range.start, &mut range.end] {
@@ -439,9 +376,7 @@ pub(crate) fn adjust_for_insert(ranges: &mut RangeTable, parent: NodeId, index: 
     }
 }
 
-/// Reparent boundary points for the pre-removal of `removed` at `index` of
-/// `parent` (<https://dom.spec.whatwg.org/#concept-node-remove> live-range
-/// pre-remove steps).
+// https://dom.spec.whatwg.org/#concept-node-remove
 pub(crate) fn adjust_for_remove(
     base: &blitz_dom::BaseDocument,
     ranges: &mut RangeTable,
@@ -463,9 +398,7 @@ pub(crate) fn adjust_for_remove(
     }
 }
 
-/// Adjust boundary points for replacing `count` units at `offset` of `node`
-/// with `length` units
-/// (<https://dom.spec.whatwg.org/#concept-cd-replace>).
+// https://dom.spec.whatwg.org/#concept-cd-replace
 pub(crate) fn adjust_for_replace_data(
     ranges: &mut RangeTable,
     node: NodeId,
@@ -490,10 +423,7 @@ pub(crate) fn adjust_for_replace_data(
     }
 }
 
-/// Adjust boundary points for merging `sibling` into `node` during
-/// `normalize`: points in the dying node move over at the accumulated
-/// length, and parent points at its slot move to the merge target
-/// (<https://dom.spec.whatwg.org/#dom-node-normalize>).
+// https://dom.spec.whatwg.org/#dom-node-normalize
 pub(crate) fn adjust_for_normalize(
     ranges: &mut RangeTable,
     node: NodeId,
@@ -515,9 +445,7 @@ pub(crate) fn adjust_for_normalize(
     }
 }
 
-/// Adjust boundary points for splitting `node` at `offset` into `new_node`
-/// after it: points past the split move over, and parent points at the old
-/// next-sibling slot shift (<https://dom.spec.whatwg.org/#concept-text-split>).
+// https://dom.spec.whatwg.org/#concept-text-split
 pub(crate) fn adjust_for_split(
     ranges: &mut RangeTable,
     node: NodeId,
@@ -539,10 +467,7 @@ pub(crate) fn adjust_for_split(
     }
 }
 
-/// Collapse boundary points for replacing every child of `parent`: the
-/// removals run the pre-remove steps in tree order, so every affected point
-/// lands on `(parent, 0)`
-/// (<https://dom.spec.whatwg.org/#concept-node-replace-all>).
+// https://dom.spec.whatwg.org/#concept-node-replace-all
 pub(crate) fn adjust_for_replace_all(
     base: &blitz_dom::BaseDocument,
     ranges: &mut RangeTable,

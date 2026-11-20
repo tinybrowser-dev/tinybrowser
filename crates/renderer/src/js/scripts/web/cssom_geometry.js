@@ -1,18 +1,9 @@
-// CSSOM View's GeometryUtils mixin and the DOMQuad/DOMRectList types
-// (<https://drafts.csswg.org/cssom-view/#the-geometryutils-interface>,
-// <https://drafts.fxtf.org/geometry/#DOMQuad>).
-//
-// The renderer exposes each element's border box through
-// `getBoundingClientRect()` and `getClientRects()`. This shim derives the
-// margin, padding, and content boxes from those and the element's computed
-// edges, so every GeometryUtils result agrees with the CSSOM View boxes the
-// page already reads.
+// https://drafts.csswg.org/cssom-view/#the-geometryutils-interface
+// https://drafts.fxtf.org/geometry/#DOMQuad
 {
   const __tbDOMRect = globalThis.DOMRect;
   const __tbDOMPoint = globalThis.DOMPoint;
-  // `Object.prototype.toString` reads the `Symbol.toStringTag` of the native
-  // geometry objects, which `assert_class_string` checks
-  // (<https://tc39.es/ecma262/#sec-object.prototype.tostring>).
+  // https://tc39.es/ecma262/#sec-object.prototype.tostring
   for (const [prototype, tag] of [
     [__tbDOMRect && __tbDOMRect.prototype, 'DOMRect'],
     [__tbDOMPoint && __tbDOMPoint.prototype, 'DOMPoint'],
@@ -23,15 +14,10 @@
       });
     }
   }
-  // WebIDL dictionary member conversion to `unrestricted double`: a present
-  // member keeps every value, including `NaN` and the infinities; an absent
-  // one takes the dictionary's default
-  // (<https://webidl.spec.whatwg.org/#es-dictionary>).
+  // https://webidl.spec.whatwg.org/#es-dictionary
   const __tbDouble = (dictionary, name, fallback) =>
     dictionary[name] === undefined ? fallback : Number(dictionary[name]);
-  // WebIDL dictionary conversion: only `undefined` and `null` read as the
-  // empty dictionary; any other primitive is a `TypeError`
-  // (<https://webidl.spec.whatwg.org/#es-dictionary>).
+  // https://webidl.spec.whatwg.org/#es-dictionary
   const __tbDictionary = (value, what) => {
     if (value === undefined || value === null) return {};
     if (typeof value !== 'object' && typeof value !== 'function') {
@@ -135,10 +121,8 @@
   });
   Object.defineProperty(DOMRectList, 'length', { configurable: true, value: 1 });
 
-  // Element and Range already answer with plain rect objects; the interfaces
-  // return the geometry classes those objects describe
-  // (<https://drafts.csswg.org/cssom-view/#dom-element-getboundingclientrect>,
-  // <https://drafts.csswg.org/cssom-view/#dom-element-getclientrects>).
+  // https://drafts.csswg.org/cssom-view/#dom-element-getboundingclientrect
+  // https://drafts.csswg.org/cssom-view/#dom-element-getclientrects
   const __tbRectsOf = list => {
     const rects = [];
     for (let index = 0; index < list.length; index += 1) {
@@ -178,7 +162,6 @@
     const number = Number.parseFloat(value);
     return Number.isFinite(number) ? number : 0;
   };
-  // The used margin, border, and padding edges of one element, in CSS pixels.
   const __tbEdges = node => {
     const style = getComputedStyle(node);
     return {
@@ -203,9 +186,7 @@
     }
     return box;
   };
-  // The offset from the border-box top-left corner to the requested box's
-  // top-left corner (`adjust a point to/from the border box`,
-  // <https://drafts.csswg.org/cssom-view/#the-geometryutils-interface>).
+  // https://drafts.csswg.org/cssom-view/#the-geometryutils-interface
   const __tbBoxOffset = (node, box) => {
     if (!node || node.nodeType !== 1 || box === 'border') return { x: 0, y: 0 };
     const edges = __tbEdges(node);
@@ -229,10 +210,7 @@
     }
     return false;
   };
-  // The rects this node generates in its document's viewport: one per box
-  // fragment for an element, one per line box for a text node, and the layout
-  // viewport for a document
-  // (<https://drafts.csswg.org/cssom-view/#the-geometryutils-interface>).
+  // https://drafts.csswg.org/cssom-view/#the-geometryutils-interface
   const __tbRectsFor = node => {
     if (node.nodeType === 9) {
       const root = node.documentElement;
@@ -242,9 +220,6 @@
     }
     if (!__tbDisplayed(node)) return [];
     if (node.nodeType === 3) {
-      // A `Range` over the text node has one rect per line box. The renderer
-      // has no range layout yet, so its parent's box is the fallback and the
-      // limitation is recorded in `docs/limitations.md`.
       if (typeof Range.prototype.getClientRects !== 'function') {
         return node.parentElement ? __tbRectsFor(node.parentElement) : [];
       }
@@ -254,10 +229,7 @@
     }
     return __tbRectsOf(node.getClientRects());
   };
-  // The offset of `document`'s viewport inside the top-level viewport. A
-  // cross-origin frame's element is not readable, which is the point at which
-  // the coordinate conversion is refused
-  // (<https://drafts.csswg.org/cssom-view/#check-the-documents-for-coordinate-conversion>).
+  // https://drafts.csswg.org/cssom-view/#check-the-documents-for-coordinate-conversion
   const __tbViewportOffset = document => {
     const view = document.defaultView;
     if (!view || view.top === view) return { x: 0, y: 0 };
@@ -273,7 +245,6 @@
       y: parent.y + rect.top + edges.borderTop + edges.paddingTop,
     };
   };
-  // The border-box top-left corner of `node` in the top-level viewport.
   const __tbOrigin = node => {
     const document = __tbDocumentOf(node);
     const offset = __tbViewportOffset(document);
@@ -282,9 +253,7 @@
     if (rects.length === 0) return null;
     return { x: offset.x + rects[0].left, y: offset.y + rects[0].top };
   };
-  // The rect of one box fragment, in that fragment's local coordinate space
-  // with its border edge at (0, 0)
-  // (<https://drafts.csswg.org/cssom-view/#the-geometryutils-interface>).
+  // https://drafts.csswg.org/cssom-view/#the-geometryutils-interface
   const __tbLocalBox = (node, box, rect, index, count) => {
     if (node.nodeType !== 1 || box === 'border') {
       return { x: 0, y: 0, width: rect.width, height: rect.height };
@@ -324,10 +293,6 @@
   };
 
   // https://drafts.csswg.org/cssom-view/#dom-geometryutils-convertpointfromnode
-  //
-  // Each call reads layout once for the source and once for the target, so a
-  // four-point conversion shares the two origins instead of re-reading layout
-  // per point.
   const __tbOrigins = (target, from, fromRects) => {
     const thisDocument = __tbDocumentOf(target);
     const fromDocument = __tbDocumentOf(from);
@@ -382,9 +347,6 @@
     const rects = __tbRectsFor(node);
     if (rects.length === 0) return [];
     const origins = __tbOrigins(relativeTo, node, rects);
-    // Every fragment is expressed in the node's font-box coordinate space,
-    // whose origin is the first fragment's border edge; the conversion below
-    // moves the whole sequence into `relativeTo`'s space.
     const base = { x: rects[0].left, y: rects[0].top };
     const quads = [];
     for (let index = 0; index < rects.length; index += 1) {

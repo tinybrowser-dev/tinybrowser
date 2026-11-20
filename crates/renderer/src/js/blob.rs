@@ -1,20 +1,8 @@
-//! Inflate-once access to the build-compressed JS shims.
-//!
-//! `build.rs` stores every install script deflated (`OUT_DIR/js_blobs`);
-//! each blob inflates at most once per process into a `&'static str` that the
-//! realm installers evaluate. A corrupt blob is a build bug, so inflation
-//! failure throws instead of aborting: every call site already returns a
-//! `rquickjs::Result`.
-
 use std::io::Read as _;
 use std::sync::OnceLock;
 
 use rquickjs::{Ctx, Exception, Result};
 
-/// Inflates `deflated` on first call through `cache`, returning the cached
-/// source afterwards. Callers racing the first inflate redundantly in
-/// parallel and the losers discard their copies; `get_or_init` publishes
-/// exactly one, and inflation is idempotent so every copy is identical.
 pub(crate) fn decompress(
     ctx: &Ctx<'_>,
     deflated: &'static [u8],
@@ -36,10 +24,6 @@ mod tests {
     use std::io::Read as _;
     use std::path::PathBuf;
 
-    /// Every blob `build.rs` emitted inflates to the sources it was built
-    /// from. `manifest.txt` is the machine-readable record of that mapping,
-    /// so adding a shim without compressing it (or vice versa) fails here
-    /// instead of shipping a realm that evaluates stale script.
     #[test]
     fn blobs_round_trip() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));

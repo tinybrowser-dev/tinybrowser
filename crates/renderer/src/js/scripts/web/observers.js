@@ -1,11 +1,7 @@
-// Visibility observation against the viewport (implicit root) or an element
-// root, with per-frame delivery
-// <https://w3c.github.io/IntersectionObserver/#intersection-observer-interface>.
+// https://w3c.github.io/IntersectionObserver/#intersection-observer-interface
 {
   const observers = host.slots('IntersectionObserver');
   const entrySlots = host.slots('IntersectionObserverEntry');
-  // Captured at realm init so a page-patched builtin cannot retarget the
-  // observer's own bookkeeping after it exists.
   const requestFrame = globalThis.requestAnimationFrame;
   const computedStyle = globalThis.getComputedStyle;
   const DOMExceptionCtor = globalThis.DOMException;
@@ -26,7 +22,6 @@
   const liveObservers = PrivateSet();
   let frameHandle = null;
 
-  // ── geometry ──────────────────────────────────────────────────────────
   const lengthPx = value => {
     const number = parseFloatValue(value);
     return number === number ? number : 0;
@@ -35,9 +30,7 @@
     const rect = element.getBoundingClientRect();
     return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
   };
-  // The scrollport of a scroll container: its border box minus the borders,
-  // which is the area its content is clipped to
-  // (<https://drafts.csswg.org/css-overflow-3/#scrollport>).
+  // https://drafts.csswg.org/css-overflow-3/#scrollport
   const paddingBox = element => {
     const style = computedStyle(element);
     const rect = element.getBoundingClientRect();
@@ -48,10 +41,7 @@
       bottom: rect.bottom - lengthPx(style.borderBottomWidth),
     };
   };
-  // The clip rect of an ancestor: its padding box restricted to the axes whose
-  // overflow clips. `overflow-x: visible` with `overflow-y: clip` leaves the
-  // horizontal axis unclipped, so its bounds stay unbounded
-  // (<https://drafts.csswg.org/css-overflow-3/#overflow-properties>).
+  // https://drafts.csswg.org/css-overflow-3/#overflow-properties
   const clipRect = element => {
     const style = computedStyle(element);
     const clipX = style.overflowX !== 'visible';
@@ -103,7 +93,6 @@
     },
   };
 
-  // ── root margin ───────────────────────────────────────────────────────
   const syntaxError = () => new DOMExceptionCtor(
     'The root margin must be one to four lengths or percentages', 'SyntaxError');
   const parseMargin = text => {
@@ -129,7 +118,6 @@
   const resolveMargin = (side, basis) =>
     side.unit === '%' ? side.value * basis / 100 : side.value;
 
-  // ── threshold ─────────────────────────────────────────────────────────
   const parseThresholds = value => {
     const items = [];
     if (value !== null && typeof value === 'object'
@@ -141,8 +129,6 @@
     const thresholds = [];
     for (const item of items) {
       const number = toNumber(item);
-      // A non-numeric string converts to NaN, which Web IDL's `double`
-      // conversion rejects with a TypeError.
       if (number !== number) throw new TypeError('threshold must be a number');
       if (number < 0 || number > 1) {
         throw new RangeError('threshold must be between 0 and 1');
@@ -159,11 +145,7 @@
     return freeze(unique);
   };
 
-  // ── intersection ──────────────────────────────────────────────────────
-  // The root intersection rectangle: the viewport for an implicit root, the
-  // padding area of a scrollable element root, and the border box otherwise,
-  // expanded by the root margin
-  // <https://w3c.github.io/IntersectionObserver/#root-intersection-rectangle>.
+  // https://w3c.github.io/IntersectionObserver/#root-intersection-rectangle
   const rootRectangle = data => {
     let rect;
     if (data.root === null || data.root.nodeType === 9) {
@@ -184,12 +166,8 @@
       bottom: rect.bottom + resolveMargin(bottom, height),
     };
   };
-  // Whether `root` is in `target`'s containing block chain. An absolutely
-  // positioned target's chain starts at its offset parent, so a static element
-  // root the target is merely nested in does not qualify
-  // (<https://w3c.github.io/IntersectionObserver/#update-intersection-observations-algo>).
+  // https://w3c.github.io/IntersectionObserver/#update-intersection-observations-algo
   const inContainingBlockChain = (target, root) => {
-    // A Document root contains every target in its document.
     if (root.nodeType === 9) return target.ownerDocument === root;
     const position = computedStyle(target).position;
     let node;
@@ -201,9 +179,7 @@
     }
     return false;
   };
-  // Clip the target's border box by every ancestor that clips its content,
-  // then by the root intersection rectangle
-  // (<https://w3c.github.io/IntersectionObserver/#compute-the-intersection>).
+  // https://w3c.github.io/IntersectionObserver/#compute-the-intersection
   const computeIntersection = (target, root, rootBounds) => {
     let rect = borderBox(target);
     const stop = root !== null && root.nodeType === 1 ? root : null;
@@ -216,7 +192,6 @@
     return intersect(rect, rootBounds);
   };
 
-  // ── entries ───────────────────────────────────────────────────────────
   function IntersectionObserverEntry() {
     throw new TypeError('Illegal constructor');
   }
@@ -266,10 +241,6 @@
     return value;
   };
 
-  // ── observer ──────────────────────────────────────────────────────────
-  // A wrapper from another realm fails `instanceof` here, so the node type is
-  // the cross-realm brand (`nodeType` is 1 for an Element and 9 for a
-  // Document).
   const isElement = value => value !== null && typeof value === 'object'
     && value.nodeType === 1;
   const isElementOrDocument = value => value !== null && typeof value === 'object'
@@ -288,13 +259,9 @@
       const { target } = registration;
       if ((time - registration.lastUpdateTime) < data.delay) continue;
       registration.lastUpdateTime = time;
-      // An explicit root's observations only reach targets it contains in the
-      // containing block chain; other targets produce no entry at all
-      // (`containing-block.html`).
       if (data.root !== null && !inContainingBlockChain(target, data.root)) continue;
       const targetRect = borderBox(target);
-      // Edge-adjacent counts as intersecting even when the area is zero
-      // (<https://w3c.github.io/IntersectionObserver/#update-intersection-observations-algo>).
+      // https://w3c.github.io/IntersectionObserver/#update-intersection-observations-algo
       const isIntersecting = targetRect.left <= rootBounds.right
         && targetRect.right >= rootBounds.left
         && targetRect.top <= rootBounds.bottom
@@ -344,9 +311,7 @@
       try {
         apply(data.callback, observer, [entries, observer]);
       } catch (error) {
-        // A throwing callback is reported as an uncaught error instead of
-        // breaking the observation loop
-        // (<https://html.spec.whatwg.org/multipage/webappapis.html#report-the-exception>).
+        // https://html.spec.whatwg.org/multipage/webappapis.html#report-the-exception
         setTimer(() => { throw error; }, 0);
       }
     }
@@ -432,8 +397,6 @@
   define(observerPrototype, 'takeRecords', {
     value() {
       brand(this);
-      // Entries are delivered in the frame that produced them, so nothing is
-      // ever pending between frames.
       return [];
     },
     writable: true, enumerable: true, configurable: true,
@@ -450,15 +413,11 @@
   });
 }
 
-// Resize observation: content, border, and device-pixel box sizes, delivered
-// after layout
-// <https://drafts.csswg.org/resize-observer/#resize-observer-interface>.
+// https://drafts.csswg.org/resize-observer/#resize-observer-interface
 {
   const observers = host.slots('ResizeObserver');
   const entrySlots = host.slots('ResizeObserverEntry');
   const sizeSlots = host.slots('ResizeObserverSize');
-  // Captured at realm init so a page-patched builtin cannot retarget the
-  // observer's bookkeeping after it exists.
   const requestFrame = globalThis.requestAnimationFrame;
   const computedStyle = globalThis.getComputedStyle;
   const ErrorEventCtor = globalThis.ErrorEvent;
@@ -474,15 +433,9 @@
 
   const live = PrivateSet();
   let frameHandle = null;
-  // Consecutive frames without a size change. The loop stops after this many
-  // so an observed target does not keep the page's task queue busy forever
-  // (a reftest never settles otherwise); `observe()` and a delivery restart
-  // it.
   const IDLE_FRAMES = 20;
   let idleFrames = 0;
-  // A resize callback that resizes again is notified in the same frame up to
-  // this many passes; what is left then is reported as a loop error
-  // (<https://drafts.csswg.org/resize-observer/#calculate-depth-for-node>).
+  // https://drafts.csswg.org/resize-observer/#calculate-depth-for-node
   const MAX_DEPTH = 5;
 
   const lengthPx = value => {
@@ -492,9 +445,7 @@
   const isVertical = style =>
     style.writingMode === 'vertical-rl' || style.writingMode === 'vertical-lr'
     || style.writingMode === 'sideways-rl' || style.writingMode === 'sideways-lr';
-  // The three observable boxes of an element. `contentRect` is the content box
-  // relative to the padding box, which is what its `x`/`y` offsets report
-  // (<https://drafts.csswg.org/resize-observer/#resize-observer-entry-interface>).
+  // https://drafts.csswg.org/resize-observer/#resize-observer-entry-interface
   const measure = element => {
     const rect = element.getBoundingClientRect();
     const style = computedStyle(element);
@@ -514,8 +465,6 @@
       borderHeight,
       contentWidth,
       contentHeight,
-      // The content box's viewport position, which decides which device
-      // pixels its snapped edges fall on.
       contentX: rect.left + lengthPx(style.borderLeftWidth) + lengthPx(style.paddingLeft),
       contentY: rect.top + lengthPx(style.borderTopWidth) + lengthPx(style.paddingTop),
       contentLeft: left,
@@ -523,10 +472,7 @@
       vertical,
     };
   };
-  // A box's size in device pixels: each edge is snapped to the nearest device
-  // pixel and the size is the distance between them, so a box that starts
-  // mid-pixel rounds its two edges, not its size
-  // (<https://drafts.csswg.org/css-box-4/#snap>).
+  // https://drafts.csswg.org/css-box-4/#snap
   const snappedSize = (start, size, ratio) =>
     Math.round((start + size) * ratio) - Math.round(start * ratio);
   const boxSize = (measured, box) => {
@@ -638,9 +584,6 @@
   const isElement = value => value !== null && typeof value === 'object'
     && value.nodeType === 1;
 
-  // Deliver every size change that exists at this instant. Returns whether a
-  // callback ran, so the caller can repeat after callback-driven layout
-  // changes.
   const deliverOnce = () => {
     let delivered = false;
     for (const observer of live.values()) {
@@ -665,9 +608,7 @@
       try {
         apply(data.callback, observer, [entries, observer]);
       } catch (error) {
-        // Report the exception as an uncaught error instead of breaking the
-        // observation loop
-        // (<https://html.spec.whatwg.org/multipage/webappapis.html#report-the-exception>).
+        // https://html.spec.whatwg.org/multipage/webappapis.html#report-the-exception
         globalThis.setTimeout(() => { throw error; }, 0);
       }
     }
@@ -696,8 +637,7 @@
     }
     idleFrames = any ? 0 : idleFrames + 1;
     if (any && hasPending()) {
-      // Undelivered notifications after the depth limit
-      // (<https://drafts.csswg.org/resize-observer/#deliver-resize-loop-error>).
+      // https://drafts.csswg.org/resize-observer/#deliver-resize-loop-error
       if (typeof ErrorEventCtor === 'function') {
         const event = new ErrorEventCtor('error', {
           message: 'ResizeObserver loop completed with undelivered notifications.',
@@ -741,8 +681,6 @@
       }
       for (const registration of data.registrations) {
         if (registration.target === target) {
-          // A second `observe()` with a different box replaces the first
-          // (`observe-015.html`).
           registration.box = box;
           return;
         }

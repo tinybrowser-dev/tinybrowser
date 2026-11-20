@@ -1,6 +1,3 @@
-// CanvasFilter validates a filter init dictionary. The rendering effect is not
-// applied yet; the constructor and beginLayer() still enforce the filter
-// parameter shapes the spec defines.
 // https://html.spec.whatwg.org/multipage/canvas.html#canvasfilter
 (function () {
   function fail() {
@@ -21,8 +18,6 @@
     return result;
   }
 
-  // Offsets and deviations accept a scalar or up to `maximum` numbers. An
-  // empty array coerces to 0.
   function pair(value, maximum) {
     if (Array.isArray(value)) {
       if (value.length > maximum) fail();
@@ -129,8 +124,6 @@
   Object.defineProperty(CanvasFilter.prototype, Symbol.toStringTag, { value: 'CanvasFilter' });
 
   globalThis.CanvasFilter = CanvasFilter;
-  // beginLayer() accepts a filter dictionary. Non-object values are cast to a
-  // string and invalid strings leave the filter unchanged.
   globalThis.__tbValidateFilter = function (init) {
     if (init === null || init === undefined) return;
     if (Array.isArray(init)) {

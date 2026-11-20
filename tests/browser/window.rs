@@ -1,8 +1,4 @@
-//! `window.open`'s browser-tab path: a cross-origin popup stays a tab, and the
-//! tab's first request runs under the calling document rather than the blank
-//! document the tab starts with. The referrer comes from the opener's policy
-//! and `Sec-Fetch-Site` from the opener's origin
-//! (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps>).
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps
 
 use std::time::{Duration, Instant};
 
@@ -10,12 +6,6 @@ use serde_json::json;
 
 use crate::fixture::{Fixture, TestServer, evaluate, ok, open_page, server};
 
-/// Serves one page that opens a browser-hosted popup, and returns the popup
-/// server plus the page's serialized origin.
-///
-/// The page binds the loopback address; `page_host` decides what site it
-/// claims, so `localhost` and `127.0.0.1` let a test choose same-site or
-/// cross-site against the popup, which is always `localhost`.
 fn open_popup(
     page_host: &str,
     head: &str,
@@ -36,9 +26,6 @@ fn open_popup(
     (popup, page_origin, fixture, client, session)
 }
 
-/// The default policy is `strict-origin-when-cross-origin`, so a cross-site
-/// popup gets the opener's origin and not its path, and the navigation is
-/// `cross-site`.
 #[test]
 fn a_cross_site_popup_sends_the_openers_origin_as_referrer() {
     let (popup, origin, _fixture, mut client, session) = open_popup("127.0.0.1", "", "");
@@ -55,9 +42,6 @@ fn a_cross_site_popup_sends_the_openers_origin_as_referrer() {
     );
 }
 
-/// The calling document's own policy decides how much of its URL travels. A
-/// page that opts into `unsafe-url` sends the whole path, which proves the
-/// referrer is resolved from the opener's policy container and not a constant.
 #[test]
 fn the_openers_referrer_policy_decides_how_much_travels() {
     let (popup, origin, _fixture, _client, _session) = open_popup(
@@ -73,8 +57,6 @@ fn the_openers_referrer_policy_decides_how_much_travels() {
     assert!(head.contains("sec-fetch-site: cross-site"), "{head}");
 }
 
-/// `noreferrer` is the opener feature's referrer half: the popup still opens
-/// and still runs under the calling document's origin, but sends no `Referer`.
 #[test]
 fn noreferrer_opens_the_popup_without_a_referrer() {
     let (popup, _origin, _fixture, _client, _session) = open_popup("127.0.0.1", "", "noreferrer");
@@ -86,9 +68,6 @@ fn noreferrer_opens_the_popup_without_a_referrer() {
     assert!(head.contains("sec-fetch-site: cross-site"), "{head}");
 }
 
-/// A popup from a different origin on the same site is still a browser tab,
-/// and its navigation is `same-site` while the default policy sends the
-/// origin.
 #[test]
 fn a_same_site_popup_is_same_site_and_not_same_origin() {
     let (popup, origin, _fixture, _client, _session) = open_popup("localhost", "", "");
@@ -100,11 +79,8 @@ fn a_same_site_popup_is_same_site_and_not_same_origin() {
     assert!(head.contains("sec-fetch-site: same-site"), "{head}");
 }
 
-/// A named browser-tab popup is one browsing context: opening the same name
-/// again selects the tab the first call opened and navigates it, instead of
-/// creating a second tab
-/// (<https://html.spec.whatwg.org/multipage/document-sequences.html#the-rules-for-choosing-a-navigable>,
-/// <https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps>).
+// https://html.spec.whatwg.org/multipage/document-sequences.html#the-rules-for-choosing-a-navigable
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps
 #[test]
 fn a_named_popup_is_reused_and_navigated() {
     let popup = TestServer::start(
@@ -116,8 +92,6 @@ fn a_named_popup_is_reused_and_navigated() {
     );
     let port = popup.address().port();
     let (listener, address) = server();
-    // The page is `127.0.0.1`, so the popups are cross-site and stay browser
-    // tabs; the browser has to own the name table for them.
     let page = format!(
         r#"<!doctype html><script>
 window.__first = window.open('http://localhost:{port}/first', "shared");
@@ -129,8 +103,6 @@ window.__first = window.open('http://localhost:{port}/first', "shared");
         &format!("http://127.0.0.1:{}/start", address.port()),
     );
     popup.wait_count("/first", 1);
-    // The second open happens after the first tab has loaded, so its
-    // navigation is not superseded by the first one.
     let second = format!(
         r#"window.__second = window.open('http://localhost:{port}/second', "shared");
            window.__first === window.__second"#
@@ -153,10 +125,7 @@ window.__first = window.open('http://localhost:{port}/first', "shared");
     );
 }
 
-/// A window open with no URL navigates nothing when it selects an existing
-/// context: `window.open('', '_self')` is how a page asks for its own proxy,
-/// and it must not replace the document with `about:blank`
-/// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps>).
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps
 #[test]
 fn opening_the_current_context_with_no_url_keeps_its_document() {
     let (listener, address) = server();
@@ -180,12 +149,7 @@ fn opening_the_current_context_with_no_url_keeps_its_document() {
     );
 }
 
-/// A sandboxed document without `allow-popups` cannot create a context, no
-/// matter how the target is spelled. The old check tested for the literal
-/// `_blank`, so `_BLANK` and any unknown `_`-prefixed name walked past it and
-/// opened a cross-origin tab. `_self` keeps working, because it creates
-/// nothing
-/// (<https://html.spec.whatwg.org/multipage/browsers.html#sandboxed-auxiliary-navigation-browsing-context-flag>).
+// https://html.spec.whatwg.org/multipage/browsers.html#sandboxed-auxiliary-navigation-browsing-context-flag
 #[test]
 fn a_sandbox_without_allow_popups_cannot_open_a_context_by_spelling() {
     let popup = TestServer::start(
@@ -201,8 +165,6 @@ fn a_sandbox_without_allow_popups_cannot_open_a_context_by_spelling() {
     let frame = |sandbox: &str, script: &str| {
         format!("<iframe sandbox=\"{sandbox}\" srcdoc=\"<script>{script}</script>\"></iframe>")
     };
-    // A sandboxed `srcdoc` frame is opaque-origin, so it cannot write the
-    // parent's globals; `postMessage` is the one channel it has.
     let page = format!(
         "<!doctype html><script>\
          window.__answers = [];\
@@ -237,9 +199,6 @@ fn a_sandbox_without_allow_popups_cannot_open_a_context_by_spelling() {
         &format!("http://127.0.0.1:{}/start", address.port()),
     );
 
-    // The synchronous answers: the permitted frame got a proxy, the sandboxed
-    // frames got null for every spelling of a new context, and `_self` still
-    // selects its own window.
     wait_for_answers(&mut client, &session);
     assert_eq!(
         evaluate(
@@ -249,10 +208,6 @@ fn a_sandbox_without_allow_popups_cannot_open_a_context_by_spelling() {
         ),
         json!("allowed:true|refused,true,true,true|self:true")
     );
-    // The permitted frame's tab really navigated; the refused names issued no
-    // request. A refused call would have started its request in the same task
-    // as the permitted one, so its absence after the permitted request lands is
-    // meaningful.
     popup.wait("/allowed");
     std::thread::sleep(std::time::Duration::from_millis(300));
     for path in ["/blank", "/upper", "/named"] {
@@ -260,15 +215,9 @@ fn a_sandbox_without_allow_popups_cannot_open_a_context_by_spelling() {
     }
 }
 
-/// The blob branch of the window open steps compares the blob entry's origin
-/// with the *top-level* origin, not the calling frame's: a blob minted by a
-/// cross-site iframe still severs the opener, while one minted by the
-/// top-level document keeps it
-/// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#get-noopener-for-window-open>).
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#get-noopener-for-window-open
 #[test]
 fn a_blob_popup_compares_its_entry_with_the_top_level_origin() {
-    // The page and its cross-site iframe share one server: the page claims
-    // `127.0.0.1`, the iframe `localhost`, so they are different sites.
     let (listener, address) = server();
     let port = address.port();
     let page = format!(
@@ -298,8 +247,6 @@ parent.postMessage(String(window.open(URL.createObjectURL(blob), '_blank') === n
         &format!("http://127.0.0.1:{port}/start"),
     );
 
-    // The top-level document's blob is same-site with the top-level origin, so
-    // the call returns the popup's proxy and the popup keeps its opener.
     assert_eq!(
         evaluate(
             &mut client,
@@ -309,9 +256,6 @@ parent.postMessage(String(window.open(URL.createObjectURL(blob), '_blank') === n
         json!(true),
         "a same-site blob keeps the opener"
     );
-    // The iframe's blob is same-origin with the iframe and cross-site with the
-    // top-level document, so the call withholds the popup's proxy. Comparing
-    // against the calling frame's site instead would have kept it.
     wait_for_value(
         &mut client,
         &session,
@@ -325,8 +269,6 @@ parent.postMessage(String(window.open(URL.createObjectURL(blob), '_blank') === n
     );
 }
 
-/// Waits until `expression` equals `expected`, so a frame's `postMessage` can
-/// arrive after the page has loaded.
 fn wait_for_value(
     client: &mut cdp::Client,
     session: &str,
@@ -343,7 +285,6 @@ fn wait_for_value(
     }
 }
 
-/// Waits until each sandboxed frame has posted its one answer.
 fn wait_for_answers(client: &mut cdp::Client, session: &str) {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -358,9 +299,7 @@ fn wait_for_answers(client: &mut cdp::Client, session: &str) {
     }
 }
 
-/// A browser tab opened with a name reports it: the name is browsing-context
-/// state the browser owns, and a renderer cannot derive it from the response
-/// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-name>).
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-name
 #[test]
 fn a_browser_tab_reports_the_name_it_was_opened_with() {
     let popup = TestServer::start(
@@ -385,10 +324,7 @@ fn a_browser_tab_reports_the_name_it_was_opened_with() {
     popup.wait("/report?name=peer");
 }
 
-/// A name a page assigns is what a later `window.open` from the group
-/// searches: the renderer reports the change, so the browser's name table is
-/// not limited to names given at creation
-/// (<https://html.spec.whatwg.org/multipage/document-sequences.html#the-rules-for-choosing-a-navigable>).
+// https://html.spec.whatwg.org/multipage/document-sequences.html#the-rules-for-choosing-a-navigable
 #[test]
 fn a_name_a_page_sets_is_what_the_group_opens_again() {
     let popup = TestServer::start(
@@ -434,10 +370,7 @@ fn a_name_a_page_sets_is_what_the_group_opens_again() {
     );
 }
 
-/// The popup that a named open creates keeps its name across a cross-origin
-/// navigation while its opener is live, and loses it when `noopener` severed
-/// the opener
-/// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#resetBCName>).
+// https://html.spec.whatwg.org/multipage/browsing-the-web.html#resetBCName
 #[test]
 fn a_popups_name_follows_the_opener_it_was_opened_with() {
     for (features, first_name, second_name) in [("", "peer", "peer"), ("noopener", "", "")] {
@@ -452,9 +385,6 @@ fn a_popups_name_follows_the_opener_it_was_opened_with() {
             None,
         );
         let second_port = second.address().port();
-        // The first document reports the name the open gave it and navigates
-        // to another origin only once the report has been sent: an in-flight
-        // fetch is aborted by the navigation that follows it.
         let first_page = format!(
             "<!doctype html><script>\
              fetch('/first?name=' + encodeURIComponent(window.name)).then(function () {{\
@@ -479,25 +409,14 @@ fn a_popups_name_follows_the_opener_it_was_opened_with() {
             &format!("http://127.0.0.1:{}/start", address.port()),
         );
         first.wait(&format!("/first?name={first_name}"));
-        // The second document is another origin, so the reset decides.
         second.wait("/second");
         second.wait(&format!("/report?name={second_name}"));
     }
 }
 
-/// A tab's target name belongs to the session-history entry it was committed
-/// with: crossing an origin clears the live name, traversing back restores the
-/// earlier entry's name, and traversing forward restores the cleared one
-/// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#resetBCName>,
-/// "the target name is set to the target name of the session history entry").
-///
-/// The tab is a `noopener` popup so it is neither auxiliary nor attached to an
-/// opener: that is what makes the cross-origin commit clear the name.
+// https://html.spec.whatwg.org/multipage/browsing-the-web.html#resetBCName
 #[test]
 fn a_target_name_is_restored_by_history_traversal() {
-    // `sessionStorage` is per origin and survives a traversal, so it marks
-    // the phase: the first load moves forward, the back load moves forward
-    // again, and each origin reports once per visit.
     let second = TestServer::start(
         vec![(
             "/second",
@@ -549,24 +468,13 @@ fn a_target_name_is_restored_by_history_traversal() {
         "tinybrowser-history-name",
         &format!("http://127.0.0.1:{}/start", address.port()),
     );
-    // The name the first entry was committed with, then the second origin's
-    // commit, which clears it because the popup has no live opener.
     first.wait_count("/seen?where=first&name=peer", 1);
     second.wait("/seen?where=second&name=");
-    // Back traverses to the first entry: its name is restored from history,
-    // not from the cleared live context.
     first.wait_count("/seen?where=first&name=peer", 2);
-    // Forward traverses to the second entry, which stored the cleared name.
     second.wait_count("/seen?where=second&name=", 2);
 }
 
-/// The entry a document leaves keeps the name that document had, even when the
-/// next document renames the tab before the browser handles the commit event.
-///
-/// A renderer-driven commit is reported to the browser after the new
-/// document's scripts have run, so the live name is already the new one by
-/// then; the commit event carries the outgoing name for exactly this reason
-/// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#resetBCName>).
+// https://html.spec.whatwg.org/multipage/browsing-the-web.html#resetBCName
 #[test]
 fn the_next_documents_name_does_not_overwrite_the_entry_behind_it() {
     let second = TestServer::start(
@@ -617,15 +525,10 @@ fn the_next_documents_name_does_not_overwrite_the_entry_behind_it() {
     );
     first.wait_count("/seen?where=first&name=first", 1);
     second.wait("/seen?where=second&name=second");
-    // Back on the first entry, the restored name is the one its own document
-    // set at commit, not the one the second document set afterwards.
     first.wait_count("/seen?where=first&name=first", 2);
 }
 
-/// A name belongs to the entry its document committed with, so a
-/// browser-driven navigation records it before leaving, and a same-document
-/// push presents the same document state's name
-/// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#resetBCName>).
+// https://html.spec.whatwg.org/multipage/browsing-the-web.html#resetBCName
 #[test]
 fn a_browser_navigation_keeps_the_entrys_name() {
     let second = TestServer::start(
@@ -657,8 +560,6 @@ fn a_browser_navigation_keeps_the_entrys_name() {
         &format!("http://localhost:{first_port}/first"),
     );
     first.wait("/seen?where=first&name=kept");
-    // The browser drives this commit and the pushed entry shares the document
-    // state, so both need the assignment recorded before the new entry exists.
     client
         .call(
             "Page.navigate",
@@ -671,13 +572,7 @@ fn a_browser_navigation_keeps_the_entrys_name() {
     first.wait_count("/seen?where=first&name=kept", 2);
 }
 
-/// A traversal restores the browsing context's target name as well as the
-/// document's copy, so another tab in the group finds the context under the
-/// restored name and no longer under the one the next document set.
-///
-/// The renderer's own frame tree would answer a lookup from inside the tab, so
-/// the check comes from the opener, which has to ask the browser
-/// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#resetBCName>).
+// https://html.spec.whatwg.org/multipage/browsing-the-web.html#resetBCName
 #[test]
 fn a_traversal_restores_the_name_the_group_opens() {
     let pages = TestServer::start(
@@ -726,8 +621,6 @@ fn a_traversal_restores_the_name_the_group_opens() {
     pages.wait("/ready?where=one");
     pages.wait("/ready?where=two");
     pages.wait("/ready?where=back");
-    // The tab is back on the entry that was committed with `peer`, so the
-    // opener's lookup by that name selects it.
     assert_eq!(
         evaluate(
             &mut client,
@@ -741,8 +634,6 @@ fn a_traversal_restores_the_name_the_group_opens() {
         "the traversal did not restore the browsing context's name"
     );
     pages.wait("/check");
-    // The name the second document set is gone with the entry that owned it,
-    // so the same lookup now creates a context instead of selecting this one.
     assert_eq!(
         evaluate(
             &mut client,
@@ -755,10 +646,7 @@ fn a_traversal_restores_the_name_the_group_opens() {
     );
 }
 
-/// A sandboxed document's popup keeps the inherited flag set in the browser
-/// tab it becomes: an opaque origin, no storage, and no top-level navigation
-/// after the popup commits a document of its own
-/// (<https://html.spec.whatwg.org/multipage/browsers.html#popup-sandboxing-flag-set>).
+// https://html.spec.whatwg.org/multipage/browsers.html#popup-sandboxing-flag-set
 #[test]
 fn a_sandboxed_popup_inherits_its_flags_in_the_browser_tab() {
     let popup = TestServer::start(
@@ -789,9 +677,7 @@ fn a_sandboxed_popup_inherits_its_flags_in_the_browser_tab() {
     popup.wait("/report?origin=null&storage=SecurityError");
 }
 
-/// `allow-popups-to-escape-sandbox` is the one keyword that keeps the popup
-/// out of the opener's flag set, so the tab starts unsandboxed
-/// (<https://html.spec.whatwg.org/multipage/browsers.html#sandbox-propagates-to-auxiliary-browsing-contexts-flag>).
+// https://html.spec.whatwg.org/multipage/browsers.html#sandbox-propagates-to-auxiliary-browsing-contexts-flag
 #[test]
 fn an_escaping_sandbox_popup_starts_unsandboxed() {
     let popup = TestServer::start(
@@ -823,10 +709,7 @@ fn an_escaping_sandbox_popup_starts_unsandboxed() {
     popup.wait(&expected);
 }
 
-/// A renderer-hosted popup keeps the opener's flag set after its first
-/// navigation: the popup sandboxing flag set belongs to the browsing context,
-/// so the `about:blank` it starts on is not the only sandboxed document
-/// (<https://html.spec.whatwg.org/multipage/browsers.html#popup-sandboxing-flag-set>).
+// https://html.spec.whatwg.org/multipage/browsers.html#popup-sandboxing-flag-set
 #[test]
 fn a_renderer_hosted_popup_keeps_its_flags_after_a_navigation() {
     let (listener, address) = server();
@@ -848,8 +731,6 @@ fn a_renderer_hosted_popup_keeps_its_flags_after_a_navigation() {
         "tinybrowser-window-sandbox",
         &format!("http://127.0.0.1:{}/start", address.port()),
     );
-    // The sentinel is requested after the navigation attempt, so its arrival
-    // proves the attempt really happened.
     pages.wait("/report?attempted=1");
     assert!(
         !pages.requested("/hijacked"),
@@ -857,10 +738,7 @@ fn a_renderer_hosted_popup_keeps_its_flags_after_a_navigation() {
     );
 }
 
-/// A name a page sets in a browser tab is cleared when that tab navigates
-/// itself to another origin without a live opener, and the browser hears about
-/// the reset too
-/// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#resetBCName>).
+// https://html.spec.whatwg.org/multipage/browsing-the-web.html#resetBCName
 #[test]
 fn a_scripted_name_does_not_survive_a_cross_origin_navigation() {
     let second = TestServer::start(
@@ -903,10 +781,7 @@ fn a_scripted_name_does_not_survive_a_cross_origin_navigation() {
     second.wait("/report?name=");
 }
 
-/// A sandboxed browser-tab popup stays sandboxed after a navigation the
-/// renderer performs itself: the popup sandboxing flag set belongs to the
-/// browsing context, and `location.href` is not a mount from the browser
-/// (<https://html.spec.whatwg.org/multipage/browsers.html#popup-sandboxing-flag-set>).
+// https://html.spec.whatwg.org/multipage/browsers.html#popup-sandboxing-flag-set
 #[test]
 fn a_sandboxed_popup_stays_sandboxed_after_its_own_navigation() {
     let popup = TestServer::start(
@@ -950,10 +825,7 @@ fn a_sandboxed_popup_stays_sandboxed_after_its_own_navigation() {
     popup.wait("/report?origin=null&storage=SecurityError");
 }
 
-/// A name the new document sets wins over the name its own mount carried: the
-/// browser resolves the commit's reset before the document runs, so it cannot
-/// overwrite what the page already reported
-/// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#resetBCName>).
+// https://html.spec.whatwg.org/multipage/browsing-the-web.html#resetBCName
 #[test]
 fn a_name_the_new_document_sets_survives_its_mount() {
     let popup = TestServer::start(
@@ -991,8 +863,6 @@ fn a_name_the_new_document_sets_survives_its_mount() {
         &format!("http://127.0.0.1:{}/start", address.port()),
     );
     popup.wait("/first?name=chosen");
-    // Navigate the popup from the browser, which mounts the next document and
-    // therefore carries the name the browser kept.
     let first = format!("http://localhost:{port}/first");
     let targets = client
         .call("Target.getTargets", &json!({}), None)
@@ -1017,10 +887,7 @@ fn a_name_the_new_document_sets_survives_its_mount() {
     popup.wait("/report?name=chosen");
 }
 
-/// A declarative refresh whose delay is larger than the clock can represent
-/// saturates while parsing and arms a timer with no deadline, so the page
-/// neither panics nor navigates
-/// (<https://html.spec.whatwg.org/multipage/semantics.html#attr-meta-http-equiv-refresh>).
+// https://html.spec.whatwg.org/multipage/semantics.html#attr-meta-http-equiv-refresh
 #[test]
 fn a_refresh_delay_beyond_the_clock_never_fires() {
     let page = "<!doctype html><meta http-equiv=\"refresh\" content=\"99999999999999999999;url=/next\"><title>overflow</title>";
@@ -1052,17 +919,7 @@ fn a_refresh_delay_beyond_the_clock_never_fires() {
     );
 }
 
-/// Runs #231's scenario once: a page opens a browser tab named `victim`, an
-/// `iframe` opens a second popup, and that popup navigates `victim` by name
-/// after it loads. Returns what the victim server recorded for `/two`, which
-/// is empty when the navigation was refused.
-///
-/// The popup's target is a real URL the server records, so "refused" and
-/// "navigated" are distinguishable from the outside; `about:blank` would
-/// never reach the server either way. `sandboxed` decides whether the opener
-/// is a `sandbox="allow-scripts allow-popups"` document, whose popup keeps
-/// the sandboxed navigation flag
-/// (<https://html.spec.whatwg.org/multipage/browsers.html#popup-sandboxing-flag-set>).
+// https://html.spec.whatwg.org/multipage/browsers.html#popup-sandboxing-flag-set
 fn sibling_navigation(sandboxed: bool) -> Vec<String> {
     let victim = TestServer::start(
         vec![
@@ -1106,20 +963,12 @@ fn sibling_navigation(sandboxed: bool) -> Vec<String> {
         &format!("http://{origin}/page/index.html"),
     );
 
-    // Both tabs exist and loaded before the popup tries to navigate.
     victim.wait("/one");
     popup.wait("/popup");
     std::thread::sleep(Duration::from_millis(1500));
     victim.history("/two")
 }
 
-/// Runs the same scenario with no intermediate popup: the page itself opens
-/// a browser tab named `victim`, and an `iframe` it hosts navigates that tab
-/// by name. Returns what the victim server recorded for `/two`.
-///
-/// This is the case the browser cannot answer from the tab's own popup set (the
-/// tab is unsandboxed), so the calling document's set has to travel on the
-/// navigation source.
 fn sandboxed_frame_navigation(sandboxed: bool) -> Vec<String> {
     let victim = TestServer::start(
         vec![
@@ -1159,10 +1008,7 @@ fn sandboxed_frame_navigation(sandboxed: bool) -> Vec<String> {
     victim.history("/two")
 }
 
-/// A sandboxed frame cannot navigate a browser tab it did not open, even
-/// though its own tab is unsandboxed: the check reads the calling document's
-/// set, not only the tab's
-/// (<https://html.spec.whatwg.org/multipage/browsers.html#sandboxed-navigation-browsing-context-flag>).
+// https://html.spec.whatwg.org/multipage/browsers.html#sandboxed-navigation-browsing-context-flag
 #[test]
 fn a_sandboxed_frame_cannot_navigate_a_sibling_tab_by_name() {
     assert!(
@@ -1171,7 +1017,6 @@ fn a_sandboxed_frame_cannot_navigate_a_sibling_tab_by_name() {
     );
 }
 
-/// The control: the same frame, unsandboxed, reaches the victim tab.
 #[test]
 fn an_unsandboxed_frame_may_navigate_a_sibling_tab_by_name() {
     assert_eq!(
@@ -1181,11 +1026,7 @@ fn an_unsandboxed_frame_may_navigate_a_sibling_tab_by_name() {
     );
 }
 
-/// A sandboxed document cannot navigate a browsing context it did not open,
-/// even one the browser hosts: the popup set travels with the tab, and the
-/// name lookup alone is not permission
-/// (<https://html.spec.whatwg.org/multipage/browsers.html#sandboxed-navigation-browsing-context-flag>,
-/// #231).
+// https://html.spec.whatwg.org/multipage/browsers.html#sandboxed-navigation-browsing-context-flag
 #[test]
 fn a_sandboxed_popup_cannot_navigate_a_sibling_tab_by_name() {
     assert!(
@@ -1194,9 +1035,6 @@ fn a_sandboxed_popup_cannot_navigate_a_sibling_tab_by_name() {
     );
 }
 
-/// The control for the test above: the same name lookup and the same
-/// navigation, with the sandbox removed, reaches the victim tab. Without this
-/// the refusal could be a lookup that never matched anything.
 #[test]
 fn an_unsandboxed_popup_may_navigate_a_sibling_tab_by_name() {
     assert_eq!(
@@ -1206,11 +1044,7 @@ fn an_unsandboxed_popup_may_navigate_a_sibling_tab_by_name() {
     );
 }
 
-/// A CSP `sandbox` directive without `allow-popups` blocks a popup exactly
-/// like an `iframe` attribute. The renderer applies the response's directive
-/// to its own active set, and the browser owns the same flags for its check,
-/// so neither path can open the context
-/// (<https://w3c.github.io/webappsec-csp/#sandbox>).
+// https://w3c.github.io/webappsec-csp/#sandbox
 #[test]
 fn a_csp_sandbox_without_allow_popups_cannot_open_a_popup() {
     let popup = TestServer::start(
@@ -1241,8 +1075,6 @@ fn a_csp_sandbox_without_allow_popups_cannot_open_a_popup() {
     );
 }
 
-/// Every open tab as CDP reports it, so a test can watch a popup appear and
-/// disappear without depending on its renderer.
 fn target_count(client: &mut cdp::Client) -> usize {
     client
         .call("Target.getTargets", &json!({}), None)
@@ -1251,7 +1083,6 @@ fn target_count(client: &mut cdp::Client) -> usize {
         .map_or(0, Vec::len)
 }
 
-/// Waits until the browser has `expected` open tabs.
 fn wait_for_targets(client: &mut cdp::Client, expected: usize) {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -1267,10 +1098,7 @@ fn wait_for_targets(client: &mut cdp::Client, expected: usize) {
     }
 }
 
-/// A same-origin popup is a browser tab on this engine, and a channel with its
-/// name still reaches the opener's listener through the browser's broadcast
-/// fan-out
-/// (<https://html.spec.whatwg.org/multipage/web-messaging.html#broadcasting-to-other-browsing-contexts>).
+// https://html.spec.whatwg.org/multipage/web-messaging.html#broadcasting-to-other-browsing-contexts
 #[test]
 fn a_popup_and_its_opener_share_a_broadcast_channel() {
     let page = b"<!doctype html><script>\n\
@@ -1301,9 +1129,7 @@ channel.postMessage({hello: 'world', n: 7});\n\
     );
 }
 
-/// A cross-origin popup is a real tab, so its own `window.close()` closes that
-/// tab rather than a hidden frame the opener still owns
-/// (<https://html.spec.whatwg.org/multipage/window-object.html#dom-window-close>).
+// https://html.spec.whatwg.org/multipage/window-object.html#dom-window-close
 #[test]
 fn a_cross_origin_popup_tab_closes_itself_through_window_close() {
     let popup = b"<!doctype html><script>\n\
@@ -1331,7 +1157,6 @@ window.addEventListener('message', function (event) { window.__said = event.data
         &session,
         &format!("window.__popup = window.open('http://localhost:{port}/popup', '_blank')"),
     );
-    // Opening the popup is a target of its own, not a hidden child frame.
     wait_for_targets(&mut client, baseline + 1);
     wait_for_value(
         &mut client,
@@ -1339,13 +1164,9 @@ window.addEventListener('message', function (event) { window.__said = event.data
         "window.__said === 'bye'",
         &json!(true),
     );
-    // The popup closed itself, so the browser drops its tab.
     wait_for_targets(&mut client, baseline);
 }
 
-/// The opener closes the cross-origin popup through its `WindowProxy`, and the
-/// popup's tab goes away. `closed` then reports the close because the proxy
-/// recorded it.
 #[test]
 fn an_opener_closes_its_popup_through_the_proxy() {
     let (listener, address) = server();

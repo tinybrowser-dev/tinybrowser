@@ -795,9 +795,8 @@ files, and `SharedArrayBuffer`); timers; `importScripts`; `import.meta`;
 asynchronous `fetch`/XHR and synchronous XHR (including `blob:` URLs);
 `BroadcastChannel`; `close()`, `terminate()`, and runtime error propagation
 to the `Worker` object. A page that spins on `Atomics` does not block its
-worker, and `terminate()` interrupts a worker stuck in synchronous script.
-`docs/worker-threads.md` records the thread model, the engine-owned timer
-mirror, and the shared-memory transport.
+worker, and `terminate()` interrupts a worker stuck in synchronous script
+(`docs/adr/0004-os-thread-dedicated-workers-with-engine-timers.md`).
 
 A worker script URL is checked against its creator's policy before the worker
 is created: the `worker` destination resolves `worker-src`, then `child-src`,
@@ -827,7 +826,7 @@ runtime errors fire at the worker global only, and a script that fails to
 load or parse fires a plain `error` event at every connected `SharedWorker`
 object. A shared worker is shared inside one engine, not across renderer
 processes, and `extendedLifetime` does not outlive the tab; moving the realm
-to its own thread is milestone 6 in `docs/worker-threads.md`. Service
+to its own thread is tracked in `docs/priorities.md`. Service
 workers remain unimplemented. `indexedDB` exists on windows and workers and
 implements the factory, database open and upgrade, one versionchange
 transaction per upgrade, object-store create/delete, the record operations

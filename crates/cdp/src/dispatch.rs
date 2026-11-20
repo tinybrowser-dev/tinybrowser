@@ -1,8 +1,3 @@
-//! CDP dispatch helpers: session methods, runtime script shapes, and replies.
-//!
-//! Split out of [`crate`] so the socket state machine and the method surface
-//! have separate reasons to change.
-
 use std::io;
 use std::time::Duration;
 
@@ -19,23 +14,14 @@ use crate::params::CallArgument;
 
 use crate::DEFAULT_BROWSER_CONTEXT_ID;
 
-/// Largest capture or emulated dimension the renderer accepts.
 const MAX_SCREENSHOT_DIM: f64 = 4096.0;
 
-/// The target a request arrived on, with what that kind can address.
-///
-/// One value instead of a session enum flattened into a `(kind, tab)` pair:
-/// a page target owns the tab it drives, and a browser target owns no tab at
-/// all, so a handler that needs one cannot be handed a browser target.
 #[derive(Clone)]
 pub(crate) enum Target {
-    /// A page target: the tab the request addresses.
     Page(TabHandle),
-    /// The browser-wide target.
     Browser,
 }
 
-/// Which targets a method serves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TargetClass {
     Page,
@@ -44,11 +30,6 @@ pub(crate) enum TargetClass {
 }
 
 impl TargetClass {
-    /// Whether a request on `target` may run a method of this class.
-    ///
-    /// The match is exhaustive over both closed enums so a new target kind
-    /// must state which methods it serves instead of inheriting a bit it was
-    /// never given.
     fn accepts(self, target: &Target) -> bool {
         match (self, target) {
             (Self::Both, Target::Page(_) | Target::Browser)
@@ -58,8 +39,6 @@ impl TargetClass {
         }
     }
 
-    /// Whether two classes can serve one request, which makes two routes for
-    /// the same method ambiguous.
     #[cfg(test)]
     fn overlaps(self, other: Self) -> bool {
         match (self, other) {
@@ -72,10 +51,8 @@ impl TargetClass {
     }
 }
 
-/// What one protocol method does on one target kind.
 #[derive(Clone, Copy)]
 pub(crate) enum Handler {
-    /// The requested effect is already the engine's fixed behavior.
     Accept(Accepted),
     ClearBrowserCookies,
     GetTargetInfo,
@@ -83,7 +60,6 @@ pub(crate) enum Handler {
     Browser(BrowserHandler),
 }
 
-/// Page-session handlers that need connection state.
 #[derive(Clone, Copy)]
 pub(crate) enum PageHandler {
     Enable,
@@ -105,7 +81,6 @@ pub(crate) enum PageHandler {
     Script(ScriptMethod),
 }
 
-/// Browser-session handlers.
 #[derive(Clone, Copy)]
 pub(crate) enum BrowserHandler {
     GetVersion,
@@ -119,7 +94,6 @@ pub(crate) enum BrowserHandler {
     DetachFromTarget,
 }
 
-/// Page handlers that run one page-side helper and return its JSON reply.
 #[derive(Clone, Copy)]
 pub(crate) enum ScriptMethod {
     GetFrameTree,
@@ -151,27 +125,16 @@ pub(crate) enum ScriptMethod {
     CssGetComputedStyleForNode,
 }
 
-/// Why a command is an accepted no-op. The reason is data so the registry
-/// states the justification instead of a comment beside a string list.
 #[derive(Clone, Copy)]
 pub(crate) enum Accepted {
-    /// Nothing waits for a debugger, so there is no waiter to release.
     WaitingForDebugger,
-    /// The domain emits no events, so its subscription toggles change nothing.
     DomainWithoutEvents,
-    /// Focus is not engine state.
     FocusIsNotEngineState,
-    /// A page target has no child targets.
     PageHasNoChildTargets,
-    /// The renderer owns its font stack; there is no font configuration.
     RendererOwnsFonts,
-    /// The engine has no download pipeline, so no download can start.
     NoDownloadPipeline,
-    /// The engine has no HTTP cache, so clearing it is already true.
     NoHttpCache,
-    /// The request selects the engine's existing media defaults.
     DefaultEmulatedMedia,
-    /// The engine has no HTTP cache, so caching is already disabled.
     CacheAlreadyDisabled,
 }
 
@@ -524,8 +487,6 @@ const ROUTES: &[Route] = &[
     },
 ];
 
-/// Looks up the handler for `method` on `kind`. An unregistered pair is
-/// `MethodNotFound`; there is no fallback table.
 pub(crate) fn route(method: &str, target: &Target) -> Option<Handler> {
     ROUTES
         .iter()
@@ -533,10 +494,6 @@ pub(crate) fn route(method: &str, target: &Target) -> Option<Handler> {
         .map(|route| route.handler)
 }
 
-/// Answers an accepted no-op. Conditional entries prove their premise from the
-/// params and otherwise report `MethodNotFound`, exactly like a real handler
-/// that cannot honor the request. A malformed request is still an
-/// invalid-params error, never a "method not found".
 pub(crate) fn accept(reason: Accepted, params: &Value) -> Result<Value, DispatchError> {
     if premise_holds(reason, params)? {
         Ok(json!({}))
@@ -545,8 +502,6 @@ pub(crate) fn accept(reason: Accepted, params: &Value) -> Result<Value, Dispatch
     }
 }
 
-/// Whether an accepted no-op applies. Conditional variants prove their premise
-/// here, once; the rest hold unconditionally.
 fn premise_holds(reason: Accepted, params: &Value) -> Result<bool, DispatchError> {
     match reason {
         Accepted::DefaultEmulatedMedia => {
@@ -567,7 +522,6 @@ fn premise_holds(reason: Accepted, params: &Value) -> Result<bool, DispatchError
     }
 }
 
-/// Runs one stateless page handler and returns its protocol reply.
 pub(crate) async fn run_script(
     method: ScriptMethod,
     params: &Value,
@@ -664,9 +618,7 @@ async fn layout_metrics(tab: &TabHandle) -> Result<Value, DispatchError> {
     }))
 }
 
-/// `Page.getNavigationHistory`: the tab's committed session-history entries in
-/// traversal order and the active index.
-/// <https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-getNavigationHistory>
+// https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-getNavigationHistory
 async fn navigation_history(tab: &TabHandle) -> Result<Value, DispatchError> {
     let history = tab
         .history()
@@ -689,9 +641,6 @@ async fn navigation_history(tab: &TabHandle) -> Result<Value, DispatchError> {
 }
 
 fn get_properties_script(params: &crate::params::GetProperties) -> String {
-    // The page helper reads booleans and an object-group string. The protocol
-    // has no `objectGroup` here, so property handles stay out of a group; the
-    // absent optional flags take their documented `false`.
     let arguments = json!({
         "objectId": params.object_id,
         "objectGroup": "",
@@ -703,11 +652,7 @@ fn get_properties_script(params: &crate::params::GetProperties) -> String {
     RUNTIME_GET_PROPERTIES.replace("__ARGS__", &arguments.to_string())
 }
 
-/// `Runtime.getProperties`: own and inherited properties of a page-side handle,
-/// plus its `[[Prototype]]` internal property. Accessors are reported as
-/// `get`/`set` pairs; getters never run. `privateProperties` is absent because
-/// JavaScript has no reflection API for private names.
-/// <https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-getProperties>
+// https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-getProperties
 async fn runtime_get_properties(tab: &TabHandle, params: &Value) -> Result<Value, DispatchError> {
     let params: crate::params::GetProperties = crate::params::parse(params)?;
     if params.object_id.is_empty() {
@@ -729,7 +674,6 @@ async fn runtime_get_properties(tab: &TabHandle, params: &Value) -> Result<Value
     }
 }
 
-/// `Runtime.releaseObject`: forget one page-side handle.
 pub(crate) async fn runtime_release_object(
     tab: &TabHandle,
     params: &Value,
@@ -745,7 +689,6 @@ pub(crate) async fn runtime_release_object(
     Ok(json!({}))
 }
 
-/// `Runtime.releaseObjectGroup`: forget every handle in one object group.
 pub(crate) async fn runtime_release_object_group(
     tab: &TabHandle,
     params: &Value,
@@ -761,7 +704,6 @@ pub(crate) async fn runtime_release_object_group(
     Ok(json!({}))
 }
 
-/// Runs a browser helper that returns a JSON string and parses it.
 async fn execute_json(tab: &TabHandle, script: &str) -> Result<Value, DispatchError> {
     let value = tab
         .execute_browser_script(script)
@@ -773,8 +715,6 @@ async fn execute_json(tab: &TabHandle, script: &str) -> Result<Value, DispatchEr
     serde_json::from_str(&text).map_err(|error| DispatchError::Failed(error.to_string()))
 }
 
-/// True when `Emulation.setEmulatedMedia` selects the engine defaults: empty
-/// media and every feature value empty.
 fn emulated_media_is_default(params: &crate::params::SetEmulatedMedia) -> bool {
     if params
         .media
@@ -789,13 +729,6 @@ fn emulated_media_is_default(params: &crate::params::SetEmulatedMedia) -> bool {
     }
 }
 
-/// `Page.addScriptToEvaluateOnNewDocument`: register `source` page-wide and
-/// return its identifier.
-///
-/// `worldName` is accepted but ignored: this engine has no isolated worlds,
-/// so scripts (including Playwright's utility-world registration, whose
-/// source is empty) run in the main world. That is a known isolation gap
-/// (docs/progress.md).
 async fn add_init_script(params: &Value, tab: &TabHandle) -> Result<Value, DispatchError> {
     let params: crate::params::AddInitScript = crate::params::parse(params)?;
     let id = tab
@@ -805,7 +738,6 @@ async fn add_init_script(params: &Value, tab: &TabHandle) -> Result<Value, Dispa
     Ok(json!({"identifier": id.to_string()}))
 }
 
-/// `Page.removeScriptToEvaluateOnNewDocument`: forget a registered script.
 async fn remove_init_script(params: &Value, tab: &TabHandle) -> Result<Value, DispatchError> {
     let params: crate::params::RemoveInitScript = crate::params::parse(params)?;
     let id = params
@@ -818,12 +750,7 @@ async fn remove_init_script(params: &Value, tab: &TabHandle) -> Result<Value, Di
     Ok(json!({}))
 }
 
-/// `Emulation.setDeviceMetricsOverride`: persist the emulated viewport on the
-/// tab and the renderer. The protocol requires integer `width`/`height`, and
-/// zero on either side clears the override; `mobile`, non-default
-/// `deviceScaleFactor`, and sizes beyond the renderer's cap are refused
-/// rather than silently approximated
-/// (<https://chromedevtools.github.io/devtools-protocol/tot/Emulation/#method-setDeviceMetricsOverride>).
+// https://chromedevtools.github.io/devtools-protocol/tot/Emulation/#method-setDeviceMetricsOverride
 async fn set_device_metrics(params: &Value, tab: &TabHandle) -> Result<Value, DispatchError> {
     let params: crate::params::SetDeviceMetrics = crate::params::parse(params)?;
     let width = narrow_metric(params.width, "width")?;
@@ -852,12 +779,10 @@ async fn set_device_metrics(params: &Value, tab: &TabHandle) -> Result<Value, Di
     set_viewport(tab, width, height).await
 }
 
-/// `Emulation.clearDeviceMetricsOverride`: restore the default viewport.
 async fn clear_device_metrics(tab: &TabHandle) -> Result<Value, DispatchError> {
     set_viewport(tab, DEFAULT_VIEWPORT.0, DEFAULT_VIEWPORT.1).await
 }
 
-/// Applies one viewport size to the tab.
 async fn set_viewport(tab: &TabHandle, width: u32, height: u32) -> Result<Value, DispatchError> {
     tab.set_viewport(width, height)
         .await
@@ -865,9 +790,6 @@ async fn set_viewport(tab: &TabHandle, width: u32, height: u32) -> Result<Value,
     Ok(json!({}))
 }
 
-/// One emulation metric as the renderer's `u32` viewport dimension. The
-/// protocol's integer decoding happened in [`crate::params::SetDeviceMetrics`];
-/// this only narrows a value that does not fit.
 fn narrow_metric(value: u64, name: &str) -> Result<u32, DispatchError> {
     u32::try_from(value).map_err(|_| {
         DispatchError::Failed(format!(
@@ -876,8 +798,6 @@ fn narrow_metric(value: u64, name: &str) -> Result<u32, DispatchError> {
     })
 }
 
-/// Capture surface side from a clip extent: at least 1, at most the renderer
-/// cap, so a bad client value cannot ask for an unpaintable surface.
 fn capture_side(extent: f64) -> u32 {
     if !extent.is_finite() || extent < 1.0 {
         return 1;
@@ -890,7 +810,6 @@ fn capture_side(extent: f64) -> u32 {
     return extent.min(MAX_SCREENSHOT_DIM) as u32;
 }
 
-/// `Storage.getStorageKey`: the tab's origin.
 async fn storage_key(tab: &TabHandle) -> Result<Value, DispatchError> {
     let value = tab
         .execute_browser_script("String(location.origin)")
@@ -902,8 +821,6 @@ async fn storage_key(tab: &TabHandle) -> Result<Value, DispatchError> {
     Ok(json!({"storageKey": key}))
 }
 
-/// `DOM.getDocument`: serialize the live tree from the renderer's typed node
-/// map.
 pub(crate) async fn dom_get_document(tab: &TabHandle) -> Result<Value, DispatchError> {
     let reply = dom_request(tab, DomRequest::GetDocument).await?;
     let DomReply::Document { root } = reply else {
@@ -912,8 +829,6 @@ pub(crate) async fn dom_get_document(tab: &TabHandle) -> Result<Value, DispatchE
     Ok(json!({"root": document_node(&root)}))
 }
 
-/// `Input.dispatchMouseEvent`: one pointer step through the page-side
-/// performer, preceded by a move so press/release land on the right target.
 pub(crate) async fn input_mouse_event(
     tab: &TabHandle,
     params: &Value,
@@ -949,8 +864,6 @@ pub(crate) async fn input_mouse_event(
     run_actions(tab, &actions).await
 }
 
-/// `Input.dispatchKeyEvent`: one key step through the page-side performer.
-/// `char` events carry their text in `text`.
 pub(crate) async fn input_key_event(
     tab: &TabHandle,
     params: &Value,
@@ -971,7 +884,6 @@ pub(crate) async fn input_key_event(
     run_actions(tab, &actions).await
 }
 
-/// `Input.insertText`: type into the focused element.
 pub(crate) async fn input_insert_text(
     tab: &TabHandle,
     params: &Value,
@@ -986,7 +898,6 @@ pub(crate) async fn input_insert_text(
     run_actions(tab, &actions).await
 }
 
-/// `Input.dispatchTouchEvent`: the first touch point as a touch pointer.
 pub(crate) async fn input_touch_event(
     tab: &TabHandle,
     params: &Value,
@@ -1011,7 +922,6 @@ pub(crate) async fn input_touch_event(
     run_actions(tab, &actions).await
 }
 
-/// `Input.emulateTouchFromMouseEvent`: the mouse shape, touch-typed.
 pub(crate) async fn input_emulate_touch_from_mouse(
     tab: &TabHandle,
     params: &Value,
@@ -1032,10 +942,7 @@ pub(crate) async fn input_emulate_touch_from_mouse(
     run_actions(tab, &actions).await
 }
 
-/// Runs a page-side action sequence and reports the CDP-shaped reply.
 async fn run_actions(tab: &TabHandle, actions: &Value) -> Result<Value, DispatchError> {
-    // The page performer takes the source array; callers may pass either the
-    // array itself or a `{"actions": [...]}` envelope.
     let sources = actions.get("actions").unwrap_or(actions);
     let script = format!(
         "(function(){{return host.__tbWebDriverActions({});}})()",
@@ -1047,30 +954,22 @@ async fn run_actions(tab: &TabHandle, actions: &Value) -> Result<Value, Dispatch
     Ok(json!({}))
 }
 
-/// Sends one typed DOM request to the tab's main frame.
 async fn dom_request(tab: &TabHandle, request: DomRequest) -> Result<DomReply, DispatchError> {
     tab.dom(request)
         .await
         .map_err(|error| DispatchError::Failed(error.to_string()))
 }
 
-/// The node a DOM method targets, from any of `objectId` (a runtime handle),
-/// `backendNodeId`, or `nodeId`.
 enum TargetNode {
-    /// No identifier: the method's document default.
     Default,
-    /// A renderer node id.
     Node(u64),
-    /// An `objectId` named a handle that does not wrap a node.
     Missing,
 }
 
-/// Whether a CDP node target names any identifier.
 fn has_node_identifier(node: &crate::params::NodeTarget) -> bool {
     node.object.is_some() || node.backend.is_some() || node.node.is_some()
 }
 
-/// Resolves a CDP node target against the renderer handle table and node map.
 async fn target_node(
     tab: &TabHandle,
     node: &crate::params::NodeTarget,
@@ -1098,12 +997,10 @@ async fn target_node(
     }
 }
 
-/// The error every required-node method answers when a handle names no node.
 fn missing_node() -> DispatchError {
     DispatchError::Failed("Could not find node with given id".to_owned())
 }
 
-/// One `DOM.Node` reply from the renderer's typed node.
 fn document_node(node: &DomNode) -> Value {
     let mut entry = serde_json::Map::new();
     entry.insert("nodeId".to_owned(), json!(node.node_id));
@@ -1135,7 +1032,6 @@ fn document_node(node: &DomNode) -> Value {
     Value::Object(entry)
 }
 
-/// One `DOM.describeNode` node: shape and child count, without children.
 fn described_node(node: &DomNode) -> Value {
     let mut entry = serde_json::Map::new();
     entry.insert("nodeId".to_owned(), json!(node.node_id));
@@ -1150,7 +1046,6 @@ fn described_node(node: &DomNode) -> Value {
     Value::Object(entry)
 }
 
-/// `DOM.querySelector`: the first matching node's id.
 pub(crate) async fn dom_query_selector(
     tab: &TabHandle,
     params: &Value,
@@ -1170,7 +1065,6 @@ pub(crate) async fn dom_query_selector(
     Ok(json!({"nodeId": node_id}))
 }
 
-/// `DOM.querySelectorAll`: every matching node's id.
 pub(crate) async fn dom_query_selector_all(
     tab: &TabHandle,
     params: &Value,
@@ -1190,7 +1084,6 @@ pub(crate) async fn dom_query_selector_all(
     Ok(json!({"nodeIds": node_ids}))
 }
 
-/// `DOM.describeNode`: the node's shape, optionally with children.
 pub(crate) async fn dom_describe_node(
     tab: &TabHandle,
     params: &Value,
@@ -1210,7 +1103,6 @@ pub(crate) async fn dom_describe_node(
     }))
 }
 
-/// `DOM.getOuterHTML`: one node's serialized markup.
 pub(crate) async fn dom_outer_html(
     tab: &TabHandle,
     params: &Value,
@@ -1232,7 +1124,6 @@ pub(crate) async fn dom_outer_html(
     Ok(json!({"outerHTML": outer_html}))
 }
 
-/// `DOM.getAttributes`: one element's flattened attribute pairs.
 pub(crate) async fn dom_attributes(
     tab: &TabHandle,
     params: &Value,
@@ -1254,7 +1145,6 @@ pub(crate) async fn dom_attributes(
     Ok(json!({"attributes": attributes}))
 }
 
-/// `DOM.resolveNode`: intern the node in the runtime handle table.
 pub(crate) async fn dom_resolve_node(
     tab: &TabHandle,
     params: &Value,
@@ -1283,7 +1173,6 @@ pub(crate) async fn dom_resolve_node(
     }))
 }
 
-/// `DOM.getNodeForLocation`: hit-test the viewport point.
 pub(crate) async fn dom_node_for_location(
     tab: &TabHandle,
     params: &Value,
@@ -1303,8 +1192,6 @@ pub(crate) async fn dom_node_for_location(
     Ok(json!({"nodeId": node_id}))
 }
 
-/// `DOM.getBoxModel`: the node's border box as content/padding/border/margin
-/// quads (the engine has no separate boxes, so all four are the border box).
 pub(crate) async fn dom_box_model(tab: &TabHandle, params: &Value) -> Result<Value, DispatchError> {
     let target: crate::params::NodeTarget = crate::params::parse(params)?;
     let node = match target_node(tab, &target).await? {
@@ -1328,7 +1215,6 @@ pub(crate) async fn dom_box_model(tab: &TabHandle, params: &Value) -> Result<Val
     }))
 }
 
-/// `DOM.getContentQuads`: one quad per client rect of the node.
 pub(crate) async fn dom_content_quads(
     tab: &TabHandle,
     params: &Value,
@@ -1346,7 +1232,6 @@ pub(crate) async fn dom_content_quads(
     Ok(json!({"quads": quads}))
 }
 
-/// `CSS.enable`: one `CSS.styleSheetAdded` per document stylesheet.
 pub(crate) async fn css_stylesheets(tab: &TabHandle) -> Result<Vec<Value>, DispatchError> {
     const SCRIPT: &str = r#"(function(){
       host.__tb_css_id = host.__tb_css_id || 0;
@@ -1370,7 +1255,6 @@ pub(crate) async fn css_stylesheets(tab: &TabHandle) -> Result<Vec<Value>, Dispa
     Ok(value.as_array().cloned().unwrap_or_default())
 }
 
-/// `CSS.getComputedStyleForNode`: the resolved style as name/value pairs.
 pub(crate) async fn css_computed_style(
     tab: &TabHandle,
     params: &Value,
@@ -1404,8 +1288,6 @@ pub(crate) async fn css_computed_style(
     browser_json(tab, &script).await
 }
 
-/// Evaluates a browser-owned expression that returns a JSON string and parses
-/// the reply. No DOM node lookup goes through page script.
 async fn browser_json(tab: &TabHandle, script: &str) -> Result<Value, DispatchError> {
     let value = tab
         .execute_browser_script(script)
@@ -1417,16 +1299,10 @@ async fn browser_json(tab: &TabHandle, script: &str) -> Result<Value, DispatchEr
     serde_json::from_str(&text).map_err(|error| DispatchError::Failed(error.to_string()))
 }
 
-/// One viewport rectangle for `Page.getLayoutMetrics`.
 fn viewport_rect(width: f64, height: f64) -> Value {
     json!({"pageX": 0, "pageY": 0, "clientWidth": width, "clientHeight": height})
 }
 
-/// `Page.captureScreenshot`: render the tab and return base64 PNG data.
-///
-/// Playwright always sends `clip`; it is forwarded to the renderer, which
-/// rasters the requested viewport and crops before encoding. Non-PNG formats
-/// are refused rather than mislabeled.
 pub(crate) async fn capture_screenshot(
     tab: &TabHandle,
     params: &Value,
@@ -1458,9 +1334,6 @@ pub(crate) async fn capture_screenshot(
     Ok(json!({"data": BASE64_STANDARD.encode(&png)}))
 }
 
-/// Resolves the optional renderer-frame extension used by automation clients
-/// that need to address a child realm directly. Standard CDP calls omit it
-/// and therefore address the main frame.
 pub(crate) fn requested_frame(
     tab: &TabHandle,
     raw: Option<&str>,
@@ -1487,7 +1360,6 @@ pub(crate) fn requested_frame(
     Ok(FrameId::new(renderer_frame))
 }
 
-/// Waits for the next navigation outcome on a temporary subscription.
 pub(crate) async fn wait_for_navigation(
     mut events: mpsc::Receiver<TabEvent>,
     duration: Duration,
@@ -1524,7 +1396,6 @@ pub(crate) async fn open_url(tab: &TabHandle, url: &str) -> Result<(), DispatchE
     Ok(())
 }
 
-/// Builds the JS argument array for `Runtime.callFunctionOn`.
 pub(crate) fn arguments_expression(arguments: &[CallArgument]) -> String {
     let parts: Vec<String> = arguments.iter().map(argument_expression).collect();
     format!("[{}]", parts.join(", "))
@@ -1543,9 +1414,6 @@ fn argument_expression(argument: &CallArgument) -> String {
     }
 }
 
-/// One `unserializableValue` as the JS literal it names. The protocol lists
-/// exactly these forms; anything else reaches the page as `undefined` rather
-/// than as a string, which is what a failed decode would produce.
 fn unserializable_literal(value: &str) -> String {
     match value {
         "NaN" | "Infinity" | "-Infinity" | "-0" => value.to_owned(),
@@ -1558,12 +1426,10 @@ fn unserializable_literal(value: &str) -> String {
     }
 }
 
-/// JS string literal for embedding in generated source.
 pub(crate) fn json_string(value: &str) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_owned())
 }
 
-/// A failed runtime call, shaped like a CDP exception.
 pub(crate) fn exception_reply(error: &TabError) -> Value {
     json!({
         "result": {"type": "undefined"},
@@ -1571,7 +1437,6 @@ pub(crate) fn exception_reply(error: &TabError) -> Value {
     })
 }
 
-/// A failed runtime call with a literal message.
 pub(crate) fn exception_text_reply(text: &str) -> Value {
     json!({
         "result": {"type": "undefined"},
@@ -1579,9 +1444,6 @@ pub(crate) fn exception_text_reply(text: &str) -> Value {
     })
 }
 
-/// Schedules `__SOURCE__` into `host.__SLOT__[__ID__]` and captures its
-/// settled value. Results key by evaluation ID; a single shared slot would
-/// let overlapping evaluations overwrite each other.
 pub(crate) const RUNTIME_SCHEDULE: &str = r#"(() => {
   const slot = { __proto__: null, done: false };
   host.__SLOT__[__ID__] = slot;
@@ -1592,15 +1454,11 @@ pub(crate) const RUNTIME_SCHEDULE: &str = r#"(() => {
   return "scheduled";
 })()"#;
 
-/// Evaluates `__SOURCE__` and serializes the value with the bridge's one
-/// `RemoteObject` serializer. Handles join `__GROUP__`.
 pub(crate) const RUNTIME_HANDLE: &str = r"(() => {
   const v = (__SOURCE__);
   return host.stringify(host.remoteObject(v, { __proto__: null, objectGroup: __GROUP__ }));
 })()";
 
-/// Reads the awaited handle result and serializes it with the bridge's one
-/// `RemoteObject` serializer.
 pub(crate) const RUNTIME_HANDLE_READ: &str = r"(() => {
   const slot = host.__tb_async_handles && host.__tb_async_handles[__ID__];
   if (!slot || !slot.done) return host.stringify({ __proto__: null, pending: true });
@@ -1609,7 +1467,6 @@ pub(crate) const RUNTIME_HANDLE_READ: &str = r"(() => {
   return host.stringify({ __proto__: null, value: host.remoteObject(slot.value, { __proto__: null, objectGroup: __GROUP__ }) });
 })()";
 
-/// Releases one handle or every handle in one object group.
 pub(crate) const RUNTIME_RELEASE: &str = r#"(() => {
   const args = __ARGS__;
   if (args.objectGroup !== undefined) host.__tb_release_group(args.objectGroup);
@@ -1617,13 +1474,8 @@ pub(crate) const RUNTIME_RELEASE: &str = r#"(() => {
   return "released";
 })()"#;
 
-/// Drops every handle owned by the outgoing execution context.
 pub(crate) const RUNTIME_CLEAR_HANDLES: &str = "host.__tb_clear_handles()";
 
-/// Enumerates a page-side handle's own and inherited properties as CDP
-/// `PropertyDescriptor` JSON. Accessor descriptors expose `get`/`set`
-/// `RemoteObject`s instead of invoking them. Values that are not primitives
-/// become handles in the request's object group.
 pub(crate) const RUNTIME_GET_PROPERTIES: &str = r#"(() => {
   const args = __ARGS__;
   const objectId = args.objectId;
@@ -1698,8 +1550,6 @@ pub(crate) const RUNTIME_GET_PROPERTIES: &str = r#"(() => {
   }});
 })()"#;
 
-/// Reads the captured async result and serializes it with the bridge's one
-/// `RemoteObject` serializer, asking for a by-value reply.
 pub(crate) const RUNTIME_READ: &str = r#"(() => {
   const s = host.__tb_async && host.__tb_async[__ID__];
   if (!s || !s.done) return host.stringify({__proto__: null, pending: true });
@@ -1743,16 +1593,12 @@ pub(crate) fn target_id(raw: &str) -> Result<TabId, DispatchError> {
 #[derive(Debug)]
 pub(crate) enum DispatchError {
     MethodNotFound,
-    /// A required parameter is missing or malformed. The message names the
-    /// field, or carries serde's field path when a struct failed to decode.
     InvalidParams(String),
-    /// A browser or page helper answered in a shape the dispatch cannot read.
     BadHelperReply(&'static str),
     Failed(String),
 }
 
 impl DispatchError {
-    /// The JSON-RPC error code for the reply.
     pub(crate) fn code(&self) -> i32 {
         match self {
             Self::MethodNotFound => -32601,
@@ -1761,7 +1607,6 @@ impl DispatchError {
         }
     }
 
-    /// The JSON-RPC error message for the reply.
     pub(crate) fn message(&self, method: &str) -> String {
         match self {
             Self::MethodNotFound => format!("'{method}' wasn't found"),
@@ -1808,8 +1653,6 @@ mod tests {
         assert!(params::parse::<SetDeviceMetrics>(&json!({"width": 1, "height": 1})).is_ok());
     }
 
-    /// The page helper reads six keys with fixed types; a `null` where it
-    /// expects `false` changes how it walks the chain.
     #[test]
     fn get_properties_arguments_keep_the_helper_shape() {
         let params: GetProperties = params::parse(&json!({"objectId": "h1"})).expect("params");
@@ -1829,8 +1672,6 @@ mod tests {
         }
     }
 
-    /// Each `CallArgument` variant becomes the JS expression the protocol
-    /// names, and an unserializable primitive is not silently lost.
     #[test]
     fn call_arguments_translate_each_variant() {
         let arguments: Vec<CallArgument> = serde_json::from_value(json!([

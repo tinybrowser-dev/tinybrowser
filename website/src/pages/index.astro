@@ -1,24 +1,36 @@
 ---
 import Base from "@/layouts/Base.astro"
-import { loadSnapshot } from "@/lib/data"
-import { formatPercent, subtestPercent } from "@/lib/record"
 
 export const prerender = true
 
-const { latest } = loadSnapshot()
-const score = latest ? subtestPercent(latest.totals) : null
+const unixCmd =
+  "curl -fsSL https://raw.githubusercontent.com/tinybrowser-dev/tinybrowser/main/install.sh | sh"
+const winCmd =
+  "irm https://raw.githubusercontent.com/tinybrowser-dev/tinybrowser/main/install.ps1 | iex"
+const startCmd = `tinybrowser\n# or bind a specific port (serves both CDP and WebDriver):\ntinybrowser --port 4444`
+const agentPrompt = `Install tinybrowser (a ~12 MiB headless browser for AI agents) and set it up for browser automation:
+
+1. Install the binary:
+   - macOS / Linux: ${unixCmd}
+   - Windows (PowerShell): ${winCmd}
+   - Ensure the install directory (~/.local/bin or %LOCALAPPDATA%\\tinybrowser\\bin) is on PATH, then run \`tinybrowser --help\` to inspect all endpoints, flags, and paths.
+2. Start the background daemon (serves both CDP and W3C WebDriver on one loopback port):
+   - Auto-port (profile-locked): \`tinybrowser\`
+     Writes \`{ "pid", "host": "127.0.0.1", "port" }\` to \`$XDG_RUNTIME_DIR/tinybrowser/default/daemon.json\`.
+   - Fixed port: \`tinybrowser --port 4444\`
+   Done when \`GET http://127.0.0.1:<port>/status\` returns 200.
+3. Connect over CDP (\`chromium.connectOverCDP("http://127.0.0.1:<port>")\`, using \`browser.contexts()[0].pages()[0]\`) or W3C WebDriver (\`POST http://127.0.0.1:<port>/session\`).`
 ---
 
 <Base
   title="tinybrowser"
-  description="A headless web browser for AI agents and automated tools. One ~12 MiB binary instead of a 400 MiB Chrome install."
+  description="A headless web browser for AI agents and automated tools in a single ~12 MiB Rust binary."
 >
   <section class="home measure">
     <h1>tinybrowser</h1>
     <p class="lede">
       A headless web browser for AI agents and automated tools. It opens web pages, runs JavaScript,
-      fills forms, and takes screenshots. Everything ships in one ~12 MiB binary instead of a 400
-      MiB Chrome install.
+      fills forms, and takes screenshots in a single ~12 MiB binary.
     </p>
     <p class="links">
       <a href="/demo">Try live demo</a>
@@ -31,23 +43,8 @@ const score = latest ? subtestPercent(latest.totals) : null
   <section class="section measure">
     <h2>Why tinybrowser</h2>
     <dl class="strengths">
-      <dt>A fraction of the size</dt>
-      <dd>One ~12 MiB Rust binary. No Chrome download and no background updater.</dd>
-
-      <dt>Fast startup and low memory</dt>
-      <dd>
-        Starts in milliseconds and uses far less memory than desktop Chromium, so you can run many
-        tabs side by side.
-      </dd>
-
-      <dt>Real web standards</dt>
-      <dd>
-        Parses HTML, lays out CSS, runs JavaScript, and enforces cookies, redirects, and CORS per
-        WHATWG
-        specs.{latest && score !== null
-          ? ` The latest run passed ${formatPercent(score)} of subtests across ${latest.totals.tests.toLocaleString("en-US")} Web Platform Test files.`
-          : ""}
-      </dd>
+      <dt>Single binary</dt>
+      <dd>One ~12 MiB Rust binary with no sidecars or separate browser download.</dd>
 
       <dt>Works with existing tools</dt>
       <dd>
@@ -59,29 +56,39 @@ const score = latest ? subtestPercent(latest.totals) : null
 
   <section class="section measure" id="install">
     <h2>Install</h2>
-    <p class="lede">
-      Prebuilt binaries ship for macOS (Apple Silicon and Intel), Linux (x86_64), Windows (x86_64),
-      and WebAssembly (<code>wasm32-wasip2</code>).
-    </p>
 
     <div class="install-list">
+      <details class="prompt-details">
+        <summary>
+          <span class="prompt-summary-link">AI agent setup prompt</span>
+          <button type="button" class="copy-btn" data-copy={agentPrompt} data-label="Copy prompt">
+            Copy prompt
+          </button>
+        </summary>
+        <pre class="code-block code-block-wrap"><code>{agentPrompt}</code></pre>
+      </details>
       <div>
-        <p class="install-label">macOS and Linux</p>
-        <pre
-          class="code-block"
-        ><code>curl -fsSL https://raw.githubusercontent.com/tinybrowser-dev/tinybrowser/main/install.sh | sh</code></pre>
+        <div class="install-head">
+          <span class="install-label">macOS and Linux</span>
+          <button type="button" class="copy-btn" data-copy={unixCmd} data-label="Copy">Copy</button>
+        </div>
+        <pre class="code-block"><code>{unixCmd}</code></pre>
       </div>
       <div>
-        <p class="install-label">Windows (PowerShell)</p>
-        <pre
-          class="code-block"
-        ><code>irm https://raw.githubusercontent.com/tinybrowser-dev/tinybrowser/main/install.ps1 | iex</code></pre>
+        <div class="install-head">
+          <span class="install-label">Windows (PowerShell)</span>
+          <button type="button" class="copy-btn" data-copy={winCmd} data-label="Copy">Copy</button>
+        </div>
+        <pre class="code-block"><code>{winCmd}</code></pre>
       </div>
       <div>
-        <p class="install-label">Start using it</p>
-        <pre class="code-block"><code>tinybrowser daemon
-# or run a classic WebDriver server:
-tinybrowser webdriver --port 4444</code></pre>
+        <div class="install-head">
+          <span class="install-label">Start using it</span>
+          <button type="button" class="copy-btn" data-copy={startCmd} data-label="Copy">
+            Copy
+          </button>
+        </div>
+        <pre class="code-block"><code>{startCmd}</code></pre>
       </div>
     </div>
 
@@ -93,12 +100,48 @@ tinybrowser webdriver --port 4444</code></pre>
     </p>
   </section>
 
-  <section class="section measure">
-    <h2>Under the hood</h2>
-    <p class="lede">
-      Built in Rust from Blitz, Stylo, html5ever, Taffy, and QuickJS, with a browser-owned HTTP/1.1
-      and HTTP/2 network stack. Every conformance run publishes to the{" "}
-      <a href="/wpt">WPT dashboard</a> and as <a href="/wpt/data/latest.json">raw JSON</a>.
-    </p>
-  </section>
+  <script is:inline>
+    ;(() => {
+      for (const button of document.querySelectorAll("button[data-copy]")) {
+        let timer = 0
+        button.addEventListener("click", async (event) => {
+          event.stopPropagation()
+          const text = button.getAttribute("data-copy")
+          const label = button.getAttribute("data-label") || "Copy"
+          if (!text) return
+          let copied = false
+          try {
+            if (navigator.clipboard && window.isSecureContext) {
+              await navigator.clipboard.writeText(text)
+              copied = true
+            }
+          } catch {
+            copied = false
+          }
+          if (!copied) {
+            const area = document.createElement("textarea")
+            area.value = text
+            area.setAttribute("readonly", "")
+            area.style.position = "fixed"
+            area.style.opacity = "0"
+            document.body.appendChild(area)
+            area.select()
+            try {
+              copied = document.execCommand("copy")
+            } catch {
+              copied = false
+            }
+            area.remove()
+          }
+          if (copied) {
+            clearTimeout(timer)
+            button.textContent = "Copied"
+            timer = window.setTimeout(() => {
+              button.textContent = label
+            }, 1500)
+          }
+        })
+      }
+    })()
+  </script>
 </Base>

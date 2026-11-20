@@ -1,5 +1,3 @@
-//! Live node collections (`NodeList`, `HTMLCollection`).
-
 use super::{install_collections_js, live_collection, world, world_for_node, wrap_node};
 
 use rquickjs::{
@@ -22,57 +20,35 @@ use std::collections::HashSet;
 pub(crate) enum CollectionKind {
     Children,
     ElementChildren,
-    /// `getElementsByTagName`. `html_document` is root's node document type
-    /// at collection creation
-    /// (<https://dom.spec.whatwg.org/#concept-getelementsbytagname>).
-    ElementsByTag {
-        name: String,
-        html_document: bool,
-    },
-    ElementsByTagNs {
-        namespace: String,
-        local: String,
-    },
+    // https://dom.spec.whatwg.org/#concept-getelementsbytagname
+    ElementsByTag { name: String, html_document: bool },
+    ElementsByTagNs { namespace: String, local: String },
     ElementsByClass(String),
     ElementsByName(String),
     SelectOptions,
-    /// `datalist.options`: HTML `option` descendants of the datalist
-    /// (<https://html.spec.whatwg.org/multipage/form-elements.html#dom-datalist-options>).
+    // https://html.spec.whatwg.org/multipage/form-elements.html#dom-datalist-options
     DataListOptions,
     SelectedOptions,
     WindowNamed(String),
-    /// The `HTMLCollection` a Document named property answers when several
-    /// elements share the name
-    /// (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-nameditem>).
+    // https://html.spec.whatwg.org/multipage/dom.html#dom-document-nameditem
     DocumentNamed(String),
-    /// `Document.scripts`: HTML `script` descendants of the document element
-    /// (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-scripts>).
+    // https://html.spec.whatwg.org/multipage/dom.html#dom-document-scripts
     HtmlScripts,
-    /// `Document.links`: HTML `a`/`area` descendants with an `href`
-    /// (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-links>).
+    // https://html.spec.whatwg.org/multipage/dom.html#dom-document-links
     HtmlLinks,
-    /// `Document.images`: HTML `img` descendants of the document element
-    /// (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-images>).
+    // https://html.spec.whatwg.org/multipage/dom.html#dom-document-images
     HtmlImages,
-    /// `Document.forms`: HTML `form` descendants of the document element
-    /// (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-forms>).
+    // https://html.spec.whatwg.org/multipage/dom.html#dom-document-forms
     HtmlForms,
-    /// `Document.embeds`/`Document.plugins`: HTML `embed` descendants of the
-    /// document element
-    /// (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-embeds>).
+    // https://html.spec.whatwg.org/multipage/dom.html#dom-document-embeds
     HtmlEmbeds,
-    /// `table.tBodies`: HTML `tbody` children of the table
-    /// (<https://html.spec.whatwg.org/multipage/tables.html#dom-table-tbodies>).
+    // https://html.spec.whatwg.org/multipage/tables.html#dom-table-tbodies
     TableBodies,
-    /// `table.rows`: `tr` children of the table and of its section children,
-    /// thead then body then tfoot
-    /// (<https://html.spec.whatwg.org/multipage/tables.html#dom-table-rows>).
+    // https://html.spec.whatwg.org/multipage/tables.html#dom-table-rows
     TableRows,
-    /// `thead`/`tbody`/`tfoot`.rows: `tr` children of the section
-    /// (<https://html.spec.whatwg.org/multipage/tables.html#dom-tbody-rows>).
+    // https://html.spec.whatwg.org/multipage/tables.html#dom-tbody-rows
     TableSectionRows,
-    /// `tr.cells`: `td`/`th` children of the row
-    /// (<https://html.spec.whatwg.org/multipage/tables.html#dom-tr-cells>).
+    // https://html.spec.whatwg.org/multipage/tables.html#dom-tr-cells
     TableRowCells,
     Static(Vec<Handle>),
 }
@@ -128,7 +104,6 @@ impl CollectionQuery {
     }
 }
 
-/// The live ids backing one named collection rooted at `scope`.
 pub(crate) fn collection_ids(
     ctx: &Ctx<'_>,
     scope: NodeId,
@@ -137,10 +112,6 @@ pub(crate) fn collection_ids(
     query_ids(ctx, scope, kind)
 }
 
-/// The live ids of `kind` scoped at `scope`, resolved through the agent's
-/// document registry. Blitz trees are walked directly: descendants come from
-/// `base.get_node` children stacks, and matching reads element names and
-/// attributes off `ElementData`.
 fn query_ids(ctx: &Ctx<'_>, scope: NodeId, kind: &CollectionKind) -> Result<Vec<NodeId>> {
     let registry = super::realm_registry(ctx)?;
     let scope = registry.borrow_mut().live_node_id(scope);
@@ -216,11 +187,7 @@ fn query_ids(ctx: &Ctx<'_>, scope: NodeId, kind: &CollectionKind) -> Result<Vec<
     })
 }
 
-/// HTML `script` descendants of the document element.
-///
-/// `Document.scripts` is an `HTMLCollection` rooted at the `Document` node
-/// whose filter matches `script` elements
-/// (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-scripts>).
+// https://html.spec.whatwg.org/multipage/dom.html#dom-document-scripts
 fn collect_html_scripts(
     doc: &crate::documents::BlitzDocument,
     document: u32,
@@ -244,11 +211,7 @@ fn collect_html_scripts(
     order
 }
 
-/// HTML `a`/`area` descendants with an `href` attribute, in tree order.
-///
-/// `Document.links` is an `HTMLCollection` rooted at the `Document` node whose
-/// filter matches `a` and `area` elements that have an `href` attribute
-/// (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-links>).
+// https://html.spec.whatwg.org/multipage/dom.html#dom-document-links
 fn collect_html_links(
     doc: &crate::documents::BlitzDocument,
     document: u32,
@@ -272,12 +235,8 @@ fn collect_html_links(
     order
 }
 
-/// HTML elements with local name `local` below `scope`, in tree order.
-///
-/// `Document.images` and `Document.forms` are `HTMLCollection`s rooted at the
-/// `Document` node whose filters match `img` and `form` elements
-/// (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-images>,
-/// <https://html.spec.whatwg.org/multipage/dom.html#dom-document-forms>).
+// https://html.spec.whatwg.org/multipage/dom.html#dom-document-images
+// https://html.spec.whatwg.org/multipage/dom.html#dom-document-forms
 fn collect_html_descendants(
     doc: &crate::documents::BlitzDocument,
     document: u32,
@@ -300,14 +259,8 @@ fn collect_html_descendants(
     order
 }
 
-/// A document script is connected: marked in-document by insertion and
-/// ancestor-connected to the document root.
-///
-/// `IS_IN_DOCUMENT` is set only in `process_added_subtree` when the parent is
-/// already in the document, so a script inside a detached fragment is not a
-/// document script
-/// (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-scripts>,
-/// <https://dom.spec.whatwg.org/#connected>).
+// https://html.spec.whatwg.org/multipage/dom.html#dom-document-scripts
+// https://dom.spec.whatwg.org/#connected
 fn script_is_in_document(doc: &crate::documents::BlitzDocument, mut id: BlitzId) -> bool {
     if !doc
         .base
@@ -328,7 +281,6 @@ fn script_is_in_document(doc: &crate::documents::BlitzDocument, mut id: BlitzId)
     }
 }
 
-/// Descendant Blitz ids of `scope` in tree order, excluding `scope` itself.
 fn descendants(base: &blitz_dom::BaseDocument, scope: BlitzId) -> Vec<BlitzId> {
     let mut order = Vec::new();
     let mut stack: Vec<BlitzId> = base
@@ -349,10 +301,6 @@ fn element_name(base: &blitz_dom::BaseDocument, id: BlitzId) -> Option<&QualName
         .map(|element| &element.name)
 }
 
-/// Whether `id` is an `option` element, the Blitz stand-in for the options
-/// list. Blitz keeps no form model, so a select's options are simply the
-/// `option` elements in its subtree, in tree order; optgroup nesting is
-/// covered because the walk descends.
 fn is_option_element(base: &blitz_dom::BaseDocument, id: BlitzId) -> bool {
     element_name(base, id)
         .is_some_and(|name| name.ns == html_namespace() && name.local.as_str() == "option")
@@ -365,11 +313,7 @@ fn collect_by_tag(
     name: &str,
     html_document: bool,
 ) -> Vec<NodeId> {
-    // HTML documents ASCII-lowercase the query against HTML-namespace
-    // names; XML documents (including XHTML) match qualified names
-    // exactly. The HTML-document flag is captured when the collection is
-    // created, so adopting the root into another document does not change
-    // the filter (<https://dom.spec.whatwg.org/#concept-getelementsbytagname>).
+    // https://dom.spec.whatwg.org/#concept-getelementsbytagname
     let lowered = name.to_ascii_lowercase();
     descendants(base, scope)
         .into_iter()
@@ -397,26 +341,20 @@ fn collect_by_name(
     descendants(base, scope)
         .into_iter()
         .filter(|&id| {
-            // Only HTML elements take part: a foreign-element `name` attribute
-            // is not one the document exposes here
-            // (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-getelementsbyname>).
+            // https://html.spec.whatwg.org/multipage/dom.html#dom-document-getelementsbyname
             is_html_element(base, id) && attr(base, id, "name").is_some_and(|value| value == name)
         })
         .map(|node| NodeId { document, node })
         .collect()
 }
 
-/// Whether `id` is an element in the HTML namespace.
 fn is_html_element(base: &blitz_dom::BaseDocument, id: BlitzId) -> bool {
     base.get_node(id)
         .and_then(|node| node.data.downcast_element())
         .is_some_and(|element| element.name.ns == html_namespace())
 }
 
-/// The Window named objects with `name` in `scope`'s document tree, in tree
-/// order: any element's ID, an `embed`/`form`/`img`/`object`'s `name`, and a
-/// same-origin child navigable's target name
-/// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#named-access-on-the-window-object>).
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#named-access-on-the-window-object
 fn collect_window_named(
     world: &crate::js::world::World,
     base: &blitz_dom::BaseDocument,
@@ -434,10 +372,7 @@ fn collect_window_named(
         .collect()
 }
 
-/// Whether `id` is one of the Window named objects with `name`
-/// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#named-access-on-the-window-object>):
-/// any element's ID, an `embed`/`form`/`img`/`object`'s `name`, or a
-/// same-origin child navigable's target name.
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#named-access-on-the-window-object
 fn is_window_named_object(
     world: &crate::js::world::World,
     base: &blitz_dom::BaseDocument,
@@ -466,10 +401,7 @@ fn is_window_named_object(
     }
 }
 
-/// The target name of `id`'s child navigable
-/// (<https://html.spec.whatwg.org/multipage/document-sequences.html#nav-target>).
-/// It follows `window.name` as well as the `name` content attribute, so an
-/// iframe whose child renames itself stops answering to its old attribute.
+// https://html.spec.whatwg.org/multipage/document-sequences.html#nav-target
 fn navigable_target_name(world: &crate::js::world::World, id: NodeId) -> Option<String> {
     let frame = world.frame_for_container(id)?;
     if !is_same_origin_navigable(world, frame) {
@@ -480,24 +412,18 @@ fn navigable_target_name(world: &crate::js::world::World, id: NodeId) -> Option<
     (!name.is_empty()).then_some(name)
 }
 
-/// Whether `frame` is same-origin with this Window. A cross-origin child does
-/// not contribute its target name to the Window's supported property names
-/// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#named-access-on-the-window-object>).
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#named-access-on-the-window-object
 fn is_same_origin_navigable(
     world: &crate::js::world::World,
     frame: crate::protocol::FrameId,
 ) -> bool {
     match world.frame_world(frame) {
         Some(child) => child.borrow().origin == world.origin,
-        // A child whose realm has not started yet is its initial about:blank,
-        // which inherits the parent's origin.
         None => true,
     }
 }
 
-/// Whether a named getter exposes `name`: some descendant is a Window named
-/// object with it
-/// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#named-access-on-the-window-object>).
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#named-access-on-the-window-object
 fn named_exists(
     world: &crate::js::world::World,
     base: &blitz_dom::BaseDocument,
@@ -513,8 +439,7 @@ fn named_exists(
         .any(|id| is_window_named_object(world, base, document, id, name))
 }
 
-/// The named elements with `name` in `scope`'s document tree, in tree order
-/// (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-nameditem>).
+// https://html.spec.whatwg.org/multipage/dom.html#dom-document-nameditem
 pub(crate) fn collect_document_named(
     base: &blitz_dom::BaseDocument,
     document: u32,
@@ -531,10 +456,7 @@ pub(crate) fn collect_document_named(
         .collect()
 }
 
-/// Whether `id` is a named element with `name`: one of the HTML elements
-/// whose `name` the Document named getter exposes, plus the `object` and
-/// `img` `id` cases
-/// (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-nameditem>).
+// https://html.spec.whatwg.org/multipage/dom.html#dom-document-nameditem
 fn is_named_element(base: &blitz_dom::BaseDocument, id: BlitzId, name: &str) -> bool {
     if name.is_empty() {
         return false;
@@ -549,8 +471,6 @@ fn is_named_element(base: &blitz_dom::BaseDocument, id: BlitzId, name: &str) -> 
     match qual.local.as_str() {
         "embed" | "form" | "iframe" => carries("name"),
         "object" => carries("name") || carries("id"),
-        // An `img` is exposed by its `id` only while it also carries a
-        // non-empty `name`, whatever that name is.
         "img" => {
             carries("name")
                 || (carries("id") && attr(base, id, "name").is_some_and(|value| !value.is_empty()))
@@ -559,10 +479,7 @@ fn is_named_element(base: &blitz_dom::BaseDocument, id: BlitzId, name: &str) -> 
     }
 }
 
-/// The supported property names of a Document, in tree order: each named
-/// element contributes its `id` value first and its `name` value second,
-/// ignoring later duplicates
-/// (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-nameditem>).
+// https://html.spec.whatwg.org/multipage/dom.html#dom-document-nameditem
 pub(crate) fn document_supported_names(
     base: &blitz_dom::BaseDocument,
     scope: BlitzId,
@@ -586,7 +503,6 @@ pub(crate) fn document_supported_names(
     names
 }
 
-/// Whether `name` is a supported property name of the Document at `scope`.
 pub(crate) fn document_has_named_property(
     base: &blitz_dom::BaseDocument,
     scope: BlitzId,
@@ -625,8 +541,7 @@ fn collect_by_class(
     quirks: bool,
 ) -> Vec<NodeId> {
     let wanted: Vec<&str> = names.split_ascii_whitespace().collect();
-    // An empty class set matches nothing
-    // (<https://dom.spec.whatwg.org/#concept-getelementsbyclassname>).
+    // https://dom.spec.whatwg.org/#concept-getelementsbyclassname
     if wanted.is_empty() {
         return Vec::new();
     }
@@ -636,16 +551,13 @@ fn collect_by_class(
             if !is_element(base, id) {
                 return false;
             }
-            // The class is the no-namespace `class` attribute, not `*:class`
-            // (<https://dom.spec.whatwg.org/#concept-getelementsbyclassname>).
+            // https://dom.spec.whatwg.org/#concept-getelementsbyclassname
             let Some(classes) = class_attribute(base, id) else {
                 return false;
             };
             let tokens: Vec<&str> = classes.split_ascii_whitespace().collect();
             wanted.iter().all(|want| {
                 tokens.iter().any(|token| {
-                    // Quirks mode compares ASCII-case-insensitively; Unicode
-                    // case folding still does not apply.
                     if quirks {
                         token.eq_ignore_ascii_case(want)
                     } else {
@@ -658,7 +570,6 @@ fn collect_by_class(
         .collect()
 }
 
-/// The `class` attribute value of an element, if it has one.
 fn class_attribute(base: &blitz_dom::BaseDocument, id: BlitzId) -> Option<&str> {
     base.get_node(id)?
         .data
@@ -671,13 +582,11 @@ fn class_attribute(base: &blitz_dom::BaseDocument, id: BlitzId) -> Option<&str> 
         .map(|attribute| attribute.value.as_str())
 }
 
-/// Whether `id` is an HTML element named `local`.
 fn html_named(base: &blitz_dom::BaseDocument, id: BlitzId, local: &str) -> bool {
     element_name(base, id)
         .is_some_and(|name| name.ns == html_namespace() && name.local.as_str() == local)
 }
 
-/// The HTML child elements of `parent` named in `locals`, in tree order.
 fn html_child_elements(
     base: &blitz_dom::BaseDocument,
     document: u32,
@@ -690,13 +599,11 @@ fn html_child_elements(
         .collect()
 }
 
-/// The `tbody` children of `table`
-/// (<https://html.spec.whatwg.org/multipage/tables.html#dom-table-tbodies>).
+// https://html.spec.whatwg.org/multipage/tables.html#dom-table-tbodies
 fn table_bodies(base: &blitz_dom::BaseDocument, document: u32, table: BlitzId) -> Vec<NodeId> {
     html_child_elements(base, document, table, &["tbody"])
 }
 
-/// The `tr` children of one table section.
 fn table_section_rows(
     base: &blitz_dom::BaseDocument,
     document: u32,
@@ -705,17 +612,12 @@ fn table_section_rows(
     html_child_elements(base, document, section, &["tr"])
 }
 
-/// The `td`/`th` children of one table row
-/// (<https://html.spec.whatwg.org/multipage/tables.html#dom-tr-cells>).
+// https://html.spec.whatwg.org/multipage/tables.html#dom-tr-cells
 fn table_row_cells(base: &blitz_dom::BaseDocument, document: u32, row: BlitzId) -> Vec<NodeId> {
     html_child_elements(base, document, row, &["td", "th"])
 }
 
-/// `table.rows` lists `thead` rows first, then in-table `tr`/`tbody` rows,
-/// then `tfoot` rows, each group in tree order. This groups by parent kind:
-/// unlike `tHead`/`tFoot` (first child only), every `thead`/`tfoot` child
-/// contributes to its group
-/// (<https://html.spec.whatwg.org/multipage/tables.html#dom-table-rows>).
+// https://html.spec.whatwg.org/multipage/tables.html#dom-table-rows
 fn table_rows(base: &blitz_dom::BaseDocument, document: u32, table: BlitzId) -> Vec<NodeId> {
     let mut head = Vec::new();
     let mut body = Vec::new();
@@ -736,9 +638,6 @@ fn table_rows(base: &blitz_dom::BaseDocument, document: u32, table: BlitzId) -> 
     head
 }
 
-/// Detaches `target` from its parent, recording the `childList` journal entry
-/// observers deliver. Blitz performs no hierarchy validation here; callers
-/// establish the parent first.
 fn detach_node(parsed: &mut crate::Parsed, target: NodeId) {
     let document = target.document;
     let (parent, previous, next) = {
@@ -765,7 +664,6 @@ fn detach_node(parsed: &mut crate::Parsed, target: NodeId) {
     }
 }
 
-/// Appends `child` to `parent`, recording the `childList` journal entry.
 fn append_node(parsed: &mut crate::Parsed, parent: NodeId, child: NodeId) {
     let previous = {
         let base = &parsed.document.base;
@@ -790,8 +688,6 @@ fn append_node(parsed: &mut crate::Parsed, parent: NodeId, child: NodeId) {
     });
 }
 
-/// Inserts `child` before `reference`, recording the `childList` journal
-/// entry on the reference's parent.
 fn insert_node_before(parsed: &mut crate::Parsed, reference: NodeId, child: NodeId) {
     let document = reference.document;
     let (parent, previous) = {
@@ -821,8 +717,6 @@ fn insert_node_before(parsed: &mut crate::Parsed, reference: NodeId, child: Node
     });
 }
 
-/// Replaces `old` with `new` in its parent, recording the `childList` journal
-/// entry.
 fn replace_node(parsed: &mut crate::Parsed, old: NodeId, new: NodeId) {
     let document = old.document;
     let (parent, previous, next) = {
@@ -853,7 +747,6 @@ fn replace_node(parsed: &mut crate::Parsed, old: NodeId, new: NodeId) {
     });
 }
 
-/// Creates a blank `option` element for a growing options collection.
 fn create_option_element(parsed: &mut crate::Parsed, document: u32) -> NodeId {
     let name = QualName::new(None, html_namespace(), LocalName::from("option"));
     let node = parsed
@@ -864,7 +757,6 @@ fn create_option_element(parsed: &mut crate::Parsed, document: u32) -> NodeId {
     NodeId { document, node }
 }
 
-/// Appends `count` blank options to `select`.
 fn append_blank_options(parsed: &mut crate::Parsed, select: NodeId, count: usize) {
     for _ in 0..count {
         let option = create_option_element(parsed, select.document);
@@ -881,13 +773,6 @@ pub(super) fn array_index(name: &str) -> Option<u32> {
     (index.to_string() == name).then_some(index)
 }
 
-/// The property key as a string, or `None` for symbols.
-///
-/// Symbols (including `Symbol.iterator` and `Symbol("0")`) are never
-/// supported indexed or named properties, so every exotic hook falls through
-/// to the ordinary path instead of treating a symbol description as a name.
-/// Re-interning distinguishes string atoms from symbol atoms that share a
-/// description; numeric atoms are checked via both string and `u32` forms.
 pub(super) fn atom_name<'js>(ctx: &Ctx<'js>, atom: &Atom<'js>) -> Option<String> {
     let name = atom.to_string().ok()?;
     if let Ok(string_atom) = Atom::from_str(ctx.clone(), &name)
@@ -909,9 +794,7 @@ pub(super) fn reject_indexed_write<'js>(
     object: &Value<'js>,
     receiver: &Value<'js>,
 ) -> ExoticSetResult {
-    // https://webidl.spec.whatwg.org/#legacy-platform-object-set: any array
-    // index is rejected (even past the end) so `coll[999] = 1` does not create
-    // an expando; `HTMLCollection-supported-property-indices.html` requires it.
+    // https://webidl.spec.whatwg.org/#legacy-platform-object-set
     if object == receiver && array_index(name).is_some() {
         ExoticSetResult::Handled(false)
     } else {
@@ -1072,8 +955,6 @@ impl JsOptionsCollection {
             HTMLElementOrLong, HTMLOptGroupElementOrHTMLOptionElement,
         };
         let select = self.query.scope.0;
-        // The union conversion already brand-checks the element, so only a
-        // tree node arrives here.
         let element = match element {
             HTMLOptGroupElementOrHTMLOptionElement::HTMLOptGroupElement(reference)
             | HTMLOptGroupElementOrHTMLOptionElement::HTMLOptionElement(reference) => reference,
@@ -1181,8 +1062,6 @@ impl<'js> html_options_collection_generated::HTMLOptionsCollection<'js> for JsOp
         self.query.ids(ctx).map(|ids| ids.len())
     }
 
-    // Inherited `item` installs on this prototype too, derived from the
-    // parent chain instead of repeated by hand.
     // https://dom.spec.whatwg.org/#dom-htmlcollection-item
     fn item(&self, ctx: Ctx<'js>, arg_0: u32) -> Result<Value<'js>> {
         self.query.item(&ctx, arg_0 as usize)
@@ -1546,10 +1425,7 @@ fn append_collection_option(ctx: &Ctx<'_>, select: NodeId, option: NodeId) -> Re
     Ok(())
 }
 
-/// A static `NodeList` snapshot as an ordinary object on `NodeList.prototype`.
-/// Own indexed properties match legacy platform objects without an indexed
-/// setter: enumerable, configurable, and not writable
-/// (<https://webidl.spec.whatwg.org/#legacy-platform-object-getownproperty>).
+// https://webidl.spec.whatwg.org/#legacy-platform-object-getownproperty
 pub(super) fn static_node_list<'js>(
     ctx: &Ctx<'js>,
     scope: NodeId,
@@ -1583,10 +1459,7 @@ pub(crate) fn install_collection_brand(ctx: &Ctx<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Determines the value of a Window named property: a same-origin child
-/// navigable's `WindowProxy`, the single named element, or an `HTMLCollection`
-/// when several share the name
-/// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#named-access-on-the-window-object>).
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#named-access-on-the-window-object
 fn window_named_value(ctx: Ctx<'_>, name: String) -> Result<Value<'_>> {
     if name.is_empty() {
         return Ok(Value::new_undefined(ctx.clone()));
@@ -1597,10 +1470,7 @@ fn window_named_value(ctx: Ctx<'_>, name: String) -> Result<Value<'_>> {
         return Ok(Value::new_undefined(ctx.clone()));
     };
     let ids = query_ids(&ctx, document, &CollectionKind::WindowNamed(name.clone()))?;
-    // A same-origin child navigable wins over the element that hosts it: the
-    // Window named getter answers its active `WindowProxy`. An element that
-    // matched only by `id` is still that element
-    // (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-window-nameditem>).
+    // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-window-nameditem
     {
         let owner = world.borrow();
         for id in &ids {
@@ -1623,8 +1493,7 @@ fn window_named_value(ctx: Ctx<'_>, name: String) -> Result<Value<'_>> {
     }
 }
 
-/// The active `WindowProxy` of `id`'s child navigable
-/// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-window-nameditem>).
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-window-nameditem
 fn frame_window<'js>(ctx: &Ctx<'js>, id: NodeId) -> Result<Option<Value<'js>>> {
     let world = world_for_node(ctx, id)?;
     let frame = world.borrow().frame_for_container(id);
@@ -1636,8 +1505,7 @@ fn frame_window<'js>(ctx: &Ctx<'js>, id: NodeId) -> Result<Option<Value<'js>>> {
     Ok(Some(value))
 }
 
-/// Whether `name` is a supported Window named-property name
-/// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#named-access-on-the-window-object>).
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#named-access-on-the-window-object
 fn window_named_has(ctx: Ctx<'_>, name: String) -> Result<bool> {
     if name.is_empty() {
         return Ok(false);
@@ -1658,11 +1526,7 @@ fn window_named_has(ctx: Ctx<'_>, name: String) -> Result<bool> {
 }
 
 fn named_item<'js>(ctx: &Ctx<'js>, query: &CollectionQuery, name: &str) -> Result<Value<'js>> {
-    // https://dom.spec.whatwg.org/#dom-htmlcollection-nameditem: an empty key
-    // returns null without searching; id has global precedence over name, so
-    // two passes in tree order. Each lookup resolves through the agent's
-    // document registry, not the callback realm, so cross-frame collections
-    // keep working after navigation or iframe retirement.
+    // https://dom.spec.whatwg.org/#dom-htmlcollection-nameditem
     if name.is_empty() {
         return Ok(Value::new_null(ctx.clone()));
     }
@@ -1705,8 +1569,7 @@ fn named_item<'js>(ctx: &Ctx<'js>, query: &CollectionQuery, name: &str) -> Resul
     Ok(Value::new_null(ctx.clone()))
 }
 
-/// The supported named properties of an `HTMLCollection`, in tree order.
-/// <https://dom.spec.whatwg.org/#interface-htmlcollection>
+// https://dom.spec.whatwg.org/#interface-htmlcollection
 fn named_keys(ctx: &Ctx<'_>, ids: &[NodeId]) -> Result<Vec<String>> {
     let mut keys: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();

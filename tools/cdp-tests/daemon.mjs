@@ -10,7 +10,7 @@ export async function startDaemon(binary) {
   mkdirSync(runtime, { recursive: true });
   mkdirSync(data, { recursive: true });
 
-  const child = spawn(binary, ["daemon", "--profile=default"], {
+  const child = spawn(binary, ["--profile=default"], {
     env: { ...globalThis.process.env, XDG_RUNTIME_DIR: runtime, XDG_DATA_HOME: data },
     stdio: "ignore",
   });

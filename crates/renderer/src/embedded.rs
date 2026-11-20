@@ -1,5 +1,3 @@
-//! In-process page engine for hosts that do not spawn renderer processes.
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -9,30 +7,18 @@ use crate::engine::Engine;
 use crate::js::Stop;
 use crate::{BrowserServices, FrameId, Mount, RemoteValue, RendererEvent, TabError};
 
-/// One renderer hosted directly in its caller's process.
 pub struct EmbeddedRenderer {
     engine: Engine,
     stop: Arc<Stop>,
-    /// Ready tasks left queued by the last budgeted drain.
-    ///
-    /// Those tasks are often timers already marked fired, so
-    /// [`Engine::next_deadline`] is `None` while work remains.
     ready_queued: bool,
 }
 
 impl EmbeddedRenderer {
-    /// Creates a renderer whose external effects are handled by `host`, and
-    /// whose pages report `identity`.
-    ///
-    /// This builds a private font database. A host that creates many
-    /// renderers on one thread should build [`crate::Fonts`] once and call
-    /// [`Self::with_fonts`] instead.
     #[must_use]
     pub fn new(host: Arc<dyn BrowserServices>, identity: net::ValidIdentity) -> Self {
         Self::with_fonts(host, identity, &crate::Fonts::default())
     }
 
-    /// Creates a renderer that shares `fonts` with other renderers.
     #[must_use]
     pub fn with_fonts(
         host: Arc<dyn BrowserServices>,
@@ -55,52 +41,22 @@ impl EmbeddedRenderer {
         }
     }
 
-    /// Replaces the main-frame document and runs ready tasks until the
-    /// script budget.
-    ///
-    /// A yield leaves tasks queued. [`Self::drain_ready`] reports that so
-    /// the host can step again immediately: timers already marked fired are
-    /// not a future deadline.
-    ///
-    /// # Errors
-    ///
-    /// The engine rejected the mount.
     pub fn mount(&mut self, mount: &Mount) -> Result<(), TabError> {
         self.engine.mount_frame(FrameId::MAIN, mount)?;
         let _yielded = self.drain_until(std::time::Instant::now() + crate::TURN_SCRIPT_BUDGET);
         Ok(())
     }
 
-    /// Mounts with a caller-chosen script budget instead of the engine's
-    /// 45-second turn.
-    ///
-    /// A host that enforces a shorter test timeout uses this so one runaway
-    /// script cannot spend the whole harness budget before the host checks
-    /// it.
-    ///
-    /// # Errors
-    ///
-    /// The engine rejected the mount.
     pub fn mount_bounded(&mut self, mount: &Mount, budget: Duration) -> Result<(), TabError> {
         self.engine.mount_frame(FrameId::MAIN, mount)?;
         let _yielded = self.drain_until(std::time::Instant::now() + budget);
         Ok(())
     }
 
-    /// Evaluates JavaScript in the main frame and returns its string coercion.
-    ///
-    /// # Errors
-    ///
-    /// Script evaluation failed.
     pub fn eval(&mut self, source: &str) -> Result<String, TabError> {
         self.engine.eval_in(FrameId::MAIN, source)
     }
 
-    /// Evaluates JavaScript in the main frame and returns a value-only result.
-    ///
-    /// # Errors
-    ///
-    /// Script evaluation failed.
     pub fn execute(
         &mut self,
         source: &str,
@@ -110,20 +66,10 @@ impl EmbeddedRenderer {
             .execute_remote_in(FrameId::MAIN, crate::ScriptSource::Page(source), timeout)
     }
 
-    /// Renders the main frame and returns the encoded PNG.
-    ///
-    /// # Errors
-    ///
-    /// The render pipeline refused the document.
     pub fn screenshot(&mut self, request: &crate::ScreenshotRequest) -> Result<Vec<u8>, TabError> {
         self.engine.screenshot_frame(FrameId::MAIN, request)
     }
 
-    /// Renders the main frame and returns the raw RGBA pixels.
-    ///
-    /// # Errors
-    ///
-    /// The render pipeline refused the document.
     pub fn render(
         &mut self,
         request: &crate::ScreenshotRequest,
@@ -131,19 +77,11 @@ impl EmbeddedRenderer {
         self.engine.render_frame(FrameId::MAIN, request)
     }
 
-    /// Runs ready tasks until the script budget without blocking.
-    ///
-    /// Returns whether ready work stayed queued. The host steps again
-    /// immediately in that case.
     #[must_use]
     pub fn drain_ready(&mut self) -> bool {
         self.drain_until(std::time::Instant::now() + crate::TURN_SCRIPT_BUDGET)
     }
 
-    /// Drains until `deadline`. Returns whether ready work stayed queued.
-    ///
-    /// [`Engine::drain_ready_until`] returns true only after `deadline` has
-    /// passed, so one call spends the budget.
     #[must_use]
     pub fn drain_until(&mut self, deadline: std::time::Instant) -> bool {
         let yielded = self.engine.drain_ready_until(deadline);
@@ -151,28 +89,15 @@ impl EmbeddedRenderer {
         yielded
     }
 
-    /// Removes and returns all pending main-frame events.
-    ///
-    /// # Errors
-    ///
-    /// The retained event limit was exceeded.
     pub fn take_events(&mut self) -> Result<Vec<(FrameId, RendererEvent)>, TabError> {
         self.engine.take_events()
     }
 
-    /// Whether any frame has a dial queued or in flight.
-    ///
-    /// A host driven by in-process effect completions waits on this instead of
-    /// treating a page with no queued task as finished.
     #[must_use]
     pub fn has_pending_dials(&self) -> bool {
         self.engine.has_pending_dials()
     }
 
-    /// Duration until the next page timer is ready.
-    ///
-    /// `Some(0)` when ready work is queued. Fired timers are not a deadline,
-    /// and a host that waited on `None` would never run them.
     #[must_use]
     pub fn time_until_deadline(&self) -> Option<Duration> {
         if self.ready_queued || self.engine.has_ready_work() {
@@ -183,13 +108,11 @@ impl EmbeddedRenderer {
             .map(|deadline| deadline.saturating_duration_since(tokio::time::Instant::now()))
     }
 
-    /// Mounts without draining, so a test can bound the following drain.
     #[cfg(test)]
     pub(crate) fn mount_for_test(&mut self, mount: &Mount) -> Result<(), TabError> {
         self.engine.mount_frame(FrameId::MAIN, mount)
     }
 
-    /// [`Self::drain_ready`] bounded by `budget` from now.
     #[cfg(test)]
     pub(crate) fn drain_for(&mut self, budget: Duration) -> bool {
         self.drain_until(std::time::Instant::now() + budget)

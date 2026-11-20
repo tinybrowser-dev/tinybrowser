@@ -1,5 +1,3 @@
-//! Named profile identity and default location.
-
 pub(crate) mod store;
 
 use std::env;
@@ -7,14 +5,12 @@ use std::fmt;
 use std::io;
 use std::path::PathBuf;
 
-/// A named durable browser data set. The implicit name is `default`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Profile {
     name: ProfileName,
 }
 
 impl Profile {
-    /// The implicit `default` profile.
     #[must_use]
     pub fn default_named() -> Self {
         Self {
@@ -22,24 +18,17 @@ impl Profile {
         }
     }
 
-    /// Profile with a parsed name.
     #[must_use]
     pub fn named(name: ProfileName) -> Self {
         Self { name }
     }
 
-    /// Parses `raw` as a profile name. Empty input is `default`.
-    ///
-    /// # Errors
-    ///
-    /// [`ProfileError::InvalidName`] when `raw` is not a single path segment.
     pub fn parse(raw: &str) -> Result<Self, ProfileError> {
         Ok(Self {
             name: ProfileName::parse(raw)?,
         })
     }
 
-    /// Name of this profile.
     #[must_use]
     pub fn name(&self) -> &ProfileName {
         &self.name
@@ -52,16 +41,10 @@ impl Default for Profile {
     }
 }
 
-/// Parsed profile name. Path separators and `.` / `..` are refused.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ProfileName(String);
 
 impl ProfileName {
-    /// Parses `raw`. Empty or whitespace-only input becomes `default`.
-    ///
-    /// # Errors
-    ///
-    /// [`ProfileError::InvalidName`] when the name cannot be a directory segment.
     pub fn parse(raw: &str) -> Result<Self, ProfileError> {
         let name = raw.trim();
         if name.is_empty() {
@@ -78,13 +61,11 @@ impl ProfileName {
         Ok(Self(name.to_owned()))
     }
 
-    /// The implicit profile name.
     #[must_use]
     pub fn default_named() -> Self {
         Self("default".into())
     }
 
-    /// Borrowed name bytes.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
@@ -97,10 +78,8 @@ impl fmt::Display for ProfileName {
     }
 }
 
-/// Why a profile name was refused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProfileError {
-    /// The name is not a single directory segment.
     InvalidName,
 }
 
@@ -114,11 +93,6 @@ impl fmt::Display for ProfileError {
 
 impl std::error::Error for ProfileError {}
 
-/// Data home for profile files: `XDG_DATA_HOME` or `$HOME/.local/share`.
-///
-/// # Errors
-///
-/// Both `XDG_DATA_HOME` and `HOME` are unset or empty.
 pub fn default_data_home() -> io::Result<PathBuf> {
     if let Some(dir) = env::var_os("XDG_DATA_HOME").filter(|value| !value.is_empty()) {
         return Ok(PathBuf::from(dir));

@@ -1,5 +1,3 @@
-//! `DOMImplementation`, DOM parsing, and serialization.
-
 use super::{
     NodeContext, create_node, retarget_wrapper, throw_dom, throw_dom_error, validate_and_extract,
     world, world_for_node, wrap_new_document, wrap_new_document_in_world, wrap_node,
@@ -14,8 +12,7 @@ use markup5ever::{LocalName, QualName};
 
 use rquickjs::{Ctx, Exception, Result, Value, class::Trace, prelude::Func};
 
-/// `DOMImplementation` as a platform object
-/// (<https://dom.spec.whatwg.org/#interface-domimplementation>).
+// https://dom.spec.whatwg.org/#interface-domimplementation
 #[derive(Trace, rquickjs::JsLifetime)]
 pub struct JsImplementation {
     pub(crate) document: Handle,
@@ -73,8 +70,7 @@ impl<'js> dom_implementation_generated::DOMImplementation<'js> for JsImplementat
             "http://www.w3.org/2000/svg" => "image/svg+xml",
             _ => "application/xml",
         };
-        // `qualifiedName` validates before the doctype steps run
-        // (<https://dom.spec.whatwg.org/#dom-domimplementation-createdocument>).
+        // https://dom.spec.whatwg.org/#dom-domimplementation-createdocument
         let root = if qualified.is_empty() {
             None
         } else {
@@ -88,8 +84,7 @@ impl<'js> dom_implementation_generated::DOMImplementation<'js> for JsImplementat
         let world_rc = world_for_node(&ctx, self.document.0)?;
         let font_ctx = world_rc.borrow().runtime.font_ctx.clone();
         let parsed = crate::Parsed::script(content_type, font_ctx);
-        // The element is created after the doctype is appended
-        // (<https://dom.spec.whatwg.org/#dom-domimplementation-createdocument>).
+        // https://dom.spec.whatwg.org/#dom-domimplementation-createdocument
         let document_root = world_rc.borrow_mut().add_document(parsed);
         world_rc
             .borrow()
@@ -162,8 +157,6 @@ impl<'js> dom_implementation_generated::DOMImplementation<'js> for JsImplementat
                 .base
                 .mutate()
                 .append_children(head, &[title_element]);
-            // Lone surrogates cannot survive the UTF-8 tree: they become the
-            // replacement character at this boundary, a known cutover gap.
             let text = parsed.document.base.mutate().create_text_node(&title_text);
             parsed
                 .document
@@ -181,9 +174,7 @@ impl<'js> dom_implementation_generated::DOMImplementation<'js> for JsImplementat
     }
 }
 
-/// Adopts `doctype` into `document` and appends it, retargeting the wrapper
-/// so the caller's object and `document.doctype` are the same node
-/// (<https://dom.spec.whatwg.org/#concept-node-adopt>).
+// https://dom.spec.whatwg.org/#concept-node-adopt
 fn append_adopted_doctype(ctx: &Ctx<'_>, document: NodeId, doctype: NodeId) -> Result<()> {
     let source_world = world_for_node(ctx, doctype)?;
     let snapshot = {
@@ -219,7 +210,6 @@ fn append_adopted_doctype(ctx: &Ctx<'_>, document: NodeId, doctype: NodeId) -> R
     retarget_wrapper(ctx, doctype, fresh)
 }
 
-/// An HTML-namespace qualified name for document construction.
 fn html_element_name(local: &str) -> QualName {
     QualName::new(
         None,
@@ -228,25 +218,17 @@ fn html_element_name(local: &str) -> QualName {
     )
 }
 
-/// [Valid doctype name](https://dom.spec.whatwg.org/#valid-doctype-name): no
-/// ASCII whitespace, NULL, or `>`.
+// https://dom.spec.whatwg.org/#valid-doctype-name
 fn valid_doctype_name(name: &str) -> bool {
     !name
         .chars()
         .any(|c| matches!(c, '\t' | '\n' | '\u{c}' | '\r' | ' ' | '\0' | '>'))
 }
 
-/// `DOMParser` (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-parsing-and-serialization>).
-///
-/// The JS surface lives in Web IDL; `parse_from_string` is the platform
-/// algorithm the generated dispatcher calls.
+// https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-parsing-and-serialization
 #[derive(Trace, rquickjs::JsLifetime)]
 pub struct JsDomParser {
-    /// The constructing realm's document URL. `parseFromString` parses with
-    /// the context object's environment settings, not the caller's, so the
-    /// instance remembers it; a directly-reached native cannot forge another
-    /// document's URL either
-    /// (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-domparser-parsefromstring>).
+    // https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-domparser-parsefromstring
     url: String,
 }
 
@@ -267,31 +249,20 @@ impl<'js> dom_parser_generated::DOMParser<'js> for JsDomParser {
         source: rquickjs::String<'js>,
         type_: dom_parser_generated::DOMParserSupportedType,
     ) -> Result<Value<'js>> {
-        // The instance's constructing realm decides the URL, never the
-        // caller: cross-realm method calls parse with the parser's
-        // environment.
         parse_string_document(&ctx, &source, type_.as_str(), &self.url)
     }
 }
 
-/// Parses `source` as `content_type` with scripting disabled and stamps the
-/// document with `url`. Shared by `DOMParser.parseFromString`, whose URL is
-/// the constructing realm's, and the XHR document response, whose URL is the
-/// response's
-/// (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-domparser-parsefromstring>,
-/// <https://xhr.spec.whatwg.org/#document-response>).
+// https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-domparser-parsefromstring
+// https://xhr.spec.whatwg.org/#document-response
 fn parse_string_document<'js>(
     ctx: &Ctx<'js>,
     source: &rquickjs::String<'js>,
     content_type: &'static str,
     url: &str,
 ) -> Result<Value<'js>> {
-    // A lone surrogate in the source is replaced with U+FFFD rather than
-    // failing conversion: XML parsing observes the replacement, so the
-    // document reports it in text
-    // (<https://crbug.com/40814739>).
+    // https://crbug.com/40814739
     let source = String::from_utf16_lossy(&source.to_utf16()?);
-    // Parsed documents never render: share fonts, skip UA sheets.
     let font_ctx = world(ctx)?.borrow().runtime.font_ctx.clone();
     let base = url.parse::<url::Url>().map_or_else(
         |_| crate::render::INVALID_BASE_URL.to_owned(),
@@ -317,48 +288,31 @@ fn parse_string_document<'js>(
     wrap_new_document(ctx, parsed)
 }
 
-/// Installs the XHR document-response parser. The `DOMParser` native takes
-/// no URL from script; this one takes the response URL, which the host
-/// supplied with the response, so a page cannot forge a document URL it did
-/// not fetch
-/// (<https://xhr.spec.whatwg.org/#document-response>).
+// https://xhr.spec.whatwg.org/#document-response
 pub(super) fn install_xhr_parse(ctx: &Ctx<'_>) -> Result<()> {
     crate::js::bridge::object(ctx)?.set("__tbXhrParseDocument", Func::from(xhr_parse_document))?;
     Ok(())
 }
 
-/// Installs the parser behind `Document.parseHTMLUnsafe`, which
-/// `scripts/web/dom.js` installs as a static: the `WebIDL` generator does not
-/// emit static operations yet. It parses with the caller's environment settings
-/// object's URL and scripting disabled, exactly as `DOMParser` does
-/// (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-document-parsehtmlunsafe>).
+// https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-document-parsehtmlunsafe
 pub(super) fn install_document_parse(ctx: &Ctx<'_>) -> Result<()> {
     crate::js::bridge::object(ctx)?
         .set("__tbParseHTMLDocument", Func::from(parse_html_document))?;
     Ok(())
 }
 
-/// `Document.parseHTMLUnsafe`'s parse: a new document with no scripting, whose
-/// URL is the initial `about:blank` and whose origin is the caller's
-/// (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-parsehtmlunsafe>).
-/// The spec gives the new document a content type and an origin but no URL, so
-/// the URL stays the initial `about:blank` rather than the caller's.
+// https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-parsehtmlunsafe
 fn parse_html_document<'js>(ctx: Ctx<'js>, source: Value<'js>) -> Result<Value<'js>> {
     let source = source.get::<rquickjs::String>()?;
     parse_string_document(&ctx, &source, "text/html", "about:blank")
 }
 
-/// Parses an XHR response body as `content_type` and stamps the document
-/// with the response URL. The shim only passes the five response-XML types;
-/// anything else is a host-contract violation, reported the way a failed
-/// parse is: the shim treats a throw as no document.
 fn xhr_parse_document<'js>(
     ctx: Ctx<'js>,
     source: rquickjs::String<'js>,
     content_type: String,
     url: String,
 ) -> Result<Value<'js>> {
-    // `parse_document` stores the type, so it must be a static known type.
     let content_type: &'static str = match content_type.as_str() {
         "text/html" => "text/html",
         "text/xml" => "text/xml",
@@ -375,25 +329,18 @@ fn xhr_parse_document<'js>(
     parse_string_document(&ctx, &source, content_type, &url)
 }
 
-/// Wraps the native `DOMParser` so every instance remembers the URL of the
-/// realm that constructed it; the parsed document takes that URL
-/// (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-domparser-parsefromstring>).
-/// Deflated by `build.rs`, inflated once per process.
+// https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-domparser-parsefromstring
 pub(crate) const INSTALL_DOMPARSER_CTOR_DEFLATE: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
     "/js_blobs/dom_parser_ctor.deflate"
 ));
 
-/// The `DOMParser` constructor shim, inflated once per process.
 pub(crate) fn install_domparser_ctor_js(ctx: &Ctx<'_>) -> Result<&'static str> {
     static CACHE: std::sync::OnceLock<Box<str>> = std::sync::OnceLock::new();
     crate::js::blob::decompress(ctx, INSTALL_DOMPARSER_CTOR_DEFLATE, &CACHE)
 }
 
-/// `XMLSerializer` (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#xmlserializer>).
-///
-/// The JS surface lives in Web IDL; `serialize_to_string` is the platform
-/// algorithm the generated dispatcher calls.
+// https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#xmlserializer
 #[derive(Trace, rquickjs::JsLifetime)]
 pub struct JsXmlSerializer;
 
@@ -410,8 +357,7 @@ impl<'js> xml_serializer_generated::XMLSerializer<'js> for JsXmlSerializer {
         ctx: Ctx<'js>,
         root: super::host::NodeReference,
     ) -> Result<rquickjs::String<'js>> {
-        // An `Attr` serializes as the empty string
-        // (<https://w3c.github.io/DOM-Parsing/#dfn-xml-serialization-algorithm>).
+        // https://w3c.github.io/DOM-Parsing/#dfn-xml-serialization-algorithm
         let Some(id) = root.tree() else {
             return rquickjs::String::from_str(ctx.clone(), "");
         };

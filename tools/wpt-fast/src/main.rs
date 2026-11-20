@@ -1,14 +1,3 @@
-//! Native test262 runner: the fast lane for the 53k pure-JavaScript tests.
-//!
-//! The WPT harness wraps every test262 file in an HTML page with
-//! testharness.js and a document realm. That costs ~384 ms per file in the
-//! nightly. This runner evaluates the same file in a fresh `QuickJS` context
-//! with the test262 harness, under a millisecond per file, and emits a
-//! wptreport the existing readers understand.
-//!
-//! The suite is read-only. Strict variants are a `"use strict";` prefix added
-//! while evaluating, never a generated file in the checkout.
-
 mod meta;
 mod modules;
 mod runner;
@@ -24,7 +13,6 @@ use rquickjs::Runtime;
 use runner::{Harness, TestCase};
 use wpt_report::{Outcome, Status};
 
-/// Parsed command line.
 struct Options {
     root: PathBuf,
     filters: Vec<String>,
@@ -110,7 +98,6 @@ fn main() {
     }
 }
 
-/// Runs every case, one runtime per worker.
 fn run_all(cases: &[TestCase], harness: &Harness, jobs: usize) -> Vec<Outcome> {
     let next = AtomicUsize::new(0);
     let (sender, receiver) = mpsc::channel();
@@ -187,7 +174,6 @@ Runs test262 files in-process and emits a wptreport.
 
 FILTER matches a path under the checkout, such as test/language or harness.";
 
-/// Parses the command line.
 fn parse_args() -> Result<Options, String> {
     let mut options = Options {
         root: suite::default_root(),

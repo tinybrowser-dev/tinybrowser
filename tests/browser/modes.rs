@@ -1,12 +1,5 @@
-//! Subcommand selection and flag parsing at the binary boundary.
-
 use crate::fixture::Fixture;
 
-/// Runs one command and returns its output.
-///
-/// A usage error must exit, so a command that starts a server instead is a
-/// failure after ten seconds, with its stderr, rather than a hung test that
-/// leaves the server running.
 fn run(fixture: &Fixture, args: &[&str]) -> std::process::Output {
     use std::process::Stdio;
     use std::time::{Duration, Instant};
@@ -37,11 +30,6 @@ fn run(fixture: &Fixture, args: &[&str]) -> std::process::Output {
     }
 }
 
-fn commands_table(help: &str) -> &str {
-    let rest = help.split("Commands:\n").nth(1).expect("Commands heading");
-    rest.split("\n\n").next().unwrap_or(rest)
-}
-
 #[test]
 fn short_v_prints_the_version() {
     let fixture = Fixture::new("tinybrowser-version");
@@ -53,12 +41,12 @@ fn short_v_prints_the_version() {
 }
 
 #[test]
-fn version_is_global() {
+fn version_short_circuits_anywhere() {
     let fixture = Fixture::new("tinybrowser-version-global");
     for args in [
-        &["daemon", "-v"][..],
-        &["renderer", "--version"],
-        &["webdriver", "-v"],
+        &["--profile=default", "-v"][..],
+        &["--renderer", "--version"],
+        &["--port=0", "-V"],
     ] {
         let output = run(&fixture, args);
         assert!(output.status.success(), "{args:?}");
@@ -78,53 +66,55 @@ fn rejects_unknown_log_level() {
 }
 
 #[test]
-fn help_lists_process_commands() {
+fn help_documents_workflow_endpoints_and_flags() {
     let fixture = Fixture::new("tinybrowser-help");
-    let output = run(&fixture, &["--help"]);
-    assert!(output.status.success());
-    let out = String::from_utf8_lossy(&output.stdout);
-    let commands = commands_table(&out);
-    assert!(commands.contains("  daemon"), "{commands}");
-    assert!(commands.contains("  renderer"), "{commands}");
-    assert!(commands.contains("  webdriver"), "{commands}");
-}
-
-#[test]
-fn no_command_prints_help() {
-    let fixture = Fixture::new("tinybrowser-no-command");
-    let output = run(&fixture, &[]);
-    assert_eq!(output.status.code(), Some(2));
-    let out = String::from_utf8_lossy(&output.stdout);
-    let commands = commands_table(&out);
-    assert!(commands.contains("  daemon"), "{commands}");
-    assert!(commands.contains("  renderer"), "{commands}");
-    assert!(commands.contains("  webdriver"), "{commands}");
-}
-
-#[test]
-fn old_mode_flags_are_rejected() {
-    let fixture = Fixture::new("tinybrowser-old-flags");
-    for args in [&["--daemon"][..], &["--renderer"], &["--webdriver=9"]] {
-        let output = run(&fixture, args);
-        assert_eq!(output.status.code(), Some(2), "{args:?}");
+    for flag in ["--help", "-h"] {
+        let output = run(&fixture, &[flag]);
+        assert!(output.status.success(), "{flag}");
+        let out = String::from_utf8_lossy(&output.stdout);
+        assert!(out.contains("Usage: tinybrowser [OPTIONS]"), "{out}");
+        assert!(out.contains("Workflow:"), "{out}");
+        assert!(
+            out.contains("Endpoints (http://127.0.0.1:<port>):"),
+            "{out}"
+        );
+        assert!(out.contains("--port <PORT>"), "{out}");
+        assert!(out.contains("--profile <NAME>"), "{out}");
+        assert!(out.contains("--renderer"), "{out}");
+        assert!(out.contains("daemon.json"), "{out}");
     }
 }
 
 #[test]
-fn double_dash_rejects_positionals() {
-    let fixture = Fixture::new("tinybrowser-double-dash");
-    for args in [&["--", "daemon"][..], &["--", "nonsense"]] {
+fn subcommands_and_positionals_are_rejected() {
+    let fixture = Fixture::new("tinybrowser-no-subcommands");
+    for args in [
+        &["daemon"][..],
+        &["webdriver"],
+        &["renderer"],
+        &["help"],
+        &["help", "webdriver"],
+        &["--daemon"],
+        &["--webdriver=9"],
+        &["--", "daemon"],
+        &["--", "nonsense"],
+    ] {
         let output = run(&fixture, args);
         assert_eq!(output.status.code(), Some(2), "{args:?}");
+        let err = String::from_utf8_lossy(&output.stderr);
+        assert!(err.contains("unexpected argument"), "{args:?}: {err}");
     }
 }
 
 #[test]
-fn repeated_global_flags_are_rejected() {
+fn repeated_single_value_flags_are_rejected() {
     let fixture = Fixture::new("tinybrowser-repeated-flags");
     for args in [
-        &["--verbose", "--verbose", "daemon"][..],
-        &["--log-level=info", "--log-level=debug", "daemon"],
+        &["--verbose", "--verbose"][..],
+        &["--log-level=info", "--log-level=debug"],
+        &["--profile=a", "--profile=b"],
+        &["--port=1", "--port=2"],
+        &["--renderer", "--renderer"],
     ] {
         let output = run(&fixture, args);
         assert_eq!(output.status.code(), Some(2), "{args:?}");
@@ -132,69 +122,34 @@ fn repeated_global_flags_are_rejected() {
 }
 
 #[test]
-fn help_with_unknown_subcommand_is_rejected() {
-    let fixture = Fixture::new("tinybrowser-help-bogus");
-    let output = run(&fixture, &["help", "bogus"]);
-    assert_eq!(output.status.code(), Some(2));
-}
-
-#[test]
-fn help_with_known_subcommand_prints_help() {
-    let fixture = Fixture::new("tinybrowser-help-known");
-    for args in [&["help"][..], &["help", "webdriver"], &["daemon", "--help"]] {
-        let output = run(&fixture, args);
-        assert!(output.status.success(), "{args:?}");
-        let out = String::from_utf8_lossy(&output.stdout);
-        assert!(out.contains("daemon"), "{args:?}: {out}");
-    }
-}
-
-#[test]
-fn webdriver_requires_port() {
-    let fixture = Fixture::new("tinybrowser-webdriver-port");
-    let output = run(&fixture, &["webdriver"]);
-    assert_eq!(output.status.code(), Some(2));
-}
-
-#[test]
-fn webdriver_rejects_an_invalid_proxy_before_starting() {
-    let fixture = Fixture::new("tinybrowser-webdriver-proxy");
-    let output = run(
-        &fixture,
-        &["webdriver", "--port=0", "--proxy=http://proxy.test/path"],
-    );
+fn rejects_an_invalid_proxy_before_starting() {
+    let fixture = Fixture::new("tinybrowser-proxy");
+    let output = run(&fixture, &["--port=0", "--proxy=http://proxy.test/path"]);
     assert_eq!(output.status.code(), Some(2));
     let err = String::from_utf8_lossy(&output.stderr);
     assert!(err.contains("proxy URI"), "{err}");
 }
 
 #[test]
-fn webdriver_rejects_an_invalid_resolve_spec_before_starting() {
-    let fixture = Fixture::new("tinybrowser-webdriver-resolve");
-    let output = run(&fixture, &["webdriver", "--port=0", "--resolve=not-a-spec"]);
+fn rejects_an_invalid_resolve_spec_before_starting() {
+    let fixture = Fixture::new("tinybrowser-resolve");
+    let output = run(&fixture, &["--port=0", "--resolve=not-a-spec"]);
     assert_eq!(output.status.code(), Some(2));
     let err = String::from_utf8_lossy(&output.stderr);
     assert!(err.contains("resolve spec"), "{err}");
 }
 
 #[test]
-fn webdriver_rejects_an_unparseable_tls_ca_before_starting() {
-    let fixture = Fixture::new("tinybrowser-webdriver-tls-ca");
+fn rejects_an_unparseable_tls_ca_before_starting() {
+    let fixture = Fixture::new("tinybrowser-tls-ca");
     let ca = fixture.data().join("not-a-cert.pem");
     std::fs::write(&ca, b"not a certificate").expect("write CA");
     let output = run(
         &fixture,
-        &[
-            "webdriver",
-            "--port=0",
-            &format!("--tls-ca={}", ca.display()),
-        ],
+        &["--port=0", &format!("--tls-ca={}", ca.display())],
     );
     assert_eq!(output.status.code(), Some(2));
     let err = String::from_utf8_lossy(&output.stderr);
-    // Only the certificate reader names the path; the flag scanner's
-    // "unexpected argument" error does not, so a command that dropped
-    // `--tls-ca` entirely cannot pass this.
     assert!(
         err.contains(&format!("--tls-ca {}:", ca.display())),
         "{err}"
@@ -203,16 +158,12 @@ fn webdriver_rejects_an_unparseable_tls_ca_before_starting() {
 }
 
 #[test]
-fn webdriver_rejects_a_missing_tls_ca_file_before_starting() {
-    let fixture = Fixture::new("tinybrowser-webdriver-tls-ca-missing");
+fn rejects_a_missing_tls_ca_file_before_starting() {
+    let fixture = Fixture::new("tinybrowser-tls-ca-missing");
     let missing = fixture.data().join("missing/test-ca.pem");
     let output = run(
         &fixture,
-        &[
-            "webdriver",
-            "--port=0",
-            &format!("--tls-ca={}", missing.display()),
-        ],
+        &["--port=0", &format!("--tls-ca={}", missing.display())],
     );
     assert_eq!(output.status.code(), Some(2));
     let err = String::from_utf8_lossy(&output.stderr);
@@ -223,46 +174,34 @@ fn webdriver_rejects_a_missing_tls_ca_file_before_starting() {
     assert!(!err.contains("unexpected argument"), "{err}");
 }
 
-/// `--help` short-circuits where it appears, before any flag reads a file.
 #[test]
 fn help_wins_over_an_unreadable_tls_ca() {
     let fixture = Fixture::new("tinybrowser-help-tls-ca");
-    let output = run(&fixture, &["webdriver", "--tls-ca=/missing", "--help"]);
+    let output = run(&fixture, &["--tls-ca=/missing", "--help"]);
     assert!(output.status.success(), "{output:?}");
     let out = String::from_utf8_lossy(&output.stdout);
     assert!(out.contains("Usage:"), "{out}");
 }
 
-/// A missing required flag is reported before a file the flag would read, so
-/// the message does not depend on argument order.
 #[test]
-fn a_missing_port_is_reported_before_an_unreadable_tls_ca() {
-    let fixture = Fixture::new("tinybrowser-port-tls-ca");
-    let output = run(&fixture, &["webdriver", "--tls-ca=/missing"]);
-    assert_eq!(output.status.code(), Some(2));
-    let err = String::from_utf8_lossy(&output.stderr);
-    assert!(err.contains("--port <PORT>"), "{err}");
-    assert!(!err.contains("--tls-ca"), "{err}");
-}
-
-#[test]
-fn profile_and_resolve_stay_on_their_commands() {
-    let fixture = Fixture::new("tinybrowser-flag-placement");
+fn renderer_rejects_daemon_flags_in_either_order() {
+    let fixture = Fixture::new("tinybrowser-renderer-flag-conflict");
     for args in [
-        &["--profile=default"][..],
-        &["--profile=default", "daemon"],
-        &["renderer", "--profile=default"],
-        &["renderer", "--resolve=*.test=127.0.0.1"],
-        &["--resolve=*.test=127.0.0.1"],
-        &["--proxy=http://127.0.0.1:1"],
-        &["renderer", "--proxy=http://127.0.0.1:1"],
-        &["daemon", "--webdriver=9"],
-        &["daemon", "--resolve=*.test=127.0.0.1"],
-        &["daemon", "--proxy=http://127.0.0.1:1"],
-        &["daemon", "--port=9"],
+        &["--renderer", "--profile=default"][..],
+        &["--profile=default", "--renderer"],
+        &["--renderer", "--port=9"],
+        &["--port=9", "--renderer"],
+        &["--renderer", "--resolve=*.test=127.0.0.1"],
+        &["--resolve=*.test=127.0.0.1", "--renderer"],
+        &["--renderer", "--proxy=http://127.0.0.1:1"],
+        &["--proxy=http://127.0.0.1:1", "--renderer"],
+        &["--renderer", "--tls-ca=/missing"],
+        &["--tls-ca=/missing", "--renderer"],
     ] {
         let output = run(&fixture, args);
         assert_eq!(output.status.code(), Some(2), "{args:?}");
+        let err = String::from_utf8_lossy(&output.stderr);
+        assert!(err.contains("unexpected argument"), "{args:?}: {err}");
     }
 }
 
@@ -270,14 +209,17 @@ fn profile_and_resolve_stay_on_their_commands() {
 fn log_file_flag_names_the_log_file() {
     let fixture = Fixture::new("tinybrowser-log-file");
     let path = fixture.data().join("explicit.log");
-    // The logger is installed before the command runs, so the file's existence
-    // pins that --log-file reached `logging::install`. The exit code is the
-    // no-command help path, which `no_command_prints_help` already asserts.
-    run(
+    let output = run(
         &fixture,
-        &["--log-file", path.to_str().expect("utf-8 path")],
+        &[
+            "--log-file",
+            path.to_str().expect("utf-8 path"),
+            "--renderer",
+        ],
     );
-    assert!(path.is_file(), "no log file at {path:?}");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let logged = std::fs::read_to_string(&path).expect("log file created");
+    assert!(logged.contains("INFO renderer ready"), "{logged}");
 }
 
 #[test]

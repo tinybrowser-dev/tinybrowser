@@ -1,11 +1,3 @@
-//! Selecting WPT tests from the checkout's manifest.
-//!
-//! The vendored `tools/manifest` decides what a test is, and `cli.py` keeps
-//! `MANIFEST.json` current. This module consumes that manifest instead of
-//! walking the tree and guessing from file names: a helper page, a reference,
-//! and a crashtest are three different things, and only the manifest knows
-//! which is which.
-
 use std::collections::HashMap;
 use std::fs;
 use std::io;
@@ -15,95 +7,53 @@ use serde_json::{Map, Value};
 
 use crate::wrapper::Wrapper;
 
-/// Which executor a test needs, shared with the report so the two agree on a
-/// test's kind.
 pub use wpt_report::Kind;
 
-/// One selected test.
 #[derive(Clone, Debug)]
 pub struct TestCase {
-    /// The URL path and query the browser navigates to, relative to the
-    /// origin. This is the wptreport id without its leading slash.
     pub relative: String,
-    /// The on-disk source, relative to the WPT root.
     pub source: String,
-    /// The executor to use.
     pub kind: Kind,
-    /// Source bytes, read once before workers start.
-    ///
-    /// Bytes, not `String`: WPT files are not all UTF-8, and the response
-    /// charset tells the parser how to decode them.
     pub bytes: Vec<u8>,
-    /// The response content type for `bytes`.
     pub content_type: String,
-    /// Whether the manifest gives the test the long timeout.
     pub long_timeout: bool,
-    /// Reference documents a reftest compares against; empty for other kinds.
     pub refs: Vec<Reference>,
-    /// The manifest's fuzzy tolerance, when the test declares one.
     pub fuzzy: Option<Fuzzy>,
 }
 
-/// One reference document of a reftest.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Reference {
-    /// The reference's URL path, relative to the origin.
     pub relative: String,
-    /// The on-disk source, relative to the WPT root.
     pub source: String,
-    /// Whether the images must match or must differ.
     pub relation: Relation,
 }
 
-/// How a reftest compares against one reference.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Relation {
-    /// `==`: the two renders must match.
     Match,
-    /// `!=`: the two renders must differ.
     Mismatch,
 }
 
-/// A reftest's pixel tolerance from `<meta name=fuzzy>`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Fuzzy {
-    /// Largest allowed per-channel difference.
     pub max_difference: u8,
-    /// Largest allowed number of differing pixels.
     pub total_pixels: u64,
 }
 
 impl TestCase {
-    /// The wptreport identifier.
     #[must_use]
     pub fn id(&self) -> String {
         format!("/{}", self.relative)
     }
 }
 
-/// How a run narrows the full selection.
 pub struct Selection {
-    /// Skip the first `offset` tests of the sorted selection.
     pub offset: usize,
-    /// Keep at most `limit` tests.
     pub limit: usize,
-    /// `(index, count)` of a wptrunner-style directory-hash chunk.
     pub shard: Option<(usize, usize)>,
-    /// Drop `testdriver` tests; the `WebDriver` lane runs those.
     pub exclude_testdriver: bool,
 }
 
-/// Reads the manifest's testharness, crashtest, and reftest items below the
-/// requested paths.
-///
-/// `paths` are relative to `root` and may name files or directories. An empty
-/// list is rejected by the caller so a run cannot accidentally start the full
-/// suite.
-///
-/// # Errors
-///
-/// The manifest is missing or malformed, a selected path matches nothing, or a
-/// selected source cannot be read.
 pub fn select(
     root: &Path,
     paths: &[String],
@@ -126,12 +76,6 @@ pub fn select(
     }
     selected.sort_by(|left, right| left.relative.cmp(&right.relative));
     selected.dedup_by(|left, right| left.relative == right.relative);
-    // A chunk keeps every variant of one source together (an `.any.js` source
-    // produces several URLs), and the variants' ids are the source path.
-    // wptrunner hashes the directory instead, to keep tests that share
-    // server-side state in one job; this lane's origin is read-only and every
-    // file gets a fresh engine, so hashing the source itself spreads the work
-    // evenly without giving that up.
     if let Some((index, count)) = selection.shard {
         selected.retain(|item| chunk_of_source(&item.source, count) == index);
     }
@@ -144,9 +88,6 @@ pub fn select(
             paths.join(", ")
         )));
     }
-    // A shard runs one contiguous slice of the sorted selection; the driver
-    // can shrink a slice that crashes the engine without changing what the
-    // slice means.
     let mut cases = Vec::new();
     for item in selected
         .into_iter()
@@ -158,34 +99,22 @@ pub fn select(
     Ok(cases)
 }
 
-/// The chunk a test's source belongs to.
-///
-/// FNV-1a over the source path; only stability and spread matter, since the
-/// chunks are this lane's own.
 fn chunk_of_source(source: &str, count: usize) -> usize {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in source.bytes() {
         hash ^= u64::from(byte);
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
-    // `count` is at least 1 (the argument parser rejects zero) and the modulo
-    // is below it, so the conversion cannot fail on any target this runs on.
     usize::try_from(hash % u64::try_from(count).unwrap_or(u64::MAX)).unwrap_or(0)
 }
 
-/// A test the manifest listed that still has to be matched and materialized.
 struct Item {
-    /// The URL path and query.
     relative: String,
-    /// The on-disk source.
     source: String,
     kind: Kind,
     long_timeout: bool,
-    /// The wrapper to synthesize, when the URL names one.
     wrapper: Option<Wrapper>,
-    /// Reference documents, for a reftest.
     refs: Vec<Reference>,
-    /// Pixel tolerance, for a reftest.
     fuzzy: Option<Fuzzy>,
 }
 
@@ -224,7 +153,6 @@ impl Item {
     }
 }
 
-/// Reads `MANIFEST.json` from the checkout.
 fn read_manifest(root: &Path) -> io::Result<Value> {
     let path = root.join("MANIFEST.json");
     let bytes = fs::read(&path).map_err(|error| {
@@ -244,7 +172,6 @@ fn read_manifest(root: &Path) -> io::Result<Value> {
     })
 }
 
-/// Visits every leaf of the manifest's directory tree.
 fn walk(node: &Value, prefix: &str, visit: &mut impl FnMut(&str, &Value)) {
     let Some(entries) = node.as_object() else {
         return;
@@ -263,7 +190,6 @@ fn walk(node: &Value, prefix: &str, visit: &mut impl FnMut(&str, &Value)) {
     }
 }
 
-/// Turns one manifest leaf (`[hash, variant...]`) into matchable items.
 fn collect_leaf(
     root: &Path,
     path: &str,
@@ -275,7 +201,6 @@ fn collect_leaf(
     let Some(entries) = leaf.as_array() else {
         return;
     };
-    // The first element is the source digest; the rest are test variants.
     for entry in entries.iter().skip(1) {
         let Some(entry) = entry.as_array() else {
             continue;
@@ -283,8 +208,6 @@ fn collect_leaf(
         if entry.len() < 2 {
             continue;
         }
-        // Testharness variants are `[url, props]`; a jsshell variant is the
-        // URL-less form and only runs in the jsshell product, not a browser.
         let empty = Map::new();
         let props = entry.last().and_then(Value::as_object).unwrap_or(&empty);
         if props.contains_key("jsshell") {
@@ -294,9 +217,6 @@ fn collect_leaf(
         let url_path = url.split('?').next().unwrap_or(url);
         let (source, wrapper) = match Wrapper::for_url(url_path) {
             Some((wrapper, source)) => (source, Some(wrapper)),
-            // Worker, service-worker, module, and shadow-realm wrappers are
-            // generated by handlers this lane does not run; their URL is not a
-            // file, so the existence check below drops them.
             None => (url_path.trim_start_matches('/').to_owned(), None),
         };
         if !matches_requested(paths, &source, url_path) {
@@ -307,8 +227,6 @@ fn collect_leaf(
         }
         let kind = match kind {
             "crashtest" => Kind::Crashtest,
-            // testdriver.js needs a WebDriver session; select the file so the
-            // summary counts it, but the runner skips it.
             _ if props.get("testdriver").and_then(Value::as_bool) == Some(true) => Kind::Testdriver,
             _ => Kind::Testharness,
         };
@@ -324,12 +242,7 @@ fn collect_leaf(
     }
 }
 
-/// Turns one reftest leaf (`[hash, [timeout, refs, extras]]`) into an item.
-///
-/// A reftest item stores its reference documents and the fuzzy tolerance the
-/// `<meta name=fuzzy>` line produced; the runner mounts each reference in
-/// turn and compares the rendered pixels
-/// (<https://web-platform-tests.org/writing-tests/reftests.html>).
+// https://web-platform-tests.org/writing-tests/reftests.html
 fn collect_reftest(
     root: &Path,
     path: &str,
@@ -378,19 +291,12 @@ fn collect_reftest(
                 relation,
             });
         }
-        // A reftest without a readable reference is not a comparison this
-        // executor can make. Upstream never emits one; if it does, the file
-        // still shows up as unmatched rather than silently passing.
         if refs.is_empty() {
             continue;
         }
         if !matches_requested(paths, path, path) || !root.join(path).is_file() {
             continue;
         }
-        // A reftest that drives the browser through `testdriver.js` reaches
-        // its comparison only under a `WebDriver` session; without one it is a
-        // file that waits for input that never comes. The flag routes it to
-        // the `WebDriver` lane, which owns every testdriver file.
         let kind = if extras
             .and_then(|extras| extras.get("testdriver"))
             .and_then(Value::as_bool)
@@ -412,11 +318,6 @@ fn collect_reftest(
     }
 }
 
-/// Reads the `<meta name=fuzzy>` tolerance out of a reftest's extras.
-///
-/// The manifest stores each bound as a `[min, max]` range. Only the
-/// default entry (a `null` selector) applies to every test; a selector-scoped
-/// entry is ignored here, which fails closed to an exact comparison.
 fn parse_fuzzy(extras: &Map<String, Value>) -> Option<Fuzzy> {
     for entry in extras.get("fuzzy")?.as_array()? {
         let Some(pair) = entry.as_array() else {
@@ -440,7 +341,6 @@ fn parse_fuzzy(extras: &Map<String, Value>) -> Option<Fuzzy> {
     None
 }
 
-/// The upper bound of a manifest fuzzy range (`[min, max]`), or a bare number.
 fn range_max(value: &Value) -> Option<u64> {
     match value {
         Value::Number(number) => number.as_u64(),
@@ -449,10 +349,6 @@ fn range_max(value: &Value) -> Option<u64> {
     }
 }
 
-/// Whether a test falls under one of the requested paths.
-///
-/// A request may name the test URL (`.any.html`) or the on-disk source
-/// (`.any.js`); both are names a person would type.
 fn matches_requested(paths: &[String], source: &str, url_path: &str) -> bool {
     let url_path = url_path.trim_start_matches('/');
     paths.iter().any(|request| {
@@ -469,8 +365,6 @@ fn matches_requested(paths: &[String], source: &str, url_path: &str) -> bool {
     })
 }
 
-/// The script URL a wrapper loads: the document URL with `.html` swapped for
-/// `.js`, as an absolute path so it resolves from the test's document.
 fn js_url(document: &str) -> String {
     let path = document
         .split('?')
@@ -481,7 +375,6 @@ fn js_url(document: &str) -> String {
     format!("/{base}.js")
 }
 
-/// The content type wptserve's `guess_content_type` returns for `path`.
 pub(crate) fn content_type_for(path: &Path, content_types: &HashMap<String, String>) -> String {
     path.extension()
         .and_then(|extension| extension.to_str())
@@ -490,7 +383,6 @@ pub(crate) fn content_type_for(path: &Path, content_types: &HashMap<String, Stri
         .unwrap_or_else(|| "application/octet-stream".to_owned())
 }
 
-/// The default checkout location, relative to the repository root.
 #[must_use]
 pub fn default_root() -> PathBuf {
     PathBuf::from("third_party/wpt")
@@ -503,7 +395,6 @@ mod tests {
 
     use super::{Kind, Relation, Selection, select};
 
-    /// The whole selection: no shard, no window, nothing excluded.
     fn all() -> Selection {
         Selection {
             offset: 0,
@@ -513,9 +404,6 @@ mod tests {
         }
     }
 
-    /// A checkout with a manifest listing one testharness file, one `.any.js`
-    /// source, a worker variant, a jsshell variant, a crashtest, and a helper
-    /// page the manifest calls support.
     fn checkout(name: &str) -> std::path::PathBuf {
         let root =
             std::env::temp_dir().join(format!("wpt-harness-suite-{name}-{}", std::process::id()));
@@ -641,8 +529,6 @@ mod tests {
         );
         assert!(window.contains("/dom/nodes/window.window.js"));
 
-        // A crashtest is a crashtest, and its testdriver flag is irrelevant:
-        // the executor only loads the page.
         let crash =
             select(&root, &["crashtests".into()], &types(), &all()).expect("crashtest selection");
         assert_eq!(crash.len(), 1);
@@ -702,8 +588,6 @@ mod tests {
             serde_json::to_vec(&manifest).expect("manifest"),
         )
         .expect("manifest written");
-        // Selected as a testdriver test, not a reftest: `WebDriver` owns the
-        // file because the comparison only happens after driver input.
         let cases = select(&root, &["r.html".into()], &types(), &all()).expect("selection");
         assert_eq!(cases[0].kind, Kind::Testdriver);
         let without = select(
@@ -730,8 +614,6 @@ mod tests {
         let paths = ["dom".to_string(), "css".into(), "crashtests".into()];
         let whole = select(&root, &paths, &types(), &all()).expect("selection");
 
-        // Every case lands in exactly one chunk, and the two chunks together
-        // are the whole selection.
         let mut seen = Vec::new();
         for index in 0..2 {
             let shard = Selection {
@@ -748,7 +630,6 @@ mod tests {
         expected.sort();
         assert_eq!(seen, expected);
 
-        // The testdriver file is selected by default and dropped on request.
         let mut without = select(
             &root,
             &paths,
@@ -800,7 +681,6 @@ mod tests {
             .len(),
             1
         );
-        // A slice keeps its place in the sorted selection.
         let window = Selection {
             offset: 1,
             limit: 1,

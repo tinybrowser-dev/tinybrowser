@@ -1,5 +1,3 @@
-//! Attribute, class, and handler-attribute objects and plumbing.
-
 use super::{
     FromJs, HANDLER_ATTRIBUTES, OptString, WINDOW_HANDLER_NAMES, WebIdlString, child_value,
     deref_weak, is_window_reflecting_handler, make_weak, realm_registry,
@@ -31,17 +29,12 @@ use crate::js::events::{
     listener_options, remove_capture, remove_listener_parsed,
 };
 
-/// A `DOMTokenList` bound to one attribute of an element: `Element.classList`
-/// and `HTMLIFrameElement.sandbox` are the same interface over different
-/// attributes
-/// (<https://dom.spec.whatwg.org/#interface-domtokenlist>,
-/// <https://html.spec.whatwg.org/multipage/iframe-embed-object.html#dom-iframe-sandbox>).
+// https://dom.spec.whatwg.org/#interface-domtokenlist
+// https://html.spec.whatwg.org/multipage/iframe-embed-object.html#dom-iframe-sandbox
 #[derive(Trace, rquickjs::JsLifetime)]
 pub struct JsTokenList {
     pub(crate) element: Handle,
-    /// The content attribute whose tokens this list holds. The update steps
-    /// write the attribute, so the list must know which one it came from
-    /// (<https://dom.spec.whatwg.org/#concept-dtl-update>).
+    // https://dom.spec.whatwg.org/#concept-dtl-update
     #[qjs(skip_trace)]
     pub(crate) attribute: LocalName,
 }
@@ -49,9 +42,7 @@ pub struct JsTokenList {
 include!(concat!(env!("OUT_DIR"), "/DOMTokenList.rs"));
 
 impl JsTokenList {
-    /// The element this list belongs to. Adoption keeps the list object, so
-    /// every operation follows the adopted copy
-    /// (<https://dom.spec.whatwg.org/#concept-node-adopt>).
+    // https://dom.spec.whatwg.org/#concept-node-adopt
     fn live_element(&self, ctx: &Ctx<'_>) -> Result<NodeId> {
         Ok(world(ctx)?
             .borrow_mut()
@@ -105,8 +96,7 @@ impl<'js> dom_token_list_generated::DOMTokenList<'js> for JsTokenList {
 
     // https://dom.spec.whatwg.org/#dom-domtokenlist-contains
     fn contains(&self, ctx: Ctx<'js>, token: rquickjs::String<'js>) -> Result<bool> {
-        // `contains` does not validate its argument
-        // (<https://dom.spec.whatwg.org/#dom-domtokenlist-contains>).
+        // https://dom.spec.whatwg.org/#dom-domtokenlist-contains
         let token = token.to_string()?;
         Ok(token_list_tokens(&ctx, self.live_element(&ctx)?, &self.attribute)?.contains(&token))
     }
@@ -126,8 +116,7 @@ impl<'js> dom_token_list_generated::DOMTokenList<'js> for JsTokenList {
                 current.push(token);
             }
         }
-        // The update steps run even when no token was added, normalizing
-        // the attribute (<https://dom.spec.whatwg.org/#dom-domtokenlist-add>).
+        // https://dom.spec.whatwg.org/#dom-domtokenlist-add
         write_token_list(&ctx, self.live_element(&ctx)?, &self.attribute, &current)
     }
 
@@ -189,8 +178,7 @@ impl<'js> dom_token_list_generated::DOMTokenList<'js> for JsTokenList {
                 token.clone_from(&new);
             }
         }
-        // Replacing can duplicate an existing token; the token set keeps the
-        // first occurrence (https://github.com/whatwg/dom/issues/443).
+        // https://github.com/whatwg/dom/issues/443
         let mut deduped: Vec<String> = Vec::with_capacity(current.len());
         for token in current {
             if !deduped.contains(&token) {
@@ -205,15 +193,11 @@ impl<'js> dom_token_list_generated::DOMTokenList<'js> for JsTokenList {
     fn supports(&self, ctx: Ctx<'js>, token: rquickjs::String<'js>) -> Result<bool> {
         let token = token.to_string()?;
         match self.attribute.as_ref() {
-            // `iframe.sandbox` is one token list with supported tokens
-            // (<https://html.spec.whatwg.org/multipage/iframe-embed-object.html#attr-iframe-sandbox>).
+            // https://html.spec.whatwg.org/multipage/iframe-embed-object.html#attr-iframe-sandbox
             "sandbox" => Ok(crate::protocol::SandboxFlags::supports(&token)),
-            // A `blocking` attribute's possible blocking tokens; `render` is
-            // the only one so far
-            // (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#blocking-attributes>).
+            // https://html.spec.whatwg.org/multipage/urls-and-fetching.html#blocking-attributes
             "blocking" => Ok(token == "render"),
-            // Validation steps step 1: no supported tokens means a `TypeError`
-            // (<https://dom.spec.whatwg.org/#concept-domtokenlist-validation>).
+            // https://dom.spec.whatwg.org/#concept-domtokenlist-validation
             _ => Err(Exception::throw_type(
                 &ctx,
                 "DOMTokenList has no supported tokens",
@@ -222,8 +206,6 @@ impl<'js> dom_token_list_generated::DOMTokenList<'js> for JsTokenList {
     }
 }
 
-/// The element's tokens for `attribute`: an ordered set, so duplicates
-/// collapse.
 fn token_list_tokens(ctx: &Ctx<'_>, id: NodeId, attribute: &LocalName) -> Result<Vec<String>> {
     let world = world(ctx)?;
     let mut tokens: Vec<String> = Vec::new();
@@ -244,7 +226,7 @@ fn token_list_tokens(ctx: &Ctx<'_>, id: NodeId, attribute: &LocalName) -> Result
     Ok(tokens)
 }
 
-/// [Token validation](https://dom.spec.whatwg.org/#validate-a-token).
+// https://dom.spec.whatwg.org/#validate-a-token
 fn validate_token(ctx: &Ctx<'_>, token: &str) -> Result<()> {
     if token.is_empty() {
         return Err(throw_dom(ctx, "SyntaxError", "token is empty"));
@@ -262,8 +244,7 @@ fn validate_token(ctx: &Ctx<'_>, token: &str) -> Result<()> {
     Ok(())
 }
 
-/// `replace` validates emptiness for both tokens before whitespace
-/// (<https://dom.spec.whatwg.org/#dom-domtokenlist-replace>).
+// https://dom.spec.whatwg.org/#dom-domtokenlist-replace
 fn validate_token_pair(ctx: &Ctx<'_>, old: &str, new: &str) -> Result<()> {
     if old.is_empty() || new.is_empty() {
         return Err(throw_dom(ctx, "SyntaxError", "token is empty"));
@@ -282,10 +263,7 @@ fn validate_token_pair(ctx: &Ctx<'_>, old: &str, new: &str) -> Result<()> {
     Ok(())
 }
 
-/// Writes the token list back as `attribute`. The update steps set the
-/// attribute even when the list serializes to the empty string; when the
-/// attribute does not exist and the value is empty they do nothing
-/// (<https://dom.spec.whatwg.org/#concept-dtl-update>).
+// https://dom.spec.whatwg.org/#concept-dtl-update
 fn write_token_list(
     ctx: &Ctx<'_>,
     id: NodeId,
@@ -306,9 +284,7 @@ fn write_tokens(ctx: &Ctx<'_>, id: NodeId, attribute: &LocalName, value: &str) -
     set_attribute_sync(ctx, id, attribute.as_ref(), value)
 }
 
-/// One `Attr` platform object
-/// (<https://dom.spec.whatwg.org/#interface-attr>). Identity lives in the
-/// agent's Attr registry so `el.attributes[0] === el.getAttributeNode(name)`.
+// https://dom.spec.whatwg.org/#interface-attr
 #[derive(Trace, rquickjs::JsLifetime)]
 pub struct JsAttr<'js> {
     pub(crate) id: u64,
@@ -321,7 +297,6 @@ struct AttrChildren<'js>(RefCell<Option<Value<'js>>>);
 
 impl<'js> Trace<'js> for AttrChildren<'js> {
     fn trace<'a>(&self, tracer: rquickjs::class::Tracer<'a, 'js>) {
-        // No JavaScript runs while the cache is borrowed or replaced.
         self.0.borrow().trace(tracer);
     }
 }
@@ -330,10 +305,7 @@ include!(concat!(env!("OUT_DIR"), "/Attr.rs"));
 
 pub(super) type AttrArgument<'js> = Class<'js, JsAttr<'js>>;
 
-/// `Attr` is a `Node` and therefore an `EventTarget`
-/// (<https://dom.spec.whatwg.org/#interface-attr>), so it is a third payload
-/// of the one `EventTarget` contract. Listeners key on the Attr registry
-/// identity, which never changes even when the attribute moves documents.
+// https://dom.spec.whatwg.org/#interface-attr
 impl<'js> event_target_generated::EventTarget<'js> for JsAttr<'js> {
     fn constructor(ctx: &Ctx<'js>) -> Result<Self> {
         Err(rquickjs::Exception::throw_type(ctx, "Illegal constructor"))
@@ -407,8 +379,6 @@ impl<'js> event_target_generated::EventTarget<'js> for JsAttr<'js> {
 
 impl super::host::SharedClass for JsAttr<'_> {
     // https://dom.spec.whatwg.org/#interface-attr
-    // `Attr` implements exactly `Attr`, `Node`, and `EventTarget`; anything
-    // else reaching an alternate arm is an incompatible receiver.
     fn require_interface(&self, ctx: &Ctx<'_>, interface: &str) -> Result<()> {
         if matches!(interface, "Attr" | "Node" | "EventTarget") {
             Ok(())
@@ -429,8 +399,7 @@ impl<'object> JsAttr<'object> {
         ctx: &Ctx<'js>,
         value: Option<rquickjs::String<'js>>,
     ) -> Result<()> {
-        // `Attr.nodeValue` follows the node rule: null acts as the empty
-        // string (<https://dom.spec.whatwg.org/#dom-node-nodevalue>).
+        // https://dom.spec.whatwg.org/#dom-node-nodevalue
         set_attr_value(
             ctx,
             self.scope.0,
@@ -682,11 +651,7 @@ impl<'object> JsAttr<'object> {
     }
 }
 
-/// `Attr` is a `Node`
-/// (<https://dom.spec.whatwg.org/#interface-attr>), so it is the second
-/// payload of the one `Node` contract. The prototype owner stays `JsNode`
-/// by the class-name election; this arm only serves `Attr` receivers that
-/// reach `Node.prototype` through the prototype chain.
+// https://dom.spec.whatwg.org/#interface-attr
 impl<'js> node_generated::Node<'js> for JsAttr<'js> {
     // https://dom.spec.whatwg.org/#dom-node-nodetype
     fn get_node_type(&self, _ctx: &Ctx<'js>) -> Result<u16> {
@@ -1008,9 +973,6 @@ impl<'js> named_node_map_generated::NamedNodeMap<'js> for JsNamedNodeMap {
         )
     }
 
-    // Supported property names are the attribute qualified names. An HTML
-    // element in an HTML document drops names that are not already ASCII
-    // lowercase. A name that repeats keeps its first attribute.
     // https://dom.spec.whatwg.org/#interface-namednodemap
     fn supported_names(&self, ctx: &Ctx<'js>) -> Result<Vec<String>> {
         let element = self.live_element(ctx)?;
@@ -1044,8 +1006,7 @@ impl<'js> named_node_map_generated::NamedNodeMap<'js> for JsNamedNodeMap {
     }
 }
 
-/// `NamedNodeMap`, live over the element's attribute list
-/// (<https://dom.spec.whatwg.org/#interface-namednodemap>).
+// https://dom.spec.whatwg.org/#interface-namednodemap
 #[derive(Trace, rquickjs::JsLifetime)]
 pub struct JsNamedNodeMap {
     pub(crate) element: Handle,
@@ -1054,9 +1015,7 @@ pub struct JsNamedNodeMap {
 include!(concat!(env!("OUT_DIR"), "/NamedNodeMap.rs"));
 
 impl JsNamedNodeMap {
-    /// The element this map belongs to. Adoption keeps the map object, so
-    /// every operation follows the adopted copy
-    /// (<https://dom.spec.whatwg.org/#concept-node-adopt>).
+    // https://dom.spec.whatwg.org/#concept-node-adopt
     fn live_element(&self, ctx: &Ctx<'_>) -> Result<NodeId> {
         Ok(world(ctx)?
             .borrow_mut()
@@ -1158,7 +1117,6 @@ impl JsNamedNodeMap {
     }
 }
 
-/// `(namespace, local)` of the attribute at `index`, if any.
 fn attribute_at(ctx: &Ctx<'_>, element: NodeId, index: i64) -> Result<Option<(String, String)>> {
     let world_rc = world_for_node(ctx, element)?;
     let world = world_rc.borrow();
@@ -1183,7 +1141,6 @@ fn attribute_at(ctx: &Ctx<'_>, element: NodeId, index: i64) -> Result<Option<(St
         }))
 }
 
-/// The attribute with qualified name `name`, as an `Attr` wrapper.
 fn named_item<'js>(ctx: &Ctx<'js>, element: NodeId, name: &str) -> Result<Value<'js>> {
     let world_rc = world_for_node(ctx, element)?;
     match named_attribute_id(ctx, &world_rc, element, name)? {
@@ -1192,13 +1149,8 @@ fn named_item<'js>(ctx: &Ctx<'js>, element: NodeId, name: &str) -> Result<Value<
     }
 }
 
-/// The qualified name `name` matches on `element`.
-///
-/// An element in the HTML namespace whose node document is an HTML document
-/// matches the ASCII-lowercased name. Any other element keeps the name.
-/// <https://dom.spec.whatwg.org/#concept-element-attributes-get-by-name>
+// https://dom.spec.whatwg.org/#concept-element-attributes-get-by-name
 pub(super) fn attribute_local_name(ctx: &Ctx<'_>, element: NodeId, name: &str) -> String {
-    // A missing document falls back to the non-HTML spelling instead of throwing.
     let html = with_node_data(ctx, element, |data| {
         data.and_then(|data| data.downcast_element())
             .is_some_and(|element| element.name.ns == crate::dom::tree::html_namespace())
@@ -1212,9 +1164,6 @@ pub(super) fn attribute_local_name(ctx: &Ctx<'_>, element: NodeId, name: &str) -
     }
 }
 
-/// The attached `Attr` id of the attribute with qualified name `name`, with
-/// its `(namespace, local)` key. The world must be the one whose document
-/// store the caller wants searched.
 fn named_attribute_id(
     ctx: &Ctx<'_>,
     world_rc: &Rc<RefCell<World>>,
@@ -1251,8 +1200,6 @@ fn named_attribute_id(
     Ok(attached_attr_id(ctx, element, &namespace, &local)?.map(|id| (namespace, local, id)))
 }
 
-// ── Attr registry helpers ────────────────────────────────────────────────
-
 pub(crate) fn attr_state(ctx: &Ctx<'_>, scope: NodeId, id: u64) -> Result<AttrState> {
     let registry = realm_registry(ctx)?;
     registry
@@ -1274,7 +1221,6 @@ fn attr_context<'js>(ctx: &Ctx<'js>, scope: NodeId, id: u64) -> Result<Ctx<'js>>
     Ok(prototype.restore(ctx)?.ctx().clone())
 }
 
-/// The attached element for `id`, or `None` when detached.
 pub(crate) fn attr_owner(ctx: &Ctx<'_>, scope: NodeId, id: u64) -> Option<NodeId> {
     let state = attr_state(ctx, scope, id).ok()?;
     let owner = state.owner?;
@@ -1344,7 +1290,6 @@ fn set_attr_value(ctx: &Ctx<'_>, scope: NodeId, id: u64, value: String) -> Resul
             .set_attribute(owner.node, name, &value);
         parsed.document.record(JournalEntry::Attributes {
             target: owner,
-            // attributeName is the attribute's local name.
             // https://dom.spec.whatwg.org/#handle-attribute-changes
             name: snapshot.local.clone(),
             namespace: snapshot.namespace,
@@ -1367,9 +1312,6 @@ fn set_attr_value(ctx: &Ctx<'_>, scope: NodeId, id: u64, value: String) -> Resul
     schedule_mutation_delivery(&home)
 }
 
-/// The `Attr` id attached at `(element, namespace, local)`, creating the
-/// platform object's identity on first access. Clears a stale mapping when
-/// the attribute is gone.
 pub(crate) fn attached_attr_id(
     ctx: &Ctx<'_>,
     element: NodeId,
@@ -1418,7 +1360,6 @@ pub(crate) fn attached_attr_id(
     Ok(Some(id))
 }
 
-/// Restores or creates the wrapper for an `Attr` id.
 pub(crate) fn attr_wrapper<'js>(ctx: &Ctx<'js>, id: u64) -> Result<Value<'js>> {
     let registry = realm_registry(ctx)?;
     let state = registry
@@ -1457,8 +1398,7 @@ pub(crate) fn attr_wrapper<'js>(ctx: &Ctx<'js>, id: u64) -> Result<Value<'js>> {
     Ok(value)
 }
 
-/// [Imports](https://dom.spec.whatwg.org/#dom-document-importnode) an `Attr`
-/// into `target_document` as a new detached attribute.
+// https://dom.spec.whatwg.org/#dom-document-importnode
 pub(crate) fn import_attr<'js>(
     ctx: &Ctx<'js>,
     target_document: NodeId,
@@ -1479,7 +1419,6 @@ pub(crate) fn import_attr<'js>(
     attr_wrapper(ctx, clone)
 }
 
-/// Creates a detached `Attr` identity; attaches via `setAttributeNode`.
 pub(crate) fn new_detached_attr(
     ctx: &Ctx<'_>,
     scope: NodeId,
@@ -1516,7 +1455,6 @@ pub(crate) fn new_detached_attr(
     Ok(id)
 }
 
-/// Keeps an existing attached `Attr` wrapper in sync after a value change.
 pub(crate) fn touch_attr(
     ctx: &Ctx<'_>,
     element: NodeId,
@@ -1532,22 +1470,13 @@ pub(crate) fn touch_attr(
     schedule_mutation_delivery(ctx)
 }
 
-/// Whether an attribute change replaces an existing handler value or only
-/// fills in a missing one.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum HandlerUpdate {
-    /// A DOM attribute write or removal always wins.
     Set,
-    /// An install pass for attributes the parser or markup insertion created:
-    /// a map entry that already exists (including one script cleared) stays,
-    /// so re-running the pass cannot resurrect a cleared handler.
     IfAbsent,
 }
 
-/// Runs the attribute change steps of one event handler content attribute:
-/// stores the raw source, or deactivates the handler on removal, and
-/// registers the handler's listener
-/// (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes>).
+// https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes
 fn update_handler_attribute(ctx: &Ctx<'_>, element: NodeId, name: &str, mode: HandlerUpdate) {
     let Some(world) = world_for_node(ctx, element).ok() else {
         return;
@@ -1563,19 +1492,13 @@ fn update_handler_attribute(ctx: &Ctx<'_>, element: NodeId, name: &str, mode: Ha
             crate::dom::tree::is_html_element(base, element.node, "frameset"),
         )
     };
-    // Only a name the element actually exposes is an event handler content
-    // attribute. `onreadystatechange` and `onvisibilitychange` belong to
-    // `Document`, and a `WindowEventHandlers` name exists only on `body`,
-    // `frameset`, and the window
-    // (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes>).
+    // https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes
     let allowed = HANDLER_ATTRIBUTES.contains(&name)
         || ((is_body || is_frameset) && WINDOW_HANDLER_NAMES.contains(&name));
     if !allowed {
         return;
     }
-    // A `body` or `frameset` element's window handlers act on its document's
-    // window. A body in a document with no browsing context has no target
-    // (<https://html.spec.whatwg.org/multipage/dom.html#body-element-event-handlers>).
+    // https://html.spec.whatwg.org/multipage/dom.html#body-element-event-handlers
     let target = if (is_body || is_frameset) && is_window_reflecting_handler(name) {
         if world.borrow().main_document_id() != Some(element.document_id()) {
             return;
@@ -1596,9 +1519,7 @@ fn update_handler_attribute(ctx: &Ctx<'_>, element: NodeId, name: &str, mode: Ha
         }
         return;
     };
-    // The inline check belongs to the attribute, so it runs when the
-    // attribute is set or parsed. A blocked handler keeps its previous value
-    // (<https://w3c.github.io/webappsec-csp/#should-block-inline>).
+    // https://w3c.github.io/webappsec-csp/#should-block-inline
     let position = crate::js::error_stack_top(ctx);
     let position = position
         .as_ref()
@@ -1612,20 +1533,8 @@ fn update_handler_attribute(ctx: &Ctx<'_>, element: NodeId, name: &str, mode: Ha
     crate::js::events::activate_handler(&mut world.borrow_mut(), target, name);
 }
 
-/// Runs the event handler content attribute steps for attributes that were
-/// installed without the DOM setter: parsed markup, inserted markup, a clone,
-/// or an adopted subtree.
-///
-/// The WHATWG algorithms that copy attributes (parse a token, clone a node,
-/// adopt a node) append them without running their change steps, yet every
-/// browser compiles a handler copied that way. The engine therefore runs the
-/// steps at each copy point instead of at parse time, and WPT depends on it
-/// (`event-handler-sourcetext.html` clones a template's handler).
-/// The pass is idempotent: an entry that already exists is kept, so a handler
-/// script cleared, or a value script assigned, is not replaced by the
-/// attribute's source.
-/// (<https://dom.spec.whatwg.org/#concept-node-clone>,
-/// <https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes>).
+// https://dom.spec.whatwg.org/#concept-node-clone
+// https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes
 pub(crate) fn install_parsed_handlers(ctx: &Ctx<'_>, root: NodeId) -> Result<()> {
     let mut found: Vec<(NodeId, String)> = Vec::new();
     {
@@ -1641,9 +1550,7 @@ pub(crate) fn install_parsed_handlers(ctx: &Ctx<'_>, root: NodeId) -> Result<()>
                 continue;
             };
             pending.extend(tree.children.iter().copied());
-            // A template's children live in its contents fragment, outside
-            // the element tree
-            // (<https://html.spec.whatwg.org/multipage/scripting.html#the-template-element>).
+            // https://html.spec.whatwg.org/multipage/scripting.html#the-template-element
             if let Some(contents) = crate::dom::tree::template_contents(base, node) {
                 pending.push(contents);
             }
@@ -1673,15 +1580,11 @@ pub(crate) fn install_parsed_handlers(ctx: &Ctx<'_>, root: NodeId) -> Result<()>
     Ok(())
 }
 
-/// Records the executing script for an element whose `src` set chose its URL,
-/// for later CSP `sourceFile` reporting
-/// (<https://w3c.github.io/webappsec-csp/#create-violation-for-global>).
+// https://w3c.github.io/webappsec-csp/#create-violation-for-global
 fn note_src_creator(ctx: &Ctx<'_>, element: NodeId) {
     let Some((url, line, column)) = crate::js::error_stack_top(ctx) else {
         return;
     };
-    // The entry lives in the element owner's world, where a later violation
-    // for its load looks it up.
     let Ok(owner) = world_for_node(ctx, element) else {
         return;
     };
@@ -1692,17 +1595,13 @@ fn note_src_creator(ctx: &Ctx<'_>, element: NodeId) {
         .insert(element, crate::js::CreatorInfo { url, line, column });
 }
 
-/// What a type change does with the current value slot: the sanitized value
-/// and the dirty value flag afterwards
-/// (<https://html.spec.whatwg.org/multipage/input.html#the-input-element>).
+// https://html.spec.whatwg.org/multipage/input.html#the-input-element
 struct InputValueStore {
     value: String,
     dirtiness: Dirtiness,
 }
 
-/// Recomputes an input's sanitized stored value after one of the content
-/// attributes that feeds its value sanitization changed
-/// (<https://html.spec.whatwg.org/multipage/input.html#the-input-element>).
+// https://html.spec.whatwg.org/multipage/input.html#the-input-element
 fn apply_input_value_attribute_change(ctx: &Ctx<'_>, element: NodeId, local: &str) -> Result<()> {
     let world_rc = world_for_node(ctx, element)?;
     let drives_value = {
@@ -1722,19 +1621,14 @@ fn apply_input_value_attribute_change(ctx: &Ctx<'_>, element: NodeId, local: &st
         crate::dom::input::sync_sanitized_value(&mut parsed.document, element.node);
         local == "value" && !dirty
     };
-    // Only a `value` attribute write that still drives the value ends the edit
-    // state; `min`/`max`/`step` do not mark a user edit over
-    // (<https://html.spec.whatwg.org/multipage/input.html#concept-fe-value>).
+    // https://html.spec.whatwg.org/multipage/input.html#concept-fe-value
     if drives_value {
         world_rc.borrow_mut().clear_control_edit_state(element);
     }
     Ok(())
 }
 
-/// Moves focus away from a control that a newly disabled `fieldset` makes
-/// unfocusable. A browser runs the focus fixup during the rendering update;
-/// doing it when the attribute changes gives the same observable result
-/// (<https://html.spec.whatwg.org/multipage/interaction.html#focusable-area>).
+// https://html.spec.whatwg.org/multipage/interaction.html#focusable-area
 fn apply_disabled_focus_fixup(ctx: &Ctx<'_>, element: NodeId) -> Result<()> {
     let world_rc = world_for_node(ctx, element)?;
     let active = {
@@ -1751,8 +1645,6 @@ fn apply_disabled_focus_fixup(ctx: &Ctx<'_>, element: NodeId) -> Result<()> {
         let Some(active) = world.active_element(element.document_id()) else {
             return Ok(());
         };
-        // Only a control inside the fieldset loses focus; a focused element
-        // elsewhere is untouched.
         let mut inside = false;
         let mut cursor = base.get_node(active.node).and_then(|tree| tree.parent);
         while let Some(current) = cursor {
@@ -1773,9 +1665,7 @@ fn apply_disabled_focus_fixup(ctx: &Ctx<'_>, element: NodeId) -> Result<()> {
     Ok(())
 }
 
-/// Runs the select selectedness rules after an attribute that changes the
-/// available or default selection
-/// (<https://html.spec.whatwg.org/multipage/form-elements.html#the-select-element>).
+// https://html.spec.whatwg.org/multipage/form-elements.html#the-select-element
 fn apply_select_attribute_change(ctx: &Ctx<'_>, element: NodeId, local: &str) -> Result<()> {
     let world = world_for_node(ctx, element)?;
     let world = world.borrow();
@@ -1801,13 +1691,7 @@ fn apply_select_attribute_change(ctx: &Ctx<'_>, element: NodeId, local: &str) ->
     Ok(())
 }
 
-/// Runs the input element's type-change steps
-/// (<https://html.spec.whatwg.org/multipage/input.html#the-input-element>).
-///
-/// A change between keywords of the same state leaves the value alone.
-/// Leaving value mode for a button state makes the current value the new
-/// default, entering value mode reloads the default and clears the dirty
-/// flag, and the state's sanitization algorithm runs last.
+// https://html.spec.whatwg.org/multipage/input.html#the-input-element
 fn apply_input_type_change(ctx: &Ctx<'_>, element: NodeId, previous: Option<&str>) -> Result<()> {
     let old = crate::dom::input::InputType::from_attribute(previous);
     let world_rc = world_for_node(ctx, element)?;
@@ -1841,21 +1725,13 @@ fn apply_input_type_change(ctx: &Ctx<'_>, element: NodeId, previous: Option<&str
             .set_value(element.node, store.value, store.dirtiness);
     }
     apply_input_selection(&world_rc, element, old, new);
-    // The edit buffer, caret, and bad-input flag belong to the previous input
-    // type
-    // (<https://html.spec.whatwg.org/multipage/input.html#the-input-element>).
+    // https://html.spec.whatwg.org/multipage/input.html#the-input-element
     world_rc.borrow_mut().clear_control_edit_state(element);
     apply_radio_group_after_type_change(&world_rc, element, new);
     Ok(())
 }
 
-/// A type change signalled for a radio whose checkedness is true unchecks the
-/// other elements in its radio button group
-/// (<https://html.spec.whatwg.org/multipage/input.html#radio-button-group>).
-///
-/// The checkedness comes from the `checked` content attribute, which every
-/// input state carries, so a text input that was checked becomes the group's
-/// checked radio and clears the one that held it.
+// https://html.spec.whatwg.org/multipage/input.html#radio-button-group
 fn apply_radio_group_after_type_change(
     world: &Rc<RefCell<World>>,
     element: NodeId,
@@ -1895,8 +1771,7 @@ fn apply_radio_group_after_type_change(
     }
 }
 
-/// Decides what the current value becomes across a type change
-/// (<https://html.spec.whatwg.org/multipage/input.html#the-input-element>).
+// https://html.spec.whatwg.org/multipage/input.html#the-input-element
 fn input_type_store(
     ctx: &Ctx<'_>,
     world: &Rc<RefCell<World>>,
@@ -1920,9 +1795,7 @@ fn input_type_store(
     };
     let old_mode = old.value_mode();
     let new_mode = new.value_mode();
-    // Leaving value mode for a button state makes the current value the new
-    // default; the dirty flag stays so a later return to value mode reloads
-    // the same string (<https://html.spec.whatwg.org/multipage/input.html#the-input-element>).
+    // https://html.spec.whatwg.org/multipage/input.html#the-input-element
     if old_mode == crate::dom::input::ValueMode::Current
         && matches!(
             new_mode,
@@ -1938,9 +1811,6 @@ fn input_type_store(
     if old_mode == crate::dom::input::ValueMode::Current
         && new_mode == crate::dom::input::ValueMode::Current
     {
-        // Both states carry a value: keep it and sanitize for the new state.
-        // A user-written value stays dirty; a value that followed its
-        // attribute keeps following it.
         return Ok(Some(InputValueStore {
             value: sanitize_current(world, element, new, current),
             dirtiness: if dirty {
@@ -1953,9 +1823,7 @@ fn input_type_store(
     if old_mode != crate::dom::input::ValueMode::Current
         && new_mode == crate::dom::input::ValueMode::Current
     {
-        // Entering value mode reloads the default, clears the dirty flag, and
-        // sanitizes the stored value
-        // (<https://html.spec.whatwg.org/multipage/input.html#the-input-element>).
+        // https://html.spec.whatwg.org/multipage/input.html#the-input-element
         let raw = attribute.unwrap_or_default();
         return Ok(Some(InputValueStore {
             value: sanitize_current(world, element, new, &raw),
@@ -1965,10 +1833,7 @@ fn input_type_store(
     Ok(None)
 }
 
-/// Moves the text entry cursor after a type change. A state that gains text
-/// entry starts at the beginning; the type-change steps do not collapse the
-/// cursor to the end
-/// (<https://html.spec.whatwg.org/multipage/input.html#the-input-element>).
+// https://html.spec.whatwg.org/multipage/input.html#the-input-element
 fn apply_input_selection(
     world: &Rc<RefCell<World>>,
     element: NodeId,
@@ -1999,11 +1864,8 @@ fn sanitize_current(
         })
 }
 
-/// A `meta` element re-runs its pragma algorithms when `name`, `content`, or
-/// `http-equiv` changes: `name=referrer` resets the document policy and
-/// `http-equiv=refresh` starts a refresh
-/// (<https://html.spec.whatwg.org/multipage/semantics.html#meta-referrer>,
-/// <https://html.spec.whatwg.org/multipage/semantics.html#attr-meta-http-equiv-refresh>).
+// https://html.spec.whatwg.org/multipage/semantics.html#meta-referrer
+// https://html.spec.whatwg.org/multipage/semantics.html#attr-meta-http-equiv-refresh
 fn refresh_meta_pragmas(ctx: &Ctx<'_>, element: NodeId, local: &str) {
     if !matches!(local, "name" | "content" | "http-equiv") {
         return;
@@ -2020,13 +1882,7 @@ fn refresh_meta_pragmas(ctx: &Ctx<'_>, element: NodeId, local: &str) {
     crate::js::bindings::node::document::apply_meta_refresh(ctx, element);
 }
 
-/// Queues a `details` element's `toggle` task when its `open` attribute
-/// A `details` element's `open` change queues its `toggle` task; a dialog's is
-/// handled by `show()`, `close()`, and `requestClose()`, and its own attribute
-/// change steps only touch the close watcher this engine does not have. The
-/// task reports the state the burst started from and the state it ends at, so
-/// a second change before the task runs only moves the end state
-/// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#the-details-element-attr-attribute-change-steps>).
+// https://html.spec.whatwg.org/multipage/interactive-elements.html#the-details-element-attr-attribute-change-steps
 fn apply_open_attribute_change(
     ctx: &Ctx<'_>,
     element: NodeId,
@@ -2054,13 +1910,9 @@ fn apply_open_attribute_change(
     Ok(())
 }
 
-/// After an attribute change, runs the element's attribute-change hooks: an
-/// `iframe`'s `src` drives its browsing context's navigation
-/// (<https://html.spec.whatwg.org/multipage/iframe-embed-object.html#process-the-iframe-attributes>),
-/// an `<img>` `src` updates the image data
-/// (<https://html.spec.whatwg.org/multipage/images.html#updating-the-image-data>),
-/// and an event handler content attribute compiles into its handler property
-/// (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes>).
+// https://html.spec.whatwg.org/multipage/iframe-embed-object.html#process-the-iframe-attributes
+// https://html.spec.whatwg.org/multipage/images.html#updating-the-image-data
+// https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes
 pub(crate) fn after_attribute_change(
     ctx: &Ctx<'_>,
     element: NodeId,
@@ -2089,10 +1941,8 @@ pub(crate) fn after_attribute_change(
     ) {
         apply_input_value_attribute_change(ctx, element, local)?;
     }
-    // A `<base href>` (set, changed, or removed) re-runs HTML's set the frozen
-    // base URL, which is where `base-uri` is enforced
-    // (<https://html.spec.whatwg.org/multipage/semantics.html#the-base-element>,
-    // <https://w3c.github.io/webappsec-csp/#is-base-allowed-for-document>).
+    // https://html.spec.whatwg.org/multipage/semantics.html#the-base-element
+    // https://w3c.github.io/webappsec-csp/#is-base-allowed-for-document
     if local == "href" {
         let owner = world_for_node(ctx, element)?;
         let is_base = owner.borrow().document(element).is_some_and(|parsed| {
@@ -2122,9 +1972,7 @@ pub(crate) fn after_attribute_change(
         return Ok(());
     }
     let world = world(ctx)?;
-    // A `srcdoc` set, changed, or removed reprocesses the iframe attributes;
-    // so does a `src` change, but only while no `srcdoc` is specified
-    // (<https://html.spec.whatwg.org/multipage/iframe-embed-object.html#process-the-iframe-attributes>).
+    // https://html.spec.whatwg.org/multipage/iframe-embed-object.html#process-the-iframe-attributes
     let srcdoc = if is_iframe && matches!(local, "srcdoc" | "src") {
         let has_srcdoc = world.borrow().document(element).is_some_and(|parsed| {
             crate::dom::tree::attr(&parsed.document.base, element.node, "srcdoc").is_some()
@@ -2135,8 +1983,7 @@ pub(crate) fn after_attribute_change(
                     .map(ToOwned::to_owned)
             })
         } else if local == "src" && has_srcdoc {
-            // `src` changes while `srcdoc` is present change nothing
-            // (<https://html.spec.whatwg.org/multipage/iframe-embed-object.html#process-the-iframe-attributes>).
+            // https://html.spec.whatwg.org/multipage/iframe-embed-object.html#process-the-iframe-attributes
             return Ok(());
         } else {
             None
@@ -2152,26 +1999,14 @@ pub(crate) fn after_attribute_change(
                 .map(ToOwned::to_owned)
         })
         .unwrap_or_default();
-    // The fetch a set triggers attributes to the executing script: a later
-    // CSP violation for the load reports it as `sourceFile`, `lineNumber`,
-    // and `columnNumber`
-    // (<https://w3c.github.io/webappsec-csp/#create-violation-for-global>).
-    // Record even when detached: the URL enters the element here, and the
-    // insertion hook keeps the earliest trigger, so a script that sets
-    // `src` then inserts reports the set, matching the line browsers
-    // attribute the mutation to.
+    // https://w3c.github.io/webappsec-csp/#create-violation-for-global
     if is_img || is_script {
         note_src_creator(ctx, element);
     }
-    // An `<img>` restarts its request from Blitz's attribute hook, which also
-    // runs for a detached `new Image()`; the settlement events drive the
-    // element's state
-    // (<https://html.spec.whatwg.org/multipage/images.html#reacting-to-dom-mutations>).
+    // https://html.spec.whatwg.org/multipage/images.html#reacting-to-dom-mutations
     if is_img {
         return Ok(());
     }
-    // A detached `iframe` has no browsing context yet; insertion reads the
-    // current attribute, so queueing here would navigate it twice.
     let connected = world
         .borrow()
         .document(element)
@@ -2187,11 +2022,8 @@ pub(crate) fn after_attribute_change(
     Ok(())
 }
 
-/// Starts what a `src`/`srcdoc` change on a connected element triggers: an
-/// `iframe` reprocesses its attributes and navigates, a `script` runs its
-/// prepare steps
-/// (<https://html.spec.whatwg.org/multipage/iframe-embed-object.html#process-the-iframe-attributes>,
-/// <https://html.spec.whatwg.org/multipage/scripting.html#prepare-the-script-element>).
+// https://html.spec.whatwg.org/multipage/iframe-embed-object.html#process-the-iframe-attributes
+// https://html.spec.whatwg.org/multipage/scripting.html#prepare-the-script-element
 fn navigate_from_attribute_change(
     ctx: &Ctx<'_>,
     element: NodeId,
@@ -2201,8 +2033,6 @@ fn navigate_from_attribute_change(
 ) -> Result<()> {
     let world = world(ctx)?;
     if !is_iframe {
-        // `src` set on a connected classic script runs the prepare steps,
-        // including the fetch when the element is not already started.
         world.borrow_mut().queue_script(element);
         return Ok(());
     }
@@ -2215,8 +2045,7 @@ fn navigate_from_attribute_change(
             ));
         return Ok(());
     }
-    // The iframe's own `referrerpolicy` attribute governs its navigation
-    // (<https://html.spec.whatwg.org/multipage/iframe-embed-object.html#attr-iframe-referrerpolicy>).
+    // https://html.spec.whatwg.org/multipage/iframe-embed-object.html#attr-iframe-referrerpolicy
     let referrer_policy = world.borrow().document(element).and_then(|parsed| {
         crate::dom::tree::attr(&parsed.document.base, element.node, "referrerpolicy")
             .and_then(net::ReferrerPolicy::parse)
@@ -2228,8 +2057,6 @@ fn navigate_from_attribute_change(
     Ok(())
 }
 
-/// Removes the DOM attribute identified by `(namespace, local)` and syncs
-/// the registry; used by `removeAttributeNode` and `NamedNodeMap.remove*`.
 pub(crate) fn remove_attribute_sync(
     ctx: &Ctx<'_>,
     element: NodeId,
@@ -2267,10 +2094,8 @@ pub(crate) fn remove_attribute_sync(
                 local,
                 crate::dom_string::DomString::default(),
             );
-            // A direct content-attribute write replaces the IDL-null state
-            // (<https://w3c.github.io/aria/#enumerated-attribute-values-html>)
-            // and clears any IDL element reference for this attribute
-            // (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes:element>).
+            // https://w3c.github.io/aria/#enumerated-attribute-values-html
+            // https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes:element
             parsed.document.clear_enumerated_null(element.node, local);
             parsed.document.clear_element_reference(element.node, local);
             parsed
@@ -2280,7 +2105,6 @@ pub(crate) fn remove_attribute_sync(
                 .clear_attribute(element.node, name.clone());
             parsed.document.record(JournalEntry::Attributes {
                 target: element,
-                // attributeName is the attribute's local name.
                 // https://dom.spec.whatwg.org/#handle-attribute-changes
                 name: name.local.as_str().to_owned(),
                 namespace: name.ns.as_str().to_owned(),
@@ -2293,10 +2117,7 @@ pub(crate) fn remove_attribute_sync(
         Some((name, value)) => {
             let namespace = name.ns.as_str().to_owned();
             let changed = name.local.as_str().to_owned();
-            // The nonce attribute change steps reset the cryptographic nonce
-            // slot on removal (value `null`); only the null-namespace attribute
-            // participates
-            // (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#nonce-attributes>).
+            // https://html.spec.whatwg.org/multipage/urls-and-fetching.html#nonce-attributes
             if changed == "nonce" && namespace.is_empty() {
                 world_rc.borrow_mut().state.nonce_slots.remove(&element);
             }
@@ -2319,7 +2140,6 @@ pub(crate) fn remove_attribute_sync(
     schedule_mutation_delivery(ctx)
 }
 
-/// One attribute on an element: its stored `(prefix, qualified name, value)`.
 fn element_attribute(
     base: &blitz_dom::BaseDocument,
     id: crate::dom::tree::BlitzId,
@@ -2348,7 +2168,6 @@ fn element_attribute(
     ))
 }
 
-/// The value of the `(namespace, local)` attribute on `id`, if present.
 fn attribute_ns_value(
     base: &blitz_dom::BaseDocument,
     id: crate::dom::tree::BlitzId,
@@ -2358,10 +2177,7 @@ fn attribute_ns_value(
     element_attribute(base, id, namespace, local).map(|(_, _, value)| value)
 }
 
-/// Sets the `local` content attribute to `value`, syncing the Attr registry
-/// and mutation observers; the reflected-attribute write path behind
-/// `host::reflect_set_string` and `write_class`
-/// (<https://dom.spec.whatwg.org/#concept-element-attributes-set>).
+// https://dom.spec.whatwg.org/#concept-element-attributes-set
 pub(crate) fn set_attribute_sync(
     ctx: &Ctx<'_>,
     element: NodeId,
@@ -2373,9 +2189,6 @@ pub(crate) fn set_attribute_sync(
     let Some(mut parsed) = world.document_mut(element) else {
         return Ok(());
     };
-    // Reuse the stored qualified name when an attribute with this local name
-    // is already present: `Attributes::set` matches the full `QualName`, so a
-    // fresh name would duplicate instead of replacing it.
     let (name, old_value) = {
         let base = &parsed.document.base;
         let Some(data) = base
@@ -2387,15 +2200,12 @@ pub(crate) fn set_attribute_sync(
                 "attribute target is not an element",
             ));
         };
-        // Match the qualified name, so `setAttribute("foo:bar")` updates the
-        // existing `foo:bar` attribute instead of creating a second one.
         // https://dom.spec.whatwg.org/#concept-element-attributes-get-by-name
         let name = data
             .attrs
             .iter()
             .find(|attribute| qualified_name_eq(&attribute.name, local))
             .map_or_else(
-                // setAttribute creates an attribute whose namespace is null.
                 // https://dom.spec.whatwg.org/#concept-element-attributes-set-value
                 || {
                     QualName::new(
@@ -2416,22 +2226,17 @@ pub(crate) fn set_attribute_sync(
         .base
         .mutate()
         .set_attribute(element.node, name.clone(), value);
-    // A plain write has no unpaired surrogate. A caller that still holds the
-    // original units remembers them after this returns.
     parsed.document.remember_attribute(
         element.node,
         local,
         crate::dom_string::DomString::from(value),
     );
-    // A direct content-attribute write replaces the IDL-null state
-    // (<https://w3c.github.io/aria/#enumerated-attribute-values-html>) and
-    // clears any IDL element reference for this attribute
-    // (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes:element>).
+    // https://w3c.github.io/aria/#enumerated-attribute-values-html
+    // https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes:element
     parsed.document.clear_enumerated_null(element.node, local);
     parsed.document.clear_element_reference(element.node, local);
     parsed.document.record(JournalEntry::Attributes {
         target: element,
-        // attributeName is the attribute's local name.
         // https://dom.spec.whatwg.org/#handle-attribute-changes
         name: name.local.as_str().to_owned(),
         namespace: namespace.clone(),
@@ -2439,15 +2244,9 @@ pub(crate) fn set_attribute_sync(
     });
     drop(parsed);
     drop(world);
-    // The nonce content attribute lives in the null namespace: a namespaced
-    // attribute that merely shares the local name must not feed the
-    // cryptographic nonce slot
-    // (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#nonce-attributes>).
+    // https://html.spec.whatwg.org/multipage/urls-and-fetching.html#nonce-attributes
     if local == "nonce" && namespace.is_empty() {
-        // The content attribute feeds the cryptographic nonce slot, so a
-        // later IDL read answers the attribute value until the IDL setter
-        // overrides it
-        // (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#nonce-attributes>).
+        // https://html.spec.whatwg.org/multipage/urls-and-fetching.html#nonce-attributes
         world_rc
             .borrow_mut()
             .state
@@ -2461,8 +2260,7 @@ pub(crate) fn set_attribute_sync(
     schedule_mutation_delivery(ctx)
 }
 
-/// `setAttributeNode` / `setAttributeNodeNS`
-/// (<https://dom.spec.whatwg.org/#concept-element-attributes-set>).
+// https://dom.spec.whatwg.org/#concept-element-attributes-set
 pub(crate) fn set_attribute_node<'js>(
     ctx: &Ctx<'js>,
     element: NodeId,
@@ -2487,9 +2285,7 @@ pub(crate) fn set_attribute_node<'js>(
     }
     let value = attr_value(ctx, scope, id)?;
     let previous = attached_attr_id(ctx, element, &state.namespace, &state.local)?;
-    // Setting an attribute that is already attached here is a no-op that
-    // returns the attribute itself
-    // (<https://dom.spec.whatwg.org/#concept-element-attributes-set> step 4).
+    // https://dom.spec.whatwg.org/#concept-element-attributes-set
     if previous == Some(id) {
         return Ok(attr.clone());
     }
@@ -2517,9 +2313,6 @@ pub(crate) fn set_attribute_node<'js>(
                     "InUseAttributeError",
                     "attribute is already associated with another element",
                 ),
-                // `attach` rejects a target with no element data; the
-                // dispatcher only offers elements, so this is unreachable
-                // through the DOM API.
                 AttrAttachError::NotAnElement => throw_dom(
                     ctx,
                     "HierarchyRequestError",
@@ -2528,7 +2321,6 @@ pub(crate) fn set_attribute_node<'js>(
             })?;
         parsed.document.record(JournalEntry::Attributes {
             target: element,
-            // attributeName is the attribute's local name.
             // https://dom.spec.whatwg.org/#handle-attribute-changes
             name: state.local.clone(),
             namespace: state.namespace.clone(),

@@ -21,9 +21,6 @@ import signal
 import sys
 import uuid
 
-# The checkout is not on the path when this file is run from the repository
-# root; `tools.localpaths` then puts `tools/`, `wptserve`, and the vendored
-# dependencies on it.
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
 
 
@@ -65,10 +62,7 @@ def main() -> int:
     config.check_subdomains = False
     config.server_host = "127.0.0.1"
     config.bind_address = False
-    # wptrunner also sets this; the route builder reads it.
     config.inject_script = None
-    # `TestEnvironment.build_config`'s table, so a handler and the harness's
-    # template substitution agree on every `{{ports[...]}}` value.
     config.ports = {
         "http": [8000, 8001],
         "http-local": [8002],
@@ -83,8 +77,6 @@ def main() -> int:
         "dns": [8053],
     }
 
-    # The handlers' stash lives in a manager process; `StashServer` also
-    # exports WPT_STASH_CONFIG, which `request.server.stash` reads.
     with stash.StashServer(authkey=str(uuid.uuid4())):
         with config as active:
             routes = serve.get_route_builder(
@@ -95,11 +87,6 @@ def main() -> int:
                 port=0,
                 doc_root=wpt_root,
                 routes=routes,
-                # The harness serves files itself and forwards only a missing
-                # path here, so this server also supplies the aliases that
-                # exist only as rewrites: `/resources/WebIDLParser.js` is
-                # `resources/webidl2/lib/webidl2.js` on disk
-                # (`tools/serve/serve.py`).
                 rewrites=serve.rewrites,
                 config=active,
                 bind_address=False,
@@ -116,7 +103,6 @@ def main() -> int:
             signal.signal(signal.SIGINT, stop)
 
             try:
-                # The harness holds the write end; EOF means it is gone.
                 for _line in sys.stdin:
                     pass
             finally:

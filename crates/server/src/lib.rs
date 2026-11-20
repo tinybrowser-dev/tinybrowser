@@ -1,12 +1,3 @@
-//! Shared hyper server kernel for the protocol adapters.
-//!
-//! `cdp` and `webdriver` need the same loopback HTTP server: one accept loop
-//! that survives transient `accept` failures, hyper's auto HTTP/1 + HTTP/2
-//! builder with the `CONNECT` protocol enabled, bounded body collection, JSON
-//! and plain-text response constructors, and a signal that drains connections
-//! gracefully. This crate owns that kernel so the adapters own only their
-//! protocol.
-
 use std::convert::Infallible;
 use std::error::Error;
 use std::future::Future;
@@ -14,8 +5,6 @@ use std::io;
 use std::net::TcpListener;
 use std::time::Duration;
 
-/// How long graceful shutdown waits for in-flight connections before
-/// aborting them.
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 use bytes::Bytes;
@@ -29,15 +18,10 @@ use serde_json::Value;
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 
-/// One inbound request whose body is still streaming.
 pub type Request = HttpRequest<Incoming>;
 
-/// One complete response with an in-memory body.
 pub type Response = HttpResponse<Full<Bytes>>;
 
-/// The shutdown signal a handler can request and the accept loop watches.
-///
-/// Cloning shares the signal; [`Shutdown::request`] is idempotent.
 #[derive(Clone)]
 pub struct Shutdown {
     tx: watch::Sender<bool>,
@@ -45,27 +29,22 @@ pub struct Shutdown {
 }
 
 impl Shutdown {
-    /// A fresh, unrequested signal.
     #[must_use]
     pub fn new() -> Self {
         let (tx, rx) = watch::channel(false);
         Self { tx, rx }
     }
 
-    /// Asks the server to stop accepting and drain open connections.
     pub fn request(&self) {
         let _ = self.tx.send(true);
     }
 
-    /// Whether shutdown has been requested.
     #[must_use]
     pub fn requested(&self) -> bool {
         *self.rx.borrow()
     }
 
     fn subscribe(&self) -> watch::Receiver<bool> {
-        // `Sender::subscribe` marks the current value seen, unlike cloning a
-        // receiver. Callers therefore check `requested()` before waiting.
         self.tx.subscribe()
     }
 }
@@ -76,15 +55,6 @@ impl Default for Shutdown {
     }
 }
 
-/// Serves `handler` on `listener` until `shutdown` is requested.
-///
-/// Each accepted connection runs hyper's auto (HTTP/1 or HTTP/2) builder with
-/// the `CONNECT` protocol enabled. Transient accept failures are retried with
-/// backoff instead of dropping the listener.
-///
-/// # Errors
-///
-/// The listener cannot be cloned or converted to nonblocking mode.
 pub async fn serve<S, H, F>(
     listener: &TcpListener,
     shutdown: Shutdown,
@@ -105,8 +75,6 @@ where
     }
     let mut tasks = JoinSet::new();
     loop {
-        // Reap finished connections; they would otherwise stay in the set for
-        // the server's lifetime.
         while tasks.try_join_next().is_some() {}
         tokio::select! {
             _ = stopping.changed() => break,
@@ -114,8 +82,6 @@ where
                 let (stream, _) = match accepted {
                     Ok(accepted) => accepted,
                     Err(_error) => {
-                        // A transient accept failure (EMFILE and friends) must
-                        // not drop the listener.
                         tokio::time::sleep(Duration::from_millis(50)).await;
                         continue;
                     }
@@ -129,9 +95,6 @@ where
             }
         }
     }
-    // Graceful shutdown lets in-flight requests finish, but a stalled client
-    // must not hold `serve` forever: after the drain period the remaining
-    // tasks abort.
     if tokio::time::timeout(DRAIN_TIMEOUT, async {
         while tasks.join_next().await.is_some() {}
     })
@@ -144,7 +107,6 @@ where
     Ok(())
 }
 
-/// Runs one connection until it finishes or shutdown is requested.
 async fn connection<S, H, F>(
     stream: tokio::net::TcpStream,
     state: S,
@@ -161,14 +123,9 @@ async fn connection<S, H, F>(
         async move { Ok::<_, Infallible>(handler(request, state).await) }
     });
     let mut auto = Builder::new(TokioExecutor::new());
-    // Enable HTTP/2 CONNECT; the CDP WebSocket handshake itself still requires
-    // HTTP/1.1.
     auto.http2().enable_connect_protocol();
     let conn = auto.serve_connection_with_upgrades(TokioIo::new(stream), service);
     tokio::pin!(conn);
-    // `subscribe()` marks the current value seen, so a request made before
-    // this receiver existed would never fire `changed()`. Check the current
-    // value first.
     if !*stop.borrow() {
         tokio::select! {
             _result = conn.as_mut() => return,
@@ -179,12 +136,6 @@ async fn connection<S, H, F>(
     let _drained = conn.as_mut().await;
 }
 
-/// Whether `request` targets a loopback host (`127.0.0.0/8`, `[::1]`, or
-/// `localhost`, with an optional `:port`).
-///
-/// Rejecting non-loopback `Host` headers stops DNS rebinding attacks where a
-/// third-party domain resolves to `127.0.0.1` and sends browser requests to a
-/// local protocol endpoint.
 #[must_use]
 pub fn is_loopback_host(request: &Request) -> bool {
     let authority = request
@@ -233,18 +184,11 @@ fn valid_optional_port(tail: &str) -> bool {
         .is_some_and(|port| !port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
-/// Whether `request` carries any `Origin` header.
-///
-/// Browsers attach `Origin` to cross-origin WebSocket handshakes and `fetch`
-/// calls (including `Origin: null` from sandboxed frames); local automation
-/// clients do not.
 #[must_use]
 pub fn has_origin(request: &Request) -> bool {
     request.headers().contains_key(header::ORIGIN)
 }
 
-/// Whether `request` carries an `application/json` `Content-Type` header
-/// (ignoring optional parameters such as `; charset=utf-8`).
 #[must_use]
 pub fn is_json_content_type(request: &Request) -> bool {
     request
@@ -255,7 +199,6 @@ pub fn is_json_content_type(request: &Request) -> bool {
         .is_some_and(|media| media.trim().eq_ignore_ascii_case("application/json"))
 }
 
-/// One JSON response; `charset=utf-8` is part of both adapters' wire surface.
 #[must_use]
 pub fn json(status: StatusCode, payload: &Value) -> Response {
     let mut response = Response::new(Full::new(Bytes::from(payload.to_string())));
@@ -267,7 +210,6 @@ pub fn json(status: StatusCode, payload: &Value) -> Response {
     response
 }
 
-/// One plain-text response.
 #[must_use]
 pub fn text(status: StatusCode, message: &str) -> Response {
     let mut response = Response::new(Full::new(Bytes::from(message.to_owned())));
@@ -279,8 +221,6 @@ pub fn text(status: StatusCode, message: &str) -> Response {
     response
 }
 
-/// The `405` a known path answers for a method it does not accept, with the
-/// `Allow` header naming the methods `allow`.
 #[must_use]
 pub fn method_not_allowed(allow: &'static str) -> Response {
     let mut response = Response::new(Full::new(Bytes::new()));
@@ -291,21 +231,12 @@ pub fn method_not_allowed(allow: &'static str) -> Response {
     response
 }
 
-/// Why bounded body collection failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BodyError {
-    /// The body exceeded the caller's byte cap.
     TooLarge,
-    /// The transport failed while reading.
     Read,
 }
 
-/// Collects `body`, failing once it would exceed `limit` bytes.
-///
-/// # Errors
-///
-/// [`BodyError::TooLarge`] when the body exceeds `limit`; [`BodyError::Read`]
-/// when the transport fails.
 pub async fn read_body<B>(body: B, limit: usize) -> Result<Bytes, BodyError>
 where
     B: Body<Data = Bytes>,
@@ -339,10 +270,6 @@ mod tests {
         text,
     };
 
-    /// Loopback authority validation accepts IPv4/IPv6 loopback literals and
-    /// `localhost` (with optional port) and rejects rebinding domains.
-    /// Removing the host check would allow `evil.com:9222` or
-    /// `localhost.evil.com` to pass.
     #[test]
     fn loopback_authority_accepts_only_loopback_hosts() {
         for good in [
@@ -484,8 +411,6 @@ mod tests {
             }
         });
 
-        // No `Connection: close`: the socket stays open and idle after the
-        // response, which is exactly the connection the drain must release.
         let mut stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
         stream
             .write_all(b"GET /idle HTTP/1.1\r\nHost: test\r\n\r\n")

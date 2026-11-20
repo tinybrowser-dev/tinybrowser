@@ -1,13 +1,3 @@
-//! `QuickJS` host for one document: eval, timers, `fetch`, DOM host objects.
-//!
-//! Callbacks live in JS (`__tb_timeouts`, `__tb_fetchCbs`). Rust holds
-//! integer ids so a `Function` never crosses the JS boundary. Invocation
-//! uses `Function::call` on the renderer thread.
-
-// The rquickjs native-function ABI hands every host function and method its
-// `Ctx` and JS arguments by value, so the lint fires on the whole binding
-// layer. Borrowing them is the fork-side fix, tracked for the rquickjs fork in
-// `docs/upstream.md`; one scoped allowance stands in until then.
 #![expect(
     clippy::needless_pass_by_value,
     reason = "the rquickjs native-function ABI passes Ctx and JS arguments by value"
@@ -56,27 +46,9 @@ use crate::protocol::{DialRequest, FrameId, ReferrerRequest, RequestPolicy, Targ
 
 pub(crate) use world::{CreatorInfo, NavigationReferrer, PolicyContainer, RealmRequest, World};
 
-/// Shared `QuickJS` heap cap. Forty live subframe realms need more than
-/// 32MB (measured: `Document-createElement-namespace.html`, 40 parallel
-/// iframes, wedges past ~24 XML realms at 32MB with an allocation failure
-/// surfacing as a generic `QuickJS` exception; green at 256MB). 256MB still
-/// bounds a malicious page while fitting MAX_FRAMES-scale bursts. A
-/// per-realm budget would isolate better; the shared heap is the current
-/// `QuickJS` shape (see `SharedRuntime`).
 const MAX_RUNTIME_MEMORY: usize = 256 * 1024 * 1024;
 const MAX_RUNTIME_STACK: usize = 512 * 1024;
-/// Wall-clock limit for one top-level entry into JS (a script, a timer or
-/// event callback, a browser evaluation without its own timeout) and its
-/// microtask checkpoint. Past it the interrupt handler aborts the task with
-/// [`JsError::Interrupted`]. Serial top-level entries in one renderer turn
-/// share [`TURN_SCRIPT_BUDGET`] so they cannot each take a full 20 s and
-/// together hit the browser's 60 s renderer request timeout.
 const DEFAULT_SCRIPT_BUDGET: Duration = Duration::from_secs(20);
-/// Wall-clock cap for one renderer turn: a parser script walk, a batch of
-/// init scripts, or one drain of ready tasks from the session's inbox wait
-/// back to the next wait. Each JS entry still uses `DEFAULT_SCRIPT_BUDGET`,
-/// then clamps to this deadline so N serial runaways stay well under the 60 s
-/// request timeout in `crates/browser/src/link.rs`.
 pub const TURN_SCRIPT_BUDGET: Duration = Duration::from_secs(45);
 
 #[derive(Clone, Copy)]
@@ -85,29 +57,14 @@ enum MicrotaskCheckpoint {
     Defer,
 }
 
-/// Web-platform JS shims, one spec area per file, evaluated in order as a
-/// single script so top-level bindings are shared across areas.
-///
-/// The whole concatenation runs inside one function scope: top-level
-/// `const`/`function` bindings stay visible to every shim file but invisible
-/// to page script, which shares the global lexical scope. Only explicit
-/// `globalThis` assignments publish names outward.
-///
-/// The bundle is assembled and deflated by `build.rs` from the file order in
-/// `scripts/web/order.txt`; it inflates once per process.
 const INSTALL_WEB_APIS_DEFLATE: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/js_blobs/web_bundle.deflate"));
 
-/// The web shim bundle, inflated once per process.
 fn install_web_apis_js(ctx: &Ctx<'_>) -> rquickjs::Result<&'static str> {
     static CACHE: std::sync::OnceLock<Box<str>> = std::sync::OnceLock::new();
     blob::decompress(ctx, INSTALL_WEB_APIS_DEFLATE, &CACHE)
 }
 
-/// The worker-only shim bundle: the web APIs a `WorkerGlobalScope` exposes,
-/// without the document and browsing-context shims.
-///
-/// Assembled by `build.rs` from `scripts/web/worker_order.txt`.
 const INSTALL_WORKER_APIS_DEFLATE: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/js_blobs/worker_bundle.deflate"));
 
@@ -116,30 +73,19 @@ fn install_worker_apis_js(ctx: &Ctx<'_>) -> rquickjs::Result<&'static str> {
     blob::decompress(ctx, INSTALL_WORKER_APIS_DEFLATE, &CACHE)
 }
 
-/// A value produced by script evaluation.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ScriptValue {
-    /// JS `undefined`.
     Undefined,
-    /// JS `null`.
     Null,
-    /// JS boolean.
     Bool(bool),
-    /// JS number.
     Number(f64),
-    /// JS string.
     String(String),
-    /// A DOM node handle for `WebDriver` element encoding.
     Node(crate::dom::tree::NodeId),
-    /// A JS array, for `WebDriver` JSON.
     List(Vec<ScriptValue>),
-    /// A JS object, for `WebDriver` JSON.
     Map(Vec<(String, ScriptValue)>),
 }
 
-/// A `<script>` in document order.
-///
-/// [HTML prepare the script element](https://html.spec.whatwg.org/multipage/webappapis.html#prepare-the-script-element)
+// https://html.spec.whatwg.org/multipage/webappapis.html#prepare-the-script-element
 #[derive(Clone)]
 pub(crate) enum Script {
     Classic(ScriptElementSource),
@@ -148,11 +94,7 @@ pub(crate) enum Script {
 
 #[derive(Clone)]
 pub(crate) enum ScriptElementSource {
-    /// Inline text, with the 1-based document line its source starts on.
-    Inline {
-        source: String,
-        line: u32,
-    },
+    Inline { source: String, line: u32 },
     Src(String),
 }
 
@@ -181,20 +123,10 @@ impl fmt::Display for JsError {
 
 impl std::error::Error for JsError {}
 
-/// Why a worker's top-level classic script did not complete.
-///
-/// The worker host acts on the cases differently: a parse failure discards the
-/// environment and fires a plain `error` event at the `Worker` object, a
-/// runtime exception was already reported at the worker global and leaves the
-/// worker's event loop running, and an interruption stops the worker without a
-/// script-visible event
-/// (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>).
+// https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model
 pub(crate) enum WorkerScriptError {
-    /// The script did not compile; no JavaScript in it ran.
     Parse,
-    /// The script ran and threw; [`report_script_error`] reported the value.
     Runtime,
-    /// The renderer turn's deadline or the engine's stop flag cut evaluation.
     Interrupted,
 }
 
@@ -215,7 +147,6 @@ pub(crate) struct TimeoutRequest {
     pub js_id: PageTimerId,
 }
 
-/// One page `fetch` / XHR dial, parsed from the shim's options object.
 pub(crate) struct JsFetchRequest {
     pub url: String,
     pub js_id: JsFetchId,
@@ -226,14 +157,6 @@ pub(crate) struct JsFetchRequest {
     pub options: DialOptions,
 }
 
-/// The options object `fetch.js` hands `__queueFetch`: one named field per
-/// option the renderer's dial needs, parsed once at the boundary.
-///
-/// The shim writes every key; `null` is how a request with no value says so,
-/// and each `null` has one meaning here: `referrer: null` is no referrer,
-/// `integrity: null` and `referrerPolicy: null` are unset, and `cache: null`
-/// is the IDL default mode. An unknown spelling is a `TypeError` that names
-/// the key and value; it never becomes a different, valid-looking request.
 pub(crate) struct DialOptions {
     pub(crate) referrer: crate::protocol::ReferrerRequest,
     pub(crate) cors: crate::protocol::CorsRequest,
@@ -271,8 +194,6 @@ impl DialOptions {
             }
         }
 
-        /// A value the IDL enum does not name is a `TypeError` that says which
-        /// option and which value, at the boundary that reads it.
         fn invalid_option(ctx: &Ctx<'_>, key: &'static str, value: &str) -> rquickjs::Error {
             Exception::throw_type(ctx, &format!("{key}: {value:?} is not a request option"))
         }
@@ -286,8 +207,7 @@ impl DialOptions {
             None => crate::protocol::ReferrerRequest::NoReferrer,
         };
         let cors = crate::protocol::CorsRequest {
-            // `fetch` always passes the mode its `Request` normalized
-            // (<https://fetch.spec.whatwg.org/#concept-request-mode>).
+            // https://fetch.spec.whatwg.org/#concept-request-mode
             mode: enum_member(ctx, options, "mode", crate::protocol::CorsMode::from_idl)?,
             credentials: enum_member(
                 ctx,
@@ -327,15 +247,7 @@ impl DialOptions {
     }
 }
 
-/// One renderer process's `QuickJS` heap, created on first use and shared by
-/// every frame in the process.
-///
-/// Several `QuickJS` contexts may share one runtime and its objects, "similar to
-/// frames of the same origin sharing JavaScript objects in a web browser"
-/// (<https://bellard.org/quickjs/quickjs.html>, JSRuntime): the same-site-frame
-/// model.
-/// The creation result is cached so a heap that cannot start fails every realm
-/// the same way instead of retrying.
+// https://bellard.org/quickjs/quickjs.html
 #[derive(Clone, Default)]
 pub(crate) struct SharedJsRuntime(Rc<OnceCell<Result<Runtime, Box<str>>>>);
 
@@ -366,47 +278,25 @@ impl SharedJsRuntime {
     pub(crate) fn get(&self) -> Result<&Runtime, JsError> {
         let slot = self.0.get_or_init(|| {
             let runtime = Runtime::new().map_err(|err| err.to_string().into_boxed_str())?;
-            // `SharedArrayBuffer` data must be reference-counted across
-            // runtimes: a buffer a page posts to a worker thread is the same
-            // block, and the receiving runtime wraps it with
-            // `JS_NewArrayBuffer(..., is_shared = true)`
-            // (<https://tc39.es/ecma262/#sec-abstract-operations-for-sharedarraybuffer-objects>).
+            // https://tc39.es/ecma262/#sec-abstract-operations-for-sharedarraybuffer-objects
             runtime.install_shared_array_buffer_hooks();
             runtime.set_loader(modules::WebModuleResolver, modules::WebModuleLoader);
-            // QuickJS reports a rejected-without-handler promise and a late
-            // handler for one here; the events fire at the microtask
-            // checkpoint
-            // (<https://html.spec.whatwg.org/multipage/webappapis.html#unhandled-promise-rejections>).
+            // https://html.spec.whatwg.org/multipage/webappapis.html#unhandled-promise-rejections
             runtime.set_host_promise_rejection_tracker(Some(Box::new(
                 |ctx, promise, reason, handled| {
                     bindings::note_rejection(&ctx, promise, reason, handled);
                 },
             )));
-            // String compilation from JS is a CSP surface the engine must own.
-            // A JS wrapper over `eval` or `Function` is observable and turns
-            // every direct eval into an indirect one
-            // (<https://tc39.es/ecma262/#sec-evaluatecall>), so the gate sits
-            // below the JS surface, where the intrinsics keep their identity
-            // (<https://w3c.github.io/webappsec-csp/#can-compile-strings>).
+            // https://tc39.es/ecma262/#sec-evaluatecall
+            // https://w3c.github.io/webappsec-csp/#can-compile-strings
             runtime.set_can_compile_strings(Some(Box::new(|ctx, source| {
                 let Some(world) = bindings::try_world(&ctx) else {
-                    // No realm behind this context: no policy to enforce.
                     return true;
                 };
-                // The timer initialization steps already checked the string
-                // when the timer was created; running the handler is not a
-                // second evaluation. Consume the allowance so an `eval`
-                // inside the handler is checked again.
                 if world.borrow().timer_string.replace(false) {
                     return true;
                 }
-                // An event handler content attribute is compiled as a
-                // function body by the engine, not by page script. CSP governs
-                // it with the inline check (`script-src-attr`), which runs
-                // when the handler is dispatched; subjecting it to `can
-                // compile strings` would demand `'unsafe-eval'` for an
-                // `onload` attribute
-                // (<https://w3c.github.io/webappsec-csp/#can-compile-strings>).
+                // https://w3c.github.io/webappsec-csp/#can-compile-strings
                 if world.borrow().compiling_handler.get() {
                     return true;
                 }
@@ -416,7 +306,6 @@ impl SharedJsRuntime {
                         throw_eval_error(&ctx, &eval_denied_message(&violations));
                         false
                     }
-                    // Reporting raised; that exception is already pending.
                     Err(_) => false,
                 }
             })));
@@ -432,15 +321,8 @@ pub(crate) struct JsRealm {
     context: Context,
     world: Rc<RefCell<World>>,
     stop: Arc<Stop>,
-    /// Set for a worker realm: `terminate()` interrupts its script even when
-    /// the page thread is the one that called it.
     terminate: Option<Arc<AtomicBool>>,
-    /// Nesting depth of [`JsRealm::with_budget`]; reentrant evaluations run
-    /// under the outer frame instead of installing their own budget.
     budget_depth: Cell<usize>,
-    /// Deadline for the current renderer turn, shared with [`ScriptTurn`]
-    /// so nested walks do not reset it. `with_budget_outer` clamps each
-    /// entry to this Instant when it is set.
     turn_deadline: Rc<Cell<Option<Instant>>>,
 }
 
@@ -453,9 +335,6 @@ impl JsRealm {
         Self::with_install(shared, world, stop, None, false)
     }
 
-    /// Builds a dedicated worker's realm. It shares the engine's `QuickJS`
-    /// runtime with its creator but has its own global, task queue, and
-    /// event-target graph.
     pub(crate) fn new_worker(
         shared: &JsRuntimeHandle,
         world: Rc<RefCell<World>>,
@@ -476,8 +355,6 @@ impl JsRealm {
         runtime.set_memory_limit(MAX_RUNTIME_MEMORY);
         runtime.set_max_stack_size(MAX_RUNTIME_STACK);
         let context = Context::full(&runtime)?;
-        // Every realm in the renderer process shares the engine's cell, so
-        // one drain deadline covers tasks that run in frames created later.
         let turn_deadline = Rc::clone(&world.borrow().runtime.turn_deadline);
         let host = Self {
             runtime,
@@ -495,14 +372,10 @@ impl JsRealm {
         } else if let Err(error) = host.install() {
             return Err(host.install_failure(error));
         }
-        // Publish the context so a cross-realm script insertion can enter this
-        // realm synchronously instead of deferring to the next drain.
         host.world.borrow_mut().realm_context = Some(host.context.clone());
         Ok(host)
     }
 
-    /// Turns a realm-install failure into a message that names the shim
-    /// exception instead of the engine's generic `Exception generated` text.
     fn install_failure(&self, error: JsError) -> JsError {
         let message = self.context.with(|ctx| {
             let value = ctx.catch();
@@ -523,9 +396,6 @@ impl JsRealm {
         JsError::Engine(format!("realm install failed: {error}: {message}").into_boxed_str())
     }
 
-    /// Starts a renderer turn on this realm, or joins one already open.
-    ///
-    /// Dropping the last owned guard clears the turn deadline.
     pub(crate) fn enter_turn(&self) -> ScriptTurn {
         ScriptTurn::enter(&self.turn_deadline)
     }
@@ -539,18 +409,8 @@ impl JsRealm {
         })
     }
 
-    /// Evaluates one parser-driven classic script and, when it throws, reports
-    /// the exception to the realm's window (`window.onerror` and the `error`
-    /// event) before returning the failure.
-    ///
-    /// `base_line` is the 1-based document line the script's first source line
-    /// occupies (0 when unknown), used to translate the inline stack's
-    /// script-relative line into a document line
-    /// (<https://html.spec.whatwg.org/multipage/webappapis.html#report-the-error>).
-    /// Records the URL of the script about to run, so a dynamic `import()` in
-    /// `eval`'d code can resolve a relative specifier. `QuickJS` compiles
-    /// string eval under the fixed name `<input>`, which no URL can base on
-    /// (<https://tc39.es/ecma262/#sec-hostresolveimportedmodule>).
+    // https://html.spec.whatwg.org/multipage/webappapis.html#report-the-error
+    // https://tc39.es/ecma262/#sec-hostresolveimportedmodule
     fn enter_script_url<T>(&self, url: &str, run: impl FnOnce() -> T) -> T {
         let previous = {
             let mut world = self.world.borrow_mut();
@@ -574,9 +434,6 @@ impl JsRealm {
                 self.context.with(|ctx| {
                     let mut options = EvalOptions::default();
                     options.strict = false;
-                    // The URL names classic-script stacks: CSP `sourceFile` and
-                    // `window.onerror` lines attribute to the script that ran,
-                    // not to the engine's anonymous eval label.
                     options.filename = Some(filename.into());
                     match ctx.eval_with_options::<Value, _>(source, options) {
                         Ok(_) => Ok(()),
@@ -590,16 +447,7 @@ impl JsRealm {
         })
     }
 
-    /// Evaluates the top-level classic script of a dedicated worker.
-    ///
-    /// A parse failure is not a runtime exception: `QuickJS` compiles the whole
-    /// script before running any of it, so nothing has executed in the worker's
-    /// realm. The spec discards the environment and fires a plain `error`
-    /// event at the `Worker` object for that case, while an exception from a
-    /// script that did run is reported at the worker global and the worker
-    /// keeps its event loop
-    /// (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>,
-    /// step 14).
+    // https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model
     pub(crate) fn eval_worker_script(
         &self,
         source: &str,
@@ -613,9 +461,6 @@ impl JsRealm {
                     options.filename = Some(filename.into());
                     match ctx.eval_with_options::<Value, _>(source, options) {
                         Ok(_) => Ok(None),
-                        // A host failure (allocation) has no thrown JavaScript
-                        // value; report its text like any uncaught exception and
-                        // leave the realm usable.
                         Err(error) if !error.is_exception() => {
                             report_script_error(&ctx, &error, 0, filename);
                             Ok(Some(WorkerScriptError::Runtime))
@@ -636,17 +481,12 @@ impl JsRealm {
         match outcome {
             Ok(None) => Ok(()),
             Ok(Some(error)) => Err(error),
-            // The script's own error wins over a job or interrupt error only
-            // when evaluation returned one; `with_budget` reports an interrupt
-            // in place of the result
-            // (<https://html.spec.whatwg.org/multipage/webappapis.html#clean-up-after-running-script>).
+            // https://html.spec.whatwg.org/multipage/webappapis.html#clean-up-after-running-script
             Err(JsError::Interrupted) => Err(WorkerScriptError::Interrupted),
             Err(_) => Err(WorkerScriptError::Runtime),
         }
     }
 
-    /// Runs one classic inline script that was inserted from another realm
-    /// before this document had a realm.
     pub(crate) fn run_deferred_inline_script(
         &self,
         id: crate::dom::tree::NodeId,
@@ -685,38 +525,21 @@ impl JsRealm {
         })
     }
 
-    /// Evaluates the top-level module script of a dedicated worker.
-    ///
-    /// A module script that fails to fetch, parse, or link is a load failure:
-    /// nothing in it ran, so the environment is discarded and the owner sees a
-    /// plain `error` event. An exception from the module's own evaluation is a
-    /// runtime error and is reported at the worker global
-    /// (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>,
-    /// step 14).
+    // https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model
     pub(crate) fn eval_worker_module(&self, url: &str) -> Result<(), WorkerScriptError> {
         let outcome = self.enter_script_url(url, || {
             self.with_budget(None, MicrotaskCheckpoint::Perform, || {
                 self.context.with(|ctx| {
-                    // The module graph's fetch or parse failed: no module script
-                    // exists to evaluate.
                     let Ok(module) = modules::load_module(&ctx, url) else {
                         return Ok(Some(WorkerScriptError::Parse));
                     };
                     let Ok((_, promise)) = module.eval() else {
                         return Ok(Some(WorkerScriptError::Parse));
                     };
-                    // The graph is linked and its static imports are fetched;
-                    // only the module bodies and their dynamic `import()` jobs
-                    // remain. Those run with the worker's own settings object,
-                    // so the outside origin stops applying before the
-                    // microtask checkpoint that runs them
-                    // (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>).
+                    // https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model
                     self.world.borrow_mut().state.module_client_origin = None;
                     match promise.finish::<()>() {
                         Ok(()) => Ok(None),
-                        // The rejection is rethrown as a pending exception, so the
-                        // realm's error plumbing reports it like any other
-                        // uncaught evaluation error.
                         Err(error) => {
                             report_script_error(&ctx, &error, 0, url);
                             Ok(Some(WorkerScriptError::Runtime))
@@ -725,10 +548,7 @@ impl JsRealm {
                 })
             })
         });
-        // The root graph has been fetched and linked. A later dynamic import()
-        // runs with the worker's own settings object, so stop applying the
-        // outside origin
-        // (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>).
+        // https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model
         self.world.borrow_mut().state.module_client_origin = None;
         match outcome {
             Ok(None) => Ok(()),
@@ -762,8 +582,6 @@ impl JsRealm {
         })
     }
 
-    /// The node a runtime handle wraps, or `None` when the handle names
-    /// anything else.
     pub(crate) fn node_for_handle(
         &self,
         object_id: &str,
@@ -780,9 +598,6 @@ impl JsRealm {
             .map_err(JsError::engine)
     }
 
-    /// Interns `node` as a runtime handle, the `DOM.resolveNode` shape: the
-    /// wrapper is minted in Rust and stored in the bridge's private handle
-    /// table, so `Runtime.callFunctionOn` can use the returned id.
     pub(crate) fn intern_node(
         &self,
         node: crate::dom::tree::NodeId,
@@ -791,17 +606,13 @@ impl JsRealm {
             .with(|ctx| -> rquickjs::Result<crate::DomRemoteNode> {
                 let host = bridge::object(&ctx)?;
                 let value = bindings::wrap_node(&ctx, node)?;
-                // A stable key per node: repeated `DOM.resolveNode` calls
-                // overwrite one entry instead of growing the handle table
-                // (<https://chromedevtools.github.io/devtools-protocol/tot/DOM/#method-resolveNode>).
+                // https://chromedevtools.github.io/devtools-protocol/tot/DOM/#method-resolveNode
                 let object_id = {
                     let remote = self.world.borrow_mut().remote_id(node);
                     format!("dom-{remote}")
                 };
                 let handles: Object = host.get("__tb_handles")?;
                 handles.set(object_id.as_str(), value)?;
-                // Read the shape from the tree, not from wrapper properties a
-                // page can redefine: `resolveNode` must not run page script.
                 let description = {
                     let world = self.world.borrow();
                     world.document(node).map_or_else(String::new, |parsed| {
@@ -827,9 +638,7 @@ impl JsRealm {
             self.context.with(|ctx| {
                 let timeouts: Array = bridge::object(&ctx)?.get("__tb_timeouts")?;
                 let idx = usize::try_from(js_id.0).map_err(|_| JsError::BadTimerId)?;
-                // A cancelled timer already left the queue: firing is a
-                // no-op, not a `TypeError`
-                // (<https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#timers>).
+                // https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#timers
                 let value: Value = timeouts.get(idx)?;
                 timeouts.as_object().remove(js_id.0)?;
                 if value.is_undefined() || value.is_null() {
@@ -841,10 +650,7 @@ impl JsRealm {
                     }
                     return Ok(());
                 }
-                // A non-function argument is compiled and run as a classic
-                // script when the timer fires; a compile or runtime error is
-                // reported like any uncaught script error
-                // (<https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#dom-settimeout>).
+                // https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#dom-settimeout
                 let code = Coerced::<String>::from_js(&ctx, value)?.0;
                 let mut options = EvalOptions::default();
                 options.strict = false;
@@ -856,9 +662,7 @@ impl JsRealm {
         })
     }
 
-    /// Dispatches one message a worker posted on its `Worker` object in the
-    /// parent realm
-    /// (<https://html.spec.whatwg.org/multipage/workers.html#dom-worker-postmessage>).
+    // https://html.spec.whatwg.org/multipage/workers.html#dom-worker-postmessage
     pub(crate) fn deliver_worker_event(
         &self,
         worker: u64,
@@ -875,7 +679,6 @@ impl JsRealm {
         })
     }
 
-    /// Fires a worker's `error` event on the parent's `Worker` object.
     pub(crate) fn deliver_worker_error(
         &self,
         worker: u64,
@@ -893,9 +696,7 @@ impl JsRealm {
         })
     }
 
-    /// Fires the plain `error` event a worker that never started reports at
-    /// its `Worker` object
-    /// (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>).
+    // https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model
     pub(crate) fn deliver_worker_load_error(&self, worker: u64) -> Result<(), JsError> {
         self.with_budget(None, MicrotaskCheckpoint::Perform, || {
             self.context.with(|ctx| {
@@ -906,7 +707,6 @@ impl JsRealm {
         })
     }
 
-    /// Dispatches one message posted to a worker global.
     pub(crate) fn deliver_worker_message(
         &self,
         payload: &str,
@@ -922,9 +722,7 @@ impl JsRealm {
         })
     }
 
-    /// Dispatches one `connect` event at a shared worker global, carrying the
-    /// worker-side port of a new connection
-    /// (<https://html.spec.whatwg.org/multipage/workers.html#dom-sharedworkerglobalscope-onconnect>).
+    // https://html.spec.whatwg.org/multipage/workers.html#dom-sharedworkerglobalscope-onconnect
     pub(crate) fn deliver_shared_connect(&self, endpoint: u64) -> Result<(), JsError> {
         self.with_budget(None, MicrotaskCheckpoint::Perform, || {
             self.context.with(|ctx| {
@@ -935,9 +733,7 @@ impl JsRealm {
         })
     }
 
-    /// Tells the page shim to dispatch `resize` on `window.visualViewport`
-    /// when the viewport's size changed
-    /// (<https://drafts.csswg.org/cssom-view/#run-the-resize-steps>).
+    // https://drafts.csswg.org/cssom-view/#run-the-resize-steps
     pub(crate) fn report_visual_viewport_changes(&self) -> Result<(), JsError> {
         self.with_budget(None, MicrotaskCheckpoint::Perform, || {
             self.context.with(|ctx| {
@@ -953,8 +749,7 @@ impl JsRealm {
         })
     }
 
-    /// Tells the page shim to dispatch `change` on `MediaQueryList`s whose
-    /// result flipped (<https://drafts.csswg.org/cssom-view/#evaluate-media-queries-and-report-changes>).
+    // https://drafts.csswg.org/cssom-view/#evaluate-media-queries-and-report-changes
     pub(crate) fn report_media_changes(&self) -> Result<(), JsError> {
         self.with_budget(None, MicrotaskCheckpoint::Perform, || {
             self.context.with(|ctx| {
@@ -977,9 +772,6 @@ impl JsRealm {
             self.context.with(|ctx| {
                 let cbs: Object = bridge::object(&ctx)?.get("__tb_fetchCbs")?;
                 let Some(func) = cbs.get::<_, Option<Function>>(js_id.0)? else {
-                    // The page aborted between the dial and this callback.
-                    // A streamed body's task would fill its channel and hold
-                    // the dial permits for nobody, so cancel it here.
                     if let Some(crate::protocol::ResponseBody::Streamed(id)) =
                         outcome.as_ref().map(|outcome| &outcome.body)
                     {
@@ -987,18 +779,12 @@ impl JsRealm {
                     }
                     return Ok(());
                 };
-                // The header list stays as served: sniffing picks the
-                // document parser, it never adds a field to a `fetch`
-                // Response, and `blob().type` reads the header list
-                // (<https://fetch.spec.whatwg.org/#concept-header-extract-mime-type>).
+                // https://fetch.spec.whatwg.org/#concept-header-extract-mime-type
                 let callback = Object::new(ctx.clone())?;
                 if let Some(outcome) = outcome {
                     callback.set("status", i32::from(outcome.status))?;
                     callback.set("statusText", outcome.status_text)?;
-                    // A filtered opaque response has an empty URL list, so
-                    // `Response.url` is the empty string; the engine still knows
-                    // the URL it fetched
-                    // (<https://fetch.spec.whatwg.org/#concept-filtered-response-opaque>).
+                    // https://fetch.spec.whatwg.org/#concept-filtered-response-opaque
                     let url = if outcome.response_type.is_opaque() {
                         String::new()
                     } else {
@@ -1016,11 +802,7 @@ impl JsRealm {
                     )?;
                     callback.set("responseType", outcome.response_type.as_str())?;
                     callback.set("redirectCount", outcome.redirect_count)?;
-                    // One tagged value carries the body. Making the shim
-                    // switch on it keeps "streamed with a decode error"
-                    // out of reach, which the flat body/bodyError/stream
-                    // triple allowed
-                    // (<https://fetch.spec.whatwg.org/#concept-response-body>).
+                    // https://fetch.spec.whatwg.org/#concept-response-body
                     let body = Object::new(ctx.clone())?;
                     match outcome.body {
                         crate::protocol::ResponseBody::Bytes(bytes) => {
@@ -1037,9 +819,7 @@ impl JsRealm {
                     }
                     callback.set("body", body)?;
                 } else {
-                    // A failed dial is a network error: the renderer rejects
-                    // and `Response.type` never becomes observable
-                    // (<https://fetch.spec.whatwg.org/#concept-network-error>).
+                    // https://fetch.spec.whatwg.org/#concept-network-error
                     callback.set("status", 0i32)?;
                     callback.set("statusText", "")?;
                     callback.set("url", "")?;
@@ -1069,8 +849,7 @@ impl JsRealm {
         })
     }
 
-    /// Queues the document's navigation entry now that `load` has run
-    /// (<https://w3c.github.io/navigation-timing/#marking-navigation-timing>).
+    // https://w3c.github.io/navigation-timing/#marking-navigation-timing
     pub(crate) fn fire_navigation_timing_entry(&self) -> Result<(), JsError> {
         self.with_budget(None, MicrotaskCheckpoint::Perform, || {
             self.context.with(|ctx| {
@@ -1080,8 +859,6 @@ impl JsRealm {
         })
     }
 
-    /// Rebinds the realm's `document` global to the world's active document
-    /// after a same-realm navigation install.
     pub(crate) fn refresh_document(&self) -> Result<(), JsError> {
         self.context.with(|ctx| {
             bindings::refresh_document_global(&ctx)?;
@@ -1089,9 +866,7 @@ impl JsRealm {
         })
     }
 
-    /// Restores state without a microtask checkpoint. The caller commits the
-    /// traversal before firing `popstate` and performing its checkpoint.
-    /// <https://html.spec.whatwg.org/multipage/browsing-the-web.html#update-document-for-history-step-application>
+    // https://html.spec.whatwg.org/multipage/browsing-the-web.html#update-document-for-history-step-application
     pub(crate) fn restore_history(
         &self,
         state: Option<&str>,
@@ -1106,9 +881,7 @@ impl JsRealm {
         })
     }
 
-    /// Runs this realm's "process cookie changes" in its own turn; see
-    /// [`process_cookie_changes_now`]
-    /// (<https://cookiestore.spec.whatwg.org/#process-cookie-changes>).
+    // https://cookiestore.spec.whatwg.org/#process-cookie-changes
     pub(crate) fn process_cookie_changes(&self) -> Result<(), JsError> {
         self.with_budget(None, MicrotaskCheckpoint::Perform, || {
             self.context.with(|ctx| {
@@ -1118,9 +891,7 @@ impl JsRealm {
         })
     }
 
-    /// Fires the trusted `hashchange` a same-document fragment navigation
-    /// owes, after the URL and history entry already changed
-    /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#the-hashchangeevent-interface>).
+    // https://html.spec.whatwg.org/multipage/browsing-the-web.html#the-hashchangeevent-interface
     pub(crate) fn fire_hash_change(&self, old_url: &str, new_url: &str) -> Result<(), JsError> {
         self.with_budget(None, MicrotaskCheckpoint::Perform, || {
             self.context.with(|ctx| {
@@ -1142,8 +913,7 @@ impl JsRealm {
         })
     }
 
-    /// Fires `DOMContentLoaded` at the document
-    /// (<https://html.spec.whatwg.org/multipage/parsing.html#the-end>).
+    // https://html.spec.whatwg.org/multipage/parsing.html#the-end
     pub(crate) fn fire_dom_content_loaded(&self) -> Result<(), JsError> {
         self.with_budget(None, MicrotaskCheckpoint::Perform, || {
             self.context.with(|ctx| {
@@ -1153,7 +923,6 @@ impl JsRealm {
         })
     }
 
-    /// Fires `readystatechange` after a document readiness change.
     pub(crate) fn fire_ready_state_change(&self) -> Result<(), JsError> {
         self.with_budget(None, MicrotaskCheckpoint::Perform, || {
             self.context.with(|ctx| {
@@ -1172,8 +941,6 @@ impl JsRealm {
         })
     }
 
-    /// Settles one CSS-connected `FontFace` after the engine's own fetch of its
-    /// `@font-face` source finishes.
     pub(crate) fn font_face_settled(
         &self,
         sheet: u64,
@@ -1188,8 +955,7 @@ impl JsRealm {
         })
     }
 
-    /// Appends one resource timing entry created by a renderer-side fetch
-    /// (<https://w3c.github.io/resource-timing/#dfn-add-a-performanceresourcetiming-entry>).
+    // https://w3c.github.io/resource-timing/#dfn-add-a-performanceresourcetiming-entry
     pub(crate) fn queue_resource_timing(
         &self,
         name: String,
@@ -1227,8 +993,7 @@ impl JsRealm {
         })
     }
 
-    /// Fires the queued `select` event of a changed text selection
-    /// (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#set-the-selection-range>).
+    // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#set-the-selection-range
     pub(crate) fn fire_selection_changed(
         &self,
         id: crate::dom::tree::NodeId,
@@ -1241,10 +1006,8 @@ impl JsRealm {
         })
     }
 
-    /// Fires the queued `toggle` event of a `details` element whose `open`
-    /// attribute changed, or of a dialog that showed or closed
-    /// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-details-toggle-event-task>,
-    /// <https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-dialog-toggle-event-task>).
+    // https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-details-toggle-event-task
+    // https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-dialog-toggle-event-task
     pub(crate) fn fire_toggle_task(
         &self,
         id: crate::dom::tree::NodeId,
@@ -1259,8 +1022,7 @@ impl JsRealm {
         })
     }
 
-    /// Fires the queued `close` event of a dialog
-    /// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:close-event>).
+    // https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:close-event
     pub(crate) fn fire_dialog_close(&self, id: crate::dom::tree::NodeId) -> Result<(), JsError> {
         self.with_budget(None, MicrotaskCheckpoint::Perform, || {
             self.context.with(|ctx| {
@@ -1270,9 +1032,7 @@ impl JsRealm {
         })
     }
 
-    /// Runs one batch of scroll steps, dispatching the `scroll` and
-    /// `scrollend` events a document queued in order
-    /// (<https://drafts.csswg.org/cssom-view/#run-the-scroll-steps>).
+    // https://drafts.csswg.org/cssom-view/#run-the-scroll-steps
     pub(crate) fn fire_scroll_events(
         &self,
         events: &[blitz_dom::PendingScrollEvent],
@@ -1287,9 +1047,7 @@ impl JsRealm {
         })
     }
 
-    /// Runs one batch of CSS animation and transition lifecycle events a
-    /// resolve observed, in observation order
-    /// (<https://drafts.csswg.org/css-animations-1/#events>).
+    // https://drafts.csswg.org/css-animations-1/#events
     pub(crate) fn fire_animation_events(
         &self,
         events: &[blitz_dom::animation_events::PendingAnimationEvent],
@@ -1304,7 +1062,6 @@ impl JsRealm {
         })
     }
 
-    /// Dispatches one trusted `securitypolicyviolation` event per violation.
     pub(crate) fn fire_csp_violations(
         &self,
         target: crate::dom::tree::NodeId,
@@ -1318,11 +1075,7 @@ impl JsRealm {
         })
     }
 
-    /// Decodes and dispatches one posted window message in this realm.
-    ///
-    /// Returns `false` when the payload cannot be decoded, which the engine
-    /// turns into a `messageerror`
-    /// (<https://html.spec.whatwg.org/multipage/web-messaging.html#window-post-message-steps>).
+    // https://html.spec.whatwg.org/multipage/web-messaging.html#window-post-message-steps
     pub(crate) fn deliver_window_message(
         &self,
         source: u64,
@@ -1342,7 +1095,6 @@ impl JsRealm {
         })
     }
 
-    /// Dispatches `messageerror` for a payload this realm could not decode.
     pub(crate) fn deliver_window_message_error(
         &self,
         source: u64,
@@ -1359,9 +1111,7 @@ impl JsRealm {
         })
     }
 
-    /// Fires one `storage` event in this realm; `storageArea` is this realm's
-    /// own area, per the spec's broadcast steps
-    /// (<https://html.spec.whatwg.org/multipage/webstorage.html#concept-storage-broadcast>).
+    // https://html.spec.whatwg.org/multipage/webstorage.html#concept-storage-broadcast
     pub(crate) fn fire_storage_event(
         &self,
         event: &crate::storage::PendingStorageEvent,
@@ -1380,10 +1130,7 @@ impl JsRealm {
         })
     }
 
-    /// Dispatches one cross-tab `message` event in this realm; the source is
-    /// `null` because the posting window lives in another renderer, and
-    /// `origin` is the sender's serialized origin at post time.
-    /// (<https://html.spec.whatwg.org/multipage/web-messaging.html#window-post-message-steps>)
+    // https://html.spec.whatwg.org/multipage/web-messaging.html#window-post-message-steps
     pub(crate) fn deliver_remote_message(
         &self,
         origin: &str,
@@ -1400,8 +1147,7 @@ impl JsRealm {
         })
     }
 
-    /// Dispatches one `BroadcastChannel` message in this realm.
-    /// (<https://html.spec.whatwg.org/multipage/web-messaging.html#broadcasting-to-other-browsing-contexts>)
+    // https://html.spec.whatwg.org/multipage/web-messaging.html#broadcasting-to-other-browsing-contexts
     pub(crate) fn deliver_broadcast_message(
         &self,
         origin: &str,
@@ -1422,7 +1168,6 @@ impl JsRealm {
         })
     }
 
-    /// Decodes and dispatches one channel message in this realm.
     pub(crate) fn deliver_port_message(
         &self,
         endpoint: u64,
@@ -1440,7 +1185,6 @@ impl JsRealm {
         })
     }
 
-    /// Dispatches `messageerror` at a port whose payload failed to decode.
     pub(crate) fn deliver_port_message_error(&self, endpoint: u64) -> Result<(), JsError> {
         self.with_budget(None, MicrotaskCheckpoint::Perform, || {
             let endpoint = js_number(endpoint);
@@ -1452,8 +1196,6 @@ impl JsRealm {
         })
     }
 
-    /// Applies the proxy writes this realm stored for `frame` before its
-    /// realm existed.
     pub(crate) fn flush_frame_sets(&self, frame: u64) -> Result<(), JsError> {
         self.with_budget(None, MicrotaskCheckpoint::Perform, || {
             let frame = js_number(frame);
@@ -1465,8 +1207,7 @@ impl JsRealm {
         })
     }
 
-    /// Fires `close` at one channel endpoint
-    /// (<https://html.spec.whatwg.org/multipage/web-messaging.html#disentangle>).
+    // https://html.spec.whatwg.org/multipage/web-messaging.html#disentangle
     pub(crate) fn deliver_port_close(&self, endpoint: u64) -> Result<(), JsError> {
         self.with_budget(None, MicrotaskCheckpoint::Perform, || {
             let endpoint = js_number(endpoint);
@@ -1478,12 +1219,6 @@ impl JsRealm {
         })
     }
 
-    /// Microtask checkpoint for parser-driven mutations: schedules the
-    /// delivery microtask when records are pending and runs the job queue.
-    ///
-    /// Parser insertions record mutations without entering a JS binding, so
-    /// nothing else schedules delivery. Called between parser scripts, where
-    /// the spec drains microtasks before the next script runs.
     pub(crate) fn deliver_mutations(&self) -> Result<(), JsError> {
         self.with_budget(None, MicrotaskCheckpoint::Perform, || {
             self.context.with(|ctx| {
@@ -1493,17 +1228,6 @@ impl JsRealm {
         })
     }
 
-    /// Runs `operation` under the script deadline and interrupt handler, then
-    /// drains the job queue and clears the interrupt handler.
-    ///
-    /// The job drain always runs so a scheduled microtask cannot outlive the
-    /// operation that scheduled it; the operation's error wins over a job
-    /// error, and an interrupt wins over both.
-    ///
-    /// Reentrant calls (script evaluated while an outer script runs) execute
-    /// under the outer frame: the outer handler, deadline, and job drain own
-    /// the nesting, so an inner frame cannot overwrite and clear the outer
-    /// budget.
     fn with_budget<T>(
         &self,
         deadline: Option<Instant>,
@@ -1563,17 +1287,13 @@ impl JsRealm {
         }
     }
 
-    /// Queues the rejection event task after a microtask checkpoint: the
-    /// events themselves fire from that task, never inside the checkpoint
-    /// (<https://html.spec.whatwg.org/multipage/webappapis.html#notify-about-rejected-promises>).
+    // https://html.spec.whatwg.org/multipage/webappapis.html#notify-about-rejected-promises
     fn report_pending_rejections(&self) {
         self.context.with(|ctx| {
             bindings::notify_rejected_promises(&ctx, &self.world);
         });
     }
 
-    /// Fires this realm's queued `unhandledrejection` / `rejectionhandled`
-    /// events.
     pub(crate) fn fire_rejection_tasks(&self) {
         self.context.with(|ctx| {
             bindings::fire_rejection_tasks(&ctx, &self.world);
@@ -1619,9 +1339,6 @@ impl JsRealm {
                     .borrow_mut()
                     .intern_brand(name, Persistent::save(&ctx, prototype));
             }
-            // The `createEvent` interfaces, captured before page script can
-            // replace the globals. Missing entries stay missing: the legacy
-            // lookup below reports them as unexposed.
             for name in [
                 "BeforeUnloadEvent",
                 "CompositionEvent",
@@ -1654,12 +1371,7 @@ impl JsRealm {
         })
     }
 
-    /// Installs a dedicated worker's global.
-    ///
-    /// The worker shares the engine's services and heap, so it keeps the
-    /// timer, fetch, encoding, and messaging host functions. It has no
-    /// document, history, storage, or Window, so those installers never run
-    /// (<https://html.spec.whatwg.org/multipage/workers.html#the-workerglobalscope-common-interface>).
+    // https://html.spec.whatwg.org/multipage/workers.html#the-workerglobalscope-common-interface
     fn install_worker(&self) -> Result<(), JsError> {
         let world = self.world.clone();
         bridge::prepare(&self.runtime, &world)?;
@@ -1674,22 +1386,14 @@ impl JsRealm {
             url_parts::install(&ctx)?;
             encoding::install(&ctx)?;
             bindings::install_messaging(&ctx)?;
-            // A worker global exposes the canvas interfaces that do not need a
-            // document: `OffscreenCanvas`, `ImageData`, `ImageBitmap`, and
-            // `createImageBitmap`
-            // (<https://html.spec.whatwg.org/multipage/workers.html#apis-available-to-workers>).
+            // https://html.spec.whatwg.org/multipage/workers.html#apis-available-to-workers
             crate::js::canvas::install(&ctx)?;
             bridge::evaluate(&ctx, install_worker_apis_js(&ctx)?)?;
             Ok(())
         })
     }
 
-    /// Fetches an `importScripts` resource as a classic script.
-    ///
-    /// `importScripts` shares the classic-script fetch, not a page `fetch`:
-    /// the response is a JavaScript resource loaded with the worker's origin
-    /// as initiator and no CORS negotiation
-    /// (<https://html.spec.whatwg.org/multipage/workers.html#dom-workerglobalscope-importscripts>).
+    // https://html.spec.whatwg.org/multipage/workers.html#dom-workerglobalscope-importscripts
     fn install_import_scripts_host(
         ctx: &Ctx<'_>,
         world: &Rc<RefCell<World>>,
@@ -1756,19 +1460,13 @@ impl JsRealm {
                         | crate::protocol::ResponseBody::Undecodable => return None,
                     }
                 };
-                // A classic worker-imported script is decoded with UTF-8
-                // decode, whose replacement mode substitutes U+FFFD and whose
-                // BOM removal drops one leading byte-order mark
-                // (<https://infra.spec.whatwg.org/#utf-8-decode>).
+                // https://infra.spec.whatwg.org/#utf-8-decode
                 let source = String::from_utf8_lossy(&body);
                 let source = source.strip_prefix('\u{feff}').unwrap_or(&source);
                 Some(source.to_owned())
             }),
         )?;
-        // `importScripts` runs the fetched source as a classic script whose
-        // base URL and error locations are the imported resource's URL, and
-        // rethrows its exception to the caller
-        // (<https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-classic-worker-imported-script>).
+        // https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-classic-worker-imported-script
         bridge::object(ctx)?.set(
             "__tbEvalImportedScript",
             Func::from(
@@ -1799,7 +1497,6 @@ impl JsRealm {
         Ok(())
     }
 
-    /// Timer scheduling and cancellation hooks the JS shim calls.
     fn install_timer_host_functions(
         ctx: &Ctx<'_>,
         outbox: &crate::js::world::Outbox,
@@ -1830,7 +1527,6 @@ impl JsRealm {
         Ok(())
     }
 
-    /// Timer and fetch submission hooks the JS shim calls.
     fn install_task_host_functions(
         &self,
         ctx: &Ctx<'_>,
@@ -1887,9 +1583,6 @@ impl JsRealm {
         Ok(())
     }
 
-    /// The CSP checks the shim calls where the Rust choke points cannot run:
-    /// string resources for timers, and a synchronous XHR that cannot reach
-    /// the dial queue.
     fn install_csp_host_functions(
         ctx: &Ctx<'_>,
         world: &Rc<RefCell<World>>,
@@ -1919,10 +1612,7 @@ impl JsRealm {
                 end_timer.borrow().timer_string.set(false);
             }),
         )?;
-        // A synchronous XHR cannot reach the dial queue's connect check, so
-        // the shim asks this hook instead and the drain dispatches the
-        // queued violations
-        // (<https://w3c.github.io/webappsec-csp/#should-request-be-blocked-by-content-security-policy>).
+        // https://w3c.github.io/webappsec-csp/#should-request-be-blocked-by-content-security-policy
         bridge::object(ctx)?.set(
             "__tbCspAllowsConnect",
             Func::from(move |url: String| {
@@ -1954,7 +1644,6 @@ impl JsRealm {
         Ok(())
     }
 
-    /// Cookie, object URL, and URL resolution hooks the JS shim calls.
     fn install_document_host_functions(
         ctx: &Ctx<'_>,
         world: &Rc<RefCell<World>>,
@@ -1991,10 +1680,7 @@ impl JsRealm {
                     )
                 };
                 services.set_cookie(&value, &url, partition_key.as_deref());
-                // A script write is one of the store changes every Window
-                // processes; the jar may still have refused the line, and
-                // each realm's diff decides that
-                // (<https://cookiestore.spec.whatwg.org/#process-cookie-changes>).
+                // https://cookiestore.spec.whatwg.org/#process-cookie-changes
                 cookie_set.borrow().notify_cookie_changes();
                 report_cookie_change_failure(&ctx, process_cookie_changes_now(&ctx));
                 Ok(())
@@ -2004,33 +1690,25 @@ impl JsRealm {
         Self::install_cookie_store_host_functions(ctx, world)
     }
 
-    /// The `CookieStore` host functions: the cookie URL, the jar query, and
-    /// the typed write the shim builds from the spec's algorithm
-    /// (<https://cookiestore.spec.whatwg.org/#cookie-store-interface>).
+    // https://cookiestore.spec.whatwg.org/#cookie-store-interface
     fn install_cookie_store_host_functions(
         ctx: &Ctx<'_>,
         world: &Rc<RefCell<World>>,
     ) -> Result<(), JsError> {
-        // `cookieStore` resolves against the document's creation URL, so a
-        // `pushState` to another path does not move the default path
-        // (<https://cookiestore.spec.whatwg.org/#dom-cookiestore-get>).
+        // https://cookiestore.spec.whatwg.org/#dom-cookiestore-get
         let creation_url = world.clone();
         bridge::object(ctx)?.set(
             "__tbCookieStoreCreationUrl",
             Func::from(move || cookie_store_url(&creation_url.borrow()).to_string()),
         )?;
 
-        // The `Domain` attribute may not name a public suffix, which the
-        // cookie jar's list decides
-        // (<https://cookiestore.spec.whatwg.org/#set-a-cookie>).
+        // https://cookiestore.spec.whatwg.org/#set-a-cookie
         bridge::object(ctx)?.set(
             "__tbCookieStorePublicSuffix",
             Func::from(|domain: String| net::is_public_suffix(&domain)),
         )?;
 
-        // The spec host-parses the `domain` option before comparing it, so an
-        // IDN option compares as its punycoded host
-        // (<https://cookiestore.spec.whatwg.org/#set-a-cookie> step 12).
+        // https://cookiestore.spec.whatwg.org/#set-a-cookie
         bridge::object(ctx)?.set(
             "__tbCookieStoreParseDomain",
             Func::from(|domain: String| {
@@ -2038,8 +1716,7 @@ impl JsRealm {
             }),
         )?;
 
-        // A host that is an IP address has no registrable domain suffix
-        // (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#is-a-registrable-domain-suffix-of-or-is-equal-to>).
+        // https://html.spec.whatwg.org/multipage/urls-and-fetching.html#is-a-registrable-domain-suffix-of-or-is-equal-to
         bridge::object(ctx)?.set(
             "__tbCookieStoreIsIp",
             Func::from(|host: String| {
@@ -2051,9 +1728,7 @@ impl JsRealm {
             }),
         )?;
 
-        // The `url` option parses against the API base URL, which is the
-        // document base URL
-        // (<https://html.spec.whatwg.org/multipage/webappapis.html#api-base-url>).
+        // https://html.spec.whatwg.org/multipage/webappapis.html#api-base-url
         let api_base = world.clone();
         bridge::object(ctx)?.set(
             "__tbCookieStoreApiBaseUrl",
@@ -2072,10 +1747,7 @@ impl JsRealm {
                         world.partition_key(),
                     )
                 };
-                // A cookie name and value cannot contain NUL, LF, `;`, or
-                // whitespace, so the pair encoding survives every cookie the
-                // jar can hold
-                // (<https://datatracker.ietf.org/doc/html/rfc6265#section-4.1.1>).
+                // https://datatracker.ietf.org/doc/html/rfc6265#section-4.1.1
                 let mut encoded = String::new();
                 for record in services.cookie_store_records(&url, partition_key.as_deref()) {
                     encoded.push_str(&record.slot);
@@ -2115,13 +1787,7 @@ impl JsRealm {
         Ok(())
     }
 
-    /// URL parsing, object URLs, and the realm's serialized origin.
-    ///
-    /// Every global has these: a `WorkerGlobalScope` exposes `URL` and
-    /// `location`, and its fetch and `importScripts` resolve against the
-    /// worker's script URL, so the worker needs the same host functions a
-    /// document does
-    /// (<https://html.spec.whatwg.org/multipage/workers.html#the-workerglobalscope-common-interface>).
+    // https://html.spec.whatwg.org/multipage/workers.html#the-workerglobalscope-common-interface
     fn install_url_host_functions(
         ctx: &Ctx<'_>,
         world: &Rc<RefCell<World>>,
@@ -2187,10 +1853,7 @@ impl JsRealm {
             }),
         )?;
 
-        // The serialized origin of this realm's settings object. A document's
-        // URL cannot supply it: `about:blank`, `about:srcdoc`, and `data:`
-        // documents carry an inherited tuple origin
-        // (<https://html.spec.whatwg.org/multipage/browsers.html#concept-origin>).
+        // https://html.spec.whatwg.org/multipage/browsers.html#concept-origin
         bridge::object(ctx)?.set(
             "__tbOrigin",
             Func::from(move || realm_origin.borrow().origin_string()),
@@ -2199,13 +1862,7 @@ impl JsRealm {
     }
 }
 
-/// Runs this realm's cookie-change observer now: it diffs the jar against
-/// what it last saw and queues the `CookieChangeEvent` it owes
-/// (<https://cookiestore.spec.whatwg.org/#process-cookie-changes>).
-///
-/// An opaque origin has no cookie URL whose in-scope cookies could change, so
-/// the observable set is always empty and the shim installs no observer for
-/// it. The absent global is that origin, not a missing feature.
+// https://cookiestore.spec.whatwg.org/#process-cookie-changes
 fn process_cookie_changes_now(ctx: &Ctx<'_>) -> rquickjs::Result<()> {
     let process: Option<rquickjs::Function> = ctx.globals().get("__tbCookieStoreProcessChanges")?;
     let Some(process) = process else {
@@ -2215,19 +1872,14 @@ fn process_cookie_changes_now(ctx: &Ctx<'_>) -> rquickjs::Result<()> {
     Ok(())
 }
 
-/// Reports a failed observation instead of throwing it out of the cookie
-/// write that triggered it. A write has already happened by then, and the
-/// setter's own steps never throw
-/// (<https://html.spec.whatwg.org/multipage/webappapis.html#report-the-error>).
+// https://html.spec.whatwg.org/multipage/webappapis.html#report-the-error
 fn report_cookie_change_failure(ctx: &Ctx<'_>, result: rquickjs::Result<()>) {
     if let Err(error) = result {
         bindings::host::report_callback_error(ctx, &error);
     }
 }
 
-/// Validates and records the synchronous history API's URL update, then
-/// forwards it to the tab coordinator after the current script finishes.
-/// <https://html.spec.whatwg.org/multipage/nav-history-apis.html#shared-history-push/replace-state-steps>
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#shared-history-push/replace-state-steps
 fn install_history_host_functions(
     ctx: &Ctx<'_>,
     world: &Rc<RefCell<World>>,
@@ -2235,8 +1887,6 @@ fn install_history_host_functions(
     let snapshot = world.borrow().history.clone();
     bridge::object(ctx)?.set("__tbHistoryLength", snapshot.length.max(1))?;
     bridge::object(ctx)?.set("__tbHistoryState", snapshot.state)?;
-    // One host function per history step, so no boolean crosses the JS
-    // boundary to say which.
     let update = |handling: crate::protocol::HistoryHandling| {
         let update_world = world.clone();
         move |ctx: Ctx<'_>, url: String, state: String| {
@@ -2282,8 +1932,7 @@ fn install_history_host_functions(
     Ok(())
 }
 
-/// Produces the cryptographically strong bytes required by
-/// [`Crypto.getRandomValues`](https://w3c.github.io/webcrypto/#Crypto-method-getRandomValues).
+// https://w3c.github.io/webcrypto/#Crypto-method-getRandomValues
 fn random_bytes(ctx: Ctx<'_>, length: usize) -> rquickjs::Result<TypedArray<'_, u8>> {
     if length > 65_536 {
         return Err(Exception::throw_range(&ctx, "random byte quota exceeded"));
@@ -2294,14 +1943,8 @@ fn random_bytes(ctx: Ctx<'_>, length: usize) -> rquickjs::Result<TypedArray<'_, 
     TypedArray::new(ctx, bytes)
 }
 
-/// `window.open`/`window.close` hooks the JS shim calls.
 fn install_window_host_functions(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<(), JsError> {
-    // The window open steps are one algorithm, so the engine runs them:
-    // `__tbOpen` encodes the URL once, reads the features once, decides the
-    // opener policy (including the blob rule, which needs the top-level
-    // origin), and picks the context. The shim only turns the answer into a
-    // `WindowProxy`
-    // (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps>).
+    // https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps
     let window_open = world.clone();
     bridge::object(ctx)?.set(
         "__tbOpen",
@@ -2339,9 +1982,6 @@ fn install_window_host_functions(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> R
     Ok(())
 }
 
-/// The hooks a `WindowProxy` uses to exchange messages: a cross-tab
-/// `postMessage`, a remote same-origin `sessionStorage` read, and a
-/// `BroadcastChannel` post.
 fn install_window_messaging_functions(
     ctx: &Ctx<'_>,
     world: &Rc<RefCell<World>>,
@@ -2352,10 +1992,7 @@ fn install_window_messaging_functions(
         Func::from(
             move |ctx: Ctx<'_>, window: u64, target_origin: String, payload: String| {
                 let world = post_message.borrow();
-                // The sender resolves the target, because `/` names the
-                // sender's own origin identity, which no serialized value can
-                // carry
-                // (<https://html.spec.whatwg.org/multipage/web-messaging.html#window-post-message-steps>).
+                // https://html.spec.whatwg.org/multipage/web-messaging.html#window-post-message-steps
                 let Some(target) =
                     crate::protocol::TargetOrigin::parse(&target_origin, Some(&world.origin))
                 else {
@@ -2369,10 +2006,6 @@ fn install_window_messaging_functions(
                     &target,
                     crate::protocol::TargetOrigin::Exact(url::Origin::Opaque(_))
                 ) {
-                    // An opaque exact target is a different origin object in
-                    // every document, so a cross-tab post with one can never
-                    // be delivered. It is still a valid argument, and the
-                    // shim already serialized the message.
                     return Ok(());
                 }
                 world.runtime.services.window_post_message(
@@ -2405,26 +2038,14 @@ fn install_window_messaging_functions(
     Ok(())
 }
 
-/// What one `window.open` call selected.
-///
-/// The context is a tagged union because a `FrameId` and a `WindowId` are
-/// different kinds of identity: this renderer hosts the first and the browser
-/// hosts the second.
-///
-/// `noopener` still selects and navigates a context; it only withholds the
-/// `WindowProxy`, which is [`withholds`](Self::withholds)
-/// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps>).
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps
 struct WindowOpenAnswer {
     context: OpenedContext,
     withholds: bool,
 }
 
-/// The context one `window.open` call selected.
 enum OpenedContext {
-    /// A context this renderer hosts: an auxiliary one it created, or the
-    /// navigable a name selected.
     Frame(FrameId),
-    /// A browser tab.
     Tab(WindowId),
 }
 
@@ -2442,10 +2063,7 @@ impl<'js> rquickjs::IntoJs<'js> for WindowOpenAnswer {
     }
 }
 
-/// One `window.open` call
-/// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps>).
-///
-/// `None` when the call opens nothing.
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps
 fn open_window(
     world: &Rc<RefCell<World>>,
     url: &str,
@@ -2455,9 +2073,7 @@ fn open_window(
     let target = TargetName::for_window_open(name);
     let plan = world.borrow().plan_window_open(url, &target, features)?;
     let services = world.borrow().runtime.services.clone();
-    // The rules for choosing a navigable search this tab's tree, then the
-    // browsing context group's browser tabs
-    // (<https://html.spec.whatwg.org/multipage/document-sequences.html#the-rules-for-choosing-a-navigable>).
+    // https://html.spec.whatwg.org/multipage/document-sequences.html#the-rules-for-choosing-a-navigable
     let selected = {
         let world = world.borrow();
         world
@@ -2483,21 +2099,11 @@ fn open_window(
             withholds: plan.withholds,
         });
     }
-    // Nothing selected a context, so the call creates one. A sandboxed
-    // document without `allow-popups` cannot create an auxiliary context,
-    // whether this renderer or the browser would host it; spelling the name
-    // `_BLANK` or choosing an unknown `_x` must not change that
-    // (<https://html.spec.whatwg.org/multipage/browsers.html#sandboxed-auxiliary-navigation-browsing-context-flag>).
-    // The browser checks the same flag against its own copy of the tab's set;
-    // this early return is the honest renderer behaving, not the check.
+    // https://html.spec.whatwg.org/multipage/browsers.html#sandboxed-auxiliary-navigation-browsing-context-flag
     if !world.borrow().allows_auxiliary_navigation() {
         return None;
     }
-    // A blob URL names bytes in this renderer's object-URL store, which a
-    // browser tab cannot resolve, so a blob popup stays in this renderer. Every
-    // other URL is a real browser tab, so it gets its own target and webdriver
-    // handle
-    // (<https://html.spec.whatwg.org/multipage/window-object.html#dom-open>).
+    // https://html.spec.whatwg.org/multipage/window-object.html#dom-open
     if plan.url.as_ref().is_some_and(|url| url.scheme() == "blob")
         && let Some(frame) =
             World::create_auxiliary(world, plan.url.as_ref(), &target, plan.opener, false)
@@ -2507,9 +2113,6 @@ fn open_window(
             withholds: plan.withholds,
         });
     }
-    // A host with no tab carrier cannot open the window itself, so the
-    // renderer hosts it. The document may be cross-origin; frames already
-    // cross that boundary through `WindowProxy`.
     if !services.opens_window_as_tab()
         && let Some(frame) =
             World::create_auxiliary(world, plan.url.as_ref(), &target, plan.opener, true)
@@ -2526,7 +2129,6 @@ fn open_window(
     })
 }
 
-/// `window.open`'s auxiliary-context hooks: reading and closing the opener.
 fn install_auxiliary_host_functions(
     ctx: &Ctx<'_>,
     world: &Rc<RefCell<World>>,
@@ -2550,32 +2152,24 @@ fn install_auxiliary_host_functions(
     bridge::object(ctx)?.set(
         "__tbCloseWindow",
         Func::from(move |ctx: Ctx<'_>| {
-            // The unload steps run in this realm before its browsing context
-            // goes away, which is where a `keepalive` report is issued
-            // (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#unload>).
+            // https://html.spec.whatwg.org/multipage/browsing-the-web.html#unload
             if let Err(error) = crate::js::events::fire_document_unload(&ctx) {
                 crate::js::bindings::host::report_callback_error(&ctx, &error);
             }
             let world = close.borrow();
-            // A browser tab closes through the same `window_close` the opener's
-            // `WindowProxy.close()` uses, so either side reaches one path
-            // (<https://html.spec.whatwg.org/multipage/window-object.html#dom-window-close>).
+            // https://html.spec.whatwg.org/multipage/window-object.html#dom-window-close
             if world.frame() == FrameId::MAIN
                 && let Some(window) = world.own_window
             {
                 world.runtime.services.window_close(window);
                 return;
             }
-            // A renderer-hosted blob popup is not a tab, so its frame is the
-            // context to close. An iframe has no opener and is left alone.
             world.close_auxiliary(world.frame());
         }),
     )?;
     Ok(())
 }
 
-/// `localStorage`/`sessionStorage` hooks the JS shim calls. The session area
-/// lives in the engine; the local area crosses the service seam.
 fn install_storage_host_functions(
     ctx: &Ctx<'_>,
     world: &Rc<RefCell<World>>,
@@ -2647,9 +2241,6 @@ fn install_storage_host_functions(
     Ok(())
 }
 
-/// The storage area the shim names: `"local"` or `"session"`. The shim is the
-/// only caller, so an unknown name is an engine bug: it throws instead of
-/// silently selecting `localStorage`.
 fn storage_area(ctx: &Ctx<'_>, kind: &str) -> rquickjs::Result<crate::protocol::StorageKind> {
     crate::protocol::StorageKind::parse(kind)
         .ok_or_else(|| rquickjs::Exception::throw_type(ctx, "unknown storage area"))
@@ -2662,8 +2253,6 @@ impl Drop for JsRealm {
         self.context.with(|ctx| bridge::release(&ctx, &self.world));
         let world = self.world.clone();
         let mut world = world.borrow_mut();
-        // Release this realm's cached wrappers and document associations
-        // before its QuickJS context goes away; sibling realms keep theirs.
         world.forget_owned_documents();
         world.clear_listeners();
         world.release_host_primitives();
@@ -2685,15 +2274,10 @@ pub(crate) fn script_at(world: &World, id: crate::dom::tree::NodeId) -> Option<S
         Some(src) if !src.trim().is_empty() => ScriptElementSource::Src(src.to_owned()),
         _ => ScriptElementSource::Inline {
             source: crate::dom::text::child_text_content(base, id.node),
-            // Known gap: Blitz stores no script line numbers.
             line: 0,
         },
     };
-    // The script block's type string: the `type` attribute when present,
-    // otherwise `text/` plus the `language` attribute, otherwise
-    // `text/javascript`; an exactly empty `type` or `language` also means
-    // `text/javascript`
-    // (<https://html.spec.whatwg.org/multipage/scripting.html#prepare-the-script-element>).
+    // https://html.spec.whatwg.org/multipage/scripting.html#prepare-the-script-element
     let typ = crate::dom::tree::attr(base, id.node, "type").map(str::trim_ascii);
     let language = crate::dom::tree::attr(base, id.node, "language");
     let type_string = match (typ, language) {
@@ -2711,9 +2295,7 @@ pub(crate) fn script_at(world: &World, id: crate::dom::tree::NodeId) -> Option<S
 }
 
 pub(super) fn javascript_module_mime(typ: Option<&str>) -> bool {
-    // A response header is a MIME type, so parameters and whitespace are
-    // allowed and the first parsable item wins
-    // (<https://fetch.spec.whatwg.org/#concept-header-extract-mime-type>).
+    // https://fetch.spec.whatwg.org/#concept-header-extract-mime-type
     let Some(mime) = typ.and_then(crate::sniff::extract_mime_type) else {
         return false;
     };
@@ -2721,8 +2303,7 @@ pub(super) fn javascript_module_mime(typ: Option<&str>) -> bool {
     javascript_mime_essence(essence)
 }
 
-/// Classic scripts additionally accept `text/html` and `text/plain`
-/// (<https://html.spec.whatwg.org/multipage/scripting.html#prepare-the-script-element>).
+// https://html.spec.whatwg.org/multipage/scripting.html#prepare-the-script-element
 pub(crate) fn classic_script_mime(typ: Option<&str>) -> bool {
     let Some(typ) = typ.map(str::trim).filter(|typ| !typ.is_empty()) else {
         return true;
@@ -2736,9 +2317,7 @@ pub(crate) fn classic_script_mime(typ: Option<&str>) -> bool {
     essence == "text/html" || essence == "text/plain" || javascript_mime_essence(&essence)
 }
 
-/// Whether `typ` is exactly a JavaScript MIME type essence string, with no
-/// parameters and no surrounding whitespace
-/// (<https://html.spec.whatwg.org/multipage/scripting.html#javascript-mime-type-essence-match>).
+// https://html.spec.whatwg.org/multipage/scripting.html#javascript-mime-type-essence-match
 pub(crate) fn javascript_mime_essence(typ: &str) -> bool {
     // https://mimesniff.spec.whatwg.org/#javascript-mime-type
     [
@@ -2763,8 +2342,6 @@ pub(crate) fn javascript_mime_essence(typ: &str) -> bool {
     .any(|essence| typ.eq_ignore_ascii_case(essence))
 }
 
-/// Owns [`JsRealm::turn_deadline`] for one renderer turn. Nested enters keep
-/// the outer Instant; only the owner clears it.
 #[must_use]
 pub(crate) struct ScriptTurn {
     slot: Rc<Cell<Option<Instant>>>,
@@ -2806,8 +2383,6 @@ impl Drop for ClearInterrupt<'_> {
     }
 }
 
-/// Array `__tbSyncFetch` returns to the XHR shim: status, body, final URL,
-/// and the response header list.
 type SyncFetchList = rquickjs::prelude::List<(i32, Vec<u8>, String, Vec<Vec<String>>)>;
 
 struct SyncPageFetch {
@@ -2821,13 +2396,8 @@ struct SyncPageFetch {
     timeout: f64,
 }
 
-/// `__tbSyncFetch`: one page request that finishes before `send` returns.
-/// MIME host calls. One Rust parser serves serialization, multipart boundaries,
-/// and `blob().type`, so JS never keeps a second MIME grammar.
 fn install_mime_host_functions(ctx: &Ctx<'_>) -> Result<(), JsError> {
-    // Parse a MIME type and serialize it back; `XMLHttpRequest`'s
-    // `overrideMimeType` stores the result, `""` on failure
-    // (<https://mimesniff.spec.whatwg.org/#parse-a-mime-type>).
+    // https://mimesniff.spec.whatwg.org/#parse-a-mime-type
     bridge::object(ctx)?.set(
         "__tbParseMimeType",
         Func::from(|value: String| -> String { crate::sniff::parse_serialized_mime_type(&value) }),
@@ -2839,9 +2409,7 @@ fn install_mime_host_functions(ctx: &Ctx<'_>) -> Result<(), JsError> {
                 .map_or_else(Vec::new, |(essence, boundary)| vec![essence, boundary])
         }),
     )?;
-    // "extract a MIME type" over one combined `Content-Type` value, serialized,
-    // `""` on failure. The `blob()` methods and the XHR blob response read it
-    // (<https://fetch.spec.whatwg.org/#concept-header-extract-mime-type>).
+    // https://fetch.spec.whatwg.org/#concept-header-extract-mime-type
     bridge::object(ctx)?.set(
         "__tbExtractMimeType",
         Func::from(|value: String| -> String {
@@ -2851,8 +2419,6 @@ fn install_mime_host_functions(ctx: &Ctx<'_>) -> Result<(), JsError> {
     Ok(())
 }
 
-/// Header and method policy predicates. `net::cors` is the only table, so the
-/// preflight decision and the JS `Headers` guard cannot drift.
 fn install_header_policy_host_functions(ctx: &Ctx<'_>) -> Result<(), JsError> {
     bridge::object(ctx)?.set(
         "__tbIsForbiddenRequestHeader",
@@ -2920,10 +2486,8 @@ fn install_sync_fetch(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<(), J
                 let headers = header_pairs(headers)?;
                 let method = net::Method::parse(&method)
                     .map_err(|_| rquickjs::Error::new_from_js("method", "HTTP method"))?;
-                // `{ referrer, withCredentials }`, named like `__queueFetch`'s
-                // options
-                // (<https://fetch.spec.whatwg.org/#concept-request-referrer>,
-                // <https://xhr.spec.whatwg.org/#the-withcredentials-attribute>).
+                // https://fetch.spec.whatwg.org/#concept-request-referrer
+                // https://xhr.spec.whatwg.org/#the-withcredentials-attribute
                 let client_url = sync_world.borrow().referrer_url.clone();
                 let referrer = match options.get::<_, Option<String>>("referrer")? {
                     Some(value) => crate::protocol::ReferrerRequest::from_idl(&value, &client_url)
@@ -2967,18 +2531,11 @@ fn header_pairs(headers: Vec<Vec<String>>) -> rquickjs::Result<Vec<(String, Stri
         .collect()
 }
 
-/// One synchronous page request. `None` is a network error, which includes
-/// the carrier deadline: a synchronous request has no `timeout` attribute to
-/// report a timeout event for
-/// (<https://xhr.spec.whatwg.org/#the-timeout-attribute>). `data:` is
-/// decoded here, the same way an async dial short-circuits before the
-/// carrier.
+// https://xhr.spec.whatwg.org/#the-timeout-attribute
 fn sync_page_fetch(world: &World, request: SyncPageFetch) -> Option<SyncFetchList> {
     if request.url.starts_with("data:") {
         let (content_type, body) = crate::engine::decode_data_url_bounded(&request.url)?;
-        // The data: URL processor yields a MIME type for every URL, and the
-        // response header list carries it
-        // (<https://fetch.spec.whatwg.org/#data-url-processor>).
+        // https://fetch.spec.whatwg.org/#data-url-processor
         let headers = vec![vec!["content-type".to_owned(), content_type]];
         return Some(sync_fetch_value(200, body, request.url, headers));
     }
@@ -2991,8 +2548,7 @@ fn sync_page_fetch(world: &World, request: SyncPageFetch) -> Option<SyncFetchLis
     let mut dial = crate::protocol::DialRequest::new(
         crate::protocol::RequestPolicy::Fetch(crate::protocol::CorsRequest {
             mode: crate::protocol::CorsMode::Cors,
-            // `withCredentials` selects `include`, else `same-origin`
-            // (<https://xhr.spec.whatwg.org/#the-withcredentials-attribute>).
+            // https://xhr.spec.whatwg.org/#the-withcredentials-attribute
             credentials: if request.with_credentials {
                 net::cors::CredentialsMode::Include
             } else {
@@ -3011,16 +2567,11 @@ fn sync_page_fetch(world: &World, request: SyncPageFetch) -> Option<SyncFetchLis
     dial.referrer = request.referrer;
     dial.timeout_ms = u64::from(millis(request.timeout));
     dial.referrer_policy = world.policy.referrer_policy.unwrap_or_default();
-    // Synchronous XHR owns the renderer thread until the response arrives;
-    // the blocking seam is the one service implementations provide for it.
     let outcome = world.runtime.services.dial_sync(dial);
     match outcome {
-        // The header list stays as served; nothing is sniffed into it
-        // (<https://fetch.spec.whatwg.org/#concept-response-header-list>).
+        // https://fetch.spec.whatwg.org/#concept-response-header-list
         Ok(outcome) => {
-            // Page script reads the filtered view: an opaque response's URL
-            // list is empty
-            // (<https://fetch.spec.whatwg.org/#concept-filtered-response-opaque>).
+            // https://fetch.spec.whatwg.org/#concept-filtered-response-opaque
             let url = if outcome.response_type.is_opaque() {
                 String::new()
             } else {
@@ -3044,7 +2595,6 @@ fn sync_page_fetch(world: &World, request: SyncPageFetch) -> Option<SyncFetchLis
     }
 }
 
-/// One synchronous fetch result as the array `__tbSyncFetch` returns.
 fn sync_fetch_value(
     status: i32,
     body: Vec<u8>,
@@ -3054,14 +2604,8 @@ fn sync_fetch_value(
     rquickjs::prelude::List((status, body, url, headers))
 }
 
-/// The violations compiling `source` produces against the document's policies,
-/// with the calling script's location captured while the compile call is on
-/// the stack and the `securitypolicyviolation` events fired
-/// (<https://w3c.github.io/webappsec-csp/#can-compile-strings>,
-/// <https://w3c.github.io/webappsec-csp/#create-violation-for-global>).
-///
-/// Shared by the engine's string-compilation hook and the `setTimeout(string)`
-/// host surface.
+// https://w3c.github.io/webappsec-csp/#can-compile-strings
+// https://w3c.github.io/webappsec-csp/#create-violation-for-global
 fn csp_eval_violations(
     ctx: &Ctx<'_>,
     world: &Rc<RefCell<World>>,
@@ -3102,8 +2646,6 @@ fn csp_eval_violations(
     Ok(violations)
 }
 
-/// The message the engine ends a refused string compilation with, naming the
-/// directive that blocked it rather than a fixed policy.
 fn eval_denied_message(violations: &[crate::csp::Violation]) -> String {
     let directive = violations
         .iter()
@@ -3117,13 +2659,7 @@ fn eval_denied_message(violations: &[crate::csp::Violation]) -> String {
     )
 }
 
-/// Raises the `EvalError` the engine propagates instead of compiling a refused
-/// string (<https://tc39.es/ecma262/#sec-eval-x>).
-///
-/// The constructor is the pristine one captured at install: a page that
-/// replaces the `EvalError` global must neither run code inside the bindings
-/// nor substitute another thrown value. With no captured constructor (outside
-/// a realm), fall back to an internal error carrying the same message.
+// https://tc39.es/ecma262/#sec-eval-x
 fn throw_eval_error(ctx: &Ctx<'_>, message: &str) -> rquickjs::Error {
     let constructor = bindings::try_world(ctx)
         .and_then(|world| world.borrow().pristine_eval_error.clone())
@@ -3137,17 +2673,7 @@ fn throw_eval_error(ctx: &Ctx<'_>, message: &str) -> rquickjs::Error {
     }
 }
 
-/// The executing script's URL, line, and column: the innermost script frame of
-/// the interpreter's stack. Subresource triggers (an element insertion, a `src`
-/// set) capture this so a later CSP violation for the load can report
-/// `sourceFile`, `lineNumber`, and `columnNumber`
-/// (<https://w3c.github.io/webappsec-csp/#create-violation-for-global>).
-///
-/// The frame is read from the interpreter directly, so a page that rewrites
-/// `Error.stackTraceLimit` or `Error.prepareStackTrace` cannot spoof it, no
-/// page code runs during the capture, and nothing is allocated for a stack
-/// string. Frames of the engine's own bundle are skipped, as are frames that
-/// name no script; `None` means no page script is running (a parser insertion).
+// https://w3c.github.io/webappsec-csp/#create-violation-for-global
 pub(crate) fn error_stack_top(ctx: &Ctx<'_>) -> Option<(String, u32, u32)> {
     let mut level = 0;
     loop {
@@ -3178,8 +2704,6 @@ fn eval_classic<'js, V: FromJs<'js>>(ctx: &rquickjs::Ctx<'js>, source: &str) -> 
         })
 }
 
-/// A caught exception's message and stack, the diagnostic a host script's
-/// failure or a compile error reports.
 fn exception_text(caught: Value<'_>) -> Option<String> {
     let exception = caught.into_exception()?;
     Some(format!(
@@ -3189,8 +2713,6 @@ fn exception_text(caught: Value<'_>) -> Option<String> {
     ))
 }
 
-/// Converts a host script's engine error, keeping the thrown value's message
-/// instead of `rquickjs`'s generic `Exception generated by QuickJS`.
 fn caught_error(ctx: &rquickjs::Ctx<'_>, error: rquickjs::Error) -> JsError {
     if !error.is_exception() {
         return JsError::from(error);
@@ -3200,12 +2722,7 @@ fn caught_error(ctx: &rquickjs::Ctx<'_>, error: rquickjs::Error) -> JsError {
     )
 }
 
-/// Reports one uncaught exception to the realm's window: the `error` event and
-/// `window.onerror`. `base_line` is the 1-based document line the script's
-/// first source line occupies (0 when unknown), so the inline stack's
-/// script-relative line can be translated into a document line.
-///
-/// <https://html.spec.whatwg.org/multipage/webappapis.html#report-the-error>
+// https://html.spec.whatwg.org/multipage/webappapis.html#report-the-error
 fn report_script_error(
     ctx: &rquickjs::Ctx<'_>,
     error: &rquickjs::Error,
@@ -3223,20 +2740,6 @@ fn report_script_error(
     bindings::report_exception_value(ctx, caught, base_line, filename);
 }
 
-/// Whether a caught value is the exception a classic-script parse failure
-/// raised.
-///
-/// ECMAScript checks a script's early errors before running any of its
-/// statements, so a parse failure executes no JavaScript. `QuickJS` builds the
-/// parser's `SyntaxError` in `js_parse_error`, which calls `build_backtrace`
-/// with only the source location and no running frame: the whole `stack` is
-/// one `    at <file>:<line>:<col>` line. An exception thrown at runtime,
-/// including one from the script's first statement, always carries the
-/// evaluated script's frame, written `    at <name> (<file>:<line>:<col>)`.
-///
-/// This is the shape the embedding API exposes: rquickjs has no compile-only
-/// eval, and probing with the `Function` constructor would change the grammar
-/// (a function body accepts `return`) and add a CSP `unsafe-eval` surface.
 fn is_script_parse_error(caught: &Value<'_>) -> bool {
     let Some(object) = caught.as_object() else {
         return false;
@@ -3326,10 +2829,7 @@ fn render_eval_result<'js>(ctx: &rquickjs::Ctx<'js>, value: Value<'js>) -> Resul
     Ok(Coerced::<String>::from_js(ctx, value)?.0)
 }
 
-/// The typed write `cookies.js` hands `__tbCookieStoreSet`: the API's
-/// algorithm already validated and defaulted every field, so this only checks
-/// the shape at the boundary
-/// (<https://cookiestore.spec.whatwg.org/#set-a-cookie>).
+// https://cookiestore.spec.whatwg.org/#set-a-cookie
 fn cookie_store_write(options: &Object<'_>) -> rquickjs::Result<net::ScriptCookieWrite> {
     let same_site = match options.get::<_, String>("sameSite")?.as_str() {
         "strict" => net::CookieSameSite::Strict,
@@ -3354,21 +2854,13 @@ fn cookie_store_write(options: &Object<'_>) -> rquickjs::Result<net::ScriptCooki
     })
 }
 
-/// The URL a `CookieStore` operation uses as its resource. It is the
-/// document's creation URL, which a `pushState` does not move
-/// (<https://cookiestore.spec.whatwg.org/#dom-cookiestore-get>). A document
-/// that inherits its origin (an initial `about:blank` or `about:srcdoc`) has
-/// no URL of its own that cookies apply to, so it uses its creator's cookie
-/// URL, captured when the document was installed
-/// (<https://html.spec.whatwg.org/multipage/dom.html#dom-document-cookie>).
+// https://cookiestore.spec.whatwg.org/#dom-cookiestore-get
+// https://html.spec.whatwg.org/multipage/dom.html#dom-document-cookie
 fn cookie_store_url(world: &World) -> Url {
     world.cookie_url()
 }
 
-/// Whether `document` is cookie-averse: it has no browsing context, or its URL
-/// is not an HTTP(S) URL. Such a document answers `""` for `cookie` and ignores
-/// writes
-/// (<https://html.spec.whatwg.org/multipage/dom.html#cookie-averse-document-object>).
+// https://html.spec.whatwg.org/multipage/dom.html#cookie-averse-document-object
 fn cookie_averse<'js>(ctx: Ctx<'js>, document: Value<'js>) -> bool {
     let Some(id) = bindings::host_node_id(&ctx, &document) else {
         return true;
@@ -3377,9 +2869,6 @@ fn cookie_averse<'js>(ctx: Ctx<'js>, document: Value<'js>) -> bool {
         return true;
     };
     let world = world.borrow();
-    // Only a world's own document has a browsing context; every script-created
-    // document (`createHTMLDocument`, `DOMParser`, `createDocument`) is
-    // cookie-averse.
     if !world.is_main_document(id) {
         return true;
     }

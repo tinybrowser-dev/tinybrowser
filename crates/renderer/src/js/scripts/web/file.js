@@ -14,10 +14,7 @@ globalThis.ProgressEvent = class ProgressEvent extends Event {
   get total() { return __tbBrand(this, __tbProgressData).total; }
 };
 Object.defineProperty(globalThis.ProgressEvent.prototype, Symbol.toStringTag, { value: 'ProgressEvent', writable: false, enumerable: false, configurable: true });
-// Web IDL sequence conversion for blob parts: the sequence must be an object,
-// elements convert left to right, and platform objects with indexed
-// properties convert through `length` and the index getters
-// (<https://webidl.spec.whatwg.org/#es-sequence>).
+// https://webidl.spec.whatwg.org/#es-sequence
 const __tbConvertBlobParts = blobParts => {
   const parts = blobParts === undefined ? [] : blobParts;
   if (parts === null || (typeof parts !== 'object' && typeof parts !== 'function')) {
@@ -55,9 +52,7 @@ const __tbConvertBlobParts = blobParts => {
   }
   return converted;
 };
-// Dictionary members evaluate in lexicographic order, so each member gets a
-// helper the constructors call in IDL order
-// (<https://webidl.spec.whatwg.org/#es-dictionary>).
+// https://webidl.spec.whatwg.org/#es-dictionary
 const __tbEndings = value => {
   if (value === undefined) return 'transparent';
   value = String(value);
@@ -166,25 +161,19 @@ globalThis.Blob = class Blob {
   }
 };
 Object.defineProperty(globalThis.Blob.prototype, Symbol.toStringTag, { value: 'Blob', writable: false, enumerable: false, configurable: true });
-// A Blob whose type is set directly, without the constructor's ASCII filter
-// and lowercase: `body.blob()` stores the MIME type extracted from the
-// header list (<https://fetch.spec.whatwg.org/#dom-body-blob>). Captured at
-// realm init so a page replacing `Blob` cannot reroute it.
+// https://fetch.spec.whatwg.org/#dom-body-blob
 const __tbBlobPrototype = globalThis.Blob.prototype;
 const __tbMakeBlob = (bytes, type) => {
   const blob = Object.create(__tbBlobPrototype);
   __tbBlobData.set(blob, { bytes, type });
   return blob;
 };
-// Web IDL constructor objects: `length` is the number of required arguments
-// (<https://webidl.spec.whatwg.org/#es-interface>).
+// https://webidl.spec.whatwg.org/#es-interface
 Object.defineProperty(globalThis.Blob, 'length', { value: 0, writable: false, enumerable: false, configurable: true });
 // https://w3c.github.io/FileAPI/#file-section
 globalThis.File = class File extends Blob {
   constructor(fileBits, fileName, options) {
     if (arguments.length < 2) throw new TypeError('The File constructor requires 2 arguments');
-    // fileBits converts before the options dictionary, and FilePropertyBag
-    // members evaluate in lexicographic order: endings, lastModified, type.
     const converted = __tbConvertBlobParts(fileBits);
     const name = String(fileName);
     let endings = 'transparent';
@@ -196,8 +185,7 @@ globalThis.File = class File extends Blob {
       }
       endings = __tbEndings(options.endings);
       if (options.lastModified !== undefined) {
-        // A long long: ToInt64 maps NaN and infinities to 0
-        // (<https://webidl.spec.whatwg.org/#abstract-opdef-converttoint>).
+        // https://webidl.spec.whatwg.org/#abstract-opdef-converttoint
         lastModified = Number(options.lastModified);
         lastModified = Number.isFinite(lastModified) ? Math.trunc(lastModified) : 0;
       }
@@ -226,16 +214,13 @@ globalThis.FileList = class FileList {
   }
 };
 Object.defineProperty(globalThis.FileList.prototype, Symbol.toStringTag, { value: 'FileList', writable: false, enumerable: false, configurable: true });
-// The prototype is captured once: structured deserialization still builds a
-// FileList after a page deletes the global interface
-// (<https://html.spec.whatwg.org/multipage/structured-data.html#structureddeserialize>).
+// https://html.spec.whatwg.org/multipage/structured-data.html#structureddeserialize
 const __tbFileListPrototype = globalThis.FileList.prototype;
 host.__tbCreateFileList = files => {
   const list = __tbObjectCreate(__tbFileListPrototype);
   const items = __tbArray.map(files, file => file);
   __tbFileListData.set(list, { files: items });
-  // The indexed getter (<https://webidl.spec.whatwg.org/#dfn-indexed-property-getter>):
-  // a FileList is fixed-size, so each index is an own property.
+  // https://webidl.spec.whatwg.org/#dfn-indexed-property-getter
   for (let index = 0; index < items.length; index++) {
     __tbDefineProperty(list, index, {
       __proto__: null,
@@ -261,8 +246,7 @@ globalThis.FileReader = class FileReader extends EventTarget {
     data.result = null;
     const generation = ++data.generation;
     this.dispatchEvent(new ProgressEvent('abort'));
-    // A read started by the abort handler suppresses the old loadend
-    // (<https://w3c.github.io/FileAPI/#fileReaderAbort>).
+    // https://w3c.github.io/FileAPI/#fileReaderAbort
     if (data.generation === generation) {
       this.dispatchEvent(new ProgressEvent('loadend'));
     }
@@ -308,9 +292,7 @@ const __tbFileReaderRead = (reader, blob, kind, argument) => {
     lengthComputable, loaded, total,
   }));
   const stale = () => data.generation !== generation;
-  // Every event runs in its own task, so awaiting tests observe the order the
-  // spec queues and abort() can land between steps
-  // (<https://w3c.github.io/FileAPI/#readOperation>).
+  // https://w3c.github.io/FileAPI/#readOperation
   host.setTimeout(function() {
     if (stale()) return;
     fire('loadstart', 0, true);
@@ -323,8 +305,7 @@ const __tbFileReaderRead = (reader, blob, kind, argument) => {
         let error = null;
         try {
           if (kind === 'text') {
-            // Encoding: explicit argument, else the blob type's charset, else
-            // UTF-8; a BOM overrides (<https://w3c.github.io/FileAPI/#readAsDataText>).
+            // https://w3c.github.io/FileAPI/#readAsDataText
             let encoding;
             if (argument !== undefined) {
               const label = __tbEncoding(__tbIDLString(argument));
@@ -370,14 +351,9 @@ const __tbFileReaderRead = (reader, blob, kind, argument) => {
 };
 Object.defineProperty(globalThis.FileReader.prototype, Symbol.toStringTag, { value: 'FileReader', writable: false, enumerable: false, configurable: true });
 // https://w3c.github.io/FileAPI/#dfn-createObjectURL
-// WebIDL USVString conversion: unpaired surrogates become U+FFFD
-// (<https://webidl.spec.whatwg.org/#idl-USVString>). Values that cross into
-// Rust have to be valid UTF-8, and a URL parser sees replacement characters
-// anyway.
+// https://webidl.spec.whatwg.org/#idl-USVString
 
-// `DataTransfer` only as far as tests need it: `items.add(file)` collects
-// files and `files` exposes them as a FileList
-// (<https://html.spec.whatwg.org/multipage/dnd.html#datatransfer>).
+// https://html.spec.whatwg.org/multipage/dnd.html#datatransfer
 const __tbDataTransferFiles = host.slots('tb-data-transfer-files');
 const __tbDataTransferItems = host.slots('tb-data-transfer-items');
 const __tbDataTransferFileList = host.slots('tb-data-transfer-file-list');
@@ -400,8 +376,7 @@ globalThis.DataTransfer = class DataTransfer {
     return items;
   }
   get files() {
-    // `files` is a `[SameObject]` FileList over the DataTransfer's items
-    // (<https://html.spec.whatwg.org/multipage/dnd.html#dom-datatransfer-files>).
+    // https://html.spec.whatwg.org/multipage/dnd.html#dom-datatransfer-files
     if (__tbDataTransferFileList.get(this) === undefined) {
       __tbDataTransferFileList.set(this, host.__tbCreateFileList(__tbDataTransferFiles.get(this)));
     }
@@ -413,11 +388,7 @@ Object.defineProperty(globalThis.DataTransfer.prototype, Symbol.toStringTag, {
   value: 'DataTransfer', writable: false, enumerable: false, configurable: true,
 });
 
-// A `type=file` input with no files still contributes an entry, an empty File
-// (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#constructing-form-data-set>).
-// The empty file a form entry list appends for a file input with no selected
-// files: empty name, `application/octet-stream` type, empty body
-// (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#constructing-form-data-set>).
+// https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#constructing-form-data-set
 host.__tbEmptyFile = () => new globalThis.File([], '', { type: 'application/octet-stream' });
 
 // https://html.spec.whatwg.org/multipage/imagebitmap-and-animations.html#dom-createimagebitmap

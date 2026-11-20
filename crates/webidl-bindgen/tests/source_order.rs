@@ -1,9 +1,5 @@
 use webidl_bindgen::{Source, compile_contracts, compile_javascript};
 
-/// Two files declare the same interface: the base in one, a partial in the
-/// other. Compiling the same corpus in either order must produce identical
-/// bytes, because partial members merge in encounter order and that order
-/// otherwise leaks into the generated member tables.
 #[test]
 fn source_order_does_not_change_the_generated_output() {
     let base = Source {

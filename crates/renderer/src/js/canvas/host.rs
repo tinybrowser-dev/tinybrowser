@@ -1,14 +1,5 @@
-//! The bitmap surface shared by `HTMLCanvasElement` and `OffscreenCanvas`.
-//!
-//! Both platform objects draw into one registry slot keyed by [`CanvasId`].
-//! Only dimensions are host-specific: a `<canvas>` reads its content
-//! attributes, while an `OffscreenCanvas` stores them on its bitmap. The
-//! context, snapshot, origin-clean flag, and open layers are all state of the
-//! bitmap, so both hosts answer those through the same registry calls.
-//!
-//! Spec:
-//! <https://html.spec.whatwg.org/multipage/canvas.html#the-canvas-element>,
-//! <https://html.spec.whatwg.org/multipage/canvas.html#the-offscreencanvas-interface>
+// https://html.spec.whatwg.org/multipage/canvas.html#the-canvas-element
+// https://html.spec.whatwg.org/multipage/canvas.html#the-offscreencanvas-interface
 
 use rquickjs::{Ctx, Value};
 
@@ -17,40 +8,28 @@ use crate::js::bindings::{host_node_id, world};
 
 use super::SourceImage;
 
-/// An opaque bitmap id. It names the pixels, not a DOM node, so an
-/// `OffscreenCanvas` needs no element and a stale id can never reach a later
-/// canvas.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct CanvasId(pub(crate) u64);
 
-/// The operations every canvas surface answers the same way.
 pub(crate) trait CanvasHost {
-    /// The bitmap this host draws into, or `None` before a context exists.
     fn canvas_id(&self, ctx: &Ctx<'_>) -> Option<CanvasId>;
 
-    /// The bitmap's current dimensions.
     fn dimensions(&self, ctx: &Ctx<'_>) -> (u32, u32);
 
-    /// A straight-RGBA copy of the bitmap, or `None` before a context exists.
     fn snapshot(&self, ctx: &Ctx<'_>) -> Option<SourceImage>;
 
-    /// The origin-clean flag, or `None` before a context exists.
     fn origin_clean(&self, ctx: &Ctx<'_>) -> Option<bool>;
 
-    /// Whether a `beginLayer()` is still open.
     fn has_open_layer(&self, ctx: &Ctx<'_>) -> bool;
 }
 
-/// A `<canvas>` element, whose dimensions reflect its content attributes
-/// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-canvas-width>).
+// https://html.spec.whatwg.org/multipage/canvas.html#dom-canvas-width
 #[derive(Clone, Copy)]
 pub(crate) struct ElementCanvas {
     pub(crate) node: NodeId,
 }
 
 impl ElementCanvas {
-    /// Resolve a JS value that is a `<canvas>` this realm created. Another
-    /// frame's element is not a source: its bitmap belongs to that frame.
     pub(crate) fn resolve<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Option<Self> {
         let node = host_node_id(ctx, value)?;
         let world = world(ctx).ok()?;
@@ -111,8 +90,7 @@ impl CanvasHost for ElementCanvas {
     }
 }
 
-/// An `OffscreenCanvas`, whose dimensions live on its bitmap
-/// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-offscreencanvas-width>).
+// https://html.spec.whatwg.org/multipage/canvas.html#dom-offscreencanvas-width
 #[derive(Clone, Copy)]
 pub(crate) struct OffscreenCanvasHost {
     pub(crate) id: CanvasId,

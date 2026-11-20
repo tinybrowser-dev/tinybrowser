@@ -1,8 +1,3 @@
-//! Selecting test262 files from a checkout.
-//!
-//! The suite is read-only. Nothing here writes under the checkout: strict
-//! variants are a prefix added while evaluating, not generated files.
-
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -10,15 +5,6 @@ use std::path::{Path, PathBuf};
 use crate::meta;
 use crate::runner::TestCase;
 
-/// Reads every selected file below `root`.
-///
-/// `filters` match a path relative to the test262 root (`test/...` or
-/// `harness/...`) after a leading slash is removed. An empty list selects all.
-///
-/// # Errors
-///
-/// The suite root, one of its directories, or one selected file cannot be
-/// read.
 pub fn select(root: &Path, filters: &[String]) -> io::Result<Vec<TestCase>> {
     let mut files = Vec::new();
     for directory in ["test", "harness"] {
@@ -35,8 +21,6 @@ pub fn select(root: &Path, filters: &[String]) -> io::Result<Vec<TestCase>> {
         }
         let source = fs::read_to_string(root.join(&relative))?;
         let meta = meta::parse(&source);
-        // WPT runs one variant per file: strict only for `onlyStrict`, sloppy
-        // for everything else (noStrict is already the default).
         let strict = meta.is_only_strict();
         cases.push(TestCase {
             relative,
@@ -48,7 +32,6 @@ pub fn select(root: &Path, filters: &[String]) -> io::Result<Vec<TestCase>> {
     Ok(cases)
 }
 
-/// Appends every non-fixture `.js` below `directory`, relative to its parent.
 fn collect(directory: &Path, files: &mut Vec<String>) -> io::Result<()> {
     let base = directory
         .parent()
@@ -84,7 +67,6 @@ fn collect_below(base: &Path, directory: &Path, files: &mut Vec<String>) -> io::
     Ok(())
 }
 
-/// The default checkout location, relative to the repository root.
 #[must_use]
 pub fn default_root() -> PathBuf {
     PathBuf::from("third_party/wpt/third_party/test262")

@@ -23,29 +23,19 @@ const __tbMessageEventConstructor = globalThis.MessageEvent = class MessageEvent
   get ports() { return __tbEventEntry(this, __tbMessageEventData, __tbFreshMessageEvent).ports; }
 };
 Object.defineProperty(globalThis.MessageEvent.prototype, Symbol.toStringTag, { value: 'MessageEvent', writable: false, enumerable: false, configurable: true });
-// ── cross-realm structured serialization ───────────────────────────────
-// Values cannot cross realms, so the sender's realm encodes a message into a
-// versioned payload string and the receiver's realm decodes it
-// (<https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal>).
-// Rust carries payloads between frames, owns the frame tree, and owns the
-// channel endpoints, so a port survives being transferred to another realm.
+// https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal
 const __tbPayloadVersion = 'tb1:';
 const __tbPlatform = host.slots('tinybrowser.platform');
 const __tbWindowData = host.slots('tinybrowser.window.data');
 const __tbPortData = host.slots('tinybrowser.messageport.data');
 const __tbFrameId = host.__tb_frameId;
 __tbWindowData.set(globalThis, { frame: __tbFrameId });
-// Whether a value is a `Window` object in this realm: the global itself, or a
-// `WindowProxy` this realm made for another frame
-// (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#window>).
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#window
 const __tbIsWindow = value =>
   value === globalThis ||
   (value !== null && typeof value === 'object' && __tbWindowData.get(value) !== undefined);
 const __tbFrameProxies = Object.create(null);
-// Writes made through a proxy whose target realm does not exist yet: a
-// browsing context registered inside a script gets its realm at the next
-// non-JS turn, and the engine then flushes these through
-// `__tbFlushFrameSets` (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-set>).
+// https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-set
 const __tbFramePendingSets = Object.create(null);
 const __tbFramePending = frame => {
   let pending = __tbFramePendingSets[frame];
@@ -55,18 +45,10 @@ const __tbFramePending = frame => {
   }
   return pending;
 };
-// `addEventListener` and friends called on a `WindowProxy` whose target realm
-// has not started: a child navigable's realm begins at the next turn, but a
-// listener added to it in this task must still reach that window, so the calls
-// replay when the realm starts
-// (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-get>,
-// <https://dom.spec.whatwg.org/#interface-eventtarget>).
+// https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-get
+// https://dom.spec.whatwg.org/#interface-eventtarget
 const __tbFramePendingCalls = Object.create(null);
-// `Origin.from(MessageEvent)` extracts the sender's origin, which only an
-// event the user agent dispatched carries; a constructed event has no source
-// and therefore no real origin
-// (<https://html.spec.whatwg.org/multipage/browsers.html#the-origin-interface>).
-// `undefined` means the value is not a `MessageEvent`.
+// https://html.spec.whatwg.org/multipage/browsers.html#the-origin-interface
 host.__tbOriginOfMessageEvent = event => {
   const entry = __tbMessageEventData.get(event);
   if (entry === undefined) return undefined;
@@ -74,38 +56,24 @@ host.__tbOriginOfMessageEvent = event => {
   return entry.origin;
 };
 
-// `Origin.from(WindowProxy)` extracts the proxy's origin only when it is
-// same-origin: a `WindowProxy` is not a platform object in the caller's realm,
-// so a cross-origin one has no reachable extract-an-origin operation
-// (<https://html.spec.whatwg.org/multipage/browsers.html#the-origin-interface>).
-// `undefined` means the value is not a `WindowProxy`.
+// https://html.spec.whatwg.org/multipage/browsers.html#the-origin-interface
 host.__tbWindowProxyAccess = value => {
   if (value === null || (typeof value !== 'object' && typeof value !== 'function')) {
     return undefined;
   }
-  // The global object of this realm is not a proxy; `Origin.from(globalThis)`
-  // reads its own origin
-  // (<https://html.spec.whatwg.org/multipage/browsers.html#the-origin-interface>).
+  // https://html.spec.whatwg.org/multipage/browsers.html#the-origin-interface
   if (value === globalThis) return undefined;
   const entry = __tbWindowData.get(value);
   if (entry === undefined) return undefined;
   return host.__tbFrameSameOrigin(entry.frame) ? 'same' : 'cross';
 };
 
-// The members a same-origin frame whose realm has not started presents from the
-// inserting realm. Only callable interfaces (constructors and functions with a
-// prototype) and the intrinsic namespace objects qualify: everything else a
-// window exposes is target state (`history`, `navigator`, `localStorage`,
-// `customElements`, `frameElement`, …), and borrowing the caller's copy would
-// answer for the wrong window
-// (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-get>).
+// https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-get
 const __tbFrameForwardedNamespaces = {
   __proto__: null,
   Math: true, JSON: true, Reflect: true, Atomics: true, Intl: true,
   console: true,
 };
-// The ECMAScript intrinsics have no `Symbol.toStringTag` on their prototypes,
-// so they need naming; every Web IDL interface this engine installs sets one.
 const __tbFrameIntrinsics = {
   __proto__: null,
   Object: true, Function: true, Array: true, String: true, Number: true,
@@ -119,12 +87,7 @@ const __tbFrameIntrinsics = {
   Uint16Array: true, Int32Array: true, Uint32Array: true, Float32Array: true,
   Float64Array: true, BigInt64Array: true, BigUint64Array: true,
 };
-// A pending same-origin child has not started a realm, but an initial
-// `about:blank` already inherits its creator's cookie URL, so the creator's
-// `CookieStore` reads and writes exactly the cookies the child would. A page
-// that reads `contentWindow.cookieStore` in the task that inserted the iframe
-// gets a working store instead of `undefined`
-// (<https://cookiestore.spec.whatwg.org/#cookie-store>).
+// https://cookiestore.spec.whatwg.org/#cookie-store
 const __tbFrameForwardedState = {
   __proto__: null,
   cookieStore: true,
@@ -144,16 +107,10 @@ const __tbFrameForwarded = (property, value) => {
         __tbFrameForwardedState[property] === true;
   }
   if (__tbFrameIntrinsics[property] === true) return true;
-  // An interface's prototype carries its `Symbol.toStringTag`; a function the
-  // page declared does not, and the target window (whose realm has not run
-  // any script) would not expose it
-  // (<https://webidl.spec.whatwg.org/#es-interfaces>).
+  // https://webidl.spec.whatwg.org/#es-interfaces
   return value.prototype[__tbSymbolToStringTag] !== undefined;
 };
-// A same-origin child whose realm has not started gets its own `Navigator`
-// instance, so per-document state such as the beacon keepalive quota belongs to
-// the child rather than to the inserting document
-// (<https://html.spec.whatwg.org/multipage/system-state.html#the-navigator-object>).
+// https://html.spec.whatwg.org/multipage/system-state.html#the-navigator-object
 const __tbNavigatorBrand = host.slots('webidl.Navigator');
 const __tbFrameNavigators = new __tbPrivateMap();
 const __tbSymbolToStringTag = Symbol.toStringTag;
@@ -170,17 +127,11 @@ host.__tbFlushFrameSets = function(frame) {
   const calls = __tbFramePendingCalls[frame];
   if (pending === undefined && calls === undefined) return false;
   const target = host.__tbFrameGlobal(frame);
-  // A frame whose realm is not up yet keeps its writes: the document that
-  // starts next, not the initial about:blank a navigation replaces, is the one
-  // they belong to
-  // (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-set>).
+  // https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-set
   if (target == null) return false;
   delete __tbFramePendingCalls[frame];
   for (const key of pending === undefined ? [] : Reflect.ownKeys(pending)) {
     if (key === '__proto__' || typeof key === 'symbol') {
-      // `CreateDataProperty`: a `__proto__` write must not walk the prototype
-      // setter, and symbol keys need `defineProperty` to become own data
-      // properties.
       Object.defineProperty(target, key, {
         value: pending[key], writable: true, enumerable: true, configurable: true,
       });
@@ -203,8 +154,6 @@ const __tbBase64Bytes = text => {
   for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
   return bytes;
 };
-// Cross-realm brand probes: an intrinsic from this realm accepts an object
-// from any realm, and throws when the internal slot is missing.
 const __tbProbe = (read, value) => {
   try { read(value); return true; } catch (error) { return false; }
 };
@@ -221,17 +170,11 @@ const __tbIsBoxedNumber = value => __tbProbe(candidate => Number.prototype.value
 const __tbIsBoxedString = value => __tbProbe(candidate => String.prototype.valueOf.call(candidate), value);
 const __tbIsBoxedBigInt = value => typeof BigInt === 'function'
   && __tbProbe(candidate => BigInt.prototype.valueOf.call(candidate), value);
-// `ImageData` is serializable but has no brand slot; its `width` accessor is
-// an internal-slot check that works across realms
-// (<https://html.spec.whatwg.org/multipage/structured-data.html#serializable-objects>).
+// https://html.spec.whatwg.org/multipage/structured-data.html#serializable-objects
 const __tbImageDataPrototype = typeof globalThis.ImageData === 'function'
   ? globalThis.ImageData.prototype
   : null;
-// A prototype-chain check, not a member probe: the `width`/`data` accessors
-// do not validate their receiver, so probing one would also match an
-// `ImageBitmap` or a plain object. A subclass still matches, and deserializes
-// as its closest serializable superclass
-// (<https://html.spec.whatwg.org/multipage/structured-data.html#structureddeserialize>).
+// https://html.spec.whatwg.org/multipage/structured-data.html#structureddeserialize
 const __tbHasPrototype = (value, prototype) => {
   if (value === null || (typeof value !== 'object' && typeof value !== 'function')) {
     return false;
@@ -246,13 +189,10 @@ const __tbIsImageData = value => __tbImageDataPrototype !== null
 const __tbImageBitmapPrototype = typeof globalThis.ImageBitmap === 'function'
   ? globalThis.ImageBitmap.prototype
   : null;
-// Every `ImageBitmap` carries the registry id the Rust canvas layer assigned.
 const __tbIsImageBitmap = value => __tbImageBitmapPrototype !== null
   && __tbHasPrototype(value, __tbImageBitmapPrototype)
   && typeof value.__tbBitmap === 'number';
-// Interface constructors the decoder instantiates are captured here, so a
-// page that deletes or replaces a global cannot change what a clone becomes
-// (<https://html.spec.whatwg.org/multipage/structured-data.html#structureddeserialize>).
+// https://html.spec.whatwg.org/multipage/structured-data.html#structureddeserialize
 const __tbCloneIntrinsic = name =>
   typeof globalThis[name] === 'function' ? globalThis[name] : undefined;
 const __tbBlobCtor = __tbCloneIntrinsic('Blob');
@@ -279,21 +219,14 @@ for (const name of [
 ]) {
   if (typeof globalThis[name] === 'function') __tbErrorCtors[name] = globalThis[name];
 }
-// An array index is a canonical non-negative integer string below 2^32-1.
 const __tbIsArrayIndex = key => {
   const number = Number(key);
   return Number.isInteger(number) && number >= 0 && number < 4294967295
     && String(number) === key;
 };
-// A real error (from any realm) answers `[object Error]` through its internal
-// slot; a plain object can only do so by defining `Symbol.toStringTag`, which
-// real errors never do
-// (<https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal>).
+// https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal
 const __tbIsError = value => Object.prototype.toString.call(value) === '[object Error]'
   && value[Symbol.toStringTag] === undefined;
-// Types with internal slots the serializer cannot reproduce. Weak maps and
-// sets answer their own brand probes; promises and weak refs expose a tag and
-// have no non-destructive brand probe.
 const __tbIsWeakMap = value => __tbProbe(candidate => WeakMap.prototype.has.call(candidate, candidate), value);
 const __tbIsWeakSet = value => __tbProbe(candidate => WeakSet.prototype.has.call(candidate, candidate), value);
 const __tbIsPromise = value => typeof Promise === 'function' && Object.prototype.toString.call(value) === '[object Promise]';
@@ -301,7 +234,6 @@ const __tbIsWeakRef = value => typeof WeakRef === 'function' && Object.prototype
 const __tbHasInternalSlots = value => __tbIsPromise(value) || __tbIsWeakMap(value)
   || __tbIsWeakSet(value) || __tbIsWeakRef(value);
 
-// `[[NumberData]]` specials have no JSON spelling.
 const __tbNumberWire = value => {
   if (value !== value) return 'NaN';
   if (value === Infinity) return 'Infinity';
@@ -322,10 +254,7 @@ const __tbTransferList = transfer => {
     throw new TypeError('The transfer list must be an iterable object');
   }
   const items = Array.from(transfer);
-  // Every element converts to the WebIDL `object` type: `null` and
-  // `undefined` have no object conversion and throw a TypeError, before any
-  // de/re-serialization or transfer side effect
-  // (<https://webidl.spec.whatwg.org/#es-object>).
+  // https://webidl.spec.whatwg.org/#es-object
   for (const item of items) {
     if (item === null || (typeof item !== 'object' && typeof item !== 'function')) {
       throw new TypeError('The transfer list must contain only objects');
@@ -334,13 +263,7 @@ const __tbTransferList = transfer => {
   return items;
 };
 
-// `postMessage(message, sequence<object> transfer)` and
-// `postMessage(message, optional StructuredSerializeOptions options = {})`
-// are overloads on `Worker`, `DedicatedWorkerGlobalScope`, and `MessagePort`.
-// WebIDL picks the sequence only for an object with an `@@iterator` method;
-// `null`, `undefined`, a primitive, and a non-iterable object all pick the
-// dictionary, whose `transfer` member is the transfer list
-// (<https://webidl.spec.whatwg.org/#dfn-overload-resolution-algorithm>).
+// https://webidl.spec.whatwg.org/#dfn-overload-resolution-algorithm
 const __tbPostMessageTransfer = transfer => {
   if (transfer !== null && typeof transfer === 'object'
       && typeof transfer[Symbol.iterator] === 'function') {
@@ -350,12 +273,6 @@ const __tbPostMessageTransfer = transfer => {
   return transfer.transfer;
 };
 
-/// Drives one transferred stream's sender half.
-///
-/// The original stream is locked here, so a second transfer or a read from
-/// the sender fails as the specification requires. Each `pull` from the
-/// receiver reads one chunk and sends it; the receiver's backpressure is what
-/// paces the source.
 const __tbStartStreamTransfer = (stream, port) => {
   let reader;
   try {
@@ -400,19 +317,14 @@ const __tbStartStreamTransfer = (stream, port) => {
   };
 };
 
-// Serializes `value` into { payload, ports }, detaching every transferred
-// buffer and endpoint as it does so
-// (<https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializewithtransfer>).
+// https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializewithtransfer
 const __tbEncode = (value, transfer, sourcePort) => {
-  // Validate the transfer list first: nothing is transferred until the value
-  // graph serializes, because transferring has side effects and
-  // StructuredSerializeInternal must be able to throw first
-  // (<https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializewithtransfer>).
-  const buffers = new __tbPrivateMap();     // ArrayBuffer -> node slot, or -1 once listed
-  const transferred = new __tbPrivateMap(); // MessagePort -> endpoint id
-  const streams = new __tbPrivateMap();     // ReadableStream -> node slot, or -1 once listed
-  const pendingStreams = __tbPrivateArray(); // {stream, port} pairs to start after encoding
-  const canvases = new __tbPrivateMap();    // OffscreenCanvas -> node slot, or -1 once listed
+  // https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializewithtransfer
+  const buffers = new __tbPrivateMap();
+  const transferred = new __tbPrivateMap();
+  const streams = new __tbPrivateMap();
+  const pendingStreams = __tbPrivateArray();
+  const canvases = new __tbPrivateMap();
   const transferredBitmaps = new __tbPrivateSet();
   const bitmapDescriptors = new __tbPrivateMap();
   for (const item of __tbTransferList(transfer)) {
@@ -428,9 +340,7 @@ const __tbEncode = (value, transfer, sourcePort) => {
       transferred.set(item, itemData.id);
     } else if (typeof globalThis.ReadableStream === 'function'
                && item instanceof globalThis.ReadableStream) {
-      // Only a locked stream cannot move; a disturbed or byte stream still
-      // has a readable tail, and the receiver always gets a default stream
-      // (<https://streams.spec.whatwg.org/#readable-stream-transfer>).
+      // https://streams.spec.whatwg.org/#readable-stream-transfer
       if (item.locked) {
         throw new globalThis.DOMException('Cannot transfer a locked ReadableStream', 'DataCloneError');
       }
@@ -446,8 +356,7 @@ const __tbEncode = (value, transfer, sourcePort) => {
       if (host.__tbOffscreenDetached(item)) {
         throw new globalThis.DOMException('Cannot transfer a detached OffscreenCanvas', 'DataCloneError');
       }
-      // A canvas with a context cannot move its bitmap yet
-      // (<https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal>).
+      // https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal
       if (host.__tbOffscreenHasContext(item)) {
         throw new globalThis.DOMException('Cannot transfer an OffscreenCanvas with a context', 'InvalidStateError');
       }
@@ -482,8 +391,7 @@ const __tbEncode = (value, transfer, sourcePort) => {
     if (kind === 'bigint') return slot(['bigint', String(input)]);
     if (kind === 'function' || kind === 'symbol') throw __tbCloneFailure();
     if (seen.has(input)) return seen.get(input);
-    // Window proxies are never serializable
-    // (<https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal>).
+    // https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal
     if (__tbWindowData.get(input) !== undefined) throw __tbCloneFailure();
     if (transferred.has(input)) {
       const index = slot(['port', transferred.get(input)]);
@@ -492,10 +400,7 @@ const __tbEncode = (value, transfer, sourcePort) => {
     }
     if (typeof globalThis.ReadableStream === 'function'
         && input instanceof globalThis.ReadableStream) {
-      // A stream is transferable but not serializable. The sender keeps it
-      // locked and pumps one chunk per pull; the receiver wraps the paired
-      // endpoint as a fresh stream
-      // (<https://streams.spec.whatwg.org/#readable-stream-transfer>).
+      // https://streams.spec.whatwg.org/#readable-stream-transfer
       if (!streams.has(input)) throw __tbCloneFailure();
       const channel = new globalThis.MessageChannel();
       const id = __tbBrand(channel.port2, __tbPortData).id;
@@ -506,15 +411,12 @@ const __tbEncode = (value, transfer, sourcePort) => {
       return index;
     }
     if (buffers.has(input)) {
-      // The bytes are captured by the transfer step, after the graph is done.
       const index = slot(null);
       seen.set(input, index);
       buffers.set(input, index);
       return index;
     }
     if (canvases.has(input)) {
-      // The receiver gets a fresh OffscreenCanvas; the sender is detached in
-      // the transfer step below.
       const index = slot(['offscreen', input.width, input.height]);
       seen.set(input, index);
       canvases.set(input, index);
@@ -522,9 +424,7 @@ const __tbEncode = (value, transfer, sourcePort) => {
     }
     if (typeof globalThis.OffscreenCanvas === 'function'
         && input instanceof globalThis.OffscreenCanvas) {
-      // OffscreenCanvas is transferable but not serializable, so a clone
-      // without a transfer entry must fail instead of becoming `{}`
-      // (<https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal>).
+      // https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal
       throw __tbCloneFailure();
     }
     if (__tbBlobData.get(input) !== undefined) {
@@ -541,9 +441,7 @@ const __tbEncode = (value, transfer, sourcePort) => {
       seen.set(input, index);
       return index;
     }
-    // A `FileList` clones its files; the interface object is recreated in the
-    // target realm
-    // (<https://w3c.github.io/FileAPI/#filelist-section>).
+    // https://w3c.github.io/FileAPI/#filelist-section
     if (__tbFileListData.get(input) !== undefined) {
       const files = __tbFileListData.get(input).files;
       const index = slot(null);
@@ -555,8 +453,7 @@ const __tbEncode = (value, transfer, sourcePort) => {
       nodes[index] = __tbSetPrototypeOf(['filelist', entries], null);
       return index;
     }
-    // `ImageData` clones its pixels as a fresh `Uint8ClampedArray`
-    // (<https://html.spec.whatwg.org/multipage/structured-data.html#serializable-objects>).
+    // https://html.spec.whatwg.org/multipage/structured-data.html#serializable-objects
     if (__tbIsImageData(input)) {
       const index = slot([
         'imagedata', input.width, input.height,
@@ -565,9 +462,7 @@ const __tbEncode = (value, transfer, sourcePort) => {
       seen.set(input, index);
       return index;
     }
-    // `ImageBitmap` is serializable and transferable; the receiver gets a
-    // fresh bitmap with the same pixels
-    // (<https://html.spec.whatwg.org/multipage/structured-data.html#serializable-objects>).
+    // https://html.spec.whatwg.org/multipage/structured-data.html#serializable-objects
     if (__tbIsImageBitmap(input)) {
       let descriptor = bitmapDescriptors.get(input);
       if (descriptor === undefined) {
@@ -588,8 +483,6 @@ const __tbEncode = (value, transfer, sourcePort) => {
       try {
         view = new Uint8Array(input);
       } catch (error) {
-        // A detached buffer cannot be copied; the spec reports it as a clone
-        // failure, not a raw TypeError.
         throw __tbCloneFailure();
       }
       const index = slot([
@@ -599,16 +492,9 @@ const __tbEncode = (value, transfer, sourcePort) => {
       return index;
     }
     if (typeof SharedArrayBuffer === 'function' && input instanceof SharedArrayBuffer) {
-      // Shared memory cannot leave an agent cluster unless the sender is
-      // cross-origin isolated; the receiver is in the same cluster, so this
-      // one check covers both sides
-      // (<https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal>).
+      // https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal
       if (host.__tbCrossOriginIsolated !== true) throw __tbCloneFailure();
-      // Shared memory is never copied: the payload names the sender's block,
-      // and the receiver wraps the same bytes. Registering here also keeps the
-      // block alive if the sender's object is collected before the message
-      // runs
-      // (<https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal>).
+      // https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal
       const id = host.__tbRegisterSharedBuffer(input);
       if (id === undefined || id === null) throw __tbCloneFailure();
       const growable = input.growable === true;
@@ -618,15 +504,9 @@ const __tbEncode = (value, transfer, sourcePort) => {
       seen.set(input, index);
       return index;
     }
-    // `ArrayBuffer.isView` is the brand check: the typed-array `length`
-    // accessor throws for a view left out of bounds by `resize()`, so probing
-    // it would misclassify the view as a plain object
-    // (<https://tc39.es/ecma262/#sec-arraybuffer.isview>).
+    // https://tc39.es/ecma262/#sec-arraybuffer.isview
     if (__tbIsArrayBufferView(input)) {
-      // A view left out of bounds by `resize` reports 0 for both byte fields,
-      // so only the engine can see that its backing store is gone. Such a view
-      // cannot be serialized
-      // (<https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal>).
+      // https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal
       if (host.__tbIsOutOfBoundsView(input)) throw __tbCloneFailure();
       const tag = Object.prototype.toString.call(input);
       const kind = tag.slice(8, -1);
@@ -638,15 +518,11 @@ const __tbEncode = (value, transfer, sourcePort) => {
         byteOffset = input.byteOffset;
         byteLength = input.byteLength;
       } catch (error) {
-        // A view over a resized-away buffer has no byte range to read.
         throw __tbCloneFailure();
       }
-      // A view that falls outside its (resized) buffer cannot be serialized
-      // (<https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal>).
+      // https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal
       if (byteOffset + byteLength > buffer.byteLength) throw __tbCloneFailure();
-      // A length-tracking view is created without an explicit length and grows
-      // with its resizable buffer; the receiver rebuilds it the same way
-      // (<https://tc39.es/ecma262/#sec-arraybuffer.prototype.resize>).
+      // https://tc39.es/ecma262/#sec-arraybuffer.prototype.resize
       const tracked = buffer.resizable === true
         && byteOffset === 0 && byteLength === buffer.byteLength;
       const encoded = encode(buffer);
@@ -657,29 +533,22 @@ const __tbEncode = (value, transfer, sourcePort) => {
       seen.set(input, index);
       return index;
     }
-    // DOMException is serializable (name and message survive)
-    // (<https://html.spec.whatwg.org/multipage/structured-data.html#serializable-objects>).
+    // https://html.spec.whatwg.org/multipage/structured-data.html#serializable-objects
     if (Object.prototype.toString.call(input) === '[object DOMException]') {
       return slot(['domexception', String(input.name), String(input.message)]);
     }
-    // Platform objects (nodes, events, ports, ...) are not serializable.
     if (__tbPortData.has(input)) throw __tbCloneFailure();
     for (let object = input; object !== null; object = Object.getPrototypeOf(object)) {
       if (__tbPlatform.has(object)) throw __tbCloneFailure();
     }
-    // Objects with internal slots the serializer cannot reproduce must fail,
-    // not silently clone as plain objects
-    // (<https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal>).
+    // https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal
     if (__tbHasInternalSlots(input)) throw __tbCloneFailure();
     if (__tbIsDate(input)) return slot(['date', __tbNumberWire(input.getTime())]);
     if (__tbIsRegExp(input)) return slot(['regexp', input.source, input.flags]);
     if (__tbIsError(input)) {
       const index = slot(null);
       seen.set(input, index);
-      // An error's `name`, its own `message` (a missing message is not the
-      // same as an empty one), and its `cause` survive the clone; custom
-      // properties do not
-      // (<https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal>).
+      // https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal
       const hasMessage = __tbHasOwnProperty.call(input, 'message');
       const cause = __tbHasOwnProperty.call(input, 'cause') ? encode(input.cause) : null;
       nodes[index] = __tbSetPrototypeOf([
@@ -716,9 +585,7 @@ const __tbEncode = (value, transfer, sourcePort) => {
       seen.set(input, index);
       const items = __tbPrivateArray();
       for (let item = 0; item < input.length; item++) __tbArray.push(items, encode(input[item]));
-      // Array serialization also copies own enumerable properties that are not
-      // indices, like any other object graph node
-      // (<https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal>).
+      // https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal
       const properties = __tbPrivateArray();
       for (const key of Object.keys(input)) {
         if (__tbIsArrayIndex(key)) continue;
@@ -727,9 +594,7 @@ const __tbEncode = (value, transfer, sourcePort) => {
       nodes[index] = __tbSetPrototypeOf(['array', items, properties], null);
       return index;
     }
-    // Anything else clones as an object with its own enumerable properties,
-    // whatever its prototype chain says
-    // (<https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal>).
+    // https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal
     const index = slot(null);
     seen.set(input, index);
     const entries = __tbPrivateArray();
@@ -738,8 +603,7 @@ const __tbEncode = (value, transfer, sourcePort) => {
     return index;
   };
   const root = encode(value);
-  // Serialization succeeded, so the transfer steps run now
-  // (<https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializewithtransfer>).
+  // https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializewithtransfer
   for (const [buffer, index] of buffers) {
     let moved;
     try {
@@ -759,8 +623,7 @@ const __tbEncode = (value, transfer, sourcePort) => {
   for (const [canvas] of canvases) {
     host.__tbOffscreenDetach(canvas);
   }
-  // Transferring an ImageBitmap closes the source bitmap
-  // (<https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializewithtransfer>).
+  // https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializewithtransfer
   for (const bitmap of transferredBitmaps) {
     bitmap.close();
   }
@@ -768,7 +631,6 @@ const __tbEncode = (value, transfer, sourcePort) => {
   for (const [port, id] of transferred) {
     if (!host.__tbPortDetach(id)) throw new globalThis.DOMException('Cannot transfer a detached MessagePort', 'DataCloneError');
     __tbBrand(port, __tbPortData).closed = true;
-    // The received port is a new object; the sender's is detached.
     delete __tbPorts[id];
     __tbArray.push(ports, id);
   }
@@ -779,8 +641,6 @@ const __tbEncode = (value, transfer, sourcePort) => {
   return { __proto__: null, payload: __tbPayloadVersion + __tbJsonStringify({ __proto__: null, root, nodes }), ports };
 };
 
-// Deserializes a payload in this realm; `ports` maps transferred endpoint ids
-// to the port objects that were already materialized for them.
 const __tbDecode = (payload, ports) => {
   const text = String(payload);
   if (text.indexOf(__tbPayloadVersion) !== 0) throw new Error('structured clone payload mismatch');
@@ -794,9 +654,7 @@ const __tbDecode = (payload, ports) => {
         const bytes = __tbBase64Bytes(nodes[index][1]);
         const resizable = nodes[index][3] === true;
         const max = typeof nodes[index][2] === 'number' ? nodes[index][2] : bytes.length;
-        // A resizable buffer keeps its maximum so a later `resize()` reaches
-        // the same ceiling the sender had
-        // (<https://tc39.es/ecma262/#sec-arraybuffer-constructor>).
+        // https://tc39.es/ecma262/#sec-arraybuffer-constructor
         const buffer = resizable && max > bytes.length
           ? new ArrayBuffer(bytes.length, { maxByteLength: max })
           : resizable
@@ -807,9 +665,7 @@ const __tbDecode = (payload, ports) => {
         break;
       }
       case 'shared': {
-        // A shared buffer is wrapped, not copied: the table entry names the
-        // same bytes the sender registered
-        // (<https://html.spec.whatwg.org/multipage/structured-data.html#structureddeserialize>).
+        // https://html.spec.whatwg.org/multipage/structured-data.html#structureddeserialize
         const buffer = host.__tbCreateSharedBuffer(
           nodes[index][1], nodes[index][2], nodes[index][3]);
         if (buffer === undefined || buffer === null) throw __tbCloneFailure();
@@ -832,9 +688,7 @@ const __tbDecode = (payload, ports) => {
     switch (descriptor[0]) {
       case 'view': {
         const buffer = values[descriptor[1]];
-        // A length-tracking view takes no explicit length and follows the
-        // buffer's size when it is resized
-        // (<https://tc39.es/ecma262/#sec-arraybuffer.prototype.resize>).
+        // https://tc39.es/ecma262/#sec-arraybuffer.prototype.resize
         const tracked = descriptor[5] === true;
         if (descriptor[2] === 'DataView') {
           values[index] = tracked
@@ -885,8 +739,6 @@ const __tbDecode = (payload, ports) => {
         });
         break;
       case 'filelist': {
-        // Built in the prepass below: a FileList's files have higher slot
-        // indices than the list itself, so they are not ready yet here.
         break;
       }
       case 'imagedata': {
@@ -918,9 +770,7 @@ const __tbDecode = (payload, ports) => {
       }
     }
   }
-  // A FileList is built before the other containers so a reference to it
-  // resolves: its `File` elements are leaves and already exist
-  // (<https://w3c.github.io/FileAPI/#filelist-section>).
+  // https://w3c.github.io/FileAPI/#filelist-section
   for (let index = 0; index < nodes.length; index++) {
     const descriptor = nodes[index];
     if (descriptor[0] !== 'filelist') continue;
@@ -936,9 +786,7 @@ const __tbDecode = (payload, ports) => {
         for (let entry = 0; entry < entries.length; entry++) {
           const key = entries[entry][0];
           const slot = entries[entry][1];
-          // `CreateDataProperty`, not `Set`: a `__proto__` key must become an
-          // own property instead of walking the prototype setter
-          // (<https://html.spec.whatwg.org/multipage/structured-data.html#structureddeserialize>).
+          // https://html.spec.whatwg.org/multipage/structured-data.html#structureddeserialize
           __tbDefineProperty(target, key, {
             __proto__: null,
             value: values[slot], writable: true, enumerable: true, configurable: true,
@@ -995,16 +843,9 @@ globalThis.structuredClone = function(value, options) {
   return clone;
 };
 
-// ── message ports ──────────────────────────────────────────────────────
-// The endpoint (id, queue, entanglement) lives in Rust; the JS object is the
-// realm's handle on it, registered in `__tbPorts` so deliveries can find it.
 const __tbPorts = Object.create(null);
 
-// Materializes every transferred endpoint. Closes are deferred: a port whose
-// peer disentangled while it was in transit fires `close` once the carrying
-// message has been dispatched, so the message handler can install
-// `onclose` first
-// (<https://html.spec.whatwg.org/multipage/web-messaging.html#disentangle>).
+// https://html.spec.whatwg.org/multipage/web-messaging.html#disentangle
 const __tbMaterializePorts = ids => {
   const ports = { __proto__: null };
   const closes = __tbPrivateArray();
@@ -1028,8 +869,6 @@ const __tbFirePortCloses = ids => {
     host.__tbDispatchTargetTrusted(port, new __tbEventConstructor('close'));
   }
 };
-// Drops ports a delivery could not decode; the spec loses them with the
-// failed message.
 const __tbDiscardPorts = ids => {
   for (let index = 0; index < ids.length; index++) {
     const id = ids[index];
@@ -1046,9 +885,7 @@ const __tbMaterializePort = id => {
   __tbPorts[id] = port;
   return port;
 };
-// An `EventHandler` accepts a function, or an object whose `handleEvent` is
-// callable; every other value, `null`, and `undefined` become `null`
-// (<https://webidl.spec.whatwg.org/#idl-event-handler>).
+// https://webidl.spec.whatwg.org/#idl-event-handler
 const __tbEventHandler = value => {
   if (value === null || value === undefined) return null;
   if (typeof value === 'function') return value;
@@ -1064,18 +901,14 @@ const __tbMessagePortConstructor = globalThis.MessagePort = class MessagePort ex
   constructor() { throw new TypeError('Illegal constructor'); }
   postMessage(message, transfer) {
     const data = __tbBrand(this, __tbPortData);
-    // The message is required; the overload set has no zero-argument member
-    // (<https://webidl.spec.whatwg.org/#overload-resolution>).
+    // https://webidl.spec.whatwg.org/#overload-resolution
     if (arguments.length < 1) {
       throw new TypeError("Failed to execute 'postMessage' on 'MessagePort': 1 argument required, but only 0 present.");
     }
-    // The transfer list is consumed even when the port is detached or the
-    // message is doomed
-    // (<https://html.spec.whatwg.org/multipage/web-messaging.html#message-port-post-message-steps>).
+    // https://html.spec.whatwg.org/multipage/web-messaging.html#message-port-post-message-steps
     const encoded = __tbEncode(message, __tbPostMessageTransfer(transfer), this);
     if (data.closed) return;
-    // A port posted to its own entangled port loses the channel
-    // (<https://html.spec.whatwg.org/multipage/web-messaging.html#message-port-post-message-steps>).
+    // https://html.spec.whatwg.org/multipage/web-messaging.html#message-port-post-message-steps
     const peer = host.__tbPortPeer(data.id);
     if (peer != null && __tbArray.indexOf(encoded.ports, peer) !== -1) return;
     host.__tbPortPost(data.id, encoded.payload, encoded.ports);
@@ -1095,9 +928,7 @@ const __tbMessagePortConstructor = globalThis.MessagePort = class MessagePort ex
   set onmessage(value) {
     const data = __tbBrand(this, __tbPortData);
     data.onmessage = __tbEventHandler(value);
-    // The first set enables the queue, whatever the value. The internal start
-    // step runs even when script replaced the `start` property on this port
-    // (<https://html.spec.whatwg.org/multipage/web-messaging.html#message-ports>).
+    // https://html.spec.whatwg.org/multipage/web-messaging.html#message-ports
     if (!data.closed) host.__tbPortStart(data.id);
   }
   get onmessageerror() { return __tbBrand(this, __tbPortData).onmessageerror; }
@@ -1118,17 +949,8 @@ globalThis.MessageChannel = class MessageChannel {
 };
 Object.defineProperty(globalThis.MessageChannel.prototype, Symbol.toStringTag, { value: 'MessageChannel', writable: false, enumerable: false, configurable: true });
 
-// ── window proxies ─────────────────────────────────────────────────────
-// One proxy per frame per realm, stable across the frame's navigations. It
-// carries the cross-origin whitelist; same-origin members forward through the
-// target realm's window
-// (<https://html.spec.whatwg.org/multipage/window-object.html#the-windowproxy-exotic-object>).
-// The cross-origin member set follows Blink's `[CrossOrigin]` IDL attributes
-// and Firefox's `sCrossOriginProperties`: postMessage, window, self, frames,
-// length, top, parent, closed, and the indexed getter.
-// The frame id of `frame`'s document-tree child navigable whose target name
-// is `name`, or null
-// (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-getownproperty>).
+// https://html.spec.whatwg.org/multipage/window-object.html#the-windowproxy-exotic-object
+// https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-getownproperty
 const __tbFrameNamedChild = (frame, name) => {
   const count = host.__tbFrameChildCount(frame);
   for (let index = 0; index < count; index += 1) {
@@ -1142,20 +964,12 @@ const __tbFrameProxy = frame => {
   if (frame === __tbFrameId) return globalThis;
   if (__tbFrameProxies[frame] !== undefined) return __tbFrameProxies[frame];
   let proxy;
-  // The `Location` stand-in for a same-origin child whose realm has not
-  // started: one object per proxy, so `contentWindow.location` keeps its
-  // identity across reads.
   let pendingLocation;
   const crossOrigin = () => {
     throw new globalThis.DOMException('Blocked a frame from accessing a cross-origin frame.', 'SecurityError');
   };
-  // `focus`/`blur` on a cross-origin window: the same engine no-op the
-  // same-origin window installs.
   const crossOriginNoop = function() {};
-  // The `Location` object a cross-origin caller sees: every member throws, and
-  // its prototype is null. Assignment is ignored, as it was before the object
-  // existed
-  // (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#the-location-interface>).
+  // https://html.spec.whatwg.org/multipage/nav-history-apis.html#the-location-interface
   const crossOriginLocation = () => cachedMember('crossOriginLocation', 'frame', () => {
     const location = __tbObjectCreate(null);
     for (const name of ['href', 'protocol', 'host', 'hostname', 'port', 'pathname',
@@ -1169,14 +983,10 @@ const __tbFrameProxy = frame => {
     }
     return location;
   });
-  // One function per proxy: a shipped engine keeps
-  // `contentWindow.postMessage` identity stable, and so do we.
   const postMessage = function(message, targetOrigin, transfer) {
     try {
       return __tbPostMessage(frame, arguments.length, message, targetOrigin, transfer);
     } catch (error) {
-      // Exceptions from a proxy's postMessage come from the target window's
-      // realm, the way a shipped engine throws them.
       if (error instanceof globalThis.DOMException) {
         const global = host.__tbFrameGlobal(frame);
         const constructor = global == null ? undefined : global.DOMException;
@@ -1187,10 +997,6 @@ const __tbFrameProxy = frame => {
       throw error;
     }
   };
-  // Same-origin-only members are built once per target realm: proxy gets
-  // keep identity (`contentWindow.addEventListener ===
-  // contentWindow.addEventListener`), and rebuilding when the target global
-  // changes keeps prototypes and methods from going stale across navigations.
   const proxyCache = __tbObjectCreate(null);
   const cachedMember = (key, targetGlobal, make) => {
     const entry = proxyCache[key];
@@ -1199,25 +1005,15 @@ const __tbFrameProxy = frame => {
     proxyCache[key] = { global: targetGlobal, fn };
     return fn;
   };
-  // One helper for the three EventTarget bindings below (was three
-  // near-identical `cachedMember` blocks).
-  // A window in another frame is not a platform object in this realm, so its
-  // EventTarget members cannot come from the target realm's prototype: the
-  // receiver would fail the interface's brand check. Address the target frame
-  // directly instead, the way `postMessage` does
-  // (<https://dom.spec.whatwg.org/#interface-eventtarget>,
-  // <https://html.spec.whatwg.org/multipage/window-object.html#the-windowproxy-exotic-object>).
+  // https://dom.spec.whatwg.org/#interface-eventtarget
+  // https://html.spec.whatwg.org/multipage/window-object.html#the-windowproxy-exotic-object
   const eventTargetMethod = (key, hostName) => cachedMember(key, 'frame', () =>
     function() {
       if (host.__tbFrameGlobal(frame) != null && !host.__tbFrameAwaitingReplay(frame)) {
         return __tbApply(host[hostName], undefined, [frame, ...arguments]);
       }
-      // A same-origin child's realm cannot start until this script returns, so
-      // the call waits in the pending call log and replays when it does
-      // (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-get>).
+      // https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-get
       if (key === 'dispatchEvent') {
-        // The window has no listener before its realm exists, and the event
-        // has nothing else to cancel.
         return true;
       }
       let calls = __tbFramePendingCalls[frame];
@@ -1230,11 +1026,7 @@ const __tbFrameProxy = frame => {
     });
   const handler = {
     get(target, property) {
-      // Cross-origin-safe window properties only; everything else needs the
-      // target realm below. In particular `name`, `document`, the node
-      // constructors, and the EventTarget methods are not cross-origin
-      // accessible, so a navigated-away child no longer leaks them
-      // (<https://html.spec.whatwg.org/multipage/browsers.html#crossoriginproperties-(-o-)>).
+      // https://html.spec.whatwg.org/multipage/browsers.html#crossoriginproperties-(-o-
       switch (property) {
         case 'postMessage':
           return postMessage;
@@ -1254,34 +1046,20 @@ const __tbFrameProxy = frame => {
       }
       const sameOrigin = host.__tbFrameGlobal(frame);
       if (sameOrigin == null) {
-        // A document exists before its realm does: `window.open`'s initial
-        // about:blank and an `iframe` inserted in a running script. Its
-        // wrapper belongs to this realm until the target realm starts.
         if (host.__tbFrameSameOrigin(frame)) {
           if (property === 'document') return host.__tbFrameDocument(frame);
           const pending = __tbFramePendingSets[frame];
           if (pending !== undefined && __tbApply(__tbHasOwnProperty, pending, [property])) {
             return pending[property];
           }
-          // A same-origin child's realm cannot start until this script
-          // returns, but its window still exposes the `Location` and the
-          // callable globals (constructors in particular) that a page reads
-          // through `contentWindow` in the same task
-          // (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-get>).
+          // https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-get
           if (property === 'name') return host.__tbFrameName(frame);
           if (property === 'navigator') return __tbFrameNavigator(frame);
-          // `clientInformation` is the legacy alias of this window's
-          // `navigator`, so a pending frame answers it the same way
-          // (<https://html.spec.whatwg.org/multipage/window-object.html#dom-window-clientinformation>).
+          // https://html.spec.whatwg.org/multipage/window-object.html#dom-window-clientinformation
           if (property === 'clientInformation') return __tbFrameNavigator(frame);
-          // `getComputedStyle` answers from the element's own document and
-          // carries no window state, so a pending same-origin child can
-          // answer it from the caller's realm
-          // (<https://drafts.csswg.org/cssom/#dom-window-getcomputedstyle>).
+          // https://drafts.csswg.org/cssom/#dom-window-getcomputedstyle
           if (property === 'getComputedStyle') return globalThis.getComputedStyle;
-          // The target frame's own viewport metrics and scroll methods, which
-          // the caller's realm holds no copy of
-          // (<https://drafts.csswg.org/cssom-view/#the-visualviewport-interface>).
+          // https://drafts.csswg.org/cssom-view/#the-visualviewport-interface
           if (property === 'visualViewport') return host.__tbFrameVisualViewport(frame);
           if (property === 'scroll' || property === 'scrollTo' || property === 'scrollBy') {
             return host.__tbFrameScrollMethod(frame, property === 'scrollBy');
@@ -1309,45 +1087,29 @@ const __tbFrameProxy = frame => {
           }
           const value = globalThis[property];
           if (__tbFrameForwarded(property, value)) return value;
-          // A same-origin realm that has not started yet cannot answer its
-          // own members.
           return undefined;
         }
-        // The cross-origin accessible members that the common whitelist above
-        // does not cover: `location` is a `Location` object whose members
-        // throw, `focus`/`blur` are this engine's no-ops, and `opener` is
-        // null because auxiliary contexts here open with no opener
-        // (<https://html.spec.whatwg.org/multipage/browsers.html#crossoriginproperties-(-o-)>,
-        // <https://html.spec.whatwg.org/multipage/window-object.html#dom-window-focus>,
-        // <https://html.spec.whatwg.org/multipage/window-object.html#dom-opener>).
+        // https://html.spec.whatwg.org/multipage/browsers.html#crossoriginproperties-(-o-
+        // https://html.spec.whatwg.org/multipage/window-object.html#dom-window-focus
+        // https://html.spec.whatwg.org/multipage/window-object.html#dom-opener
         switch (property) {
           case 'location': return crossOriginLocation();
           case 'focus': case 'blur': return crossOriginNoop;
           case 'opener': return null;
         }
-        // Cross-origin named access still reaches a child navigable's
-        // WindowProxy, the one non-index member a cross-origin window
-        // exposes besides the cross-origin property set
-        // (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-getownproperty>).
+        // https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-getownproperty
         if (typeof property === 'string') {
           const child = __tbFrameNamedChild(frame, property);
           if (child != null) return __tbFrameProxy(child);
         }
-        // A frame whose navigable was destroyed keeps the Window a script
-        // already referenced until the engine drops it at the end of the
-        // turn; the destroy steps remove the tree entry first
-        // (<https://html.spec.whatwg.org/multipage/document-sequences.html#destroy-a-child-navigable>).
+        // https://html.spec.whatwg.org/multipage/document-sequences.html#destroy-a-child-navigable
         if (!host.__tbFrameRegistered(frame)) return undefined;
         crossOrigin();
       }
       switch (property) {
         case 'name': return host.__tbFrameName(frame);
         case 'document': return host.__tbFrameDocument(frame);
-        // Cross-realm constructors are not callable from this realm. Hand
-        // back a local function that creates the node in the target frame's
-        // document; its prototype is the target realm's so `instanceof
-        // contentWindow.Comment` holds
-        // (<https://dom.spec.whatwg.org/#dom-comment-comment>).
+        // https://dom.spec.whatwg.org/#dom-comment-comment
         case 'Comment': case 'Text': return cachedMember(property, sameOrigin, () => {
           const ctor = function() {
             return __tbApply(host.__tb_construct_in_frame, globalThis, [frame, property, ...arguments]);
@@ -1358,14 +1120,8 @@ const __tbFrameProxy = frame => {
           __tbDefineProperty(ctor, 'name', { value: property, configurable: true });
           return ctor;
         });
-        // Host EventTarget methods live on each realm's window object. A
-        // WindowProxy get that forwards to another realm's global does not
-        // yield a callable from this realm, so `contentWindow.addEventListener`
-        // was not a function. Bind the realm-init-captured method (never the
-        // target's clobberable own property) with the proxy as `this`;
-        // `window_world_for_call` resolves the target frame
-        // (<https://dom.spec.whatwg.org/#interface-eventtarget>,
-        // <https://html.spec.whatwg.org/multipage/window-object.html#the-windowproxy-exotic-object>).
+        // https://dom.spec.whatwg.org/#interface-eventtarget
+        // https://html.spec.whatwg.org/multipage/window-object.html#the-windowproxy-exotic-object
         case 'addEventListener': return eventTargetMethod(property, '__tbFrameAddEventListener');
         case 'removeEventListener': return eventTargetMethod(property, '__tbFrameRemoveEventListener');
         case 'dispatchEvent': return eventTargetMethod(property, '__tbFrameDispatchEvent');
@@ -1373,16 +1129,10 @@ const __tbFrameProxy = frame => {
       return sameOrigin[property];
     },
     set(target, property, value) {
-      // Writes need the target realm too: a cross-origin `name` set must not
-      // reach the stored name.
       const sameOrigin = host.__tbFrameGlobal(frame);
       if (sameOrigin == null) {
         if (host.__tbFrameRegistered(frame)) {
-          // Assigning `location` on a pending same-origin window runs the
-          // target window's setter, so an unparsable URL throws before the
-          // child realm exists; storing it as a pending write would delay the
-          // throw past the assignment
-          // (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-href>).
+          // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-href
           if (property === 'location' && host.__tbFrameSameOrigin(frame)) {
             host.__tbFrameSetLocation(frame, value);
             return true;
@@ -1397,9 +1147,6 @@ const __tbFrameProxy = frame => {
         return true;
       }
       if (property === '__proto__') {
-        // `CreateDataProperty`, not prototype mutation (cf.
-        // `__tbFlushFrameSets`): a `__proto__` set must not re-prototype the
-        // target realm's window.
         __tbDefineProperty(sameOrigin, property, {
           __proto__: null, value, writable: true, enumerable: true, configurable: true,
         });
@@ -1441,11 +1188,7 @@ const __tbFrameProxy = frame => {
       return __tbFrameForwarded(property, globalThis[property]);
     },
     getPrototypeOf() {
-      // The spec forwards to the target; cross-origin callers cannot reach
-      // it, so the plain object prototype stands in
-      // (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-getprototypeof>).
-      // Pinned at realm init: a page replacing `globalThis.Object` must not
-      // control what cross-origin callers receive.
+      // https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-getprototypeof
       const sameOrigin = host.__tbFrameGlobal(frame);
       return sameOrigin == null
         ? __tbObjectPrototype
@@ -1464,11 +1207,7 @@ const __tbFrameProxy = frame => {
 };
 host.__tbFrameProxy = __tbFrameProxy;
 
-// ── posting and delivery ───────────────────────────────────────────────
 // https://html.spec.whatwg.org/multipage/web-messaging.html#dom-window-postmessage
-// `postMessage` step 5: `/` names the incumbent origin and is passed through
-// for the host to resolve with origin identity intact; anything else but `*`
-// must parse as a URL. The host parses it before the message is serialized.
 function __tbNormalizeTargetOrigin(targetOrigin) {
   return targetOrigin === undefined ? '/' : String(targetOrigin);
 }
@@ -1479,16 +1218,12 @@ function __tbPostMessage(targetFrame, argumentCount, message, targetOrigin, tran
   if (targetFrame == null) {
     throw new TypeError(`Failed to execute 'postMessage' on 'Window': the target window is missing.`);
   }
-  // `postMessage(message, options)` dictionary overload
-  // (<https://html.spec.whatwg.org/multipage/web-messaging.html#dom-window-postmessage>).
+  // https://html.spec.whatwg.org/multipage/web-messaging.html#dom-window-postmessage
   if (targetOrigin !== null && typeof targetOrigin === 'object') {
     transfer = targetOrigin.transfer;
     targetOrigin = targetOrigin.targetOrigin;
   }
-  // The target origin resolves before the message is serialized, so an
-  // invalid value throws `SyntaxError` without detaching buffers, ports, or
-  // canvases
-  // (<https://html.spec.whatwg.org/multipage/web-messaging.html#window-post-message-steps>).
+  // https://html.spec.whatwg.org/multipage/web-messaging.html#window-post-message-steps
   const checkedOrigin = __tbNormalizeTargetOrigin(targetOrigin);
   host.__tbValidateTargetOrigin(checkedOrigin);
   const encoded = __tbEncode(message, transfer, null);
@@ -1497,9 +1232,7 @@ function __tbPostMessage(targetFrame, argumentCount, message, targetOrigin, tran
 globalThis.postMessage = function(message, targetOrigin, transfer) {
   return __tbPostMessage(__tbFrameId, arguments.length, message, targetOrigin, transfer);
 };
-// Runs in the target realm: decode, then dispatch a trusted message event, or
-// report the failure so the engine dispatches `messageerror`
-// (<https://html.spec.whatwg.org/multipage/web-messaging.html#window-post-message-steps>).
+// https://html.spec.whatwg.org/multipage/web-messaging.html#window-post-message-steps
 host.__tbDeliverMessage = function(payload, sourceFrame, origin, portIds) {
   if (String(payload).indexOf(__tbPayloadVersion) !== 0) return false;
   const materialized = __tbMaterializePorts(portIds);
@@ -1507,8 +1240,6 @@ host.__tbDeliverMessage = function(payload, sourceFrame, origin, portIds) {
   try {
     data = __tbDecode(payload, materialized.ports);
   } catch (error) {
-    // The ports arrived with a message that cannot be decoded; they are lost
-    // with it.
     __tbDiscardPorts(portIds);
     return false;
   }
@@ -1524,10 +1255,7 @@ host.__tbDeliverMessageError = function(sourceFrame, origin) {
     data: null, origin: origin, source: __tbFrameProxy(sourceFrame),
   }));
 };
-// A message from another tab cannot name a frame in this renderer, so its
-// source is `null`, and its `origin` is the sender's serialized origin at
-// post time
-// (<https://html.spec.whatwg.org/multipage/web-messaging.html#window-post-message-steps>).
+// https://html.spec.whatwg.org/multipage/web-messaging.html#window-post-message-steps
 host.__tbDeliverRemoteMessage = function(origin, payload) {
   if (String(payload).indexOf(__tbPayloadVersion) !== 0) return;
   let data;
@@ -1541,7 +1269,6 @@ host.__tbDeliverRemoteMessage = function(origin, payload) {
   }));
 };
 
-// ── broadcast channels ─────────────────────────────────────────────────
 // https://html.spec.whatwg.org/multipage/web-messaging.html#broadcastchannel
 const __tbBroadcastData = host.slots('tinybrowser.broadcastchannel.data');
 const __tbBroadcastChannels = new __tbPrivateSet();
@@ -1637,7 +1364,6 @@ host.__tbDeliverPortClose = function(endpoint) {
   host.__tbDispatchTargetTrusted(port, new __tbEventConstructor('close'));
 };
 
-// ── the window's own indexed and browsing-context members ──────────────
 // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-length
 Object.defineProperty(globalThis, 'length', {
   get() { return host.__tbFrameChildCount(__tbFrameId); },
@@ -1684,17 +1410,13 @@ Object.defineProperty(globalThis, 'name', {
   configurable: true, enumerable: true,
 });
 
-// Event handler properties live in the world rather than on the wrapper, so
-// a collected wrapper cannot lose `element.onload`
-// (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handlers>).
+// https://html.spec.whatwg.org/multipage/webappapis.html#event-handlers
 (function() {
   const names = host.__tb_handlerNames;
   if (names === undefined) return;
-  // `Document`, `HTMLElement`, `SVGElement` and `MathMLElement` all include
-  // `GlobalEventHandlers`, so the same accessors land on each prototype
-  // (<https://html.spec.whatwg.org/multipage/dom.html#documents>,
-  // <https://html.spec.whatwg.org/multipage/webappapis.html#event-handlers>,
-  // <https://w3c.github.io/mathml-core/#dom-mathmlelement>).
+  // https://html.spec.whatwg.org/multipage/dom.html#documents
+  // https://html.spec.whatwg.org/multipage/webappapis.html#event-handlers
+  // https://w3c.github.io/mathml-core/#dom-mathmlelement
   const elementProtos = [
     globalThis.Document.prototype,
     globalThis.HTMLElement.prototype,
@@ -1702,13 +1424,9 @@ Object.defineProperty(globalThis, 'name', {
   ];
   if (globalThis.MathMLElement) elementProtos.push(globalThis.MathMLElement.prototype);
   for (const name of names) {
-    // `onpointerrawupdate` is `[SecureContext]`, so an insecure origin must
-    // not expose it
-    // (<https://w3c.github.io/pointerevents/#extensions-to-the-globaleventhandlers-mixin>).
+    // https://w3c.github.io/pointerevents/#extensions-to-the-globaleventhandlers-mixin
     if (name === 'onpointerrawupdate' && !globalThis.isSecureContext) continue;
-    // `onmouseenter` and `onmouseleave` are `[LegacyLenientThis]`: a wrong
-    // `this` reads undefined and ignores writes
-    // (<https://webidl.spec.whatwg.org/#LegacyLenientThis>).
+    // https://webidl.spec.whatwg.org/#LegacyLenientThis
     const lenient = name === 'onmouseenter' || name === 'onmouseleave';
     Object.defineProperty(globalThis, name, {
       get() { return lenient && this !== globalThis ? undefined : host.__tbGetWindowHandler(name); },
@@ -1732,8 +1450,7 @@ Object.defineProperty(globalThis, 'name', {
       });
     }
   }
-  // `WindowEventHandlers` adds names that no element exposes
-  // (<https://html.spec.whatwg.org/multipage/webappapis.html#windoweventhandlers>).
+  // https://html.spec.whatwg.org/multipage/webappapis.html#windoweventhandlers
   for (const name of host.__tb_windowHandlerNames || []) {
     Object.defineProperty(globalThis, name, {
       get() { return host.__tbGetWindowHandler(name); },
@@ -1741,11 +1458,9 @@ Object.defineProperty(globalThis, 'name', {
       enumerable: true, configurable: true,
     });
   }
-  // `Document` declares a few handlers of its own, which no element shares
-  // (<https://html.spec.whatwg.org/multipage/dom.html#the-document-object>).
+  // https://html.spec.whatwg.org/multipage/dom.html#the-document-object
   for (const name of host.__tb_documentHandlerNames || []) {
-    // `onreadystatechange` is `[LegacyLenientThis]`
-    // (<https://html.spec.whatwg.org/multipage/dom.html#the-document-object>).
+    // https://html.spec.whatwg.org/multipage/dom.html#the-document-object
     const lenient = name === 'onreadystatechange';
     Object.defineProperty(globalThis.Document.prototype, name, {
       get() {
@@ -1759,11 +1474,8 @@ Object.defineProperty(globalThis, 'name', {
       enumerable: true, configurable: true,
     });
   }
-  // A `body` or `frameset` element forwards every `WindowEventHandlers`
-  // attribute, plus the six `GlobalEventHandlers` in the window-reflecting
-  // set, to its document's window instead of keeping a slot of its own
-  // (<https://html.spec.whatwg.org/multipage/webappapis.html#window-reflecting-body-element-event-handler-set>,
-  // <https://html.spec.whatwg.org/multipage/dom.html#body-element-event-handlers>).
+  // https://html.spec.whatwg.org/multipage/webappapis.html#window-reflecting-body-element-event-handler-set
+  // https://html.spec.whatwg.org/multipage/dom.html#body-element-event-handlers
   const windowReflecting = [
     ...(host.__tb_windowHandlerNames || []),
     ...(host.__tb_bodyWindowHandlers || []),
@@ -1779,18 +1491,10 @@ Object.defineProperty(globalThis, 'name', {
   }
 })();
 
-// ── auxiliary windows ──────────────────────────────────────────────────
-// `window.open` may create a browser tab or a same-origin frame; either way
-// the engine selects the context. This block keeps one proxy per remote tab,
-// exposing `close`, `postMessage`, and the same-origin storage areas, and
-// forgets the tab's name when `close()` runs so a later open creates a fresh
-// one
-// (<https://html.spec.whatwg.org/multipage/window-object.html#dom-open>).
+// https://html.spec.whatwg.org/multipage/window-object.html#dom-open
 (function() {
   const remoteWindows = new __tbPrivateMap();
   const remoteSessions = new __tbPrivateMap();
-  // Tabs closed through `close()`, so `closed` reports it. The host forgets
-  // the tab's name, so a later `open(url, name)` opens a fresh tab.
   const closedTabs = new __tbPrivateSet();
 
   function remoteWindow(tab) {
@@ -1805,8 +1509,7 @@ Object.defineProperty(globalThis, 'name', {
           };
           case 'closed': return closedTabs.has(tab);
           case 'postMessage': return function(message, targetOrigin, transfer) {
-            // Same argument handling as a same-page `postMessage`
-            // (<https://html.spec.whatwg.org/multipage/web-messaging.html#dom-window-postmessage>).
+            // https://html.spec.whatwg.org/multipage/web-messaging.html#dom-window-postmessage
             if (arguments.length === 0) {
               throw new TypeError(`Failed to execute 'postMessage' on 'Window': 1 argument required, but only 0 present.`);
             }
@@ -1841,8 +1544,6 @@ Object.defineProperty(globalThis, 'name', {
     return proxy;
   }
 
-  // A live read of another window's session area, for same-origin openers and
-  // opened windows. The response carries the storage seam's encoded strings.
   function remoteSession(tab) {
     const existing = remoteSessions.get(tab);
     if (existing !== undefined) return existing;
@@ -1861,23 +1562,12 @@ Object.defineProperty(globalThis, 'name', {
 
   globalThis.open = function(url, target, features) {
     if (arguments.length < 1 || url === undefined || url === null) url = '';
-    // Convert once, so a stateful `toString` cannot give the validity check and
-    // the engine's own parse different strings. An empty URL names no document;
-    // every other one must parse, and a parse failure throws before any context
-    // is chosen
-    // (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps>).
+    // https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps
     const href = host.__tbUSVString(url);
     if (href !== '' && host.__tbResolveUrl(href, undefined) == null) {
       throw new globalThis.DOMException('Invalid URL', 'SyntaxError');
     }
-    // The engine runs the window open steps: it encodes the URL, tokenizes the
-    // features, applies the blob-URL opener rule, and picks the context. The
-    // shim only turns the selected context into a `WindowProxy`
-    // (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps>).
-    //
-    // `target` defaults to `_blank` per the IDL, and the engine also treats an
-    // empty or absent target as `_blank`, so passing `undefined` through is
-    // enough.
+    // https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps
     const name = target === undefined || target === null ? '' : String(target);
     const featureString = features === undefined || features === null ? '' : String(features);
     const answer = host.__tbOpen(href, name, featureString);
@@ -1888,15 +1578,11 @@ Object.defineProperty(globalThis, 'name', {
       case 'tab': proxy = remoteWindow(answer.id); break;
       default: throw new TypeError(`unknown window open answer: ${answer.kind}`);
     }
-    // `noopener` still selects and navigates the context, and never hands back
-    // its `WindowProxy`
-    // (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps>).
+    // https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps
     return answer.withholds ? null : proxy;
   };
 
   // https://html.spec.whatwg.org/multipage/window-object.html#dom-window-close
-  // A script may only close a context it opened. Closing a child iframe or the
-  // tab's own top-level frame is a no-op, which the host checks.
   globalThis.close = function close() { host.__tbCloseWindow(); };
 
   // https://html.spec.whatwg.org/multipage/window-object.html#dom-opener
@@ -1911,15 +1597,8 @@ Object.defineProperty(globalThis, 'name', {
   });
 })();
 
-// ── web storage ─────────────────────────────────────────────────────────
-// `localStorage` and `sessionStorage` are one interface over two areas: the
-// browser process owns the local area (shared by every tab, persisted with
-// the profile), the engine owns the session area (one per top-level browsing
-// context). Items are named properties per the legacy platform-object rules:
-// a stored item is hidden by a member of the prototype chain, and every
-// string-keyed write stores
-// (<https://html.spec.whatwg.org/multipage/webstorage.html#the-storage-interface>,
-// <https://webidl.spec.whatwg.org/#legacy-platform-object>).
+// https://html.spec.whatwg.org/multipage/webstorage.html#the-storage-interface
+// https://webidl.spec.whatwg.org/#legacy-platform-object
 (function() {
   const kindSlot = host.slots('storageKind');
   const holders = new __tbPrivateMap();
@@ -1936,16 +1615,11 @@ Object.defineProperty(globalThis, 'name', {
     "Failed to execute 'setItem' on 'Storage': Setting the value of '" + key +
     "' exceeded the quota.");
 
-  // JavaScript strings may hold lone surrogates; DOMString preserves them but
-  // the UTF-8 host seam cannot. JSON escaping round-trips them exactly
-  // (<https://webidl.spec.whatwg.org/#idl-DOMString>).
+  // https://webidl.spec.whatwg.org/#idl-DOMString
   const encode = value => JSON.stringify(value);
   const decode = value => (value === null || value === undefined ? null : JSON.parse(value));
 
   // https://storage.spec.whatwg.org/#quotaexceedederror
-  // This user agent names no requested size, so both members are `null`;
-  // they live on the subclass so a plain `DOMException` named
-  // `QuotaExceededError` does not grow them.
   globalThis.QuotaExceededError = class QuotaExceededError extends globalThis.DOMException {
     constructor(message = '') {
       super(message, 'QuotaExceededError');
@@ -2109,9 +1783,7 @@ Object.defineProperty(globalThis, 'name', {
     value: 'StorageEvent', writable: false, enumerable: false, configurable: true,
   });
 
-  /// Fires one storage event in this realm, with this realm's area as
-  /// `storageArea`
-  /// (<https://html.spec.whatwg.org/multipage/webstorage.html#concept-storage-broadcast>).
+  // https://html.spec.whatwg.org/multipage/webstorage.html#concept-storage-broadcast
   host.__tbFireStorageEvent = function(kind, key, oldValue, newValue, url) {
     host.__tbDispatchTrusted(new StorageEvent('storage', {
       key: decode(key), oldValue: decode(oldValue), newValue: decode(newValue),
@@ -2125,15 +1797,12 @@ Object.defineProperty(globalThis, 'name', {
   Object.defineProperty(globalThis, 'sessionStorage', {
     get() { return area('session'); }, configurable: true,
   });
-  // Remote-window proxies share these areas for same-origin openers.
   host.__tbStorageArea = area;
   host.__tbStorageEncode = encode;
   host.__tbStorageDecode = decode;
 })();
 
-// Platform objects and globals are not serializable; the marker travels with
-// the prototype, so it identifies an object from another realm too
-// (<https://html.spec.whatwg.org/multipage/structured-data.html#serializable-objects>).
+// https://html.spec.whatwg.org/multipage/structured-data.html#serializable-objects
 (function() {
   const names = [
     'Event', 'EventTarget', 'Node', 'DOMException', 'Attr', 'NamedNodeMap',

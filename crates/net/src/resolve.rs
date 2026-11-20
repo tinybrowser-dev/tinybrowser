@@ -3,14 +3,9 @@ use std::net::Ipv4Addr;
 use std::str::FromStr;
 use std::sync::Arc;
 
-/// Resolution-phase failure. `hyper-util` wraps it in its own connect error;
-/// keeping a distinct type lets [`crate::transport`] classify the failure as
-/// DNS instead of guessing from the message text.
 #[derive(Debug)]
 pub(crate) enum ResolveFailure {
-    /// System resolver (`getaddrinfo`) failure.
     System(std::io::Error),
-    /// A `--resolve=PATTERN=fail` rule denied the name.
     Denied,
 }
 
@@ -32,16 +27,10 @@ impl std::error::Error for ResolveFailure {
     }
 }
 
-/// A `--resolve` spec that is not `PATTERN=IPv4` or `PATTERN=fail`.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 #[error("resolve spec {0:?} must be PATTERN=IPv4 or PATTERN=fail")]
 pub struct InvalidResolveRule(Box<str>);
 
-/// One parsed `--resolve=PATTERN=ADDR` rule. First match wins.
-///
-/// The `PATTERN` is an exact host or a `*` glob; `ADDR` is an IPv4 literal or
-/// `fail`. Parsing happens at the configuration boundary, so an invalid spec
-/// is a usage error instead of a dial-time failure.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResolveRule {
     pattern: Box<str>,
@@ -51,12 +40,6 @@ pub struct ResolveRule {
 impl FromStr for ResolveRule {
     type Err = InvalidResolveRule;
 
-    /// Parses one `PATTERN=ADDR` spec.
-    ///
-    /// # Errors
-    ///
-    /// [`InvalidResolveRule`] carrying `spec` when it has no `=`, either half
-    /// is empty, or `ADDR` is neither an IPv4 literal nor `fail`.
     fn from_str(spec: &str) -> Result<Self, Self::Err> {
         let Some((pattern, addr)) = spec.split_once('=') else {
             return Err(InvalidResolveRule(spec.into()));
@@ -83,7 +66,6 @@ pub(crate) enum Target {
     Fail,
 }
 
-/// Ordered host rewrites. Empty means libc DNS. Cheap to clone.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct HostMap {
     rules: Arc<Vec<ResolveRule>>,

@@ -1,10 +1,3 @@
-//! One test262 file, run in a fresh `QuickJS` context.
-//!
-//! The harness follows TC39's INTERPRETING.md and the WPT reporter's existing
-//! choices: `assert.js` and `sta.js` first, then the declared includes, then
-//! the test. Async tests use `print`/`$DONE`, and negative tests check the
-//! constructor name of the uncaught value.
-
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fs;
@@ -21,25 +14,15 @@ use wpt_report::{Outcome, Status, Subtest, SubtestStatus};
 
 use crate::meta::{Meta, Phase};
 
-/// One file selected from the suite.
 #[derive(Clone, Debug)]
 pub struct TestCase {
-    /// Path relative to the test262 root, with `/` separators.
     pub relative: String,
-    /// Whether this is the strict variant.
     pub strict: bool,
-    /// Source text, read once before workers start.
     pub source: String,
-    /// Parsed frontmatter.
     pub meta: Meta,
 }
 
 impl TestCase {
-    /// The identifier WPT uses for this test.
-    ///
-    /// WPT replaces the `.js` extension with the wrapper suffix; it does not
-    /// append to it. The manifest must agree with the report or a baseline
-    /// diff cannot match a single test.
     #[must_use]
     pub fn wpt_id(&self) -> String {
         let stem = self.relative.strip_suffix(".js").unwrap_or(&self.relative);
@@ -52,20 +35,12 @@ impl TestCase {
     }
 }
 
-/// Sources every test can ask for, read once per process.
 pub struct Harness {
-    /// Test262 root, used by the module loader.
     pub root: PathBuf,
-    /// `harness/**/*.js`, keyed by the name test262 includes.
     pub scripts: BTreeMap<String, String>,
 }
 
 impl Harness {
-    /// Reads every harness script below `root/harness`.
-    ///
-    /// # Errors
-    ///
-    /// The harness directory or one of its scripts cannot be read.
     pub fn load(root: &Path) -> std::io::Result<Self> {
         let harness_root = root.join("harness");
         let mut scripts = BTreeMap::new();
@@ -77,7 +52,6 @@ impl Harness {
     }
 }
 
-/// Reads every `.js` below `directory`, keyed relative to `base`.
 fn collect_scripts(
     base: &Path,
     directory: &Path,
@@ -100,8 +74,6 @@ fn collect_scripts(
     Ok(())
 }
 
-/// Runs one case. The caller owns the runtime, so a worker reuses it across
-/// files.
 #[must_use]
 pub fn run(runtime: &Runtime, harness: &Harness, case: &TestCase) -> Outcome {
     let started = Instant::now();
@@ -138,25 +110,19 @@ pub fn run(runtime: &Runtime, harness: &Harness, case: &TestCase) -> Outcome {
     }
 }
 
-/// What one file produced.
 enum Verdict {
     Pass,
     Fail(String),
     Skip(String),
 }
 
-/// The error a test raised.
 enum Failure {
-    /// A parse or early error, reported as a `SyntaxError`.
     Syntax(String),
-    /// A module import did not resolve or load.
     Resolution(String),
-    /// A thrown JavaScript value.
     Runtime {
         name: Option<String>,
         message: String,
     },
-    /// The harness itself or the host rejected the test.
     Host(String),
 }
 
@@ -212,10 +178,6 @@ fn run_file(runtime: &Runtime, harness: &Harness, case: &TestCase) -> Verdict {
     finish(runtime, &case.meta, &async_result)
 }
 
-/// Runs a `flags: [module]` file through `QuickJS`'s module loader.
-///
-/// Modules are strict by definition. Top-level await resolves through
-/// `Promise::finish`, which drives pending jobs until the module settles.
 fn run_module(runtime: &Runtime, harness: &Harness, case: &TestCase) -> Verdict {
     let async_result: Rc<RefCell<Option<Result<(), String>>>> = Rc::new(RefCell::new(None));
     let context = match Context::full(runtime) {
@@ -248,7 +210,6 @@ fn run_module(runtime: &Runtime, harness: &Harness, case: &TestCase) -> Verdict 
     finish(runtime, &case.meta, &async_result)
 }
 
-/// Installs the host and runs the harness scripts a test is built on.
 fn prepare(
     ctx: &Ctx<'_>,
     harness: &Harness,
@@ -292,7 +253,6 @@ fn prepare(
     None
 }
 
-/// Applies the async result after a test that finished its body.
 fn finish(
     runtime: &Runtime,
     meta: &Meta,
@@ -311,12 +271,6 @@ fn finish(
     }
 }
 
-/// The verdict for a test body that ran to the end without raising.
-///
-/// A `negative:` test exists to make the engine throw, so completing is the
-/// same failure test262's own harness reports as "expected exception was not
-/// thrown". `$DONOTEVALUATE` covers the tests that police themselves from
-/// inside the file; the frontmatter covers the rest.
 fn completed(meta: &Meta) -> Verdict {
     match &meta.negative {
         Some(negative) => Verdict::Fail(format!(
@@ -327,7 +281,6 @@ fn completed(meta: &Meta) -> Verdict {
     }
 }
 
-/// Applies `negative:` metadata to the error the file raised.
 fn classify_failure(meta: &Meta, failure: &Failure) -> Verdict {
     let Some(negative) = &meta.negative else {
         return Verdict::Fail(failure.message());
@@ -345,7 +298,6 @@ fn classify_failure(meta: &Meta, failure: &Failure) -> Verdict {
     Verdict::Fail(format!("expected {expected}, got {}", failure.message()))
 }
 
-/// Installs `print` and `$262` into a fresh context.
 fn install_host(
     ctx: &Ctx<'_>,
     async_result: Rc<RefCell<Option<Result<(), String>>>>,
@@ -379,8 +331,6 @@ fn install_host(
     .map_err(|error| error.to_string())?;
     host.set("detachArrayBuffer", detach)
         .map_err(|error| error.to_string())?;
-    // `Ctx::run_gc` calls QuickJS directly and does not take the runtime lock
-    // the callback already holds, unlike `Runtime::run_gc`.
     let gc = Function::new(ctx.clone(), |ctx: Ctx<'_>| ctx.run_gc())
         .map_err(|error| error.to_string())?;
     host.set("gc", gc).map_err(|error| error.to_string())?;
@@ -389,12 +339,6 @@ fn install_host(
         .map_err(|error| error.to_string())
 }
 
-/// Evaluates one script in sloppy mode and maps a thrown value to a
-/// [`Failure`].
-///
-/// test262 runs non-strict tests in sloppy mode, and a strict variant adds its
-/// own `"use strict";` prefix. `Ctx::eval` defaults to strict, so every script
-/// goes through `EvalOptions` explicitly.
 fn eval(ctx: &Ctx<'_>, source: &str) -> Result<(), Failure> {
     let mut options = EvalOptions::default();
     options.strict = false;
@@ -402,8 +346,6 @@ fn eval(ctx: &Ctx<'_>, source: &str) -> Result<(), Failure> {
         .map_err(|error| failure_from_error(ctx, error))
 }
 
-/// Maps a `QuickJS` error to a [`Failure`], taking the pending JS value when
-/// there is one.
 fn failure_from_error(ctx: &Ctx<'_>, error: rquickjs::Error) -> Failure {
     match CaughtError::from_error(ctx, error) {
         CaughtError::Exception(exception) => exception_failure(&exception),
@@ -417,7 +359,6 @@ fn failure_from_error(ctx: &Ctx<'_>, error: rquickjs::Error) -> Failure {
     }
 }
 
-/// Maps a JavaScript exception object to a [`Failure`].
 fn exception_failure(exception: &rquickjs::Exception<'_>) -> Failure {
     let name = constructor_name(exception.as_object());
     let message = exception.message().unwrap_or_default();
@@ -428,7 +369,6 @@ fn exception_failure(exception: &rquickjs::Exception<'_>) -> Failure {
     }
 }
 
-/// The `constructor.name` a thrown object reports.
 fn constructor_name(object: &Object<'_>) -> Option<String> {
     object
         .get::<_, Function<'_>>("constructor")
@@ -436,10 +376,6 @@ fn constructor_name(object: &Object<'_>) -> Option<String> {
         .ok()
 }
 
-/// Maps a thrown non-`Error` value to a [`Failure`].
-///
-/// `Test262Error` is deliberately not an `Error` subclass, so the harness's
-/// own assertion failure arrives here as a plain object.
 fn value_failure(value: &Value<'_>) -> Failure {
     let Some(object) = value.as_object() else {
         return Failure::Runtime {
@@ -459,7 +395,6 @@ fn value_failure(value: &Value<'_>) -> Failure {
     Failure::Runtime { name, message }
 }
 
-/// Runs promise jobs until none remain.
 fn drain_jobs(runtime: &Runtime) -> Result<(), String> {
     loop {
         match runtime.execute_pending_job() {

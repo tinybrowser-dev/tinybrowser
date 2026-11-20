@@ -23,6 +23,22 @@ fn daemon_registers_loopback_and_second_start_reuses_it() {
         serde_json::json!(net::Identity::default().product)
     );
 
+    {
+        use std::io::{Read, Write};
+        let mut stream =
+            std::net::TcpStream::connect(("127.0.0.1", port)).expect("webdriver connect");
+        stream
+            .write_all(b"GET /status HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+            .expect("webdriver write");
+        let mut response = String::new();
+        stream
+            .read_to_string(&mut response)
+            .expect("webdriver read");
+        let body = response.split("\r\n\r\n").nth(1).expect("http body");
+        let status: serde_json::Value = serde_json::from_str(body).expect("status json");
+        assert_eq!(status["value"]["ready"], serde_json::json!(true));
+    }
+
     fixture.spawn_daemon();
     let status = fixture
         .children()

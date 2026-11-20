@@ -1,24 +1,14 @@
 // https://cookiestore.spec.whatwg.org/#cookie-store-interface
-//
-// `CookieStore` is a thin, promise-returning front end over the cookie jar.
-// The jar owns storage, retrieval order, path and domain matching, and the
-// storage model's refusals. This shim owns the spec's validation, its default
-// path computation, and the option overloads, because those refuse an
-// operation with a `TypeError` before the jar ever sees it.
 (function() {
   'use strict';
-  // `[SecureContext]`: the whole interface is absent otherwise
-  // (<https://cookiestore.spec.whatwg.org/#cookie-store-interface>).
+  // https://cookiestore.spec.whatwg.org/#cookie-store-interface
   if (host.__tbSecureContext !== true) {
     return;
   }
 
-  // To normalize a cookie name or value: remove the U+0009 TAB and U+0020
-  // SPACE at either end, and nothing else
-  // (<https://cookiestore.spec.whatwg.org/#normalize-a-cookie-name-or-value>).
+  // https://cookiestore.spec.whatwg.org/#normalize-a-cookie-name-or-value
   const kNormalizeEdges = /^[\t ]+|[\t ]+$/g;
-  // U+003B, any C0 control except U+0009 TAB, and U+007F DELETE
-  // (<https://cookiestore.spec.whatwg.org/#set-a-cookie> step 3).
+  // https://cookiestore.spec.whatwg.org/#set-a-cookie
   const kUnsafePair = /[;\u0000-\u0008\u000A-\u001F\u007F]/;
   const kMaxNameValuePair = 4096;
   const kMaxAttribute = 1024;
@@ -33,21 +23,17 @@
     return value.replace(kNormalizeEdges, '');
   }
 
-  // USVString conversion: a Symbol is a TypeError and a lone surrogate
-  // becomes U+FFFD, which `String()` alone would get wrong
-  // (<https://webidl.spec.whatwg.org/#es-USVString>).
+  // https://webidl.spec.whatwg.org/#es-USVString
   function usv(value) {
     return host.__tbUSVString(value);
   }
 
-  // The size limits count UTF-8 bytes, not UTF-16 units
-  // (<https://cookiestore.spec.whatwg.org/#cookie-maximum-name/value-pair-size>).
+  // https://cookiestore.spec.whatwg.org/#cookie-maximum-name/value-pair-size
   function utf8Length(value) {
     return host.__tbUtf8Encode(value).length;
   }
 
-  // RFC 6265 §5.1.4's serialized cookie default path
-  // (<https://datatracker.ietf.org/doc/html/rfc6265#section-5.1.4>).
+  // https://datatracker.ietf.org/doc/html/rfc6265#section-5.1.4
   function defaultPath(url) {
     const path = url.pathname;
     if (path === '' || path[0] !== '/') {
@@ -60,10 +46,7 @@
     return path.slice(0, last);
   }
 
-  // Whether `domain` is a registrable domain suffix of, or is equal to,
-  // `hostname` (<https://cookiestore.spec.whatwg.org/#set-a-cookie> step 12).
-  // Host parsing lowercases and punycodes the option, an IP address has no
-  // registrable suffix, and a public suffix is neither.
+  // https://cookiestore.spec.whatwg.org/#set-a-cookie
   function domainMatchesHost(domain, hostname) {
     if (domain === hostname) {
       return true;
@@ -90,9 +73,7 @@
         (typeof value === 'object' || typeof value === 'function');
   }
 
-  // The URL a query runs against. `options.url` may only repeat the document's
-  // creation URL, fragment aside
-  // (<https://cookiestore.spec.whatwg.org/#dom-cookiestore-getall-options>).
+  // https://cookiestore.spec.whatwg.org/#dom-cookiestore-getall-options
   function validateQueryUrl(options) {
     if (options.url === undefined) {
       return;
@@ -115,9 +96,7 @@
     }
   }
 
-  // The host encodes one cookie per line as `slot\0name\0value\0state\n`.
-  // None of those fields can hold NUL or LF once the jar accepted the cookie
-  // (<https://datatracker.ietf.org/doc/html/rfc6265#section-4.1.1>).
+  // https://datatracker.ietf.org/doc/html/rfc6265#section-4.1.1
   function decode(records) {
     const list = [];
     if (records === '') {
@@ -138,9 +117,7 @@
     return list;
   }
 
-  // The jar's records keyed by storage slot and name. A cookie with the same
-  // name can live in several slots at once, so the slot is part of the key
-  // (<https://cookiestore.spec.whatwg.org/#observable-changes>).
+  // https://cookiestore.spec.whatwg.org/#observable-changes
   function snapshotCookies() {
     const snapshot = new Map();
     for (const cookie of decode(host.__tbCookieStoreGetAll())) {
@@ -154,17 +131,14 @@
     const list = name === null
         ? cookies
         : cookies.filter(cookie => cookie.name === name);
-    // `CookieListItem` exposes exactly the name and the value
-    // (<https://cookiestore.spec.whatwg.org/#cookie-list-item>).
+    // https://cookiestore.spec.whatwg.org/#cookie-list-item
     return list.map(cookie => ({name: cookie.name, value: cookie.value}));
   }
 
-  // <https://cookiestore.spec.whatwg.org/#set-a-cookie>
+  // https://cookiestore.spec.whatwg.org/#set-a-cookie
   function buildCookie(url, name, value, expires, domain, path, sameSite,
                        partitioned, maxAge) {
-    // The IDL enum conversion runs before the algorithm, so an unknown
-    // spelling throws even when the cookie would fail validation later
-    // (<https://webidl.spec.whatwg.org/#es-enumeration>).
+    // https://webidl.spec.whatwg.org/#es-enumeration
     sameSite = cookieSameSite(sameSite);
     name = normalize(usv(name));
     value = normalize(usv(value));
@@ -221,9 +195,7 @@
       if (maxAge !== null && maxAge !== undefined) {
         return null;
       }
-      // `DOMHighResTimeStamp` is an IDL `double`, so a non-finite value is a
-      // `TypeError` before the algorithm runs
-      // (<https://webidl.spec.whatwg.org/#es-double>).
+      // https://webidl.spec.whatwg.org/#es-double
       const millis = Number(expires);
       if (!Number.isFinite(millis)) {
         throw new TypeError('expires is not a finite number');
@@ -233,8 +205,7 @@
       expires = null;
     }
     if (maxAge !== null && maxAge !== undefined) {
-      // `long long?`: finite, truncated toward zero, and inside the range
-      // (<https://webidl.spec.whatwg.org/#es-long-long>).
+      // https://webidl.spec.whatwg.org/#es-long-long
       const age = Number(maxAge);
       if (!Number.isFinite(age) || age < kLongMin || age > kLongMax) {
         throw new TypeError('maxAge is not a long long');
@@ -284,30 +255,19 @@
     if (cookie === null) {
       throw new TypeError('cookie rejected');
     }
-    // The write is typed, not a `Set-Cookie` line: the API's `path` is
-    // stored verbatim, and a line would split a `path` holding U+003B (;)
-    // into extra attributes
-    // (<https://cookiestore.spec.whatwg.org/#set-a-cookie>).
-    //
-    // The host processes this realm's observation before it returns and
-    // queues every other live one, so a `Set-Cookie` response and a script
-    // write take the same path through `processCookieChanges`
-    // (<https://cookiestore.spec.whatwg.org/#process-cookie-changes>).
+    // https://cookiestore.spec.whatwg.org/#set-a-cookie
+    // https://cookiestore.spec.whatwg.org/#process-cookie-changes
     host.__tbCookieStoreSet(cookie);
   }
 
-  // `CookieChangeEvent` and the script-side change notification. A cookie
-  // change is observed when the cookie is visible to this document's cookie
-  // URL, so the snapshot is the jar's script-visible view for that URL
-  // (<https://cookiestore.spec.whatwg.org/#observable-changes>).
+  // https://cookiestore.spec.whatwg.org/#observable-changes
   class CookieChangeEvent extends Event {
     constructor(type, init = {}) {
       super(usv(type), init);
       this.__changed = Object.freeze([]);
       this.__deleted = Object.freeze([]);
       if (init.changed !== undefined) {
-        // `changed` is a `FrozenArray<CookieListItem>`
-        // (<https://cookiestore.spec.whatwg.org/#cookiechangeevent>).
+        // https://cookiestore.spec.whatwg.org/#cookiechangeevent
         this.__changed = Object.freeze(Array.from(
             init.changed,
             item => ({name: usv(item.name), value: usv(item.value)})));
@@ -331,19 +291,10 @@
     }
   }
 
-  /// The jar state this realm last processed. A change is reported once, by
-  /// diffing the jar against this when the host asks for it, whether the
-  /// write came from this realm's script, a response header, or another
-  /// frame. A navigation installs a fresh realm, so every document starts
-  /// its own observation and a cookie its navigation stored is not a change
-  /// it witnessed
-  /// (<https://cookiestore.spec.whatwg.org/#process-cookie-changes>).
+  // https://cookiestore.spec.whatwg.org/#process-cookie-changes
   let observed = snapshotCookies();
 
-  /// Prepares the changed and deleted lists between two jar views. A
-  /// replaced cookie keeps its slot, so an attribute-only change is seen; a
-  /// cookie that disappeared from the slot is a deletion
-  /// (<https://cookiestore.spec.whatwg.org/#prepare-lists>).
+  // https://cookiestore.spec.whatwg.org/#prepare-lists
   function cookieChangeLists(before, after) {
     const changed = [];
     const deleted = [];
@@ -355,17 +306,14 @@
     }
     for (const [key, cookie] of before) {
       if (!after.has(key)) {
-        // A deleted item's value is undefined
-        // (<https://cookiestore.spec.whatwg.org/#prepare-lists>).
+        // https://cookiestore.spec.whatwg.org/#prepare-lists
         deleted.push({name: cookie.name, value: undefined});
       }
     }
     return {changed, deleted};
   }
 
-  /// "Process cookie changes": the change set is the jar now, not at
-  /// delivery, so two writes that land before this runs are one event
-  /// (<https://cookiestore.spec.whatwg.org/#process-cookie-changes>).
+  // https://cookiestore.spec.whatwg.org/#process-cookie-changes
   function processCookieChanges() {
     const after = snapshotCookies();
     const lists = cookieChangeLists(observed, after);
@@ -373,13 +321,7 @@
     if (lists.changed.length === 0 && lists.deleted.length === 0) {
       return;
     }
-    // The spec queues a global task on the DOM manipulation task source
-    // (<https://cookiestore.spec.whatwg.org/#process-cookie-changes>); this
-    // realm has no task source the shim can queue on, so the event is a
-    // promise job instead. See docs/limitations.md.
-    //
-    // "Fire a change event" creates the event itself, so it carries the
-    // trusted flag: script dispatch would clear it.
+    // https://cookiestore.spec.whatwg.org/#process-cookie-changes
     Promise.resolve().then(() => {
       host.__tbDispatchTargetTrusted(
           globalThis.cookieStore,
@@ -389,7 +331,7 @@
 
   function cookieStoreOperation(steps) {
     if (kOpaqueOrigin) {
-      // <https://cookiestore.spec.whatwg.org/#dom-cookiestore-get>
+      // https://cookiestore.spec.whatwg.org/#dom-cookiestore-get
       return Promise.reject(
           new DOMException('opaque origin', 'SecurityError'));
     }
@@ -401,12 +343,8 @@
   }
 
   class CookieStore extends EventTarget {
-    // `[Exposed=Window] attribute EventHandler onchange`
-    // (<https://cookiestore.spec.whatwg.org/#window-cookiestore>). This is an
-    // event handler attribute, not a listener: the engine reads it at
-    // dispatch time through the handler-attribute path and calls it once,
-    // after the listener list
-    // (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-attributes>).
+    // https://cookiestore.spec.whatwg.org/#window-cookiestore
+    // https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-attributes
     get onchange() {
       return this.__onchange === undefined ? null : this.__onchange;
     }
@@ -415,16 +353,14 @@
       this.__onchange = typeof handler === 'function' ? handler : null;
     }
 
-    // `get.length` is 0: the dictionary overload needs no required argument
-    // (<https://webidl.spec.whatwg.org/#overload-resolution-algorithm>).
+    // https://webidl.spec.whatwg.org/#overload-resolution-algorithm
     get(nameOrOptions = undefined) {
       return cookieStoreOperation(() => {
         if (nameOrOptions === undefined || nameOrOptions === null ||
             isObject(nameOrOptions)) {
           const options = dictionary(nameOrOptions);
           if (options.name === undefined && options.url === undefined) {
-            // An empty `options` dictionary is a `TypeError`
-            // (<https://cookiestore.spec.whatwg.org/#dom-cookiestore-get>).
+            // https://cookiestore.spec.whatwg.org/#dom-cookiestore-get
             throw new TypeError('get() needs a name or url');
           }
           validateQueryUrl(options);
@@ -452,7 +388,6 @@
       });
     }
 
-    // `set.length` is 1: the dictionary overload needs one required argument.
     set(nameOrOptions, value = undefined) {
       return cookieStoreOperation(() => {
         if (arguments.length >= 2) {
@@ -479,10 +414,7 @@
         let name;
         let domain = null;
         let path = '/';
-        // The spec's `delete(name)` step passes `partitioned` as true, but
-        // WPT `cookieStore_get_delete_basic` sets the cookie with the
-        // positional overload (unpartitioned) and expects this delete to
-        // remove it, and both Chrome and Firefox do remove it. Follow them.
+        // https://cookiestore.spec.whatwg.org/#dom-cookiestore-delete — delete(name) does not force partitioned: true, matching Chrome and Firefox
         let partitioned = false;
         if (nameOrOptions === undefined || nameOrOptions === null ||
             isObject(nameOrOptions)) {
@@ -499,8 +431,7 @@
         } else {
           name = nameOrOptions;
         }
-        // An empty name needs a non-empty value to reach the storage model
-        // (<https://cookiestore.spec.whatwg.org/#delete-a-cookie>).
+        // https://cookiestore.spec.whatwg.org/#delete-a-cookie
         const value = normalize(usv(name)).length === 0 ? 'deleted' : '';
         storeCookie(buildCookie(kCreationUrl, name, value, null, domain, path,
                                 'strict', partitioned, 0));
@@ -520,8 +451,7 @@
   globalThis.CookieStore = CookieStore;
   globalThis.CookieChangeEvent = CookieChangeEvent;
 
-  // `[SameObject] readonly attribute CookieStore cookieStore`
-  // (<https://cookiestore.spec.whatwg.org/#window-cookiestore>).
+  // https://cookiestore.spec.whatwg.org/#window-cookiestore
   const store = new CookieStore();
   Object.defineProperty(globalThis, 'cookieStore', {
     value: store,
@@ -530,9 +460,6 @@
     writable: false,
   });
 
-  // The host queues "process cookie changes" in every live realm when the
-  // jar changes, whichever way it changed. An opaque origin exposes no
-  // `CookieStore`, so it installs no observer to run.
   if (!kOpaqueOrigin) {
     globalThis.__tbCookieStoreProcessChanges = processCookieChanges;
   }

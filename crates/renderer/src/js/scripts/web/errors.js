@@ -1,14 +1,11 @@
-// Uncaught-error plumbing: the `ErrorEvent` interface and the bridge the host
-// calls when a script or an event handler throws
-// (<https://html.spec.whatwg.org/multipage/webappapis.html#report-the-error>).
+// https://html.spec.whatwg.org/multipage/webappapis.html#report-the-error
 (function() {
   const errorData = host.slots('ErrorEvent');
   const rejectionData = host.slots('PromiseRejectionEvent');
   const EventConstructor = globalThis.Event;
   const construct = Reflect.construct;
 
-  // `ErrorEventInit` members beyond `EventInit`
-  // (<https://html.spec.whatwg.org/multipage/webappapis.html#erroreventinit>).
+  // https://html.spec.whatwg.org/multipage/webappapis.html#erroreventinit
   function ErrorEvent(type) {
     if (new.target === undefined) {
       throw new TypeError('Class constructor ErrorEvent cannot be invoked without new');
@@ -54,8 +51,7 @@
     value: ErrorEvent, writable: true, configurable: true,
   });
 
-  // `PromiseRejectionEventInit`: `promise` is required, `reason` defaults to
-  // undefined (<https://html.spec.whatwg.org/multipage/webappapis.html#promiserejectioneventinit>).
+  // https://html.spec.whatwg.org/multipage/webappapis.html#promiserejectioneventinit
   function PromiseRejectionEvent(type) {
     if (new.target === undefined) {
       throw new TypeError('Class constructor PromiseRejectionEvent cannot be invoked without new');
@@ -88,9 +84,6 @@
     value: PromiseRejectionEvent, writable: true, configurable: true,
   });
 
-  // The first stack frame that names a source location, script-relative:
-  // `at fn (file:line:col)` at runtime, `at file:line:col` for the parser's
-  // own errors.
   const locationOf = stack => {
     if (typeof stack !== 'string') return null;
     for (const frame of stack.split('\n')) {
@@ -102,19 +95,13 @@
     return null;
   };
 
-  // The throw site's own file wins when the stack names one: an
-  // `importScripts` exception is reported against the imported script, not
-  // the worker script that called it
-  // (<https://html.spec.whatwg.org/multipage/webappapis.html#report-an-exception>).
+  // https://html.spec.whatwg.org/multipage/webappapis.html#report-an-exception
   const fileOf = (location, filename) => {
     if (location === null) return filename;
     return /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(location.file) ? location.file : filename;
   };
 
-  // The message browsers put on the `error` event: the thrown value's class,
-  // then its message ("Uncaught TypeError: ..."). Workers WPT checks both
-  // parts, and every engine prefixes the class for an Error or DOMException
-  // (<https://html.spec.whatwg.org/multipage/webappapis.html#report-an-exception>).
+  // https://html.spec.whatwg.org/multipage/webappapis.html#report-an-exception
   const describe = caught => {
     const isObject =
       caught !== null && (typeof caught === 'object' || typeof caught === 'function');
@@ -134,16 +121,11 @@
     };
   };
 
-  // A document line is the stack's script-relative line shifted by the
-  // script's first line. A worker script passes 0 because its source starts at
-  // line 1, so the stack line is already the worker line.
   const lineOf = (location, baseLine) => {
     if (location === null) return baseLine;
     return baseLine === 0 ? location.line : baseLine + location.line - 1;
   };
 
-  // One report at a time: an exception thrown by the `onerror` handler itself
-  // is not reported back into `onerror` again.
   let reporting = false;
 
   host.__tbReportException = function(caught, meta) {
@@ -163,12 +145,7 @@
       };
     };
     if (reporting) {
-      // The exception came from a handler that is already reporting one. It
-      // is not dispatched at this global a second time (that would recurse),
-      // but a worker owner still hears about it: the spec's error reporting
-      // reports the handler's exception like any other uncaught error, and the
-      // `Worker` object is the worker's error event target
-      // (<https://html.spec.whatwg.org/multipage/webappapis.html#report-an-exception>).
+      // https://html.spec.whatwg.org/multipage/webappapis.html#report-an-exception
       if (typeof host.__tbWorkerUnhandled === 'function') {
         const { filename, lineno, colno } = details();
         host.__tbWorkerUnhandled(info.message, filename, lineno, colno);
@@ -183,16 +160,12 @@
         filename,
         lineno,
         colno,
-        // The thrown value itself, whatever its type: `throw "hello"` reports
-        // the string, not null
-        // (<https://html.spec.whatwg.org/multipage/webappapis.html#report-an-exception>).
+        // https://html.spec.whatwg.org/multipage/webappapis.html#report-an-exception
         error: caught,
         cancelable: true,
       });
       host.__tbDispatchTrusted(event);
-      // A worker global reports an unhandled exception to its owner as an
-      // `error` event on the `Worker` object
-      // (<https://html.spec.whatwg.org/multipage/workers.html#runtime-script-errors-in-workers>).
+      // https://html.spec.whatwg.org/multipage/workers.html#runtime-script-errors-in-workers
       if (!event.defaultPrevented && typeof host.__tbWorkerUnhandled === 'function') {
         host.__tbWorkerUnhandled(info.message, filename, event.lineno, event.colno);
       }
@@ -205,12 +178,7 @@
     writable: false, configurable: false, enumerable: false,
   });
 
-  // Reports an error that already has its message and location: a worker's
-  // unhandled exception arriving at its owner's global. It follows the same
-  // steps as `__tbReportException` after the error value is known, so a nested
-  // worker keeps walking up to the document
-  // (<https://html.spec.whatwg.org/multipage/webappapis.html#report-an-exception>,
-  // step 7.2).
+  // https://html.spec.whatwg.org/multipage/webappapis.html#report-an-exception
   host.__tbReportError = function(message, filename, lineno, colno) {
     const event = new ErrorEvent('error', {
       message,
@@ -229,10 +197,7 @@
     writable: false, configurable: false, enumerable: false,
   });
 
-  // The host calls this at the end of a microtask checkpoint for a promise
-  // rejected without a handler, and again if a handler is attached after the
-  // rejection was reported
-  // (<https://html.spec.whatwg.org/multipage/webappapis.html#unhandled-promise-rejections>).
+  // https://html.spec.whatwg.org/multipage/webappapis.html#unhandled-promise-rejections
   host.__tbPromiseRejection = function(handled, promise, reason) {
     const event = new PromiseRejectionEvent(
       handled ? 'rejectionhandled' : 'unhandledrejection',

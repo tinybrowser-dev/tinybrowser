@@ -1,16 +1,3 @@
-//! Browser-loadable tinybrowser page engine component.
-//!
-//! The component runs the browser's own fetch core: the driver shapes one page
-//! dial with [`dial`], [`net::Agent`] applies redirects, cookies, CORS,
-//! `Sec-Fetch-*`, and the referrer, and the host transport moves the bytes one
-//! exchange at a time through the host contract. The native browser runs the
-//! same core over hyper, so the two hosts differ in who owns a socket, not in
-//! what a page sees.
-//!
-//! The component has no executor. A dial's future is polled once when the
-//! renderer asks for it, then again each time the host delivers the exchange
-//! that future waits on — the same loop `engine.step` already drives.
-
 mod driver;
 mod host_transport;
 
@@ -50,11 +37,6 @@ use crate::bindings::tinybrowser::browser::host;
 use crate::bindings::tinybrowser::browser::types::{FetchError, FetchResponse};
 use crate::host_transport::HostTransport;
 
-/// The component's fetch core and the port it moves bytes through.
-///
-/// One instance serves every tab: the agent owns the cookie jar, so every dial
-/// must pass through the same transport for the jar to see one set of
-/// responses.
 struct Network {
     agent: Agent,
     transport: Arc<HostTransport>,
@@ -66,8 +48,6 @@ fn network() -> &'static Network {
         let transport = Arc::new(HostTransport::new(
             u64::try_from(renderer::MAX_RESPONSE_BODY_BYTES).unwrap_or(u64::MAX),
         ));
-        // Every hop is bounded by the per-call cap; each dial's own deadline
-        // travels on its request, so a page's `timeout_ms` can only tighten it.
         let agent = Agent::with_transport(
             AgentOptions {
                 timeout_per_call: Some(dial::PAGE_FETCH_TIMEOUT),
@@ -79,10 +59,6 @@ fn network() -> &'static Network {
     })
 }
 
-/// Shared font database for all tabs created in this wasm instance.
-///
-/// The host registers webfont bytes via `engine.register-font`; cloning the
-/// handle into each tab is a cheap reference-count bump.
 fn fonts() -> &'static Mutex<renderer::Fonts> {
     static FONTS: OnceLock<Mutex<renderer::Fonts>> = OnceLock::new();
     FONTS.get_or_init(|| Mutex::new(renderer::Fonts::default()))
@@ -111,7 +87,6 @@ impl Guest for Component {
     }
 }
 
-/// Completed top-level `goto` waiting for the next `step` to mount it.
 type PendingNavigation = Arc<Mutex<Option<Result<Mount, String>>>>;
 
 struct Tab {
@@ -239,8 +214,6 @@ impl GuestTab for Tab {
             }
         }
         let mut renderer = self.renderer.borrow_mut();
-        // Fired timers sit in the task queue and are not a deadline. A yield
-        // with `time_until_deadline() == None` would idle the host forever.
         let delay = if renderer.drain_ready() {
             Some(std::time::Duration::ZERO)
         } else {
@@ -305,11 +278,6 @@ impl Tab {
     }
 }
 
-/// The renderer's event vocabulary, restricted to what this component emits.
-///
-/// The embedded engine has no auxiliary browsing contexts and its host owns
-/// the single tab, so the browser's joint-history bookkeeping events stay
-/// inside the engine instead of crossing the component boundary.
 fn to_event(event: RendererEvent) -> Option<Event> {
     match event {
         RendererEvent::Browser(event) => match event {
@@ -340,24 +308,19 @@ fn to_event(event: RendererEvent) -> Option<Event> {
     }
 }
 
-/// The dials one tab has in flight.
 struct DialRegistry {
     dials: Mutex<HashMap<u64, Dial>>,
 }
 
-/// One dial: either a subresource request or a top-level `goto` navigation.
 struct Dial {
     owner: u64,
     task: DialTask,
-    /// The host exchange this dial waits on while it is parked.
     waiting_on: Option<u64>,
 }
 
 enum DialTask {
     Subresource {
         future: Pin<Box<dyn Future<Output = Result<DialOutcome, DialFailure>> + Send>>,
-        /// Taken exactly once: by the poll that finishes the dial, or by a
-        /// cancellation.
         completion: Option<DialCompletion>,
     },
     Navigation {
@@ -409,8 +372,6 @@ impl DialRegistry {
         }
     }
 
-    /// Polls one dial once, then either completes it or parks it until the host
-    /// answers the exchange that poll opened.
     fn poll(registry: &Arc<Self>, id: u64, mut dial: Dial) {
         let transport = &network().transport;
         let mut context = Context::from_waker(Waker::noop());
@@ -426,15 +387,12 @@ impl DialRegistry {
                     lock(&registry.dials).insert(id, dial);
                 }
                 None => {
-                    // The core is waiting on something no exchange will answer.
-                    // Fail the dial instead of parking the tab forever.
                     dial.fail(DialFailure::Connect);
                 }
             },
         }
     }
 
-    /// Fails one dial and stops the host work it started.
     fn cancel(&self, id: u64) {
         let Some(mut dial) = lock(&self.dials).remove(&id) else {
             return;
@@ -443,7 +401,6 @@ impl DialRegistry {
         dial.fail(DialFailure::Cancelled);
     }
 
-    /// Stops the host exchange a parked dial waits on, if any.
     fn stop(dial: &mut Dial) {
         let Some(host_id) = dial.waiting_on.take() else {
             return;
@@ -454,11 +411,6 @@ impl DialRegistry {
     }
 }
 
-/// Dials parked on a host exchange, keyed by the exchange the host must answer.
-///
-/// Every entry is removed by the completion, the cancellation, or the tab
-/// teardown that ends it, so the map only ever holds work the host still owes.
-/// The tab and dial an exchange resumes when the host answers it.
 type Parked = (Arc<DialRegistry>, u64);
 
 fn waiting_dials() -> &'static Mutex<HashMap<u64, Parked>> {
@@ -466,33 +418,22 @@ fn waiting_dials() -> &'static Mutex<HashMap<u64, Parked>> {
     WAITING.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// The component's local storage areas, keyed by origin. Each [`StorageArea`]
-/// keeps insertion order for `key(index)` and enumeration; the outer map only
-/// indexes areas by origin. A browser tab has no profile on disk, so the areas
-/// die with the component.
 fn local_storage() -> &'static Mutex<HashMap<renderer::StorageKey, StorageArea>> {
     static AREAS: OnceLock<Mutex<HashMap<renderer::StorageKey, StorageArea>>> = OnceLock::new();
     AREAS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// `indexedDB` rows shared by every realm of this wasm instance.
 fn indexed_db() -> &'static Mutex<HashMap<renderer::StorageKey, StorageArea>> {
     static AREAS: OnceLock<Mutex<HashMap<renderer::StorageKey, StorageArea>>> = OnceLock::new();
     AREAS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Session storage namespaces keyed by component tab owner.
 fn session_storage() -> &'static Mutex<HashMap<u64, HashMap<renderer::StorageKey, StorageArea>>> {
     static NAMESPACES: OnceLock<Mutex<HashMap<u64, HashMap<renderer::StorageKey, StorageArea>>>> =
         OnceLock::new();
     NAMESPACES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Locks a shared map or registry, recovering from a panicking holder.
-///
-/// A poisoned lock means some earlier operation panicked. These maps hold no
-/// cross-entry invariant a panic can break, so the next caller can continue
-/// with the state that was committed.
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -516,7 +457,6 @@ impl WasmServices {
 
 impl NetworkHost for WasmServices {
     fn start_dial(&self, request: DialRequest, completion: DialCompletion) -> DialCancellation {
-        // An opaque origin has no URL to fetch under and no initiator to name.
         let Some(initiator) = request.initiator.to_url().map(|url| url.origin()) else {
             completion(Err(DialFailure::Connect));
             return Box::new(|| {});

@@ -20,8 +20,7 @@
       throw new TypeError('1 argument required, but only 0 present');
     }
     const event = __tbApply(host.__tb_new_security_policy_violation_event, globalThis, arguments);
-    // A subclass constructor keeps its own prototype
-    // (<https://webidl.spec.whatwg.org/#interface-object>).
+    // https://webidl.spec.whatwg.org/#interface-object
     if (new.target !== SecurityPolicyViolationEvent) {
       __tbSetPrototypeOf(event, new.target.prototype);
     }

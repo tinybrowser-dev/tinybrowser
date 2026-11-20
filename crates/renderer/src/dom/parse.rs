@@ -1,20 +1,9 @@
-//! Infra-spec string parsing rules (realm-free).
-
-/// ASCII whitespace for the HTML parsing rules: space, tab, LF, FF, CR.
-/// Notably not vertical tab or other Unicode spaces, which stop parsing
-/// instead of being skipped
-/// (<https://infra.spec.whatwg.org/#ascii-whitespace>).
+// https://infra.spec.whatwg.org/#ascii-whitespace
 pub(crate) fn is_html_whitespace(char: Option<&char>) -> bool {
     matches!(char, Some(' ' | '\t' | '\n' | '\u{c}' | '\r'))
 }
 
-/// The HTML rules for parsing integers: skip ASCII whitespace, take an
-/// optional sign, require an ASCII digit, then consume digits and ignore
-/// whatever follows them
-/// (<https://infra.spec.whatwg.org/#rules-for-parsing-integers>).
-///
-/// Overflow bails to `None` like a parse failure: reflection sites map both
-/// to the IDL default, so the distinction is unobservable there.
+// https://infra.spec.whatwg.org/#rules-for-parsing-integers
 pub(crate) fn parse_integer(value: &str) -> Option<i32> {
     let mut chars = value.chars().peekable();
     while is_html_whitespace(chars.peek()) {
@@ -43,11 +32,7 @@ pub(crate) fn parse_integer(value: &str) -> Option<i32> {
     i32::try_from(result).ok()
 }
 
-/// The HTML rules for parsing non-negative integers (ASCII whitespace,
-/// an optional `+`, ASCII digits with trailing garbage ignored), capped at
-/// 2^31 - 1 like unsigned-long reflection: larger values fail, `-0` still
-/// yields `0`
-/// (<https://infra.spec.whatwg.org/#rules-for-parsing-non-negative-integers>).
+// https://infra.spec.whatwg.org/#rules-for-parsing-non-negative-integers
 pub(crate) fn parse_non_negative_integer(value: &str) -> Option<u32> {
     match parse_integer(value)? {
         0 => Some(0),
@@ -56,13 +41,7 @@ pub(crate) fn parse_non_negative_integer(value: &str) -> Option<u32> {
     }
 }
 
-/// The HTML rules for parsing floating-point number values: skip ASCII
-/// whitespace, take an optional sign, read an integer and fraction part,
-/// then an optional exponent; trailing garbage is ignored
-/// (<https://infra.spec.whatwg.org/#rules-for-parsing-floating-point-number-values>).
-///
-/// Failure and non-finite results both bail to `None`: reflection sites map
-/// either to the IDL default.
+// https://infra.spec.whatwg.org/#rules-for-parsing-floating-point-number-values
 pub(crate) fn parse_double(value: &str) -> Option<f64> {
     let bytes = value.as_bytes();
     let mut pos = 0;
@@ -102,12 +81,8 @@ pub(crate) fn parse_double(value: &str) -> Option<f64> {
             pos = probe;
         }
     }
-    // The scanner above accepts exactly the spec's grammar, so the standard
-    // parser (correctly rounded, with proper overflow handling) converts it:
-    // `0e999999` is 0, `1e999` overflows to infinity (failure here).
     let parsed: f64 = value[start..pos].parse().ok()?;
     if parsed.is_finite() {
-        // The value set excludes `-0`: adding `+0` normalizes it.
         Some(parsed + 0.0)
     } else {
         None

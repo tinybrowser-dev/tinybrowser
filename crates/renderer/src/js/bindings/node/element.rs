@@ -1,6 +1,3 @@
-//! Element interfaces: `Element`, `HTMLElement`, `SVG` and `MathML` elements,
-//! ARIA and editing mixins, hyperlink utilities, and generic reflection.
-
 use super::super::{
     AttrArgument, CollectionKind, JsNamedNodeMap, JsTokenList, LegacyNullString, NodeContext,
     NodeOrString, OptString, WebIdlString, active_world, after_attribute_change, attached_attr_id,
@@ -55,13 +52,8 @@ include!(concat!(env!("OUT_DIR"), "/ElementCSSInlineStyle.rs"));
 include!(concat!(env!("OUT_DIR"), "/ElementContentEditable.rs"));
 include!(concat!(env!("OUT_DIR"), "/HTMLHyperlinkElementUtils.rs"));
 
-/// Run the scripts in newly inserted markup, in tree order, which is
-/// `setHTMLUnsafe(runScripts: true)`: "scripts contained in html will be
-/// executed immediately after the node tree is updated"
-/// (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-element-sethtmlunsafe>).
-/// A script that is not connected to the document, such as one inside template
-/// contents, is skipped by "prepare the script element"
-/// (<https://html.spec.whatwg.org/multipage/scripting.html#prepare-the-script-element>).
+// https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-element-sethtmlunsafe
+// https://html.spec.whatwg.org/multipage/scripting.html#prepare-the-script-element
 fn run_inserted_scripts(ctx: &Ctx<'_>, roots: &[NodeId]) -> Result<()> {
     let mut scripts = Vec::new();
     for root in roots {
@@ -100,26 +92,18 @@ fn collect_scripts(ctx: &Ctx<'_>, id: NodeId, out: &mut Vec<NodeId>) -> Result<(
     Ok(())
 }
 
-/// Replace `target`'s children (or its template contents, or a shadow root's
-/// children) with parsed `markup`.
-///
-/// `innerHTML` and `setHTMLUnsafe` share this: both parse a fragment in the
-/// target's context and replace its children, and only `setHTMLUnsafe` runs the
-/// scripts afterwards
-/// (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#fragment-parsing-algorithm-steps>).
+// https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#fragment-parsing-algorithm-steps
 pub(super) fn replace_with_markup(
     ctx: &Ctx<'_>,
     target: NodeId,
     markup: &str,
     run_scripts: bool,
 ) -> Result<()> {
-    // Adoption by copy leaves a stale handle behind; parse into the live
-    // container (https://dom.spec.whatwg.org/#concept-node-adopt).
+    // https://dom.spec.whatwg.org/#concept-node-adopt
     let element = super::super::realm_registry(ctx)?
         .borrow_mut()
         .live_node_id(target);
-    // A shadow root's fragment parsing context is its host
-    // (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-shadowroot-innerhtml>).
+    // https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-shadowroot-innerhtml
     let context = super::document::inner_html_fragment_context(ctx, element)?;
 
     let snapshots = {
@@ -128,9 +112,7 @@ pub(super) fn replace_with_markup(
     };
 
     let container = element;
-    // A template's markup lands in its template contents, not its (empty)
-    // children
-    // (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-element-innerhtml>).
+    // https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-element-innerhtml
     let container = world_for_node(ctx, container)?
         .borrow()
         .document(container)
@@ -156,16 +138,11 @@ pub(super) fn replace_with_markup(
     drop(world);
     fixup_controls_on_insert(ctx, container.document, &controls)?;
     register_inserted_iframes(ctx, &added)?;
-    // Parsed content attributes never pass through the DOM setter, so their
-    // handler change steps run as part of the insertion, before the
-    // fragment's scripts
-    // (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes>).
+    // https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes
     for root in &added {
         super::super::install_parsed_handlers(ctx, *root)?;
     }
-    // Scripts run as part of the insertion, before the custom element
-    // reactions `[CEReactions]` flushes when the method returns
-    // (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-element-sethtmlunsafe>).
+    // https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-element-sethtmlunsafe
     if run_scripts {
         run_inserted_scripts(ctx, &added)?;
     }
@@ -173,12 +150,7 @@ pub(super) fn replace_with_markup(
     schedule_mutation_delivery(ctx)
 }
 
-/// The host side of `setHTMLUnsafe` for an `Element` or `ShadowRoot`. The
-/// interface operation itself installs in JS because its `(TrustedHTML or
-/// DOMString)` argument and `SetHTMLUnsafeOptions` dictionary are unions the
-/// binding generator does not lower yet; the receiver and target rules stay
-/// here, where the tree state lives
-/// (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-element-sethtmlunsafe>).
+// https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-element-sethtmlunsafe
 pub(crate) fn set_html_unsafe_host<'js>(
     ctx: Ctx<'js>,
     value: Value<'js>,
@@ -209,19 +181,13 @@ pub(crate) fn set_html_unsafe_host<'js>(
     replace_with_markup(&ctx, target, &html, run_scripts)
 }
 
-/// Where a `*HTMLUnsafe` insertion method puts the parsed fragment
-/// (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-element-appendhtmlunsafe>).
+// https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-element-appendhtmlunsafe
 #[derive(Clone, Copy)]
 pub(crate) enum InsertPosition {
-    /// `appendHTMLUnsafe`
     Append,
-    /// `prependHTMLUnsafe`
     Prepend,
-    /// `beforeHTMLUnsafe`
     Before,
-    /// `afterHTMLUnsafe`
     After,
-    /// `replaceWithHTMLUnsafe`
     ReplaceWith,
 }
 
@@ -237,10 +203,8 @@ impl InsertPosition {
         }
     }
 
-    /// The receiver kinds the method is exposed on: `ParentNode`'s mixin for
-    /// the container positions, `ChildNode`'s for the sibling positions
-    /// (<https://dom.spec.whatwg.org/#interface-parentnode>,
-    /// <https://dom.spec.whatwg.org/#interface-childnode>).
+    // https://dom.spec.whatwg.org/#interface-parentnode
+    // https://dom.spec.whatwg.org/#interface-childnode
     fn accepts(self, data: &NodeData) -> bool {
         match self {
             Self::Append | Self::Prepend => {
@@ -258,24 +222,16 @@ impl InsertPosition {
     }
 }
 
-/// The resolved insertion point of an `*HTMLUnsafe` method.
 struct InsertionPoint {
-    /// The node whose children receive the fragment.
     container: NodeId,
-    /// The node to insert before; `None` appends.
     reference: Option<NodeId>,
-    /// The fragment parsing context element's local name.
     context: String,
-    /// The node whose subtree's custom elements upgrade after insertion.
     upgrade_root: NodeId,
-    /// The node the insertion replaces (`replaceWithHTMLUnsafe`).
     replaced: Option<NodeId>,
 }
 
-/// Resolves where `position` on `target` inserts, applying the spec's "target
-/// for HTML insertion" and "parent for HTML insertion" rules
-/// (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#target-for-html-insertion>,
-/// <https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#parent-for-html-insertion>).
+// https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#target-for-html-insertion
+// https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#parent-for-html-insertion
 fn insertion_point(
     ctx: &Ctx<'_>,
     target: NodeId,
@@ -305,8 +261,7 @@ fn insertion_point(
     }
 }
 
-/// The `appendHTMLUnsafe`/`prependHTMLUnsafe` insertion point
-/// (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#target-for-html-insertion>).
+// https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#target-for-html-insertion
 fn container_point(
     ctx: &Ctx<'_>,
     world: &World,
@@ -327,18 +282,13 @@ fn container_point(
                 .ok_or_else(|| Exception::throw_type(ctx, "shadow root has no host"))?;
             html_fragment_context(&host.name)
         }
-        // `InsertPosition::accepts` rejected every other kind
         _ => unreachable!(),
     };
-    // `target for HTML insertion` unwraps a template to its contents, while
-    // the fragment still parses in the template element itself
-    // (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#target-for-html-insertion>).
+    // https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#target-for-html-insertion
     let container = match node.data {
         NodeData::Element(_) => template_contents_target(&parsed.document, target),
         _ => target,
     };
-    // The container may live in the template's inert document, so its children
-    // come from that document's tree, not `target`'s
     let container_base = world
         .document(container)
         .ok_or_else(|| Exception::throw_type(ctx, "no document"))?;
@@ -364,9 +314,7 @@ fn container_point(
     })
 }
 
-/// The `beforeHTMLUnsafe`/`afterHTMLUnsafe`/`replaceWithHTMLUnsafe` insertion
-/// point; `None` when the receiver has no parent
-/// (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#parent-for-html-insertion>).
+// https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#parent-for-html-insertion
 fn child_point(
     ctx: &Ctx<'_>,
     world: &World,
@@ -388,10 +336,7 @@ fn child_point(
         return Err(Exception::throw_type(ctx, "stale node"));
     };
     let context = parent_context(ctx, world, parsed, &parent_node.data)?;
-    // The fragment goes in where the receiver was. `replace`'s reference child
-    // is the receiver's next sibling: the receiver is removed first, so it
-    // cannot be the anchor
-    // (<https://dom.spec.whatwg.org/#concept-node-replace>).
+    // https://dom.spec.whatwg.org/#concept-node-replace
     let reference = match position {
         InsertPosition::Before => Some(target),
         _ => sibling(base, target.node, true).map(|node| NodeId {
@@ -413,9 +358,7 @@ fn child_point(
     }))
 }
 
-/// The fragment parsing context of a child insertion: the parent element, the
-/// host of a `DocumentFragment` or shadow root, and a throw for anything else
-/// (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#parent-for-html-insertion>).
+// https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#parent-for-html-insertion
 fn parent_context(
     ctx: &Ctx<'_>,
     world: &World,
@@ -425,10 +368,7 @@ fn parent_context(
     let base = &parsed.document.base;
     match data {
         NodeData::Element(element) => {
-            // A child of the root `html` element has no HTML insertion parent;
-            // the method throws instead of building a tree the document
-            // content model rejects
-            // (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#filter-and-pre-insert-html>).
+            // https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#filter-and-pre-insert-html
             if element.name.ns == html_namespace()
                 && element.name.local == markup5ever::local_name!("html")
             {
@@ -447,10 +387,7 @@ fn parent_context(
                 .ok_or_else(|| Exception::throw_type(ctx, "fragment has no host"))?;
             Ok(html_fragment_context(&host.name))
         }
-        // Template contents live in their own inert document, where the
-        // fragment cannot name its host element; the side table carries the
-        // back link
-        // (<https://html.spec.whatwg.org/multipage/scripting.html#template-contents>).
+        // https://html.spec.whatwg.org/multipage/scripting.html#template-contents
         NodeData::Fragment { host: None } => {
             let (document, host) = parsed
                 .document
@@ -482,11 +419,7 @@ fn no_html_parent(ctx: &Ctx<'_>) -> rquickjs::Error {
     )
 }
 
-/// The host side of the `*HTMLUnsafe` partial-update insertion methods. They
-/// install in JS for the same reason `setHTMLUnsafe` does: their
-/// `(TrustedHTML or DOMString)` argument and options dictionary are unions the
-/// binding generator does not lower yet
-/// (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#html-insertion-methods>).
+// https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#html-insertion-methods
 pub(crate) fn insert_html_unsafe_host<'js>(
     ctx: Ctx<'js>,
     value: Value<'js>,
@@ -512,8 +445,6 @@ pub(crate) fn insert_html_unsafe_host<'js>(
     insert_html_unsafe(&ctx, target, &html, point, run_scripts)
 }
 
-/// Parses `markup` in the point's context, places the fragment, and runs the
-/// fixups the insertion requires.
 fn insert_html_unsafe(
     ctx: &Ctx<'_>,
     target: NodeId,
@@ -534,11 +465,9 @@ fn insert_html_unsafe(
         materialize_children(&mut parsed.document, point.container.document, &snapshots)
             .map_err(|err| throw_dom_error(ctx, err))?;
     let added = fragment_children(&parsed.document, replacement);
-    // A replaced subtree's child navigables die with it
-    // (<https://html.spec.whatwg.org/multipage/document-sequences.html#destroy-a-child-navigable>).
+    // https://html.spec.whatwg.org/multipage/document-sequences.html#destroy-a-child-navigable
     let mut iframes = Vec::new();
-    // `replace` removes the old node, then inserts the fragment where it was
-    // (<https://dom.spec.whatwg.org/#concept-node-replace>).
+    // https://dom.spec.whatwg.org/#concept-node-replace
     let reference = match point.replaced {
         Some(replaced) => {
             iframes = iframe_containers_in_subtrees(&parsed, &[replaced]);
@@ -562,16 +491,11 @@ fn insert_html_unsafe(
     drop(world);
     fixup_controls_on_insert(ctx, point.container.document, &controls)?;
     register_inserted_iframes(ctx, &added)?;
-    // Parsed content attributes never pass through the DOM setter, so their
-    // handler change steps run as part of the insertion, before the
-    // fragment's scripts
-    // (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes>).
+    // https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes
     for root in &added {
         super::super::install_parsed_handlers(ctx, *root)?;
     }
-    // Scripts run as part of the insertion, before the custom element
-    // reactions the method's `[CEReactions]` flushes when it returns
-    // (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-element-appendhtmlunsafe>).
+    // https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-element-appendhtmlunsafe
     if run_scripts {
         run_inserted_scripts(ctx, &added)?;
     }
@@ -617,9 +541,8 @@ impl<'js> element_generated::Element<'js> for JsNode {
         self.matches(ctx, WebIdlString(arg_0.to_string()?))
     }
 
-    /// <https://dom.spec.whatwg.org/#dom-element-webkitmatchesselector>
+    // https://dom.spec.whatwg.org/#dom-element-webkitmatchesselector
     fn webkit_matches_selector(&self, ctx: Ctx<'js>, arg_0: rquickjs::String<'js>) -> Result<bool> {
-        // Legacy alias of `matches(selectors)`.
         self.matches(ctx, WebIdlString(arg_0.to_string()?))
     }
 
@@ -662,7 +585,7 @@ impl<'js> element_generated::Element<'js> for JsNode {
         )
     }
 
-    /// <https://dom.spec.whatwg.org/#dom-element-insertadjacentelement>
+    // https://dom.spec.whatwg.org/#dom-element-insertadjacentelement
     fn insert_adjacent_element(
         &self,
         ctx: Ctx<'js>,
@@ -677,7 +600,7 @@ impl<'js> element_generated::Element<'js> for JsNode {
         }
     }
 
-    /// <https://dom.spec.whatwg.org/#dom-element-insertadjacenttext>
+    // https://dom.spec.whatwg.org/#dom-element-insertadjacenttext
     fn insert_adjacent_text(
         &self,
         ctx: Ctx<'js>,
@@ -731,9 +654,7 @@ impl<'js> element_generated::Element<'js> for JsNode {
         arg_0: element_generated::BooleanOrScrollIntoViewOptions,
     ) -> Result<()> {
         let (behavior, block, inline, container) = match arg_0 {
-            // `false` asks for the end edge; every other boolean is the
-            // default start edge. The inline axis always defaults to nearest
-            // (<https://drafts.csswg.org/cssom-view/#dom-element-scrollintoview>).
+            // https://drafts.csswg.org/cssom-view/#dom-element-scrollintoview
             element_generated::BooleanOrScrollIntoViewOptions::Boolean(false) => (
                 element_generated::ScrollBehavior::Auto,
                 element_generated::ScrollLogicalPosition::End,
@@ -931,9 +852,7 @@ impl<'js> element_generated::Element<'js> for JsNode {
             WebIdlString(name.clone()),
             WebIdlString(js_string_to_utf8(&arg_1)?),
         )?;
-        // The tree attribute drops unpaired surrogates so CSS `id` matching
-        // stays distinct from U+FFFD. The getter returns the original units
-        // (<https://infra.spec.whatwg.org/#javascript-string-convert>).
+        // https://infra.spec.whatwg.org/#javascript-string-convert
         if units.has_unpaired_surrogate() {
             let local = attribute_local_name(&ctx, self.handle.get().0, &name);
             let world = world(&ctx)?;
@@ -1092,9 +1011,7 @@ impl<'js> html_element_generated::HTMLElement<'js> for JsNode {
         self.dataset(ctx)
     }
 
-    // The cryptographic nonce: reading answers the slot, writing sets it
-    // without touching the content attribute
-    // (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#dom-nonce>).
+    // https://html.spec.whatwg.org/multipage/urls-and-fetching.html#dom-nonce
     fn get_nonce(&self, ctx: &Ctx<'js>) -> Result<rquickjs::String<'js>> {
         let value = nonce_of(ctx, self.handle.get().0)?;
         rquickjs::String::from_str(ctx.clone(), &value)
@@ -1112,11 +1029,7 @@ impl<'js> html_element_generated::HTMLElement<'js> for JsNode {
         rquickjs::String::from_str(ctx.clone(), &label)
     }
 
-    // The translation mode: the nearest ancestor-or-self HTML element whose
-    // `translate` attribute is in the yes or no state decides, while the
-    // inherit state, a non-HTML element, and a missing parent all fall
-    // through to translate-enabled
-    // (<https://html.spec.whatwg.org/multipage/dom.html#the-translate-attribute>).
+    // https://html.spec.whatwg.org/multipage/dom.html#the-translate-attribute
     fn get_translate(&self, ctx: &Ctx<'js>) -> Result<bool> {
         let owner = world_for_node(ctx, self.handle.get().0)?;
         let borrowed = owner.borrow();
@@ -1133,12 +1046,10 @@ impl<'js> html_element_generated::HTMLElement<'js> for JsNode {
                 && element.name.ns == html_namespace()
             {
                 match crate::dom::tree::attr(base, current, "translate") {
-                    // The empty value default is the Yes state.
                     Some(value) if value.is_empty() || value.eq_ignore_ascii_case("yes") => {
                         return Ok(true);
                     }
                     Some(value) if value.eq_ignore_ascii_case("no") => return Ok(false),
-                    // The missing and invalid value defaults inherit.
                     _ => {}
                 }
             }
@@ -1157,11 +1068,7 @@ impl<'js> html_element_generated::HTMLElement<'js> for JsNode {
         )
     }
 
-    // The computed writing-suggestions value: the nearest ancestor-or-self
-    // with the attribute decides (`false` only for an ASCII
-    // case-insensitive "false"; any other value means true), defaulting to
-    // true
-    // (<https://html.spec.whatwg.org/multipage/editing.html#dom-writingsuggestions>).
+    // https://html.spec.whatwg.org/multipage/editing.html#dom-writingsuggestions
     fn get_writing_suggestions(&self, ctx: &Ctx<'js>) -> Result<rquickjs::String<'js>> {
         let owner = world_for_node(ctx, self.handle.get().0)?;
         let borrowed = owner.borrow();
@@ -1175,19 +1082,13 @@ impl<'js> html_element_generated::HTMLElement<'js> for JsNode {
         )
     }
 
-    // The `autocapitalize` state keyword: `off`/`none` read "none", `on`/
-    // `sentences` read "sentences", missing or empty reads "", and anything
-    // else reads "sentences" (the invalid value default)
-    // (<https://html.spec.whatwg.org/multipage/editing.html#dom-autocapitalize>).
+    // https://html.spec.whatwg.org/multipage/editing.html#dom-autocapitalize
     fn get_autocapitalize(&self, ctx: &Ctx<'js>) -> Result<rquickjs::String<'js>> {
         let raw = content_attr(ctx, self.handle.get().0, "autocapitalize");
         rquickjs::String::from_str(ctx.clone(), autocapitalize_keyword(raw.as_deref()))
     }
 
-    // The `tabindex` content attribute parses as an integer; absence,
-    // parse failure, or overflow reads as the element default (0 for the
-    // focusable locals, -1 otherwise)
-    // (<https://html.spec.whatwg.org/multipage/interaction.html#dom-tabindex>).
+    // https://html.spec.whatwg.org/multipage/interaction.html#dom-tabindex — follows Chromium's default focusable set (a[href], non-hidden input, audio/video[controls]) rather than the spec's bare local-name list
     fn get_tab_index(&self, ctx: &Ctx<'js>) -> Result<i32> {
         let owner = world_for_node(ctx, self.handle.get().0)?;
         let borrowed = owner.borrow();
@@ -1323,9 +1224,7 @@ impl<'js> math_ml_element_generated::MathMLElement<'js> for JsNode {
     }
 }
 
-/// `ARIAMixin` is a spec mixin included by `Element`: nullable string
-/// reflection over `role` and the `aria-*` content attributes
-/// (<https://w3c.github.io/aria/#introstates>).
+// https://w3c.github.io/aria/#introstates
 impl<'js> aria_mixin_generated::ARIAMixin<'js> for JsNode {
     // https://w3c.github.io/aria/#aria-activedescendant
     fn get_aria_active_descendant_element(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
@@ -1740,10 +1639,7 @@ impl<'js> aria_mixin_generated::ARIAMixin<'js> for JsNode {
     }
 }
 
-/// `ElementCSSInlineStyle` is a spec mixin included by `HTMLElement`,
-/// `SVGElement`, and `MathMLElement`, so the one contract installs on all
-/// three prototypes from the IDL includes
-/// (<https://drafts.csswg.org/cssom/#the-elementcssinlinestyle-mixin>).
+// https://drafts.csswg.org/cssom/#the-elementcssinlinestyle-mixin
 impl<'js> element_css_inline_style_generated::ElementCSSInlineStyle<'js> for JsNode {
     // https://drafts.csswg.org/cssom/#dom-elementcssinlinestyle-style
     fn get_style(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
@@ -1751,15 +1647,9 @@ impl<'js> element_css_inline_style_generated::ElementCSSInlineStyle<'js> for JsN
     }
 }
 
-// `ElementContentEditable` is a spec mixin included by `HTMLElement`: the
-// enumerated `enterkeyhint`/`inputmode` are generated from the metadata table
-// rather than written here
-// (<https://html.spec.whatwg.org/multipage/interaction.html#attr-enterkeyhint>).
+// https://html.spec.whatwg.org/multipage/interaction.html#attr-enterkeyhint
 
-/// `HTMLHyperlinkElementUtils` is a spec mixin included by `HTMLAnchorElement`
-/// and `HTMLAreaElement`, so the one contract installs on both prototypes
-/// from the IDL includes
-/// (<https://html.spec.whatwg.org/multipage/links.html#htmlhyperlinked>).
+// https://html.spec.whatwg.org/multipage/links.html#htmlhyperlinked
 impl<'js> html_hyperlink_element_utils_generated::HTMLHyperlinkElementUtils<'js> for JsNode {
     // https://html.spec.whatwg.org/multipage/links.html#dom-hyperlink-href
     fn get_href(&self, ctx: &Ctx<'js>) -> Result<crate::dom_string::DomString> {
@@ -1768,8 +1658,6 @@ impl<'js> html_hyperlink_element_utils_generated::HTMLHyperlinkElementUtils<'js>
 }
 
 impl JsNode {
-    // The union of the element's box fragments relative to the viewport; zero
-    // when the element generates no box (for example `display: none`).
     pub(super) fn get_bounding_client_rect<'js>(&self, ctx: Ctx<'js>) -> Result<Value<'js>> {
         match self.client_rects(&ctx, true).into_iter().next() {
             Some((left, top, width, height)) => {
@@ -1789,15 +1677,7 @@ impl JsNode {
         Ok(array.into_value())
     }
 
-    /// The element's box fragments relative to the viewport
-    /// (<https://drafts.csswg.org/cssom-view/#dom-element-getclientrects>).
-    ///
-    /// A non-atomic inline is laid out as style spans in its inline root, so
-    /// it has one fragment per line box; every other element has one border
-    /// box. `bounding` asks for the union of those fragments, which is what
-    /// `getBoundingClientRect()` reports; a union of no fragments is a zero
-    /// rect. An element with no associated box (for example `display: none`)
-    /// generates none.
+    // https://drafts.csswg.org/cssom-view/#dom-element-getclientrects
     fn client_rects(&self, ctx: &Ctx<'_>, bounding: bool) -> Vec<(f64, f64, f64, f64)> {
         let id = self.handle.get().0;
         let Some(world) = active_world(ctx, id) else {
@@ -1820,10 +1700,7 @@ impl JsNode {
             .into_iter()
             .map(|rect| (rect.x, rect.y, rect.width, rect.height))
             .collect();
-        // An empty non-atomic inline is flattened into its inline root and has
-        // no fragment of its own, but it still has a position: the layout
-        // box's origin, which is where its caret would be
-        // (<https://drafts.csswg.org/css-inline-3/#invisible-line-boxes>).
+        // https://drafts.csswg.org/css-inline-3/#invisible-line-boxes
         if rects.is_empty() {
             let position = node.absolute_position(0.0, 0.0);
             let size = node.final_layout().size;
@@ -1854,23 +1731,13 @@ impl JsNode {
         rects
     }
 
-    /// Whether this element is potentially visible, following the optional
-    /// checks (<https://drafts.csswg.org/cssom-view/#dom-element-checkvisibility>).
-    ///
-    /// `visibility` is inherited, so this element's computed value already
-    /// includes an ancestor's unless a descendant re-declares `visible`;
-    /// `opacity` is not inherited, so its gate walks the element and every
-    /// ancestor. `content-visibility` is not in the Servo style crate's
-    /// property tables (`engine = "gecko"` in `longhands.toml`), so a hidden or
-    /// auto ancestor cannot be detected (`docs/upstream.md`).
+    // https://drafts.csswg.org/cssom-view/#dom-element-checkvisibility
     pub(super) fn check_visibility(
         &self,
         ctx: Ctx<'_>,
         options: element_generated::CheckVisibilityOptions,
     ) -> bool {
         let id = self.handle.get().0;
-        // An element whose document has no browsing context has no boxes, and
-        // neither has one whose document has been replaced.
         let Some(world) = active_world(&ctx, id) else {
             return false;
         };
@@ -1887,8 +1754,7 @@ impl JsNode {
             return false;
         }
 
-        // Each option name in the IDL is an alias of its partner
-        // (<https://drafts.csswg.org/cssom-view/#dictdef-checkvisibilityoptions>).
+        // https://drafts.csswg.org/cssom-view/#dictdef-checkvisibilityoptions
         let opacity_requested = options.opacity_property || options.check_opacity;
         let visibility_requested = options.visibility_property || options.check_visibility_css;
         if visibility_requested
@@ -1909,12 +1775,7 @@ impl JsNode {
         true
     }
 
-    /// Scrolls this element's boxes into view with the requested alignment
-    /// (<https://drafts.csswg.org/cssom-view/#dom-element-scrollintoview>).
-    ///
-    /// Blitz owns the scroll engine: it scrolls every ancestor scrolling box
-    /// in the containing block chain, then the viewport, and applies the
-    /// requested behavior and `container` limit.
+    // https://drafts.csswg.org/cssom-view/#dom-element-scrollintoview
     pub(super) fn scroll_into_view(
         &self,
         ctx: Ctx<'_>,
@@ -1930,8 +1791,7 @@ impl JsNode {
         };
         let id = self.handle.get().0;
         parsed.document.base.resolve(crate::animation_seconds());
-        // A boxless element has nothing to bring into view
-        // (<https://drafts.csswg.org/cssom-view/#dom-element-scrollintoview>).
+        // https://drafts.csswg.org/cssom-view/#dom-element-scrollintoview
         if !parsed
             .document
             .base
@@ -1965,16 +1825,12 @@ impl JsNode {
         self.set_scroll_axis(ctx, value, true);
     }
 
-    /// One axis of `scrollTop`/`scrollLeft`, including the quirks-mode body
-    /// and root-element rules
-    /// (<https://drafts.csswg.org/cssom-view/#dom-element-scrolltop>).
+    // https://drafts.csswg.org/cssom-view/#dom-element-scrolltop
     fn scroll_axis(&self, ctx: &Ctx<'_>, vertical: bool) -> f64 {
         super::scrolling::element_scroll_position(ctx, self.handle.get().0, vertical)
     }
 
-    /// The `scrollTop`/`scrollLeft` setter: non-finite values become zero, and
-    /// the other axis keeps its current position
-    /// (<https://drafts.csswg.org/cssom-view/#dom-element-scrolltop>).
+    // https://drafts.csswg.org/cssom-view/#dom-element-scrolltop
     fn set_scroll_axis(&self, ctx: &Ctx<'_>, value: f64, vertical: bool) {
         let id = self.handle.get().0;
         let current = super::scrolling::element_scroll_position(ctx, id, !vertical);
@@ -1986,9 +1842,7 @@ impl JsNode {
         super::scrolling::element_scroll(ctx, id, x, y, blitz_dom::ScrollBehavior::Auto);
     }
 
-    /// Runs `read` over this wrapper's Blitz layout node after flushing
-    /// pending layout; metrics are zero without one
-    /// (<https://drafts.csswg.org/cssom-view/#extension-to-the-element-interface>).
+    // https://drafts.csswg.org/cssom-view/#extension-to-the-element-interface
     pub(super) fn layout_metric(
         &self,
         ctx: &Ctx<'_>,
@@ -2007,12 +1861,8 @@ impl JsNode {
         Ok(read(node))
     }
 
-    /// `clientWidth`/`clientHeight` share their steps: a boxless element
-    /// answers zero (a non-atomic inline's flattened box has no size of its
-    /// own, so Blitz answers zero too), the root element outside quirks mode and
-    /// the body element in quirks mode answer the viewport, and everything else
-    /// answers its padding edge (<https://drafts.csswg.org/cssom-view/#dom-element-clientwidth>,
-    /// <https://drafts.csswg.org/cssom-view/#dom-element-clientheight>).
+    // https://drafts.csswg.org/cssom-view/#dom-element-clientwidth
+    // https://drafts.csswg.org/cssom-view/#dom-element-clientheight
     fn client_size(&self, ctx: &Ctx<'_>, vertical: bool) -> Result<i32> {
         let id = self.handle.get().0;
         let world = world(ctx)?;
@@ -2054,9 +1904,7 @@ impl JsNode {
         self.client_size(ctx, true)
     }
 
-    /// `Element.currentCSSZoom`: the element's effective zoom, or `1.0` when it
-    /// is not being rendered
-    /// (<https://drafts.csswg.org/cssom-view/#dom-element-currentcsszoom>).
+    // https://drafts.csswg.org/cssom-view/#dom-element-currentcsszoom
     pub(super) fn current_css_zoom(&self, ctx: &Ctx<'_>) -> Result<f64> {
         self.layout_metric(ctx, super::zoom::effective_zoom)
     }
@@ -2064,10 +1912,7 @@ impl JsNode {
     // https://drafts.csswg.org/cssom-view/#dom-element-clientleft
     pub(super) fn client_left(&self, ctx: &Ctx<'_>) -> Result<i32> {
         Ok(cssom_round(self.layout_metric(ctx, |node| {
-            // A table's box is the wrapper box, which has no border of its
-            // own; the grid's border belongs to the table's content edge, not
-            // its client edge
-            // (<https://drafts.csswg.org/cssom-view/#dom-element-clientleft>).
+            // https://drafts.csswg.org/cssom-view/#dom-element-clientleft
             if crate::dom::tree::is_html_tag(Some(&node.data), "table") {
                 return 0.0;
             }
@@ -2085,11 +1930,8 @@ impl JsNode {
         })?))
     }
 
-    /// `scrollWidth`/`scrollHeight` share their steps: the root element outside
-    /// quirks mode, and the body element in quirks mode when it does not scroll
-    /// itself on the axis, answer the viewport's scrolling area; everything else
-    /// answers its own (<https://drafts.csswg.org/cssom-view/#dom-element-scrollwidth>,
-    /// <https://drafts.csswg.org/cssom-view/#dom-element-scrollheight>).
+    // https://drafts.csswg.org/cssom-view/#dom-element-scrollwidth
+    // https://drafts.csswg.org/cssom-view/#dom-element-scrollheight
     fn scroll_size(&self, ctx: &Ctx<'_>, vertical: bool) -> Result<i32> {
         let id = self.handle.get().0;
         let world = world(ctx)?;
@@ -2109,15 +1951,9 @@ impl JsNode {
                 super::scrolling::viewport_scroll_area(&parsed, vertical, viewport),
             )));
         }
-        // A table's scrolling area starts from its own box (the wrapper box
-        // with captions, else the grid's border box), not its padding edge,
-        // and grows with whatever overflows it. The generic path would start
-        // from the padding edge and drop the captions
-        // (<https://drafts.csswg.org/cssom-view/#dom-element-scrollwidth>,
-        // <https://drafts.csswg.org/css-tables-3/#table-wrapper-box>).
+        // https://drafts.csswg.org/cssom-view/#dom-element-scrollwidth
+        // https://drafts.csswg.org/css-tables-3/#table-wrapper-box
         if let Some(table) = table_offset_edge(&parsed.document.base, id, vertical) {
-            // The scrolling area is at least the table's own box; Blitz's
-            // scroll size covers the padding edge and any overflow beyond it
             let scroll = f64::from(if vertical {
                 node.scroll_height()
             } else {
@@ -2153,8 +1989,7 @@ impl JsNode {
         if !valid_attribute_local_name(&name.0) {
             return Ok(Value::new_null(ctx));
         }
-        // HTML elements match ASCII-lowercased
-        // (<https://dom.spec.whatwg.org/#concept-element-attributes-get-by-name>).
+        // https://dom.spec.whatwg.org/#concept-element-attributes-get-by-name
         let local = attribute_local_name(&ctx, self.handle.get().0, &name.0);
         let world = world(&ctx)?;
         let found = {
@@ -2281,10 +2116,7 @@ impl JsNode {
         )
     }
 
-    /// The `[SameObject]` `DOMTokenList` over one of the element's content
-    /// attributes: the first read builds it, later reads answer the same
-    /// object
-    /// (<https://dom.spec.whatwg.org/#interface-domtokenlist>).
+    // https://dom.spec.whatwg.org/#interface-domtokenlist
     pub(super) fn token_list<'js>(
         &self,
         ctx: &Ctx<'js>,
@@ -2342,7 +2174,6 @@ impl JsNode {
         if !valid_attribute_local_name(&name.0) {
             return Ok(false);
         }
-        // HTML elements match ASCII-lowercased, like `getAttribute`.
         let local = attribute_local_name(&ctx, self.handle.get().0, &name.0);
         let world = world(&ctx)?;
         let parsed = world.borrow();
@@ -2413,8 +2244,7 @@ impl JsNode {
         qualified: WebIdlString,
         value: WebIdlString,
     ) -> Result<()> {
-        // setAttributeNS never lowercases its name, even on HTML elements
-        // (<https://dom.spec.whatwg.org/#dom-element-setattributens>).
+        // https://dom.spec.whatwg.org/#dom-element-setattributens
         let name = validate_and_extract(
             &ctx,
             namespace.0.as_deref(),
@@ -2437,8 +2267,6 @@ impl JsNode {
                 &local,
             );
             previous_value = old_value.clone();
-            // Reuse the stored qualified name when the attribute is already
-            // present, so the write replaces instead of duplicating it.
             let stored = parsed
                 .document
                 .base
@@ -2462,7 +2290,6 @@ impl JsNode {
                 .set_attribute(self.handle.get().0.node, stored, &value.0);
             parsed.document.record(JournalEntry::Attributes {
                 target: self.handle.get().0,
-                // attributeName is the attribute's local name.
                 // https://dom.spec.whatwg.org/#handle-attribute-changes
                 name: local.clone(),
                 namespace: namespace.clone(),
@@ -2692,10 +2519,7 @@ impl JsNode {
         namespace: OptString,
         local: WebIdlString,
     ) -> Result<Value<'js>> {
-        // The namespace variant matches the local name exactly, in HTML
-        // documents too: the lowercasing rule belongs to
-        // `getElementsByTagName` alone
-        // (<https://dom.spec.whatwg.org/#concept-getelementsbytagnamens>).
+        // https://dom.spec.whatwg.org/#concept-getelementsbytagnamens
         live_collection(
             &ctx,
             self.handle.get().0,
@@ -2720,19 +2544,14 @@ impl JsNode {
             let Some(node) = base.get_node(container.node) else {
                 return Err(Exception::throw_type(ctx, "stale node"));
             };
-            // `innerHTML` belongs to `Element` and `ShadowRoot`, not to the
-            // other fragment kinds
-            // (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-element-innerhtml>).
+            // https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-element-innerhtml
             if node.data.downcast_element().is_none()
                 && !matches!(node.data, NodeData::ShadowRoot { .. })
             {
                 return Err(Exception::throw_type(ctx, "innerHTML requires an element"));
             }
-            // innerHTML on a template reads its template contents, not its
-            // (empty) children. After `content` is read, those nodes live in
-            // the inert template-contents document
-            // (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-element-innerhtml>,
-            // <https://html.spec.whatwg.org/multipage/scripting.html#template-contents>).
+            // https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-element-innerhtml
+            // https://html.spec.whatwg.org/multipage/scripting.html#template-contents
             (
                 template_contents_target(&parsed.document, container),
                 parsed.content_type == "text/html",
@@ -2786,8 +2605,7 @@ impl JsNode {
         ) {
             return Err(throw_dom(&ctx, "SyntaxError", "invalid position"));
         }
-        // Adoption by copy leaves a stale handle behind; parse against the
-        // live container (https://dom.spec.whatwg.org/#concept-node-adopt).
+        // https://dom.spec.whatwg.org/#concept-node-adopt
         let element = self.handle.get().0;
         let context = with_node_data(&ctx, element, |data| match data {
             Some(NodeData::Element(element)) => Some(html_fragment_context(&element.name)),
@@ -2848,14 +2666,10 @@ impl JsNode {
         drop(world);
         fixup_controls_on_insert(&ctx, element.document, &controls)?;
         register_inserted_iframes(&ctx, &moved)?;
-        // Parsed content attributes never pass through the DOM setter, so
-        // their handler change steps run as part of the insertion
-        // (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes>).
+        // https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes
         for root in &moved {
             super::super::install_parsed_handlers(&ctx, *root)?;
         }
-        // Custom elements in parsed markup upgrade, like the innerHTML and
-        // outerHTML paths below.
         upgrade_parsed_tree(
             &ctx,
             if needs_parent {
@@ -2871,8 +2685,7 @@ impl JsNode {
 
     // https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-element-outerhtml
     pub(super) fn set_outer_html(&self, ctx: &Ctx<'_>, value: LegacyNullString) -> Result<()> {
-        // Adoption by copy leaves a stale handle behind; replace the live
-        // element (https://dom.spec.whatwg.org/#concept-node-adopt).
+        // https://dom.spec.whatwg.org/#concept-node-adopt
         let element = self.handle.get().0;
         let world_rc = world(ctx)?;
         let (parent, context) = {
@@ -2889,7 +2702,6 @@ impl JsNode {
                     node,
                 })
             else {
-                // A parentless element has nothing to replace.
                 return Ok(());
             };
             if base.root_node().id == parent.node {
@@ -2899,9 +2711,7 @@ impl JsNode {
                     "the parent of the element is a Document",
                 ));
             }
-            // A DocumentFragment has no parsing context of its own; a
-            // body element stands in
-            // (<https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-element-outerhtml>).
+            // https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-element-outerhtml
             let context = base
                 .get_node(parent.node)
                 .and_then(|node| node.data.downcast_element())
@@ -2934,9 +2744,7 @@ impl JsNode {
         drop(parsed);
         drop(world);
         register_inserted_iframes(ctx, &added)?;
-        // Parsed content attributes never pass through the DOM setter, so
-        // their handler change steps run as part of the insertion
-        // (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes>).
+        // https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes
         for root in &added {
             super::super::install_parsed_handlers(ctx, *root)?;
         }
@@ -2965,7 +2773,6 @@ impl JsNode {
         Ok(value)
     }
 }
-/// The value of the `(namespace, local)` attribute on `id`, if present.
 pub(super) fn attr_ns_value(
     base: &blitz_dom::BaseDocument,
     id: BlitzId,
@@ -2986,10 +2793,7 @@ pub(super) fn attr_ns_value(
         })
 }
 
-/// [Insert adjacent](https://dom.spec.whatwg.org/#concept-element-insert-adjacent).
-///
-/// Returns the inserted node, or `None` when `beforebegin` / `afterend` has
-/// no parent.
+// https://dom.spec.whatwg.org/#concept-element-insert-adjacent
 pub(super) fn insert_adjacent(
     ctx: &Ctx<'_>,
     element: NodeId,
@@ -3052,7 +2856,6 @@ pub(super) fn insert_adjacent(
     Ok(Some(node))
 }
 
-/// The context object of an `Element` operation.
 pub(super) fn require_context_element(ctx: &Ctx<'_>, id: NodeId) -> Result<NodeId> {
     let element = {
         let world = world(ctx)?;
@@ -3072,8 +2875,7 @@ pub(super) fn require_context_element(ctx: &Ctx<'_>, id: NodeId) -> Result<NodeI
     }
 }
 
-/// An `Element` argument
-/// (<https://webidl.spec.whatwg.org/#es-interface>).
+// https://webidl.spec.whatwg.org/#es-interface
 pub(super) fn require_element_argument<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<NodeId> {
     let Some(id) = host_node_id(ctx, value) else {
         return Err(Exception::throw_type(ctx, "argument is not an Element"));
@@ -3081,7 +2883,6 @@ pub(super) fn require_element_argument<'js>(ctx: &Ctx<'js>, value: &Value<'js>) 
     require_context_element(ctx, id)
 }
 
-/// `id`'s parent, or `None` when it is parentless.
 pub(super) fn tree_parent(ctx: &Ctx<'_>, id: NodeId) -> Result<Option<NodeId>> {
     let world = world(ctx)?;
     let world = world.borrow();
@@ -3099,8 +2900,7 @@ pub(super) fn tree_parent(ctx: &Ctx<'_>, id: NodeId) -> Result<Option<NodeId>> {
         }))
 }
 
-/// Node ids among `(Node or DOMString)` arguments, for sibling exclusion
-/// (<https://dom.spec.whatwg.org/#dom-childnode-before>).
+// https://dom.spec.whatwg.org/#dom-childnode-before
 pub(super) fn argument_node_ids(nodes: &[NodeOrString<'_>]) -> HashSet<BlitzId> {
     nodes
         .iter()
@@ -3111,8 +2911,6 @@ pub(super) fn argument_node_ids(nodes: &[NodeOrString<'_>]) -> HashSet<BlitzId> 
         .collect()
 }
 
-/// The nearest sibling of `id` in `forward` direction that is not in
-/// `excluded`.
 pub(super) fn sibling_not_in(
     base: &blitz_dom::BaseDocument,
     id: BlitzId,
@@ -3137,13 +2935,8 @@ pub(super) fn sibling_not_in(
     }
 }
 
-/// Moves focus to `id` when it is focusable
-/// (<https://html.spec.whatwg.org/multipage/interaction.html#dom-focus>).
-///
-/// A `label` that is not itself focusable forwards the focus to its labeled
-/// control: the spec leaves the label's behavior to the platform, and browsers
-/// forward so that a label can be used as the control's focus proxy
-/// (<https://html.spec.whatwg.org/multipage/forms.html#the-label-element>).
+// https://html.spec.whatwg.org/multipage/interaction.html#dom-focus
+// https://html.spec.whatwg.org/multipage/forms.html#the-label-element
 pub(super) fn focus_element(ctx: &Ctx<'_>, id: NodeId) -> Result<()> {
     if is_focusable(ctx, id)? {
         return focus_node(ctx, id);
@@ -3168,7 +2961,6 @@ pub(super) fn focus_element(ctx: &Ctx<'_>, id: NodeId) -> Result<()> {
     Ok(())
 }
 
-/// One content attribute's raw value, when the attribute is present.
 pub(super) fn content_attr(ctx: &Ctx<'_>, id: NodeId, name: &str) -> Option<String> {
     let owner = world_for_node(ctx, id).ok()?;
     let borrowed = owner.borrow();
@@ -3177,10 +2969,7 @@ pub(super) fn content_attr(ctx: &Ctx<'_>, id: NodeId, name: &str) -> Option<Stri
     })
 }
 
-/// The `accessKeyLabel` string: the platform's modifier names plus the
-/// uppercased key. An attribute that does not hold exactly one key has no
-/// label
-/// (<https://html.spec.whatwg.org/multipage/interaction.html#dom-accesskeylabel>).
+// https://html.spec.whatwg.org/multipage/interaction.html#dom-accesskeylabel
 fn access_key_label(value: &str) -> String {
     let mut tokens = value.split_ascii_whitespace();
     let Some(token) = tokens.next() else {
@@ -3195,12 +2984,7 @@ fn access_key_label(value: &str) -> String {
     format!("Alt+Shift+{}", key.to_ascii_uppercase())
 }
 
-/// The border width `clientLeft`/`clientTop` report on one axis
-/// (<https://drafts.csswg.org/cssom-view/#dom-element-clientleft>).
-///
-/// An element without a box, and a non-atomic inline, report zero. Blitz
-/// renders scrollbars on the right and bottom only, so the "scrollbar between
-/// the left padding edge and the left border edge" is always zero here.
+// https://drafts.csswg.org/cssom-view/#dom-element-clientleft
 fn client_border(node: &blitz_dom::Node, vertical: bool) -> f32 {
     if !node.has_boxes() || node.is_non_atomic_inline() {
         return 0.0;
@@ -3209,27 +2993,18 @@ fn client_border(node: &blitz_dom::Node, vertical: bool) -> f32 {
     if vertical { border.top } else { border.left }
 }
 
-/// Whether `data` is an element node, for
-/// [`document_first_child`](super::document::document_first_child) searches.
 pub(super) fn is_element_data(data: &NodeData) -> bool {
     matches!(data, NodeData::Element(_))
 }
 
-/// `unsigned long` reflection: a non-negative integer within `long` range,
-/// otherwise the default
-/// (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes>).
+// https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes
 pub(super) fn reflect_ulong(raw: Option<&str>, default: u32) -> u32 {
     raw.and_then(crate::dom::parse::parse_integer)
         .and_then(|value| u32::try_from(value).ok())
         .unwrap_or(default)
 }
 
-/// Clamped `unsigned long` reflection (used by `colSpan`, `rowSpan`, `span`):
-/// full-range non-negative parsing, then clamping; parse failure reads the
-/// default. Unlike plain reflection the range is not capped at 2^31 - 1
-/// before clamping, so `4294967296` clamps to the edge rather than the
-/// default
-/// (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes>).
+// https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes
 pub(super) fn reflect_clamped_ulong(raw: Option<&str>, default: u32, min: u32, max: u32) -> u32 {
     let Some(text) = raw else {
         return default;
@@ -3264,16 +3039,13 @@ pub(super) fn reflect_clamped_ulong(raw: Option<&str>, default: u32, min: u32, m
     u32::try_from(result).map_or(max, |value| value.clamp(min, max))
 }
 
-/// `double` reflection: a floating-point value or the default
-/// (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes>).
+// https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes
 pub(super) fn reflect_double(raw: Option<&str>, default: f64) -> f64 {
     raw.and_then(crate::dom::parse::parse_double)
         .unwrap_or(default)
 }
 
-/// Limited `double` reflection (used by `progress.max`): a positive
-/// floating-point value or the default
-/// (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes>).
+// https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes
 pub(super) fn reflect_limited_double(raw: Option<&str>, default: f64) -> f64 {
     match raw.and_then(crate::dom::parse::parse_double) {
         Some(value) if value > 0.0 => value,
@@ -3281,9 +3053,7 @@ pub(super) fn reflect_limited_double(raw: Option<&str>, default: f64) -> f64 {
     }
 }
 
-/// Whether `node` is the first `summary` element child of a `details`
-/// parent: only that one is focusable
-/// (<https://html.spec.whatwg.org/multipage/interaction.html#focusable-area>).
+// https://html.spec.whatwg.org/multipage/interaction.html#focusable-area
 pub(crate) fn is_first_summary_child(
     base: &blitz_dom::BaseDocument,
     parent: BlitzId,
@@ -3305,11 +3075,7 @@ pub(crate) fn is_first_summary_child(
     })
 }
 
-/// The computed `writingSuggestions` value for `node`: the nearest
-/// ancestor-or-self carrying the attribute decides, ASCII
-/// case-insensitively (`false` reads "false", any other present value
-/// reads "true"); with no such ancestor the value is "true"
-/// (<https://html.spec.whatwg.org/multipage/editing.html#writing-suggestions>).
+// https://html.spec.whatwg.org/multipage/editing.html#writing-suggestions
 pub(super) fn writing_suggestions_value(
     base: &blitz_dom::BaseDocument,
     node: BlitzId,
@@ -3328,10 +3094,7 @@ pub(super) fn writing_suggestions_value(
     "true"
 }
 
-/// The `autocapitalize` IDL keyword for a raw content-attribute value:
-/// `off`/`none` read "none", `on`/`sentences` read "sentences", missing or
-/// empty reads "", and any other value reads "sentences"
-/// (<https://html.spec.whatwg.org/multipage/editing.html#autocapitalization>).
+// https://html.spec.whatwg.org/multipage/editing.html#autocapitalization
 pub(super) fn autocapitalize_keyword(raw: Option<&str>) -> &'static str {
     let Some(value) = raw else {
         return "";
@@ -3341,23 +3104,12 @@ pub(super) fn autocapitalize_keyword(raw: Option<&str>) -> &'static str {
         "words" => "words",
         "characters" => "characters",
         "" => "",
-        // "sentences", "on", and anything else: the invalid value default.
         _ => "sentences",
     }
 }
 
-/// The `tabindex` default for one element: 0 for the focusable locals
-/// (buttons, `select`/`textarea`/`iframe`, editing hosts, and the first
-/// `summary` of a `details`), -1 otherwise. Connection and disabled state
-/// do not move the IDL default (a detached `button` still reads 0; verified
-/// live against the `WebDriver` build, which has no layout)
-/// (<https://html.spec.whatwg.org/multipage/interaction.html#dom-tabindex>,
-/// <https://html.spec.whatwg.org/multipage/interaction.html#focusable-area>).
-///
-/// This follows Chromium rather than the spec's bare local-name list: `a`
-/// needs an `href`, `input type=hidden` is never a default focusable area,
-/// and `audio`/`video` need `controls`. `area`, `frame`, `object`, and the
-/// SVG/`MathML` `a` elements from the spec list read -1 here.
+// https://html.spec.whatwg.org/multipage/interaction.html#dom-tabindex — follows Chromium's default focusable set (a[href], non-hidden input, audio/video[controls]) rather than the spec's bare local-name list
+// https://html.spec.whatwg.org/multipage/interaction.html#focusable-area
 pub(super) fn tab_index_default(base: &blitz_dom::BaseDocument, node: BlitzId) -> i32 {
     let Some(tree) = base.get_node(node) else {
         return -1;
@@ -3368,9 +3120,6 @@ pub(super) fn tab_index_default(base: &blitz_dom::BaseDocument, node: BlitzId) -
     if element.name.ns != html_namespace() {
         return -1;
     }
-    // Editing hosts are focusable: `contenteditable` in the True or
-    // Plaintext-Only state (empty, `true`, or `plaintext-only`, ASCII
-    // case-insensitive).
     if crate::dom::tree::attr(base, node, "contenteditable").is_some_and(|state| {
         matches!(
             state.to_ascii_lowercase().as_str(),
@@ -3379,7 +3128,6 @@ pub(super) fn tab_index_default(base: &blitz_dom::BaseDocument, node: BlitzId) -
     }) {
         return 0;
     }
-    // The first `summary` child of a `details` is focusable.
     if element.name.local.as_str() == "summary"
         && let Some(parent) = tree.parent
         && is_first_summary_child(base, parent, node)
@@ -3409,9 +3157,7 @@ pub(super) fn tab_index_default(base: &blitz_dom::BaseDocument, node: BlitzId) -
     }
 }
 
-/// The cryptographic nonce of `id`: the IDL-set slot when present, else
-/// the content attribute, else empty
-/// (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#nonce-attributes>).
+// https://html.spec.whatwg.org/multipage/urls-and-fetching.html#nonce-attributes
 pub(in crate::js::bindings) fn nonce_of(ctx: &Ctx<'_>, id: NodeId) -> Result<String> {
     let owner = world_for_node(ctx, id)?;
     if let Some(slot) = owner.borrow().state.nonce_slots.get(&id) {
@@ -3420,9 +3166,7 @@ pub(in crate::js::bindings) fn nonce_of(ctx: &Ctx<'_>, id: NodeId) -> Result<Str
     Ok(content_attr(ctx, id, "nonce").unwrap_or_default())
 }
 
-/// Writes the IDL `nonce` slot without touching the content attribute,
-/// shared by the `HTMLElement`, `SVGElement`, and `MathMLElement` setters
-/// (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#dom-nonce>).
+// https://html.spec.whatwg.org/multipage/urls-and-fetching.html#dom-nonce
 pub(super) fn set_nonce_slot(ctx: &Ctx<'_>, id: NodeId, value: &str) -> Result<()> {
     let owner = world_for_node(ctx, id)?;
     owner
@@ -3433,8 +3177,6 @@ pub(super) fn set_nonce_slot(ctx: &Ctx<'_>, id: NodeId, value: &str) -> Result<(
     Ok(())
 }
 
-/// One nullable `aria-*` (or `role`) reflection read: the content attribute
-/// value, or null when absent.
 pub(super) fn aria_get<'js>(
     ctx: &Ctx<'js>,
     id: NodeId,
@@ -3446,8 +3188,6 @@ pub(super) fn aria_get<'js>(
     }
 }
 
-/// One nullable `aria-*` (or `role`) reflection write: null removes the
-/// content attribute.
 pub(super) fn aria_set(
     ctx: &Ctx<'_>,
     id: NodeId,
@@ -3460,10 +3200,7 @@ pub(super) fn aria_set(
     }
 }
 
-/// `crossorigin` reflection: absent reads null, the empty string reads
-/// `anonymous`, anything else matches ASCII case-insensitively with an
-/// `anonymous` invalid default; setting null removes the attribute
-/// (<https://html.spec.whatwg.org/multipage/urls-and-fetching.html#dom-crossorigin>).
+// https://html.spec.whatwg.org/multipage/urls-and-fetching.html#dom-crossorigin
 pub(super) fn reflect_cross_origin<'js>(
     ctx: &Ctx<'js>,
     id: NodeId,
@@ -3492,9 +3229,7 @@ pub(super) fn set_cross_origin(
     }
 }
 
-/// The node whose children are a template's contents: the inert fragment
-/// after `content` is first read, otherwise the same-document fragment
-/// (<https://html.spec.whatwg.org/multipage/scripting.html#template-contents>).
+// https://html.spec.whatwg.org/multipage/scripting.html#template-contents
 fn template_contents_target(doc: &crate::documents::BlitzDocument, id: NodeId) -> NodeId {
     if let Some((document, node)) = doc.template_owner(id.node) {
         return NodeId { document, node };
@@ -3530,11 +3265,7 @@ impl JsNode {
         rquickjs::String::from_str(ctx.clone(), &text)
     }
 
-    /// Setting `outerText` replaces the element with the rendered text
-    /// fragment, then merges with adjacent text siblings (but does not
-    /// fully normalize). Without a parent it throws; the setter is a no-op
-    /// on non-HTML elements, which never install it.
-    /// (<https://html.spec.whatwg.org/multipage/dom.html#the-innertext-idl-attribute>).
+    // https://html.spec.whatwg.org/multipage/dom.html#the-innertext-idl-attribute
     #[expect(
         clippy::too_many_lines,
         reason = "outerText setter steps in spec order; splitting them is a refactor, not a lint fix"
@@ -3563,7 +3294,6 @@ impl JsNode {
                 "outerText needs a parent",
             ));
         };
-        // Replacing the document element would put text under `Document`.
         let is_document_parent = {
             let world = world(ctx)?;
             let world = world.borrow();
@@ -3587,15 +3317,12 @@ impl JsNode {
         let Some(mut parsed) = world.document_mut(self.handle.get().0) else {
             return Ok(());
         };
-        // Child navigables die with the replaced element: collect their
-        // containers before removal, destroy after the borrows drop.
         let iframes = iframe_containers_in_subtrees(&parsed, &[self.handle.get().0]);
         let mut added = crate::dom::text::rendered_text_fragment(&mut parsed, &value, true);
         for child in &added {
             place_journaled(&mut parsed, parent, *child, Some(self.handle.get().0));
         }
         unlink_journaled(&mut parsed, self.handle.get().0);
-        // Merge with the previous text sibling, then the following one.
         if let Some(first) = added.first().copied() {
             let previous = sibling(&parsed.document.base, first.node, false).map(|node| NodeId {
                 document: first.document,
@@ -3660,10 +3387,7 @@ impl JsNode {
         schedule_mutation_delivery(ctx)
     }
 
-    /// Setting `innerText` replaces all children with the rendered text
-    /// fragment: newlines become `br` elements with no empty text around
-    /// them (an all-empty value yields one empty text node)
-    /// (<https://html.spec.whatwg.org/multipage/dom.html#set-the-inner-text-steps>).
+    // https://html.spec.whatwg.org/multipage/dom.html#set-the-inner-text-steps
     pub(super) fn set_inner_text(&self, ctx: &Ctx<'_>, value: LegacyNullString) -> Result<()> {
         let value = value.0;
         let html = world(ctx)?
@@ -3727,13 +3451,8 @@ impl From<element_generated::ScrollLogicalPosition> for blitz_dom::ScrollLogical
     }
 }
 
-/// A table's `clientWidth`/`clientHeight` is its `offsetWidth`/`offsetHeight`:
-/// the table wrapper box when it has captions, else the grid's border box.
-/// CSSOM View's generic answer is the padding edge, which for a table would
-/// drop the captions and subtract the grid's own border; browsers, and the
-/// spec's own table tests, report the offset size instead
-/// (<https://drafts.csswg.org/cssom-view/#dom-element-clientwidth>,
-/// <https://drafts.csswg.org/css-tables-3/#table-wrapper-box>).
+// https://drafts.csswg.org/cssom-view/#dom-element-clientwidth
+// https://drafts.csswg.org/css-tables-3/#table-wrapper-box
 fn table_offset_edge(
     base: &blitz_dom::BaseDocument,
     id: crate::dom::tree::NodeId,

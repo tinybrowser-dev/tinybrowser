@@ -1,9 +1,3 @@
-//! Platform objects for DOM nodes, one module per concern.
-//!
-//! `JsNode` is the single wrapper class for every node; the JS interface
-//! prototypes copy its members, so the Rust class cannot split across
-//! modules (`#[rquickjs::methods]` emits one `MethodImplementor` impl per
-//! type). Its members stay in `node`.
 use rquickjs::function::Constructor;
 
 mod attributes;
@@ -24,9 +18,6 @@ mod mutation;
 mod node;
 mod origin;
 mod performance;
-/// Runs an inline classic script in the realm that owns its document; a
-/// document without a realm yet queues it through
-/// [`World::queue_deferred_script`](crate::js::world::World::queue_deferred_script).
 pub(crate) use node::document::prepare_classic_script;
 mod parsing;
 mod range;
@@ -74,19 +65,12 @@ use super::events::{self, JsEvent, JsEventTarget};
 use super::world::{Handle, RealmRegistry, WeakReferences, World};
 
 thread_local! {
-    /// JS world per live realm, keyed by its `JSContext` pointer.
-    ///
-    /// Runtime userdata would be one slot per renderer process, and the second
-    /// frame would overwrite the first; each realm needs its own. One renderer
-    /// thread hosts every frame, and entries are removed when the realm drops,
-    /// so the map is thread-local and keyed by pointer identity.
     static REALM_WORLDS: RefCell<HashMap<usize, Weak<RefCell<World>>>> =
         RefCell::new(HashMap::new());
     static REALM_REGISTRIES: RefCell<HashMap<usize, Weak<RefCell<RealmRegistry>>>> =
         RefCell::new(HashMap::new());
 }
 
-/// Remembers `world` as the JS world of the realm behind `ctx`.
 fn register_world(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) {
     let registry = world.borrow().registry();
     let context = ctx.as_raw().as_ptr() as usize;
@@ -103,7 +87,6 @@ fn register_world(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) {
     });
 }
 
-/// Forgets the realm behind `context`; called when its realm is dropped.
 pub(crate) fn forget_world(context: &rquickjs::Context) {
     REALM_WORLDS.with(|worlds| {
         worlds
@@ -121,8 +104,6 @@ pub(crate) fn forget_registry_contexts(contexts: &[usize]) {
     });
 }
 
-/// The agent associated with a context, including a retired iframe context
-/// kept alive by an adopted platform object's prototype.
 pub(crate) fn realm_registry(ctx: &Ctx<'_>) -> Result<Rc<RefCell<RealmRegistry>>> {
     REALM_REGISTRIES
         .with(|registries| {
@@ -134,7 +115,6 @@ pub(crate) fn realm_registry(ctx: &Ctx<'_>) -> Result<Rc<RefCell<RealmRegistry>>
         .ok_or_else(|| Exception::throw_internal(ctx, "missing JS agent"))
 }
 
-/// The document of the current realm's global object.
 pub(crate) fn main_document(ctx: &Ctx<'_>) -> Result<NodeId> {
     world(ctx)?
         .borrow()
@@ -145,10 +125,6 @@ pub(crate) fn main_document(ctx: &Ctx<'_>) -> Result<NodeId> {
         .ok_or_else(|| Exception::throw_type(ctx, "no document"))
 }
 
-/// Builds a `DOMException` value from Rust with a real prototype, so
-/// `instanceof DOMException` and `constructor` checks pass. Promise rejections
-/// hand this value to the reject function; a thrown one goes through
-/// [`throw_dom`].
 pub(crate) fn dom_exception_value<'js>(
     ctx: &Ctx<'js>,
     name: &str,
@@ -159,8 +135,6 @@ pub(crate) fn dom_exception_value<'js>(
     Ok(host::instance(ctx, JsDomException { name, message })?.into_value())
 }
 
-/// Builds and throws a `DOMException` from Rust with a real prototype, so
-/// `instanceof DOMException` and `constructor` checks pass.
 pub(crate) fn throw_dom(ctx: &Ctx<'_>, name: &str, message: &str) -> rquickjs::Error {
     match dom_exception_value(ctx, name, message) {
         Ok(exception) => ctx.throw(exception),
@@ -168,22 +142,16 @@ pub(crate) fn throw_dom(ctx: &Ctx<'_>, name: &str, message: &str) -> rquickjs::E
     }
 }
 
-/// Maps a refused tree operation onto its exception class
-/// (<https://dom.spec.whatwg.org/#dom-domerror> naming).
+// https://dom.spec.whatwg.org/#dom-domerror
 pub(crate) fn throw_dom_error(ctx: &Ctx<'_>, err: TreeError) -> rquickjs::Error {
     match err {
         TreeError::Hierarchy => throw_dom(ctx, "HierarchyRequestError", &err.to_string()),
         TreeError::NotFound => throw_dom(ctx, "NotFoundError", &err.to_string()),
-        // Programming errors, not web-visible DOM exceptions.
         TreeError::Stale => Exception::throw_type(ctx, &err.to_string()),
     }
 }
 
-/// Fires the realm window's `error` event for one uncaught exception, driving
-/// `window.onerror` with the spec's five arguments. `base_line` translates the
-/// inline stack's script-relative line into a document line (0 when unknown).
-///
-/// <https://html.spec.whatwg.org/multipage/webappapis.html#report-the-error>
+// https://html.spec.whatwg.org/multipage/webappapis.html#report-the-error
 pub(super) fn report_exception_value<'js>(
     ctx: &Ctx<'js>,
     caught: Value<'js>,
@@ -204,17 +172,12 @@ pub(super) fn report_exception_value<'js>(
     if meta.set("baseLine", base_line).is_err() || meta.set("filename", filename).is_err() {
         return;
     }
-    // A throwing `onerror` is the reporter's problem to swallow; report_exception
-    // already dropped the pending exception.
     if report.call::<_, ()>((caught, meta)).is_err() {
-        // Clear the exception the reporter threw so it does not surface at the
-        // next `catch`.
         let _ = ctx.catch();
     }
 }
 
-/// One promise rejection the engine tracks for a realm
-/// (<https://html.spec.whatwg.org/multipage/webappapis.html#unhandled-promise-rejections>).
+// https://html.spec.whatwg.org/multipage/webappapis.html#unhandled-promise-rejections
 struct TrackedRejection {
     world: Weak<RefCell<World>>,
     promise: Persistent<Value<'static>>,
@@ -222,26 +185,17 @@ struct TrackedRejection {
 }
 
 thread_local! {
-    /// A global object's about-to-be-notified rejected promises list:
-    /// rejections that have not reached a microtask checkpoint yet.
     static ABOUT_TO_NOTIFY: RefCell<Vec<TrackedRejection>> =
         const { RefCell::new(Vec::new()) };
-    /// Rejections whose `unhandledrejection` task is queued but has not run.
-    /// A handler attached meanwhile removes the entry, so the task skips it
-    /// (<https://html.spec.whatwg.org/multipage/webappapis.html#notify-about-rejected-promises>).
+    // https://html.spec.whatwg.org/multipage/webappapis.html#notify-about-rejected-promises
     static NOTIFICATION_TASKS: RefCell<Vec<TrackedRejection>> =
         const { RefCell::new(Vec::new()) };
-    /// Reported rejections that are still unhandled: the global object's
-    /// outstanding rejected promises weak set. A late handler queues
-    /// `rejectionhandled`.
     static OUTSTANDING: RefCell<Vec<TrackedRejection>> =
         const { RefCell::new(Vec::new()) };
-    /// Rejections whose `rejectionhandled` task is queued but has not run.
     static HANDLED_TASKS: RefCell<Vec<TrackedRejection>> =
         const { RefCell::new(Vec::new()) };
 }
 
-/// Whether `entry` holds `promise`.
 fn holds_promise<'js>(ctx: &Ctx<'js>, entry: &TrackedRejection, promise: &Value<'js>) -> bool {
     entry
         .promise
@@ -250,7 +204,6 @@ fn holds_promise<'js>(ctx: &Ctx<'js>, entry: &TrackedRejection, promise: &Value<
         .is_ok_and(|stored| stored == *promise)
 }
 
-/// Removes and returns the entry for `promise` from `queue`.
 fn remove_promise<'js>(
     ctx: &Ctx<'js>,
     queue: &RefCell<Vec<TrackedRejection>>,
@@ -263,7 +216,6 @@ fn remove_promise<'js>(
     Some(queue.remove(index))
 }
 
-/// Whether `queue` already holds `promise`.
 fn contains_promise<'js>(
     ctx: &Ctx<'js>,
     queue: &RefCell<Vec<TrackedRejection>>,
@@ -275,7 +227,6 @@ fn contains_promise<'js>(
         .any(|entry| holds_promise(ctx, entry, promise))
 }
 
-/// Queues the task that fires this realm's pending rejection events.
 fn queue_rejection_task(ctx: &Ctx<'_>) {
     let Ok(world) = world(ctx) else {
         return;
@@ -287,14 +238,7 @@ fn queue_rejection_task(ctx: &Ctx<'_>) {
         .push_back(crate::js::world::RealmRequest::RejectionTasks);
 }
 
-/// `QuickJS`'s host rejection tracker, called when a promise is rejected with no
-/// handler (`handled` false) and again when a handler is attached to a still
-/// unhandled rejection (`handled` true)
-/// (<https://html.spec.whatwg.org/multipage/webappapis.html#hostpromiserejectiontracker>).
-///
-/// A rejection is only recorded here. The events fire from a task, never from
-/// inside the promise machinery: a handler attached before that task runs must
-/// suppress the notification.
+// https://html.spec.whatwg.org/multipage/webappapis.html#hostpromiserejectiontracker
 pub(super) fn note_rejection<'js>(
     ctx: &Ctx<'js>,
     promise: Value<'js>,
@@ -302,21 +246,18 @@ pub(super) fn note_rejection<'js>(
     handled: bool,
 ) {
     if handled {
-        // Before the checkpoint the promise is still about to be notified.
         if ABOUT_TO_NOTIFY
             .with(|queue| remove_promise(ctx, queue, &promise))
             .is_some()
         {
             return;
         }
-        // After the checkpoint, the notification task has not run yet.
         if NOTIFICATION_TASKS
             .with(|queue| remove_promise(ctx, queue, &promise))
             .is_some()
         {
             return;
         }
-        // A reported rejection handled afterwards queues `rejectionhandled`.
         let Some(entry) = OUTSTANDING.with(|queue| remove_promise(ctx, queue, &promise)) else {
             return;
         };
@@ -342,12 +283,6 @@ pub(super) fn note_rejection<'js>(
     });
 }
 
-/// Drops the queued rejection state that belongs to `current`'s realm.
-///
-/// The queues are thread-local and hold `Persistent` values, so an entry
-/// left behind keeps its context alive past teardown and trips
-/// `JS_FreeRuntime`'s live-object assertion. Entries whose realm is already
-/// gone are dead weight too.
 pub(super) fn forget_rejections(current: &Rc<RefCell<World>>) {
     for queue in [
         &ABOUT_TO_NOTIFY,
@@ -366,7 +301,6 @@ pub(super) fn forget_rejections(current: &Rc<RefCell<World>>) {
     }
 }
 
-/// Drains `queue` of the entries owned by `current`'s realm.
 fn take_for_realm(
     queue: &'static std::thread::LocalKey<RefCell<Vec<TrackedRejection>>>,
     current: &Rc<RefCell<World>>,
@@ -377,7 +311,6 @@ fn take_for_realm(
         let mut rest = Vec::new();
         for entry in queue.drain(..) {
             let Some(world) = entry.world.upgrade() else {
-                // The realm is gone; its promise no longer matters.
                 continue;
             };
             if Rc::ptr_eq(&world, current) {
@@ -391,9 +324,7 @@ fn take_for_realm(
     })
 }
 
-/// Ends a microtask checkpoint: clones the about-to-be-notified list into the
-/// realm's notification task and queues that task
-/// (<https://html.spec.whatwg.org/multipage/webappapis.html#notify-about-rejected-promises>).
+// https://html.spec.whatwg.org/multipage/webappapis.html#notify-about-rejected-promises
 pub(super) fn notify_rejected_promises(ctx: &Ctx<'_>, current: &Rc<RefCell<World>>) {
     let rejected = take_for_realm(&ABOUT_TO_NOTIFY, current);
     if rejected.is_empty() {
@@ -406,10 +337,7 @@ pub(super) fn notify_rejected_promises(ctx: &Ctx<'_>, current: &Rc<RefCell<World
     queue_rejection_task(ctx);
 }
 
-/// Runs the queued rejection tasks for `current`'s realm: one
-/// `unhandledrejection` per rejection still unhandled at task time, then any
-/// `rejectionhandled` a late handler queued
-/// (<https://html.spec.whatwg.org/multipage/webappapis.html#notify-about-rejected-promises>).
+// https://html.spec.whatwg.org/multipage/webappapis.html#notify-about-rejected-promises
 pub(super) fn fire_rejection_tasks(ctx: &Ctx<'_>, current: &Rc<RefCell<World>>) {
     for entry in take_for_realm(&NOTIFICATION_TASKS, current) {
         let (Ok(promise), Ok(reason)) = (
@@ -418,9 +346,6 @@ pub(super) fn fire_rejection_tasks(ctx: &Ctx<'_>, current: &Rc<RefCell<World>>) 
         ) else {
             continue;
         };
-        // A handler attached before this task ran removed the entry from the
-        // notification list, so reaching here means the promise is still
-        // unhandled; it joins the outstanding set that a late handler reports.
         fire_rejection(ctx, false, promise, reason);
         OUTSTANDING.with(|queue| queue.borrow_mut().push(entry));
     }
@@ -431,8 +356,6 @@ pub(super) fn fire_rejection_tasks(ctx: &Ctx<'_>, current: &Rc<RefCell<World>>) 
     }
 }
 
-/// Dispatches one `PromiseRejectionEvent` at the realm window through the
-/// `__tbPromiseRejection` shim.
 fn fire_rejection<'js>(ctx: &Ctx<'js>, handled: bool, promise: Value<'js>, reason: Value<'js>) {
     let Ok(report) = crate::js::bridge::object(ctx)
         .and_then(|host| host.get::<_, Value>("__tbPromiseRejection"))
@@ -443,7 +366,6 @@ fn fire_rejection<'js>(ctx: &Ctx<'js>, handled: bool, promise: Value<'js>, reaso
         return;
     };
     if report.call::<_, Value>((handled, promise, reason)).is_err() {
-        // Clear the exception the handler threw.
         let _ = ctx.catch();
     }
 }
@@ -482,10 +404,6 @@ impl<'js> rquickjs::FromJs<'js> for WebIdlCodeUnits {
 
 impl<'js> rquickjs::FromJs<'js> for WebIdlUnsignedLong {
     fn from_js(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Self> {
-        // The pristine `Number`, captured at install: a page-assigned global
-        // must not hijack `unsigned long` conversion. Conversion errors
-        // propagate; the clobberable global is only a fallback when install
-        // predates the capture.
         let pristine = world(ctx)?.borrow().pristine_number.clone();
         if let Some(pristine) = pristine {
             let to_number: Function = pristine.restore(ctx)?;
@@ -508,12 +426,6 @@ pub(crate) fn install(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
     install_document(ctx, world)
 }
 
-/// Installs the global a dedicated worker runs in.
-///
-/// The event classes, bridge, host functions, and primitives are shared with
-/// a document realm; the DOM, history, location, and Window installers are
-/// not. The worker shim publishes `self`, `location`, `navigator`,
-/// `postMessage`, `importScripts`, and the worker-only interfaces.
 pub(crate) fn install_worker(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
     install_common(ctx, world)?;
     install_worker_global_hosts(ctx, world)?;
@@ -522,27 +434,16 @@ pub(crate) fn install_worker(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Resul
     Ok(())
 }
 
-/// Whether `creator`'s policy blocks a worker script at `url`, queueing the
-/// violations for the creator's document when it does.
-///
-/// The worker script fetch carries the `worker` destination, so `worker-src`
-/// decides it, falling back to `child-src`, `script-src`, and `default-src`
-/// (<https://w3c.github.io/webappsec-csp/#effective-directive-for-a-request>).
-/// When the fallback lands on `script-src`, that list's own pre-request check
-/// runs, so a worker created by a nonce-carrying script survives
-/// `'strict-dynamic'` (<https://w3c.github.io/webappsec-csp/#script-pre-request>).
-/// A blocked worker never fetches; its object still exists and reports the
-/// plain `error` event a failed load always gives
-/// (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>).
+// https://w3c.github.io/webappsec-csp/#effective-directive-for-a-request
+// https://w3c.github.io/webappsec-csp/#script-pre-request
+// https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model
 fn worker_script_blocked(creator: &World, worker: crate::worker::WorkerId, url: &url::Url) -> bool {
     let violations = creator.policy.csp.check_request(
         &creator.origin,
         &creator.document_url,
         url,
         crate::csp::Destination::Worker,
-        // The constructor is script-initiated, so `'strict-dynamic'` applies
-        // and no nonce or integrity metadata can vouch for the URL
-        // (<https://w3c.github.io/webappsec-csp/#script-src-strict-dynamic>).
+        // https://w3c.github.io/webappsec-csp/#script-src-strict-dynamic
         Some(crate::csp::ScriptRequest {
             nonce: "",
             parser_inserted: false,
@@ -557,9 +458,7 @@ fn worker_script_blocked(creator: &World, worker: crate::worker::WorkerId, url: 
     blocked
 }
 
-/// Documents and worker globals both construct workers; a nested worker runs in
-/// the same engine and gets the same hooks
-/// (<https://html.spec.whatwg.org/multipage/workers.html#dom-worker>).
+// https://html.spec.whatwg.org/multipage/workers.html#dom-worker
 fn install_worker_constructor_hosts(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
     let host = crate::js::bridge::object(ctx)?;
     let url_world = Rc::clone(world);
@@ -596,20 +495,13 @@ fn install_worker_constructor_hosts(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -
                     name,
                     crate::worker::CreatedWorkerOptions::dedicated(module, credentials),
                 );
-                // A dedicated worker starts on its own OS thread here, inside
-                // `new Worker()`: the parallelism tests post and then spin
-                // before their script returns, so a start deferred to the
-                // engine's reconcile could never run in time
-                // (<https://html.spec.whatwg.org/multipage/workers.html#dom-worker>).
+                // https://html.spec.whatwg.org/multipage/workers.html#dom-worker
                 current.runtime.worker_dir.spawn_dedicated(created);
                 Ok(id.get())
             },
         ),
     )?;
-    // A `SharedWorker` connection: the constructor pairs the page's `port`
-    // with a worker-side endpoint, and the engine attaches that endpoint to
-    // the realm keyed by (origin, url, name) as a `connect` event
-    // (<https://html.spec.whatwg.org/multipage/workers.html#dom-sharedworker>).
+    // https://html.spec.whatwg.org/multipage/workers.html#dom-sharedworker
     install_shared_worker_constructor_host(ctx, world)?;
     let post_world = Rc::clone(world);
     host.set(
@@ -620,9 +512,7 @@ fn install_worker_constructor_hosts(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -
                     return;
                 };
                 let world = post_world.borrow();
-                // The worker's frame owns the transferred endpoints before the
-                // message runs there
-                // (<https://html.spec.whatwg.org/multipage/web-messaging.html#transfer-receiving-steps>).
+                // https://html.spec.whatwg.org/multipage/web-messaging.html#transfer-receiving-steps
                 {
                     let shared_handle = world.shared();
                     let mut shared = shared_handle.borrow_mut();
@@ -632,9 +522,7 @@ fn install_worker_constructor_hosts(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -
                             .route(*endpoint, crate::protocol::FrameId::worker(id));
                     }
                 }
-                // The worker thread may already be gone; a transfer that
-                // reaches it is lost with the message
-                // (<https://html.spec.whatwg.org/multipage/web-messaging.html#transfer-receiving-steps>).
+                // https://html.spec.whatwg.org/multipage/web-messaging.html#transfer-receiving-steps
                 if !world.runtime.worker_dir.send(
                     crate::worker::WorkerId::new(id),
                     crate::worker::WorkerCommand::Post {
@@ -661,9 +549,7 @@ fn install_worker_constructor_hosts(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -
     Ok(())
 }
 
-/// The `SharedWorker` half of the constructor hooks: it pairs the page's port
-/// with a worker-side endpoint and queues the connection for the shared realm
-/// (<https://html.spec.whatwg.org/multipage/workers.html#dom-sharedworker>).
+// https://html.spec.whatwg.org/multipage/workers.html#dom-sharedworker
 fn install_shared_worker_constructor_host(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
     let host = crate::js::bridge::object(ctx)?;
     let shared_world = Rc::clone(world);
@@ -692,10 +578,7 @@ fn install_shared_worker_constructor_host(ctx: &Ctx<'_>, world: &Rc<RefCell<Worl
                     ),
                 };
                 let current = shared_world.borrow();
-                // The option defaults to `all` only in a first-party site
-                // context, and an explicit `all` there is refused before the
-                // worker exists
-                // (<https://privacycg.github.io/saa-non-cookie-storage/#shared-worker>).
+                // https://privacycg.github.io/saa-non-cookie-storage/#shared-worker
                 let same_site_cookies = match requested {
                     Some(crate::worker::SharedWorkerSameSiteCookies::All)
                         if !current.first_party =>
@@ -715,9 +598,6 @@ fn install_shared_worker_constructor_host(ctx: &Ctx<'_>, world: &Rc<RefCell<Worl
                 let id = current.runtime.next_worker_id();
                 let (frame, shared) = (current.frame(), current.shared());
                 if worker_script_blocked(&current, id, &parsed) {
-                    // The connection's port pair still exists — `port` is
-                    // readable and `start()` is a no-op — but the worker side
-                    // goes away, so nothing ever arrives from it.
                     let (page_endpoint, worker_endpoint) =
                         shared.borrow_mut().ports.new_pair(frame);
                     shared.borrow_mut().forget_endpoints(&[worker_endpoint]);
@@ -740,9 +620,7 @@ fn install_shared_worker_constructor_host(ctx: &Ctx<'_>, world: &Rc<RefCell<Worl
                     },
                 );
                 let (page_endpoint, worker_endpoint) = shared.borrow_mut().ports.new_pair(frame);
-                // The worker side leaves this realm now; the engine aims it at
-                // the shared realm's frame when it adopts the connection
-                // (<https://html.spec.whatwg.org/multipage/web-messaging.html#transfer-receiving-steps>).
+                // https://html.spec.whatwg.org/multipage/web-messaging.html#transfer-receiving-steps
                 if !shared.borrow_mut().ports.detach(worker_endpoint, frame) {
                     return Err(Exception::throw_type(&ctx, "Cannot transfer MessagePort"));
                 }
@@ -761,10 +639,7 @@ fn install_shared_worker_constructor_host(ctx: &Ctx<'_>, world: &Rc<RefCell<Worl
     )
 }
 
-/// Resolves a worker script URL the way the HTML constructor does: against the
-/// document's base URL, with the document's encoding as the URL parser's
-/// encoding override
-/// (<https://html.spec.whatwg.org/multipage/workers.html#dom-worker>).
+// https://html.spec.whatwg.org/multipage/workers.html#dom-worker
 fn worker_script_url(world: &World, href: &str, base: &str) -> Option<String> {
     let base = url::Url::parse(base).ok()?;
     let encoding = world.main_document().map_or(encoding_rs::UTF_8, |parsed| {
@@ -775,8 +650,6 @@ fn worker_script_url(world: &World, href: &str, base: &str) -> Option<String> {
         .map(|url| url.as_str().to_owned())
 }
 
-/// The hooks a worker global calls: its own identity, and messages and close
-/// to its creator.
 fn install_worker_global_hosts(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
     let host = crate::js::bridge::object(ctx)?;
     let name = world.borrow().worker_name().unwrap_or_default().to_owned();
@@ -786,8 +659,7 @@ fn install_worker_global_hosts(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Res
     host.set("__tbWorkerName", name)?;
     host.set("__tbWorkerURL", url)?;
     host.set("__tbWorkerModule", world.borrow().worker_is_module())?;
-    // A nested worker's constructor reaches into the same engine
-    // (<https://html.spec.whatwg.org/multipage/workers.html#dom-worker>).
+    // https://html.spec.whatwg.org/multipage/workers.html#dom-worker
     install_worker_constructor_hosts(ctx, world)?;
     let unhandled_world = Rc::clone(world);
     host.set(
@@ -849,16 +721,12 @@ fn install_worker_global_hosts(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Res
                 return;
             };
             if world.is_shared_worker() {
-                // A shared realm runs in the page engine, so the engine closes
-                // it
-                // (<https://html.spec.whatwg.org/multipage/workers.html#dom-sharedworkerglobalscope-close>).
+                // https://html.spec.whatwg.org/multipage/workers.html#dom-sharedworkerglobalscope-close
                 world
                     .runtime
                     .push_worker_request(crate::worker::WorkerRequest::Close { id: worker });
             } else {
-                // A dedicated worker's thread reads the flag after its task
-                // and drops the environment
-                // (<https://html.spec.whatwg.org/multipage/workers.html#dom-dedicatedworkerglobalscope-close>).
+                // https://html.spec.whatwg.org/multipage/workers.html#dom-dedicatedworkerglobalscope-close
                 world.worker_close_requested.set(true);
             }
         }),
@@ -866,8 +734,6 @@ fn install_worker_global_hosts(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Res
     Ok(())
 }
 
-/// The part of a global install every realm shares: the bridge, the
-/// `EventTarget` graph, host functions, and pristine intrinsics.
 fn install_common(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
     register_world(ctx, world);
     crate::js::bridge::install(ctx, world)?;
@@ -875,10 +741,7 @@ fn install_common(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
     world
         .borrow_mut()
         .set_window(Persistent::save(ctx, globals.clone()));
-    // `Event.timeStamp` is measured from the same time origin as
-    // `performance.now()`
-    // (<https://dom.spec.whatwg.org/#dom-event-timestamp>). Sample both clocks
-    // once, so creating an event needs no extra JS call.
+    // https://dom.spec.whatwg.org/#dom-event-timestamp
     let performance_now: f64 = globals
         .get::<_, Object>("performance")
         .and_then(|performance| performance.get::<_, Function>("now"))
@@ -911,9 +774,6 @@ fn install_common(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
     crate::js::bridge::evaluate(ctx, events::install_abort_js(ctx)?)?;
     install_host_functions(ctx)?;
     capture_host_primitives(ctx, &globals, world)?;
-    // Both a Window and a `WorkerGlobalScope` are event targets. The bare
-    // methods let a worker global dispatch before its prototype is rewired to
-    // `DedicatedWorkerGlobalScope.prototype`.
     globals.set(
         "addEventListener",
         rquickjs::prelude::Func::from(window_add_event_listener),
@@ -933,15 +793,10 @@ fn install_common(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
     Ok(())
 }
 
-/// The DOM and browsing-context surface a document realm adds to the common
-/// install.
 fn install_document(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
     let globals = ctx.globals();
     install_webdriver_bridge(ctx)?;
-    // `innerWidth`/`innerHeight`/`outerWidth`/`outerHeight` are live getters
-    // defined in the web shims; they read the document viewport so CDP
-    // emulation is visible without re-installing globals
-    // (<https://drafts.csswg.org/cssom-view/#dom-window-innerwidth>).
+    // https://drafts.csswg.org/cssom-view/#dom-window-innerwidth
     Class::<JsNode>::define(&globals)?;
     Class::<JsNodeList>::define(&globals)?;
     Class::<JsHtmlCollection>::define(&globals)?;
@@ -990,8 +845,6 @@ fn install_document(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
         rquickjs::prelude::Func::from(set_window_handler),
     )?;
     install_brands(ctx)?;
-    // Generated members land on the brands.js `Node.prototype`; the derived
-    // interface prototypes inherit them through the prototype chain.
     node::install(ctx)?;
     range::install(ctx)?;
     Class::<JsAttr>::define(&globals)?;
@@ -1003,9 +856,7 @@ fn install_document(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
     });
     if let Some(id) = document_id {
         globals.set("document", wrap_node(ctx, id)?)?;
-        // The parser installed the document's content attributes before this
-        // realm existed, so their change steps run here, before page script
-        // (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes>).
+        // https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes
         attributes::install_parsed_handlers(ctx, id)?;
     }
 
@@ -1020,7 +871,6 @@ fn install_document(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
     Ok(())
 }
 
-/// Registers the `__tb_*` host functions page scripts call into.
 fn install_host_functions(ctx: &Ctx<'_>) -> Result<()> {
     crate::js::bridge::object(ctx)?.set("__tbIdentity", rquickjs::prelude::Func::from(identity))?;
     crate::js::bridge::object(ctx)?.set(
@@ -1075,11 +925,7 @@ fn install_host_functions(ctx: &Ctx<'_>) -> Result<()> {
     Ok(())
 }
 
-/// The style engine's resolved value of `property` on `element`, or the empty
-/// string when the element has no style or the property is unknown
-/// (<https://drafts.csswg.org/cssom/#resolved-values>). `getComputedStyle`
-/// falls back to the inline style and then to initial values on an empty
-/// result.
+// https://drafts.csswg.org/cssom/#resolved-values
 fn resolved_style<'js>(
     ctx: Ctx<'js>,
     element: Value<'js>,
@@ -1098,22 +944,15 @@ fn resolved_style<'js>(
         return String::new();
     };
     let base = &mut parsed.document.base;
-    // Reading a computed style forces a style flush, so values reflect
-    // mutations made earlier in the same script, including layout-dependent
-    // used values
-    // (<https://drafts.csswg.org/cssom/#dom-window-getcomputedstyle>).
+    // https://drafts.csswg.org/cssom/#dom-window-getcomputedstyle
     base.resolve(crate::animation_seconds());
     match computed_pseudo_element(pseudo) {
         Some(pseudo) => base.resolved_pseudo_style_value(id.node, pseudo, &property),
-        // A pseudo-element the engine does not cascade has no value of its own
         None if pseudo != 0 => String::new(),
         None => base.resolved_style_value(id.node, &property),
     }
 }
 
-/// The pseudo-element a `getComputedStyle` pseudo code names, as the style
-/// engine's own type. Code 0 means "no pseudo-element", which is the element
-/// itself.
 fn computed_pseudo_element(code: i32) -> Option<style::selector_parser::PseudoElement> {
     use style::selector_parser::PseudoElement;
     match code {
@@ -1126,14 +965,7 @@ fn computed_pseudo_element(code: i32) -> Option<style::selector_parser::PseudoEl
     }
 }
 
-/// The pseudo code for a `getComputedStyle` argument that starts with a colon.
-/// -1 means the argument is not a pseudo-element selector CSSOM can answer, so
-/// the caller returns an empty declaration; 0 means the argument is not a
-/// pseudo-element at all, so the element's own style answers; 6 means a
-/// pseudo-element CSSOM recognises but the engine does not cascade, so the
-/// declaration answers with initial values where the engine has none.
-///
-/// <https://drafts.csswg.org/selectors-4/#typedef-pseudo-element-selector>
+// https://drafts.csswg.org/selectors-4/#typedef-pseudo-element-selector
 fn parse_pseudo_element(text: String) -> i32 {
     use blitz_dom::ComputedPseudoElement;
     use style::selector_parser::PseudoElement;
@@ -1148,10 +980,7 @@ fn parse_pseudo_element(text: String) -> i32 {
     }
 }
 
-/// The declaration entries a computed style reports, in CSSOM's order
-/// (`CSSStyleDeclaration.length`, `item()`, and the indexed getter on a
-/// computed style)
-/// (<https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-length>).
+// https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-length
 fn computed_style_names<'js>(
     ctx: Ctx<'js>,
     element: Value<'js>,
@@ -1178,19 +1007,12 @@ fn computed_style_names<'js>(
     Ok(array)
 }
 
-/// Marks an object with the `[[IsHTMLDDA]]` internal slot. Only `document.all`
-/// carries the slot, and only the engine can set it, because it changes how
-/// `typeof`, `ToBoolean`, and loose equality treat the object
-/// (<https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#htmlallcollection>).
+// https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#htmlallcollection
 fn mark_html_dda(object: rquickjs::Object<'_>) {
     object.set_is_html_dda();
 }
 
-/// Whether `element` may have a computed style at all. CSSOM reports one only
-/// when the element is connected, in the flat tree, and its shadow-including
-/// root's browsing context is being rendered; every other element gets an
-/// empty declaration
-/// (<https://drafts.csswg.org/cssom/#dom-window-getcomputedstyle>).
+// https://drafts.csswg.org/cssom/#dom-window-getcomputedstyle
 fn has_computed_style<'js>(ctx: Ctx<'js>, element: Value<'js>) -> bool {
     let Ok(world) = world(&ctx) else {
         return false;
@@ -1204,9 +1026,7 @@ fn has_computed_style<'js>(ctx: Ctx<'js>, element: Value<'js>) -> bool {
             return false;
         };
         let base = &mut parsed.document.base;
-        // Reading a computed style forces a style flush, so connectedness and
-        // flat-tree membership describe the tree as the page left it
-        // (<https://drafts.csswg.org/cssom/#dom-window-getcomputedstyle>).
+        // https://drafts.csswg.org/cssom/#dom-window-getcomputedstyle
         base.resolve(crate::animation_seconds());
         if !crate::dom::tree::is_connected(base, id.node)
             || !crate::dom::tree::is_in_flat_tree(base, id.node)
@@ -1214,9 +1034,7 @@ fn has_computed_style<'js>(ctx: Ctx<'js>, element: Value<'js>) -> bool {
             return false;
         }
     }
-    // The element's own document decides whether it has a browsing context;
-    // a `DOMParser` result and a `createHTMLDocument` result have none
-    // (<https://dom.spec.whatwg.org/#concept-document-bc>).
+    // https://dom.spec.whatwg.org/#concept-document-bc
     let Some(owner) = owning_world(&ctx, id) else {
         return false;
     };
@@ -1224,9 +1042,7 @@ fn has_computed_style<'js>(ctx: Ctx<'js>, element: Value<'js>) -> bool {
     if !has_context {
         return false;
     }
-    // A child navigable is rendered only while its container is. The container
-    // lives in the parent frame's tree, which shares this document store
-    // (<https://html.spec.whatwg.org/multipage/rendering.html#being-rendered>).
+    // https://html.spec.whatwg.org/multipage/rendering.html#being-rendered
     let Some(container) = owner.borrow().container() else {
         return true;
     };
@@ -1249,8 +1065,7 @@ fn has_computed_style<'js>(ctx: Ctx<'js>, element: Value<'js>) -> bool {
     })
 }
 
-/// The active document's viewport size in CSS pixels, for the live `window`
-/// metrics (<https://drafts.csswg.org/cssom-view/#dom-window-innerwidth>).
+// https://drafts.csswg.org/cssom-view/#dom-window-innerwidth
 fn viewport_size(ctx: Ctx<'_>) -> Vec<f64> {
     let (width, height) = world(&ctx)
         .ok()
@@ -1260,10 +1075,7 @@ fn viewport_size(ctx: Ctx<'_>) -> Vec<f64> {
     vec![f64::from(width), f64::from(height)]
 }
 
-/// The identity every page in this process reports: `navigator.userAgent` and
-/// `navigator.userAgentData`, from the same value the network sends as its
-/// request headers
-/// (<https://wicg.github.io/ua-client-hints/#http-ua-hints>).
+// https://wicg.github.io/ua-client-hints/#http-ua-hints
 fn identity(ctx: Ctx<'_>) -> Result<Object<'_>> {
     let identity = world(&ctx)?.borrow().runtime.identity.clone();
     let object = Object::new(ctx.clone())?;
@@ -1288,7 +1100,6 @@ fn identity(ctx: Ctx<'_>) -> Result<Object<'_>> {
     Ok(object)
 }
 
-/// One brand list as plain objects, which `navigator.js` freezes.
 fn brand_array<'js>(ctx: &Ctx<'js>, brands: &[net::Brand]) -> Result<Array<'js>> {
     let array = Array::new(ctx.clone())?;
     for (index, brand) in brands.iter().enumerate() {
@@ -1300,8 +1111,6 @@ fn brand_array<'js>(ctx: &Ctx<'js>, brands: &[net::Brand]) -> Result<Array<'js>>
     Ok(array)
 }
 
-/// Captures the pristine intrinsics and host entry points every later lookup
-/// must use instead of `ctx.globals()`.
 fn capture_host_primitives<'js>(
     ctx: &Ctx<'js>,
     globals: &Object<'js>,
@@ -1339,10 +1148,7 @@ pub(crate) fn host_node_id<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Option<No
         .map(|node| node.borrow().node_id())
 }
 
-/// Resolves a `WebDriver` element id to its wrapper, or `null` when no node
-/// owns the id. Element commands use this so references returned by
-/// `execute_script` work as well as Find Element results
-/// (<https://w3c.github.io/webdriver/#elements>).
+// https://w3c.github.io/webdriver/#elements
 pub(super) fn webdriver_element(ctx: Ctx<'_>, remote_id: f64) -> Result<Value<'_>> {
     let Some(remote) = crate::js::bridge::enforce_range_u64(remote_id) else {
         return Ok(Value::new_null(ctx));
@@ -1351,7 +1157,6 @@ pub(super) fn webdriver_element(ctx: Ctx<'_>, remote_id: f64) -> Result<Value<'_
     let Some(node) = world.borrow().node_for_remote(remote) else {
         return Ok(Value::new_null(ctx));
     };
-    // Only a live, connected element is a valid element reference.
     let valid = world.borrow().document(node).is_some_and(|parsed| {
         let base = &parsed.document.base;
         crate::dom::tree::is_connected(base, node.node)
@@ -1365,7 +1170,6 @@ pub(super) fn webdriver_element(ctx: Ctx<'_>, remote_id: f64) -> Result<Value<'_
     wrap_node(&ctx, node)
 }
 
-/// Every element's border box from the Blitz layout, in tree order.
 pub(crate) fn layout_boxes(world: &World, document: NodeId) -> Vec<crate::render::NodeBox> {
     let Some(mut parsed) = world.document_mut(document) else {
         return Vec::new();
@@ -1397,8 +1201,6 @@ pub(crate) fn layout_boxes(world: &World, document: NodeId) -> Vec<crate::render
     boxes
 }
 
-/// `node`'s border box `(left, top, width, height)` from the current layout,
-/// if it has one.
 pub(crate) fn element_box(world: &World, node: NodeId) -> Option<(f64, f64, f64, f64)> {
     layout_boxes(world, node)
         .into_iter()
@@ -1413,8 +1215,7 @@ pub(crate) fn element_box(world: &World, node: NodeId) -> Option<(f64, f64, f64,
         })
 }
 
-/// Current viewport offset from the document's scrolling element.
-/// <https://drafts.csswg.org/cssom-view/#scrolling-viewport>
+// https://drafts.csswg.org/cssom-view/#scrolling-viewport
 pub(crate) fn viewport_scroll(world: &World, node: NodeId) -> (f64, f64) {
     let Some(parsed) = world.document(node) else {
         return (0.0, 0.0);
@@ -1423,15 +1224,7 @@ pub(crate) fn viewport_scroll(world: &World, node: NodeId) -> (f64, f64) {
     (scroll.x, scroll.y)
 }
 
-/// The element at viewport coordinate `(x, y)`, or `None` when the point is
-/// outside the viewport.
-///
-/// Blitz owns hit testing: it walks the paint order (stacking contexts
-/// included), applies transforms, scroll offsets, overflow clipping, and
-/// `pointer-events`, and resolves text runs and anonymous boxes to their
-/// element (<https://drafts.csswg.org/cssom-view/#dom-document-elementfrompoint>).
-/// Hit testing consults layout, and a caller may ask right after a mutation,
-/// so the document's style/layout pass runs first.
+// https://drafts.csswg.org/cssom-view/#dom-document-elementfrompoint
 #[expect(
     clippy::cast_possible_truncation,
     reason = "Blitz layout is f32; a point inside the viewport is exactly representable"
@@ -1449,9 +1242,7 @@ pub(crate) fn element_at_point(world: &World, document: NodeId, x: f64, y: f64) 
         })
 }
 
-/// Every element at viewport coordinate `(x, y)` in paint order, topmost
-/// first, as for `document.elementsFromPoint()`
-/// (<https://drafts.csswg.org/cssom-view/#dom-document-elementsfrompoint>).
+// https://drafts.csswg.org/cssom-view/#dom-document-elementsfrompoint
 #[expect(
     clippy::cast_possible_truncation,
     reason = "Blitz layout is f32; a point inside the viewport is exactly representable"
@@ -1473,7 +1264,6 @@ pub(crate) fn elements_at_point(world: &World, document: NodeId, x: f64, y: f64)
         .collect()
 }
 
-/// [`element_at_point`] for a JS binding's context.
 pub(super) fn element_at_point_ctx(
     ctx: &Ctx<'_>,
     document: NodeId,
@@ -1503,12 +1293,7 @@ pub(super) fn rect_object<'js>(
     Ok(object)
 }
 
-/// Points `from`'s existing wrapper at `to` and moves the wrapper cache.
-///
-/// Adoption copies the node into the destination tree. The spec keeps the
-/// same object, so a wrapper this realm can see follows the copy
-/// (<https://dom.spec.whatwg.org/#concept-node-adopt>). A wrapper that lives
-/// in another realm stays where it is: this context cannot update it.
+// https://dom.spec.whatwg.org/#concept-node-adopt
 pub(super) fn retarget_wrapper(ctx: &Ctx<'_>, from: NodeId, to: NodeId) -> Result<()> {
     let world_rc = world(ctx)?;
     if let Some(source) = world_rc.borrow().owner_world(from) {
@@ -1532,10 +1317,6 @@ pub(super) fn retarget_wrapper(ctx: &Ctx<'_>, from: NodeId, to: NodeId) -> Resul
     let Ok(class) = Class::<JsNode>::from_js(ctx, value) else {
         return Ok(());
     };
-    // The wrapper may be the receiver of the native call that is adopting
-    // the node (a listener moving the dispatching target), so its class is
-    // borrowed immutably right now. The handle is a `Cell`, which is what
-    // lets the retarget happen under that borrow.
     class.borrow().handle.set(Handle(to));
     Ok(())
 }
@@ -1555,15 +1336,11 @@ pub(crate) fn wrap_node<'js>(ctx: &Ctx<'js>, id: NodeId) -> Result<Value<'js>> {
     Ok(value)
 }
 
-/// Publishes `parsed` as a new document of this realm's world and wraps its
-/// root.
 pub(super) fn wrap_new_document<'js>(ctx: &Ctx<'js>, parsed: crate::Parsed) -> Result<Value<'js>> {
     wrap_new_document_in_world(ctx, parsed, &world(ctx)?)
 }
 
-/// Publishes a new document in `world_rc`, which determines its and its
-/// descendants' relevant realm, and returns the document's shared wrapper.
-/// <https://dom.spec.whatwg.org/#create-a-document>
+// https://dom.spec.whatwg.org/#create-a-document
 pub(super) fn wrap_new_document_in_world<'js>(
     ctx: &Ctx<'js>,
     parsed: crate::Parsed,
@@ -1602,8 +1379,6 @@ fn instantiate_node<'js>(ctx: &Ctx<'js>, id: NodeId) -> Result<Value<'js>> {
     wrap_with_brand(ctx, id, brand)
 }
 
-/// Instantiates a `JsNode` wrapper with the realm-owner's prototype for
-/// `brand`.
 fn wrap_with_brand<'js>(ctx: &Ctx<'js>, id: NodeId, brand: &str) -> Result<Value<'js>> {
     let value = JsNode {
         handle: std::cell::Cell::new(Handle(id)),
@@ -1612,9 +1387,6 @@ fn wrap_with_brand<'js>(ctx: &Ctx<'js>, id: NodeId, brand: &str) -> Result<Value
     let class = if let Some(prototype) = node_wrapper_prototype(ctx, id, brand)? {
         host::instance_proto(value, prototype)?
     } else {
-        // No brand yet (a frame document whose realm does not exist): the
-        // registered Node class prototype until that realm installs its
-        // brands.
         let prototype = Class::<JsNode>::prototype(ctx)?
             .ok_or_else(|| Exception::throw_internal(ctx, "native Node class has no prototype"))?;
         host::instance_proto(value, prototype)?
@@ -1622,16 +1394,9 @@ fn wrap_with_brand<'js>(ctx: &Ctx<'js>, id: NodeId, brand: &str) -> Result<Value
     Ok(Class::into_value(class))
 }
 
-/// The interface prototype a node's wrapper must use.
-///
-/// A node's relevant realm is the one that created it, even after
-/// `adoptNode` changes its node document
-/// (<https://dom.spec.whatwg.org/#concept-node-adopt>,
-/// <https://github.com/whatwg/dom/issues/977>).
-/// An iframe document created while a parent script runs has no realm yet,
-/// so that world has no brands; fall back to the owning document's realm and
-/// then to this realm until that realm exists
-/// (<https://html.spec.whatwg.org/multipage/iframe-embed-object.html#the-iframe-element:html-element-insertion-steps>).
+// https://dom.spec.whatwg.org/#concept-node-adopt
+// https://github.com/whatwg/dom/issues/977
+// https://html.spec.whatwg.org/multipage/iframe-embed-object.html#the-iframe-element:html-element-insertion-steps
 fn node_wrapper_prototype<'js>(
     ctx: &Ctx<'js>,
     id: NodeId,
@@ -1655,10 +1420,8 @@ fn node_wrapper_prototype<'js>(
     proto.map(|proto| proto.restore(ctx)).transpose()
 }
 
-/// The element interface for a qualified name
-/// (<https://html.spec.whatwg.org/multipage/dom.html#elements-in-the-dom:html-element>
-/// and <https://w3c.github.io/mathml-core/#dom-mathmlelement>).
-/// Other namespaces use the base `Element` interface.
+// https://html.spec.whatwg.org/multipage/dom.html#elements-in-the-dom:html-element
+// https://w3c.github.io/mathml-core/#dom-mathmlelement
 fn element_interface(name: &QualName) -> &'static str {
     if name.ns == crate::dom::tree::html_namespace() {
         html_element_interface(name.local.as_str())
@@ -1671,8 +1434,7 @@ fn element_interface(name: &QualName) -> &'static str {
     }
 }
 
-/// `local` name to element interface
-/// (<https://html.spec.whatwg.org/multipage/dom.html#elements-in-the-dom:html-element>).
+// https://html.spec.whatwg.org/multipage/dom.html#elements-in-the-dom:html-element
 const ELEMENT_INTERFACES: &[(&str, &str)] = &[
     ("a", "HTMLAnchorElement"),
     ("abbr", "HTMLElement"),
@@ -1805,12 +1567,7 @@ const ELEMENT_INTERFACES: &[(&str, &str)] = &[
     ("xmp", "HTMLPreElement"),
 ];
 
-/// Element interfaces whose receiver check passes through an intermediate
-/// interface: an audio or video element implements `HTMLMediaElement`
-/// between its own interface and `HTMLElement`
-/// (<https://html.spec.whatwg.org/multipage/dom.html#htmlmediaelement>). Child
-/// first, parent second; `node_interface_matches` derives the
-/// media receiver check from these pairs instead of re-listing the tags.
+// https://html.spec.whatwg.org/multipage/dom.html#htmlmediaelement
 pub(super) const ELEMENT_INTERFACE_PARENTS: &[(&str, &str)] = &[
     ("HTMLAudioElement", "HTMLMediaElement"),
     ("HTMLVideoElement", "HTMLMediaElement"),
@@ -1862,9 +1619,6 @@ pub(super) fn deref_weak<'js>(
     }
 }
 
-/// Prototype-brand installation script for the browser-realm platform
-/// objects; one `define` per `WebIDL` interface. Deflated by `build.rs`,
-/// inflated once per process.
 const INSTALL_BRANDS_DEFLATE: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/js_blobs/brands.deflate"));
 
@@ -1879,12 +1633,7 @@ fn install_brands(ctx: &Ctx<'_>) -> Result<()> {
     let entries = table
         .props::<String, Object>()
         .collect::<Result<Vec<(String, Object)>>>()?;
-    // Cross-check: [`ELEMENT_INTERFACES`] and `brands.js` are one fact stated
-    // twice, in Rust and in the shim. Every element interface the table names
-    // must have the prototype brands.js installed; a table that names an
-    // interface the shim does not define fails this realm install at startup
-    // instead of misbranding pages later
-    // (<https://html.spec.whatwg.org/multipage/dom.html#elements-in-the-dom>).
+    // https://html.spec.whatwg.org/multipage/dom.html#elements-in-the-dom
     let defined: std::collections::HashSet<&str> =
         entries.iter().map(|(name, _)| name.as_str()).collect();
     let missing: std::collections::BTreeSet<&str> = ELEMENT_INTERFACES
@@ -1905,22 +1654,14 @@ fn install_brands(ctx: &Ctx<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Collection prototypes and legacy named-property behavior for the browser realm.
-/// Deflated by `build.rs`, inflated once per process.
 pub(super) const INSTALL_COLLECTIONS_DEFLATE: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/js_blobs/collections.deflate"));
 
-/// The collections shim, inflated once per process.
 pub(super) fn install_collections_js(ctx: &Ctx<'_>) -> Result<&'static str> {
     static CACHE: std::sync::OnceLock<Box<str>> = std::sync::OnceLock::new();
     super::blob::decompress(ctx, INSTALL_COLLECTIONS_DEFLATE, &CACHE)
 }
 
-/// The realm's world, or `None` when `ctx` has no registered realm.
-///
-/// Unlike [`world`], this never raises: hosts that run before or outside a
-/// realm's install (an engine callback, for instance) must be able to observe
-/// the absence without leaving an exception pending.
 pub(crate) fn try_world(ctx: &Ctx<'_>) -> Option<Rc<RefCell<World>>> {
     REALM_WORLDS.with(|worlds| {
         worlds
@@ -1938,20 +1679,11 @@ pub(crate) fn world_for_node(ctx: &Ctx<'_>, id: NodeId) -> Result<Rc<RefCell<Wor
     owning_world(ctx, id).ok_or_else(|| Exception::throw_type(ctx, "stale node"))
 }
 
-/// The world that owns `id`, or `None` when its document is gone. Callers that
-/// must not throw for a node from a dead document use this instead of
-/// [`world_for_node`].
 pub(crate) fn owning_world(ctx: &Ctx<'_>, id: NodeId) -> Option<Rc<RefCell<World>>> {
     realm_registry(ctx).ok()?.borrow().owner_world(id)
 }
 
-/// The world that owns `id`'s document, when that document is the active
-/// document of that world.
-///
-/// An element in a document without a browsing context — a `DOMParser` result
-/// or a `createHTMLDocument` result — has no boxes, so the CSSOM View
-/// scrolling and visibility algorithms treat it as absent
-/// (<https://drafts.csswg.org/cssom-view/#dom-element-scrolltop>).
+// https://drafts.csswg.org/cssom-view/#dom-element-scrolltop
 pub(crate) fn active_world(ctx: &Ctx<'_>, id: NodeId) -> Option<Rc<RefCell<World>>> {
     let world = owning_world(ctx, id)?;
     if world.borrow().main_document_id() != Some(id.document) {
@@ -1994,7 +1726,6 @@ pub(crate) fn character_data(ctx: &Ctx<'_>, id: NodeId) -> Result<crate::dom_str
     Ok(parsed.document.character_data(id.node))
 }
 
-/// The value of `id`'s attribute `local`, or the empty string.
 pub(super) fn attribute_value(ctx: &Ctx<'_>, id: NodeId, local: &str) -> Result<String> {
     let owner = world_for_node(ctx, id)?;
     Ok(owner
@@ -2006,15 +1737,7 @@ pub(super) fn attribute_value(ctx: &Ctx<'_>, id: NodeId, local: &str) -> Result<
         .unwrap_or_default())
 }
 
-/// [Replaces data](https://dom.spec.whatwg.org/#concept-cd-replace) on a
-/// `CharacterData` node: `count` code units at `offset` become `data`.
-/// Callers pass the real span (`insertData` uses a zero count, `deleteData`
-/// an empty replacement); live ranges adjust by that span, not by the whole
-/// write.
-///
-/// The tree stores UTF-8, so lone surrogates land as the replacement
-/// character (see `docs/progress.md`); the algorithms otherwise operate on
-/// UTF-16 code units.
+// https://dom.spec.whatwg.org/#concept-cd-replace
 pub(super) fn replace_character_data(
     ctx: &Ctx<'_>,
     id: NodeId,
@@ -2025,9 +1748,6 @@ pub(super) fn replace_character_data(
     replace_character_data_inner(ctx, id, offset, count, data)
 }
 
-/// Whole-data replacement: the `data`, `nodeValue`, and `textContent`
-/// setters, and any internal write whose spec step is "replace data with 0,
-/// the node's length, and data".
 pub(super) fn set_character_data(
     ctx: &Ctx<'_>,
     id: NodeId,
@@ -2036,11 +1756,7 @@ pub(super) fn set_character_data(
     replace_character_data_inner(ctx, id, 0, u32::MAX, data)
 }
 
-/// `update data from attributes`: the serialized map becomes the
-/// instruction's data, and the map itself is stored as given
-/// (<https://dom.spec.whatwg.org/#update-data-from-attributes>). The data
-/// and the map can differ only by attribute names the XML grammar rejects,
-/// which the serialized form cannot round-trip.
+// https://dom.spec.whatwg.org/#update-data-from-attributes
 pub(super) fn set_pi_attributes(
     ctx: &Ctx<'_>,
     id: NodeId,
@@ -2087,8 +1803,6 @@ pub(super) fn set_pi_attributes(
     schedule_mutation_delivery(ctx)
 }
 
-/// Writes `utf8` as the node's whole data, by kind. Returns false when the
-/// node holds no character data.
 fn write_character_data(base: &mut blitz_dom::BaseDocument, id: NodeId, utf8: &str) -> bool {
     let Some(node) = base.get_node(id.node) else {
         return false;
@@ -2113,9 +1827,7 @@ fn write_character_data(base: &mut blitz_dom::BaseDocument, id: NodeId, utf8: &s
         }
         NodeData::ProcessingInstruction { .. } => {
             base.snapshot_node_state_only(id.node);
-            // Writing the data re-derives the pseudo-attributes, so no reader
-            // sees a map older than the data
-            // (<https://www.w3.org/TR/xml-stylesheet/#dt-parsing>).
+            // https://www.w3.org/TR/xml-stylesheet/#dt-parsing
             base.mutate().set_processing_instruction_data(id.node, utf8);
             true
         }
@@ -2163,8 +1875,7 @@ fn replace_character_data_inner(
         }
         parsed.document.character_data(id.node)
     };
-    // A count past the end clamps to the node's length
-    // (<https://dom.spec.whatwg.org/#concept-cd-replace>).
+    // https://dom.spec.whatwg.org/#concept-cd-replace
     let old_units = old_value.units().into_owned();
     let offset = (offset as usize).min(old_units.len());
     let count = (count as usize).min(old_units.len() - offset);
@@ -2176,8 +1887,7 @@ fn replace_character_data_inner(
     if !write_character_data(&mut parsed.document.base, id, &utf8) {
         return Ok(());
     }
-    // The tree stores lossy UTF-8. DOM reads return the exact units
-    // (<https://infra.spec.whatwg.org/#javascript-string-convert>).
+    // https://infra.spec.whatwg.org/#javascript-string-convert
     parsed.document.remember_character_data(id.node, &exact);
     crate::dom::range::adjust_for_replace_data(
         &mut parsed.document.side.ranges,
@@ -2197,9 +1907,7 @@ fn replace_character_data_inner(
     schedule_mutation_delivery(ctx)
 }
 
-/// `WebIDL` `unsigned long` offset conversion plus the `CharacterData` bounds
-/// check: offsets beyond the data throw `IndexSizeError`
-/// (<https://dom.spec.whatwg.org/#concept-cd-substring>).
+// https://dom.spec.whatwg.org/#concept-cd-substring
 pub(crate) fn character_data_offset(ctx: &Ctx<'_>, offset: u32, length: usize) -> Result<usize> {
     let offset = usize::try_from(offset).unwrap_or(usize::MAX);
     if offset > length {
@@ -2234,8 +1942,7 @@ pub(super) fn sibling_value<'js>(ctx: &Ctx<'js>, id: NodeId, forward: bool) -> R
     child_value(ctx, sibling)
 }
 
-/// The nearest element sibling in the given direction
-/// (<https://dom.spec.whatwg.org/#dom-nondocumenttypechildnode-nextelementsibling>).
+// https://dom.spec.whatwg.org/#dom-nondocumenttypechildnode-nextelementsibling
 pub(super) fn element_sibling_value<'js>(
     ctx: &Ctx<'js>,
     id: NodeId,
@@ -2267,9 +1974,6 @@ pub(super) fn string_value<'js>(ctx: &Ctx<'js>, text: &str) -> Result<Value<'js>
     Ok(rquickjs::String::from_str(ctx.clone(), text)?.into_value())
 }
 
-/// Rebinds the `document` global to the realm world's active document. A realm
-/// created while a navigation response was still streaming bound the outgoing
-/// document; the installed one arrives later.
 pub(crate) fn refresh_document_global(ctx: &Ctx<'_>) -> Result<()> {
     let world = world(ctx)?;
     let document_id = world.borrow().with_main_document(|parsed| NodeId {
@@ -2278,16 +1982,12 @@ pub(crate) fn refresh_document_global(ctx: &Ctx<'_>) -> Result<()> {
     });
     if let Some(id) = document_id {
         ctx.globals().set("document", wrap_node(ctx, id)?)?;
-        // A document installed into a realm that already exists never passed
-        // through the realm-install walk, so its parser-installed handler
-        // attributes get their change steps here
-        // (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes>).
+        // https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-content-attributes
         attributes::install_parsed_handlers(ctx, id)?;
     }
     Ok(())
 }
 
-/// A DOM string as a JavaScript string value, preserving every code unit.
 pub(crate) fn dom_string<'js>(
     ctx: &Ctx<'js>,
     value: &crate::dom_string::DomString,
@@ -2295,16 +1995,14 @@ pub(crate) fn dom_string<'js>(
     rquickjs::String::from_utf16(ctx.clone(), &value.units())
 }
 
-/// Which context a qualified name is validated in
-/// (<https://dom.spec.whatwg.org/#validate-and-extract> steps 6 and 7).
+// https://dom.spec.whatwg.org/#validate-and-extract
 #[derive(Clone, Copy)]
 pub(super) enum NodeContext {
     Attribute,
     Element,
 }
 
-/// [Validate and extract](https://dom.spec.whatwg.org/#validate-and-extract)
-/// a namespace and qualified name.
+// https://dom.spec.whatwg.org/#validate-and-extract
 pub(super) fn validate_and_extract(
     ctx: &Ctx<'_>,
     namespace: Option<&str>,
@@ -2369,7 +2067,7 @@ pub(super) fn validate_and_extract(
     ))
 }
 
-/// [Valid namespace prefix](https://dom.spec.whatwg.org/#valid-namespace-prefix).
+// https://dom.spec.whatwg.org/#valid-namespace-prefix
 fn valid_namespace_prefix(prefix: &str) -> bool {
     !prefix.is_empty()
         && !prefix
@@ -2377,7 +2075,7 @@ fn valid_namespace_prefix(prefix: &str) -> bool {
             .any(|c| is_infra_whitespace(c) || matches!(c, '\0' | '/' | '>'))
 }
 
-/// [Valid attribute local name](https://dom.spec.whatwg.org/#valid-attribute-local-name).
+// https://dom.spec.whatwg.org/#valid-attribute-local-name
 pub(super) fn valid_attribute_local_name(local: &str) -> bool {
     !local.is_empty()
         && !local
@@ -2385,7 +2083,7 @@ pub(super) fn valid_attribute_local_name(local: &str) -> bool {
             .any(|c| is_infra_whitespace(c) || matches!(c, '\0' | '/' | '=' | '>'))
 }
 
-/// [Valid element local name](https://dom.spec.whatwg.org/#valid-element-local-name).
+// https://dom.spec.whatwg.org/#valid-element-local-name
 pub(crate) fn valid_element_local_name(name: &str) -> bool {
     let mut chars = name.chars();
     let Some(first) = chars.next() else {
@@ -2424,9 +2122,6 @@ pub(super) fn elements_by_tag<'js>(
     )
 }
 
-/// Builds a live collection wrapper. `brand` selects the interface:
-/// `None` means `NodeList`, `Some("HTMLCollection")` and
-/// `Some("HTMLOptionsCollection")` select those; anything else throws.
 pub(super) fn live_collection<'js>(
     ctx: &Ctx<'js>,
     scope: NodeId,
@@ -2469,8 +2164,7 @@ pub(super) fn find_element_by_id(
     scope: crate::dom::tree::BlitzId,
     id: &str,
 ) -> Option<NodeId> {
-    // An element with an empty ID has no ID, so no element matches
-    // (<https://dom.spec.whatwg.org/#concept-id>).
+    // https://dom.spec.whatwg.org/#concept-id
     if id.is_empty() {
         return None;
     }
@@ -2597,8 +2291,6 @@ mod realm_tests {
                 r"
                 var ctx = document.getElementById('c').getContext('2d');
                 ctx.font = '40px serif';
-                // Blink: a measured alignment and the same option alignment
-                // cancel, so the first cluster starts at the text origin.
                 ctx.textAlign = 'center';
                 var tm = ctx.measureText('E');
                 var width = tm.width;
@@ -2607,13 +2299,11 @@ mod realm_tests {
                 ctx.textAlign = 'left';
                 var later = tm.getTextClusters()[0].x;
 
-                // A getter re-entering the canvas must not abort the renderer.
                 var reentered = true;
                 try {
                   tm.getTextClusters({ get align() { ctx.fillRect(0, 0, 1, 1); return 'left'; } });
                 } catch (e) { reentered = false; }
 
-                // A plain object is not a TextCluster.
                 var rejected = false;
                 try { ctx.fillTextCluster({start: 0, end: 1, x: 0, y: 0}, 0, 0); }
                 catch (e) { rejected = e instanceof TypeError; }
@@ -2664,12 +2354,9 @@ mod realm_tests {
                 var canvas = document.getElementById('c');
                 canvas.getContext('2d').fillRect(0, 0, 4, 4);
 
-                // `any` quality: no WebIDL conversion, so `valueOf` never runs.
                 var valueOfRan = false;
                 canvas.toDataURL('image/jpeg', { valueOf() { valueOfRan = true; return 0.5; } });
 
-                // `convertToBlob` reads and converts the dictionary members in
-                // lexicographic order, once each.
                 var off = new OffscreenCanvas(4, 4);
                 off.getContext('2d').fillRect(0, 0, 4, 4);
                 var order = [];
@@ -2688,8 +2375,6 @@ mod realm_tests {
                 globalThis.__valueOfRan = valueOfRan;
                 globalThis.__first = first;
 
-                // The Blob and the task come from captured values, not from the
-                // page-replaceable globals.
                 globalThis.Blob = function () { throw new Error('page Blob'); };
                 globalThis.setTimeout = function () { throw new Error('page setTimeout'); };
                 canvas.toBlob(function () {}, 'image/png');
@@ -2779,10 +2464,6 @@ mod realm_tests {
         let outcome = realm
             .eval("[__probe, String(globalThis.__contextless)].join('|')")
             .expect("offscreen probe");
-        // No node was added, there is no page-visible bitmap handle, the
-        // transferred bitmap still owns the red pixels the offscreen canvas
-        // painted before the transfer cleared it, a forged id is refused, and
-        // a contextless canvas still serializes a transparent bitmap.
         assert_eq!(outcome, "0,false,undefined,4,255,255,true|true");
     }
 
@@ -2900,17 +2581,13 @@ mod realm_tests {
         assert_eq!(outcome, "3,I,gap,U,0,true");
     }
 
-    /// The environment's secure-context bit decides every `[SecureContext]`
-    /// surface, so a plain-http document must not see them
-    /// (<https://html.spec.whatwg.org/multipage/webappapis.html#secure-contexts>).
+    // https://html.spec.whatwg.org/multipage/webappapis.html#secure-contexts
     #[test]
     fn a_secure_context_gates_the_secure_context_only_surfaces() {
         let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
         let shared = SharedJsRuntime::default();
         for (url, expected) in [
             ("https://a.test/", "true,function,true,true,function"),
-            // `http://a.test` is not loopback, so it is not potentially
-            // trustworthy.
             ("http://a.test/", "false,undefined,false,false,undefined"),
         ] {
             let stop = Arc::new(Stop::new());
@@ -2942,10 +2619,7 @@ mod realm_tests {
         }
     }
 
-    /// `Crypto` is an interface object with one instance, and its algorithms
-    /// never read page-replaceable state: not the method that fills bytes,
-    /// not the instance's own views, and not the typed-array prototype
-    /// (<https://w3c.github.io/webcrypto/#Crypto-interface>).
+    // https://w3c.github.io/webcrypto/#Crypto-interface
     #[test]
     fn crypto_is_one_interface_with_one_instance() {
         let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
@@ -3010,9 +2684,7 @@ mod realm_tests {
         );
     }
 
-    /// A generated interface's instances carry the generated prototype, not
-    /// the class literal's, and a subclass still chooses its own
-    /// (<https://webidl.spec.whatwg.org/#internally-create-a-new-object-implementing-the-interface>).
+    // https://webidl.spec.whatwg.org/#internally-create-a-new-object-implementing-the-interface
     #[test]
     fn a_constructed_js_interface_gets_the_generated_prototype() {
         let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
@@ -3048,12 +2720,8 @@ mod realm_tests {
         assert_eq!(outcome, "true,true,true,true,function");
     }
 
-    /// A call is a direct eval only when the callee is `%eval%` itself
-    /// (<https://tc39.es/ecma262/#sec-evaluatecall>), and `%eval%` /
-    /// `%Function%` expose intrinsic property attributes
-    /// (<https://tc39.es/ecma262/#sec-eval-x>). A wrapper over either global is
-    /// observable and turns every direct eval into an indirect one, so the
-    /// engine must gate string compilation below the JS surface.
+    // https://tc39.es/ecma262/#sec-evaluatecall
+    // https://tc39.es/ecma262/#sec-eval-x
     #[test]
     fn evaluation_intrinsics_keep_spec_identity() {
         let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
@@ -3096,10 +2764,7 @@ mod realm_tests {
             .expect("evaluation intrinsics");
     }
 
-    /// A policy without `'unsafe-eval'` refuses `eval` and the `Function`
-    /// constructor in the engine, not through a JS wrapper; adding the keyword
-    /// allows both.
-    /// (<https://w3c.github.io/webappsec-csp/#can-compile-strings>)
+    // https://w3c.github.io/webappsec-csp/#can-compile-strings
     #[test]
     fn evaluation_respects_content_security_policy() {
         let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
@@ -3134,9 +2799,6 @@ mod realm_tests {
             .expect("eval");
         assert_eq!(denied, "EvalError,EvalError");
 
-        // A page that swaps the `EvalError` global must not run code inside the
-        // bindings nor substitute the thrown value: the refusal uses the
-        // pristine constructor captured at install.
         let spoofed = realm
             .eval(
                 r#"
@@ -3160,9 +2822,6 @@ mod realm_tests {
         assert_eq!(allowed, "2,2");
     }
 
-    /// A JS-reachable event must not pin its `QuickJS` context past realm
-    /// teardown. Before event state moved out of the class, this aborted the
-    /// runtime with `JS_FreeRuntime: Assertion 'list_empty(&rt->gc_obj_list)'`.
     #[test]
     fn teardown_with_retained_custom_event() {
         let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
@@ -3213,12 +2872,8 @@ mod realm_tests {
         drop(shared);
     }
 
-    /// Handler IDL attributes convert through their callback types: a
-    /// non-object assignment clears the slot, the legacy `webkit` animation
-    /// and transition types keep their own lowercase properties, and
-    /// `KeyboardEvent` carries the legacy `which` member
-    /// (<https://webidl.spec.whatwg.org/#LegacyTreatNonObjectAsNull>,
-    /// <https://w3c.github.io/uievents/#dom-keyboardevent-which>).
+    // https://webidl.spec.whatwg.org/#LegacyTreatNonObjectAsNull
+    // https://w3c.github.io/uievents/#dom-keyboardevent-which
     #[test]
     fn event_handler_attributes_follow_their_conversions() {
         let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
@@ -3292,10 +2947,6 @@ mod realm_tests {
         drop(shared);
     }
 
-    /// A `<base href>` moves the document base URL, which resolves relative
-    /// URLs, but not the URL the document's cookies belong to. An inherited
-    /// document uses its creator's cookie URL instead of its own
-    /// `about:blank`.
     #[test]
     fn the_cookie_url_ignores_the_document_base() {
         let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
@@ -3320,10 +2971,7 @@ mod realm_tests {
         }
     }
 
-    /// A jar change queues "process cookie changes" in every live realm but
-    /// the one that made it: the source processes the change itself before
-    /// the operation returns, so a later write cannot join its event
-    /// (<https://cookiestore.spec.whatwg.org/#process-cookie-changes>).
+    // https://cookiestore.spec.whatwg.org/#process-cookie-changes
     #[test]
     fn a_cookie_change_queues_every_other_realm() {
         let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
@@ -3365,10 +3013,7 @@ mod realm_tests {
         );
     }
 
-    /// A `Location` assignment that changes only the fragment is a
-    /// same-document navigation: the URL and history move now and nothing is
-    /// queued for the engine to load. A different path still navigates
-    /// (<https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate-to-a-fragment>).
+    // https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate-to-a-fragment
     #[test]
     fn a_fragment_assignment_does_not_queue_a_load() {
         let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
@@ -3384,7 +3029,6 @@ mod realm_tests {
             "https://a.test/dir/page",
             "<!doctype html><p>hello</p>",
         );
-        // A mounted document starts on one joint history step.
         world.borrow_mut().history = crate::protocol::HistorySnapshot {
             length: 1,
             local_length: 1,
@@ -3458,8 +3102,6 @@ mod realm_tests {
         let realm_b =
             JsRealm::new(&shared.handle(), world_b.clone(), Arc::clone(&stop)).expect("realm b");
 
-        // Each realm resolves its own world; one runtime-wide slot would
-        // clobber the first world when the second realm installs.
         for (realm, expected) in [(&realm_a, &world_a), (&realm_b, &world_b)] {
             realm.context.with(|ctx| {
                 let resolved = world(&ctx).expect("world");
@@ -3470,7 +3112,6 @@ mod realm_tests {
             });
         }
 
-        // A function created in realm A is callable in realm B: one heap.
         let add_one = realm_a.context.with(|ctx| {
             let value: Value = super::super::eval_classic(&ctx, "(x) => x + 1").expect("function");
             Persistent::save(&ctx, value)
@@ -3482,7 +3123,6 @@ mod realm_tests {
             assert_eq!(result, 42);
         });
 
-        // Separate documents stay separate trees.
         realm_a.context.with(|ctx| {
             let mine: bool =
                 super::super::eval_classic(&ctx, "document.getElementById('a') !== null")
@@ -3528,7 +3168,6 @@ mod realm_tests {
             })
             .expect("b document");
 
-        // Realm A wraps realm B's document: the same object as B's `document`.
         let from_a = realm_a.context.with(|ctx| {
             let value = match wrap_node(&ctx, b_root) {
                 Ok(value) => value,
@@ -3556,7 +3195,6 @@ mod realm_tests {
             assert!(is_document, "wrapper keeps the owner realm's prototype");
         });
 
-        // Reading and mutating from A are visible in B through the same tree.
         realm_a.context.with(|ctx| {
             let value = wrap_node(&ctx, b_root).expect("wrap b document in a");
             let object = value.into_object().expect("object");
@@ -3590,9 +3228,6 @@ mod realm_tests {
         });
     }
 
-    /// Four zero-delay runaway timers share one drain deadline, so one
-    /// `drain_ready` returns well under the 60 s renderer request timeout
-    /// and leaves the rest queued.
     #[test]
     fn one_drain_stops_four_runaway_timers() {
         let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
@@ -3640,9 +3275,6 @@ mod realm_tests {
         assert_eq!(count, "2");
     }
 
-    /// An embedded host that only waits on the next timer stalls after a
-    /// yield: the due timers are already queued. The wait is zero so the
-    /// host steps again.
     #[test]
     fn embedded_yield_is_an_immediate_step() {
         let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
@@ -3667,7 +3299,6 @@ mod realm_tests {
         assert_eq!(count, "1");
     }
 
-    /// A cross-origin world cannot revoke another world's blob URL.
     #[test]
     fn revoke_object_url_rejects_a_cross_origin_caller() {
         let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
@@ -3730,8 +3361,6 @@ mod realm_tests {
         )
     }
 
-    /// A timeout cancelled in the same script never reaches the document's
-    /// timer map, because both requests share the realm outbox order.
     #[test]
     fn timeout_cancelled_in_the_same_turn_does_not_fire() {
         let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
@@ -3755,9 +3384,6 @@ mod realm_tests {
         );
     }
 
-    /// A bad script's `error` handler may insert another bad script. The
-    /// replacement is a queued task, so the handler cannot recurse inside the
-    /// drain that is already running.
     #[test]
     fn script_error_handler_may_insert_another_bad_script() {
         let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
@@ -3789,8 +3415,6 @@ mod realm_tests {
         );
     }
 
-    /// `document.open`, `document.write`, and `document.close` stay in one
-    /// queue, so the write after an open lands in the parser the open created.
     #[test]
     fn document_write_after_open_keeps_queue_order() {
         let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
@@ -3817,8 +3441,6 @@ mod realm_tests {
         );
     }
 
-    /// Replacing a document drops queued markup and releases its stream
-    /// budget, while a queued cancellation survives to stop the old timer.
     #[test]
     fn replace_document_releases_writes_and_keeps_cancellations() {
         let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
@@ -3863,8 +3485,6 @@ mod realm_tests {
         );
     }
 
-    /// A child frame that settles after the parent's own subresources still
-    /// lets the parent reach `complete` and fire `load`.
     #[test]
     fn iframe_finishing_last_fires_parent_load() {
         let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
@@ -3884,8 +3504,6 @@ mod realm_tests {
         assert_eq!(load_state(&mut engine), ("complete".into(), "true".into()));
     }
 
-    /// A failed `data:` script that settles last releases its delay before the
-    /// failure is handled, so `load` still fires.
     #[test]
     fn failed_data_script_finishing_last_fires_load() {
         let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
@@ -3904,8 +3522,6 @@ mod realm_tests {
         assert_eq!(load_state(&mut engine), ("complete".into(), "true".into()));
     }
 
-    /// A font requested while a stylesheet settles is made a delaying dial
-    /// before the load check, so `load` cannot fire in the gap.
     #[test]
     fn font_requested_by_a_stylesheet_delays_load() {
         let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());

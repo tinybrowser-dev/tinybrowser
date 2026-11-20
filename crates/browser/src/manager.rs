@@ -1,11 +1,3 @@
-//! Renderer process policy: soft budget, spare, and same-site reuse.
-//!
-//! Blank documents stay virtual, the manager keeps one unlocked spare, and
-//! under the soft limit each live site instance receives its own renderer
-//! process. Assignment release arrives as a notice from the registry's drop
-//! path, so process shutdown is decided off the same state lock that reserves
-//! assignments.
-
 use std::collections::HashMap;
 use std::io;
 use std::sync::Weak;
@@ -23,17 +15,14 @@ use crate::network::TabNetworkHandle;
 use crate::site::Site;
 use crate::storage::SessionStorage;
 
-/// Identity of one live renderer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct RendererId(pub(crate) u64);
 
-/// Browser-owned renderer process manager.
 pub(crate) struct RendererProcessManager {
     inner: Arc<ManagerInner>,
 }
 
 struct ManagerInner {
-    /// The identity every renderer this manager spawns reports.
     identity: net::ValidIdentity,
     partition: PartitionServices,
     sessions: Arc<SessionStorage>,
@@ -77,13 +66,6 @@ impl RendererProcessManager {
         Self { inner }
     }
 
-    /// Creates one assignment for `options`, reusing a live same-site process
-    /// when the budget requires it.
-    ///
-    /// # Errors
-    ///
-    /// Process spawn failure, a failed protocol handshake, or an exhausted
-    /// process budget with no reusable process.
     pub(crate) async fn acquire(
         &self,
         tab: TabId,
@@ -92,8 +74,6 @@ impl RendererProcessManager {
     ) -> io::Result<Arc<Assignment>> {
         let (process, assignment) = self.acquire_reserved(tab, site, network).await?;
         if let Err(error) = process.assign_notify(assignment.id()).await {
-            // Dropping the assignment releases the reservation and asks the
-            // manager to re-evaluate the process.
             drop(assignment);
             return Err(error);
         }
@@ -101,9 +81,6 @@ impl RendererProcessManager {
         Ok(assignment)
     }
 
-    /// Picks a process and records the assignment while holding the state
-    /// lock, so a concurrent release cannot observe zero assignments and shut
-    /// the process down mid-acquire.
     async fn acquire_reserved(
         &self,
         tab: TabId,
@@ -144,13 +121,6 @@ impl RendererProcessManager {
     }
 }
 
-/// Evaluates process shutdown for every released assignment.
-///
-/// The notice carries the process, not the id: the registry already removed
-/// the record and decremented the count before sending it. A release that
-/// races an acquire either lands before the reservation (and finds a live
-/// assignment) or after the process left the site pool, so the two paths
-/// cannot disagree.
 async fn release_loop(
     inner: Weak<ManagerInner>,
     mut releases: mpsc::UnboundedReceiver<Arc<RendererHandle>>,
@@ -214,10 +184,6 @@ fn fill_spare(inner: &Arc<ManagerInner>) {
     });
 }
 
-/// Takes one slot from the process budget and spawns a renderer into it.
-///
-/// `Ok(None)` means the budget is exhausted; the caller decides whether to
-/// reuse a live process or fail.
 async fn spawn_slot(
     inner: &Arc<ManagerInner>,
     site: Option<Site>,

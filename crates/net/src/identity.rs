@@ -1,12 +1,4 @@
-//! One browser identity: the `User-Agent` string, the User-Agent Client
-//! Hints, `Accept-Language`, and the product strings a page reads.
-//!
-//! The header, the `Sec-CH-UA*` request headers, `Accept-Language`,
-//! `navigator.userAgent`, `navigator.userAgentData`, `navigator.languages`,
-//! `navigator.vendor`, `navigator.productSub`, CSP reports, and CDP's
-//! `Browser.getVersion` all read this one value, so a caller that overrides
-//! the identity cannot leave one of them claiming another product
-//! (<https://wicg.github.io/ua-client-hints/#http-ua-hints>).
+// https://wicg.github.io/ua-client-hints/#http-ua-hints
 
 use std::fmt::Write as _;
 
@@ -16,63 +8,35 @@ use url::Url;
 
 use crate::HeaderError;
 
-/// The built-in identity's `User-Agent` header: the reduced Chrome 152 string.
 pub const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36";
 
-/// The built-in identity's full build, as `Sec-CH-UA` and the client hints
-/// report it.
 const DEFAULT_FULL_VERSION: &str = "152.0.7977.82";
 
-/// The built-in identity's `navigator.languages`, most preferred first.
 const DEFAULT_LANGUAGES: [&str; 2] = ["en-US", "en"];
 
-/// A validated `User-Agent` field value.
-///
-/// Nothing in this crate builds one from an unchecked string: the CLI or the
-/// embedder parses the value it was given, and every later reader only
-/// serializes it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UserAgent(HeaderValue);
 
 impl UserAgent {
-    /// Wraps a value known to be valid at compile time, for a crate constant.
-    ///
-    /// # Panics
-    ///
-    /// When `value` contains a byte a field value cannot carry. A call in a
-    /// `const` item makes that a compile error, which is how the built-in
-    /// identity is checked.
     #[must_use]
     pub const fn from_static(value: &'static str) -> Self {
         Self(HeaderValue::from_static(value))
     }
 
-    /// Parses one `User-Agent` value.
-    ///
-    /// # Errors
-    ///
-    /// [`HeaderError::InvalidValue`] when `value` is not a visible ASCII field
-    /// value.
     pub fn parse(value: &str) -> Result<Self, HeaderError> {
         let header =
             HeaderValue::from_str(value).map_err(|_| HeaderError::InvalidValue(value.into()))?;
-        // `from_str` also admits the obs-text bytes 0x80..=0xFF, which `to_str`
-        // refuses. A value the type cannot print is a value `as_str` and the
-        // wire would silently lose, so it is invalid here.
         header
             .to_str()
             .map_err(|_| HeaderError::InvalidValue(value.into()))?;
         Ok(Self(header))
     }
 
-    /// The value as a string. The type guarantees visible ASCII, so this is
-    /// lossless.
     #[must_use]
     pub fn as_str(&self) -> &str {
         self.0.to_str().unwrap_or_default()
     }
 
-    /// The typed field value, for the request header list.
     pub(crate) fn header(&self) -> &HeaderValue {
         &self.0
     }
@@ -95,15 +59,11 @@ impl<'de> Deserialize<'de> for UserAgent {
     }
 }
 
-/// The built-in identity's user agent, checked at compile time.
 const DEFAULT_IDENTITY_USER_AGENT: UserAgent = UserAgent::from_static(DEFAULT_USER_AGENT);
 
-/// One brand in `Sec-CH-UA` or `navigator.userAgentData.brands`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Brand {
-    /// The brand name, e.g. `Chromium`.
     pub brand: String,
-    /// Its major version, e.g. `152`.
     pub version: String,
 }
 
@@ -116,63 +76,29 @@ impl Brand {
     }
 }
 
-/// One browser identity: the `User-Agent` string and every value a page, a
-/// request, a report, or CDP can observe from it.
-///
-/// The fields mirror Chromium's `UserAgentMetadata`
-/// (<https://chromium.googlesource.com/chromium/src/+/main/third_party/blink/public/common/user_agent/user_agent_metadata.h>)
-/// plus the `navigator` product strings, so a page's low- and high-entropy
-/// hints, its `Navigator.platform`, and the CDP product all name the same
-/// product.
-///
-/// This is the identity as configuration and as the wire carries it. The
-/// values derived from it — the three client-hint field values and the
-/// `Accept-Language` list — are formatted once by [`ValidIdentity`], which is
-/// the type every request and page boundary takes.
+// https://chromium.googlesource.com/chromium/src/+/main/third_party/blink/public/common/user_agent/user_agent_metadata.h
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Identity {
-    /// The `User-Agent` request header.
     pub user_agent: UserAgent,
-    /// Low-entropy brands, `Sec-CH-UA` and `navigator.userAgentData.brands`.
     pub brands: Vec<Brand>,
-    /// High-entropy `navigator.userAgentData.getHighEntropyValues` list.
     pub full_version_list: Vec<Brand>,
-    /// The CDP product token, e.g. `Chrome/152.0.7977.82`.
     pub product: String,
-    /// `Sec-CH-UA-Platform`, without the quoted-string form, e.g. `Linux`.
     pub platform: String,
-    /// The high-entropy `platformVersion` hint.
     pub platform_version: String,
-    /// The high-entropy `architecture` hint.
     pub architecture: String,
-    /// The high-entropy `model` hint.
     pub model: String,
-    /// `Sec-CH-UA-Mobile`.
     pub mobile: bool,
-    /// The high-entropy `bitness` hint.
     pub bitness: String,
-    /// The high-entropy `wow64` hint.
     pub wow64: bool,
-    /// The high-entropy `formFactors` hint.
     pub form_factors: Vec<String>,
-    /// The deprecated `Navigator.platform` string, e.g. `Linux x86_64`. It is
-    /// not a client hint; the page still reads it.
     pub navigator_platform: String,
-    /// `navigator.languages`, most preferred first: the first tag is
-    /// `navigator.language` and the list becomes `Accept-Language`.
     pub languages: Vec<String>,
-    /// `navigator.vendor`.
     pub vendor: String,
-    /// `navigator.productSub`.
     pub product_sub: String,
 }
 
 impl Default for Identity {
     fn default() -> Self {
-        // The brand versions are the full version's major, so a build bump is
-        // one edit. The reduced UA repeats the major because it is a `const`
-        // string; `the_default_identity_names_one_build_everywhere` holds the
-        // two together.
         let major = DEFAULT_FULL_VERSION
             .split_once('.')
             .map_or(DEFAULT_FULL_VERSION, |(major, _)| major);
@@ -206,9 +132,7 @@ impl Default for Identity {
 }
 
 impl Identity {
-    /// The `Sec-CH-UA` field value: the brands in spec order, each as a
-    /// quoted-string pair
-    /// (<https://wicg.github.io/ua-client-hints/#sec-ch-ua>).
+    // https://wicg.github.io/ua-client-hints/#sec-ch-ua
     #[must_use]
     pub fn sec_ch_ua(&self) -> String {
         self.brands
@@ -224,45 +148,27 @@ impl Identity {
             .join(", ")
     }
 
-    /// The `Sec-CH-UA-Mobile` field value.
     #[must_use]
     pub fn sec_ch_ua_mobile(&self) -> &'static str {
         if self.mobile { "?1" } else { "?0" }
     }
 
-    /// The `Sec-CH-UA-Platform` field value, quoted.
     #[must_use]
     pub fn sec_ch_ua_platform(&self) -> String {
         format!("\"{}\"", quote(&self.platform))
     }
 }
 
-/// Why an [`Identity`] cannot carry a request or a page.
 #[derive(Debug, thiserror::Error)]
 pub enum InvalidIdentity {
-    /// No language is configured, so `navigator.language` and
-    /// `Accept-Language` would have nothing to report.
     #[error("an identity needs at least one language")]
     NoLanguages,
-    /// A language is not one tag both `navigator.languages` and
-    /// `Accept-Language` can carry, so the two would list different things.
     #[error("not a language tag: {0:?}")]
     Language(String),
-    /// A brand or the platform is not a valid HTTP field value.
     #[error(transparent)]
     Header(#[from] HeaderError),
 }
 
-/// An [`Identity`] whose derived request values all formatted successfully.
-///
-/// The three client-hint field values and the `Accept-Language` list are
-/// formatted once, when the identity crosses this boundary, so no later reader
-/// can meet a brand that is not a field value and quietly skip a header.
-///
-/// [`AgentOptions`](crate::AgentOptions), the browser's network context, and
-/// the renderer's handshake take this type, so an unusable identity cannot
-/// reach a request or a page. Serde validates on the way in, which is how a
-/// handshake carrying a broken brand fails instead of dropping the hints.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ValidIdentity {
     identity: Identity,
@@ -271,14 +177,11 @@ pub struct ValidIdentity {
 }
 
 impl ValidIdentity {
-    /// The three `Sec-CH-UA*` field values.
     #[must_use]
     pub fn hints(&self) -> &ClientHints {
         &self.hints
     }
 
-    /// The `Accept-Language` field value derived from
-    /// [`Identity::languages`].
     #[must_use]
     pub fn accept_language(&self) -> &HeaderValue {
         &self.accept_language
@@ -307,9 +210,6 @@ impl TryFrom<Identity> for ValidIdentity {
 
 impl Default for ValidIdentity {
     fn default() -> Self {
-        // The built-in identity is formatted once per process at most; its
-        // validity is an invariant of `Identity::default`, and every test and
-        // caller that builds one exercises it.
         Self::try_from(Identity::default()).expect("the built-in identity is valid")
     }
 }
@@ -326,13 +226,7 @@ impl<'de> Deserialize<'de> for ValidIdentity {
     }
 }
 
-/// The `Accept-Language` field value for `languages`.
-///
-/// Chromium's q-values: the first language carries `q=1` implicitly, then the
-/// quality drops by 0.1 per language and stays at 0.1
-/// (<https://source.chromium.org/chromium/chromium/src/+/main:net/http/http_util.cc>).
-/// Duplicates are dropped, so a repeated tag does not shift every later
-/// quality.
+// https://source.chromium.org/chromium/chromium/src/+/main:net/http/http_util.cc
 fn accept_language(languages: &[String]) -> Result<HeaderValue, InvalidIdentity> {
     let mut value = String::new();
     let mut seen: Vec<&str> = Vec::new();
@@ -358,13 +252,6 @@ fn accept_language(languages: &[String]) -> Result<HeaderValue, InvalidIdentity>
     HeaderValue::from_str(&value).map_err(|_| HeaderError::InvalidValue(value.into()).into())
 }
 
-/// Whether `tag` is one `navigator.languages` entry and one `Accept-Language`
-/// list element at the same time: non-empty, and only ASCII alphanumerics and
-/// `-`.
-///
-/// Anything else either cannot be a field value or would split the list a page
-/// reads (a `,`, a `;`, a space), so the two readers would disagree about which
-/// languages the identity prefers.
 fn is_language_tag(tag: &str) -> bool {
     !tag.is_empty()
         && tag
@@ -372,11 +259,6 @@ fn is_language_tag(tag: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
 }
 
-/// The `Sec-CH-UA`, `Sec-CH-UA-Mobile`, and `Sec-CH-UA-Platform` values, ready
-/// to be written onto a request.
-///
-/// Built once per identity: a hop only clones three validated `HeaderValue`s
-/// instead of formatting the brands again.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClientHints {
     ua: HeaderValue,
@@ -385,8 +267,6 @@ pub struct ClientHints {
 }
 
 impl ClientHints {
-    /// Formats the three values once, refusing a brand or platform that is not
-    /// a field value.
     fn build(identity: &Identity) -> Result<Self, HeaderError> {
         let field = |value: String| {
             HeaderValue::from_str(&value).map_err(|_| HeaderError::InvalidValue(value.into()))
@@ -398,9 +278,7 @@ impl ClientHints {
         })
     }
 
-    /// Writes the hints onto one request, when `url` is potentially
-    /// trustworthy: a network attacker must not learn the exact build
-    /// (<https://wicg.github.io/ua-client-hints/#sec-ch-ua>).
+    // https://wicg.github.io/ua-client-hints/#sec-ch-ua
     pub fn write(&self, headers: &mut crate::HeaderMap, url: &Url) {
         if !secure_context::is_potentially_trustworthy(url) {
             return;
@@ -417,7 +295,6 @@ impl ClientHints {
     }
 }
 
-/// Escapes a brand or platform for a structured-field string.
 fn quote(value: &str) -> String {
     let mut quoted = String::with_capacity(value.len());
     for character in value.chars() {
@@ -447,8 +324,6 @@ mod tests {
         assert_eq!(identity.sec_ch_ua_platform(), r#""Linux""#);
     }
 
-    /// The reduced UA, the brands, the full version list, and the CDP product
-    /// name one build.
     #[test]
     fn the_default_identity_names_one_build_everywhere() {
         let identity = Identity::default();
@@ -507,8 +382,6 @@ mod tests {
         );
     }
 
-    /// The hints are field values, so a control byte in a brand is refused
-    /// where the identity becomes valid, not on a request mid-page.
     #[test]
     fn an_identity_with_a_broken_brand_cannot_become_valid() {
         let identity = Identity {
@@ -525,8 +398,6 @@ mod tests {
         assert!(ClientHints::build(&Identity::default()).is_ok());
     }
 
-    /// A repeated tag is dropped and the qualities still descend from the
-    /// first occurrence, as Chromium's builder does.
     #[test]
     fn accept_language_counts_each_language_once() {
         let languages = ["en-US", "en", "en-US", "fr"].map(str::to_owned).to_vec();
@@ -536,8 +407,6 @@ mod tests {
         );
     }
 
-    /// Past the tenth language the quality stays at 0.1 instead of reaching
-    /// `q=0`, which would ask for nothing.
     #[test]
     fn accept_language_never_asks_for_zero_quality() {
         let languages = (0..12).map(|index| format!("l{index}")).collect::<Vec<_>>();
@@ -558,8 +427,6 @@ mod tests {
         ));
     }
 
-    /// A tag that would split the `Accept-Language` list, or empty the page's
-    /// list, is refused instead of making the two readers disagree.
     #[test]
     fn a_language_must_be_one_tag() {
         for tag in ["", "en;q=0", "en,fr", "en fr", "*"] {
@@ -578,8 +445,6 @@ mod tests {
         );
     }
 
-    /// Serde is the second boundary that builds the derived values, so a
-    /// handshake carrying a broken brand fails instead of dropping the hints.
     #[test]
     fn a_decoded_identity_is_validated() {
         let mut identity = Identity::default();

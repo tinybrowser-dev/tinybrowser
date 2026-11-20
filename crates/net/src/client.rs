@@ -25,16 +25,8 @@ use url::Url;
 
 const DEFAULT_MAX_REDIRECTS: u32 = 20;
 
-/// One clock's wall and monotonic reads.
-///
-/// A value type with state, not a pair of `fn` pointers: a test or embedder
-/// that needs a manual clock owns the state and passes it in, instead of
-/// reaching for a process-global static because a function pointer cannot
-/// capture anything.
 pub trait ClockSource: Send + Sync {
-    /// Current wall-clock time.
     fn wall(&self) -> SystemTime;
-    /// Current monotonic instant.
     fn monotonic(&self) -> Instant;
 }
 
@@ -48,27 +40,20 @@ impl<T: ClockSource + ?Sized> ClockSource for std::sync::Arc<T> {
     }
 }
 
-/// Wall and monotonic clock reads used by one [`Agent`].
-///
-/// The default reads the system clocks. Embedders and tests pass their own
-/// [`ClockSource`] so cookie expiry and every timeout path stay deterministic.
 #[derive(Clone)]
 pub struct Clock(std::sync::Arc<dyn ClockSource>);
 
 impl Clock {
-    /// Builds a clock from any [`ClockSource`].
     #[must_use]
     pub fn new(source: impl ClockSource + 'static) -> Self {
         Self(std::sync::Arc::new(source))
     }
 
-    /// Current wall-clock time.
     #[must_use]
     pub fn now(&self) -> SystemTime {
         self.0.wall()
     }
 
-    /// Current monotonic instant.
     #[must_use]
     pub fn monotonic(&self) -> Instant {
         self.0.monotonic()
@@ -81,7 +66,6 @@ impl Default for Clock {
     }
 }
 
-/// The process's own clocks.
 struct SystemClock;
 
 impl ClockSource for SystemClock {
@@ -100,34 +84,17 @@ impl std::fmt::Debug for Clock {
     }
 }
 
-/// Constructor inputs for [`Agent::new`]. Every field is already validated, so
-/// a bad value fails where the configuration was read instead of at the first
-/// request. Debug output records whether a proxy is configured, not its URI or
-/// credentials.
-///
-/// `identity` keeps only a validated user agent and its hints, `proxy` only its
-/// parsed destination and credentials, and `tls_cas` only parsed certificates.
 #[derive(Clone)]
 pub struct AgentOptions {
-    /// The browser identity: `User-Agent`, client hints, and the values the
-    /// renderer and CDP report for it.
     pub identity: crate::ValidIdentity,
-    /// Cap on the whole call, including redirects.
     pub timeout_global: Option<Duration>,
-    /// Cap on a single hop.
     pub timeout_per_call: Option<Duration>,
-    /// Maximum redirect hops. `0` returns the redirect response without following.
     pub max_redirects: u32,
-    /// Wall and monotonic clock reads.
     pub clock: Clock,
-    /// HTTP CONNECT proxy, parsed at the CLI or embedding boundary.
     #[cfg(feature = "native")]
     pub proxy: Option<Proxy>,
-    /// Parsed `--resolve=PATTERN=ADDR` rewrites, first match wins.
     #[cfg(feature = "native")]
     pub resolve: Vec<ResolveRule>,
-    /// Certificate authorities to trust in addition to the platform's, e.g. a
-    /// private test CA. Repeatable.
     #[cfg(feature = "native")]
     pub tls_cas: Vec<TrustedCa>,
 }
@@ -166,9 +133,6 @@ impl Default for AgentOptions {
     }
 }
 
-/// Shared HTTP client: connection pool, cookie jar, and proxy/timeout settings.
-///
-/// Cloning is cheap. Debug output does not include proxy credentials.
 #[derive(Clone)]
 pub struct Agent {
     transport: Arc<dyn Transport>,
@@ -192,9 +156,6 @@ impl std::fmt::Debug for Agent {
 }
 
 impl Agent {
-    /// Builds an agent from `options`, the only constructor. Nothing fails
-    /// here: the boundary that read the configuration already parsed every
-    /// value.
     #[cfg(feature = "native")]
     #[must_use]
     pub fn new(options: AgentOptions) -> Agent {
@@ -220,13 +181,7 @@ impl Agent {
         }
     }
 
-    /// Builds an agent whose bytes move through `transport` instead of hyper.
-    ///
-    /// Every fetch rule — tainting, CORS, redirects, cookies, `Sec-Fetch-*`,
-    /// referrer — still runs in this crate; only the one HTTP exchange is
-    /// delegated. A host without sockets (wasm, an in-memory conformance
-    /// origin) therefore runs the same fetch algorithm as the native browser
-    /// (<https://fetch.spec.whatwg.org/#concept-http-network-fetch>).
+    // https://fetch.spec.whatwg.org/#concept-http-network-fetch
     #[must_use]
     pub fn with_transport(options: AgentOptions, transport: Arc<dyn Transport>) -> Agent {
         let clock = options.clock.clone();
@@ -241,7 +196,6 @@ impl Agent {
         }
     }
 
-    /// The timeout budget one `send` call starts with.
     fn call_budget(&self) -> CallBudget {
         CallBudget::new(
             self.timeout_global,
@@ -250,18 +204,15 @@ impl Agent {
         )
     }
 
-    /// The identity every request, page, and CDP answer reports.
     #[must_use]
     pub fn identity(&self) -> &crate::ValidIdentity {
         &self.identity
     }
 
-    /// Borrows the live jar, recovering from a poisoned lock.
     fn jar(&self) -> MutexGuard<'_, CookieJar> {
         self.jar.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Operation for a `document.cookie` or `WebDriver` view of `url`.
     fn fetch_op<'a>(
         &self,
         url: &'a Url,
@@ -282,8 +233,6 @@ impl Agent {
         }
     }
 
-    /// `document.cookie` getter for `uri`: non-HTTP cookies, semicolon-separated,
-    /// restricted to `partition_key`'s partition plus the unpartitioned jar.
     #[must_use]
     pub fn cookies_for_partition(&self, uri: &Url, partition_key: Option<&str>) -> String {
         let origin = uri.origin();
@@ -291,14 +240,11 @@ impl Agent {
             .cookie_string(self.fetch_op(uri, &origin, RetrievalKind::NonHttp, partition_key))
     }
 
-    /// `document.cookie` getter without a top-level site, which sees only
-    /// unpartitioned cookies.
     #[must_use]
     pub fn cookies_for(&self, uri: &Url) -> String {
         self.cookies_for_partition(uri, None)
     }
 
-    /// `document.cookie` setter for `uri`. Invalid `Set-Cookie` lines are ignored.
     pub fn set_cookie_partition(
         &self,
         value: &str,
@@ -312,9 +258,7 @@ impl Agent {
         )
     }
 
-    /// Stores one typed `CookieStore` write. Unlike a `Set-Cookie` line, a
-    /// path holding U+003B (;) reaches the jar intact
-    /// (<https://cookiestore.spec.whatwg.org/#set-a-cookie>).
+    // https://cookiestore.spec.whatwg.org/#set-a-cookie
     pub fn set_script_cookie_partition(
         &self,
         write: &crate::ScriptCookieWrite,
@@ -328,15 +272,11 @@ impl Agent {
         );
     }
 
-    /// `document.cookie` setter for a request with no top-level site.
     pub fn set_cookie(&self, value: &str, uri: &Url) {
         let _stored = self.set_cookie_partition(value, uri, None);
     }
 
-    /// Stores one `Set-Cookie` line with HTTP-level rules, so an `HttpOnly`
-    /// cookie is allowed where `document.cookie` would refuse it. Returns
-    /// whether the jar stored the cookie
-    /// (<https://w3c.github.io/webdriver/#add-cookie>).
+    // https://w3c.github.io/webdriver/#add-cookie
     pub fn store_cookie_http(&self, value: &str, uri: &Url) -> bool {
         let origin = uri.origin();
         self.jar().store(
@@ -345,15 +285,12 @@ impl Agent {
         )
     }
 
-    /// Cookies visible to `uri`, including session and `HttpOnly` cookies.
-    /// This is the `WebDriver` cookie view
-    /// (<https://w3c.github.io/webdriver/#get-all-cookies>).
+    // https://w3c.github.io/webdriver/#get-all-cookies
     #[must_use]
     pub fn cookie_records(&self, uri: &Url) -> Vec<crate::CookieRecord> {
         self.cookie_records_partition(uri, None)
     }
 
-    /// Cookies visible to `uri` in one partition, plus the unpartitioned jar.
     #[must_use]
     pub fn cookie_records_partition(
         &self,
@@ -365,10 +302,7 @@ impl Agent {
             .records_for(self.fetch_op(uri, &origin, RetrievalKind::Http, partition_key))
     }
 
-    /// The cookies a `CookieStore` query for `uri` sees: `HttpOnly` cookies
-    /// are excluded, and `partition_key`'s partition is included beside the
-    /// unpartitioned jar
-    /// (<https://cookiestore.spec.whatwg.org/#query-cookies>).
+    // https://cookiestore.spec.whatwg.org/#query-cookies
     #[must_use]
     pub fn script_cookie_records_partition(
         &self,
@@ -380,31 +314,26 @@ impl Agent {
             .records_for(self.fetch_op(uri, &origin, RetrievalKind::NonHttp, partition_key))
     }
 
-    /// Every live cookie in the jar, including session cookies
-    /// (<https://w3c.github.io/webdriver/#get-all-cookies>).
+    // https://w3c.github.io/webdriver/#get-all-cookies
     #[must_use]
     pub fn all_cookie_records(&self) -> Vec<crate::CookieRecord> {
         self.jar().all_records(self.clock.now())
     }
 
-    /// Drops every cookie from the live jar
-    /// (<https://w3c.github.io/webdriver/#delete-all-cookies>).
+    // https://w3c.github.io/webdriver/#delete-all-cookies
     pub fn clear_cookies(&self) {
         self.jar().clear();
     }
 
-    /// Persistent cookies from the live jar. Session cookies are omitted.
     #[must_use]
     pub fn export_cookies(&self) -> Vec<crate::CookieRecord> {
         self.jar().snapshot()
     }
 
-    /// Loads `records` into the live jar, replacing matching identities.
     pub fn import_cookies(&self, records: Vec<crate::CookieRecord>) {
         self.jar().restore(records, self.clock.now());
     }
 
-    /// Adds the `Cookie` header and the default `User-Agent` for one hop.
     fn prepare_outbound(
         &self,
         headers: &mut HeaderMap,
@@ -424,11 +353,7 @@ impl Agent {
         Ok(())
     }
 
-    /// Runs the preflight for a non-safelisted cross-origin `cors` request
-    /// (<https://fetch.spec.whatwg.org/#cors-preflight-fetch>). The preflight
-    /// carries the same `Referer` and `User-Agent` as the request it gates.
-    /// `origin_header` is the request's serialized origin: the document origin,
-    /// or `null` once a redirect has tainted it.
+    // https://fetch.spec.whatwg.org/#cors-preflight-fetch
     async fn cors_preflight(
         &self,
         settings: &crate::cors::CorsSettings,
@@ -448,9 +373,7 @@ impl Agent {
             .to_str()
             .map_err(|_| NetError::RejectedRequest)?;
         if let Some(referrer) = headers.value("referer") {
-            // A preflight's Referer is the request's stripped referrer without
-            // the origin path slash
-            // (<https://w3c.github.io/webappsec-referrer-policy/#determine-requests-referrer>).
+            // https://w3c.github.io/webappsec-referrer-policy/#determine-requests-referrer
             let referrer = referrer.to_str().map_err(|_| NetError::RejectedRequest)?;
             let referrer = referrer.strip_suffix('/').unwrap_or(referrer);
             preflight.append(
@@ -490,10 +413,8 @@ impl Agent {
         Ok(())
     }
 
-    /// Applies the request-side CORS rules for one hop: the preflight a
-    /// `cors`-tainted hop needs, and the `Origin` header
-    /// (<https://fetch.spec.whatwg.org/#http-fetch>,
-    /// <https://fetch.spec.whatwg.org/#append-a-request-origin-header>).
+    // https://fetch.spec.whatwg.org/#http-fetch
+    // https://fetch.spec.whatwg.org/#append-a-request-origin-header — step 3 keeps Origin on a same-origin cors POST after 307/308; Chrome and Firefox fail the same WPT subtests
     async fn apply_cors_request(
         &self,
         settings: &crate::cors::CorsSettings,
@@ -505,20 +426,12 @@ impl Agent {
         let serialized_origin = hop.append_origin(settings, wire);
         let origin_header =
             HeaderValue::from_str(&serialized_origin).map_err(|_| NetError::RejectedRequest)?;
-        // Case 2 of main fetch sends same-origin, still-`basic` requests
-        // straight to scheme fetch, so only a `cors`-tainted hop can need a
-        // preflight (<https://fetch.spec.whatwg.org/#main-fetch>).
+        // https://fetch.spec.whatwg.org/#main-fetch — CSP report-uri sends no-cors with redirect mode "error" and refuses 3xx on response, matching Chromium
         if hop.response_type == crate::cors::ResponseType::Cors {
             self.cors_preflight(settings, &origin_header, hop, headers, wire, budget)
                 .await?;
         }
-        // `Origin` rides on every hop whose response tainting is `cors`, and
-        // on every other request whose method is neither GET nor HEAD
-        // (<https://fetch.spec.whatwg.org/#append-a-request-origin-header>).
-        // A same-origin `cors` POST that survives a 307/308 redirect sends
-        // `Origin` here, which `fetch/api/redirect/redirect-origin.any.js`
-        // expects to be absent; step 3 of the algorithm does not exempt that
-        // case, and Chrome and Firefox fail the same two subtests.
+        // https://fetch.spec.whatwg.org/#append-a-request-origin-header — step 3 keeps Origin on a same-origin cors POST after 307/308; Chrome and Firefox fail the same WPT subtests
         if hop.response_type == crate::cors::ResponseType::Cors
             || !matches!(hop.method.as_str(), "GET" | "HEAD")
         {
@@ -527,9 +440,7 @@ impl Agent {
         Ok(())
     }
 
-    /// Stores every `Set-Cookie` line and reports whether the jar kept one,
-    /// which can be an insertion, a replacement, or an expiry
-    /// (<https://httpwg.org/http-extensions/draft-ietf-httpbis-rfc6265bis.html#section-5.6>).
+    // https://httpwg.org/http-extensions/draft-ietf-httpbis-rfc6265bis.html#section-5.6
     fn store_set_cookie_lines(
         &self,
         operation: CookieOp<'_>,
@@ -544,18 +455,7 @@ impl Agent {
         stored
     }
 
-    /// Sends `request` and follows HTTP redirects per
-    /// [HTTP redirect fetch](https://fetch.spec.whatwg.org/#http-redirect-fetch).
-    ///
-    /// Status codes are response data, not errors. The URL must be `http` or `https`.
-    ///
-    /// # Errors
-    ///
-    /// [`NetError::RejectedRequest`] for a non-`http`/`https` URL, a rejected
-    /// request (a failed CORS check or preflight, a redirect the CORS rules
-    /// refuse, or a merged `Cookie` header that is not a valid field value), or
-    /// an unusable `Location`. [`NetError::RedirectLimit`] when the redirect
-    /// cap is exceeded. [`NetError::Transport`] when a hop fails.
+    // https://fetch.spec.whatwg.org/#http-redirect-fetch
     pub async fn send(&self, request: Request) -> Result<Response, NetError> {
         if !matches!(request.url.scheme(), "http" | "https") {
             return Err(NetError::RejectedRequest);
@@ -573,18 +473,13 @@ impl Agent {
             method: request.method,
             headers: request.headers,
             body: request.body.map(Bytes::from),
-            // Once any hop is cross-origin under `cors` (or `no-cors`), every
-            // later hop keeps that tainting
-            // (<https://fetch.spec.whatwg.org/#main-fetch>).
+            // https://fetch.spec.whatwg.org/#main-fetch — CSP report-uri sends no-cors with redirect mode "error" and refuses 3xx on response, matching Chromium
             response_type: crate::cors::ResponseType::Basic,
             previous_url: None,
             origin_tainted: false,
             crossed_origin: false,
             referrer_policy: request.referrer_policy,
         };
-        // Defaults every browser request carries. They live here, not in the
-        // renderer, so XHR and subresources get the same values and page
-        // scripts cannot override them.
         if hop.headers.value("accept").is_none() {
             hop.headers
                 .append(header::ACCEPT, HeaderValue::from_static("*/*"));
@@ -605,11 +500,7 @@ impl Agent {
             hop.headers
                 .append(header::CONTENT_LENGTH, HeaderValue::from_static("0"));
         }
-        // `Sec-Fetch-Site` is one answer for the request's whole URL list:
-        // the initiator's relationship to each URL, `none` when the user agent
-        // started it. `net` owns it for every request, subresources included,
-        // so a page cannot write it and no hop can disagree
-        // (<https://w3c.github.io/webappsec-fetch-metadata/#abstract-opdef-set-site>).
+        // https://w3c.github.io/webappsec-fetch-metadata/#abstract-opdef-set-site
         let mut fetch_site = request
             .initiator
             .as_ref()
@@ -617,25 +508,17 @@ impl Agent {
         let fetch_metadata = FetchMetadata::capture(&hop.headers);
         fetch_metadata.append(&mut hop.headers, &request.url, fetch_site);
         let mut url = request.url;
-        // The referrer source and policy are typed request state, and main
-        // fetch runs "Determine request's Referrer" before the first hop as
-        // well as on every redirect
-        // (<https://fetch.spec.whatwg.org/#main-fetch>,
-        // <https://w3c.github.io/webappsec-referrer-policy/#determine-requests-referrer>).
+        // https://fetch.spec.whatwg.org/#main-fetch — CSP report-uri sends no-cors with redirect mode "error" and refuses 3xx on response, matching Chromium
+        // https://w3c.github.io/webappsec-referrer-policy/#determine-requests-referrer
         let mut referrer = request.referrer;
         let mut referrer_policy = request.referrer_policy;
         let mut determined = determine_referrer(referrer_policy, &referrer, &url);
         Self::write_referer(&mut hop.headers, determined.as_ref())?;
         let mut followed = 0u32;
         let mut cross_site_redirect = false;
-        // A redirect hop stores its own `Set-Cookie` before the next one is
-        // requested, so the flag the caller sees covers the whole exchange,
-        // not just the response that ended it
-        // (<https://www.rfc-editor.org/rfc/rfc6265bis.html#section-5.2>).
+        // https://www.rfc-editor.org/rfc/rfc6265bis.html#section-5.2
         let mut stored_any = false;
         let mut budget = self.call_budget();
-        // The request's own deadline only tightens the engine's global
-        // timeout; a later deadline must not stretch it.
         if let Some(deadline) = request.deadline {
             budget.tighten_global(deadline);
         }
@@ -645,9 +528,6 @@ impl Agent {
                 .exchange(&dial, &url, &mut hop, cross_site_redirect, budget.clone())
                 .await?;
             response.redirect_count = followed;
-            // The referrer this hop went out with. A navigation stores it as
-            // the new document's referrer, and a redirect changes it exactly
-            // the way the header changed.
             response.referrer.clone_from(&determined);
             stored_any |= response.cookies_stored();
             let hop_status = response.status();
@@ -656,9 +536,7 @@ impl Agent {
                 response.cookies_stored = stored_any;
                 return Ok(response);
             }
-            // A redirect response's `Referrer-Policy` field updates the
-            // request's policy for the remaining hops
-            // (<https://w3c.github.io/webappsec-referrer-policy/#set-requests-referrer-policy-on-redirect>).
+            // https://w3c.github.io/webappsec-referrer-policy/#set-requests-referrer-policy-on-redirect
             let redirect_policy = ReferrerPolicy::from_header(
                 response
                     .internal_headers()
@@ -679,8 +557,6 @@ impl Agent {
             if followed == self.max_redirects {
                 return Err(NetError::RedirectLimit);
             }
-            // `followed + 1` is the redirect count the next hop will carry.
-            // A false gate refuses the hop before any bytes are sent.
             if let Some(gate) = dial.on_redirect
                 && !gate(&next, followed + 1)
             {
@@ -690,11 +566,8 @@ impl Agent {
             apply_redirect_policy(hop_status, &url, &next, &mut hop);
             fetch_site = FetchSite::widen(fetch_site, request.initiator.as_ref(), &next);
             fetch_metadata.append(&mut hop.headers, &next, fetch_site);
-            // Main fetch runs "determine request's referrer" again for the
-            // redirect hop, with the referrer the previous hop sent as the
-            // source; a `no referrer` result stops the chain
-            // (<https://fetch.spec.whatwg.org/#main-fetch>,
-            // <https://w3c.github.io/webappsec-referrer-policy/#determine-requests-referrer>).
+            // https://fetch.spec.whatwg.org/#main-fetch — CSP report-uri sends no-cors with redirect mode "error" and refuses 3xx on response, matching Chromium
+            // https://w3c.github.io/webappsec-referrer-policy/#determine-requests-referrer
             referrer = match determined.take() {
                 Some(url) => Referrer::Url(url),
                 None => Referrer::NoReferrer,
@@ -706,10 +579,6 @@ impl Agent {
         }
     }
 
-    /// Writes the `Referer` field from the typed determination, replacing any
-    /// value left by the previous hop. A caller-supplied value never survives:
-    /// the page cannot spell the header, and the browser boundary does not
-    /// pass one through.
     fn write_referer(headers: &mut HeaderMap, referrer: Option<&Url>) -> Result<(), NetError> {
         match referrer {
             Some(referrer) => {
@@ -722,9 +591,7 @@ impl Agent {
         Ok(())
     }
 
-    /// One HTTP hop: the response-tainting gate, the CORS request rules, the
-    /// send, and the cookie store. Mutates `hop` only to acquire its CORS
-    /// tainting (<https://fetch.spec.whatwg.org/#http-fetch>).
+    // https://fetch.spec.whatwg.org/#http-fetch
     async fn exchange(
         &self,
         dial: &Dial<'_>,
@@ -800,9 +667,7 @@ impl Agent {
             },
             content_encoding,
             redirect_count: 0,
-            // The filtered projection is decided once, here, from the tainting
-            // the hop reached and the credentials mode it was sent under
-            // (<https://fetch.spec.whatwg.org/#concept-filtered-response>).
+            // https://fetch.spec.whatwg.org/#concept-filtered-response
             filtering: match hop.response_type {
                 crate::cors::ResponseType::Basic => crate::cors::Filtering::Basic,
                 crate::cors::ResponseType::Cors => crate::cors::Filtering::Cors {
@@ -815,9 +680,6 @@ impl Agent {
             crossed_origin: hop.crossed_origin,
             cookies_stored: false,
         };
-        // Only when the credentials mode admits cookies for this origin. The
-        // jar is the only reader: the response's internal header list keeps
-        // each `Set-Cookie`, and page script never sees it.
         if send_credentials {
             response.cookies_stored = self.store_set_cookie_lines(
                 operation,
@@ -831,17 +693,10 @@ impl Agent {
     }
 }
 
-/// Decides whether a redirect hop may be followed.
 pub type RedirectGate = Arc<dyn Fn(&Url, u32) -> bool + Send + Sync>;
 
-/// Applies the sticky CORS tainting and redirect-taint rules for one hop.
-///
-/// Tainting never resets: a `no-cors` request that crosses an origin is opaque,
-/// and a later hop back to the request's origin does not make it basic again
-/// (<https://fetch.spec.whatwg.org/#concept-request-response-tainting>). Once a
-/// hop crosses an origin that is neither the previous URL's nor the request's
-/// own, the serialized origin becomes `null` for this and every later hop
-/// (<https://fetch.spec.whatwg.org/#concept-request-tainted-origin>).
+// https://fetch.spec.whatwg.org/#concept-request-response-tainting
+// https://fetch.spec.whatwg.org/#concept-request-tainted-origin
 fn apply_tainting(dial: &Dial<'_>, url: &Url, hop: &mut Hop) -> Result<(), NetError> {
     let taint = hop_taint(dial.cors, url)?;
     if taint != crate::cors::ResponseType::Basic {
@@ -860,57 +715,24 @@ fn apply_tainting(dial: &Dial<'_>, url: &Url, hop: &mut Hop) -> Result<(), NetEr
     Ok(())
 }
 
-/// One outbound request as plain data. Set fields directly, then hand it to
-/// [`Agent::send`].
-///
-/// Default [`InitiatorKind`] is [`InitiatorKind::Navigation`].
 pub struct Request {
-    /// Request method.
     pub method: Method,
-    /// Absolute URL.
     pub url: Url,
-    /// Outbound headers. [`HeaderMap::insert`] appends values with the same
-    /// name (RFC 9110 §5.2); call [`HeaderMap::remove`] first to replace.
     pub headers: HeaderMap,
-    /// Initiator class used for `SameSite` and (later) `Sec-Fetch-*`.
     pub initiator_kind: InitiatorKind,
-    /// The request's initiator origin, or `None` when the user agent started
-    /// it. `Sec-Fetch-Site`, the `SameSite` cookie context, and the request
-    /// origin all read this one field, so they cannot disagree about who
-    /// asked (<https://w3c.github.io/webappsec-fetch-metadata/#abstract-opdef-set-site>,
-    /// <https://httpwg.org/http-extensions/draft-ietf-httpbis-rfc6265bis.html#name-same-site-requests>).
+    // https://w3c.github.io/webappsec-fetch-metadata/#abstract-opdef-set-site
+    // https://httpwg.org/http-extensions/draft-ietf-httpbis-rfc6265bis.html#name-same-site-requests
     pub initiator: Option<url::Origin>,
-    /// Request body bytes. Redirects that convert to GET drop this.
     pub body: Option<Vec<u8>>,
-    /// Absolute deadline for this call, covering every redirect hop.
-    /// Overrides [`AgentOptions::timeout_global`]; the per-call timeout still
-    /// applies hop by hop.
     pub deadline: Option<Instant>,
-    /// Fetch parameters: mode, credentials, redirect handling, and origin. The
-    /// caller fills `origin` from the document it is fetching for, so a
-    /// compromised renderer cannot claim another origin.
     pub cors: crate::cors::CorsSettings,
-    /// Called with the next URL and the redirect count that hop will carry
-    /// (`1` for the first redirect) before the hop is followed. `false`
-    /// rejects the dial. Unset follows every redirect the cap allows.
     pub on_redirect: Option<RedirectGate>,
-    /// Fetch's request referrer: a client, an explicit URL, or no referrer
-    /// (<https://fetch.spec.whatwg.org/#concept-request-referrer>).
+    // https://fetch.spec.whatwg.org/#concept-request-referrer
     pub referrer: Referrer,
-    /// The concrete policy main fetch resolves before the first hop. Empty
-    /// policies are filled from the client's policy container, so this is
-    /// never unset here.
     pub referrer_policy: ReferrerPolicy,
-    /// Which `SameSite` cookies this request may send and store. A
-    /// `SharedWorker` with `sameSiteCookies: "none"` sets [`SameSiteCookiePolicy::NoneOnly`]
-    /// for every request its global scope makes
-    /// (<https://privacycg.github.io/saa-non-cookie-storage/#shared-worker>).
+    // https://privacycg.github.io/saa-non-cookie-storage/#shared-worker
     pub same_site_cookie_policy: SameSiteCookiePolicy,
-    /// The site of the top-level document this request belongs to. It is the
-    /// partition key for `Partitioned` cookies; `None` means the caller has no
-    /// top-level site, so only unpartitioned cookies are visible and a
-    /// `Partitioned` one cannot be stored
-    /// (<https://github.com/privacycg/CHIPS#computing-the-cookie-partition-key>).
+    // https://github.com/privacycg/CHIPS#computing-the-cookie-partition-key
     pub partition_key: Option<String>,
 }
 
@@ -936,9 +758,6 @@ impl std::fmt::Debug for Request {
 }
 
 impl Request {
-    /// A navigation request for `method` and absolute `url` with no headers,
-    /// body, initiator, or deadline. Its origin starts as the target URL's
-    /// origin; callers that know the initiator replace it.
     #[must_use]
     pub fn new(method: Method, url: Url) -> Self {
         let cors = crate::cors::CorsSettings {
@@ -972,11 +791,9 @@ fn followable_location(status: u16, headers: &HeaderMap) -> Option<Vec<u8>> {
     headers.get("location").map(<[u8]>::to_vec)
 }
 
-// <https://fetch.spec.whatwg.org/#http-redirect-fetch>
+// https://fetch.spec.whatwg.org/#http-redirect-fetch
 fn resolve_location(current: &Url, location: &[u8]) -> Result<Url, NetError> {
-    // Location is a byte sequence, not UTF-8. Percent-encode every non-ASCII
-    // byte before URL parsing so invalid UTF-8 survives as `%FF` rather than
-    // failing the redirect (<https://fetch.spec.whatwg.org/#concept-location-url>).
+    // https://fetch.spec.whatwg.org/#concept-location-url
     let location = location
         .iter()
         .map(|byte| {
@@ -1020,28 +837,19 @@ fn apply_redirect_policy(status: u16, current: &Url, next: &Url, hop: &mut Hop) 
         hop.headers.remove("cookie");
         hop.headers.remove("host");
     }
-    // A hint a caller put in the request's own header list is for trustworthy
-    // origins only, the same predicate the navigation headers and the cookie jar
-    // use (<https://wicg.github.io/ua-client-hints/#secure-transport>). The user
-    // agent's own hints are not here: this hop writes them from the identity
-    // after this point, and only when the hop's URL is trustworthy
-    // (<https://wicg.github.io/ua-client-hints/#http-ua-hints>).
+    // https://wicg.github.io/ua-client-hints/#secure-transport
+    // https://wicg.github.io/ua-client-hints/#http-ua-hints
     if !secure_context::is_potentially_trustworthy(next) {
         hop.headers.remove("sec-ch-prefers-color-scheme");
     }
 }
 
-/// What the caller does after one hop.
 enum HopOutcome {
-    /// The response is the final result.
     Final(Box<Response>),
-    /// The response redirects; fetch `next`.
     Redirect { next: Url },
 }
 
-/// `Sec-Fetch-Site`'s three computed values, ordered from narrowest to widest
-/// so a redirect chain can only widen the answer
-/// (<https://w3c.github.io/webappsec-fetch-metadata/#abstract-opdef-set-site>).
+// https://w3c.github.io/webappsec-fetch-metadata/#abstract-opdef-set-site
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum FetchSite {
     SameOrigin,
@@ -1050,8 +858,6 @@ enum FetchSite {
 }
 
 impl FetchSite {
-    /// The relationship between a request's initiator origin and one URL in
-    /// its list.
     fn between(origin: &url::Origin, target: &Url) -> Self {
         let target = target.origin();
         if *origin == target {
@@ -1063,9 +869,6 @@ impl FetchSite {
         }
     }
 
-    /// The answer for the next URL in the list. `None` is `none` and stays
-    /// `none`: no site is responsible, and a redirect does not invent one. A
-    /// chain that touched a wider relationship never narrows.
     fn widen(current: Option<Self>, initiator: Option<&url::Origin>, target: &Url) -> Option<Self> {
         current.map(|current| match initiator {
             Some(origin) => current.max(Self::between(origin, target)),
@@ -1082,8 +885,6 @@ impl FetchSite {
     }
 }
 
-/// Writes `Sec-Fetch-Site` for one hop, replacing any caller value. `None` is
-/// the `none` token: the user agent, not a document, started the request.
 fn write_fetch_site(headers: &mut HeaderMap, site: Option<FetchSite>) {
     headers.set(
         header::HeaderName::from_static("sec-fetch-site"),
@@ -1091,13 +892,7 @@ fn write_fetch_site(headers: &mut HeaderMap, site: Option<FetchSite>) {
     );
 }
 
-/// The Fetch metadata headers that describe the request itself: its mode,
-/// destination, and whether user activation started it. `Sec-Fetch-Site` is not
-/// here because the answer is per URL, so the request's whole list decides it.
-///
-/// The caller writes these where it knows the destination and mode; this
-/// captures them once, and every hop appends them or drops them together
-/// (<https://w3c.github.io/webappsec-fetch-metadata/#fetch-integration>).
+// https://w3c.github.io/webappsec-fetch-metadata/#fetch-integration
 struct FetchMetadata {
     mode: Option<HeaderValue>,
     dest: Option<HeaderValue>,
@@ -1113,11 +908,6 @@ impl FetchMetadata {
         }
     }
 
-    /// Applies "append the Fetch metadata headers" to one hop. All four are one
-    /// group: a URL that is not potentially trustworthy carries none of them,
-    /// so a destination served over plain `http` learns nothing about its
-    /// requester, and a hop that redirects from `http` to `https` carries them
-    /// again.
     fn append(&self, headers: &mut HeaderMap, url: &Url, site: Option<FetchSite>) {
         if !secure_context::is_potentially_trustworthy(url) {
             for name in [
@@ -1144,16 +934,9 @@ impl FetchMetadata {
     }
 }
 
-/// Writes the headers one hop carries after the CORS decision: the
-/// URL-credentials `Authorization`, the `Cookie` gate, and the client hints.
-///
-/// Credentials mode gates both the `Cookie` header and the URL-credentials
-/// `Authorization` header
-/// (<https://fetch.spec.whatwg.org/#concept-request-credentials-mode>,
-/// <https://fetch.spec.whatwg.org/#http-network-or-cache-fetch>). The hints are
-/// written here, not into the caller's header list, so they never change the
-/// CORS-preflight decision
-/// (<https://wicg.github.io/ua-client-hints/#http-ua-hints>).
+// https://fetch.spec.whatwg.org/#concept-request-credentials-mode
+// https://fetch.spec.whatwg.org/#http-network-or-cache-fetch
+// https://wicg.github.io/ua-client-hints/#http-ua-hints
 fn prepare_credentials(
     dial: &Dial<'_>,
     url: &Url,
@@ -1169,7 +952,6 @@ fn prepare_credentials(
     Ok(())
 }
 
-/// Request-scoped values shared by every hop of one `send` call.
 struct Dial<'a> {
     cors: &'a crate::cors::CorsSettings,
     client_hints: &'a crate::ClientHints,
@@ -1177,53 +959,34 @@ struct Dial<'a> {
     initiator: Option<&'a url::Origin>,
     on_redirect: Option<&'a RedirectGate>,
     same_site_cookie_policy: SameSiteCookiePolicy,
-    /// The site of the top-level document this request belongs to, which
-    /// selects the `Partitioned` cookies it may send and store.
     partition_key: Option<&'a str>,
 }
 
 impl Dial<'_> {
-    /// Whether the credentials mode includes credentials, for the CORS check
-    /// and response filtering
-    /// (<https://fetch.spec.whatwg.org/#concept-request-credentials-mode>).
+    // https://fetch.spec.whatwg.org/#concept-request-credentials-mode
     fn credentials_include(&self) -> bool {
         self.cors.credentials.includes()
     }
 }
 
-/// The request state a redirect may rewrite, plus the sticky CORS tainting.
 struct Hop {
     method: Method,
     headers: HeaderMap,
     body: Option<Bytes>,
     response_type: crate::cors::ResponseType,
-    /// The previous hop's URL, for the redirect-taint computation
-    /// (<https://fetch.spec.whatwg.org/#concept-request-tainted-origin>).
+    // https://fetch.spec.whatwg.org/#concept-request-tainted-origin
     previous_url: Option<Url>,
-    /// Whether the serialized request origin has collapsed to `null` because a
-    /// hop crossed an origin that is neither the previous URL's nor the
-    /// request's own
-    /// (<https://fetch.spec.whatwg.org/#serializing-a-request-origin>).
+    // https://fetch.spec.whatwg.org/#serializing-a-request-origin
     origin_tainted: bool,
-    /// Whether any hop's URL origin differs from the request's origin. A
-    /// `no-cors` request that crosses it gets an opaque response, and the
-    /// tainting never resets, so a chain that returns to the request's origin
-    /// stays opaque
-    /// (<https://fetch.spec.whatwg.org/#concept-request-response-tainting>).
+    // https://fetch.spec.whatwg.org/#concept-request-response-tainting
     crossed_origin: bool,
-    /// The request's referrer policy, which decides whether a non-CORS request
-    /// with a body reports its origin or `null`
-    /// (<https://fetch.spec.whatwg.org/#append-a-request-origin-header>). A
-    /// redirect's `Referrer-Policy` field updates it for the remaining hops
-    /// (<https://w3c.github.io/webappsec-referrer-policy/#set-requests-referrer-policy-on-redirect>).
+    // https://fetch.spec.whatwg.org/#append-a-request-origin-header — step 3 keeps Origin on a same-origin cors POST after 307/308; Chrome and Firefox fail the same WPT subtests
+    // https://w3c.github.io/webappsec-referrer-policy/#set-requests-referrer-policy-on-redirect
     referrer_policy: ReferrerPolicy,
 }
 
 impl Hop {
-    /// The byte-serialized request origin CORS compares, `null` once a redirect
-    /// has tainted the request
-    /// (<https://fetch.spec.whatwg.org/#serializing-a-request-origin>). The
-    /// request `Origin` header and the response CORS check both read it here.
+    // https://fetch.spec.whatwg.org/#serializing-a-request-origin
     fn serialized_origin<'a>(&self, settings: &'a crate::cors::CorsSettings) -> Cow<'a, str> {
         if self.origin_tainted {
             Cow::Borrowed("null")
@@ -1232,14 +995,7 @@ impl Hop {
         }
     }
 
-    /// The value "append a request `Origin` header" writes for this hop
-    /// (<https://fetch.spec.whatwg.org/#append-a-request-origin-header>).
-    ///
-    /// A `cors`-tainted hop, and any `GET` or `HEAD`, always names the origin.
-    /// Every other request can be reported as `null`, and which policies do
-    /// that is the referrer policy's decision: `no-referrer` always,
-    /// `same-origin` across an origin boundary, and the three downgrade-aware
-    /// policies when an `https` origin reaches a non-`https` URL.
+    // https://fetch.spec.whatwg.org/#append-a-request-origin-header — step 3 keeps Origin on a same-origin cors POST after 307/308; Chrome and Firefox fail the same WPT subtests
     fn append_origin<'a>(
         &self,
         settings: &'a crate::cors::CorsSettings,
@@ -1269,9 +1025,7 @@ impl Hop {
     }
 }
 
-/// The response tainting a hop acquires
-/// (<https://fetch.spec.whatwg.org/#concept-request-response-tainting>). A
-/// `same-origin` request across an origin boundary is a network error.
+// https://fetch.spec.whatwg.org/#concept-request-response-tainting
 fn hop_taint(
     settings: &crate::cors::CorsSettings,
     url: &Url,
@@ -1283,14 +1037,7 @@ fn hop_taint(
         crate::cors::RequestMode::Navigate => Ok(crate::cors::ResponseType::Basic),
         crate::cors::RequestMode::SameOrigin => Err(NetError::RejectedRequest),
         crate::cors::RequestMode::Cors => Ok(crate::cors::ResponseType::Cors),
-        // A cross-origin `no-cors` request is opaque. A non-following
-        // redirect mode is decided when a 3xx response arrives, not before the
-        // request is sent: main fetch would refuse it up front, but CSP's
-        // `report-uri` delivery is a `no-cors` request whose redirect mode is
-        // `"error"`, and Chromium sends it anyway (docs/upstream.md). A
-        // `manual` request would hand page script an opaque-redirect response
-        // that main fetch forbids, so that one still fails before sending
-        // (<https://fetch.spec.whatwg.org/#main-fetch>).
+        // https://fetch.spec.whatwg.org/#main-fetch — CSP report-uri sends no-cors with redirect mode "error" and refuses 3xx on response, matching Chromium
         crate::cors::RequestMode::NoCors => match settings.redirect {
             crate::cors::RedirectMode::Manual => Err(NetError::RejectedRequest),
             crate::cors::RedirectMode::Follow | crate::cors::RedirectMode::Error => {
@@ -1300,18 +1047,12 @@ fn hop_taint(
     }
 }
 
-/// The page's view of one response
-/// (<https://fetch.spec.whatwg.org/#concept-filtered-response>).
-///
-/// Every accessor returns the filtered value: an opaque response has status 0,
-/// an empty status message, no header list, and no URL, so a caller cannot
-/// reach the internal response through this type.
+// https://fetch.spec.whatwg.org/#concept-filtered-response
 pub struct FilteredResponse<'a> {
     response: &'a Response,
 }
 
 impl<'a> FilteredResponse<'a> {
-    /// The filtered status code: 0 for an opaque response.
     #[must_use]
     pub fn status(&self) -> u16 {
         if self.response.is_opaque() {
@@ -1321,7 +1062,6 @@ impl<'a> FilteredResponse<'a> {
         }
     }
 
-    /// The filtered status message: empty for an opaque response.
     #[must_use]
     pub fn status_text(&self) -> &'a str {
         if self.response.is_opaque() {
@@ -1331,9 +1071,7 @@ impl<'a> FilteredResponse<'a> {
         }
     }
 
-    /// The filtered URL, or `None` for an opaque response, whose URL list is
-    /// empty
-    /// (<https://fetch.spec.whatwg.org/#concept-filtered-response-opaque>).
+    // https://fetch.spec.whatwg.org/#concept-filtered-response-opaque
     #[must_use]
     pub fn url(&self) -> Option<&'a Url> {
         if self.response.filtering == crate::cors::Filtering::Opaque {
@@ -1343,19 +1081,12 @@ impl<'a> FilteredResponse<'a> {
         }
     }
 
-    /// How the response was filtered.
     #[must_use]
     pub fn response_type(&self) -> crate::cors::ResponseType {
         self.response.response_type()
     }
 
-    /// The header list page script may read, in wire order: a `basic` response
-    /// keeps every field but the forbidden response-header names, a `cors`
-    /// response keeps its safelisted and explicitly exposed fields, and an
-    /// opaque response keeps none
-    /// (<https://fetch.spec.whatwg.org/#concept-filtered-response>).
-    ///
-    /// The entries borrow the internal map; nothing is cloned.
+    // https://fetch.spec.whatwg.org/#concept-filtered-response
     #[must_use]
     pub fn headers(&self) -> Vec<(&'a str, &'a [u8])> {
         match self.response.filtering {
@@ -1381,9 +1112,7 @@ impl<'a> FilteredResponse<'a> {
     }
 }
 
-/// The CORS check for a `cors`-tainted response
-/// (<https://fetch.spec.whatwg.org/#cors-check>). Every hop, redirect or
-/// final, must pass it.
+// https://fetch.spec.whatwg.org/#cors-check
 fn cors_gate(response: &Response, dial: &Dial<'_>, hop: &Hop) -> Result<(), NetError> {
     if hop.response_type != crate::cors::ResponseType::Cors {
         return Ok(());
@@ -1399,11 +1128,8 @@ fn cors_gate(response: &Response, dial: &Dial<'_>, hop: &Hop) -> Result<(), NetE
     Ok(())
 }
 
-/// Applies the response-side CORS rules for one hop, in spec order: the CORS
-/// check, then the redirect handling (the credentials rule, the redirect
-/// mode, and the final filtering)
-/// (<https://fetch.spec.whatwg.org/#http-fetch>,
-/// <https://fetch.spec.whatwg.org/#http-redirect-fetch>).
+// https://fetch.spec.whatwg.org/#http-fetch
+// https://fetch.spec.whatwg.org/#http-redirect-fetch
 fn classify_response(
     response: Response,
     current_url: &Url,
@@ -1412,9 +1138,7 @@ fn classify_response(
 ) -> Result<HopOutcome, NetError> {
     cors_gate(&response, dial, hop)?;
     let settings = dial.cors;
-    // Manual mode never validates or follows Location; the response is an
-    // opaque-redirect filtered response
-    // (<https://fetch.spec.whatwg.org/#http-redirect-fetch>).
+    // https://fetch.spec.whatwg.org/#http-redirect-fetch
     if settings.redirect == crate::cors::RedirectMode::Manual
         && matches!(response.status(), 301 | 302 | 303 | 307 | 308)
     {
@@ -1426,9 +1150,7 @@ fn classify_response(
         return Ok(HopOutcome::Final(Box::new(response)));
     };
     let next = resolve_location(current_url, &location)?;
-    // A redirect to a URL that includes credentials is a network error
-    // once the request is `cors`-tainted or would cross an origin
-    // (<https://fetch.spec.whatwg.org/#http-redirect-fetch>, steps 9-10).
+    // https://fetch.spec.whatwg.org/#http-redirect-fetch
     let redirects_with_credentials = !next.username().is_empty() || next.password().is_some();
     if redirects_with_credentials
         && (hop.response_type == crate::cors::ResponseType::Cors
@@ -1441,15 +1163,12 @@ fn classify_response(
         crate::cors::RedirectMode::Error => {
             return Err(NetError::RejectedRequest);
         }
-        // Manual returned above; unreachable here.
         crate::cors::RedirectMode::Manual | crate::cors::RedirectMode::Follow => {}
     }
     Ok(HopOutcome::Redirect { next })
 }
 
-/// The reason phrase one status code carries, or an empty string over HTTP/2,
-/// which does not send one
-/// (<https://fetch.spec.whatwg.org/#concept-response-status-message>).
+// https://fetch.spec.whatwg.org/#concept-response-status-message
 fn reason_phrase(status: u16, http2: bool) -> String {
     if http2 {
         return String::new();
@@ -1476,7 +1195,6 @@ fn apply_url_credentials(headers: &mut HeaderMap, url: &Url) -> Result<(), NetEr
     Ok(())
 }
 
-/// Streaming response body. Dropping it closes the socket.
 pub struct Body {
     reader: Box<dyn AsyncRead + Send + Unpin>,
     shared_error: Arc<Mutex<Option<NetError>>>,
@@ -1490,7 +1208,6 @@ impl std::fmt::Debug for Body {
 }
 
 impl Body {
-    /// Wraps the raw socket body in the decoders named by `Content-Encoding`.
     async fn decoded(raw: RawBody, codings: &[String]) -> Self {
         let shared_error = Arc::clone(&raw.shared_error);
         let shared_input = Arc::clone(&raw.shared_input);
@@ -1508,8 +1225,7 @@ impl Body {
                 "identity" => {}
                 "gzip" | "x-gzip" => {
                     let mut decoder = GzipDecoder::new(BufReader::new(reader));
-                    // A gzip response may carry several members
-                    // (<https://www.rfc-editor.org/rfc/rfc7230#section-4.1.3>).
+                    // https://www.rfc-editor.org/rfc/rfc7230#section-4.1.3
                     decoder.multiple_members(true);
                     reader = Box::new(decoder);
                 }
@@ -1538,8 +1254,7 @@ impl Body {
                         Box::new(DeflateDecoder::new(buffered))
                     };
                 }
-                // Unsupported coding: leave the remaining bytes untouched
-                // (<https://fetch.spec.whatwg.org/#concept-http-network-fetch>).
+                // https://fetch.spec.whatwg.org/#concept-http-network-fetch
                 _ => break,
             }
         }
@@ -1550,14 +1265,6 @@ impl Body {
         }
     }
 
-    /// Next decoded chunk, or `None` at end of body.
-    ///
-    /// # Errors
-    ///
-    /// [`NetError::Transport`] when the socket read fails or the deadline
-    /// expires; [`NetError::Decode`] when a decoder rejects the bytes. The
-    /// carrier's byte budget is enforced by whoever reads the chunks, so it is
-    /// not an error here.
     pub async fn read_chunk(&mut self) -> Result<Option<Vec<u8>>, NetError> {
         let mut buffer = vec![0; 16 * 1024];
         match self.reader.read(&mut buffer).await {
@@ -1584,7 +1291,6 @@ impl Body {
     }
 }
 
-/// Raw socket body before content decoders.
 struct RawBody {
     inner: WireBody,
     current: Option<Bytes>,
@@ -1644,7 +1350,6 @@ fn set_body_error(slot: &Mutex<Option<NetError>>, error: NetError) {
     }
 }
 
-/// HTTP response after redirects. Status codes are data, including 4xx and 5xx.
 #[derive(Debug)]
 pub struct Response {
     status: u16,
@@ -1657,103 +1362,72 @@ pub struct Response {
     filtering: crate::cors::Filtering,
     referrer: Option<Url>,
     crossed_origin: bool,
-    /// Whether the jar stored a cookie from this response's `Set-Cookie`
-    /// fields.
     cookies_stored: bool,
 }
 
 impl Response {
-    /// HTTP status code.
     #[must_use]
     pub fn status(&self) -> u16 {
         self.status
     }
 
-    /// HTTP reason phrase, for the `Response.statusText` getter.
     #[must_use]
     pub fn status_text(&self) -> &str {
         &self.status_text
     }
 
-    /// How the response was filtered for page script: basic, CORS, or opaque
-    /// (<https://fetch.spec.whatwg.org/#concept-response-type>).
+    // https://fetch.spec.whatwg.org/#concept-response-type
     #[must_use]
     pub fn response_type(&self) -> crate::cors::ResponseType {
         self.filtering.response_type()
     }
 
-    /// Whether the filtered projection is opaque: no status, URL, headers, or
-    /// body reach page script
-    /// (<https://fetch.spec.whatwg.org/#concept-filtered-response-opaque>).
+    // https://fetch.spec.whatwg.org/#concept-filtered-response-opaque
     #[must_use]
     pub fn is_opaque(&self) -> bool {
         self.filtering.is_opaque()
     }
 
-    /// Whether any hop's URL origin differed from the request's origin, which
-    /// is what a `no-cors` request turns into an opaque response
-    /// (<https://fetch.spec.whatwg.org/#concept-request-response-tainting>).
+    // https://fetch.spec.whatwg.org/#concept-request-response-tainting
     #[must_use]
     pub fn crossed_origin(&self) -> bool {
         self.crossed_origin
     }
 
-    /// The internal response's header list, before any filtering: every field
-    /// the server sent, `Set-Cookie` included.
-    ///
-    /// A page `fetch`/XHR reports [`Response::filtered`] instead. An internal
-    /// consumer — an image decoder, a script compiler, a style sheet parser —
-    /// reads this one, because the spec's own algorithms read the unsafe
-    /// response, not the filtered one
-    /// (<https://fetch.spec.whatwg.org/#concept-internal-response>).
+    // https://fetch.spec.whatwg.org/#concept-internal-response
     #[must_use]
     pub fn internal_headers(&self) -> &HeaderMap {
         &self.headers
     }
 
-    /// The filtered response page script may observe: its status, URL, headers,
-    /// and redirect flag already projected through [`Filtering`](crate::cors::Filtering). The internal
-    /// response stays out of reach through this type
-    /// (<https://fetch.spec.whatwg.org/#concept-filtered-response>).
+    // https://fetch.spec.whatwg.org/#concept-filtered-response
     #[must_use]
     pub fn filtered(&self) -> FilteredResponse<'_> {
         FilteredResponse { response: self }
     }
 
-    /// URL after redirects. Fragments from the original request are preserved.
     #[must_use]
     pub fn final_url(&self) -> &Url {
         &self.final_url
     }
 
-    /// Number of redirect hops followed for this response.
     #[must_use]
     pub fn redirect_count(&self) -> u32 {
         self.redirect_count
     }
 
-    /// The stripped referrer this response's final hop was sent with, after
-    /// `Determine request's Referrer` ran for that hop. A navigation stores it
-    /// as the new document's own referrer
-    /// (<https://html.spec.whatwg.org/multipage/document-lifecycle.html#creating-and-initializing-a-document-object>).
+    // https://html.spec.whatwg.org/multipage/document-lifecycle.html#creating-and-initializing-a-document-object
     #[must_use]
     pub fn referrer(&self) -> Option<&Url> {
         self.referrer.as_ref()
     }
 
-    /// Whether the jar stored a cookie from this response's `Set-Cookie`
-    /// fields.
     #[must_use]
     pub fn cookies_stored(&self) -> bool {
         self.cookies_stored
     }
 
-    /// Consumes the response and returns its decoded body stream.
-    ///
-    /// This is the *internal* response's body. A page `fetch` gets it only when
-    /// [`Filtering::is_opaque`](crate::cors::Filtering::is_opaque) is false; an
-    /// opaque filtered response has a null body
-    /// (<https://fetch.spec.whatwg.org/#concept-filtered-response-opaque>).
+    // https://fetch.spec.whatwg.org/#concept-filtered-response-opaque
     pub async fn into_body(self) -> Body {
         Body::decoded(self.body, &self.content_encoding).await
     }
@@ -1788,9 +1462,7 @@ mod redirect_policy_tests {
         }
     }
 
-    /// One hop of a cross-origin `POST` whose request carries `policy` as its
-    /// referrer policy, for the `Origin` append rule
-    /// (<https://fetch.spec.whatwg.org/#append-a-request-origin-header>).
+    // https://fetch.spec.whatwg.org/#append-a-request-origin-header — step 3 keeps Origin on a same-origin cors POST after 307/308; Chrome and Firefox fail the same WPT subtests
     fn posting_hop(policy: ReferrerPolicy) -> (Hop, crate::cors::CorsSettings) {
         let origin = Url::parse("http://a.test/page").expect("origin").origin();
         let hop = Hop {
@@ -1812,9 +1484,7 @@ mod redirect_policy_tests {
         (hop, settings)
     }
 
-    /// A non-CORS `POST` reports `null` where the request's referrer policy
-    /// hides the origin, and the serialized origin everywhere else
-    /// (<https://fetch.spec.whatwg.org/#append-a-request-origin-header>).
+    // https://fetch.spec.whatwg.org/#append-a-request-origin-header — step 3 keeps Origin on a same-origin cors POST after 307/308; Chrome and Firefox fail the same WPT subtests
     #[test]
     fn a_non_cors_post_origin_follows_the_referrer_policy() {
         let cross = url("http://www1.test/resource");
@@ -1841,8 +1511,7 @@ mod redirect_policy_tests {
         }
     }
 
-    /// A caller-supplied client hint is dropped when the redirect hop is not
-    /// potentially trustworthy (<https://wicg.github.io/ua-client-hints/#secure-transport>).
+    // https://wicg.github.io/ua-client-hints/#secure-transport
     #[test]
     fn a_redirect_to_an_untrustworthy_origin_drops_the_client_hint() {
         let mut hop = hop_with_hint();
@@ -1855,9 +1524,7 @@ mod redirect_policy_tests {
         assert_eq!(hop.headers.get("sec-ch-prefers-color-scheme"), None);
     }
 
-    /// The first hop's token names the relationship between the request's
-    /// initiator and the target: origin first, then site, then nothing shared
-    /// (<https://w3c.github.io/webappsec-fetch-metadata/#abstract-opdef-set-site>).
+    // https://w3c.github.io/webappsec-fetch-metadata/#abstract-opdef-set-site
     #[test]
     fn fetch_site_names_the_first_hop_relationship() {
         let origin = url("https://a.test/page").origin();
@@ -1885,9 +1552,6 @@ mod redirect_policy_tests {
         );
     }
 
-    /// `Sec-Fetch-Site` covers the whole URL list, so a chain widens and never
-    /// narrows: a redirect back to the request's origin keeps the worst
-    /// relationship any hop had.
     #[test]
     fn fetch_site_widens_along_a_redirect_chain() {
         let origin = url("https://a.test/page").origin();
@@ -1904,9 +1568,6 @@ mod redirect_policy_tests {
         );
     }
 
-    /// A request the user agent started keeps `none`: no site is responsible,
-    /// and no redirect gives one a site to be responsible for. Whichever value
-    /// the request had, `net` writes the header itself.
     #[test]
     fn fetch_site_none_survives_redirects_and_is_always_written() {
         let site = FetchSite::widen(None, None, &url("https://b.test/"));
@@ -2005,8 +1666,6 @@ mod decode_tests {
 
 #[cfg(test)]
 mod transport_port_tests {
-    //! The fetch core must not depend on hyper: a host supplies only the one
-    //! exchange, and every policy step still runs above it (#233).
 
     use std::pin::Pin;
     use std::sync::{Arc, Mutex, PoisonError};
@@ -2019,8 +1678,6 @@ mod transport_port_tests {
     use crate::cors::{CorsSettings, CredentialsMode, RedirectMode, RequestMode, ResponseType};
     use crate::transport::{HopBudget, Transport, WireRequest, WireResponse};
 
-    /// A transport that records the request it was handed and answers with one
-    /// header.
     struct FakeTransport {
         allow_origin: Option<&'static str>,
         seen: Arc<Mutex<Vec<(String, String)>>>,
@@ -2080,9 +1737,7 @@ mod transport_port_tests {
         request
     }
 
-    /// A `cors` response without `Access-Control-Allow-Origin` is a network
-    /// error even when the bytes came from a non-hyper transport
-    /// (<https://fetch.spec.whatwg.org/#cors-check>).
+    // https://fetch.spec.whatwg.org/#cors-check
     #[tokio::test]
     async fn a_cross_origin_cors_response_without_acao_is_rejected() {
         let seen = Arc::new(Mutex::new(Vec::new()));
@@ -2112,8 +1767,6 @@ mod transport_port_tests {
         );
     }
 
-    /// The same exchange with an approving header reaches the caller as a
-    /// `cors` response.
     #[tokio::test]
     async fn a_cross_origin_cors_response_with_acao_is_cors_typed() {
         let agent = Agent::with_transport(
@@ -2131,10 +1784,8 @@ mod transport_port_tests {
         assert_eq!(response.response_type(), ResponseType::Cors);
     }
 
-    /// One scripted response: status plus static headers.
     type ScriptedResponse = (u16, Vec<(&'static str, &'static str)>);
 
-    /// A scripted transport: one response per exchange, in order.
     struct ScriptedTransport {
         script: Mutex<std::collections::VecDeque<ScriptedResponse>>,
         seen: Arc<Mutex<Vec<(String, String)>>>,
@@ -2174,9 +1825,7 @@ mod transport_port_tests {
         }
     }
 
-    /// A redirect runs a second exchange through the same port, and the final
-    /// URL and count reach the caller
-    /// (<https://fetch.spec.whatwg.org/#http-redirect-fetch>).
+    // https://fetch.spec.whatwg.org/#http-redirect-fetch
     #[tokio::test]
     async fn a_redirect_crosses_the_same_port() {
         let seen = Arc::new(Mutex::new(Vec::new()));
@@ -2205,9 +1854,7 @@ mod transport_port_tests {
         assert_eq!(seen[1].1, "http://b.test/final");
     }
 
-    /// A non-safelisted cross-origin request sends its preflight through the
-    /// same port before the actual hop
-    /// (<https://fetch.spec.whatwg.org/#cors-preflight-fetch>).
+    // https://fetch.spec.whatwg.org/#cors-preflight-fetch
     #[tokio::test]
     async fn a_cors_preflight_uses_the_same_port() {
         let seen = Arc::new(Mutex::new(Vec::new()));

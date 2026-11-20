@@ -1,11 +1,4 @@
-//! CSSOM View scrolling: which box a scroll call addresses, and an element's
-//! scroll position.
-//!
-//! The scroll engine is Blitz's (`BaseDocument::scroll_to`, `scroll_by`,
-//! `scroll_into_view`, and the per-node scroll offsets); this module owns the
-//! CSSOM View algorithms that pick the scrolling element, route a root or body
-//! call to the viewport, and gate every call on the node's document being the
-//! active one (<https://drafts.csswg.org/cssom-view/#scrolling>).
+// https://drafts.csswg.org/cssom-view/#scrolling
 
 use blitz_dom::{Node, NodeData};
 use markup5ever::interface::QuirksMode;
@@ -19,15 +12,11 @@ use crate::dom::tree::{NodeId, html_namespace};
 use super::super::{active_world, host_node_id, world};
 use super::document::document_first_child;
 
-/// Whether an axis with this computed overflow has a scrolling box.
-///
-/// `visible` and `clip` have none; `hidden` does for programmatic scrolls
-/// (<https://drafts.csswg.org/cssom-view/#scrolling-box>).
+// https://drafts.csswg.org/cssom-view/#scrolling-box
 fn scrollable_overflow(overflow: Overflow) -> bool {
     !matches!(overflow, Overflow::Visible | Overflow::Clip)
 }
 
-/// One axis of a node's computed `overflow`, when the node has styles.
 fn overflow(node: &Node, vertical: bool) -> Option<Overflow> {
     let styles = node.primary_styles()?;
     Some(if vertical {
@@ -37,14 +26,7 @@ fn overflow(node: &Node, vertical: bool) -> Option<Overflow> {
     })
 }
 
-/// Whether an element's `overflow` is applied to the viewport instead of to a
-/// scrolling box of its own
-/// (<https://drafts.csswg.org/css-overflow-3/#overflow-propagation>).
-///
-/// The root element's overflow always belongs to the viewport. When the root is
-/// an HTML `html` element whose own overflow is `visible` on both axes, the
-/// first `body` child's overflow propagates instead, and that `body` has no
-/// scrolling box.
+// https://drafts.csswg.org/css-overflow-3/#overflow-propagation
 fn overflow_propagates_to_viewport(parsed: &Parsed, element: NodeId) -> bool {
     parsed
         .document
@@ -52,13 +34,7 @@ fn overflow_propagates_to_viewport(parsed: &Parsed, element: NodeId) -> bool {
         .overflow_propagates_to_viewport(element.node)
 }
 
-/// The used overflow of an element on one axis, with a propagated body's value
-/// replaced by `visible`.
-///
-/// The element a value propagates from gets a used overflow of `visible`
-/// (<https://drafts.csswg.org/css-overflow-3/#overflow-propagation>), so it
-/// has no scrolling box even though its computed value is `hidden`, `scroll`,
-/// or `auto`.
+// https://drafts.csswg.org/css-overflow-3/#overflow-propagation
 fn used_overflow(parsed: &Parsed, element: NodeId, vertical: bool) -> Option<Overflow> {
     if overflow_propagates_to_viewport(parsed, element) {
         return Some(Overflow::Visible);
@@ -66,18 +42,12 @@ fn used_overflow(parsed: &Parsed, element: NodeId, vertical: bool) -> Option<Ove
     overflow(parsed.document.base.get_node(element.node)?, vertical)
 }
 
-/// The document's root element: its first element child
-/// (<https://dom.spec.whatwg.org/#document-element>).
+// https://dom.spec.whatwg.org/#document-element
 pub(crate) fn root_element(parsed: &Parsed) -> Option<NodeId> {
     document_first_child(parsed, |data| matches!(data, NodeData::Element(_)))
 }
 
-/// The document's body element
-/// (<https://html.spec.whatwg.org/multipage/dom.html#the-body-element-2>).
-///
-/// This is the first HTML-namespaced `body` that is a child of an
-/// HTML-namespaced `html` element, not `document.body`: the latter can also
-/// return a `frameset`.
+// https://html.spec.whatwg.org/multipage/dom.html#the-body-element-2
 pub(super) fn body_element(parsed: &Parsed) -> Option<NodeId> {
     let base = &parsed.document.base;
     let html = base.get_node(root_element(parsed)?.node)?;
@@ -97,14 +67,8 @@ pub(super) fn body_element(parsed: &Parsed) -> Option<NodeId> {
     })
 }
 
-/// Whether an element is potentially scrollable in one axis
-/// (<https://drafts.csswg.org/cssom-view/#potentially-scrollable>).
-///
-/// The parent's overflow and the element's own overflow must each create a
-/// scrolling box. `parent_clip_counts_as_hidden` is the `scrollingElement`
-/// step's override, which applies only there: the scroll getters and setters
-/// use the definition as written, where a parent `overflow: clip` does not
-/// count (<https://drafts.csswg.org/cssom-view/#dom-document-scrollingelement>).
+// https://drafts.csswg.org/cssom-view/#potentially-scrollable
+// https://drafts.csswg.org/cssom-view/#dom-document-scrollingelement
 fn potentially_scrollable_in(
     parsed: &Parsed,
     element: NodeId,
@@ -115,8 +79,6 @@ fn potentially_scrollable_in(
     let Some(node) = base.get_node(element.node) else {
         return false;
     };
-    // "has an associated box": a boxless element is never potentially
-    // scrollable.
     if !node.has_boxes() {
         return false;
     }
@@ -133,28 +95,17 @@ fn potentially_scrollable_in(
     }
 }
 
-/// Whether an element is potentially scrollable in at least one axis, by the
-/// definition the scroll getters and setters use.
 fn potentially_scrollable(parsed: &Parsed, element: NodeId) -> bool {
     potentially_scrollable_in(parsed, element, false, false)
         || potentially_scrollable_in(parsed, element, true, false)
 }
 
-/// The same question with the `scrollingElement` step's `clip`-as-`hidden`
-/// override for the body element's parent.
 fn potentially_scrollable_for_scrolling_element(parsed: &Parsed, element: NodeId) -> bool {
     potentially_scrollable_in(parsed, element, false, true)
         || potentially_scrollable_in(parsed, element, true, true)
 }
 
-/// The width or height of the viewport's scrolling area, which CSSOM View
-/// answers for the root element and for a quirks-mode body that does not scroll
-/// itself: the initial containing block (the viewport) unioned with every
-/// descendant's margin box, which Blitz records as the root element's scrolling
-/// area (<https://drafts.csswg.org/cssom-view/#dom-element-scrollheight>).
-///
-/// `viewport` is the viewport extent on the axis, because the scrolling area
-/// always covers the initial containing block.
+// https://drafts.csswg.org/cssom-view/#dom-element-scrollheight
 pub(super) fn viewport_scroll_area(parsed: &Parsed, vertical: bool, viewport: f64) -> f64 {
     let content = root_element(parsed)
         .and_then(|root| parsed.document.base.get_node(root.node))
@@ -168,11 +119,7 @@ pub(super) fn viewport_scroll_area(parsed: &Parsed, vertical: bool, viewport: f6
     content.max(viewport)
 }
 
-/// Whether `scrollWidth`/`scrollHeight` on this element report the viewport's
-/// scrolling area instead of the element's own: the root element when the
-/// document is not in quirks mode, and the body element in quirks mode when it
-/// is not potentially scrollable in that axis
-/// (<https://drafts.csswg.org/cssom-view/#dom-element-scrollheight>).
+// https://drafts.csswg.org/cssom-view/#dom-element-scrollheight
 pub(super) fn scroll_area_is_viewport(parsed: &Parsed, element: NodeId, vertical: bool) -> bool {
     let quirks = parsed.quirks_mode == QuirksMode::Quirks;
     if root_element(parsed) == Some(element) {
@@ -183,10 +130,7 @@ pub(super) fn scroll_area_is_viewport(parsed: &Parsed, element: NodeId, vertical
         && !potentially_scrollable_in(parsed, element, vertical, false)
 }
 
-/// Whether `clientWidth`/`clientHeight` on this element report the viewport
-/// size: the root element when the document is not in quirks mode, and the body
-/// element in quirks mode
-/// (<https://drafts.csswg.org/cssom-view/#dom-element-clientwidth>).
+// https://drafts.csswg.org/cssom-view/#dom-element-clientwidth
 pub(super) fn client_area_is_viewport(parsed: &Parsed, element: NodeId) -> bool {
     if root_element(parsed) == Some(element) {
         return parsed.quirks_mode != QuirksMode::Quirks;
@@ -194,12 +138,7 @@ pub(super) fn client_area_is_viewport(parsed: &Parsed, element: NodeId) -> bool 
     parsed.quirks_mode == QuirksMode::Quirks && body_element(parsed) == Some(element)
 }
 
-/// The document's `scrollingElement`
-/// (<https://drafts.csswg.org/cssom-view/#dom-document-scrollingelement>).
-///
-/// In quirks mode the answer is the body element when the body is not
-/// potentially scrollable, and null otherwise; every other document answers
-/// with its root element or null.
+// https://drafts.csswg.org/cssom-view/#dom-document-scrollingelement
 pub(super) fn scrolling_element(parsed: &mut Parsed) -> Option<NodeId> {
     parsed.document.base.resolve(crate::animation_seconds());
     if parsed.quirks_mode == QuirksMode::Quirks {
@@ -209,19 +148,13 @@ pub(super) fn scrolling_element(parsed: &mut Parsed) -> Option<NodeId> {
     root_element(parsed)
 }
 
-/// The viewport's scroll offset on one axis.
 fn viewport_offset(parsed: &Parsed, vertical: bool) -> f64 {
     let scroll = parsed.document.base.viewport_scroll();
     if vertical { scroll.y } else { scroll.x }
 }
 
-/// An element's `scrollTop`/`scrollLeft`
-/// (<https://drafts.csswg.org/cssom-view/#dom-element-scrolltop>).
-///
-/// The root element reports the viewport. In quirks mode the body element does
-/// too, unless it is potentially scrollable, and the root element reports zero.
-/// The offset is a layout length, but the CSSOM View member is unscaled
-/// (<https://drafts.csswg.org/css-viewport/#zoom-dom-cssom>).
+// https://drafts.csswg.org/cssom-view/#dom-element-scrolltop
+// https://drafts.csswg.org/css-viewport/#zoom-dom-cssom — root Element.scroll() applies both x and y coordinates, matching Chrome and WPT over CSSOM View's scrollX discard
 fn scroll_position(parsed: &Parsed, element: NodeId, vertical: bool) -> f64 {
     let offset = scroll_position_scaled(parsed, element, vertical);
     let zoom = parsed
@@ -232,8 +165,6 @@ fn scroll_position(parsed: &Parsed, element: NodeId, vertical: bool) -> f64 {
     offset / zoom
 }
 
-/// An element's `scrollTop`/`scrollLeft` in layout lengths, before the
-/// element's effective zoom is removed.
 fn scroll_position_scaled(parsed: &Parsed, element: NodeId, vertical: bool) -> f64 {
     let quirks = parsed.quirks_mode == QuirksMode::Quirks;
     if root_element(parsed) == Some(element) {
@@ -249,8 +180,6 @@ fn scroll_position_scaled(parsed: &Parsed, element: NodeId, vertical: bool) -> f
     let Some(node) = parsed.document.base.get_node(element.node) else {
         return 0.0;
     };
-    // A boxless element, or one without a scrolling box on this axis, stays
-    // at the start.
     if !node.has_boxes()
         || !used_overflow(parsed, element, vertical).is_some_and(scrollable_overflow)
     {
@@ -260,9 +189,7 @@ fn scroll_position_scaled(parsed: &Parsed, element: NodeId, vertical: bool) -> f
     if vertical { offset.y } else { offset.x }
 }
 
-/// Scroll an element to an absolute position, following the root/body routing
-/// of `scrollTop`/`scrollLeft` and `Element.scroll()`
-/// (<https://drafts.csswg.org/cssom-view/#dom-element-scrolltop>).
+// https://drafts.csswg.org/cssom-view/#dom-element-scrolltop
 fn scroll_to(
     parsed: &mut Parsed,
     element: NodeId,
@@ -270,8 +197,7 @@ fn scroll_to(
     y: f64,
     behavior: blitz_dom::ScrollBehavior,
 ) {
-    // "Normalize non-finite values": NaN and the infinities become zero
-    // (<https://drafts.csswg.org/cssom-view/#normalize-non-finite-values>).
+    // https://drafts.csswg.org/cssom-view/#normalize-non-finite-values
     let x = if x.is_finite() { x } else { 0.0 };
     let y = if y.is_finite() { y } else { 0.0 };
     let quirks = parsed.quirks_mode == QuirksMode::Quirks;
@@ -293,27 +219,13 @@ fn scroll_to(
     let Some(target) = target else {
         return;
     };
-    // An element without a scrolling box on either axis has nothing to move; a
-    // propagated body has a used overflow of `visible`. This is the element's
-    // own box only: CSSOM's parent-overflow rule in "potentially scrollable"
-    // belongs to the `scrollingElement` and quirks-body questions, and applying
-    // it here would freeze every scroller inside a `body` with visible
-    // overflow (`scrollLeftTop.html`).
     if Some(target) != root
         && !used_overflow(parsed, target, false).is_some_and(scrollable_overflow)
         && !used_overflow(parsed, target, true).is_some_and(scrollable_overflow)
     {
         return;
     }
-    // CSSOM View's `Element.scroll()` step for the root element delegates to
-    // `window.scroll(scrollX, y)`, which would discard x, but Chrome applies
-    // both coordinates and `css/cssom-view/scrolling-quirks-vs-nonquirks.html`
-    // asserts that (`scroll(50, 60)` leaves scrollLeft at 50). Follow the
-    // browser.
-    //
-    // The arguments are unscaled CSSOM View lengths, which the scroll engine
-    // stores in layout lengths
-    // (<https://drafts.csswg.org/css-viewport/#zoom-dom-cssom>).
+    // https://drafts.csswg.org/css-viewport/#zoom-dom-cssom — root Element.scroll() applies both x and y coordinates, matching Chrome and WPT over CSSOM View's scrollX discard
     let (x, y) = match parsed.document.base.get_node(target.node) {
         Some(node) => (super::zoom::scaled(node, x), super::zoom::scaled(node, y)),
         None => (x, y),
@@ -321,9 +233,7 @@ fn scroll_to(
     parsed.document.base.scroll_to(target.node, x, y, behavior);
 }
 
-/// An element's current scroll position on one axis, for the shim's overloaded
-/// `scroll()`/`scrollTo()` family
-/// (<https://drafts.csswg.org/cssom-view/#dom-element-scrolltop>).
+// https://drafts.csswg.org/cssom-view/#dom-element-scrolltop
 pub(crate) fn element_scroll_position(ctx: &Ctx<'_>, id: NodeId, vertical: bool) -> f64 {
     let Some(world) = active_world(ctx, id) else {
         return 0.0;
@@ -336,7 +246,7 @@ pub(crate) fn element_scroll_position(ctx: &Ctx<'_>, id: NodeId, vertical: bool)
     scroll_position(&parsed, id, vertical)
 }
 
-/// Scroll an element to `(x, y)` (<https://drafts.csswg.org/cssom-view/#dom-element-scroll>).
+// https://drafts.csswg.org/cssom-view/#dom-element-scroll
 pub(crate) fn element_scroll(
     ctx: &Ctx<'_>,
     id: NodeId,
@@ -354,8 +264,6 @@ pub(crate) fn element_scroll(
     scroll_to(&mut parsed, id, x, y, behavior);
 }
 
-/// The scroll behavior an IDL `ScrollBehavior` names. The shim converts the
-/// enum before this call; anything else takes the IDL default.
 fn scroll_behavior(value: &str) -> blitz_dom::ScrollBehavior {
     match value {
         "instant" => blitz_dom::ScrollBehavior::Instant,
@@ -364,7 +272,6 @@ fn scroll_behavior(value: &str) -> blitz_dom::ScrollBehavior {
     }
 }
 
-/// Registers the scroll host functions the CSSOM View shims call.
 pub(crate) fn install(ctx: &Ctx<'_>) -> Result<()> {
     let bridge = crate::js::bridge::object(ctx)?;
     bridge.set(
@@ -386,9 +293,7 @@ pub(crate) fn install(ctx: &Ctx<'_>) -> Result<()> {
     Ok(())
 }
 
-/// The viewport's scroll offset `(x, y)`, for `window.scrollX`/`scrollY` and
-/// `pageXOffset`/`pageYOffset`
-/// (<https://drafts.csswg.org/cssom-view/#dom-window-scrollx>).
+// https://drafts.csswg.org/cssom-view/#dom-window-scrollx
 fn viewport_scroll_offset(ctx: Ctx<'_>) -> Vec<f64> {
     let Ok(world) = world(&ctx) else {
         return vec![0.0, 0.0];
@@ -405,8 +310,7 @@ fn viewport_scroll_offset(ctx: Ctx<'_>) -> Vec<f64> {
     vec![scroll.x, scroll.y]
 }
 
-/// `window.scroll()`/`scrollTo()`: scroll the viewport to `(x, y)`
-/// (<https://drafts.csswg.org/cssom-view/#dom-window-scroll>).
+// https://drafts.csswg.org/cssom-view/#dom-window-scroll
 fn scroll_viewport(ctx: Ctx<'_>, x: f64, y: f64, behavior: String) {
     let Ok(world) = world(&ctx) else {
         return;

@@ -1,14 +1,8 @@
-// `FormData`: the entry list a form contributes, plus programmatic entries
-// (<https://xhr.spec.whatwg.org/#interface-formdata>).
+// https://xhr.spec.whatwg.org/#interface-formdata
 (function() {
   const lists = host.slots();
 
-  // Forms whose entry list is under construction. Wrappers are interned per
-  // node (one shared wrapper per NodeId), so object identity is a stable key
-  // for the underlying form element. A reentrant `new FormData(form)` while
-  // the flag is set returns an empty list without firing `formdata`, so a
-  // `formdata` handler that submits the form cannot recurse
-  // (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#constructing-the-form-data-set>).
+  // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#constructing-the-form-data-set
   const constructingEntryList = new WeakSet();
 
   function FormData(form, submitter) {
@@ -26,8 +20,7 @@
         for (let index = 0; index + 1 < flat.length; index += 2) {
           __tbArray.push(list, [String(flat[index]), flat[index + 1]]);
         }
-        // Constructing the entry list fires `formdata`, whose handler may extend
-        // the list (<https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#constructing-the-form-data-set>).
+        // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#constructing-the-form-data-set
         if (typeof globalThis.FormDataEvent === 'function') {
           form.dispatchEvent(new globalThis.FormDataEvent('formdata', {
             formData: this, bubbles: true, cancelable: false,
@@ -47,9 +40,7 @@
     return list;
   };
 
-  // A `Blob` value becomes a `File` named by the optional third argument; any
-  // other value is stringified
-  // (<https://xhr.spec.whatwg.org/#create-an-entry>).
+  // https://xhr.spec.whatwg.org/#create-an-entry
   const createEntry = (value, filename) => {
     if (globalThis.Blob && value instanceof globalThis.Blob) {
       if (globalThis.File && value instanceof globalThis.File) return value;
@@ -120,8 +111,7 @@
       const key = String(name);
       const entry = [key, createEntry(value, filename)];
       const list = entryList(this);
-      // Replace the first match and remove the rest
-      // (<https://xhr.spec.whatwg.org/#dom-formdata-set>).
+      // https://xhr.spec.whatwg.org/#dom-formdata-set
       let first = -1;
       for (let index = 0; index < list.length; index++) {
         if (list[index][0] === key) { first = index; break; }

@@ -1,5 +1,3 @@
-//! `WebIDL` argument conversion helpers.
-
 use std::borrow::Cow;
 
 use super::node::insert_converted_node;
@@ -9,7 +7,6 @@ use crate::dom::tree::NodeId;
 
 use rquickjs::{Ctx, Exception, Function, Object, Result, Value};
 
-/// Dictionary member truthiness (`ToBoolean`, missing members are false).
 pub(crate) fn option_truthy<'js>(ctx: &Ctx<'js>, options: &Object<'js>, key: &str) -> Result<bool> {
     let value: Value = options.get(key)?;
     if value.is_undefined() || value.is_null() {
@@ -18,12 +15,7 @@ pub(crate) fn option_truthy<'js>(ctx: &Ctx<'js>, options: &Object<'js>, key: &st
     to_boolean(ctx, &value)
 }
 
-/// `WebIDL` `ToBoolean` (<https://webidl.spec.whatwg.org/#es-boolean>).
-///
-/// Primitives convert directly (no user code can run for them); anything else
-/// goes through the pristine `Boolean`, captured at install. A page-assigned
-/// `Boolean` global must not change the answer, and `0n` is the one falsy
-/// bigint.
+// https://webidl.spec.whatwg.org/#es-boolean
 pub(crate) fn to_boolean<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<bool> {
     if let Some(boolean) = value.as_bool() {
         return Ok(boolean);
@@ -42,45 +34,30 @@ pub(crate) fn to_boolean<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<bool
         let boolean: Function = boolean.restore(ctx)?;
         return boolean.call((value.clone(),));
     }
-    // Install predates the capture: fall back to the (clobberable) global.
     let boolean: Function = ctx.globals().get("Boolean")?;
     boolean.call((value.clone(),))
 }
 
 pub(crate) struct OptString(pub(crate) Option<String>);
 
-/// `WebIDL` `DOMString` conversion: `ToString(value)`
-/// (<https://webidl.spec.whatwg.org/#es-DOMString>).
+// https://webidl.spec.whatwg.org/#es-DOMString
 pub(crate) struct WebIdlString(pub(crate) String);
 
-/// `[LegacyNullToEmptyString]` `DOMString`: `null` becomes the empty string
-/// (<https://webidl.spec.whatwg.org/#LegacyNullToEmptyString>).
+// https://webidl.spec.whatwg.org/#LegacyNullToEmptyString
 pub(crate) struct LegacyNullString(pub(crate) String);
 
-/// A `DOMString` argument that keeps every UTF-16 code unit.
-///
-/// Character data may contain unpaired surrogates, which a Rust `String`
-/// cannot hold, so these entry points carry the exact code units instead.
 pub(crate) struct WebIdlCodeUnits(pub(crate) crate::dom_string::DomString);
 
-/// `WebIDL` `unsigned long` conversion
-/// (<https://webidl.spec.whatwg.org/#es-unsigned-long>).
+// https://webidl.spec.whatwg.org/#es-unsigned-long
 pub(crate) struct WebIdlUnsignedLong(pub(crate) u32);
 
-/// `DOMString` conversion through the engine's `ToString` operation
-/// (<https://webidl.spec.whatwg.org/#es-DOMString>).
+// https://webidl.spec.whatwg.org/#es-DOMString
 pub(crate) fn webidl_to_string<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<String> {
     webidl_to_js_string(ctx, value)?.to_string()
 }
 
-/// UTF-8 for attributes that feed selector matching.
-///
-/// Unpaired surrogates cannot live in a Rust `String`. Replacing them with
-/// U+FFFD would make an `id` match a CSS escape that the CSS parser also
-/// turns into U+FFFD
-/// (<https://drafts.csswg.org/css-syntax/#consume-escaped-code-point>).
-/// Dropping those code units keeps the two distinct
-/// (<https://infra.spec.whatwg.org/#javascript-string-convert>).
+// https://drafts.csswg.org/css-syntax/#consume-escaped-code-point
+// https://infra.spec.whatwg.org/#javascript-string-convert
 pub(crate) fn js_string_to_utf8(value: &rquickjs::String<'_>) -> Result<String> {
     if let Ok(text) = value.to_string() {
         Ok(text)
@@ -92,9 +69,7 @@ pub(crate) fn js_string_to_utf8(value: &rquickjs::String<'_>) -> Result<String> 
     }
 }
 
-/// `DOMString` conversion keeping every UTF-16 code unit
-/// (<https://webidl.spec.whatwg.org/#es-DOMString>), for character data that
-/// may contain unpaired surrogates.
+// https://webidl.spec.whatwg.org/#es-DOMString
 pub(crate) fn webidl_to_units<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Vec<u16>> {
     webidl_to_js_string(ctx, value)?.to_utf16()
 }
@@ -104,16 +79,12 @@ fn webidl_to_js_string<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<rquickj
     Ok(converted.0)
 }
 
-/// One already-converted `(Node or DOMString)` union member: the generated
-/// union enums map into this before insertion.
 pub(crate) enum NodeOrString<'js> {
     Node(super::host::NodeReference),
     String(rquickjs::String<'js>),
 }
 
-/// [Converting nodes into a node](https://dom.spec.whatwg.org/#convert-nodes-into-a-node)
-/// over generated union members. Dispatch already ran the union conversion,
-/// so strings arrive converted and nodes arrive as references.
+// https://dom.spec.whatwg.org/#convert-nodes-into-a-node
 pub(crate) fn convert_union_nodes_into_node<'js>(
     ctx: &Ctx<'js>,
     document: NodeId,
@@ -124,8 +95,6 @@ pub(crate) fn convert_union_nodes_into_node<'js>(
         match node {
             NodeOrString::Node(reference) => {
                 let Some(id) = reference.tree() else {
-                    // The union trial only admits tree nodes, matching
-                    // insertion below, which rejects attribute references.
                     return Err(throw_dom(
                         ctx,
                         "HierarchyRequestError",
@@ -142,20 +111,16 @@ pub(crate) fn convert_union_nodes_into_node<'js>(
     assemble_nodes_into_node(ctx, document, pieces)
 }
 
-/// A converted node list piece: a tree node or text to create.
 enum Piece {
     Node(NodeId),
     Text(String),
 }
 
-/// Phase two of node conversion: adopt nodes across documents, then return
-/// the single node or a fragment holding them all.
 fn assemble_nodes_into_node(
     ctx: &Ctx<'_>,
     document: NodeId,
     mut pieces: Vec<Piece>,
 ) -> Result<NodeId> {
-    // Phase two, adoptions.
     for piece in &mut pieces {
         if let Piece::Node(id) = piece {
             *id = adopt_across_documents(ctx, document, *id)?;
@@ -190,9 +155,7 @@ fn assemble_nodes_into_node(
             node: parsed.document.create_fragment(),
         }
     };
-    // Each node is appended to the fragment
-    // (<https://dom.spec.whatwg.org/#convert-nodes-into-a-node>), which
-    // removes it from its previous parent and records that removal.
+    // https://dom.spec.whatwg.org/#convert-nodes-into-a-node
     for piece in pieces {
         let id = match piece {
             Piece::Node(id) => id,
@@ -214,21 +177,14 @@ fn assemble_nodes_into_node(
     Ok(fragment)
 }
 
-/// A selector syntax error is a `SyntaxError` `DOMException`
-/// (<https://dom.spec.whatwg.org/#scope-match-a-selectors-string>).
+// https://dom.spec.whatwg.org/#scope-match-a-selectors-string
 pub(crate) fn select_error(ctx: &Ctx<'_>, err: &style_traits::ParseError) -> rquickjs::Error {
     throw_dom(ctx, "SyntaxError", &format!("{err:?}"))
 }
 
-/// Rewrites `::first-line` and the legacy `:first-line` to `::before`.
-///
-/// Both forms are valid pseudo-elements and match no element
-/// (<https://drafts.csswg.org/css-pseudo/#selectordef-first-line>,
-/// <https://drafts.csswg.org/selectors-4/#pseudo-element-selectors>,
-/// <https://dom.spec.whatwg.org/#scope-match-a-selectors-string>).
-/// The selector parser rejects the name, while it already accepts `::before`
-/// and that pseudo-element likewise matches no element. Strings, comments,
-/// and escapes are left alone so an attribute value is not rewritten.
+// https://drafts.csswg.org/css-pseudo/#selectordef-first-line
+// https://drafts.csswg.org/selectors-4/#pseudo-element-selectors
+// https://dom.spec.whatwg.org/#scope-match-a-selectors-string
 pub(crate) fn selector_matching_elements(selectors: &str) -> Cow<'_, str> {
     if !contains_ascii_ignore_case(selectors, b"first-line") {
         return Cow::Borrowed(selectors);
@@ -268,7 +224,6 @@ pub(crate) fn selector_matching_elements(selectors: &str) -> Cow<'_, str> {
     }
 }
 
-/// ASCII case-insensitive substring search over the raw bytes.
 fn contains_ascii_ignore_case(haystack: &str, needle: &[u8]) -> bool {
     haystack
         .as_bytes()
@@ -276,8 +231,6 @@ fn contains_ascii_ignore_case(haystack: &str, needle: &[u8]) -> bool {
         .any(|window| window.eq_ignore_ascii_case(needle))
 }
 
-/// The end index of a comment, string, or escape starting at `index`, when
-/// one starts there.
 fn skip_selector_literal(selectors: &str, index: usize) -> Option<usize> {
     let rest = &selectors[index..];
     if rest.starts_with("/*") {
@@ -296,8 +249,6 @@ fn skip_selector_literal(selectors: &str, index: usize) -> Option<usize> {
     }
 }
 
-/// The index just past a quoted string starting at `index`, or the end
-/// of input when the string never closes.
 fn end_of_selector_string(selectors: &str, index: usize, quote: char) -> usize {
     let mut cursor = index + quote.len_utf8();
     while cursor < selectors.len() {
@@ -318,7 +269,6 @@ fn end_of_selector_string(selectors: &str, index: usize, quote: char) -> usize {
     selectors.len()
 }
 
-/// The index just after a `:first-line` or `::first-line` pseudo at `index`.
 fn first_line_pseudo(selectors: &str, index: usize) -> Option<usize> {
     let rest = &selectors.as_bytes()[index..];
     if !rest.starts_with(b":") {
@@ -338,16 +288,12 @@ fn first_line_pseudo(selectors: &str, index: usize) -> Option<usize> {
     (!continues).then_some(after)
 }
 
-/// Whether `character` continues a CSS identifier: backslash, hyphen,
-/// underscore, or alphanumeric
-/// (<https://drafts.csswg.org/css-syntax/#ident-token-diagram>).
+// https://drafts.csswg.org/css-syntax/#ident-token-diagram
 fn is_css_name_continue(character: char) -> bool {
     character == '\\' || character == '-' || character == '_' || character.is_alphanumeric()
 }
 
-/// Integer conversion from a `double`
-/// (<https://webidl.spec.whatwg.org/#abstract-opdef-converttoint>): NaN and
-/// infinities become 0, then the truncated value wraps modulo 2^32.
+// https://webidl.spec.whatwg.org/#abstract-opdef-converttoint
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,

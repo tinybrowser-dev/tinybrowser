@@ -1,13 +1,3 @@
-//! Synchronous panic records.
-//!
-//! Release builds use `panic = "abort"`: the panic hook runs, then the process
-//! aborts. The regular file sink is a background queue that dies with the
-//! process, so a panic record written through it would be lost. This hook
-//! bypasses the queue and appends straight to the log file, then stderr (the
-//! stream the daemon forwards from a renderer).
-//!
-//! The hook must not panic: every step is best-effort.
-
 use std::io::Write as _;
 
 pub(crate) fn install(logger: &'static crate::Logger) {
@@ -44,9 +34,6 @@ fn record(logger: &crate::Logger, info: &std::panic::PanicHookInfo<'_>) {
     }
 }
 
-/// Opens through the sink's own `open`, so a hook-created log gets the same
-/// 0600 file and 0700 parent as the sink's. A fresh handle also follows the
-/// writer thread's `<file>.1` rotation instead of a cached inode.
 fn append(path: &std::path::Path, line: &str) {
     if let Ok(mut file) = crate::file::open(path) {
         let _ = file.write_all(line.as_bytes());

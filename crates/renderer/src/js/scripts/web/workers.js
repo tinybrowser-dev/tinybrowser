@@ -1,12 +1,8 @@
-// Dedicated workers: the `Worker` constructor in a document realm, and the
-// `DedicatedWorkerGlobalScope` a worker script runs in
-// (<https://html.spec.whatwg.org/multipage/workers.html#dedicated-workers-and-the-dedicatedworkerglobalscope-interface>).
+// https://html.spec.whatwg.org/multipage/workers.html#dedicated-workers-and-the-dedicatedworkerglobalscope-interface
 (function() {
   const __tbWorkerIsGlobal = host.__tbIsWorker === true;
 
-  // Handler properties are plain writable values; the event dispatch reads
-  // `on<type>` after the listener list, the same shape `XMLHttpRequest` uses
-  // (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handlers>).
+  // https://html.spec.whatwg.org/multipage/webappapis.html#event-handlers
   const __tbDefineWorkerHandler = (prototype, name) => {
     Object.defineProperty(prototype, name, {
       value: null,
@@ -17,8 +13,6 @@
   };
 
   if (__tbWorkerIsGlobal) {
-    // A worker global has no browsing context: remove the Window-shaped names
-    // the messaging shim installs for documents.
     for (const name of ['window', 'localStorage', 'sessionStorage', 'frameElement', 'length', 'parent', 'top', 'open', 'opener']) {
       try {
         delete globalThis[name];
@@ -53,17 +47,13 @@
       get location() { return globalThis.location; }
       get navigator() { return globalThis.navigator; }
       importScripts(...urls) {
-        // A module worker's global has no classic-script import: the operation
-        // throws, and the worker keeps running
-        // (<https://html.spec.whatwg.org/multipage/workers.html#dom-workerglobalscope-importscripts>).
+        // https://html.spec.whatwg.org/multipage/workers.html#dom-workerglobalscope-importscripts
         if (host.__tbWorkerModule) {
           throw new TypeError("Failed to execute 'importScripts' on 'WorkerGlobalScope': Module scripts don't support importScripts().");
         }
         for (const value of urls) {
           const href = new URL(String(value), location.href).href;
-          // The host reports a failed fetch as `undefined`; an empty script is
-          // the empty string, which still runs
-          // (<https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-classic-worker-imported-script>).
+          // https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-classic-worker-imported-script
           const source = host.__tbImportScripts(href);
           if (source === undefined) {
             throw new DOMException(`Failed to load ${href}`, 'NetworkError');
@@ -72,10 +62,7 @@
         }
       }
     }
-    // `onerror` is a `WorkerGlobalScope` handler, and the realm's own global is
-    // an `OnErrorEventHandler`: the five-argument call is decided by the
-    // event's target, not by this slot
-    // (<https://html.spec.whatwg.org/multipage/webappapis.html#event-handlers>).
+    // https://html.spec.whatwg.org/multipage/webappapis.html#event-handlers
     __tbDefineWorkerHandler(WorkerGlobalScope.prototype, 'onerror');
     __tbDefineWorkerHandler(WorkerGlobalScope.prototype, 'onlanguagechange');
     __tbDefineWorkerHandler(WorkerGlobalScope.prototype, 'onoffline');
@@ -94,9 +81,7 @@
         const encoded = __tbEncode(message, __tbPostMessageTransfer(transfer));
         host.__tbWorkerPostToParent(encoded.payload, encoded.ports);
       }
-      // `close()` belongs to the dedicated global, not to the common
-      // `WorkerGlobalScope`
-      // (<https://html.spec.whatwg.org/multipage/workers.html#dom-dedicatedworkerglobalscope-close>).
+      // https://html.spec.whatwg.org/multipage/workers.html#dom-dedicatedworkerglobalscope-close
       close() {
         host.__tbWorkerClose();
       }
@@ -107,9 +92,7 @@
       value: 'DedicatedWorkerGlobalScope', writable: false, enumerable: false, configurable: true,
     });
 
-    // A `SharedWorker` global receives connections instead of window messages:
-    // its only entry points are `onconnect` and the ports each event carries
-    // (<https://html.spec.whatwg.org/multipage/workers.html#shared-workers-and-the-sharedworkerglobalscope-interface>).
+    // https://html.spec.whatwg.org/multipage/workers.html#shared-workers-and-the-sharedworkerglobalscope-interface
     class SharedWorkerGlobalScope extends WorkerGlobalScope {
       close() {
         host.__tbWorkerClose();
@@ -136,16 +119,11 @@
     }
     globalThis.self = globalThis;
 
-    // The Window shim in the messaging script installs these as own properties
-    // of every global. A worker's are the `WorkerGlobalScope` operations on
-    // the prototype chain, so drop the Window-shaped own ones.
     delete globalThis.close;
     delete globalThis.postMessage;
 
     if (host.__tbIsSharedWorker === true) {
-      // The host calls this when the engine adopts a `connect`: the event's
-      // port is the worker side of the new connection
-      // (<https://html.spec.whatwg.org/multipage/workers.html#dom-sharedworkerglobalscope-onconnect>).
+      // https://html.spec.whatwg.org/multipage/workers.html#dom-sharedworkerglobalscope-onconnect
       globalThis.__tbWorkerConnect = function(endpoint) {
         const materialized = __tbMaterializePorts([endpoint]);
         const port = materialized.ports[endpoint];
@@ -158,11 +136,8 @@
       };
     }
 
-    // `name` is a `[Replaceable]` attribute: an own accessor on the global
-    // that, once assigned, becomes a writable data property holding the value
-    // as assigned, without a `DOMString` conversion
-    // (<https://webidl.spec.whatwg.org/#idl-attributes>,
-    // <https://html.spec.whatwg.org/multipage/workers.html#dom-dedicatedworkerglobalscope-name>).
+    // https://webidl.spec.whatwg.org/#idl-attributes
+    // https://html.spec.whatwg.org/multipage/workers.html#dom-dedicatedworkerglobalscope-name
     let workerName = host.__tbWorkerName;
     Object.defineProperty(globalThis, 'name', {
       get() { return workerName; },
@@ -184,11 +159,8 @@
       value: location, writable: false, enumerable: true, configurable: false,
     });
 
-    // `origin` comes from the `WindowOrWorkerGlobalScope` mixin: the worker's
-    // origin serialization, `"null"` for an opaque one, and `[Replaceable]`
-    // so an assignment replaces the accessor with a data property
-    // (<https://html.spec.whatwg.org/multipage/webappapis.html#dom-origin>,
-    // <https://webidl.spec.whatwg.org/#idl-attributes>).
+    // https://html.spec.whatwg.org/multipage/webappapis.html#dom-origin
+    // https://webidl.spec.whatwg.org/#idl-attributes
     let workerOrigin = location.origin;
     Object.defineProperty(globalThis, 'origin', {
       get() { return workerOrigin; },
@@ -205,9 +177,7 @@
       configurable: true,
     });
 
-    // `performance` is not a Window-only API; a worker gets the same clock
-    // surface for its own realm
-    // (<https://w3c.github.io/hr-time/#the-performance-interface>).
+    // https://w3c.github.io/hr-time/#the-performance-interface
     if (globalThis.performance === undefined) {
       const origin = Date.now();
       Object.defineProperty(globalThis, 'performance', {
@@ -220,16 +190,13 @@
       });
     }
 
-    // The host calls this after a message from the creator arrived.
     globalThis.__tbWorkerDeliverMessage = function(payload, portIds) {
       const materialized = __tbMaterializePorts(portIds);
       let data;
       try {
         data = __tbDecode(payload, materialized.ports);
       } catch (error) {
-        // The ports arrived with a message that cannot be decoded; they are
-        // lost with it
-        // (<https://html.spec.whatwg.org/multipage/web-messaging.html#transfer-receiving-steps>).
+        // https://html.spec.whatwg.org/multipage/web-messaging.html#transfer-receiving-steps
         __tbDiscardPorts(portIds);
         return;
       }
@@ -242,9 +209,7 @@
     };
   }
 
-  // `Worker` is exposed on both globals, so a worker can start a nested
-  // worker; the base URL then resolves against the worker script's URL
-  // (<https://html.spec.whatwg.org/multipage/workers.html#dom-worker>).
+  // https://html.spec.whatwg.org/multipage/workers.html#dom-worker
   const __tbWorkers = new Map();
   const __tbWorkerIds = new WeakMap();
   const __tbWorkerBase = () => {
@@ -259,28 +224,20 @@
       if (arguments.length < 1) {
         throw new TypeError("Failed to construct 'Worker': 1 argument required, but only 0 present.");
       }
-      // Convert and parse before initializing the base class: a `toString`
-      // that constructs another worker must recurse through JS alone, and a
-      // conversion exception propagates unchanged
-      // (<https://html.spec.whatwg.org/multipage/workers.html#dom-worker>).
+      // https://html.spec.whatwg.org/multipage/workers.html#dom-worker
       const href = String(url);
       const parsed = host.__tbParseWorkerURL(href, __tbWorkerBase());
       if (parsed === undefined) {
         throw new DOMException(`Invalid worker script URL: ${href}`, 'SyntaxError');
       }
       super();
-      // An off-origin script is not a constructor error: the fetch fails and
-      // the `Worker` object reports a plain `error` event, the same shape as
-      // any other script that cannot load
-      // (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>).
+      // https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model
       const dictionary = options === undefined || options === null ? {} : Object(options);
       const type = dictionary.type === undefined ? 'classic' : String(dictionary.type);
       if (type !== 'classic' && type !== 'module') {
         throw new TypeError(`Worker type must be 'classic' or 'module': ${type}`);
       }
-      // A module worker's script fetch options carry this credentials mode;
-      // its graph keeps it for every descendant fetch
-      // (<https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script>).
+      // https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script
       const credentials = dictionary.credentials === undefined
         ? 'same-origin'
         : String(dictionary.credentials);
@@ -315,9 +272,7 @@
     value: Worker, writable: true, configurable: true,
   });
 
-  // `SharedWorker` is Window-only; a worker global has no shared worker
-  // constructor
-  // (<https://html.spec.whatwg.org/multipage/workers.html#shared-workers-and-the-sharedworkerglobalscope-interface>).
+  // https://html.spec.whatwg.org/multipage/workers.html#shared-workers-and-the-sharedworkerglobalscope-interface
   if (!__tbWorkerIsGlobal) {
     const __tbSharedWorkerPorts = new WeakMap();
     class SharedWorker extends EventTarget {
@@ -325,20 +280,14 @@
         if (arguments.length < 1) {
           throw new TypeError("Failed to construct 'SharedWorker': 1 argument required, but only 0 present.");
         }
-        // Convert and parse before initializing the base class: a `toString`
-        // that constructs another worker must recurse through JS alone, and a
-        // conversion exception propagates unchanged
-        // (<https://html.spec.whatwg.org/multipage/workers.html#dom-sharedworker>).
+        // https://html.spec.whatwg.org/multipage/workers.html#dom-sharedworker
         const href = String(url);
         const parsed = host.__tbParseWorkerURL(href, __tbWorkerBase());
         if (parsed === undefined) {
           throw new DOMException(`Invalid shared worker script URL: ${href}`, 'SyntaxError');
         }
         super();
-        // `options` is `(DOMString or WorkerOptions)`. `undefined` takes the
-        // default empty dictionary and `null` converts to an empty dictionary;
-        // every other primitive is the worker name
-        // (<https://webidl.spec.whatwg.org/#idl-union>).
+        // https://webidl.spec.whatwg.org/#idl-union
         let dictionary;
         let name;
         if (options === undefined || options === null || typeof options === 'object') {
@@ -418,12 +367,7 @@
       colno,
       cancelable: true,
     });
-    // An uncanceled worker error is reported at the `Worker` object's own
-    // realm — the document or the parent worker — exactly like an uncaught
-    // exception there. A handler reached through a promise cannot call
-    // `preventDefault()` until its microtask runs, so the report decision
-    // waits for the microtask checkpoint
-    // (<https://html.spec.whatwg.org/multipage/webappapis.html#report-an-exception>).
+    // https://html.spec.whatwg.org/multipage/webappapis.html#report-an-exception
     worker.dispatchEvent(event);
     Promise.resolve().then(() => {
       if (!event.defaultPrevented && typeof host.__tbReportError === 'function') {
@@ -431,9 +375,7 @@
       }
     });
   };
-  // A worker that never started (fetch, MIME, parse, or realm failure) fires a
-  // plain `error` event at the `Worker` object, with no message
-  // (<https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model>).
+  // https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model
   globalThis.__tbWorkerLoadErrorEvent = function(id) {
     const worker = __tbWorkers.get(id);
     if (worker === undefined) return;

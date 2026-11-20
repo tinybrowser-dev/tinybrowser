@@ -45,7 +45,7 @@ const runtime = join(root, "run");
 const data = join(root, "data");
 mkdirSync(runtime, { recursive: true });
 mkdirSync(data, { recursive: true });
-const daemon = spawn(binary, ["daemon", "--profile=mdn-form"], {
+const daemon = spawn(binary, ["--profile=mdn-form"], {
   env: { ...process.env, XDG_RUNTIME_DIR: runtime, XDG_DATA_HOME: data },
   stdio: "inherit",
   detached: true,

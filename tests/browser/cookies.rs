@@ -1,17 +1,7 @@
-//! Cookie access from a frame the tab's renderer is not locked to.
-//!
-//! One renderer hosts every frame of its tab, so a cross-site iframe's document
-//! URL is a legitimate claim that still names another site's origin data. The
-//! browser answers it with no cookies and keeps the page alive: killing the
-//! renderer would let any cross-site iframe take its page down
-//! (<https://chromium.googlesource.com/chromium/src/+/main/docs/process_model_and_site_isolation.md#process-locks>).
+// https://chromium.googlesource.com/chromium/src/+/main/docs/process_model_and_site_isolation.md#process-locks
 
 use crate::fixture::{TestServer, evaluate, ok, open_page, poll_until, server};
 
-/// The frame reports both cookie surfaces at once: `document.cookie` is the
-/// synchronous path and `cookieStore` the asynchronous one. It writes through
-/// both before reading, so an empty read can only come from the lock and not
-/// from a `localhost` jar that was never touched.
 const FRAME: &str = "<!doctype html><script>\
 document.cookie = 'leak=1; Path=/; Secure; SameSite=None';\
 cookieStore.set({name: 'leak2', value: '1', sameSite: 'none'}).catch(() => {}).then(() =>\

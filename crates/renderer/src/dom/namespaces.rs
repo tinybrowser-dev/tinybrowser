@@ -1,16 +1,10 @@
-//! Namespace lookup: locate-a-namespace and locate-a-namespace-prefix.
-//!
-//! The entry points switch on the node kind (fragments and doctypes have
-//! no namespace, documents defer to their element), then walk inclusive
-//! ancestors through parent elements
-//! (<https://dom.spec.whatwg.org/#locate-a-namespace>).
+// https://dom.spec.whatwg.org/#locate-a-namespace
 
 use blitz_dom::NodeData;
 
 use crate::dom::tree::{NodeId, is_element};
 
-/// The parent element of `id`, skipping non-element parents
-/// (<https://dom.spec.whatwg.org/#parent-element>).
+// https://dom.spec.whatwg.org/#parent-element
 pub(crate) fn parent_element_of(
     doc: &crate::documents::BlitzDocument,
     id: NodeId,
@@ -22,7 +16,6 @@ pub(crate) fn parent_element_of(
     })
 }
 
-/// The document element of the tree whose root is `id`.
 pub(crate) fn document_element_of(
     doc: &crate::documents::BlitzDocument,
     id: NodeId,
@@ -39,7 +32,7 @@ pub(crate) fn document_element_of(
         })
 }
 
-/// [Locate a namespace](https://dom.spec.whatwg.org/#locate-a-namespace).
+// https://dom.spec.whatwg.org/#locate-a-namespace
 pub(crate) fn locate_namespace(
     doc: &crate::documents::BlitzDocument,
     node: NodeId,
@@ -63,9 +56,7 @@ pub(crate) fn locate_namespace(
     locate_element_namespace(doc, node, prefix)
 }
 
-/// [Locates a namespace](https://dom.spec.whatwg.org/#locate-a-namespace)
-/// for `prefix` from `node`, switching on the node's interface: fragments
-/// and doctypes have none, documents defer to their element.
+// https://dom.spec.whatwg.org/#locate-a-namespace
 pub(crate) fn locate_element_namespace(
     doc: &crate::documents::BlitzDocument,
     id: NodeId,
@@ -108,7 +99,7 @@ pub(crate) fn locate_element_namespace(
     parent_element_of(doc, id).and_then(|parent| locate_namespace(doc, parent, prefix))
 }
 
-/// [Locate a namespace prefix](https://dom.spec.whatwg.org/#locate-a-namespace-prefix).
+// https://dom.spec.whatwg.org/#locate-a-namespace-prefix
 pub(crate) fn locate_prefix(
     doc: &crate::documents::BlitzDocument,
     node: NodeId,
@@ -132,8 +123,7 @@ pub(crate) fn locate_prefix(
     locate_element_prefix(doc, node, namespace)
 }
 
-/// [Locates a namespace prefix](https://dom.spec.whatwg.org/#locate-a-namespace-prefix)
-/// for `namespace` from `node`, mirroring the namespace lookup by kind.
+// https://dom.spec.whatwg.org/#locate-a-namespace-prefix
 pub(crate) fn locate_element_prefix(
     doc: &crate::documents::BlitzDocument,
     id: NodeId,

@@ -1,10 +1,4 @@
-//! Canvas text shaping and glyph outlines.
-//!
-//! Parley resolves the CSS font and shapes the string; skrifa turns the
-//! resulting glyph ids into outlines. Both are already part of the document
-//! renderer, so canvas text shares its font database and fallback behavior.
-//!
-//! Spec: <https://html.spec.whatwg.org/multipage/canvas.html#text-styles>
+// https://html.spec.whatwg.org/multipage/canvas.html#text-styles
 
 use parley::{
     FontContext, FontFamily, FontStyle, FontWeight, Language, LayoutContext, PositionedLayoutItem,
@@ -19,33 +13,16 @@ use tiny_skia::{Path, PathBuilder, Transform};
 
 use super::state::TextBaseline;
 
-/// One shaping cluster in text space. This follows Parley's shaping
-/// boundaries, so a ligature such as `fi` is one cluster spanning two
-/// graphemes; `getTextClusters` exposes these positions, not grapheme split
-/// points.
 pub(crate) struct TextCluster {
-    /// The cluster's text, kept so `TextCluster.text` never re-slices the
-    /// original string through a byte map.
     pub(crate) text: String,
     pub(crate) utf16_start: u32,
     pub(crate) utf16_end: u32,
-    /// Visual offset from the text origin, in unscaled text space.
     pub(crate) offset: f32,
     pub(crate) advance: f32,
-    /// The cluster's glyph outlines, in unscaled text space with the cluster's
-    /// own origin at `x = 0`. Drawing translates by the cluster's position, so
-    /// `fillTextCluster` paints exactly these outlines rather than re-shaping
-    /// the cluster's text. A cluster with no glyphs (a ligature continuation)
-    /// has `None`.
     pub(crate) path: Option<Path>,
-    /// Glyph ink bounds for this cluster, relative to the text origin and the
-    /// alphabetic baseline, squeezed by `maxWidth` when one applies.
     pub(crate) ink: Option<ClusterInk>,
 }
 
-/// Ink bounds relative to the text origin and the alphabetic baseline.
-/// `ascent` and `descent` are positive; `min_x` and `max_x` keep their sign so
-/// a glyph that overhangs left of the origin reports it in `min_x`.
 #[derive(Clone, Copy)]
 pub(crate) struct ClusterInk {
     pub(crate) min_x: f32,
@@ -55,7 +32,6 @@ pub(crate) struct ClusterInk {
 }
 
 impl ClusterInk {
-    /// The union of two ink boxes. `None` on either side means the other side.
     pub(crate) fn union(self, other: Self) -> Self {
         Self {
             min_x: self.min_x.min(other.min_x),
@@ -66,29 +42,15 @@ impl ClusterInk {
     }
 }
 
-/// One measured string. The `TextMetrics` object and every `TextCluster` it
-/// returns hold an `Rc` to this record, so the shaping is freed when `QuickJS`
-/// collects the last script-visible reference instead of accumulating on the
-/// context. The record's native bytes are outside the engine's heap cap, and
-/// one retained cluster pins every cluster's path, so a page measuring in a
-/// loop can still grow between collections.
 pub(crate) struct TextMetricsRecord {
     pub(crate) text: String,
     pub(crate) shaped: ShapedText,
-    /// The `width` member, corrected in f64 for `word-spacing`, so the scalar
-    /// and the bounding-box members agree.
     pub(crate) width: f64,
-    /// The resolved `textAlign` at measure time, so a read never re-resolves
-    /// against a later context state.
     pub(crate) align: ResolvedAlign,
     pub(crate) baseline: TextBaseline,
-    /// Whether the context's direction resolved to right-to-left, so an
-    /// `align` option on `getTextClusters` resolves without the context.
     pub(crate) rtl: bool,
 }
 
-/// `textAlign` resolved against the paragraph direction. `start`/`end` have no
-/// meaning once the direction is known, so the record never stores them.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ResolvedAlign {
     Left,
@@ -97,7 +59,6 @@ pub(crate) enum ResolvedAlign {
 }
 
 impl ResolvedAlign {
-    /// The IDL value `TextCluster.align` reports.
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Left => "left",
@@ -107,9 +68,6 @@ impl ResolvedAlign {
     }
 }
 
-/// What a shaping pass produces. A drawing pass needs one combined glyph path;
-/// a measurement needs per-cluster paths and ink; the width-only pass that
-/// corrects `word-spacing` needs neither.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Shaping {
     Glyphs,
@@ -117,26 +75,15 @@ pub(crate) enum Shaping {
     Width,
 }
 
-/// One shaped string. `glyph_path` shifts the outlines so the top of the em
-/// box is at `y = 0` and the alphabetic baseline is at `y = ascent`; callers
-/// subtract that to anchor at the requested baseline.
 pub(crate) struct ShapedText {
-    /// The combined glyph path, present only for [`Shaping::Glyphs`].
     pub(crate) path: Option<Path>,
     pub(crate) width: f32,
     pub(crate) ascent: f32,
     pub(crate) descent: f32,
-    /// Horizontal squeeze applied by `fillText`'s `maxWidth`.
     pub(crate) scale_x: f32,
-    /// Shaped clusters in the shaping run's logical order, present only for
-    /// [`Shaping::Clusters`]. RTL runs are reversed by `parley`'s visual
-    /// iteration, not here.
     pub(crate) clusters: Vec<TextCluster>,
-    /// The union of every cluster's ink, relative to the text origin and the
-    /// alphabetic baseline, squeezed by `maxWidth`
-    /// (<https://html.spec.whatwg.org/multipage/canvas.html#textmetrics>).
+    // https://html.spec.whatwg.org/multipage/canvas.html#textmetrics
     pub(crate) ink: Option<ClusterInk>,
-    /// Font-level metrics in css pixels, for `TextMetrics`.
     pub(crate) em_ascent: f32,
     pub(crate) em_descent: f32,
     pub(crate) font_ascent: f32,
@@ -145,9 +92,7 @@ pub(crate) struct ShapedText {
     pub(crate) ideographic_baseline: f32,
 }
 
-/// Shapes `text` with the canvas `font` shorthand. A `maxWidth` squeezes the
-/// result horizontally rather than wrapping it
-/// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-filltext>).
+// https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-filltext
 #[expect(
     clippy::too_many_arguments,
     clippy::too_many_lines,
@@ -166,9 +111,7 @@ pub(crate) fn shape(
     font_ctx: &mut FontContext,
     shaping: Shaping,
 ) -> ShapedText {
-    // Canvas text preparation replaces ASCII whitespace with U+0020 and
-    // shapes one line; newlines are not mandatory breaks
-    // (<https://html.spec.whatwg.org/multipage/canvas.html#text-preparation-algorithm>).
+    // https://html.spec.whatwg.org/multipage/canvas.html#text-preparation-algorithm
     let text: String = text
         .chars()
         .map(|ch| {
@@ -180,11 +123,7 @@ pub(crate) fn shape(
         })
         .collect();
     let parsed = parse_font(font);
-    // Canvas replaces every collapsible whitespace with U+0020 and does not
-    // collapse runs (<https://html.spec.whatwg.org/multipage/canvas.html#text-preparation-algorithm>).
-    // U+0000 has zero advance, so it never reaches the shaper. A measurement
-    // keeps a byte map back to the original string so a cluster's UTF-16 range
-    // and text refer to the string the page measured.
+    // https://html.spec.whatwg.org/multipage/canvas.html#text-preparation-algorithm
     let mut prepared = String::with_capacity(text.len());
     let mut byte_map = (shaping == Shaping::Clusters).then(|| Vec::with_capacity(text.len() + 1));
     for (byte, ch) in text.char_indices() {
@@ -242,10 +181,8 @@ pub(crate) fn shape(
     if let Some(language) = language.and_then(|language| Language::parse(language).ok()) {
         builder.push_default(StyleProperty::Locale(Some(language)));
     }
-    // One FontFeatures range: a second push would overwrite the first.
     let mut features = Vec::new();
     if parsed.small_caps {
-        // `parse_css_list` requires quoted tags: `"smcp" on`.
         features.push("\"smcp\" 1");
     }
     if kerning == "none" {
@@ -262,7 +199,6 @@ pub(crate) fn shape(
     let (ascent, descent) = metrics.map_or((parsed.size, parsed.size * 0.25), |metrics| {
         (metrics.ascent, metrics.descent)
     });
-    // `width()` excludes trailing whitespace; canvas measures it.
     let width = layout.full_width();
     let scale_x = max_width
         .filter(|max| *max > 0.0 && width > *max)
@@ -283,11 +219,6 @@ pub(crate) fn shape(
                     let range = cluster.text_range();
                     let byte_start = byte_map[range.start];
                     let byte_end = byte_map[range.end];
-                    // The byte map is monotonic and lands on character
-                    // boundaries because every normalization is one byte to
-                    // one byte and U+0000 is dropped from both sides. Release
-                    // relies on that construction, not on the debug assertion;
-                    // a slice off a boundary would abort the renderer.
                     debug_assert!(text.is_char_boundary(byte_start));
                     debug_assert!(text.is_char_boundary(byte_end));
                     clusters.push(TextCluster {
@@ -304,9 +235,6 @@ pub(crate) fn shape(
         }
     }
     let font_metrics = layout_font_metrics(&layout, parsed.size);
-    // A drawing pass keeps one combined glyph path; a measurement keeps one
-    // path per cluster plus the ink each glyph contributes, so every query
-    // answers from this single shaping pass.
     let path = match shaping {
         Shaping::Glyphs => glyph_path(&layout, None),
         Shaping::Clusters => {
@@ -315,8 +243,6 @@ pub(crate) fn shape(
         }
         Shaping::Width => None,
     };
-    // Only a measurement reads the ink box; a drawing pass would pay for a
-    // second path clone and bounds scan it never consumes.
     let ink = if shaping == Shaping::Clusters {
         clusters
             .iter()
@@ -342,7 +268,6 @@ pub(crate) fn shape(
     }
 }
 
-/// Maps every byte boundary in `text` to its UTF-16 offset.
 fn cluster_utf16_offsets(text: &str) -> Vec<usize> {
     let mut offsets = vec![0; text.len() + 1];
     let mut utf16 = 0;
@@ -365,9 +290,6 @@ struct FontMetrics {
     ideographic: f32,
 }
 
-/// Reads the horizontal `hang` and `ideo` coordinates from the OpenType BASE
-/// table. The returned distances are CSS pixels, positive above the alphabetic
-/// baseline.
 fn base_baselines(font: &FontRef<'_>, size: f32) -> Option<(f32, f32)> {
     let data = font.table_data(Tag::new(b"BASE"))?;
     let base = skrifa::raw::tables::base::Base::read(data).ok()?;
@@ -396,9 +318,7 @@ fn base_baselines(font: &FontRef<'_>, size: f32) -> Option<(f32, f32)> {
     Some((hanging?, ideographic?))
 }
 
-/// Canvas separates em-height metrics (win ascent/descent) from font bounding
-/// box metrics (hhea/typo ascent/descent); both are scaled by the font size
-/// (<https://html.spec.whatwg.org/multipage/canvas.html#textmetrics>).
+// https://html.spec.whatwg.org/multipage/canvas.html#textmetrics
 fn layout_font_metrics(layout: &parley::Layout<[u8; 4]>, size: f32) -> FontMetrics {
     for line in layout.lines() {
         for item in line.items() {
@@ -411,10 +331,7 @@ fn layout_font_metrics(layout: &parley::Layout<[u8; 4]>, size: f32) -> FontMetri
                 continue;
             };
             let metrics = font_ref.metrics(Size::new(run.font_size()), LocationRef::default());
-            // The em square is the font size. A font whose typo metrics do
-            // not add up to the em size (the CanvasTest-ascent256 fixture is
-            // 256/-256 over 1024 units) is scaled to fill it
-            // (<https://html.spec.whatwg.org/multipage/canvas.html#textmetrics>).
+            // https://html.spec.whatwg.org/multipage/canvas.html#textmetrics
             let raw_ascent = metrics.ascent.max(0.0);
             let raw_descent = (-metrics.descent).max(0.0);
             let em_sum = raw_ascent + raw_descent;
@@ -423,17 +340,9 @@ fn layout_font_metrics(layout: &parley::Layout<[u8; 4]>, size: f32) -> FontMetri
             } else {
                 1.0
             };
-            // The OpenType BASE table carries the real hanging and
-            // ideographic baselines when the font has one. Distances are
-            // positive above the alphabetic baseline, matching how
-            // `baseline_offset` places them
-            // (<https://learn.microsoft.com/en-us/typography/opentype/spec/base>).
-            let (hanging, ideographic) = base_baselines(&font_ref, run.font_size()).unwrap_or((
-                raw_ascent * 0.8,
-                // Without BASE, put the ideographic baseline near the
-                // descent, below alphabetic.
-                -raw_descent,
-            ));
+            // https://learn.microsoft.com/en-us/typography/opentype/spec/base
+            let (hanging, ideographic) = base_baselines(&font_ref, run.font_size())
+                .unwrap_or((raw_ascent * 0.8, -raw_descent));
             return FontMetrics {
                 em_ascent: raw_ascent * em_scale,
                 em_descent: raw_descent * em_scale,
@@ -454,22 +363,11 @@ fn layout_font_metrics(layout: &parley::Layout<[u8; 4]>, size: f32) -> FontMetri
     }
 }
 
-/// The cluster that owns a glyph at `x`, chosen from `order`, which sorts
-/// cluster indexes by their left edge. `partition_point` returns the last
-/// cluster whose offset is at or before `x`, so a glyph that starts a ligature
-/// lands on the cluster where that ligature begins, not on a later
-/// continuation cluster. Parley's `visual_offset` and `PositionedGlyph::x`
-/// share an origin and are monotonic, which is what makes the comparison
-/// meaningful.
 fn cluster_at(order: &[usize], clusters: &[TextCluster], x: f32) -> Option<usize> {
     let position = order.partition_point(|index| clusters[*index].offset <= x);
     order.get(position.saturating_sub(1)).copied()
 }
 
-/// Builds the glyph outlines in text space. When `ink` is present, the same
-/// glyph pass also records each cluster's own path and unions its ink bounds,
-/// so `fillTextCluster` paints the measured shaping and
-/// `getActualBoundingBox(start, end)` answers without shaping the range again.
 fn glyph_path(
     layout: &parley::Layout<[u8; 4]>,
     mut ink: Option<(&mut [TextCluster], f32, f32)>,
@@ -492,8 +390,6 @@ fn glyph_path(
         None => Vec::new(),
     };
     for line in layout.lines() {
-        // Parley places glyphs on the CSS line box; canvas text baselines are
-        // defined by the font's em metrics, so drop the half-leading.
         let leading = line.metrics().baseline - root_ascent;
         for item in line.items() {
             let PositionedLayoutItem::GlyphRun(run) = item else {
@@ -548,9 +444,6 @@ fn glyph_path(
                             Some(current) => current.union(glyph_ink),
                         });
                     }
-                    // The cluster path is stored with the cluster's own origin
-                    // at zero, so drawing it translates by the cluster's
-                    // position instead of carrying the whole line's offset.
                     let origin = clusters[index].offset;
                     if let Some(local) = path
                         .clone()
@@ -574,12 +467,8 @@ fn glyph_path(
     placed_any.then(|| builder.finish()).flatten()
 }
 
-/// CSS `font` shorthand: style/weight flags, a `<length>` in px, then the
-/// family list (which parley resolves from its default stack)
-/// (<https://drafts.csswg.org/css-fonts/#font-prop>).
-/// Resolves a canvas length (already normalized by the setter) to CSS pixels
-/// against the current font size.
-/// (<https://drafts.csswg.org/css-values-4/#lengths>)
+// https://drafts.csswg.org/css-fonts/#font-prop
+// https://drafts.csswg.org/css-values-4/#lengths
 pub(crate) fn length_px(value: &str, font_size: f32) -> f32 {
     let split = value
         .find(|ch: char| !(ch.is_ascii_digit() || matches!(ch, '.' | '-' | '+')))
@@ -602,11 +491,7 @@ pub(crate) fn length_px(value: &str, font_size: f32) -> f32 {
     number * scale
 }
 
-/// Canonicalizes the CSS `font` shorthand for `ctx.font`. Relative sizes
-/// resolve against the canvas element's font-size/line-height (10px when the
-/// element specifies none), and invalid shorthands return `None` so the
-/// previous font stays
-/// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-font>).
+// https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-font
 pub(crate) fn canonical_font(value: &str, base_size: f32, line_height: f32) -> Option<String> {
     let value = value.trim();
     if value.is_empty() {
@@ -802,7 +687,6 @@ fn format_number(value: f32) -> String {
     }
 }
 
-/// The px size from a `font` shorthand, for resolving font-relative spacing.
 pub(crate) fn font_size(font: &str) -> f32 {
     parse_font(font).size
 }
@@ -831,7 +715,6 @@ fn parse_font(font: &str) -> ParsedFont {
         } else if lower == "bold" || lower == "bolder" {
             weight = 700.0;
         } else if let Some(px) = lower.strip_suffix("px") {
-            // `12px/1.5` carries a line height after the size.
             let px = px.split('/').next().unwrap_or(px);
             if let Ok(value) = px.parse::<f32>() {
                 size = value;
@@ -857,8 +740,6 @@ fn parse_font(font: &str) -> ParsedFont {
     }
 }
 
-/// Collects one glyph outline, flipping font y-up coordinates to canvas
-/// y-down around the baseline.
 struct GlyphPen {
     builder: PathBuilder,
 }

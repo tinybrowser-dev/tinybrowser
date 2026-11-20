@@ -1,9 +1,4 @@
-//! Canvas 2D drawing state and rasterization.
-//!
-//! The bitmap is a `tiny-skia` pixmap. `tiny-skia` stores premultiplied RGBA,
-//! while canvas exposes straight RGBA through `getImageData` and `ImageData`,
-//! so the two conversions live here
-//! (<https://html.spec.whatwg.org/multipage/canvas.html#concept-canvas-bitmap>).
+// https://html.spec.whatwg.org/multipage/canvas.html#concept-canvas-bitmap
 
 use std::collections::HashMap;
 use std::f32::consts::FRAC_PI_4;
@@ -11,11 +6,8 @@ use std::sync::Arc;
 
 use num_traits::ToPrimitive;
 
-/// Shadows larger than this are skipped rather than allocating unbounded
-/// temporary bitmaps from hostile coordinates.
 const MAX_SHADOW_SIDE: u32 = 4096;
 
-/// The standard circular-arc-to-cubic-Bezier constant.
 const KAPPA: f32 = 0.552_284_8;
 
 use tiny_skia::{
@@ -24,7 +16,6 @@ use tiny_skia::{
     Transform,
 };
 
-/// One canvas rendering context.
 pub(crate) struct Canvas2D {
     pub(crate) width: u32,
     pub(crate) height: u32,
@@ -37,26 +28,17 @@ pub(crate) struct Canvas2D {
     gradients: HashMap<u32, Gradient>,
     patterns: HashMap<u32, Pattern>,
     next_resource: u32,
-    /// Whether every image painted into this canvas was same-origin. A
-    /// cross-origin image clears the flag, and `getImageData` then throws
-    /// `SecurityError`
-    /// (<https://html.spec.whatwg.org/multipage/canvas.html#the-canvas-element>).
+    // https://html.spec.whatwg.org/multipage/canvas.html#the-canvas-element
     origin_clean: bool,
-    /// Open layers, each with its parent bitmap and the state captured at
-    /// `beginLayer`
-    /// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-beginlayer>).
+    // https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-beginlayer
     layers: Vec<Layer>,
 }
 
-/// Canvas spacing accepts only a CSS length; the unit is serialized in lower
-/// case and an invalid or non-finite value leaves the previous spacing
-/// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-letterspacing>).
+// https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-letterspacing
 fn normalize_length(value: &str) -> Option<String> {
     let text = value.trim().to_ascii_lowercase();
     let Some(split) = text.find(|ch: char| !(ch.is_ascii_digit() || matches!(ch, '.' | '-' | '+')))
     else {
-        // Unitless zero is a valid CSS length; every other unitless number is
-        // not.
         return text
             .parse::<f32>()
             .ok()
@@ -111,17 +93,11 @@ struct State {
     smoothing: bool,
     smoothing_quality: String,
     filter: String,
-    /// Color matrix from the active `CanvasFilter` or layer filter. Filters
-    /// that cannot be represented as a color matrix leave this `None`.
     filter_matrix: Option<ColorMatrix>,
-    /// The `CanvasFilter` object assigned to `filter`, so the getter can return
-    /// the same object after `save()`/`restore()`. It is part of the drawing
-    /// state and lives on the same stack as the matrix.
     filter_object: Option<rquickjs::Persistent<rquickjs::Value<'static>>>,
     clip: Option<Arc<Mask>>,
 }
 
-/// A rectangle in canvas user space.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Rect {
     pub(crate) x: f32,
@@ -140,8 +116,6 @@ impl Rect {
         }
     }
 
-    /// A negative width or height means the rectangle starts at the opposite
-    /// corner, not that the image is mirrored.
     fn normalized(self) -> Self {
         let mut rect = self;
         if rect.width < 0.0 {
@@ -156,8 +130,7 @@ impl Rect {
     }
 }
 
-/// A 4x5 row-major color matrix from a `colorMatrix` filter
-/// (<https://drafts.fxtf.org/filter-effects/#feColorMatrixElement>).
+// https://drafts.fxtf.org/filter-effects/#feColorMatrixElement
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ColorMatrix([f32; 20]);
 
@@ -233,7 +206,6 @@ impl ColorMatrix {
         Self(values)
     }
 
-    /// Composes `next` after `self` by multiplying the augmented matrices.
     pub(crate) fn then(self, next: Self) -> Self {
         let left = self.0;
         let right = next.0;
@@ -254,8 +226,7 @@ impl ColorMatrix {
     }
 }
 
-/// Applies `matrix` to every pixel of `pixmap`, in unpremultiplied sRGB like
-/// `feColorMatrix` (<https://drafts.fxtf.org/filter-effects/#feColorMatrixElement>).
+// https://drafts.fxtf.org/filter-effects/#feColorMatrixElement
 fn apply_color_matrix(pixmap: &mut Pixmap, matrix: &ColorMatrix) {
     let coefficients = &matrix.0;
     for pixel in pixmap.pixels_mut() {
@@ -284,9 +255,6 @@ fn apply_color_matrix(pixmap: &mut Pixmap, matrix: &ColorMatrix) {
     }
 }
 
-/// A color and, when the assigned syntax has no sRGB-byte serialization, the
-/// exact CSSOM string. Keeping both together means state never has to guess
-/// which representation to trust.
 #[derive(Clone, PartialEq)]
 struct CanvasColor {
     rgba: [u8; 4],
@@ -336,7 +304,6 @@ pub(crate) enum TextBaseline {
 }
 
 impl TextBaseline {
-    /// Parses the `CanvasTextBaseline` enum value the setters accept.
     pub(crate) fn parse(value: &str) -> Option<Self> {
         Some(match value {
             "top" => Self::Top,
@@ -349,7 +316,6 @@ impl TextBaseline {
         })
     }
 
-    /// The IDL enum value, as `ctx.textBaseline` reports it.
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Top => "top",
@@ -382,9 +348,7 @@ enum Segment {
 pub(crate) struct Gradient {
     kind: GradientKind,
     stops: Vec<(f32, [u8; 4])>,
-    /// A zero-length linear gradient or a radial gradient with equal radii
-    /// has no extent and paints nothing
-    /// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-createlineargradient>).
+    // https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-createlineargradient
     degenerate: bool,
 }
 
@@ -409,7 +373,6 @@ enum GradientKind {
 struct Layer {
     base: usize,
     parent: Option<Pixmap>,
-    /// Filter applied to this layer's bitmap in `endLayer`, before compositing.
     filter_matrix: Option<ColorMatrix>,
 }
 
@@ -419,15 +382,11 @@ pub(crate) struct Pattern {
     spread: SpreadMode,
     repetition: PatternRepeat,
     quality: FilterQuality,
-    /// False when the pattern's image was not origin-clean; assigning it to a
-    /// fill or stroke taints the canvas.
     origin_clean: bool,
-    /// `CanvasPattern.setTransform` in pattern space.
     transform: Transform,
 }
 
-/// How `createPattern`'s repetition string clips and tiles
-/// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-createpattern>).
+// https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-createpattern
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PatternRepeat {
     Repeat,
@@ -436,20 +395,13 @@ enum PatternRepeat {
     NoRepeat,
 }
 
-/// A decoded source image for `drawImage`: straight RGBA, row-major.
-///
-/// The pixels are shared so a raster cached for a vector source is reused
-/// without copying it on every draw.
 pub(crate) struct SourceImage {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) pixels: Arc<[u8]>,
-    /// False when the source came from another origin; painting it clears the
-    /// destination canvas's origin-clean flag.
     pub(crate) origin_clean: bool,
 }
 
-/// One color from a stop list at a periodic position in `0..1`.
 fn sample_stops(stops: &[(f32, [u8; 4])], offset: f32) -> [u8; 4] {
     let offset = offset.rem_euclid(1.0);
     let Some((first_offset, first)) = stops.first() else {
@@ -486,8 +438,6 @@ fn sample_stops(stops: &[(f32, [u8; 4])], offset: f32) -> [u8; 4] {
     ]
 }
 
-/// Rotates gradient stops so a conic gradient starts at `angle` degrees while
-/// tiny-skia sweeps from 0 to 360.
 fn conic_stops(stops: &[(f32, [u8; 4])], angle: f32, alpha: f32) -> Vec<GradientStop> {
     let shift = angle.rem_euclid(360.0) / 360.0;
     let boundary = sample_stops(stops, 1.0 - shift);
@@ -512,15 +462,11 @@ fn conic_stops(stops: &[(f32, [u8; 4])], angle: f32, alpha: f32) -> Vec<Gradient
 }
 
 impl Canvas2D {
-    /// Resets the bitmap and drawing state, keeping the gradient and pattern
-    /// objects alive: resizing a canvas does not invalidate them
-    /// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-canvas-width>).
+    // https://html.spec.whatwg.org/multipage/canvas.html#dom-canvas-width
     pub(crate) fn reset_for_resize(&mut self, width: u32, height: u32) {
         let gradients = std::mem::take(&mut self.gradients);
         let patterns = std::mem::take(&mut self.patterns);
         let next_resource = self.next_resource;
-        // Resizing clears the bitmap and state, not the taint: a canvas that
-        // painted a cross-origin image stays unreadable.
         let origin_clean = self.origin_clean;
         *self = Canvas2D::new(width, height);
         self.gradients = gradients;
@@ -559,10 +505,8 @@ impl Canvas2D {
         self.origin_clean = false;
     }
 
-    /// `ctx.reset()`: clear the bitmap and return to the default state
-    /// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-reset>).
+    // https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-reset
     pub(crate) fn reset(&mut self) {
-        // Dropping an open layer must not leave its bitmap as the canvas.
         while let Some(layer) = self.layers.pop() {
             self.pixmap = layer.parent;
         }
@@ -572,9 +516,7 @@ impl Canvas2D {
         self.reset_state();
     }
 
-    /// Replaces the bitmap with a fresh transparent one, leaving the drawing
-    /// state untouched. `transferToImageBitmap` does this, unlike `reset()`
-    /// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-offscreencanvas-transfertoimagebitmap>).
+    // https://html.spec.whatwg.org/multipage/canvas.html#dom-offscreencanvas-transfertoimagebitmap
     pub(crate) fn clear_bitmap(&mut self) {
         if let Some(pixmap) = &mut self.pixmap {
             pixmap.fill(Color::TRANSPARENT);
@@ -587,21 +529,15 @@ impl Canvas2D {
         self.path.clear();
         self.current = None;
         self.subpath_start = Point::zero();
-        // Gradients and patterns are independent objects: resetting the
-        // context must not invalidate ids a script still holds
-        // (<https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-reset>).
+        // https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-reset
         self.layers.clear();
     }
-
-    // ---- state -----------------------------------------------------------
 
     pub(crate) fn save(&mut self) {
         self.stack.push(self.state.clone());
     }
 
-    /// `restore()` cannot pop a layer's saved state; that is an
-    /// `InvalidStateError` while the layer is open
-    /// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-restore>).
+    // https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-restore
     pub(crate) fn restore(&mut self) -> bool {
         if self
             .layers
@@ -616,16 +552,11 @@ impl Canvas2D {
         true
     }
 
-    /// Opens a layer: drawing goes to a fresh transparent bitmap, the
-    /// rendering state resets inside it, and `endLayer` composites the bitmap
-    /// with the state captured here.
     pub(crate) fn begin_layer(&mut self) {
         self.begin_layer_filtered(None);
     }
 
-    /// Opens a layer whose bitmap is passed through `filter` when
-    /// `endLayer` composites it
-    /// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-beginlayer>).
+    // https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-beginlayer
     pub(crate) fn begin_layer_filtered(&mut self, filter: Option<ColorMatrix>) {
         let base = self.stack.len();
         let captured = self.state.clone();
@@ -648,8 +579,6 @@ impl Canvas2D {
         self.state.filter_object = None;
     }
 
-    /// Closes the innermost layer, unless a `save()` opened after it is still
-    /// unbalanced.
     pub(crate) fn end_layer(&mut self) -> bool {
         let Some(base) = self.layers.last().map(|layer| layer.base) else {
             return false;
@@ -665,8 +594,6 @@ impl Canvas2D {
             filter_matrix,
             ..
         } = layer;
-        // `begin_layer_filtered` pushed the captured state onto `self.stack`
-        // immediately above the layer boundary, so it is the state to restore.
         let Some(state) = self.stack.pop() else {
             return false;
         };
@@ -674,10 +601,7 @@ impl Canvas2D {
         if let (Some(pixmap), Some(matrix)) = (layer_pixmap.as_mut(), filter_matrix) {
             apply_color_matrix(pixmap, &matrix);
         }
-        // The layer's compositing state is the state captured by
-        // `beginLayer`, including its shadow. Draw the shadow from the
-        // filtered layer before the layer itself, then composite once
-        // (<https://html.spec.whatwg.org/multipage/canvas.html#drawing-model>).
+        // https://html.spec.whatwg.org/multipage/canvas.html#drawing-model
         self.state = state;
         self.pixmap = parent;
         let Some(layer_pixmap) = layer_pixmap else {
@@ -701,9 +625,6 @@ impl Canvas2D {
         true
     }
 
-    /// Paints the shadow of a finished layer. The layer bitmap is already
-    /// filtered, so its alpha is the shadow source; the captured state supplies
-    /// the shadow color, offset, blur, global alpha, blend, and clip.
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_precision_loss,
@@ -720,9 +641,6 @@ impl Canvas2D {
         {
             return;
         }
-        // The layer pixmap spans the whole canvas. Crop the shadow mask to the
-        // painted pixels so the pattern's outside-the-mask padding is
-        // transparent instead of repeating the canvas edge.
         let width = layer.width();
         let mut bounds: Option<(u32, u32, u32, u32)> = None;
         for (index, pixel) in layer.pixels().iter().enumerate() {
@@ -743,10 +661,6 @@ impl Canvas2D {
         };
         let sigma = self.state.shadow_blur / 2.0;
         let padding = (sigma * 3.0).ceil() as u32 + 1;
-        // `finish_shadow` fills the whole canvas with a padded pattern. The
-        // mask therefore needs a transparent border at least as large as the
-        // shadow offset, or the pattern's edge clamp repeats the painted
-        // pixels across the rest of the canvas.
         let margin = padding
             + self.state.shadow_x.abs().ceil() as u32
             + self.state.shadow_y.abs().ceil() as u32
@@ -788,7 +702,6 @@ impl Canvas2D {
         self.state.filter_matrix = matrix;
     }
 
-    /// The `CanvasFilter` object currently assigned to `filter`.
     pub(crate) fn filter_object(&self) -> Option<rquickjs::Persistent<rquickjs::Value<'static>>> {
         self.state.filter_object.clone()
     }
@@ -843,10 +756,6 @@ impl Canvas2D {
         self.state.transform
     }
 
-    /// The device-space length of each user-space unit vector under the
-    /// current transformation. A `dst` rect is drawn at this scale, so a
-    /// vector source needs a raster of at least this many pixels per source
-    /// pixel.
     pub(crate) fn device_scale(&self) -> (f32, f32) {
         let transform = self.state.transform;
         (
@@ -878,8 +787,6 @@ impl Canvas2D {
                 .pre_concat(Transform::from_rotate(radians.to_degrees()));
         }
     }
-
-    // ---- properties ------------------------------------------------------
 
     pub(crate) fn fill_style(&self) -> StyleValue {
         StyleValue::from_style(&self.state.fill)
@@ -1033,8 +940,6 @@ impl Canvas2D {
         self.state.shadow.rgba
     }
 
-    /// The exact CSS serialization of `shadowColor`, when it was set from a
-    /// color function such as `color(srgb …)` or `lab()`.
     pub(crate) fn shadow_serialized(&self) -> Option<&str> {
         self.state.shadow.serialized.as_deref()
     }
@@ -1056,12 +961,8 @@ impl Canvas2D {
         }
     }
 
-    /// Fills glyph outlines whose baseline starts at `(x, y)` in user space.
-    /// `scale_x` is the `maxWidth` squeeze
-    /// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-filltext>).
+    // https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-filltext
     pub(crate) fn fill_text_path(&mut self, path: &Path, x: f32, y: f32, scale_x: f32) {
-        // Canvas space: CTM first, then the text anchor, then the maxWidth
-        // squeeze. `pre_concat` is `self * other`, so build in that order.
         let transform = self
             .state
             .transform
@@ -1272,8 +1173,6 @@ impl Canvas2D {
         }
     }
 
-    // ---- paths -----------------------------------------------------------
-
     pub(crate) fn begin_path(&mut self) {
         self.path.clear();
         self.current = None;
@@ -1357,7 +1256,6 @@ impl Canvas2D {
         if !(x.is_finite() && y.is_finite() && width.is_finite() && height.is_finite()) {
             return;
         }
-        // A zero-area rect still starts a subpath at its origin.
         if width == 0.0 && height == 0.0 {
             self.move_to(x, y);
             return;
@@ -1385,8 +1283,7 @@ impl Canvas2D {
         self.current = Some(self.subpath_start);
     }
 
-    /// `arc()`, with the angles and direction from the HTML Standard
-    /// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-arc>).
+    // https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-arc
     pub(crate) fn arc(
         &mut self,
         cx: f32,
@@ -1407,7 +1304,6 @@ impl Canvas2D {
         if radius < 0.0 {
             return;
         }
-        // An empty arc still connects to its start point.
         if radius == 0.0 || same_float(start, end) {
             self.line_to(cx + radius * start.cos(), cy + radius * start.sin());
             return;
@@ -1459,11 +1355,6 @@ impl Canvas2D {
         end: f32,
         counterclockwise: bool,
     ) {
-        // The arc runs from the start point to the end point in the requested
-        // direction, covering at most one full turn. Compare in f64 with a
-        // tolerance: a multiple of 2π that went through f32 may round to a
-        // tiny remainder, and an exact `==` on that remainder would change
-        // between an empty arc and a full one.
         let raw = f64::from(if counterclockwise {
             start - end
         } else {
@@ -1476,9 +1367,6 @@ impl Canvas2D {
         } else {
             let modulo = raw.rem_euclid(tau);
             if modulo <= tolerance {
-                // A direction-mismatched full turn is a full circle, not an
-                // empty arc. Shipped engines agree here even though the spec
-                // only spells out the `>= 2π` case.
                 if raw < 0.0 { tau } else { 0.0 }
             } else {
                 modulo
@@ -1505,11 +1393,6 @@ impl Canvas2D {
             clippy::cast_sign_loss,
             reason = "the count is a finite positive angle span, far below u32::MAX"
         )]
-        // A quarter-turn cubic approximates a circular arc to about 0.03% of
-        // the radius; that error is visible once a non-uniform transform
-        // stretches the radius, so use eighth-turns. tiny-skia has no conic
-        // segments, unlike Skia's quadrant conics, so the smaller step is the
-        // only way to reduce the approximation error.
         let segments = ((delta.abs() / FRAC_PI_4).ceil() as u32).max(1);
         #[expect(
             clippy::cast_precision_loss,
@@ -1640,9 +1523,6 @@ impl Canvas2D {
         {
             return;
         }
-        // A negative side mirrors the box; its winding still follows the
-        // direction the box was drawn in
-        // (Blink `CanvasPath::roundRect`).
         let clockwise = (width < 0.0) == (height < 0.0);
         let flip_x = width < 0.0;
         let flip_y = height < 0.0;
@@ -1688,9 +1568,7 @@ impl Canvas2D {
             transform.map_point(&mut point);
             point
         };
-        // Clockwise from the top-left tangent: top edge, right edge, bottom
-        // edge, left edge, then the top-left arc back to the start
-        // (<https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-roundrect>).
+        // https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-roundrect
         let cw = [
             Segment::MoveTo(start),
             Segment::LineTo(map(right - tr_x, top)),
@@ -1737,8 +1615,6 @@ impl Canvas2D {
             else {
                 return;
             };
-            // Walking the same contour backwards: each cubic keeps its
-            // endpoints but swaps its control points.
             self.path.extend_from_slice(&[
                 Segment::MoveTo(start),
                 Segment::Cubic(tl_2, tl_1, tl_start),
@@ -1755,10 +1631,7 @@ impl Canvas2D {
         self.start_round_rect_tail(x, y);
     }
 
-    /// Step 14 of `roundRect`: a new subpath containing only `(x, y)`, so a
-    /// following segment starts at the rectangle origin rather than at the
-    /// first corner tangent
-    /// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-roundrect>).
+    // https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-roundrect
     fn start_round_rect_tail(&mut self, x: f32, y: f32) {
         let mut origin = Point::from_xy(x, y);
         self.state.transform.map_point(&mut origin);
@@ -1801,8 +1674,7 @@ impl Canvas2D {
         } else {
             FillRule::Winding
         };
-        // The point is in canvas space, unaffected by the CTM
-        // (<https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-ispointinpath>).
+        // https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-ispointinpath
         path_contains(path, rule, Point::from_xy(x, y))
     }
 
@@ -1839,8 +1711,6 @@ impl Canvas2D {
         path_contains(&outline, FillRule::Winding, Point::from_xy(x, y))
     }
 
-    /// A full-canvas coverage mask, or `None` when the canvas exceeds the
-    /// bitmap budget. `Mask::new` does not cap its own allocation.
     fn canvas_mask(&self) -> Option<Mask> {
         let width = self.width.max(1);
         let height = self.height.max(1);
@@ -1848,9 +1718,7 @@ impl Canvas2D {
         Mask::new(width, height)
     }
 
-    /// A `Path2D`'s segments are in user space; the canvas paints them
-    /// through its current transform
-    /// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-fill>).
+    // https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-fill
     pub(crate) fn fill_borrowed_path(&mut self, other: &Canvas2D, even_odd: bool) {
         let Some(user_path) = other.build_path() else {
             return;
@@ -1873,7 +1741,6 @@ impl Canvas2D {
 
     pub(crate) fn clip_borrowed_path(&mut self, other: &Canvas2D, even_odd: bool) {
         let Some(user_path) = other.build_path() else {
-            // An empty path describes no area: the clip becomes empty.
             self.state.clip = self.canvas_mask().map(Arc::new);
             return;
         };
@@ -1909,7 +1776,6 @@ impl Canvas2D {
         self.is_point_in_built_stroke(&device_path, x, y)
     }
 
-    /// The path in user space, for a `Path2D` consumer.
     pub(crate) fn user_path(&self) -> Option<Path> {
         self.build_path()
     }
@@ -1918,7 +1784,6 @@ impl Canvas2D {
         self.current
     }
 
-    /// Appends every segment of `path`, for `Path2D.addPath`.
     pub(crate) fn append_path(&mut self, path: &Path) {
         for segment in path.segments() {
             match segment {
@@ -1947,14 +1812,11 @@ impl Canvas2D {
         }
     }
 
-    /// Copies another `Path2D`'s segments, for `new Path2D(other)`.
     pub(crate) fn copy_path(&mut self, other: &Canvas2D) {
         self.path.clone_from(&other.path);
         self.current = other.current;
         self.subpath_start = other.subpath_start;
     }
-
-    // ---- painting --------------------------------------------------------
 
     pub(crate) fn fill(&mut self, even_odd: bool) {
         let Some(path) = self.build_path() else {
@@ -1985,7 +1847,6 @@ impl Canvas2D {
             FillRule::Winding
         };
         if let Some(mask) = &mut self.state.clip {
-            // Saving the state must not copy a multi-megabyte coverage mask.
             Arc::make_mut(mask).intersect_path(path, rule, true, Transform::identity());
         } else {
             let Some(mut mask) = self.canvas_mask() else {
@@ -2069,11 +1930,7 @@ impl Canvas2D {
         builder.finish()
     }
 
-    /// Applies a `colorMatrix` filter to a single drawing operation, bounded to
-    /// the operation's device rect. The operation renders into a transparent
-    /// layer, the matrix runs on that layer, the shadow is rendered from the
-    /// filtered image, and the result composites once with the state's blend
-    /// mode (<https://html.spec.whatwg.org/multipage/canvas.html#drawing-model>).
+    // https://html.spec.whatwg.org/multipage/canvas.html#drawing-model
     fn with_draw_filter(
         &mut self,
         bounds: tiny_skia::Rect,
@@ -2095,15 +1952,10 @@ impl Canvas2D {
         let saved_shadow = self.state.shadow.clone();
         let saved_shadow_blur = self.state.shadow_blur;
         let saved_clip = self.state.clip.take();
-        // The canvas clip is in canvas coordinates; the draw runs in the
-        // layer's own coordinates, so crop it to the layer once instead of
-        // applying it at every paint.
         self.state.clip = saved_clip
             .as_ref()
             .and_then(|clip| crop_clip(clip, left, top, width, height))
             .map(Arc::new);
-        // The shadow is rendered from the filtered image after the matrix, so
-        // the draw itself must not paint it.
         self.state.shadow = CanvasColor::new([0, 0, 0, 0]);
         self.state.shadow_blur = 0.0;
         let offset = Transform::from_translate(-to_f32(left), -to_f32(top));
@@ -2121,7 +1973,6 @@ impl Canvas2D {
         self.pixmap = parent;
         apply_color_matrix(&mut layer, &matrix);
 
-        // Drawing model step 5: the shadow comes from the filtered image.
         if self.shadow_drawn() {
             self.finish_shadow(
                 layer.clone(),
@@ -2132,7 +1983,6 @@ impl Canvas2D {
             );
         }
 
-        // Drawing model step 7: composite the filtered image once.
         if clears_uncovered(self.state.blend)
             && let Some(coverage) = self.coverage_mask(&layer, left, top)
         {
@@ -2155,9 +2005,6 @@ impl Canvas2D {
         );
     }
 
-    /// The integer device rect a filtered draw can touch, padded for
-    /// antialiasing and clamped to the canvas. `None` when the draw has no
-    /// finite area, so no layer is allocated.
     fn filter_bounds(&self, bounds: tiny_skia::Rect) -> Option<(i32, i32, u32, u32)> {
         if !(bounds.left().is_finite()
             && bounds.top().is_finite()
@@ -2180,8 +2027,6 @@ impl Canvas2D {
         Some((left.to_i32()?, top.to_i32()?, width, height))
     }
 
-    /// The layer's alpha placed into a full-canvas coverage mask, for the
-    /// composite operations that clear where the source does not cover.
     fn coverage_mask(&self, layer: &Pixmap, left: i32, top: i32) -> Option<Mask> {
         let mut coverage = Mask::new(self.width, self.height)?;
         let width = layer.width() as usize;
@@ -2293,11 +2138,7 @@ impl Canvas2D {
         pixmap.fill_path(path, &paint, rule, Transform::identity(), mask);
     }
 
-    /// Composites where the destination has no coverage. `copy`, `source-in`,
-    /// `source-out`, `destination-in`, and `destination-atop` clear the area
-    /// the shape does not cover, so the operation must run against the whole
-    /// canvas, not just the shape
-    /// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-globalcompositeoperation>).
+    // https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-globalcompositeoperation
     fn clear_uncovered(&mut self, path: &Path, rule: FillRule) {
         if !clears_uncovered(self.state.blend) {
             return;
@@ -2309,8 +2150,6 @@ impl Canvas2D {
         self.clear_uncovered_mask(&shape);
     }
 
-    /// Clears the destination where `shape` has no coverage, for the composite
-    /// operations that would otherwise leave the untouched canvas in place.
     fn clear_uncovered_mask(&mut self, shape: &Mask) {
         let clip = match &self.state.clip {
             None => None,
@@ -2340,9 +2179,7 @@ impl Canvas2D {
         pixmap.apply_mask(&mask);
     }
 
-    /// The strip a `repeat-x`, `repeat-y`, or `no-repeat` pattern may paint
-    /// in; the shader itself only knows how to repeat or pad
-    /// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-createpattern>).
+    // https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-createpattern
     fn pattern_mask(&self, image: &Arc<Pixmap>, repetition: PatternRepeat) -> Option<Mask> {
         const LIMIT: f32 = 1_000_000.0;
         #[expect(
@@ -2381,9 +2218,6 @@ impl Canvas2D {
         Some(mask)
     }
 
-    /// The size of the pixmap the drawing operations currently target. A
-    /// filtered draw targets its bounded layer; everything else targets the
-    /// canvas.
     fn pixmap_size(&self) -> (u32, u32) {
         self.pixmap
             .as_ref()
@@ -2472,10 +2306,7 @@ impl Canvas2D {
             anti_alias: true,
             ..Paint::default()
         };
-        // The stored path is in canvas space. Stroking happens in user space
-        // so the CTM scales the line width, the dash lengths, and the outline
-        // exactly once
-        // (<https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-stroke>).
+        // https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-stroke
         let Some(inverse) = self.state.transform.invert() else {
             return;
         };
@@ -2515,9 +2346,7 @@ impl Canvas2D {
             return None;
         }
         let stops = match &gradient.kind {
-            // tiny-skia's sweep shader does not wrap negative angles. Rotate
-            // the color stops into a 0..360 sweep instead
-            // (<https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-createconicgradient>).
+            // https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-createconicgradient
             GradientKind::Conic { angle, .. } => {
                 conic_stops(&gradient.stops, angle.to_degrees(), alpha)
             }
@@ -2555,8 +2384,6 @@ impl Canvas2D {
             }
         }
     }
-
-    // ---- resources -------------------------------------------------------
 
     pub(crate) fn gradient_definition(&self, id: u32) -> Option<Gradient> {
         self.gradients.get(&id).cloned()
@@ -2624,9 +2451,7 @@ impl Canvas2D {
                     end_radius: r1,
                 },
                 stops: Vec::new(),
-                // Equal radii paint a cylinder when the centers differ; only
-                // identical circles have no extent
-                // (<https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-createradialgradient>).
+                // https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-createradialgradient
                 degenerate: (r0 - r1).abs() < f32::EPSILON
                     && (x0 - x1).abs() < f32::EPSILON
                     && (y0 - y1).abs() < f32::EPSILON,
@@ -2707,9 +2532,6 @@ impl Canvas2D {
         Some(id)
     }
 
-    // ---- pixels ----------------------------------------------------------
-
-    /// Encodes the bitmap as PNG for `canvas.toDataURL`/`toBlob`.
     pub(crate) fn to_png(&self) -> Option<Vec<u8>> {
         let pixels = self.read_pixels(0, 0, self.width, self.height)?;
         let mut png = Vec::new();
@@ -2724,14 +2546,9 @@ impl Canvas2D {
         Some(png)
     }
 
-    /// Encodes the bitmap as JPEG. `quality` is already the encoder's range
-    /// (`JpegQuality::new`); the caller applies the spec's default when it is
-    /// missing or invalid.
     pub(crate) fn to_jpeg(&self, quality: JpegQuality) -> Option<Vec<u8>> {
         let pixels = self.read_pixels(0, 0, self.width, self.height)?;
-        // JPEG has no alpha channel: composite the straight source over opaque
-        // black, the spec's rule for formats without one
-        // (<https://html.spec.whatwg.org/multipage/canvas.html#a-serialisation-of-the-bitmap-as-a-file>).
+        // https://html.spec.whatwg.org/multipage/canvas.html#a-serialisation-of-the-bitmap-as-a-file
         let mut rgb = Vec::with_capacity(pixels.len() / 4 * 3);
         for pixel in pixels.as_chunks::<4>().0 {
             let alpha = u16::from(pixel[3]);
@@ -2749,13 +2566,7 @@ impl Canvas2D {
         )
     }
 
-    /// A transparent PNG for a canvas that never had a context. Streams one
-    /// zero row at a time so a fresh 4096x4096 canvas does not allocate a
-    /// 64 MB pixmap just to serialize its blank bitmap.
     pub(crate) fn blank_png(width: u32, height: u32) -> Option<Vec<u8>> {
-        // The same retained-resource cap as an allocated bitmap: the encoder
-        // streams rows, so without it a page-sized `width * height` is an
-        // unbounded amount of work.
         crate::js::world::canvas_bytes(width, height)?;
         let row_len = usize::try_from(width).ok()?.checked_mul(4)?;
         let mut out = Vec::new();
@@ -2776,7 +2587,6 @@ impl Canvas2D {
         Some(out)
     }
 
-    /// A black JPEG for a canvas that never had a context.
     pub(crate) fn blank_jpeg(width: u32, height: u32, quality: JpegQuality) -> Option<Vec<u8>> {
         let pixels = crate::js::world::canvas_bytes(width, height)?;
         let pixels = pixels / 4 * 3;
@@ -2789,9 +2599,7 @@ impl Canvas2D {
         )
     }
 
-    /// Straight RGBA pixels for `getImageData`, with out-of-bounds areas
-    /// transparent black
-    /// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-getimagedata>).
+    // https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-getimagedata
     pub(crate) fn read_pixels(&self, x: i32, y: i32, width: u32, height: u32) -> Option<Vec<u8>> {
         let mut out = vec![0; crate::js::world::canvas_bytes(width, height)?];
         let Some(pixmap) = &self.pixmap else {
@@ -2807,8 +2615,6 @@ impl Canvas2D {
                 let (Ok(sx), Ok(sy)) = (u32::try_from(sx), u32::try_from(sy)) else {
                     continue;
                 };
-                // `Pixmap::pixel` only checks the linear index, so an x past
-                // the row would read the next row.
                 if sx >= pixmap.width() || sy >= pixmap.height() {
                     continue;
                 }
@@ -2826,9 +2632,7 @@ impl Canvas2D {
         Some(out)
     }
 
-    /// `putImageData`: straight RGBA source, no transform, alpha, or
-    /// compositing
-    /// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-putimagedata>).
+    // https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-putimagedata
     #[expect(
         clippy::similar_names,
         reason = "source and target corners are named for their axis"
@@ -2851,8 +2655,6 @@ impl Canvas2D {
             i32::try_from(source_width).unwrap_or(i32::MAX),
             i32::try_from(source_height).unwrap_or(i32::MAX),
         ));
-        // Blink normalizes a negative dirty rectangle against its origin
-        // (`BaseRenderingContext2D::putImageData`).
         if dirty_width < 0 {
             if dirty_x < 0 {
                 dirty_x = 0;
@@ -2880,9 +2682,7 @@ impl Canvas2D {
         if source_x1 <= source_x0 || source_y1 <= source_y0 {
             return;
         }
-        // Destination = source + (dx, dy), clipped to the bitmap; clipping
-        // trims the source range by the same amount
-        // (<https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-putimagedata>).
+        // https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-putimagedata
         let target_x0 = source_x0 + i64::from(dx);
         let target_y0 = source_y0 + i64::from(dy);
         let target_x1 = source_x1 + i64::from(dx);
@@ -2923,7 +2723,6 @@ impl Canvas2D {
         }
     }
 
-    /// `drawImage`, with the source already decoded to straight RGBA.
     pub(crate) fn draw_image(&mut self, source: &SourceImage, src: Rect, dst: Rect) {
         let bounds = if let Some(path) = self.rect_path(dst.x, dst.y, dst.width, dst.height) {
             path.bounds()
@@ -2985,17 +2784,13 @@ impl Canvas2D {
         {
             return;
         }
-        // Tainting is unconditional in the drawImage algorithm, even when the
-        // destination rectangle is empty.
         if !source.origin_clean {
             self.taint();
         }
         if src.width == 0.0 || src.height == 0.0 || dst.width == 0.0 || dst.height == 0.0 {
             return;
         }
-        // A negative width or height describes the same rectangle from the
-        // opposite corner; it does not reverse the image
-        // (<https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-drawimage>).
+        // https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-drawimage
         let src = src.normalized();
         let dst = dst.normalized();
         let Rect {
@@ -3066,7 +2861,6 @@ impl Canvas2D {
         }
     }
 
-    /// The shadow of `drawImage`: the image's own alpha, tinted and offset.
     fn paint_image_shadow(
         &mut self,
         path: &Path,
@@ -3115,8 +2909,6 @@ impl Canvas2D {
                 SpreadMode::Pad,
                 quality,
                 1.0,
-                // The mask path is shifted into mask space, so the image must
-                // be shifted first and then drawn through its own transform.
                 shift.pre_concat(image_transform),
             ),
             blend_mode: BlendMode::SourceOver,
@@ -3136,8 +2928,7 @@ impl Canvas2D {
         self.finish_shadow(mask, sigma, left, top, self.state.alpha);
     }
 
-    /// Paints the shadow pass for a shape before the shape itself
-    /// (<https://html.spec.whatwg.org/multipage/canvas.html#shadows>).
+    // https://html.spec.whatwg.org/multipage/canvas.html#shadows
     fn paint_shadow(&mut self, path: &Path, rule: FillRule, stroke: Option<&Stroke>) {
         let [_, _, _, alpha] = self.state.shadow.rgba;
         if alpha == 0
@@ -3153,8 +2944,6 @@ impl Canvas2D {
         }
         let sigma = self.state.shadow_blur / 2.0;
         let blur_padding = (sigma * 3.0).ceil() + 1.0;
-        // Path bounds cover the centerline; a stroke extends past it by half
-        // the line width scaled by the miter limit at joins.
         let scale = self
             .state
             .transform
@@ -3194,8 +2983,6 @@ impl Canvas2D {
         let Some(paint) = self.shadow_mask_paint(style) else {
             return;
         };
-        // The mask path is in user space, like a stroke, so shaders built in
-        // user space follow the same transform.
         let Some(inverse) = self.state.transform.invert() else {
             return;
         };
@@ -3217,8 +3004,6 @@ impl Canvas2D {
         self.finish_shadow(mask, sigma, left, top, self.state.alpha);
     }
 
-    /// Tints, blurs, offsets, and composites a shadow mask. The mask covers
-    /// the canvas region starting at `(left, top)`.
     fn finish_shadow(&mut self, mut mask: Pixmap, sigma: f32, left: f32, top: f32, opacity: f32) {
         Self::tint_shadow(&mut mask, self.state.shadow.rgba);
         blur_pixmap(&mut mask, sigma);
@@ -3257,8 +3042,6 @@ impl Canvas2D {
         );
     }
 
-    /// The shape's own coverage, so a transparent fill casts no shadow. RGB
-    /// is discarded after rasterizing; only alpha survives.
     fn shadow_mask_paint(&self, style: &Style) -> Option<Paint<'_>> {
         let mut paint = Paint {
             blend_mode: BlendMode::SourceOver,
@@ -3284,7 +3067,6 @@ impl Canvas2D {
         Some(paint)
     }
 
-    /// Replaces a shape's pixels with the shadow color, keeping its alpha.
     fn tint_shadow(mask: &mut Pixmap, [red, green, blue, alpha]: [u8; 4]) {
         let shadow_alpha = u32::from(alpha);
         for pixel in mask.data_mut().as_chunks_mut::<4>().0 {
@@ -3363,7 +3145,6 @@ impl Default for State {
     }
 }
 
-/// A value assigned to `fillStyle` or `strokeStyle`.
 #[derive(Clone)]
 pub(crate) enum StyleValue {
     Color([u8; 4]),
@@ -3402,8 +3183,6 @@ fn to_u8(value: f32) -> u8 {
     channel
 }
 
-/// Exact float equality, which is what Blink uses for canvas angle and point
-/// comparisons (`canvas_path.cc`, `AdjustEndAngle`).
 fn same_float(left: f32, right: f32) -> bool {
     left.partial_cmp(&right) == Some(std::cmp::Ordering::Equal)
 }
@@ -3423,9 +3202,7 @@ fn ellipse_derivative(cx: f32, cy: f32, rx: f32, ry: f32, rotation: f32, angle: 
     Point::from_xy(x * cos - y * sin, x * sin + y * cos)
 }
 
-/// CSS border-radius expansion for `roundRect`: 1, 2, 3, or 4 values, each
-/// clamped to half the box side
-/// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-roundrect>).
+// https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-roundrect
 fn round_rect_radii(radii: &[(f32, f32)], width: f32, height: f32) -> [(f32, f32); 4] {
     let values: [(f32, f32); 4] = match radii {
         [] => [(0.0, 0.0); 4],
@@ -3449,10 +3226,7 @@ fn round_rect_radii(radii: &[(f32, f32)], width: f32, height: f32) -> [(f32, f32
     values.map(|(rx, ry)| (rx * scale, ry * scale))
 }
 
-/// Point-in-path in canvas space. `tiny-skia` has no analytic `contains`, so
-/// curves flatten to short polylines and the result comes from a crossing
-/// count plus an on-boundary check
-/// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-ispointinpath>).
+// https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-ispointinpath
 fn path_contains(path: &Path, rule: FillRule, point: Point) -> bool {
     if !(point.x.is_finite() && point.y.is_finite()) {
         return false;
@@ -3478,7 +3252,6 @@ fn path_contains(path: &Path, rule: FillRule, point: Point) -> bool {
     for segment in path.segments() {
         match segment {
             tiny_skia::PathSegment::MoveTo(p) => {
-                // Filling closes every open subpath implicitly.
                 if subpath_open {
                     edge(current, subpath_start);
                 }
@@ -3525,8 +3298,6 @@ fn path_contains(path: &Path, rule: FillRule, point: Point) -> bool {
     }
 }
 
-/// Boundary tolerance: canvas tests probe 0.01px outside a path, and f32
-/// flattening error stays far below that.
 const BOUNDARY_EPSILON: f32 = 1e-3;
 
 fn point_on_segment(point: Point, a: Point, b: Point) -> bool {
@@ -3597,8 +3368,6 @@ fn flatten_cubic_at(
     flatten_cubic_at(middle, e, c, end, out, depth + 1);
 }
 
-/// `tiny_skia`'s `invert` maps a zero scale to infinity instead of failing,
-/// so canvas checks the determinant itself.
 fn transform_is_invertible(transform: Transform) -> bool {
     let determinant = transform.sx * transform.sy - transform.kx * transform.ky;
     determinant != 0.0 && determinant.is_finite()
@@ -3608,8 +3377,6 @@ fn midpoint(a: Point, b: Point) -> Point {
     Point::from_xy(a.x.midpoint(b.x), a.y.midpoint(b.y))
 }
 
-/// Distance from `point` to the line through `a` and `b`. Curves whose
-/// controls sit near the chord flatten to a single segment.
 fn point_line_distance(point: Point, a: Point, b: Point) -> f32 {
     let (dx, dy) = (b.x - a.x, b.y - a.y);
     let length = dx.hypot(dy);
@@ -3621,13 +3388,9 @@ fn point_line_distance(point: Point, a: Point, b: Point) -> f32 {
 
 const FLATTEN_TOLERANCE: f32 = 0.1;
 
-/// Cap flattened points per curve so a path with huge coordinates cannot
-/// allocate 65k points per segment inside a hit test.
 const MAX_FLATTEN_POINTS: usize = 4096;
 
-/// Drops subpaths with no extent before stroking. A zero-length subpath
-/// would otherwise paint a cap dot, but the spec prunes degenerate segments
-/// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-stroke>).
+// https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-stroke
 fn prune_degenerate(path: &Path) -> Option<Path> {
     let mut builder = PathBuilder::new();
     let mut commands: Vec<tiny_skia::PathSegment> = Vec::new();
@@ -3690,9 +3453,7 @@ fn flush_subpath(
     commands.clear();
 }
 
-/// Applies the dash pattern in user space, then strokes the result. Dash
-/// lengths scale with the CTM like the line width
-/// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-setlinedash>).
+// https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-setlinedash
 fn dash_and_stroke(path: &Path, stroke: &Stroke, transform: Transform) -> Option<Path> {
     let scale = tiny_skia::PathStroker::compute_resolution_scale(&transform);
     let dashed;
@@ -3705,8 +3466,7 @@ fn dash_and_stroke(path: &Path, stroke: &Stroke, transform: Transform) -> Option
     input.stroke(stroke, scale)
 }
 
-/// The composite operations that clear where the source does not cover
-/// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-globalcompositeoperation>).
+// https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-globalcompositeoperation
 fn clears_uncovered(blend: BlendMode) -> bool {
     matches!(
         blend,
@@ -3718,13 +3478,10 @@ fn clears_uncovered(blend: BlendMode) -> bool {
     )
 }
 
-/// A layer coordinate or size as a float. Device coordinates are far inside the
-/// exact `f32` integer range.
 fn to_f32<T: ToPrimitive>(value: T) -> f32 {
     value.to_f32().unwrap_or(0.0)
 }
 
-/// The canvas clip cropped to a filtered layer's device rect.
 fn crop_clip(clip: &Mask, left: i32, top: i32, width: u32, height: u32) -> Option<Mask> {
     let mut out = Mask::new(width, height)?;
     let target_width = usize::try_from(width).ok()?;
@@ -3830,14 +3587,10 @@ fn blend_name(blend: BlendMode) -> &'static str {
     }
 }
 
-/// Serializes a color the way canvas reports it back: `#rrggbb` when opaque,
-/// `rgba(...)` otherwise.
 pub(crate) fn serialize_color([r, g, b, a]: [u8; 4]) -> String {
     if a == 255 {
         format!("#{r:02x}{g:02x}{b:02x}")
     } else {
-        // Keep enough precision that 1 and 254 do not collapse to 0 and 1.
-        // 128 is the one byte browsers serialize as the exact 0.5 token.
         let alpha = f32::from(a) / 255.0;
         let alpha = if a == 128 {
             0.5
@@ -3848,9 +3601,7 @@ pub(crate) fn serialize_color([r, g, b, a]: [u8; 4]) -> String {
     }
 }
 
-/// Blurs premultiplied RGBA with three box passes, matching Skia's Gaussian
-/// approximation. `sigma` is half of `shadowBlur`
-/// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-shadowblur>).
+// https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-shadowblur
 fn blur_pixmap(pixmap: &mut Pixmap, sigma: f32) {
     if sigma <= 0.0 {
         return;
@@ -3860,8 +3611,6 @@ fn blur_pixmap(pixmap: &mut Pixmap, sigma: f32) {
     }
 }
 
-/// Box sizes whose repeated application approximates a Gaussian of `sigma`
-/// (Kovesi, "Fast almost-Gaussian filtering").
 fn box_radii(sigma: f32, passes: usize) -> Vec<usize> {
     let passes = passes.max(1);
     #[expect(
@@ -3966,8 +3715,6 @@ fn box_blur_vertical(data: &mut [u8], width: usize, height: usize, radius: usize
     data.copy_from_slice(&out);
 }
 
-/// Encodes one JPEG image. `quality` is already in the encoder's `1..=100`
-/// range.
 fn encode_jpeg(
     pixels: &[u8],
     width: u32,
@@ -3987,20 +3734,12 @@ fn encode_jpeg(
     Some(jpeg)
 }
 
-/// The JPEG encoder's `1..=100` quality for a canvas `0..=1` quality
-/// (<https://html.spec.whatwg.org/multipage/canvas.html#dom-canvas-todataurl>).
-///
-/// Constructing the type is the only place the float range becomes the
-/// encoder's integer range, so no caller can hand the encoder an out-of-range
-/// value and no float-to-integer cast needs a lint suppression.
+// https://html.spec.whatwg.org/multipage/canvas.html#dom-canvas-todataurl
 #[derive(Clone, Copy)]
 pub(crate) struct JpegQuality(u8);
 
 impl JpegQuality {
-    /// `quality` is a finite canvas quality in `0..=1`.
     pub(crate) fn new(quality: f64) -> Self {
-        // The clamp makes the value exact for `to_u8`: 1..=100 rounds to an
-        // integer in that range.
         let scaled = (quality * 100.0).round().clamp(1.0, 100.0);
         Self(scaled.to_u8().unwrap_or(100))
     }
@@ -4072,8 +3811,6 @@ mod tests {
         };
         assert_eq!((origin.x, origin.y), (5.0, 6.0));
 
-        // Omitted radii use the one-value default; they must not index past
-        // the normalized list.
         let mut default_radii = Canvas2D::new(100, 50);
         default_radii.round_rect(1.0, 2.0, 20.0, 10.0, &[]);
     }
@@ -4099,19 +3836,14 @@ mod tests {
                 .filter(|segment| matches!(segment, Segment::Cubic(..)))
                 .count()
         };
-        // Eighth-turns: a full circle is 8 cubics, not the 4 a quarter-turn
-        // approximation would use.
         let mut full = Canvas2D::new(4, 4);
         full.arc(2.0, 2.0, 1.0, 0.0, std::f32::consts::TAU, false);
         assert_eq!(cubics(&full), 8);
 
-        // A direction-mismatched 2π span is a full circle, not an empty arc.
         let mut reversed = Canvas2D::new(4, 4);
         reversed.arc(2.0, 2.0, 1.0, 0.0, std::f32::consts::TAU, true);
         assert_eq!(cubics(&reversed), 8);
 
-        // A clockwise 2.5π span wraps to a 1.5π counterclockwise sweep,
-        // which is six eighth-turns.
         let mut wrapped = Canvas2D::new(4, 4);
         wrapped.arc(2.0, 2.0, 1.0, 0.0, 2.5 * std::f32::consts::PI, true);
         assert_eq!(cubics(&wrapped), 6);
@@ -4142,7 +3874,6 @@ mod tests {
         canvas.fill_rect(0.0, 0.0, 4.0, 2.0);
         let pixels = canvas.read_pixels(0, 0, 4, 4).unwrap();
         assert_eq!(&pixels[..4], &[255, 0, 0, 255]);
-        // Row 2 is the shadow: green, drawn under the red shape.
         assert_eq!(&pixels[32..36], &[0, 255, 0, 255]);
     }
 
@@ -4187,8 +3918,6 @@ mod tests {
         canvas.stroke();
         let pixels = canvas.read_pixels(0, 0, 30, 30).unwrap();
         let alpha = |x: usize, y: usize| pixels[(y * 30 + x) * 4 + 3];
-        // The short arc turns through (17, 3). The long way around would pass
-        // through (3, 17) instead.
         assert!(alpha(17, 3) > 0, "short arc midpoint is empty");
         assert_eq!(alpha(3, 17), 0, "arc took the long way around");
     }
@@ -4233,14 +3962,9 @@ mod tests {
         let pixels = canvas.read_pixels(0, 0, 8, 8).unwrap();
         let pixel = |x: usize, y: usize| &pixels[(y * 8 + x) * 4..(y * 8 + x) * 4 + 4];
         assert_eq!(pixel(0, 0), &[255, 0, 0, 128]);
-        // The shadow uses the alpha captured at beginLayer and lands below the
-        // layer bitmap.
         assert_eq!(pixel(0, 5), &[0, 255, 0, 128]);
     }
 
-    /// A filtered draw renders into a layer bounded to its own device rect, so
-    /// the shape must still land where it was drawn and must not spill outside
-    /// the rect.
     #[test]
     fn a_filtered_draw_stays_inside_its_device_rect() {
         let mut canvas = Canvas2D::new(32, 32);
