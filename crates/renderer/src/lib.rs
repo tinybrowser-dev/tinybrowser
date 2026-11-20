@@ -74,6 +74,36 @@ impl Fonts {
             .register_fonts(parley::fontique::Blob::new(data), None)
             .len()
     }
+
+    /// Registers a host-supplied font (sfnt, WOFF, or WOFF2) and appends its
+    /// families to the generic fallback lists so documents render text even in
+    /// environments without system fonts (such as WebAssembly).
+    pub fn register_fallback_font(&mut self, data: Vec<u8>) -> usize {
+        use parley::fontique::{Blob, GenericFamily};
+
+        let decoded = crate::js::fonts::decode_font(data);
+        if decoded.is_empty() {
+            return 0;
+        }
+        let registered = self
+            .0
+            .collection
+            .register_fonts(Blob::new(Arc::new(decoded)), None);
+        let families: Vec<_> = registered.iter().map(|(id, _)| *id).collect();
+        if !families.is_empty() {
+            for generic in [
+                GenericFamily::SansSerif,
+                GenericFamily::Serif,
+                GenericFamily::Monospace,
+                GenericFamily::SystemUi,
+            ] {
+                self.0
+                    .collection
+                    .append_generic_families(generic, families.iter().copied());
+            }
+        }
+        families.len()
+    }
 }
 
 pub use js::{Stop, TURN_SCRIPT_BUDGET};

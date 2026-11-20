@@ -21,7 +21,7 @@ mod encoding;
 mod events;
 
 pub(crate) use events::handler_attribute_violations;
-mod fonts;
+pub(crate) mod fonts;
 mod intl;
 mod modules;
 mod runtime;

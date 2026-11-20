@@ -11,10 +11,11 @@ const score = latest ? subtestPercent(latest.totals) : null
   <section class="home measure">
     <h1>tinybrowser</h1>
     <p class="lede">
-      A small, fast, spec-first headless browser for AI agents. The Web Platform Tests run on every
-      code push, and the result is published at <a href="/wpt">/wpt</a>.
+      A small, fast, spec-first headless browser for AI agents. One ~12 MiB Rust binary (Blitz,
+      Stylo, html5ever, QuickJS) — also embeddable as a WASI Preview 2 component.
     </p>
     <p class="links">
+      <a href="/demo">Try Wasm demo</a>
       <a href="/wpt">Conformance dashboard</a>
       <a href="https://github.com/tinybrowser-dev/tinybrowser" rel="noreferrer">Source</a>
       <a href="/wpt/data/latest.json">Raw record</a>

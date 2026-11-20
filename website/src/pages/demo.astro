@@ -1,0 +1,93 @@
+---
+import Base from "@/layouts/Base.astro"
+---
+
+<Base
+  title="Demo · tinybrowser"
+  description="Run tinybrowser (Blitz + QuickJS + fetch core) compiled to WASI Preview 2 directly inside your browser."
+>
+  <script is:inline type="importmap">
+    {
+      "imports": {
+        "@bytecodealliance/preview2-shim/cli": "/wasm/shims/cli.js",
+        "@bytecodealliance/preview2-shim/clocks": "/wasm/shims/clocks.js",
+        "@bytecodealliance/preview2-shim/filesystem": "/wasm/shims/filesystem.js",
+        "@bytecodealliance/preview2-shim/io": "/wasm/shims/io.js",
+        "@bytecodealliance/preview2-shim/random": "/wasm/shims/random.js"
+      }
+    }
+  </script>
+
+  <div class="page-head">
+    <div>
+      <h1 class="page-title">Embedded Wasm demo</h1>
+      <p class="lede">
+        The same Rust engine (Blitz, QuickJS, and the fetch core) compiled to
+        <code>wasm32-wasip2</code> and driven like an agent inside this tab.
+      </p>
+    </div>
+    <p class="run-meta" id="demo-status">initializing…</p>
+  </div>
+
+  <section class="demo-presets" aria-label="Agent presets">
+    <span class="demo-label">Presets</span>
+    <button id="preset-fetch" type="button" disabled>Fetch + 302 + cookies</button>
+    <button id="preset-example" type="button" disabled>goto(example.com)</button>
+    <button id="preset-canvas" type="button" disabled>CSS Grid + Canvas 2D</button>
+    <button id="preset-multitab" type="button" disabled>Spawn 8 tabs</button>
+  </section>
+
+  <section class="demo-commands" aria-label="Agent controls">
+    <div class="demo-row">
+      <label class="demo-label" for="demo-url">goto</label>
+      <input id="demo-url" type="url" placeholder="https://example.com/" spellcheck="false" />
+      <button id="demo-goto" type="button" disabled>Navigate</button>
+    </div>
+    <div class="demo-row">
+      <label class="demo-label" for="demo-eval">eval</label>
+      <input
+        id="demo-eval"
+        type="text"
+        value="document.title + ' · ' + document.querySelectorAll('*').length + ' nodes'"
+        spellcheck="false"
+      />
+      <button id="demo-eval-run" type="button" disabled>Run</button>
+    </div>
+  </section>
+
+  <section class="demo-grid">
+    <div class="demo-panel">
+      <div class="demo-panel-head">
+        <h2>Rendered frame</h2>
+        <span class="muted" id="demo-frame-meta">640x400 RGBA</span>
+        <button id="demo-render" type="button" disabled>Re-render</button>
+      </div>
+      <div class="demo-canvas-wrap">
+        <canvas id="demo-canvas" width="640" height="400"></canvas>
+      </div>
+    </div>
+
+    <div class="demo-panel">
+      <div class="demo-panel-head">
+        <h2>Agent output</h2>
+      </div>
+      <pre class="demo-pre" id="demo-output">waiting for engine…</pre>
+
+      <div class="demo-panel-head demo-panel-sub">
+        <h2>Host HTTP hops</h2>
+        <span class="muted">via /api/hop</span>
+      </div>
+      <pre class="demo-pre demo-pre-sm" id="demo-hops"></pre>
+    </div>
+  </section>
+
+  <details class="demo-source">
+    <summary>Mount custom HTML</summary>
+    <textarea id="demo-html" rows="12" spellcheck="false"></textarea>
+    <div class="demo-source-bar">
+      <button id="demo-mount" type="button" disabled>Mount HTML</button>
+    </div>
+  </details>
+
+  <script src="../demo/app.ts"></script>
+</Base>

@@ -12,9 +12,51 @@ use std::time::Instant;
 
 use dial::DialHead;
 use dial::body::{BodyEvent, BodyReader};
-use net::Agent;
-use renderer::{DialFailure, DialOutcome, DialRequest, ResponseBody};
+use net::{Agent, InitiatorKind, Method, Request};
+use renderer::{DialFailure, DialOutcome, DialRequest, Mount, ResponseBody, TabState};
 use url::Url;
+
+/// Fetches a top-level document through the shared fetch core and turns it
+/// into a [`Mount`] ready for the renderer.
+pub(crate) async fn navigate(agent: Agent, url: Url) -> Result<Mount, String> {
+    let deadline = Instant::now() + dial::PAGE_FETCH_TIMEOUT;
+    let mut request = Request::new(Method::GET, url);
+    let _ = request.headers.insert("Upgrade-Insecure-Requests", "1");
+    let _ = request.headers.insert(
+        "Accept",
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    );
+    let _ = request.headers.insert("Sec-Fetch-Mode", "navigate");
+    let _ = request.headers.insert("Sec-Fetch-User", "?1");
+    let _ = request.headers.insert("Sec-Fetch-Dest", "document");
+    request.initiator_kind = InitiatorKind::Navigation;
+    request.cors = net::cors::CorsSettings {
+        mode: net::cors::RequestMode::Navigate,
+        credentials: net::cors::CredentialsMode::Include,
+        redirect: net::cors::RedirectMode::Follow,
+        origin: url::Origin::new_opaque(),
+    };
+    request.deadline = Some(deadline);
+    let response = agent
+        .send(request)
+        .await
+        .map_err(|error| format!("{:?}", dial::dial_failure(&error)))?;
+    let head = DialHead::internal(&response).into_document_head();
+    let mut reader = BodyReader::new(response, None, true).await;
+    let body = loop {
+        match reader.next().await {
+            BodyEvent::Chunk(_) => {}
+            BodyEvent::Done(bytes) => break bytes,
+            BodyEvent::DecodeError => return Err("body decode error".into()),
+            BodyEvent::Failed(failure) => return Err(format!("{failure:?}")),
+        }
+    };
+    Ok(Mount {
+        head,
+        tab: TabState::default(),
+        body,
+    })
+}
 
 /// Runs one dial to completion, including its body.
 ///

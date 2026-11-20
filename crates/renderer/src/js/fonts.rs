@@ -44,7 +44,7 @@ const MAX_FONT_BYTES: usize = 64 * 1024 * 1024;
 /// reads sfnt data only; both the validation and registration paths go through
 /// this so a face is judged by the bytes it will actually register. Returns
 /// empty when a declared size exceeds [`MAX_FONT_BYTES`].
-fn decode_font(data: Vec<u8>) -> Vec<u8> {
+pub(crate) fn decode_font(data: Vec<u8>) -> Vec<u8> {
     match data.get(..4) {
         Some(b"wOFF") => {
             if let Some(size) = data.get(16..20) {

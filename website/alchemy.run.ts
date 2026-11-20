@@ -23,8 +23,10 @@ export default Alchemy.Stack(
     const site = yield* Cloudflare.Website.StaticSite("Website", {
       command: "bun run build",
       outdir: "dist",
+      main: "./src/worker.ts",
       assets: {
         notFoundHandling: "404-page",
+        runWorkerFirst: ["/api/*"],
       },
       domain: "tinybrowser.ericc.ch",
       workersDev: false,

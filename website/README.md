@@ -1,30 +1,34 @@
 # Website
 
-The public site has the home page and the WPT dashboard at `/wpt`. Astro, plain
-CSS, no client framework. Every page is rendered at build time.
+The public site has the home page (`/`), the embedded Wasm demo (`/demo`), the
+WPT dashboard (`/wpt`), and the Cloudflare Worker (`/api/hop`, `/api/demo/*`).
+Astro, plain CSS, no client framework. Every page is rendered at build time.
 
+    cargo build -p tinybrowser-wasm --target wasm32-wasip2 --release
     bun install
-    WPT_DATA_DIR=../data bun run dev
+    WPT_DATA_DIR=../data bun run build
 
 `WPT_DATA_DIR` points at a checkout of
 [`tinybrowser-dev/tinybrowser-wpt-results`](https://github.com/tinybrowser-dev/tinybrowser-wpt-results).
 Without it the dashboard renders its empty state, which is what the first
-deploy looks like.
+deploy looks like. Without a compiled `tinybrowser_wasm.wasm`, `build:wasm`
+skips transpiling and `/demo` shows build instructions.
 
 ## Checks
 
     bun run check
 
 `check` runs contrast, typecheck, lint, format, and build. CI runs the same
-commands, then Alchemy deploys `dist/`.
+commands, then Alchemy deploys `dist/` + `src/worker.ts`.
 
-| script      | what it does                                         |
-| ----------- | ---------------------------------------------------- |
-| `contrast`  | validates the token pairs in `src/styles/themes.css` |
-| `typecheck` | `astro sync` + `tsc --noEmit --runExternalCode`      |
-| `lint`      | oxlint                                               |
-| `format`    | oxfmt in check mode. `format:fix` writes             |
-| `build`     | copies the record, then `astro build`                |
+| script       | what it does                                                     |
+| ------------ | ---------------------------------------------------------------- |
+| `contrast`   | validates the token pairs in `src/styles/themes.css`             |
+| `typecheck`  | `astro sync` + `tsc --noEmit --runExternalCode`                  |
+| `lint`       | oxlint                                                           |
+| `format`     | oxfmt in check mode. `format:fix` writes                         |
+| `build:wasm` | transpiles `tinybrowser_wasm.wasm` with `jco` into `public/wasm` |
+| `build`      | syncs WPT data, builds Wasm assets, then runs `astro build`      |
 
 `@/` is the only path alias. It points at `src/`. Everything else is a
 relative import.

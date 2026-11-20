@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "astro": "astro",
-    "build": "bun run sync-data && astro build",
+    "build": "bun run sync-data && bun run build:wasm && astro build",
+    "build:wasm": "bun run scripts/build-wasm.ts",
     "check": "bun run contrast && bun run typecheck && bun run lint && bun run format && bun run build",
     "contrast": "bun scripts/check-contrast.ts",
     "cf:deploy": "alchemy deploy --stage prod",
@@ -23,12 +24,14 @@
     "typecheck": "astro sync && tsc --noEmit --runExternalCode"
   },
   "dependencies": {
+    "@bytecodealliance/preview2-shim": "^0.31.1",
     "@fontsource-variable/jetbrains-mono": "^5.3.0",
     "@fontsource-variable/plus-jakarta-sans": "^5.3.0",
     "astro": "^7.4.2"
   },
   "devDependencies": {
     "@alchemy.run/cloudflare": "2.0.0-beta.84",
+    "@bytecodealliance/jco": "^1.16.0",
     "@effect/platform-bun": "4.0.7",
     "@effect/platform-node": "4.0.7",
     "@types/node": "^26.6.6",

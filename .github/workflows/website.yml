@@ -20,6 +20,9 @@ on:
     branches: [main]
     paths:
       - "website/**"
+      - "crates/wasm/**"
+      - "crates/net/**"
+      - "crates/dial/**"
       - ".github/workflows/website.yml"
   workflow_run:
     workflows: [WPT]
@@ -44,6 +47,36 @@ jobs:
       WPT_DATA_DIR: ${{ github.workspace }}/data
     steps:
       - uses: actions/checkout@v7
+
+      # Build the WASI Preview 2 component so `/demo` always ships the current
+      # engine from `main` alongside the static site and `/api/hop` Worker.
+      - name: Rust toolchain (wasm32-wasip2)
+        run: |
+          rustup toolchain install --profile minimal --component rust-src
+          rustup target add wasm32-wasip2
+      - name: Submodules (wasm build inputs, shallow)
+        run: |
+          git submodule update --init --depth 1 --jobs 4 \
+            third_party/blitz third_party/rquickjs third_party/html5ever
+          git -C third_party/rquickjs submodule update --init --depth 1 sys/quickjs
+      - name: Cargo cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-wasm-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-wasm-
+      - name: sccache
+        uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          version: "v0.18.0"
+      - name: Build wasm component
+        env:
+          CARGO_INCREMENTAL: "0"
+          SCCACHE_GHA_ENABLED: "true"
+          RUSTC_WRAPPER: "sccache"
+        run: cargo build --release --locked -p tinybrowser-wasm --target wasm32-wasip2
 
       # The published history. A missing record is not an error: the site
       # renders its empty state and the first WPT run fills it in.

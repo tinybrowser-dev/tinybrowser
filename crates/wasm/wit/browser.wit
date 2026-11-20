@@ -6,7 +6,7 @@
 /// for one hop and reports what came back. It must not add policy of its own,
 /// because every rule it would re-apply was already applied to the request it
 /// receives.
-package tinybrowser:browser@0.3.0;
+package tinybrowser:browser@0.4.0;
 
 interface types {
     /// One header field, name and value verbatim.
@@ -159,6 +159,15 @@ interface engine {
         /// A frame finished parsing and dispatched `DOMContentLoaded`;
         /// subresources may still be loading.
         dom-content-loaded,
+        /// A `goto` navigation failed before a document could be mounted.
+        navigation-failed(string),
+    }
+
+    /// One painted viewport frame in tightly packed RGBA pixel order.
+    record rendered-frame {
+        width: u32,
+        height: u32,
+        rgba: list<u8>,
     }
 
     /// Whether a same-document history update added an entry or replaced one.
@@ -189,11 +198,22 @@ interface engine {
         /// while a component export is on the stack: step only after the call
         /// that caused it returns.
         constructor(url: string, html: string) -> result<tab, string>;
+        /// Replaces the tab's main document with `html` at `url`.
+        mount: func(url: string, html: string) -> result<_, string>;
+        /// Navigates the tab to `url` through the component's fetch core.
+        ///
+        /// Follows redirects and applies cookies and `Sec-Fetch-*` headers
+        /// before mounting the resulting document on the next `step`.
+        goto: func(url: string) -> result<_, string>;
         /// This tab's `fetch-request.owner` value.
         owner: func() -> u64;
+        /// Current document URL (`location.href`).
+        url: func() -> result<string, string>;
         /// Evaluates `source` in the main frame and returns its string
         /// coercion. Throws surface as the error side.
         eval: func(source: string) -> result<string, string>;
+        /// Renders the main frame into RGBA pixels at `width` x `height`.
+        render: func(width: u32, height: u32) -> result<rendered-frame, string>;
         /// Advances the page one turn: runs ready tasks until the script
         /// budget, then returns milliseconds until the next timer.
         ///
@@ -212,6 +232,11 @@ interface engine {
         /// Text content of the document body; empty before the body exists.
         text: func() -> result<string, string>;
     }
+
+    /// Registers a font file (TTF, OTF, WOFF, or WOFF2) into the shared font
+    /// database used by tabs created afterwards. Returns the number of
+    /// registered families (0 if the bytes did not parse).
+    register-font: func(data: list<u8>) -> u32;
 
     /// Delivers one exchange's outcome, returning whether it was expected.
     ///
