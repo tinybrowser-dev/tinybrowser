@@ -282,9 +282,8 @@ impl Document {
         match task {
             Task::Timer(id) => {
                 self.record_event(RendererEvent::Timer(id));
-                if self.refresh_timer == Some(id) {
-                    self.refresh_timer = None;
-                    self.fire_refresh();
+                if let Some(target) = self.refresh.take_due(id) {
+                    self.fire_refresh(&target);
                 }
                 if let Some(timer) = self.timers.remove(&id)
                     && let Some(js_id) = timer.js_id
@@ -360,14 +359,12 @@ impl Document {
                 self.adopt_js_work();
             }
             Task::ScrollEvents => {
-                self.scroll_events_queued = false;
-                let events = std::mem::take(&mut self.pending_scroll_events);
+                let events = self.ui_events.take_scroll();
                 self.fire_js(|js| js.fire_scroll_events(&events));
                 self.adopt_js_work();
             }
             Task::AnimationEvents => {
-                self.animation_events_queued = false;
-                let events = std::mem::take(&mut self.pending_animation_events);
+                let events = self.ui_events.take_animation();
                 self.fire_js(|js| js.fire_animation_events(&events));
                 self.adopt_js_work();
             }
@@ -388,12 +385,7 @@ impl Document {
     /// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-details-toggle-event-task>,
     /// <https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-dialog-toggle-event-task>).
     fn run_toggle_task(&mut self, node: NodeId) {
-        if let Some(index) = self
-            .pending_toggles
-            .iter()
-            .position(|(pending, _, _)| *pending == node)
-        {
-            let (_, old_state, new_state) = self.pending_toggles.remove(index);
+        if let Some((old_state, new_state)) = self.ui_events.take_toggle(node) {
             self.fire_js(|js| js.fire_toggle_task(node, &old_state, &new_state));
         }
         self.adopt_js_work();

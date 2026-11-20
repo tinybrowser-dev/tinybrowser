@@ -31,11 +31,13 @@ use crate::protocol::{
 
 use self::dials::DialLedger;
 use self::load::{LoadDelay, LoadDelayGuard};
+use self::state::{CspState, RefreshState, ResponseStage, UiEventQueue};
 
 pub(crate) mod dial;
 mod dials;
 pub(crate) mod dom;
 mod drain;
+mod state;
 
 mod intern;
 mod load;
@@ -683,27 +685,7 @@ pub(crate) struct Document {
     shared: SharedHandle,
     url: Url,
     tasks: VecDeque<Task>,
-    /// Scroll and `scrollend` events Blitz has queued, waiting for the scroll
-    /// steps. An event never fires inside the assignment that scrolled: the
-    /// task that runs the steps dispatches this list in order
-    /// (<https://drafts.csswg.org/cssom-view/#run-the-scroll-steps>).
-    pending_scroll_events: Vec<blitz_dom::PendingScrollEvent>,
-    /// Whether a [`Task::ScrollEvents`] is already queued, so the next scroll
-    /// steps batch has one task however many boxes moved.
-    scroll_events_queued: bool,
-    /// CSS animation and transition lifecycle events Blitz's last resolve
-    /// observed, waiting for the rendering-opportunity batch that fires them
-    /// (<https://drafts.csswg.org/css-animations-1/#events>).
-    pending_animation_events: Vec<blitz_dom::animation_events::PendingAnimationEvent>,
-    /// Whether a [`Task::AnimationEvents`] is already queued, so one batch
-    /// covers every event the resolve observed.
-    animation_events_queued: bool,
-    /// The elements with a queued `toggle` task, each with the state it
-    /// started from and the state it ends at. A later change before the task
-    /// runs updates only the end state, so the element still fires one event
-    /// (<https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-details-toggle-event-task>,
-    /// <https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-dialog-toggle-event-task>).
-    pending_toggles: Vec<(crate::dom::tree::NodeId, String, String)>,
+    ui_events: UiEventQueue,
     timers: HashMap<TimerId, Timer>,
     next_timer_id: TimerId,
     /// Every queued, in-flight, and cancelled dial for this document.
@@ -713,11 +695,6 @@ pub(crate) struct Document {
     /// installs later still sees them
     /// (<https://html.spec.whatwg.org/multipage/images.html#update-the-image-data>).
     deferred_image_events: VecDeque<Task>,
-    /// `securitypolicyviolation` events reported while the parser was still
-    /// active. They wait for the parser so the listeners the document's own
-    /// scripts install are in place
-    /// (<https://w3c.github.io/webappsec-csp/#report-violation>).
-    pending_csp_events: VecDeque<Task>,
     /// The token that delays this document's `load` event for each connected
     /// `<img>` whose current request has not settled
     /// (<https://html.spec.whatwg.org/multipage/images.html#update-the-image-data>,
@@ -758,18 +735,7 @@ pub(crate) struct Document {
     new_frames: Rc<RefCell<Vec<CreatedFrame>>>,
     /// Whether this document's `load` event has fired.
     load_fired: bool,
-    /// Whether the shared declarative refresh steps already ran for this
-    /// document; a later `Refresh` value is ignored
-    /// (<https://html.spec.whatwg.org/multipage/semantics.html#attr-meta-http-equiv-refresh>).
-    will_declaratively_refresh: bool,
-    /// The target of a refresh waiting for the document to finish loading,
-    /// with its delay. The clock starts at the completely-loaded point, not
-    /// when the value was parsed.
-    pending_refresh: Option<(Url, std::time::Duration)>,
-    /// The timer a refresh is waiting on, so a new navigation can cancel it.
-    refresh_timer: Option<TimerId>,
-    /// The URL an armed refresh navigates to when its timer fires.
-    refresh_target: Option<Url>,
+    refresh: RefreshState,
     events: Vec<RendererEvent>,
     events_overflowed: bool,
     js: Option<crate::js::JsRealm>,
@@ -801,72 +767,8 @@ pub(crate) struct Document {
     /// Decoder for a body that is still arriving; `None` when the markup is
     /// already in hand.
     decoder: Option<dial::ResponseDecoder>,
-    /// Encoding sniffed for the current response, reported as
-    /// `document.characterSet`.
-    character_set: &'static str,
-    /// The response `Content-Type` for the active parser. XML MIME types
-    /// select the XML parser; anything else, including a script's
-    /// `document.open()`, stays HTML.
-    response_content_type: Option<String>,
-    /// `Content-Security-Policy` and `Content-Security-Policy-Report-Only`
-    /// from the response being parsed, parsed once
-    /// (<https://w3c.github.io/webappsec-csp/#parse-response-csp>).
-    response_policy: crate::csp::List,
-    /// The sandbox flags the response's enforced CSP `sandbox` directives
-    /// impose, kept beside the policy so a local-scheme document inherits the
-    /// same container
-    /// (<https://w3c.github.io/webappsec-csp/#sandbox>).
-    response_sandbox: crate::protocol::SandboxFlags,
-    /// `Referrer-Policy` from the response being parsed, applied after the
-    /// parser installs the new document (the state reset clears the realm).
-    response_referrer_policy: Option<net::ReferrerPolicy>,
-    /// Whether the response being parsed is a secure context, computed at
-    /// the head from its URL and its creator's bit
-    /// (<https://html.spec.whatwg.org/multipage/webappapis.html#secure-contexts>).
-    response_secure_context: bool,
-    /// The response's `Cross-Origin-Opener-Policy` and
-    /// `Cross-Origin-Embedder-Policy` values
-    /// (<https://html.spec.whatwg.org/multipage/browsers.html#cross-origin-opener-policies>).
-    response_cross_origin_opener_policy: crate::protocol::CrossOriginOpenerPolicy,
-    response_cross_origin_embedder_policy: crate::protocol::CrossOriginEmbedderPolicy,
-    /// Whether the response being parsed is cross-origin isolated, computed at
-    /// the head from its own headers, its secure context, and its creator
-    /// (<https://html.spec.whatwg.org/multipage/webappapis.html#concept-settings-object-cross-origin-isolated-capability>).
-    response_cross_origin_isolated: bool,
-    /// The creator's secure-context bit for the next navigation this document
-    /// commits. `None` when the browser started the navigation, which has no
-    /// creator (`is_secure_environment` then reads the URL alone).
-    creator_secure_context: Option<bool>,
-    /// The creator's cross-origin isolation for the next navigation this
-    /// document commits. A nested document needs its ancestor's capability as
-    /// well as its own embedder policy.
-    creator_cross_origin_isolated: Option<bool>,
-    /// The policy container a local-scheme document inherits, installed
-    /// atomically after the parser replaces the document's state
-    /// (<https://html.spec.whatwg.org/multipage/browsers.html#policy-containers>).
-    inherited_policy: Option<PolicyContainer>,
-    /// When set, [`Document::install_parsed`] replaces the world's policy
-    /// with the response headers. A script's `document.open()` leaves it
-    /// unset so the existing policy survives.
-    csp_from_response: bool,
-    /// Endpoint names and URLs from the navigation response's
-    /// `Reporting-Endpoints` headers. A violated policy's `report-to`
-    /// directive resolves its first known name here
-    /// (<https://w3c.github.io/reporting/#header>).
-    ///
-    /// Only [`Document::install_head`] and `set_reporting_endpoints` write
-    /// it; no caller reaches around them.
-    reporting_endpoints: Vec<(String, String)>,
-    /// HTTP status of the committed navigation response, reported as the
-    /// violation `status-code`. Zero when unknown
-    /// (<https://w3c.github.io/webappsec-csp/#create-violation-for-global>).
-    http_status: u16,
-    /// First 1445 raw response bytes, the MIME sniff resource header.
-    sniff_header: Vec<u8>,
-    /// Whether [`Document::finish_parse`] runs the MIME sniffing algorithm.
-    apply_mime_sniff: bool,
-    /// `nosniff` and whether this body came from HTTP.
-    mime_guard: crate::sniff::MimeGuard,
+    response: ResponseStage,
+    csp: CspState,
     /// The parser-inserted script the parser waits for, if any. A dynamic
     /// script that finishes first must not resume the walk: the synchronous
     /// scripts after a parser-inserted `src` run only once it executes
@@ -874,9 +776,6 @@ pub(crate) struct Document {
     parser_blocked_script: Option<crate::dom::tree::NodeId>,
     deferred_modules: Vec<(crate::dom::tree::NodeId, crate::js::ScriptSource)>,
     stop: Arc<crate::js::Stop>,
-    /// `frame-src` redirect violations to fire in the embedding document.
-    /// The navigating frame cannot dispatch into its parent's realm.
-    embedder_csp_reports: Vec<(FrameId, Vec<crate::csp::Violation>)>,
 }
 
 impl Drop for Document {
@@ -1046,16 +945,11 @@ impl Document {
             shared: runtime.shared.clone(),
             url: document_url,
             tasks: VecDeque::new(),
-            pending_scroll_events: Vec::new(),
-            scroll_events_queued: false,
-            pending_animation_events: Vec::new(),
-            animation_events_queued: false,
-            pending_toggles: Vec::new(),
+            ui_events: UiEventQueue::default(),
             timers: HashMap::new(),
             next_timer_id: TimerId::default(),
             dials: DialLedger::new(Arc::clone(&runtime.stop), Arc::clone(&runtime.wake)),
             deferred_image_events: VecDeque::new(),
-            pending_csp_events: VecDeque::new(),
             image_load_delays: HashMap::new(),
             connected_images: HashSet::new(),
             linked_sheets: HashMap::new(),
@@ -1066,10 +960,7 @@ impl Document {
             history_updates: Vec::new(),
             new_frames,
             load_fired: false,
-            will_declaratively_refresh: false,
-            pending_refresh: None,
-            refresh_timer: None,
-            refresh_target: None,
+            refresh: RefreshState::default(),
             events: Vec::new(),
             events_overflowed: false,
             js: None,
@@ -1083,27 +974,8 @@ impl Document {
             parser_eof: true,
             parser_owner: ParserOwner::Carrier,
             decoder: None,
-            character_set: "UTF-8",
-            response_content_type: None,
-            response_policy: crate::csp::List::default(),
-            response_sandbox: crate::protocol::SandboxFlags::default(),
-            response_referrer_policy: None,
-            response_secure_context: false,
-            response_cross_origin_opener_policy:
-                crate::protocol::CrossOriginOpenerPolicy::UnsafeNone,
-            response_cross_origin_embedder_policy:
-                crate::protocol::CrossOriginEmbedderPolicy::UnsafeNone,
-            response_cross_origin_isolated: false,
-            creator_secure_context: None,
-            creator_cross_origin_isolated: None,
-            inherited_policy: None,
-            embedder_csp_reports: Vec::new(),
-            csp_from_response: false,
-            reporting_endpoints: Vec::new(),
-            http_status: 0,
-            sniff_header: Vec::new(),
-            apply_mime_sniff: false,
-            mime_guard: crate::sniff::MimeGuard::default(),
+            response: ResponseStage::default(),
+            csp: CspState::default(),
             parser_blocked_script: None,
             deferred_modules: Vec::new(),
             stop: Arc::clone(&runtime.stop),
@@ -1650,7 +1522,7 @@ impl Document {
     /// navigation, which has no creator
     /// (<https://html.spec.whatwg.org/multipage/webappapis.html#secure-contexts>).
     pub(crate) fn set_creator_secure_context(&mut self, creator: Option<bool>) {
-        self.creator_secure_context = creator;
+        self.response.creator_secure_context = creator;
     }
 
     /// Records the creator's cross-origin isolation for the navigation this
@@ -1658,7 +1530,7 @@ impl Document {
     /// capability in addition to its own `Cross-Origin-Embedder-Policy`
     /// (<https://html.spec.whatwg.org/multipage/webappapis.html#concept-settings-object-cross-origin-isolated-capability>).
     pub(crate) fn set_creator_cross_origin_isolated(&mut self, creator: Option<bool>) {
-        self.creator_cross_origin_isolated = creator;
+        self.response.creator_cross_origin_isolated = creator;
     }
 
     /// Gives a blank document the URL `about:blank` and the creator's base
@@ -1721,7 +1593,7 @@ impl Document {
         // (<https://html.spec.whatwg.org/multipage/browsers.html#creating-a-new-browsing-context>).
         self.world.borrow_mut().document_referrer = inherited_url.cloned();
         // No HTTP response stands behind a blank document.
-        self.http_status = 0;
+        self.csp.http_status = 0;
         self.load_html("");
         self.ensure_js_ok();
     }
@@ -1743,7 +1615,7 @@ impl Document {
         markup: &str,
     ) {
         let url = Url::parse("about:srcdoc").expect("about:srcdoc parses");
-        self.http_status = 0;
+        self.csp.http_status = 0;
         // A `srcdoc` document inherits its creator's origin object, so the two
         // share a `document.domain` assignment unless a sandbox replaces the
         // origin with an opaque one
@@ -1768,7 +1640,7 @@ impl Document {
             // (<https://html.spec.whatwg.org/multipage/browsers.html#creating-a-new-browsing-context>).
             world.document_referrer = Some(referrer_url.clone());
         }
-        self.inherited_policy = Some(policy.clone());
+        self.response.inherited_policy = Some(policy.clone());
         self.initial_blank = false;
         self.load_html(markup);
     }
@@ -2141,16 +2013,9 @@ impl Document {
         old_state: String,
         new_state: String,
     ) {
-        if let Some(pending) = self
-            .pending_toggles
-            .iter_mut()
-            .find(|(pending, _, _)| *pending == id)
-        {
-            pending.2 = new_state;
-            return;
+        if self.ui_events.push_toggle(id, old_state, new_state) {
+            self.tasks.push_back(Task::ToggleEvent(id));
         }
-        self.pending_toggles.push((id, old_state, new_state));
-        self.tasks.push_back(Task::ToggleEvent(id));
     }
 
     /// Queues the `close` event a closed dialog fires on the user interaction
@@ -2418,29 +2283,11 @@ impl Document {
         self.parser_eof = eof;
         self.decoder = decoder;
         self.parser_owner = owner;
-        self.response_content_type = None;
-        self.response_policy = crate::csp::List::default();
-        self.response_sandbox = crate::protocol::SandboxFlags::default();
-        self.response_referrer_policy = None;
-        self.response_secure_context = false;
-        self.response_cross_origin_opener_policy =
-            crate::protocol::CrossOriginOpenerPolicy::UnsafeNone;
-        self.response_cross_origin_embedder_policy =
-            crate::protocol::CrossOriginEmbedderPolicy::UnsafeNone;
-        self.response_cross_origin_isolated = false;
-        self.csp_from_response = false;
-        self.sniff_header.clear();
-        self.apply_mime_sniff = false;
-        self.mime_guard = crate::sniff::MimeGuard::default();
+        self.response.reset_for_parse();
         self.active_parse = Some(ActiveParse {
             buffer: input.to_owned(),
             delay: self.load_delay.guard(),
         });
-        // A new parse starts undecided: without this an `about:blank` or
-        // `document.open()` document inherits the previous response's
-        // charset, and `document.characterSet` lies. The response decoder,
-        // when one exists, reports the real charset at EOF.
-        self.character_set = "UTF-8";
     }
 
     /// One funnel: opens the realm from a response head — new realm, URL
@@ -2458,7 +2305,7 @@ impl Document {
         // (blank, data) report zero rather than a previous page's status.
         // Violation `status-code` reports it
         // (<https://w3c.github.io/webappsec-csp/#create-violation-for-global>).
-        self.http_status = head.source.status();
+        self.csp.http_status = head.source.status();
         self.set_reporting_endpoints(head.source.reporting_endpoints());
         if let Some((width, height)) = head.viewport {
             self.viewport_size = (width, height);
@@ -2498,62 +2345,11 @@ impl Document {
                     .and_then(crate::sniff::extract_mime_type),
             )),
         );
-        // Kept raw until `finish_parse`: the Apache `text/plain` check needs
-        // the exact bytes the server sent before the extraction runs
-        // (<https://mimesniff.spec.whatwg.org/#supplied-mime-type-detection-algorithm>).
-        self.response_content_type.clone_from(&head.content_type);
-        self.response_policy = policy.csp.clone();
-        self.response_sandbox = policy.sandbox;
-        self.response_referrer_policy = policy.referrer_policy;
-        // A local-scheme document clones its creator's whole container, and its
-        // creator's secure-context bit is the one it inherits. A document with no
-        // creator has no bit to inherit, so its own URL decides
-        // (<https://html.spec.whatwg.org/multipage/browsers.html#determining-navigation-params-policy-container>).
-        let creator = match &head.source {
-            crate::protocol::ResponseSource::Http(_) => self.creator_secure_context,
-            crate::protocol::ResponseSource::Local { inherited } => inherited
-                .as_ref()
-                .map(|policy| policy.secure_context)
-                .or(self.creator_secure_context),
-        };
-        self.response_secure_context = secure_context::is_secure_environment(&head.url, creator);
-        // A top-level document is isolated by its own headers. A nested one
-        // also needs its embedder's capability, and only the embedder policy
-        // applies to it; a local-scheme document inherits the whole decision
-        // with the rest of the policy container
-        // (<https://html.spec.whatwg.org/multipage/webappapis.html#concept-settings-object-cross-origin-isolated-capability>).
-        let creator_isolated = match &head.source {
-            crate::protocol::ResponseSource::Http(_) => self.creator_cross_origin_isolated,
-            crate::protocol::ResponseSource::Local { inherited } => inherited
-                .as_ref()
-                .map(|policy| policy.cross_origin_isolated)
-                .or(self.creator_cross_origin_isolated),
-        };
         let top_level = {
             let shared = self.shared.borrow();
             shared.tree.top_level(self.frame) == self.frame
         };
-        self.response_cross_origin_opener_policy = policy.cross_origin_opener_policy;
-        self.response_cross_origin_embedder_policy = policy.cross_origin_embedder_policy;
-        self.response_cross_origin_isolated = match &head.source {
-            crate::protocol::ResponseSource::Local { .. } => policy.cross_origin_isolated,
-            crate::protocol::ResponseSource::Http(_) => {
-                self.response_secure_context
-                    && policy.cross_origin_embedder_policy.compatible()
-                    && (if top_level {
-                        policy.cross_origin_opener_policy
-                            == crate::protocol::CrossOriginOpenerPolicy::SameOrigin
-                    } else {
-                        creator_isolated.unwrap_or(false)
-                    })
-            }
-        };
-        self.csp_from_response = true;
-        self.apply_mime_sniff = true;
-        self.mime_guard = crate::sniff::MimeGuard {
-            no_sniff: head.source.no_sniff(),
-            http: head.source.is_http(),
-        };
+        self.response.stage_head(head, top_level);
         // A response `Refresh` starts the document's one declarative refresh
         // (<https://html.spec.whatwg.org/multipage/document-lifecycle.html#creating-and-initializing-a-document-object>).
         if let Some(refresh) = head.source.refresh() {
@@ -2607,17 +2403,13 @@ impl Document {
     /// document against the new response's endpoints, so this is also set
     /// before the check.
     fn set_reporting_endpoints(&mut self, endpoints: Option<&str>) {
-        self.reporting_endpoints =
-            endpoints.map_or_default(crate::csp::parse_reporting_endpoints_value);
+        self.csp.set_reporting_endpoints(endpoints);
     }
 
     /// Feeds response bytes. The decoder holds them until the encoding is
     /// known, then the parser sees the markup.
     pub(crate) fn write_body(&mut self, bytes: &[u8]) {
-        if self.sniff_header.len() < crate::sniff::RESOURCE_HEADER_LEN {
-            let room = crate::sniff::RESOURCE_HEADER_LEN - self.sniff_header.len();
-            self.sniff_header.extend(bytes.iter().copied().take(room));
-        }
+        self.response.push_sniff_bytes(bytes);
         let Some(decoder) = self.decoder.as_mut() else {
             return;
         };
@@ -2642,7 +2434,7 @@ impl Document {
     pub(crate) fn end_body(&mut self) {
         if let Some(decoder) = self.decoder.take() {
             let (text, encoding) = decoder.finish();
-            self.character_set = encoding;
+            self.response.character_set = encoding;
             self.write_text(&text);
         }
         self.parser_eof = true;
@@ -2834,12 +2626,9 @@ impl Document {
             shared.detach_child_frames(self.frame);
         }
         self.load_fired = false;
-        self.will_declaratively_refresh = false;
-        self.pending_refresh = None;
-        if let Some(id) = self.refresh_timer.take() {
+        if let Some(id) = self.refresh.reset() {
             self.timers.remove(&id);
         }
-        self.refresh_target = None;
         self.pending_frame_loads.clear();
         for (_, request) in self.blitz_requests.drain() {
             Box::new(request.handler)
@@ -2850,7 +2639,7 @@ impl Document {
         self.subresource_bytes.clear();
         self.style_policies.clear();
         self.deferred_image_events.clear();
-        self.pending_csp_events.clear();
+        self.csp.clear_pending_events();
         self.image_load_delays.clear();
         self.connected_images.clear();
         self.timers.retain(|_, timer| timer.js_id.is_none());
@@ -3030,19 +2819,11 @@ impl Document {
     /// Replaces the world's policy with the response headers when this parse
     /// came from a navigation. `document.open()` leaves the flag unset.
     fn install_policy(&mut self) {
-        if self.csp_from_response {
-            self.world.borrow_mut().policy = PolicyContainer {
-                csp: self.response_policy.clone(),
-                sandbox: self.response_sandbox,
-                referrer_policy: self.response_referrer_policy,
-                secure_context: self.response_secure_context,
-                cross_origin_opener_policy: self.response_cross_origin_opener_policy,
-                cross_origin_embedder_policy: self.response_cross_origin_embedder_policy,
-                cross_origin_isolated: self.response_cross_origin_isolated,
-            };
+        if let Some(policy) = self.response.policy.clone() {
+            self.world.borrow_mut().policy = policy;
             return;
         }
-        if let Some(policy) = self.inherited_policy.take() {
+        if let Some(policy) = self.response.inherited_policy.take() {
             self.world.borrow_mut().policy = policy;
         }
     }
@@ -3145,41 +2926,23 @@ impl Document {
         drop(delay);
         // Writes queued while the parser was active join this parse; later
         // writes have no incremental parser to feed (see `write_text`).
-        if self.apply_mime_sniff {
-            // The stored value is the raw header list. The Apache check needs
-            // it exactly as sent; the sniff needs the extracted MIME type.
-            // mimesniff names "the value of the last Content-Type header" as
-            // the supplied type, but browsers extract — last value that
-            // parses, `*/*` skipped — and the WPT `fetch/content-type`
-            // expectations follow the browsers
-            // (<https://fetch.spec.whatwg.org/#concept-header-extract-mime-type>,
-            // <https://mimesniff.spec.whatwg.org/#supplied-mime-type-detection-algorithm>).
-            let raw = self.response_content_type.as_deref();
-            let supplied = raw.and_then(crate::sniff::extract_mime_type);
-            let apache =
-                self.mime_guard.http && raw.is_some_and(crate::sniff::apache_bug_content_type);
-            self.response_content_type = Some(crate::sniff::sniff_mime(
-                &self.sniff_header,
-                supplied.as_deref(),
-                self.mime_guard.no_sniff,
-                apache,
-            ));
-        }
+        self.response.sniff_content_type();
         // XML MIME types use the XML parser. HTML, and a script's
         // `document.open()`, do not
         // (<https://html.spec.whatwg.org/multipage/parsing.html#xml-parser>,
         // <https://mimesniff.spec.whatwg.org/#xml-mime-type>).
         let parsed = if let Some(content_type) = self
-            .response_content_type
+            .response
+            .content_type
             .as_deref()
             .and_then(crate::xml::navigated_content_type)
         {
             let mut parsed =
                 crate::xml::parse_navigated(&buffer, content_type, self.blitz_config());
-            parsed.character_set = self.character_set;
+            parsed.character_set = self.response.character_set;
             // The parser needs the XML kind; `contentType` reports the
             // actual essence (`application/atom+xml`, not `application/xml`).
-            if let Some(header) = self.response_content_type.as_deref() {
+            if let Some(header) = self.response.content_type.as_deref() {
                 parsed.content_type = crate::xml::document_content_type(header);
             }
             parsed
@@ -3191,7 +2954,8 @@ impl Document {
             // (<https://mimesniff.spec.whatwg.org/#sniffing-a-mime-type>,
             // <https://html.spec.whatwg.org/multipage/rendering.html#the-pre-element>).
             let plain = self
-                .response_content_type
+                .response
+                .content_type
                 .as_deref()
                 .and_then(crate::sniff::extract_mime_type)
                 .is_some_and(|mime| {
@@ -3209,12 +2973,12 @@ impl Document {
                 buffer
             };
             let mut parsed = crate::parse_html(&markup, self.blitz_config());
-            parsed.character_set = self.character_set;
+            parsed.character_set = self.response.character_set;
             // A non-XML response still records its MIME type on the
             // document. Images, style sheets, and plain text in a frame
             // parse as HTML wrapping, but `contentType` is the type
             // (<https://html.spec.whatwg.org/multipage/nav-history-apis.html#concept-document-content-type>).
-            if let Some(header) = self.response_content_type.as_deref() {
+            if let Some(header) = self.response.content_type.as_deref() {
                 parsed.content_type = crate::xml::document_content_type(header);
             }
             parsed
@@ -3501,7 +3265,7 @@ impl Document {
                     violation.column_number = creator.column;
                 }
                 if violation.status_code == 0 {
-                    violation.status_code = self.http_status;
+                    violation.status_code = self.csp.http_status;
                 }
             }
         }
@@ -3517,7 +3281,8 @@ impl Document {
     /// (<https://w3c.github.io/webappsec-csp/#report-violation>).
     fn queue_csp_events(&mut self, violations: Vec<crate::csp::Violation>) {
         if self.world.borrow().parser_active {
-            self.pending_csp_events
+            self.csp
+                .pending_events
                 .push_back(Task::CspViolation(violations));
         } else {
             self.tasks.push_back(Task::CspViolation(violations));
@@ -3642,6 +3407,7 @@ impl Document {
     fn reporting_url(&self, names: &[String]) -> Option<Url> {
         for name in names {
             let url = self
+                .csp
                 .reporting_endpoints
                 .iter()
                 .find(|(endpoint, _)| endpoint == name)
@@ -4471,12 +4237,7 @@ impl Document {
                 None => Vec::new(),
             }
         };
-        if events.is_empty() {
-            return;
-        }
-        self.pending_scroll_events.extend(events);
-        if !self.scroll_events_queued {
-            self.scroll_events_queued = true;
+        if self.ui_events.push_scroll(events) {
             self.tasks.push_back(Task::ScrollEvents);
         }
     }
@@ -4493,12 +4254,7 @@ impl Document {
                 None => Vec::new(),
             }
         };
-        if events.is_empty() {
-            return;
-        }
-        self.pending_animation_events.extend(events);
-        if !self.animation_events_queued {
-            self.animation_events_queued = true;
+        if self.ui_events.push_animation(events) {
             self.tasks.push_back(Task::AnimationEvents);
         }
     }
@@ -4719,7 +4475,7 @@ impl Document {
     /// wins; a later one is ignored
     /// (<https://html.spec.whatwg.org/multipage/semantics.html#attr-meta-http-equiv-refresh>).
     fn start_declarative_refresh(&mut self, value: &str) {
-        if self.will_declaratively_refresh
+        if self.refresh.is_scheduled()
             || self
                 .world
                 .borrow()
@@ -4732,8 +4488,7 @@ impl Document {
         let Some((target, delay)) = parse_declarative_refresh(value, &document_url) else {
             return;
         };
-        self.will_declaratively_refresh = true;
-        self.pending_refresh = Some((target, delay));
+        self.refresh.schedule(target, delay);
         self.arm_refresh();
     }
 
@@ -4742,23 +4497,17 @@ impl Document {
     /// the document already loaded
     /// (<https://html.spec.whatwg.org/multipage/semantics.html#attr-meta-http-equiv-refresh>).
     fn arm_refresh(&mut self) {
-        if !self.load_fired || self.refresh_timer.is_some() {
+        if !self.load_fired {
             return;
         }
-        let Some((target, delay)) = self.pending_refresh.take() else {
-            return;
-        };
-        self.refresh_target = Some(target);
-        let id = self.schedule_timer(delay);
-        self.refresh_timer = Some(id);
+        let mut refresh = std::mem::take(&mut self.refresh);
+        refresh.arm(|delay| self.schedule_timer(delay));
+        self.refresh = refresh;
     }
 
     /// Navigates this document's browsing context to its armed refresh target,
     /// using this document as the navigation's source.
-    fn fire_refresh(&mut self) {
-        let Some(target) = self.refresh_target.take() else {
-            return;
-        };
+    fn fire_refresh(&mut self, target: &Url) {
         let navigation = FrameNavigation::get(
             crate::js::NavigationTarget::Target(crate::protocol::TargetName::Current),
             target.to_string(),
@@ -4792,7 +4541,7 @@ impl Document {
         self.drain_blitz_fetches();
         if !self.world.borrow().parser_active {
             self.tasks.append(&mut self.deferred_image_events);
-            self.tasks.append(&mut self.pending_csp_events);
+            self.tasks.append(&mut self.csp.pending_events);
         }
         if self.load_fired {
             return false;
@@ -4976,7 +4725,7 @@ impl Document {
         let violations = gate.redirected_violations(&self.url, final_url, request_url);
         let blocked = crate::csp::blocks(&violations);
         if !violations.is_empty() {
-            self.embedder_csp_reports.push((embedder, violations));
+            self.csp.embedder_reports.push((embedder, violations));
         }
         blocked
     }
@@ -5019,7 +4768,7 @@ impl Document {
     pub(crate) fn take_embedder_csp_reports(
         &mut self,
     ) -> Vec<(FrameId, Vec<crate::csp::Violation>)> {
-        std::mem::take(&mut self.embedder_csp_reports)
+        std::mem::take(&mut self.csp.embedder_reports)
     }
 
     /// Whether the response URL of a completed request violates the policy
