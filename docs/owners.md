@@ -22,7 +22,8 @@ it (#239).
 | HTTP cache | `crates/browser/src/network.rs` | the browser's response store |
 | Per-origin key/value rows | `crates/browser/src/storage.rs` (`StorageAreas`) | `StorageKind` plus opaque encoded values |
 | IndexedDB databases and records | `crates/renderer/src/js/scripts/web/indexeddb.js` | the `indexeddb` area through the storage seam |
-| Carrier dial adapter | `crates/dial` | one conversion from `DialRequest` to `net::Request` |
+| Carrier dial adapter | `crates/dial` | one conversion from `DialRequest` to `net::Request`, plus the buffered body reader |
+| Wasm host contract | `crates/wasm/wit/browser.wit` | one `WireRequest` per `host.start-fetch`; policy stays in `net` |
 | WPT timeout policy | `tools/wpt/timeouts.py` | flags from `cli.py` |
 | WPT test selection | `tools/wpt-harness/src/suite.rs` (manifest) | — |
 | WPT response metadata | `tools/wpt-harness/src/{services,wrapper,template}.rs` | — |

@@ -1,127 +1,78 @@
 /// The browser component's host contract.
 ///
-/// The component owns pages, cookies, and redirect policy; the host owns the
-/// network transport and performs one HTTP exchange per request. Every rule
-/// below is a host obligation. A host that cannot honor one must answer with a
-/// `fetch-error` rather than guess, because the component trusts these answers
-/// for cookie and origin decisions.
-package tinybrowser:browser@0.2.0;
+/// The component runs the fetch algorithm itself: redirects, cookies, CORS,
+/// `Sec-Fetch-*`, and the referrer are decided before a request reaches this
+/// contract, exactly as they are in the native browser. The host moves bytes
+/// for one hop and reports what came back. It must not add policy of its own,
+/// because every rule it would re-apply was already applied to the request it
+/// receives.
+package tinybrowser:browser@0.3.0;
 
 interface types {
-    enum fetch-kind {
-        /// A script's `fetch()` or `XMLHttpRequest`.
-        js-fetch,
-        /// A classic `<script src>` load.
-        classic-script,
-        /// A JavaScript module graph fetch.
-        module-script,
-        /// A `<link rel=stylesheet>` sheet.
-        stylesheet,
-        /// An `<img src>` resource, or a CSS image.
-        image,
-        /// A web font a CSS `@font-face` rule names.
-        font,
-        /// A child frame's navigation.
-        frame-load,
+    /// One header field, name and value verbatim.
+    ///
+    /// Values are isomorphic: each `u8` of the wire value is the code point
+    /// with the same number. A header byte that is not ASCII therefore survives
+    /// the round trip instead of being rejected or replaced
+    /// (<https://infra.spec.whatwg.org/#isomorphic-encode>).
+    record header {
+        name: string,
+        value: string,
     }
 
-    /// Fetch's request mode, as the component resolved it
-    /// (<https://fetch.spec.whatwg.org/#concept-request-mode>).
-    enum fetch-mode {
-        /// The response must pass the CORS check.
-        cors,
-        /// The response is opaque; a cross-origin body is not readable.
-        no-cors,
-        /// A cross-origin response is a network error.
-        same-origin,
-        /// Navigation mode: like `no-cors`, and used for a frame load.
-        navigate,
-    }
-
-    /// Fetch's credentials mode (<https://fetch.spec.whatwg.org/#concept-request-credentials-mode>).
-    enum fetch-credentials {
-        omit,
-        same-origin,
-        %include,
-    }
-
-    /// Fetch's redirect mode (<https://fetch.spec.whatwg.org/#concept-request-redirect-mode>).
-    enum fetch-redirect {
-        follow,
-        error,
-        manual,
-    }
-
+    /// One HTTP exchange, shaped entirely by the fetch core.
+    ///
+    /// `id` correlates the exchange with its completion: the component
+    /// allocates it, and the host must report it back unchanged.
+    ///
+    /// `owner` is the component's tab identity. The host steps that tab after
+    /// it delivers the completion, which is why the component names it rather
+    /// than the host: a page's first request starts while its constructor
+    /// runs, before the host holds the tab handle.
+    ///
+    /// `headers` is the complete request header list for this hop, `Cookie`
+    /// and `Sec-Fetch-*` included because the component added them. `method`,
+    /// `url`, and `body` are likewise final: a redirect the component chose to
+    /// follow arrives as a separate request, so the host never rewrites this
+    /// one.
     record fetch-request {
-        /// Correlates this exchange with its completion. Unique within the
-        /// component instance, and reused for nothing else.
         id: u64,
-        /// Component-side tab identity. The host uses it to find the tab to
-        /// step, because a page's first request starts while its constructor
-        /// runs and the host does not have the tab handle yet.
         owner: u64,
-        kind: fetch-kind,
-        /// The mode the component resolved for this dial. A host that cannot
-        /// honor it answers `fetch-error`; it must not substitute its own
-        /// (a browser `fetch` defaults to `cors`, which changes whether a
-        /// cross-origin subresource loads at all).
-        mode: fetch-mode,
-        /// The credentials mode, so the host can apply the same cookie rules
-        /// the component's `cookie` header already reflects.
-        credentials: fetch-credentials,
-        /// The redirect mode. `error` must turn a 3xx into a failed exchange;
-        /// `manual` must report the 3xx unreduced so the component can project
-        /// an opaque redirect.
-        redirect: fetch-redirect,
-        /// Absolute `http`/`https` URL of this exchange.
+        /// Request method, in the spelling the HTTP grammar accepts.
+        method: string,
+        /// Absolute `http`/`https` URL, without a fragment.
         url: string,
-        /// Document URL the dial started from.
-        initiator: string,
-        /// Hard cap on `fetch-response.body`; a larger body is `limit`.
+        headers: list<header>,
+        /// Request body bytes, absent for a bodyless request.
+        body: option<list<u8>>,
+        /// Milliseconds left before this hop's deadline, or absent when the
+        /// hop has none. The host aborts the exchange at it and answers
+        /// `timeout`; a host that ignores it is late rather than wrong,
+        /// because the component checks the same deadline when the answer
+        /// arrives.
+        timeout-ms: option<u64>,
+        /// Hard cap on `fetch-response.body`. A body larger than this is
+        /// `limit`, not a truncated body: the component must never see a
+        /// prefix it would treat as the whole response.
         max-body-bytes: u64,
-        /// Value for the `Cookie` request header of this exchange.
-        ///
-        /// The component computed it for `url` alone. The host must send it to
-        /// `url`'s origin and to no other: a redirect the component chooses to
-        /// follow arrives as a new request with its own header, so reusing this
-        /// value for another origin would disclose one site's cookies to
-        /// another.
-        ///
-        /// Browsers forbid scripts from setting `Cookie` and from reading
-        /// `Set-Cookie`, so a host that runs in a browser can only carry this
-        /// value through an intermediary it controls, such as the development
-        /// proxy described in the repository notes.
-        cookie: string,
     }
 
+    /// One HTTP exchange's answer, unreduced.
+    ///
+    /// A 3xx status is reported as a status with its `Location` header in
+    /// `headers`; the component decides whether to follow it. The host must
+    /// not follow redirects itself, because the following exchanges carry
+    /// different headers, a different cookie set, and possibly a different
+    /// tainting.
     record fetch-response {
-        /// HTTP status of this exchange, unreduced. A 3xx status is reported
-        /// as such so the component can decide whether to follow it.
         status: u16,
-        /// Absolute URL the response bytes came from, when the host knows one
-        /// that differs from `fetch-request.url`.
-        ///
-        /// The component stores this exchange's `set-cookies` against it and
-        /// measures the cross-site taint from the request URL to it, so a host
-        /// that followed redirects itself must report the landing URL or its
-        /// cookies would be filed under the site it started from. The
-        /// component falls back to the request URL, so an empty value is safe
-        /// only when no redirect happened.
-        final-url: string,
-        /// `Content-Type` header, when the transport exposes it.
-        content-type: option<string>,
-        /// Every `Set-Cookie` line of this exchange, verbatim.
-        ///
-        /// The component parses and stores them against the request URL. The
-        /// host must not filter by `HttpOnly` and must not pre-join lines. Each
-        /// exchange reports its own lines, so a redirect hop's cookies are
-        /// stored even though the host never reports that hop as a response.
-        set-cookies: list<string>,
-        /// `Location` header of a redirect status, when the host can see it.
-        ///
-        /// A host that cannot observe redirects leaves this empty and reports
-        /// the final exchange instead; see `start-fetch`.
-        location: option<string>,
+        /// Whether the exchange ran over HTTP/2, which has no reason phrase
+        /// (<https://www.rfc-editor.org/rfc/rfc9113#section-8.3.2>).
+        http2: bool,
+        /// Every response header, verbatim, `Set-Cookie` lines included and
+        /// unjoined. The component parses and stores them itself, and decides
+        /// which ones page script may read.
+        headers: list<header>,
         /// The whole response body, capped by `fetch-request.max-body-bytes`.
         ///
         /// This transport has no progressive delivery: a page that asked for a
@@ -133,13 +84,13 @@ interface types {
     enum fetch-error {
         /// Name resolution failed.
         dns,
-        /// Connection or proxy failure, including rejection by CORS.
+        /// Connection or proxy failure.
         connect,
         /// TLS handshake or certificate verification failed.
         tls,
-        /// A deadline expired.
+        /// The hop's deadline expired.
         timeout,
-        /// `max-body-bytes` was exceeded, or a redirect cap was hit.
+        /// `max-body-bytes` was exceeded.
         limit,
         /// The host is at capacity for this request.
         queue-full,
@@ -154,30 +105,21 @@ interface host {
 
     /// Performs one HTTP exchange and returns whether it was accepted.
     ///
-    /// The exchange must not follow redirects when the host can avoid it: a
-    /// 3xx status and its `Location` are reported back, and the component
-    /// decides whether to ask for another exchange with a new request. A host
-    /// that cannot see redirects, such as a browser `fetch` without an
-    /// intermediary, may follow them itself and report the final response,
-    /// whose `final-url` and `set-cookies` must then describe that last
-    /// exchange; the component sees a status it does not follow, attributes
-    /// the response to `final-url`, and uses it. That fallback cannot carry
-    /// cookies honestly, because such a host can neither set `Cookie` nor read
-    /// `Set-Cookie`.
-    ///
-    /// The request's `mode`, `credentials`, and `redirect` are the component's
-    /// resolved values, not hints. A host must apply them (a browser
-    /// `fetch(..., {mode, credentials, redirect})` maps directly) or answer
-    /// `fetch-error`; substituting a default changes whether a cross-origin
-    /// resource loads and whether a redirect is followed at all.
-    ///
-    /// A `true` answer obligates the host to call `engine.complete-fetch`
-    /// exactly once for this `id`, unless the component cancels it first. The
-    /// call returns before the exchange settles. A `false` answer means the
-    /// host cannot serve this request at all, such as a non-HTTP scheme or an
-    /// unavailable intermediary; the component fails the dial itself, so the
+    /// The exchange is exactly the request it carries: one URL, one method,
+    /// one header list, one body. A `true` answer obligates the host to call
+    /// `engine.complete-fetch` exactly once for this `id`, unless the component
+    /// cancels it first. The call returns before the exchange settles. A
+    /// `false` answer means the host cannot serve this request at all, such as
+    /// an unavailable intermediary; the component fails the dial itself, so the
     /// host must not complete it. Capacity pressure is instead `true` followed
     /// by `complete-fetch` with `queue-full`.
+    ///
+    /// Cookies travel in the header list, because the component owns the jar:
+    /// it sends `Cookie` and reads `Set-Cookie`. A host that cannot set or read
+    /// those fields — a browser `fetch`, which forbids both — needs an
+    /// intermediary it controls, such as the development proxy described in
+    /// the repository notes. The same intermediary is what lets a host answer
+    /// a 3xx status instead of following it.
     start-fetch: func(request: fetch-request) -> bool;
 
     /// Stops work for an unfinished exchange.

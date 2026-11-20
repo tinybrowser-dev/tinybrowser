@@ -12,9 +12,10 @@ workspace = true
 crate-type = ["cdylib"]
 
 [dependencies]
+bytes = "1"
+dial = { workspace = true }
 renderer = { workspace = true }
 webstorage = { workspace = true }
-cookies = { workspace = true }
 net = { workspace = true }
 url = { version = "2", features = ["serde"] }
 wit-bindgen = "0.62"

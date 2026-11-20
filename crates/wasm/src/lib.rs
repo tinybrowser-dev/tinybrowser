@@ -1,25 +1,33 @@
 //! Browser-loadable tinybrowser page engine component.
 //!
-//! This is the browser side of tinybrowser, compiled as a WebAssembly
-//! component. It owns pages, cookies, and the redirect policy of a dial; the
-//! host owns the network transport and performs exactly one HTTP exchange per
-//! `host.start-fetch` call.
+//! The component runs the browser's own fetch core: the driver shapes one page
+//! dial with [`dial`], [`net::Agent`] applies redirects, cookies, CORS,
+//! `Sec-Fetch-*`, and the referrer, and the host transport moves the bytes one
+//! exchange at a time through the host contract. The native browser runs the
+//! same core over hyper, so the two hosts differ in who owns a socket, not in
+//! what a page sees.
+//!
+//! The component has no executor. A dial's future is polled once when the
+//! renderer asks for it, then again each time the host delivers the exchange
+//! that future waits on — the same loop `engine.step` already drives.
+
+mod driver;
+mod host_transport;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
-use std::time::SystemTime;
+use std::task::{Context, Poll, Waker};
 
-use cookies::{
-    CookieJar, CookieOp, InitiatorKind, RetrievalKind, SameSiteCookiePolicy, schemeful_same_site,
-};
+use net::{Agent, AgentOptions, Transport};
 use renderer::{
-    BrowserEvent, BrowsingContextHost, DialCompletion, DialFailure, DialKind, DialOutcome,
-    DialRequest, EmbeddedRenderer, HistoryHandling, MAX_RESPONSE_BODY_BYTES, MessagingHost, Mount,
-    NetworkHost, RendererEvent, StorageChange, StorageHost, StorageKind,
+    BrowserEvent, BrowsingContextHost, DialCancellation, DialCompletion, DialFailure, DialOutcome,
+    DialRequest, EmbeddedRenderer, HistoryHandling, MessagingHost, Mount, NetworkHost,
+    RendererEvent, StorageChange, StorageHost, StorageKind,
 };
-use url::Url;
 use webstorage::StorageArea;
 
 #[expect(
@@ -35,23 +43,41 @@ mod bindings {
     export!(Component with_types_in self);
 }
 
-use bindings::exports::tinybrowser::browser::engine::{
+use crate::bindings::exports::tinybrowser::browser::engine::{
     Event, FrameEvent, Guest, GuestTab, HistoryHandling as HostHistoryHandling,
 };
-use bindings::tinybrowser::browser::types::{
-    FetchCredentials, FetchError, FetchKind, FetchMode, FetchRedirect, FetchRequest, FetchResponse,
-};
+use crate::bindings::tinybrowser::browser::host;
+use crate::bindings::tinybrowser::browser::types::{FetchError, FetchResponse};
+use crate::host_transport::HostTransport;
 
-/// Redirect hops a single dial may follow.
+/// The component's fetch core and the port it moves bytes through.
 ///
-/// Matches the native transport's cap; see
-/// <https://fetch.spec.whatwg.org/#http-redirect-fetch>.
-const MAX_REDIRECTS: u32 = 20;
+/// One instance serves every tab: the agent owns the cookie jar, so every dial
+/// must pass through the same transport for the jar to see one set of
+/// responses.
+struct Network {
+    agent: Agent,
+    transport: Arc<HostTransport>,
+}
 
-/// Statuses the redirect algorithm follows.
-///
-/// <https://fetch.spec.whatwg.org/#http-redirect-fetch>
-const REDIRECT_STATUSES: [u16; 5] = [301, 302, 303, 307, 308];
+fn network() -> &'static Network {
+    static NETWORK: OnceLock<Network> = OnceLock::new();
+    NETWORK.get_or_init(|| {
+        let transport = Arc::new(HostTransport::new(
+            u64::try_from(renderer::MAX_RESPONSE_BODY_BYTES).unwrap_or(u64::MAX),
+        ));
+        // Every hop is bounded by the per-call cap; each dial's own deadline
+        // travels on its request, so a page's `timeout_ms` can only tighten it.
+        let agent = Agent::with_transport(
+            AgentOptions {
+                timeout_per_call: Some(dial::PAGE_FETCH_TIMEOUT),
+                ..AgentOptions::default()
+            },
+            Arc::clone(&transport) as Arc<dyn Transport>,
+        );
+        Network { agent, transport }
+    })
+}
 
 struct Component;
 
@@ -59,55 +85,21 @@ impl Guest for Component {
     type Tab = Tab;
 
     fn complete_fetch(id: u64, result: Result<FetchResponse, FetchError>) -> bool {
-        let Some(pending) = lock(pending_fetches()).remove(&id) else {
+        let Some((registry, dial_id)) = lock(waiting_dials()).remove(&id) else {
             return false;
         };
-        let PendingFetch {
-            owner,
-            mut chain,
-            completion,
-        } = pending;
-        let Some(completion) = completion else {
+        let Some(mut dial) = lock(&registry.dials).remove(&dial_id) else {
             return false;
         };
-        match result {
-            Err(error) => completion(Err(decode_fetch_error(error))),
-            Ok(response) => {
-                // A host that cannot see redirects answers with the exchange
-                // it ended on, so attribute this response to the URL it
-                // reports. Storing it against the requested hop would file one
-                // site's cookies under another's name. Store before following:
-                // the next hop's header depends on this response.
-                let source = reported_url(&chain, &response);
-                chain.cross_site_redirect |= !schemeful_same_site(&chain.url, &source);
-                store_hop_cookies(&source, &chain, &response);
-                // From here the dial stands where this response came from: a
-                // relative `Location` resolves against that, not against the
-                // hop that was requested before the host moved us.
-                chain.url = source;
-                match next_hop(&chain, &response) {
-                    Ok(Some(next)) => {
-                        let redirects = chain.followed.saturating_add(1);
-                        if let Some(csp) = &chain.csp {
-                            let document = chain.initiator.clone().unwrap_or_else(|| next.clone());
-                            if !csp.allows(&document, &next, redirects) {
-                                // The renderer reports `final_url` and drops the body.
-                                completion(Ok(csp_blocked(&next)));
-                                return true;
-                            }
-                        }
-                        chain.followed = chain.followed.saturating_add(1);
-                        chain.cross_site_redirect |= !schemeful_same_site(&chain.url, &next);
-                        chain.url = next;
-                        start_hop(owner, chain, completion);
-                    }
-                    Ok(None) => {
-                        completion(decode_fetch_result(response, &chain.url));
-                    }
-                    Err(failure) => completion(Err(failure)),
-                }
+        if !network().transport.complete(id, result) {
+            // The exchange is gone, so nothing will resume this future. Fail
+            // the dial rather than park the tab with no one to wake it.
+            if let Some(completion) = dial.completion.take() {
+                completion(Err(DialFailure::Connect));
             }
+            return false;
         }
+        DialRegistry::poll(&registry, dial_id, dial);
         true
     }
 }
@@ -121,9 +113,7 @@ impl GuestTab for Tab {
     fn new(url: String, html: String) -> Result<Self, String> {
         let services = Arc::new(WasmServices::new());
         let owner = services.owner;
-        // The component is its own host; a host-supplied identity arrives with
-        // the `fetch-request` contract change in #192.
-        let mut renderer = EmbeddedRenderer::new(services, net::ValidIdentity::default());
+        let mut renderer = EmbeddedRenderer::new(services, network().agent.identity().clone());
         let mount = Mount {
             head: renderer::ResponseHead::local(
                 url::Url::parse(&url).map_err(|_| format!("invalid url: {url}"))?,
@@ -236,51 +226,92 @@ fn to_event(event: RendererEvent) -> Option<Event> {
     }
 }
 
-/// One dial's state, kept across its redirect hops.
-struct Chain {
-    dial: u64,
-    /// URL of the hop in flight.
-    url: Url,
-    /// Document URL the dial started from, for `SameSite` and the
-    /// credentials-mode origin comparison.
-    initiator: Option<Url>,
-    kind: DialKind,
-    /// The request's mode, credentials mode, and redirect mode. The host
-    /// applies them, and the component keeps them because the credentials
-    /// mode also decides whether a cookie header is computed at all.
-    cors: net::cors::CorsParameters,
-    /// Hops already followed.
-    followed: u32,
-    /// Whether any hop so far moved to another site.
-    cross_site_redirect: bool,
-    /// Policy checked before each redirect is followed.
-    csp: Option<renderer::RedirectGate>,
-    /// The cookie partition this dial belongs to, from the regular realm's
-    /// top-level site.
-    partition_key: Option<String>,
+/// The dials one tab has in flight.
+struct DialRegistry {
+    dials: Mutex<HashMap<u64, Dial>>,
 }
 
-struct PendingFetch {
+/// One dial: its fetch future, and who to answer when it ends.
+struct Dial {
     owner: u64,
-    chain: Chain,
-    /// Taken exactly once: by the last hop's completion, or by tab teardown.
+    future: Pin<Box<dyn Future<Output = Result<DialOutcome, DialFailure>> + Send>>,
+    /// Taken exactly once: by the poll that finishes the dial, or by a
+    /// cancellation.
     completion: Option<DialCompletion>,
+    /// The host exchange this dial waits on while it is parked.
+    waiting_on: Option<u64>,
 }
 
-/// Every exchange in flight, across all tabs of this component instance.
+impl DialRegistry {
+    fn new() -> Self {
+        Self {
+            dials: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Polls one dial once, then either completes it or parks it until the host
+    /// answers the exchange that poll opened.
+    fn poll(registry: &Arc<Self>, id: u64, mut dial: Dial) {
+        let transport = &network().transport;
+        let mut context = Context::from_waker(Waker::noop());
+        transport.begin_poll(dial.owner);
+        let polled = dial.future.as_mut().poll(&mut context);
+        let opened = transport.end_poll();
+        match polled {
+            Poll::Ready(result) => {
+                if let Some(completion) = dial.completion.take() {
+                    completion(result);
+                }
+            }
+            Poll::Pending => match opened {
+                Some(host_id) => {
+                    dial.waiting_on = Some(host_id);
+                    lock(waiting_dials()).insert(host_id, (Arc::clone(registry), id));
+                    lock(&registry.dials).insert(id, dial);
+                }
+                None => {
+                    // The core is waiting on something no exchange will answer.
+                    // Fail the dial instead of parking the tab forever.
+                    if let Some(completion) = dial.completion.take() {
+                        completion(Err(DialFailure::Connect));
+                    }
+                }
+            },
+        }
+    }
+
+    /// Fails one dial and stops the host work it started.
+    fn cancel(&self, id: u64) {
+        let Some(mut dial) = lock(&self.dials).remove(&id) else {
+            return;
+        };
+        Self::stop(&mut dial);
+        if let Some(completion) = dial.completion.take() {
+            completion(Err(DialFailure::Cancelled));
+        }
+    }
+
+    /// Stops the host exchange a parked dial waits on, if any.
+    fn stop(dial: &mut Dial) {
+        let Some(host_id) = dial.waiting_on.take() else {
+            return;
+        };
+        lock(waiting_dials()).remove(&host_id);
+        network().transport.abandon(host_id);
+        host::cancel_fetch(host_id);
+    }
+}
+
+/// Dials parked on a host exchange, keyed by the exchange the host must answer.
 ///
-/// Entries appear only for dials the renderer asked for, and the renderer caps
-/// concurrent dials per document and frames per engine, so a host that honors
-/// its completion obligation cannot make this grow without bound.
-fn pending_fetches() -> &'static Mutex<HashMap<u64, PendingFetch>> {
-    static PENDING: OnceLock<Mutex<HashMap<u64, PendingFetch>>> = OnceLock::new();
-    PENDING.get_or_init(|| Mutex::new(HashMap::new()))
-}
+/// Every entry is removed by the completion, the cancellation, or the tab
+/// teardown that ends it, so the map only ever holds work the host still owes.
+/// The tab and dial an exchange resumes when the host answers it.
+type Parked = (Arc<DialRegistry>, u64);
 
-/// Cookie state shared by every tab in one component instance.
-fn cookie_jar() -> &'static Mutex<CookieJar> {
-    static JAR: OnceLock<Mutex<CookieJar>> = OnceLock::new();
-    JAR.get_or_init(|| Mutex::new(CookieJar::default()))
+fn waiting_dials() -> &'static Mutex<HashMap<u64, Parked>> {
+    static WAITING: OnceLock<Mutex<HashMap<u64, Parked>>> = OnceLock::new();
+    WAITING.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// The component's local storage areas, keyed by origin. Entries keep
@@ -305,339 +336,59 @@ fn session_storage() -> &'static Mutex<HashMap<u64, HashMap<renderer::StorageKey
     NAMESPACES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Locks a shared map or jar, recovering from a panicking holder.
+/// Locks a shared map or registry, recovering from a panicking holder.
 ///
-/// A poisoned lock means some earlier operation panicked. The jar and the
-/// pending map hold no cross-entry invariant a panic can break, so the next
-/// caller can continue with the state that was committed.
+/// A poisoned lock means some earlier operation panicked. These maps hold no
+/// cross-entry invariant a panic can break, so the next caller can continue
+/// with the state that was committed.
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Sends one hop to the host and records it until its completion arrives.
-///
-/// HTTP is GET-only here, so a redirect never changes the method or drops a
-/// body.
-fn start_hop(owner: u64, chain: Chain, completion: DialCompletion) {
-    let id = NEXT_FETCH.fetch_add(1, Ordering::Relaxed);
-    let request = FetchRequest {
-        id,
-        owner,
-        kind: match chain.kind {
-            DialKind::JsFetch => FetchKind::JsFetch,
-            DialKind::ClassicScript => FetchKind::ClassicScript,
-            DialKind::ModuleScript => FetchKind::ModuleScript,
-            DialKind::Stylesheet => FetchKind::Stylesheet,
-            DialKind::Image => FetchKind::Image,
-            DialKind::Font => FetchKind::Font,
-            DialKind::FrameLoad => FetchKind::FrameLoad,
-            // Unreachable: `start_dial` completes reports without a hop.
-            DialKind::CspReport => unreachable!("report-uri has no transport hop"),
-        },
-        url: chain.url.to_string(),
-        initiator: chain.initiator.as_ref().map_or_default(Url::to_string),
-        mode: host_mode(chain.cors.mode),
-        credentials: host_credentials(chain.cors.credentials),
-        redirect: host_redirect(chain.cors.redirect),
-        max_body_bytes: u64::try_from(MAX_RESPONSE_BODY_BYTES).unwrap_or(u64::MAX),
-        cookie: cookie_header(&chain),
-    };
-    lock(pending_fetches()).insert(
-        id,
-        PendingFetch {
-            owner,
-            chain,
-            completion: Some(completion),
-        },
-    );
-    if !bindings::tinybrowser::browser::host::start_fetch(&request) {
-        let pending = lock(pending_fetches()).remove(&id);
-        if let Some(completion) = pending.and_then(|pending| pending.completion) {
-            completion(Err(DialFailure::Connect));
-        }
-    }
-}
-
-/// The host-visible name for a request mode.
-fn host_mode(mode: net::cors::RequestMode) -> FetchMode {
-    match mode {
-        net::cors::RequestMode::Cors => FetchMode::Cors,
-        net::cors::RequestMode::NoCors => FetchMode::NoCors,
-        net::cors::RequestMode::SameOrigin => FetchMode::SameOrigin,
-        net::cors::RequestMode::Navigate => FetchMode::Navigate,
-    }
-}
-
-/// The host-visible name for a credentials mode.
-fn host_credentials(credentials: net::cors::CredentialsMode) -> FetchCredentials {
-    match credentials {
-        net::cors::CredentialsMode::Omit => FetchCredentials::Omit,
-        net::cors::CredentialsMode::SameOrigin => FetchCredentials::SameOrigin,
-        net::cors::CredentialsMode::Include => FetchCredentials::Include,
-    }
-}
-
-/// The host-visible name for a redirect mode.
-fn host_redirect(redirect: net::cors::RedirectMode) -> FetchRedirect {
-    match redirect {
-        net::cors::RedirectMode::Follow => FetchRedirect::Follow,
-        net::cors::RedirectMode::Error => FetchRedirect::Error,
-        net::cors::RedirectMode::Manual => FetchRedirect::Manual,
-    }
-}
-
-/// The `Cookie` header for the hop in flight.
-fn cookie_header(chain: &Chain) -> String {
-    let initiator = chain.initiator.as_ref().map(Url::origin);
-    let cross_origin = initiator
-        .as_ref()
-        .is_some_and(|initiator| *initiator != chain.url.origin());
-    if !net::cors::credentials_admitted(chain.cors.credentials, cross_origin) {
-        return String::new();
-    }
-    lock(cookie_jar()).cookie_string(CookieOp {
-        url: &chain.url,
-        now: SystemTime::now(),
-        kind: RetrievalKind::Http,
-        initiator_kind: InitiatorKind::Fetch,
-        method_is_safe: true,
-        initiator: initiator.as_ref(),
-        cross_site_redirect: chain.cross_site_redirect,
-        same_site_policy: SameSiteCookiePolicy::All,
-        partition_key: chain.partition_key.as_deref(),
-    })
-}
-
-/// Where a response came from, as far as the host can say.
-///
-/// The hop URL unless the host reports a different final URL, which is how a
-/// host that followed redirects itself tells us the bytes are not from the
-/// hop we asked for.
-fn reported_url(chain: &Chain, response: &FetchResponse) -> Url {
-    Url::parse(&response.final_url)
-        .ok()
-        .filter(|url| matches!(url.scheme(), "http" | "https"))
-        .unwrap_or_else(|| chain.url.clone())
-}
-
-/// Stores one exchange's `Set-Cookie` lines against the URL that sent them.
-///
-/// <https://httpwg.org/http-extensions/draft-ietf-httpbis-rfc6265bis.html#name-the-set-cookie-header-field>
-fn store_hop_cookies(url: &Url, chain: &Chain, response: &FetchResponse) {
-    if response.set_cookies.is_empty() {
-        return;
-    }
-    let now = SystemTime::now();
-    let initiator = chain.initiator.as_ref().map(Url::origin);
-    let mut jar = lock(cookie_jar());
-    for line in &response.set_cookies {
-        jar.store(
-            line,
-            CookieOp {
-                url,
-                now,
-                kind: RetrievalKind::Http,
-                initiator_kind: InitiatorKind::Fetch,
-                method_is_safe: true,
-                initiator: initiator.as_ref(),
-                cross_site_redirect: chain.cross_site_redirect,
-                same_site_policy: SameSiteCookiePolicy::All,
-                partition_key: chain.partition_key.as_deref(),
-            },
-        );
-    }
-}
-
-/// The redirect this response asks for, if the dial may follow it.
-///
-/// Mirrors the native transport's `followable_location`, redirect cap, and
-/// `resolve_location`; the fragment carry-over is
-/// <https://fetch.spec.whatwg.org/#http-redirect-fetch>.
-fn next_hop(chain: &Chain, response: &FetchResponse) -> Result<Option<Url>, DialFailure> {
-    if !REDIRECT_STATUSES.contains(&response.status) {
-        return Ok(None);
-    }
-    let Some(location) = response.location.as_deref() else {
-        return Ok(None);
-    };
-    if chain.followed >= MAX_REDIRECTS {
-        return Err(DialFailure::Limit);
-    }
-    let mut next = chain.url.join(location).map_err(|_| DialFailure::Connect)?;
-    if !matches!(next.scheme(), "http" | "https") {
-        return Err(DialFailure::Connect);
-    }
-    if next.fragment().is_none()
-        && let Some(fragment) = chain.url.fragment()
-    {
-        next.set_fragment(Some(fragment));
-    }
-    Ok(Some(next))
-}
-
-/// A response the WASM carrier builds without the fetch core.
-///
-/// The component still moves its own bytes until #192 puts it on the
-/// [`net::Transport`] port, so the outcome is spelled out here instead of a
-/// `DialOutcome` constructor a real fetch core would have decided.
-fn basic_outcome(
-    status: u16,
-    final_url: Url,
-    content_type: Option<String>,
-    headers: Vec<(String, String)>,
-    body: Vec<u8>,
-) -> DialOutcome {
-    DialOutcome {
-        status,
-        status_text: String::new(),
-        final_url,
-        content_type,
-        headers,
-        body: renderer::ResponseBody::Bytes(body),
-        response_type: net::cors::ResponseType::Basic,
-        crossed_origin: false,
-        redirect_count: 0,
-        cookies_stored: false,
-        referrer: None,
-    }
-}
-
-/// A redirect the policy refused. Status 0 is not a response the page can
-/// use; `final_url` is the blocked hop so the renderer can report it.
-fn csp_blocked(url: &Url) -> DialOutcome {
-    basic_outcome(0, url.clone(), None, Vec::new(), Vec::new())
-}
-
-fn decode_fetch_result(response: FetchResponse, hop_url: &Url) -> Result<DialOutcome, DialFailure> {
-    if response.body.len() > MAX_RESPONSE_BODY_BYTES {
-        return Err(DialFailure::Limit);
-    }
-    // A host that cannot see redirects reports the browser's final URL here.
-    // Fall back to the hop URL rather than failing a dial over metadata.
-    let final_url = Url::parse(&response.final_url)
-        .ok()
-        .filter(|url| matches!(url.scheme(), "http" | "https"))
-        .unwrap_or_else(|| hop_url.clone());
-    // This transport answers with the whole body, so a page that asked for a
-    // progressive body gets it buffered. The renderer accepts a body in place
-    // of a stream, and the page sees a response that was not streamed.
-    let mut outcome = basic_outcome(
-        response.status,
-        final_url,
-        response.content_type,
-        Vec::new(),
-        response.body,
-    );
-    // No host header list crosses this transport, so the response has none.
-    outcome.headers = Vec::new();
-    Ok(outcome)
-}
-
-fn decode_fetch_error(error: FetchError) -> DialFailure {
-    match error {
-        FetchError::Dns => DialFailure::Dns,
-        FetchError::Connect => DialFailure::Connect,
-        FetchError::Tls => DialFailure::Tls,
-        FetchError::Timeout => DialFailure::Timeout,
-        FetchError::Limit => DialFailure::Limit,
-        FetchError::QueueFull => DialFailure::QueueFull,
-        FetchError::Cancelled => DialFailure::Cancelled,
-    }
-}
-
 static NEXT_OWNER: AtomicU64 = AtomicU64::new(1);
-static NEXT_FETCH: AtomicU64 = AtomicU64::new(1);
+static NEXT_DIAL: AtomicU64 = AtomicU64::new(1);
 
 struct WasmServices {
     owner: u64,
+    registry: Arc<DialRegistry>,
 }
 
 impl WasmServices {
     fn new() -> Self {
         Self {
             owner: NEXT_OWNER.fetch_add(1, Ordering::Relaxed),
+            registry: Arc::new(DialRegistry::new()),
         }
     }
 }
 
 impl NetworkHost for WasmServices {
-    fn start_dial(
-        &self,
-        request: DialRequest,
-        completion: DialCompletion,
-    ) -> renderer::DialCancellation {
-        // A dial the component cannot shape is not a transport question, so it
-        // never reaches the host.
-        // `report-uri` POSTs have no body or method on this GET-only
-        // transport (`fetch-request` carries neither), so the report is
-        // dropped here instead of sent as a bogus GET. The native carrier
-        // sends the real POST; the renderer already fired the event.
-        if request.policy.kind() == DialKind::CspReport {
-            completion(Ok(basic_outcome(
-                204,
-                request.url,
-                None,
-                Vec::new(),
-                Vec::new(),
-            )));
-            return Box::new(|| {});
-        }
-        let shaped = matches!(request.url.scheme(), "http" | "https").then_some(request.url);
-        let Some(url) = shaped else {
+    fn start_dial(&self, request: DialRequest, completion: DialCompletion) -> DialCancellation {
+        // An opaque origin has no URL to fetch under and no initiator to name.
+        let Some(initiator) = request.initiator.to_url().map(|url| url.origin()) else {
             completion(Err(DialFailure::Connect));
             return Box::new(|| {});
         };
-        let dial = NEXT_FETCH.fetch_add(1, Ordering::Relaxed);
-        start_hop(
-            self.owner,
-            Chain {
-                dial,
-                url,
-                initiator: request.initiator.to_url(),
-                kind: request.policy.kind(),
-                cors: request.policy.cors(),
-                followed: 0,
-                cross_site_redirect: false,
-                csp: request.csp.as_deref().cloned(),
-                partition_key: request.partition_key,
-            },
-            completion,
-        );
-        Box::new(move || {
-            let pending = {
-                let mut fetches = lock(pending_fetches());
-                let id = fetches
-                    .iter()
-                    .find_map(|(&id, fetch)| (fetch.chain.dial == dial).then_some(id));
-                id.and_then(|id| fetches.remove(&id).map(|fetch| (id, fetch)))
-            };
-            if let Some((id, fetch)) = pending {
-                bindings::tinybrowser::browser::host::cancel_fetch(id);
-                if let Some(completion) = fetch.completion {
-                    completion(Err(DialFailure::Cancelled));
-                }
-            }
-        })
+        let id = NEXT_DIAL.fetch_add(1, Ordering::Relaxed);
+        let dial = Dial {
+            owner: self.owner,
+            future: Box::pin(driver::run(network().agent.clone(), request, initiator)),
+            completion: Some(completion),
+            waiting_on: None,
+        };
+        DialRegistry::poll(&self.registry, id, dial);
+        let registry = Arc::clone(&self.registry);
+        Box::new(move || registry.cancel(id))
     }
 
     fn cookie_store_records(
         &self,
-        url: &Url,
+        url: &url::Url,
         partition_key: Option<&str>,
     ) -> Vec<renderer::ScriptCookie> {
-        let origin = url.origin();
-        lock(cookie_jar())
-            .records_for(CookieOp {
-                url,
-                now: SystemTime::now(),
-                kind: RetrievalKind::NonHttp,
-                initiator_kind: InitiatorKind::Fetch,
-                method_is_safe: true,
-                initiator: Some(&origin),
-                cross_site_redirect: false,
-                same_site_policy: SameSiteCookiePolicy::All,
-                partition_key,
-            })
+        network()
+            .agent
+            .script_cookie_records_partition(url, partition_key)
             .into_iter()
             .map(|record| renderer::ScriptCookie::from_record(&record))
             .collect()
@@ -646,57 +397,22 @@ impl NetworkHost for WasmServices {
     fn cookie_store_store(
         &self,
         write: &net::ScriptCookieWrite,
-        url: &Url,
+        url: &url::Url,
         partition_key: Option<&str>,
     ) {
-        let origin = url.origin();
-        let _stored = lock(cookie_jar()).store_script(
-            write,
-            CookieOp {
-                url,
-                now: SystemTime::now(),
-                kind: RetrievalKind::NonHttp,
-                initiator_kind: InitiatorKind::Fetch,
-                method_is_safe: true,
-                initiator: Some(&origin),
-                cross_site_redirect: false,
-                same_site_policy: SameSiteCookiePolicy::All,
-                partition_key,
-            },
-        );
+        let _stored = network()
+            .agent
+            .set_script_cookie_partition(write, url, partition_key);
     }
 
-    fn cookies_for(&self, url: &Url, partition_key: Option<&str>) -> String {
-        let origin = url.origin();
-        lock(cookie_jar()).cookie_string(CookieOp {
-            url,
-            now: SystemTime::now(),
-            kind: RetrievalKind::NonHttp,
-            initiator_kind: InitiatorKind::Fetch,
-            method_is_safe: true,
-            initiator: Some(&origin),
-            cross_site_redirect: false,
-            same_site_policy: SameSiteCookiePolicy::All,
-            partition_key,
-        })
+    fn cookies_for(&self, url: &url::Url, partition_key: Option<&str>) -> String {
+        network().agent.cookies_for_partition(url, partition_key)
     }
 
-    fn set_cookie(&self, value: &str, url: &Url, partition_key: Option<&str>) {
-        let origin = url.origin();
-        lock(cookie_jar()).store(
-            value,
-            CookieOp {
-                url,
-                now: SystemTime::now(),
-                kind: RetrievalKind::NonHttp,
-                initiator_kind: InitiatorKind::Fetch,
-                method_is_safe: true,
-                initiator: Some(&origin),
-                cross_site_redirect: false,
-                same_site_policy: SameSiteCookiePolicy::All,
-                partition_key,
-            },
-        );
+    fn set_cookie(&self, value: &str, url: &url::Url, partition_key: Option<&str>) {
+        let _stored = network()
+            .agent
+            .set_cookie_partition(value, url, partition_key);
     }
 }
 
@@ -802,7 +518,7 @@ impl StorageHost for WasmServices {
 impl BrowsingContextHost for WasmServices {
     fn window_open(
         &self,
-        _url: Option<&Url>,
+        _url: Option<&url::Url>,
         _target: &renderer::TargetName,
         _opener: renderer::OpenerPolicy,
         _source: &renderer::NavigationSource,
@@ -813,7 +529,7 @@ impl BrowsingContextHost for WasmServices {
     fn navigate_named(
         &self,
         _name: &renderer::ContextName,
-        _url: Option<&Url>,
+        _url: Option<&url::Url>,
         _opener: renderer::OpenerPolicy,
         _source: &renderer::NavigationSource,
     ) -> Option<renderer::WindowId> {
@@ -853,83 +569,28 @@ impl MessagingHost for WasmServices {
 
 impl Drop for WasmServices {
     fn drop(&mut self) {
-        let mut cancelled = Vec::new();
-        lock(pending_fetches()).retain(|id, fetch| {
-            if fetch.owner != self.owner {
-                return true;
+        let owed: Vec<u64> = {
+            let mut waiting = lock(waiting_dials());
+            let ids: Vec<u64> = waiting
+                .iter()
+                .filter(|(_, (registry, _))| Arc::ptr_eq(registry, &self.registry))
+                .map(|(id, _)| *id)
+                .collect();
+            for id in &ids {
+                waiting.remove(id);
             }
-            if let Some(completion) = fetch.completion.take() {
-                cancelled.push((*id, completion));
+            ids
+        };
+        for id in owed {
+            network().transport.abandon(id);
+            host::cancel_fetch(id);
+        }
+        let dials = std::mem::take(&mut *lock(&self.registry.dials));
+        for (_, mut dial) in dials {
+            if let Some(completion) = dial.completion.take() {
+                completion(Err(DialFailure::Cancelled));
             }
-            false
-        });
-        for (id, completion) in cancelled {
-            bindings::tinybrowser::browser::host::cancel_fetch(id);
-            completion(Err(DialFailure::Cancelled));
         }
         lock(session_storage()).remove(&self.owner);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_host_contract_names_every_fetch_policy() {
-        use net::cors::{CredentialsMode, RedirectMode, RequestMode};
-        for (mode, expected) in [
-            (RequestMode::Cors, FetchMode::Cors),
-            (RequestMode::NoCors, FetchMode::NoCors),
-            (RequestMode::SameOrigin, FetchMode::SameOrigin),
-            (RequestMode::Navigate, FetchMode::Navigate),
-        ] {
-            assert_eq!(host_mode(mode), expected);
-        }
-        for (credentials, expected) in [
-            (CredentialsMode::Omit, FetchCredentials::Omit),
-            (CredentialsMode::SameOrigin, FetchCredentials::SameOrigin),
-            (CredentialsMode::Include, FetchCredentials::Include),
-        ] {
-            assert_eq!(host_credentials(credentials), expected);
-        }
-        for (redirect, expected) in [
-            (RedirectMode::Follow, FetchRedirect::Follow),
-            (RedirectMode::Error, FetchRedirect::Error),
-            (RedirectMode::Manual, FetchRedirect::Manual),
-        ] {
-            assert_eq!(host_redirect(redirect), expected);
-        }
-    }
-
-    #[test]
-    fn host_failures_keep_their_kind() {
-        for (error, expected) in [
-            (FetchError::Dns, DialFailure::Dns),
-            (FetchError::Connect, DialFailure::Connect),
-            (FetchError::Tls, DialFailure::Tls),
-            (FetchError::Timeout, DialFailure::Timeout),
-            (FetchError::Limit, DialFailure::Limit),
-            (FetchError::QueueFull, DialFailure::QueueFull),
-            (FetchError::Cancelled, DialFailure::Cancelled),
-        ] {
-            assert_eq!(decode_fetch_error(error), expected);
-        }
-    }
-
-    #[test]
-    fn a_response_without_a_usable_final_url_keeps_the_hop_url() {
-        let hop = Url::parse("https://example.test/docs").expect("valid url");
-        let response = FetchResponse {
-            status: 200,
-            final_url: String::new(),
-            content_type: None,
-            set_cookies: Vec::new(),
-            location: None,
-            body: b"hi".to_vec(),
-        };
-        let outcome = decode_fetch_result(response, &hop).expect("decoded");
-        assert!(matches!(&outcome.body, renderer::ResponseBody::Bytes(body) if body == b"hi"));
-        assert_eq!(&outcome.final_url, &hop);
     }
 }
