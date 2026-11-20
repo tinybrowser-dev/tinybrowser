@@ -135,6 +135,186 @@ jobs:
           path: dist/${{ steps.package.outputs.name }}.tar.gz
           retention-days: 7
 
+  macos-aarch64:
+    name: macos-aarch64
+    needs: verify
+    runs-on: macos-14
+    timeout-minutes: 120
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@v7
+      - name: Toolchain
+        run: |
+          rustup toolchain install --profile minimal --component rust-src
+          cargo --version
+      - name: Submodules (build inputs only, shallow)
+        run: |
+          git submodule update --init --depth 1 --jobs 4 \
+            third_party/blitz third_party/rquickjs third_party/html5ever
+          git -C third_party/rquickjs submodule update --init --depth 1 sys/quickjs
+      - name: Cargo cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-aarch64-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-aarch64-
+      - name: sccache
+        uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          version: "v0.18.0"
+      - name: Build
+        env:
+          SCCACHE_GHA_ENABLED: "true"
+          RUSTC_WRAPPER: "sccache"
+        run: |
+          cargo build --release --locked -p tinybrowser --target aarch64-apple-darwin
+          ls -lh target/aarch64-apple-darwin/release/tinybrowser
+          ./target/aarch64-apple-darwin/release/tinybrowser --version
+      - name: Package
+        id: package
+        run: |
+          set -euo pipefail
+          version="${{ needs.verify.outputs.version }}"
+          target=aarch64-apple-darwin
+          name="tinybrowser-$version-$target"
+          mkdir -p "dist/$name"
+          cp "target/$target/release/tinybrowser" "dist/$name/"
+          cp LICENSE NOTICE CREDITS.md "dist/$name/"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          ls -lh "dist/$name.tar.gz"
+      - name: Upload the release assets
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: dist/${{ steps.package.outputs.name }}.tar.gz
+          retention-days: 7
+
+  macos-x86_64:
+    name: macos-x86_64
+    needs: verify
+    runs-on: macos-14
+    timeout-minutes: 120
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@v7
+      - name: Toolchain
+        run: |
+          rustup toolchain install --profile minimal --component rust-src
+          rustup target add x86_64-apple-darwin
+          cargo --version
+      - name: Submodules (build inputs only, shallow)
+        run: |
+          git submodule update --init --depth 1 --jobs 4 \
+            third_party/blitz third_party/rquickjs third_party/html5ever
+          git -C third_party/rquickjs submodule update --init --depth 1 sys/quickjs
+      - name: Cargo cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-x86_64-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-x86_64-
+      - name: sccache
+        uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          version: "v0.18.0"
+      - name: Build
+        env:
+          SCCACHE_GHA_ENABLED: "true"
+          RUSTC_WRAPPER: "sccache"
+        run: |
+          cargo build --release --locked -p tinybrowser --target x86_64-apple-darwin
+          ls -lh target/x86_64-apple-darwin/release/tinybrowser
+          file target/x86_64-apple-darwin/release/tinybrowser
+      - name: Package
+        id: package
+        run: |
+          set -euo pipefail
+          version="${{ needs.verify.outputs.version }}"
+          target=x86_64-apple-darwin
+          name="tinybrowser-$version-$target"
+          mkdir -p "dist/$name"
+          cp "target/$target/release/tinybrowser" "dist/$name/"
+          cp LICENSE NOTICE CREDITS.md "dist/$name/"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          ls -lh "dist/$name.tar.gz"
+      - name: Upload the release assets
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: dist/${{ steps.package.outputs.name }}.tar.gz
+          retention-days: 7
+
+  windows-x86_64:
+    name: windows-x86_64
+    needs: verify
+    runs-on: windows-2022
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+      - name: Toolchain
+        shell: bash
+        run: |
+          rustup toolchain install --profile minimal --component rust-src
+          cargo --version
+      - name: Submodules (build inputs only, shallow)
+        shell: bash
+        run: |
+          git submodule update --init --depth 1 --jobs 4 \
+            third_party/blitz third_party/rquickjs third_party/html5ever
+          git -C third_party/rquickjs submodule update --init --depth 1 sys/quickjs
+      - name: Cargo cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-x86_64-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-x86_64-
+      - name: sccache
+        uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          version: "v0.18.0"
+      - name: Build
+        shell: bash
+        env:
+          # Override .cargo/config.toml's GCC/Clang CFLAGS for MSVC cl.exe.
+          CFLAGS: ""
+          SCCACHE_GHA_ENABLED: "true"
+          RUSTC_WRAPPER: "sccache"
+        run: |
+          cargo build --release --locked -p tinybrowser --target x86_64-pc-windows-msvc
+          ls -lh target/x86_64-pc-windows-msvc/release/tinybrowser.exe
+          ./target/x86_64-pc-windows-msvc/release/tinybrowser.exe --version
+      - name: Package
+        id: package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = "${{ needs.verify.outputs.version }}"
+          $target = "x86_64-pc-windows-msvc"
+          $name = "tinybrowser-$version-$target"
+          $stage = "dist\$name"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item "target\$target\release\tinybrowser.exe" "$stage\"
+          Copy-Item LICENSE, NOTICE, CREDITS.md "$stage\"
+          Compress-Archive -Path $stage -DestinationPath "dist\$name.zip" -Force
+          "name=$name" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Get-Item "dist\$name.zip" | Select-Object Name, Length
+      - name: Upload the release assets
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: dist/${{ steps.package.outputs.name }}.zip
+          retention-days: 7
+
   wasm32-wasip2:
     name: wasm32-wasip2
     needs: verify
@@ -236,7 +416,7 @@ jobs:
 
   publish:
     name: publish
-    needs: [verify, linux-x86_64, wasm32-wasip2, smoke]
+    needs: [verify, linux-x86_64, macos-aarch64, macos-x86_64, windows-x86_64, wasm32-wasip2, smoke]
     if: github.ref_type == 'tag'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -254,9 +434,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          ( cd dist && sha256sum ./*.tar.gz | sed 's| \./| |' > sha256sums.txt )
+          ( cd dist && sha256sum ./*.tar.gz ./*.zip | sed 's| \./| |' > sha256sums.txt )
           cat dist/sha256sums.txt
           gh release create "${{ needs.verify.outputs.tag }}" \
-            dist/*.tar.gz dist/sha256sums.txt \
+            dist/*.tar.gz dist/*.zip dist/sha256sums.txt \
             --title "tinybrowser ${{ needs.verify.outputs.version }}" \
             --generate-notes

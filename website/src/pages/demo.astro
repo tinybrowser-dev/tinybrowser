@@ -1,11 +1,25 @@
 ---
 import Base from "@/layouts/Base.astro"
+
+export const prerender = true
 ---
 
 <Base
   title="Demo · tinybrowser"
-  description="Run tinybrowser (Blitz + QuickJS + fetch core) compiled to WASI Preview 2 directly inside your browser."
+  description="Browse live websites inside tinybrowser compiled to WebAssembly. Click links, run JavaScript, resize the viewport, and watch every HTTP hop."
 >
+  <div class="page-head">
+    <div class="measure">
+      <h1 class="page-title">Live browser demo</h1>
+      <p class="lede">
+        tinybrowser (Blitz, QuickJS, and the Rust fetch stack) compiled to WebAssembly and running
+        inside this tab. Enter a URL, click links on the rendered frame, resize the viewport, or run
+        JavaScript on the page.
+      </p>
+    </div>
+    <p class="run-meta" id="demo-status">initializing…</p>
+  </div>
+
   <script is:inline type="importmap">
     {
       "imports": {
@@ -18,29 +32,25 @@ import Base from "@/layouts/Base.astro"
     }
   </script>
 
-  <div class="page-head">
-    <div>
-      <h1 class="page-title">Embedded Wasm demo</h1>
-      <p class="lede">
-        The same Rust engine (Blitz, QuickJS, and the fetch core) compiled to
-        <code>wasm32-wasip2</code> and driven like an agent inside this tab.
-      </p>
-    </div>
-    <p class="run-meta" id="demo-status">initializing…</p>
-  </div>
-
-  <section class="demo-presets" aria-label="Agent presets">
-    <span class="demo-label">Presets</span>
-    <button id="preset-fetch" type="button" disabled>Fetch + 302 + cookies</button>
-    <button id="preset-example" type="button" disabled>goto(example.com)</button>
-    <button id="preset-canvas" type="button" disabled>CSS Grid + Canvas 2D</button>
+  <section class="demo-presets" aria-label="Live presets">
+    <span class="demo-label">Try</span>
+    <button id="preset-hn" type="button" disabled>Hacker News (live)</button>
+    <button id="preset-npr" type="button" disabled>NPR Text (live)</button>
+    <button id="preset-example" type="button" disabled>example.com</button>
+    <button id="preset-interactive" type="button" disabled>Interactive app</button>
+    <button id="preset-fetch" type="button" disabled>302 + cookies</button>
     <button id="preset-multitab" type="button" disabled>Spawn 8 tabs</button>
   </section>
 
   <section class="demo-commands" aria-label="Agent controls">
     <div class="demo-row">
       <label class="demo-label" for="demo-url">goto</label>
-      <input id="demo-url" type="url" placeholder="https://example.com/" spellcheck="false" />
+      <input
+        id="demo-url"
+        type="url"
+        placeholder="https://news.ycombinator.com/"
+        spellcheck="false"
+      />
       <button id="demo-goto" type="button" disabled>Navigate</button>
     </div>
     <div class="demo-row">
@@ -53,6 +63,13 @@ import Base from "@/layouts/Base.astro"
       />
       <button id="demo-eval-run" type="button" disabled>Run</button>
     </div>
+    <div class="demo-actions" aria-label="Quick page actions">
+      <span class="demo-label">actions</span>
+      <button id="action-highlight" type="button" disabled>Highlight headings</button>
+      <button id="action-links" type="button" disabled>Extract links</button>
+      <button id="action-invert" type="button" disabled>Invert colors</button>
+      <button id="action-html" type="button" disabled>Inspect HTML</button>
+    </div>
   </section>
 
   <section class="demo-grid">
@@ -60,11 +77,27 @@ import Base from "@/layouts/Base.astro"
       <div class="demo-panel-head">
         <h2>Rendered frame</h2>
         <span class="muted" id="demo-frame-meta">640x400 RGBA</span>
-        <button id="demo-render" type="button" disabled>Re-render</button>
+        <div class="demo-toolbar" aria-label="Viewport and scroll">
+          <button id="vp-desktop" type="button" disabled>800×500</button>
+          <button id="vp-tablet" type="button" disabled aria-pressed="true">640×400</button>
+          <button id="vp-mobile" type="button" disabled>375×560</button>
+          <span class="muted" aria-hidden="true">·</span>
+          <button id="scroll-up" type="button" disabled>Up</button>
+          <button id="scroll-down" type="button" disabled>Down</button>
+          <button id="demo-render" type="button" disabled>Re-render</button>
+        </div>
       </div>
       <div class="demo-canvas-wrap">
-        <canvas id="demo-canvas" width="640" height="400"></canvas>
+        <canvas
+          id="demo-canvas"
+          width="640"
+          height="400"
+          title="Click links or buttons inside the rendered page. Scroll with the mouse wheel."
+        ></canvas>
       </div>
+      <p class="demo-hint" id="demo-hint">
+        Click any link or button in the rendered frame, or scroll over it.
+      </p>
     </div>
 
     <div class="demo-panel">
@@ -74,10 +107,10 @@ import Base from "@/layouts/Base.astro"
       <pre class="demo-pre" id="demo-output">waiting for engine…</pre>
 
       <div class="demo-panel-head demo-panel-sub">
-        <h2>Host HTTP hops</h2>
-        <span class="muted">via /api/hop</span>
+        <h2>Live HTTP hops</h2>
+        <span class="muted" id="demo-hops-meta">via /api/hop</span>
       </div>
-      <pre class="demo-pre demo-pre-sm" id="demo-hops"></pre>
+      <pre class="demo-pre demo-pre-sm" id="demo-hops">no requests yet</pre>
     </div>
   </section>
 

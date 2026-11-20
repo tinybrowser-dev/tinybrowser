@@ -1,13 +1,15 @@
 /**
- * Agent-style driver for the `/demo` page.
+ * Interactive driver for the `/demo` page.
  *
  * Loads the jco-transpiled `tinybrowser-wasm` component from `/wasm/`,
  * registers the site's bundled webfonts into the shared font database, and
- * exposes agent-style operations (`goto`, `mount`, `step`, `eval`, `text`,
- * `render`, and multi-tab spawning).
+ * exposes interactive browsing (`goto`, canvas click-to-navigate and button
+ * clicks, scroll, viewport resizing, live JS mutation, and streaming HTTP hops).
  */
 
-import type { HopRecord } from "./host"
+import fetchPresetHtml from "./fixtures/fetch-cookies.html?raw"
+import interactiveAppHtml from "./fixtures/interactive.html?raw"
+import type { HopRecord, HopStart } from "./host"
 
 interface RenderedFrame {
   width: number
@@ -42,83 +44,19 @@ interface WasmEngine {
 interface HostModule {
   configure(hooks: {
     completeFetch?: (id: bigint, outcome: unknown) => boolean
+    onStart?: (request: HopStart) => void
     onSettled?: (record: HopRecord) => void
     onWake?: () => void
   }): void
   inFlight(): number
 }
 
-const VIEWPORT_WIDTH = 640
-const VIEWPORT_HEIGHT = 400
-
-const FETCH_PRESET_HTML = `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <title>Fetch + Cookies in Wasm</title>
-  <style>
-    body { font-family: sans-serif; margin: 24px; color: #111; background: #fcfcfc; }
-    h1 { font-size: 20px; margin: 0 0 12px; }
-    .card { border: 1px solid #cfcfcf; padding: 14px; background: #f2f2f2; }
-    code { font-family: monospace; }
-  </style>
-</head>
-<body>
-  <h1>tinybrowser fetch core in Wasm</h1>
-  <div class="card">
-    <p id="out">Running subresource script, 302 redirect, and cookie echo...</p>
-  </div>
-  <script src="/api/demo/hello.js"></script>
-  <script>
-    const out = document.getElementById("out");
-    fetch("/api/demo/redirect")
-      .then((r) => r.text())
-      .then((body) =>
-        fetch("/api/demo/echo")
-          .then((e) => e.text())
-          .then((jar) => {
-            out.textContent =
-              body.trim() + " | " + jar.trim() + " | " + document.body.dataset.subresource;
-          })
-      );
-  </script>
-</body>
-</html>`
-
-const LAYOUT_CANVAS_HTML = `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <title>Blitz Layout + Canvas 2D</title>
-  <style>
-    body { font-family: sans-serif; margin: 20px; background: #fcfcfc; color: #111; }
-    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px; }
-    .box { border: 1px solid #111; padding: 12px; background: #f2f2f2; }
-    .k { font-size: 12px; color: #575757; margin: 0 0 4px; }
-    .v { font-size: 20px; font-weight: 700; margin: 0; }
-    canvas { border: 1px solid #111; display: block; }
-  </style>
-</head>
-<body>
-  <div class="grid">
-    <div class="box"><p class="k">Layout</p><p class="v">Stylo + Taffy</p></div>
-    <div class="box"><p class="k">Scripting</p><p class="v" id="js-status">QuickJS</p></div>
-  </div>
-  <canvas id="c" width="580" height="190"></canvas>
-  <script>
-    const c = document.getElementById("c");
-    const ctx = c.getContext("2d");
-    ctx.fillStyle = "#111";
-    ctx.fillRect(0, 0, c.width, c.height);
-    const bars = [42, 78, 61, 110, 94, 138, 125, 152];
-    bars.forEach((h, i) => {
-      ctx.fillStyle = i === bars.length - 1 ? "#fcfcfc" : "#777";
-      ctx.fillRect(28 + i * 66, c.height - 24 - h, 44, h);
-    });
-    document.getElementById("js-status").textContent = "QuickJS + Canvas 2D";
-  </script>
-</body>
-</html>`
+interface HitResult {
+  kind: "link" | "click" | "none"
+  tag?: string
+  href?: string
+  label?: string
+}
 
 function queryRequired<T extends Element>(selector: string): T {
   const el = document.querySelector<T>(selector)
@@ -136,25 +74,64 @@ const mountButton = queryRequired<HTMLButtonElement>("#demo-mount")
 const renderButton = queryRequired<HTMLButtonElement>("#demo-render")
 const canvasEl = queryRequired<HTMLCanvasElement>("#demo-canvas")
 const frameMetaEl = queryRequired<HTMLElement>("#demo-frame-meta")
+const hintEl = queryRequired<HTMLElement>("#demo-hint")
 const outputEl = queryRequired<HTMLElement>("#demo-output")
 const hopsEl = queryRequired<HTMLElement>("#demo-hops")
+const hopsMetaEl = queryRequired<HTMLElement>("#demo-hops-meta")
 
-const presetFetchBtn = queryRequired<HTMLButtonElement>("#preset-fetch")
+const presetHnBtn = queryRequired<HTMLButtonElement>("#preset-hn")
+const presetNprBtn = queryRequired<HTMLButtonElement>("#preset-npr")
 const presetExampleBtn = queryRequired<HTMLButtonElement>("#preset-example")
-const presetCanvasBtn = queryRequired<HTMLButtonElement>("#preset-canvas")
+const presetInteractiveBtn = queryRequired<HTMLButtonElement>("#preset-interactive")
+const presetFetchBtn = queryRequired<HTMLButtonElement>("#preset-fetch")
 const presetMultitabBtn = queryRequired<HTMLButtonElement>("#preset-multitab")
+
+const actionHighlightBtn = queryRequired<HTMLButtonElement>("#action-highlight")
+const actionLinksBtn = queryRequired<HTMLButtonElement>("#action-links")
+const actionInvertBtn = queryRequired<HTMLButtonElement>("#action-invert")
+const actionHtmlBtn = queryRequired<HTMLButtonElement>("#action-html")
+
+const vpDesktopBtn = queryRequired<HTMLButtonElement>("#vp-desktop")
+const vpTabletBtn = queryRequired<HTMLButtonElement>("#vp-tablet")
+const vpMobileBtn = queryRequired<HTMLButtonElement>("#vp-mobile")
+const scrollUpBtn = queryRequired<HTMLButtonElement>("#scroll-up")
+const scrollDownBtn = queryRequired<HTMLButtonElement>("#scroll-down")
 
 let engine: WasmEngine | null = null
 let host: HostModule | null = null
 let activeTab: WasmTab | null = null
 let wake: (() => void) | null = null
 let pumpGeneration = 0
+let viewportWidth = 640
+let viewportHeight = 400
+const hopLines = new Map<number, string>()
 
 function setStatus(message: string): void {
   statusEl.textContent = message
 }
 
-function appendHop(record: HopRecord): void {
+function clearHops(): void {
+  hopLines.clear()
+  hopsEl.textContent = "no requests yet"
+  hopsMetaEl.textContent = "via /api/hop"
+}
+
+function flushHops(): void {
+  if (hopLines.size === 0) {
+    hopsEl.textContent = "no requests yet"
+    hopsMetaEl.textContent = "via /api/hop"
+    return
+  }
+  hopsEl.textContent = Array.from(hopLines.values()).join("\n")
+  hopsMetaEl.textContent = `${hopLines.size} ${hopLines.size === 1 ? "request" : "requests"} via /api/hop`
+}
+
+function recordHopStart(req: HopStart): void {
+  hopLines.set(req.id, `#${req.id} ${req.method} ${req.url} -> pending…`)
+  flushHops()
+}
+
+function recordHopSettled(record: HopRecord): void {
   const outcomeText =
     record.outcome.tag === "ok"
       ? `${record.outcome.val.status} (${record.outcome.val.body.byteLength} B)`
@@ -163,11 +140,22 @@ function appendHop(record: HopRecord): void {
   const gotCookie =
     record.outcome.tag === "ok" &&
     record.outcome.val.headers.some((h) => h.name.toLowerCase() === "set-cookie")
+  const location =
+    record.outcome.tag === "ok" &&
+    record.outcome.val.status >= 300 &&
+    record.outcome.val.status < 400
+      ? record.outcome.val.headers.find((h) => h.name.toLowerCase() === "location")?.value
+      : undefined
   const tags: Array<string> = []
+  if (location) tags.push(`-> ${location}`)
   if (sentCookie) tags.push("Cookie")
   if (gotCookie) tags.push("Set-Cookie")
   const suffix = tags.length > 0 ? ` [${tags.join(", ")}]` : ""
-  hopsEl.textContent += `#${record.id} ${record.method} ${record.url} -> ${outcomeText} · ${record.durationMs}ms${suffix}\n`
+  hopLines.set(
+    record.id,
+    `#${record.id} ${record.method} ${record.url} -> ${outcomeText} · ${record.durationMs}ms${suffix}`,
+  )
+  flushHops()
 }
 
 function renderActiveTab(): void {
@@ -176,14 +164,14 @@ function renderActiveTab(): void {
   if (!ctx) return
   const started = performance.now()
   try {
-    const frame = activeTab.render(VIEWPORT_WIDTH, VIEWPORT_HEIGHT)
+    const frame = activeTab.render(viewportWidth, viewportHeight)
     canvasEl.width = frame.width
     canvasEl.height = frame.height
     const pixels = new Uint8ClampedArray(frame.rgba.byteLength)
     pixels.set(frame.rgba)
     ctx.putImageData(new ImageData(pixels, frame.width, frame.height), 0, 0)
     const elapsed = Math.round(performance.now() - started)
-    frameMetaEl.textContent = `${frame.width}x${frame.height} RGBA · painted in ${elapsed}ms`
+    frameMetaEl.textContent = `${frame.width}×${frame.height} RGBA · painted in ${elapsed}ms`
   } catch (error: unknown) {
     frameMetaEl.textContent = `render failed: ${formatError(error)}`
   }
@@ -202,13 +190,13 @@ function updateInspector(extra?: string): void {
   outputEl.textContent = lines.join("\n")
 }
 
-async function pumpTab(tab: WasmTab, generation: number): Promise<void> {
-  if (!host) return
+async function pumpTab(tab: WasmTab, generation: number): Promise<boolean> {
+  if (!host) return false
   const started = performance.now()
   let steps = 0
 
   for (;;) {
-    if (generation !== pumpGeneration) return
+    if (generation !== pumpGeneration) return false
     const delay = tab.step()
     steps += 1
 
@@ -217,16 +205,20 @@ async function pumpTab(tab: WasmTab, generation: number): Promise<void> {
     if (navErr) {
       updateInspector(`navigation-failed: ${String(navErr.event.val ?? "unknown")}`)
       setStatus("navigation failed")
-      return
+      return false
     }
 
     if (delay === undefined || delay === null) {
       if (host.inFlight() === 0) {
         const elapsed = Math.round(performance.now() - started)
+        const currentUrl = safeRead(() => tab.url())
+        if (currentUrl.startsWith("http://") || currentUrl.startsWith("https://")) {
+          urlInput.value = currentUrl
+        }
         updateInspector(`steps: ${steps} · settled in ${elapsed}ms`)
         renderActiveTab()
         setStatus(`idle · ${elapsed}ms`)
-        return
+        return true
       }
       await new Promise<void>((resolve) => {
         wake = resolve
@@ -242,48 +234,50 @@ async function pumpTab(tab: WasmTab, generation: number): Promise<void> {
       updateInspector(`stopped after ${steps} steps (timer loop)`)
       renderActiveTab()
       setStatus("step cap reached")
-      return
+      return true
     }
   }
 }
 
-async function runMount(url: string, html: string): Promise<void> {
-  if (!engine) return
+async function runMount(url: string, html: string): Promise<boolean> {
+  if (!engine) return false
   pumpGeneration += 1
   const gen = pumpGeneration
-  hopsEl.textContent = ""
+  clearHops()
   setStatus("mounting…")
   try {
     activeTab = new engine.Tab(url, html)
   } catch (error: unknown) {
     outputEl.textContent = `mount failed: ${formatError(error)}`
     setStatus("error")
-    return
+    return false
   }
-  await pumpTab(activeTab, gen)
+  return pumpTab(activeTab, gen)
 }
 
-async function runGoto(url: string): Promise<void> {
-  if (!engine) return
+async function runGoto(url: string): Promise<boolean> {
+  if (!engine) return false
+  const normalized = /^https?:\/\//i.test(url) ? url : `https://${url}`
+  urlInput.value = normalized
   pumpGeneration += 1
   const gen = pumpGeneration
-  hopsEl.textContent = ""
-  setStatus(`navigating to ${url}…`)
+  clearHops()
+  setStatus(`loading ${normalized}…`)
   try {
     activeTab = new engine.Tab("http://tinybrowser.invalid/", "")
-    activeTab.goto(url)
+    activeTab.goto(normalized)
   } catch (error: unknown) {
     outputEl.textContent = `goto failed: ${formatError(error)}`
     setStatus("error")
-    return
+    return false
   }
-  await pumpTab(activeTab, gen)
+  return pumpTab(activeTab, gen)
 }
 
 function runMultiTabBenchmark(): void {
   if (!engine) return
   pumpGeneration += 1
-  hopsEl.textContent = ""
+  clearHops()
   const count = 8
   setStatus(`spawning ${count} tabs…`)
   const started = performance.now()
@@ -292,7 +286,7 @@ function runMultiTabBenchmark(): void {
 
   for (let index = 0; index < count; index += 1) {
     const t0 = performance.now()
-    const html = `<!doctype html><title>Tab ${index + 1}</title><p id="n">${index + 1}</p><script>document.getElementById("n").textContent = "tab-" + (${index + 1} * 10);</script>`
+    const html = `<!doctype html><title>Tab ${index + 1}</title><body style="font-family:sans-serif;margin:24px"><h1>Tab ${index + 1}</h1><p id="n">${index + 1}</p></body><script>document.getElementById("n").textContent = "tab-" + (${index + 1} * 10);</script>`
     const tab = new engine.Tab(`https://tab-${index + 1}.example/`, html)
     tab.step()
     const value = tab.eval('document.getElementById("n").textContent')
@@ -313,19 +307,111 @@ function runMultiTabBenchmark(): void {
   setStatus(`${tabs.length} live tabs · ${totalMs}ms`)
 }
 
-function runEval(): void {
+function runEval(sourceOverride?: string, label?: string): void {
   if (!activeTab) return
-  const source = evalInput.value.trim()
+  const source = (sourceOverride ?? evalInput.value).trim()
   if (!source) return
+  if (sourceOverride !== undefined) {
+    evalInput.value = sourceOverride
+  }
   const started = performance.now()
   try {
     const value = activeTab.eval(source)
     const elapsed = (performance.now() - started).toFixed(1)
-    updateInspector(`eval (${elapsed}ms): ${value}`)
+    const prefix = label ? `${label} (${elapsed}ms)` : `eval (${elapsed}ms)`
+    updateInspector(`${prefix}: ${value}`)
     renderActiveTab()
   } catch (error: unknown) {
     updateInspector(`eval threw: ${formatError(error)}`)
   }
+}
+
+async function handleCanvasClick(event: MouseEvent): Promise<void> {
+  if (!activeTab) return
+  const rect = canvasEl.getBoundingClientRect()
+  if (rect.width === 0 || rect.height === 0) return
+  const x = Math.round(((event.clientX - rect.left) / rect.width) * canvasEl.width)
+  const y = Math.round(((event.clientY - rect.top) / rect.height) * canvasEl.height)
+
+  const hitScript = `(() => {
+    const x = ${x}, y = ${y};
+    const candidates = Array.from(document.querySelectorAll('a[href], button, input, summary, [onclick]'));
+    let best = null;
+    let bestArea = Infinity;
+    for (const el of candidates) {
+      const r = el.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) continue;
+      if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) {
+        const area = r.width * r.height;
+        if (area < bestArea) {
+          best = el;
+          bestArea = area;
+        }
+      }
+    }
+    if (!best) return JSON.stringify({ kind: 'none' });
+    const link = best.closest ? best.closest('a[href]') : (best.tagName === 'A' ? best : null);
+    if (link && link.href && (link.href.startsWith('http://') || link.href.startsWith('https://'))) {
+      return JSON.stringify({
+        kind: 'link',
+        tag: 'a',
+        href: link.href,
+        label: (link.textContent || '').trim().slice(0, 60)
+      });
+    }
+    if (typeof best.click === 'function') best.click();
+    return JSON.stringify({
+      kind: 'click',
+      tag: (best.tagName || '').toLowerCase(),
+      label: (best.textContent || best.value || '').trim().slice(0, 60)
+    });
+  })()`
+
+  let parsed: HitResult
+  try {
+    parsed = JSON.parse(activeTab.eval(hitScript)) as HitResult
+  } catch (error: unknown) {
+    hintEl.textContent = `click(${x}, ${y}) error: ${formatError(error)}`
+    return
+  }
+
+  if (parsed.kind === "link" && parsed.href) {
+    hintEl.textContent = `Clicked link (${x}, ${y}) -> ${parsed.href}`
+    await runGoto(parsed.href)
+    return
+  }
+
+  if (parsed.kind === "click") {
+    hintEl.textContent = `Clicked <${parsed.tag ?? "el"}> "${parsed.label ?? ""}" at (${x}, ${y})`
+    activeTab.step()
+    updateInspector(`click(${x}, ${y}) -> <${parsed.tag ?? "el"}> ${parsed.label ?? ""}`)
+    renderActiveTab()
+    return
+  }
+
+  hintEl.textContent = `No link or button at (${x}, ${y}). Try clicking a link or button on the page.`
+}
+
+function scrollPage(deltaY: number): void {
+  if (!activeTab) return
+  try {
+    const pos = activeTab.eval(
+      `(() => { window.scrollBy(0, ${Math.round(deltaY)}); return Math.round(window.scrollY); })()`,
+    )
+    renderActiveTab()
+    hintEl.textContent = `Scrolled to y=${pos}px`
+  } catch (error: unknown) {
+    hintEl.textContent = `scroll failed: ${formatError(error)}`
+  }
+}
+
+function setViewport(width: number, height: number, activeButton: HTMLButtonElement): void {
+  viewportWidth = width
+  viewportHeight = height
+  for (const button of [vpDesktopBtn, vpTabletBtn, vpMobileBtn]) {
+    button.setAttribute("aria-pressed", button === activeButton ? "true" : "false")
+  }
+  renderActiveTab()
 }
 
 async function registerSiteFonts(wasmEngine: WasmEngine): Promise<number> {
@@ -355,7 +441,8 @@ async function boot(): Promise<void> {
     host = hostMod
     host.configure({
       completeFetch: (id, outcome) => wasmMod.engine.completeFetch(id, outcome),
-      onSettled: appendHop,
+      onStart: recordHopStart,
+      onSettled: recordHopSettled,
       onWake: () => {
         if (wake === null) return
         const resume = wake
@@ -368,10 +455,16 @@ async function boot(): Promise<void> {
     setStatus(`ready · ${families} font ${families === 1 ? "family" : "families"} loaded`)
 
     enableControls()
-    const originUrl = `${window.location.origin}/api/demo/hello.txt`
-    urlInput.value = "https://example.com/"
-    htmlInput.value = FETCH_PRESET_HTML
-    await runMount(originUrl, FETCH_PRESET_HTML)
+    htmlInput.value = interactiveAppHtml
+
+    // Load a live site on boot so visitors see live HTTP hops and today's web
+    // rendered inside Wasm. Fall back to the interactive app when /api/hop is
+    // unavailable: no network, or a Worker that is not running.
+    const loadedLive = await runGoto("https://news.ycombinator.com/")
+    if (!loadedLive) {
+      await runMount("https://demo.tinybrowser.invalid/", interactiveAppHtml)
+      hintEl.textContent = "Could not reach /api/hop. Loaded the interactive Wasm app instead."
+    }
   } catch (error: unknown) {
     setStatus("wasm bundle not built")
     outputEl.textContent = [
@@ -392,10 +485,21 @@ function enableControls(): void {
     evalButton,
     mountButton,
     renderButton,
-    presetFetchBtn,
+    presetHnBtn,
+    presetNprBtn,
     presetExampleBtn,
-    presetCanvasBtn,
+    presetInteractiveBtn,
+    presetFetchBtn,
     presetMultitabBtn,
+    actionHighlightBtn,
+    actionLinksBtn,
+    actionInvertBtn,
+    actionHtmlBtn,
+    vpDesktopBtn,
+    vpTabletBtn,
+    vpMobileBtn,
+    scrollUpBtn,
+    scrollDownBtn,
   ]
   for (const button of controls) {
     button.disabled = false
@@ -414,7 +518,7 @@ urlInput.addEventListener("keydown", (event) => {
   }
 })
 
-evalButton.addEventListener("click", runEval)
+evalButton.addEventListener("click", () => runEval())
 evalInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter") runEval()
 })
@@ -426,22 +530,98 @@ mountButton.addEventListener("click", () => {
 
 renderButton.addEventListener("click", renderActiveTab)
 
-presetFetchBtn.addEventListener("click", () => {
-  htmlInput.value = FETCH_PRESET_HTML
-  void runMount(`${window.location.origin}/api/demo/hello.txt`, FETCH_PRESET_HTML)
+canvasEl.addEventListener("click", (event) => {
+  void handleCanvasClick(event)
+})
+
+canvasEl.addEventListener(
+  "wheel",
+  (event) => {
+    if (!activeTab) return
+    event.preventDefault()
+    scrollPage(event.deltaY)
+  },
+  { passive: false },
+)
+
+vpDesktopBtn.addEventListener("click", () => setViewport(800, 500, vpDesktopBtn))
+vpTabletBtn.addEventListener("click", () => setViewport(640, 400, vpTabletBtn))
+vpMobileBtn.addEventListener("click", () => setViewport(375, 560, vpMobileBtn))
+scrollUpBtn.addEventListener("click", () => scrollPage(-240))
+scrollDownBtn.addEventListener("click", () => scrollPage(240))
+
+presetHnBtn.addEventListener("click", () => {
+  void runGoto("https://news.ycombinator.com/")
+})
+
+presetNprBtn.addEventListener("click", () => {
+  void runGoto("https://text.npr.org/")
 })
 
 presetExampleBtn.addEventListener("click", () => {
-  urlInput.value = "https://example.com/"
   void runGoto("https://example.com/")
 })
 
-presetCanvasBtn.addEventListener("click", () => {
-  htmlInput.value = LAYOUT_CANVAS_HTML
-  void runMount("https://demo.tinybrowser.invalid/", LAYOUT_CANVAS_HTML)
+presetInteractiveBtn.addEventListener("click", () => {
+  htmlInput.value = interactiveAppHtml
+  void runMount("https://demo.tinybrowser.invalid/", interactiveAppHtml)
+})
+
+presetFetchBtn.addEventListener("click", () => {
+  htmlInput.value = fetchPresetHtml
+  void runMount(`${window.location.origin}/api/demo/hello.txt`, fetchPresetHtml)
 })
 
 presetMultitabBtn.addEventListener("click", runMultiTabBenchmark)
+
+actionHighlightBtn.addEventListener("click", () => {
+  runEval(
+    `(() => {
+      const id = '__tb_hl';
+      const existing = document.getElementById(id);
+      if (existing) { existing.remove(); return 'highlights removed'; }
+      const s = document.createElement('style');
+      s.id = id;
+      s.textContent = 'h1,h2,h3,a { outline: 2px solid #111 !important; background: #e8e8e8 !important; color: #111 !important; }';
+      (document.head || document.documentElement).appendChild(s);
+      return 'highlighted ' + document.querySelectorAll('h1,h2,h3,a').length + ' headings and links';
+    })()`,
+    "highlight",
+  )
+})
+
+actionLinksBtn.addEventListener("click", () => {
+  runEval(
+    `Array.from(document.querySelectorAll('a[href]')).slice(0, 12).map((a, i) => (i + 1) + '. ' + (a.textContent || '').trim().slice(0, 50) + ' -> ' + a.href).join('\\n') || '(no links)'`,
+    "links",
+  )
+})
+
+actionInvertBtn.addEventListener("click", () => {
+  runEval(
+    `(() => {
+      const id = '__tb_inv';
+      const existing = document.getElementById(id);
+      if (existing) { existing.remove(); return 'restored original colors'; }
+      const s = document.createElement('style');
+      s.id = id;
+      s.textContent = 'html, body, table, td, tr, div { background: #111111 !important; color: #ededed !important; border-color: #333333 !important; } a { color: #fcfcfc !important; }';
+      (document.head || document.documentElement).appendChild(s);
+      return 'injected monochrome dark stylesheet';
+    })()`,
+    "invert",
+  )
+})
+
+actionHtmlBtn.addEventListener("click", () => {
+  if (!activeTab) return
+  try {
+    const html = activeTab.eval("document.documentElement.outerHTML")
+    outputEl.textContent = html.slice(0, 4000)
+  } catch (error: unknown) {
+    updateInspector(`inspect failed: ${formatError(error)}`)
+  }
+})
 
 function safeRead(fn: () => string): string {
   try {

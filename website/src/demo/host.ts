@@ -45,8 +45,16 @@ export interface HopRecord {
   durationMs: number
 }
 
+export interface HopStart {
+  id: number
+  owner: number
+  method: string
+  url: string
+}
+
 interface HostHooks {
   completeFetch: (id: bigint, outcome: FetchOutcome) => boolean
+  onStart: (request: HopStart) => void
   onSettled: (record: HopRecord) => void
   onWake: () => void
   hopUrl?: string
@@ -57,6 +65,7 @@ let inFlightCount = 0
 let hopUrl = "/api/hop"
 let hooks: HostHooks = {
   completeFetch: () => false,
+  onStart: () => {},
   onSettled: () => {},
   onWake: () => {},
 }
@@ -79,6 +88,7 @@ export function startFetch(request: FetchRequest): boolean {
   const controller = new AbortController()
   exchanges.set(id, controller)
   inFlightCount += 1
+  hooks.onStart({ id, owner, method: request.method, url: request.url })
 
   void exchange(request, controller.signal).then((outcome) => {
     settle({
@@ -130,7 +140,7 @@ async function exchange(request: FetchRequest, signal: AbortSignal): Promise<Fet
         method: request.method,
         url: request.url,
         headers: request.headers.map(({ name, value }) => [name, value]),
-        body: request.body === undefined ? null : toBase64(request.body),
+        body: request.body === undefined ? null : request.body.toBase64(),
         timeoutMs: request.timeoutMs === undefined ? null : Number(request.timeoutMs),
         maxBodyBytes: Number(request.maxBodyBytes),
       }),
@@ -154,24 +164,7 @@ async function exchange(request: FetchRequest, signal: AbortSignal): Promise<Fet
       status: answer.status ?? 200,
       http2: Boolean(answer.http2),
       headers: (answer.headers ?? []).map(([name, value]) => ({ name, value })),
-      body: fromBase64(answer.body ?? ""),
+      body: Uint8Array.fromBase64(answer.body ?? ""),
     },
   }
-}
-
-function fromBase64(text: string): Uint8Array {
-  const binary = atob(text)
-  const bytes = new Uint8Array(binary.length)
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index)
-  }
-  return bytes
-}
-
-function toBase64(bytes: Uint8Array): string {
-  let binary = ""
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte)
-  }
-  return btoa(binary)
 }

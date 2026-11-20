@@ -18,15 +18,31 @@ fn main() {
     if std::env::var("PROFILE").as_deref() != Ok("release") {
         return;
     }
-    for arg in [
-        "-fuse-ld=lld",
-        "-Wl,--icf=all",
-        "-Wl,--build-id=none",
-        "-Wl,--gc-sections",
-        "-Wl,-O2",
-        "-Wl,-z,pack-relative-relocs",
-        "-Wl,--no-eh-frame-hdr",
-    ] {
-        println!("cargo:rustc-link-arg-bins={arg}");
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let target_env = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
+
+    match target_os.as_str() {
+        "linux" => {
+            for arg in [
+                "-fuse-ld=lld",
+                "-Wl,--icf=all",
+                "-Wl,--build-id=none",
+                "-Wl,--gc-sections",
+                "-Wl,-O2",
+                "-Wl,-z,pack-relative-relocs",
+                "-Wl,--no-eh-frame-hdr",
+            ] {
+                println!("cargo:rustc-link-arg-bins={arg}");
+            }
+        }
+        "macos" => {
+            println!("cargo:rustc-link-arg-bins=-Wl,-dead_strip");
+        }
+        "windows" if target_env == "msvc" => {
+            for arg in ["/OPT:REF", "/OPT:ICF"] {
+                println!("cargo:rustc-link-arg-bins={arg}");
+            }
+        }
+        _ => {}
     }
 }

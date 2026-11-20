@@ -14,21 +14,32 @@ Without it the dashboard renders its empty state, which is what the first
 deploy looks like. Without a compiled `tinybrowser_wasm.wasm`, `build:wasm`
 skips transpiling and `/demo` shows build instructions.
 
+## Local dev
+
+    bun run dev
+
+`bun run dev` syncs WPT data, builds the Wasm assets into `public/wasm/`, and
+starts `alchemy dev` (`Cloudflare.Website.Astro`) on `:4321`. Astro pages hot
+reload and `/api/*` routes (`/api/hop`, `/api/demo/*`) execute inside a local
+`workerd` runtime, so `/demo` gets live HTTP hops and cookies alongside page
+edits.
+
 ## Checks
 
     bun run check
 
 `check` runs contrast, typecheck, lint, format, and build. CI runs the same
-commands, then Alchemy deploys `dist/` + `src/worker.ts`.
+commands, then Alchemy builds Astro with its Cloudflare adapter and deploys the
+Worker + static assets.
 
 | script       | what it does                                                     |
 | ------------ | ---------------------------------------------------------------- |
 | `contrast`   | validates the token pairs in `src/styles/themes.css`             |
-| `typecheck`  | `astro sync` + `tsc --noEmit --runExternalCode`                  |
+| `typecheck`  | `astro sync` + `tsc --noEmit`                                    |
 | `lint`       | oxlint                                                           |
 | `format`     | oxfmt in check mode. `format:fix` writes                         |
 | `build:wasm` | transpiles `tinybrowser_wasm.wasm` with `jco` into `public/wasm` |
-| `build`      | syncs WPT data, builds Wasm assets, then runs `astro build`      |
+| `build`      | syncs WPT data and builds Wasm assets into `public/`             |
 
 `@/` is the only path alias. It points at `src/`. Everything else is a
 relative import.
@@ -63,11 +74,11 @@ runner load.
 
 ## Deploy
 
-`.github/workflows/website.yml` deploys with `bunx alchemy deploy --stage prod`
-on two triggers: a push that touches `website/**`, and the completion of a `WPT`
-run (whose publish step may have moved the data). The stack in
-`alchemy.run.ts` is a Cloudflare Worker with static assets, served at
-`tinybrowser.ericc.ch`.
+`.github/workflows/website.yml` deploys with
+`bunx alchemy deploy --stage production` on two triggers: a push that touches
+`website/**`, and the completion of a `WPT` run (whose publish step may have
+moved the data). The stack in `alchemy.run.ts` is a Cloudflare Worker with
+static assets, served at `tinybrowser.ericc.ch`.
 
 The workflow needs `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` as repo
 secrets.

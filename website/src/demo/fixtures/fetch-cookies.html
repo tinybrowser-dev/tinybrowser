@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Fetch + 302 + Cookies in Wasm</title>
+    <style>
+      body {
+        font-family: sans-serif;
+        margin: 24px;
+        color: #111;
+        background: #fcfcfc;
+      }
+      h1 {
+        font-size: 20px;
+        margin: 0 0 12px;
+      }
+      .card {
+        border: 1px solid #cfcfcf;
+        padding: 14px;
+        background: #f2f2f2;
+      }
+      pre {
+        font-family: monospace;
+        font-size: 13px;
+        white-space: pre-wrap;
+        margin: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>tinybrowser fetch core in Wasm</h1>
+    <div class="card">
+      <pre id="out">Running subresource script, 302 redirect, and cookie echo...</pre>
+    </div>
+    <script src="/api/demo/hello.js"></script>
+    <script>
+      const out = document.getElementById("out")
+      fetch("/api/demo/redirect")
+        .then((r) => r.text())
+        .then((body) =>
+          fetch("/api/demo/echo")
+            .then((e) => e.text())
+            .then((jar) => {
+              out.textContent =
+                body.trim() +
+                "\n" +
+                jar.trim() +
+                "\nsubresource: " +
+                document.body.dataset.subresource
+            }),
+        )
+    </script>
+  </body>
+</html>

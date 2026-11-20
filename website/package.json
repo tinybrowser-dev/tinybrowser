@@ -5,23 +5,20 @@
   "type": "module",
   "scripts": {
     "astro": "astro",
-    "build": "bun run sync-data && bun run build:wasm && astro build",
+    "build": "bun run sync-data && bun run build:wasm",
     "build:wasm": "bun run scripts/build-wasm.ts",
     "check": "bun run contrast && bun run typecheck && bun run lint && bun run format && bun run build",
     "contrast": "bun scripts/check-contrast.ts",
-    "cf:deploy": "alchemy deploy --stage prod",
-    "cf:destroy": "alchemy destroy --stage prod",
-    "cf:plan": "alchemy plan --stage prod",
-    "dev": "astro dev",
-    "dev:network": "astro dev --host",
+    "cf:deploy": "bun run build && alchemy deploy --stage production",
+    "cf:destroy": "alchemy destroy --stage production",
+    "cf:plan": "bun run build && alchemy plan --stage production",
+    "dev": "bun run build && alchemy dev",
     "format": "oxfmt --check",
     "format:fix": "oxfmt",
     "lint": "oxlint",
     "lint:fix": "oxlint --fix",
-    "preview": "astro preview",
-    "preview:network": "astro preview --host",
     "sync-data": "bun run scripts/sync-data.ts",
-    "typecheck": "astro sync && tsc --noEmit --runExternalCode"
+    "typecheck": "astro sync && tsc --noEmit"
   },
   "dependencies": {
     "@bytecodealliance/preview2-shim": "^0.31.1",
@@ -30,18 +27,19 @@
     "astro": "^7.4.2"
   },
   "devDependencies": {
-    "@alchemy.run/cloudflare": "2.0.0-beta.84",
+    "@alchemy.run/cloudflare": "2.0.0-beta.87",
+    "@alchemy.run/frontend-frameworks": "2.0.0-beta.87",
     "@bytecodealliance/jco": "^1.16.0",
-    "@effect/platform-bun": "4.0.7",
-    "@effect/platform-node": "4.0.7",
+    "@effect/platform-bun": "4.1.4",
+    "@effect/platform-node": "4.1.4",
     "@types/node": "^26.6.6",
-    "alchemy": "2.0.0-beta.84",
-    "effect": "4.0.7",
+    "alchemy": "2.0.0-beta.87",
+    "effect": "4.1.4",
     "oxfmt": "^0.74.0",
     "oxlint": "^1.89.0",
     "typescript": "7.1.0-beta"
   },
   "overrides": {
-    "@effect/platform-node-shared": "4.0.7"
+    "@effect/platform-node-shared": "4.1.4"
   }
 }

@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Interactive DOM + Canvas in Wasm</title>
+    <style>
+      body {
+        font-family: sans-serif;
+        margin: 20px;
+        background: #fcfcfc;
+        color: #111;
+      }
+      h1 {
+        font-size: 18px;
+        margin: 0 0 6px;
+      }
+      .meta {
+        font-size: 12px;
+        color: #575757;
+        margin: 0 0 14px;
+        font-family: monospace;
+      }
+      .bar {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        margin-bottom: 14px;
+      }
+      button {
+        font-family: sans-serif;
+        font-size: 14px;
+        padding: 6px 12px;
+        border: 1px solid #111;
+        background: #f2f2f2;
+        color: #111;
+        cursor: pointer;
+      }
+      .count {
+        font-size: 20px;
+        font-weight: 700;
+        font-family: monospace;
+        min-width: 72px;
+      }
+      canvas {
+        border: 1px solid #111;
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Click the buttons right on this rendered frame</h1>
+    <p class="meta" id="clock">Mounted inside QuickJS + Blitz</p>
+    <div class="bar">
+      <span class="count" id="val">5</span>
+      <button id="dec" type="button">-1</button>
+      <button id="inc" type="button">+1</button>
+      <button id="rnd" type="button">Randomize bars</button>
+      <button id="rst" type="button">Reset</button>
+    </div>
+    <canvas id="c" width="580" height="190"></canvas>
+    <script>
+      let count = 5
+      let bars = [42, 78, 61, 110, 94, 138, 125, 152]
+      const valEl = document.getElementById("val")
+      const clockEl = document.getElementById("clock")
+      const canvas = document.getElementById("c")
+      const ctx = canvas.getContext("2d")
+
+      function draw() {
+        valEl.textContent = "count=" + count
+        clockEl.textContent = "QuickJS live clock: " + new Date().toISOString()
+        ctx.fillStyle = "#111"
+        ctx.fillRect(0, 0, canvas.width, canvas.height)
+        const scale = Math.max(0.25, Math.min(1.6, count / 5))
+        bars.forEach((base, i) => {
+          const h = Math.min(canvas.height - 28, Math.round(base * scale))
+          ctx.fillStyle = i === bars.length - 1 ? "#fcfcfc" : "#777"
+          ctx.fillRect(28 + i * 66, canvas.height - 16 - h, 44, h)
+        })
+      }
+
+      document.getElementById("inc").addEventListener("click", () => {
+        count += 1
+        draw()
+      })
+      document.getElementById("dec").addEventListener("click", () => {
+        count = Math.max(1, count - 1)
+        draw()
+      })
+      document.getElementById("rst").addEventListener("click", () => {
+        count = 5
+        bars = [42, 78, 61, 110, 94, 138, 125, 152]
+        draw()
+      })
+      document.getElementById("rnd").addEventListener("click", () => {
+        bars = bars.map(() => 30 + Math.floor(Math.random() * 130))
+        draw()
+      })
+      draw()
+    </script>
+  </body>
+</html>

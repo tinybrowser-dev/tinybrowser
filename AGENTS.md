@@ -17,9 +17,7 @@ Maximize web spec conformance per byte.
 
 ## Upstream
 
-- Never open a pull request anywhere, to any repository, for any reason, unless the user asks for one in that exact turn. This is absolute: no upstream PR, no fork-to-upstream PR, no "small patch they would want". Fixes for `DioxusLabs/blitz`, `servo/html5ever`, `DelSkayn/rquickjs`, and `quickjs-ng/quickjs` stay commits on `tinybrowser-dev/*` forks and are recorded in `docs/upstream.md`.
-- Pushing a fork branch is fine. Opening the PR is not. `gh pr create`, `hub pull-request`, `glab mr create`, and the REST/GraphQL calls behind them are all the same act.
-- The rule outranks every other consideration in this file: a skipped upstream patch costs a merge later, an unwanted PR costs the maintainers' goodwill now.
+Never open a pull request to upstream for any reason. This is absolute: no upstream PR, no fork-to-upstream PR, no "small patch they would want". Fixes for `DioxusLabs/blitz`, `servo/html5ever`, `DelSkayn/rquickjs`, and `quickjs-ng/quickjs` stay commits on `tinybrowser-dev/*` forks and are recorded in `docs/upstream.md`.
 
 ## Disk
 
@@ -39,6 +37,7 @@ Maximize web spec conformance per byte.
 
   `cargo clean` only removes this checkout's target. A cold rebuild is cheaper
   than a full disk. Do not "fix" it by moving the target directory to home.
+
 - Check `df -h /mnt/ssd` before a long build, test, or WPT run. Below ~10G
   free, run `mbx gc` first.
 

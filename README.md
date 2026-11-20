@@ -9,20 +9,30 @@ One ~12 MiB Rust binary (Blitz, Stylo, html5ever, Taffy, QuickJS) with no sideca
 
 ## Install
 
+macOS and Linux:
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/tinybrowser-dev/tinybrowser/main/install.sh | sh
 ```
 
-Or download a tarball directly from [GitHub Releases](https://github.com/tinybrowser-dev/tinybrowser/releases).
+Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/tinybrowser-dev/tinybrowser/main/install.ps1 | iex
+```
+
+Or download an archive directly from [GitHub Releases](https://github.com/tinybrowser-dev/tinybrowser/releases).
 
 ### Platform support (`v0.1.0`)
 
 | Target | Status | Notes |
 | --- | --- | --- |
 | `x86_64-unknown-linux-gnu` | Shipped | Built on Ubuntu 22.04 (glibc 2.35+). Requires system `libssl3` and `libfontconfig1`. |
+| `aarch64-apple-darwin` | Shipped | Apple Silicon macOS (11.0+). Uses system Security.framework. |
+| `x86_64-apple-darwin` | Shipped | Intel macOS (11.0+). Uses system Security.framework. |
+| `x86_64-pc-windows-msvc` | Shipped | Windows x64 (`.zip`). Uses system Schannel. |
 | `wasm32-wasip2` | Shipped | Embeddable page engine component (`tinybrowser.wasm`, host supplies one-hop HTTP). |
-| Termux / Android `aarch64` | Planned | |
-| Linux `aarch64`, macOS, Windows | Planned | |
+| Linux `aarch64`, Termux / Android `aarch64` | Planned | |
 
 ## Usage
 
