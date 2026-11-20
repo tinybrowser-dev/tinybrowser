@@ -126,14 +126,13 @@ jobs:
           cp target/release/tinybrowser "dist/$name/"
           cp LICENSE NOTICE CREDITS.md "dist/$name/"
           tar --owner=0 --group=0 -C dist -czf "dist/$name.tar.gz" "$name"
-          ( cd dist && sha256sum ./*.tar.gz | sed 's| \./| |' > sha256sums.txt )
           echo "name=$name" >> "$GITHUB_OUTPUT"
-          cat dist/sha256sums.txt
+          ls -lh "dist/$name.tar.gz"
       - name: Upload the release assets
         uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.package.outputs.name }}
-          path: dist/*
+          path: dist/${{ steps.package.outputs.name }}.tar.gz
           retention-days: 7
 
   wasm32-wasip2:
@@ -191,14 +190,13 @@ jobs:
           cp target/wasm32-wasip2/release/tinybrowser_wasm.wasm "dist/$name/tinybrowser.wasm"
           cp LICENSE NOTICE CREDITS.md "dist/$name/"
           tar --owner=0 --group=0 -C dist -czf "dist/$name.tar.gz" "$name"
-          ( cd dist && sha256sum ./*.tar.gz | sed 's| \./| |' > sha256sums.txt )
           echo "name=$name" >> "$GITHUB_OUTPUT"
-          cat dist/sha256sums.txt
+          ls -lh "dist/$name.tar.gz"
       - name: Upload the release assets
         uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.package.outputs.name }}
-          path: dist/*
+          path: dist/${{ steps.package.outputs.name }}.tar.gz
           retention-days: 7
 
   smoke:
@@ -256,6 +254,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          ( cd dist && sha256sum ./*.tar.gz | sed 's| \./| |' > sha256sums.txt )
+          cat dist/sha256sums.txt
           gh release create "${{ needs.verify.outputs.tag }}" \
             dist/*.tar.gz dist/sha256sums.txt \
             --title "tinybrowser ${{ needs.verify.outputs.version }}" \
