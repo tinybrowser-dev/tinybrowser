@@ -17,7 +17,7 @@ use browser::{
     BrowserHandle, CookieRecord, CookieSameSite, RemoteValue, ScreenshotRequest, ScriptFailure,
     TabError, TabHandle,
 };
-use http::StatusCode;
+use http::{Method, StatusCode};
 use serde_json::{Value, json};
 use server::{Request, Response, Shutdown};
 use tokio::sync::Mutex;
@@ -53,6 +53,22 @@ struct AppState {
 const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 
 async fn serve_request(request: Request, state: AppState) -> Response {
+    if !server::is_loopback_host(&request) {
+        return server::text(StatusCode::FORBIDDEN, "non-loopback Host header rejected");
+    }
+    if server::has_non_null_origin(&request) {
+        return server::text(StatusCode::FORBIDDEN, "Origin header rejected");
+    }
+    if matches!(
+        *request.method(),
+        Method::POST | Method::PUT | Method::PATCH
+    ) && !server::is_json_content_type(&request)
+    {
+        return server::text(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "Content-Type must be application/json",
+        );
+    }
     let method = request.method().as_str().to_owned();
     let path = request.uri().path().to_owned();
     let body = match server::read_body(request.into_body(), MAX_BODY_BYTES).await {

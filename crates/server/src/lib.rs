@@ -79,9 +79,8 @@ impl Default for Shutdown {
 /// Serves `handler` on `listener` until `shutdown` is requested.
 ///
 /// Each accepted connection runs hyper's auto (HTTP/1 or HTTP/2) builder with
-/// the `CONNECT` protocol enabled, matching the two adapters' previous ad-hoc
-/// servers. Transient accept failures are retried with backoff instead of
-/// dropping the listener.
+/// the `CONNECT` protocol enabled. Transient accept failures are retried with
+/// backoff instead of dropping the listener.
 ///
 /// # Errors
 ///
@@ -162,8 +161,8 @@ async fn connection<S, H, F>(
         async move { Ok::<_, Infallible>(handler(request, state).await) }
     });
     let mut auto = Builder::new(TokioExecutor::new());
-    // HTTP/2 CONNECT, as the adapters' previous servers enabled it. The CDP
-    // WebSocket handshake itself still requires HTTP/1.1.
+    // Enable HTTP/2 CONNECT; the CDP WebSocket handshake itself still requires
+    // HTTP/1.1.
     auto.http2().enable_connect_protocol();
     let conn = auto.serve_connection_with_upgrades(TokioIo::new(stream), service);
     tokio::pin!(conn);
@@ -178,6 +177,90 @@ async fn connection<S, H, F>(
     }
     conn.as_mut().graceful_shutdown();
     let _drained = conn.as_mut().await;
+}
+
+/// Whether `request` targets a loopback host (`127.0.0.0/8`, `[::1]`, or
+/// `localhost`, with an optional `:port`).
+///
+/// Rejecting non-loopback `Host` headers stops DNS rebinding attacks where a
+/// third-party domain resolves to `127.0.0.1` and sends browser requests to a
+/// local protocol endpoint.
+#[must_use]
+pub fn is_loopback_host(request: &Request) -> bool {
+    let authority = request
+        .headers()
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .or_else(|| request.uri().authority().map(http::uri::Authority::as_str));
+    authority.is_some_and(is_loopback_authority)
+}
+
+fn is_loopback_authority(authority: &str) -> bool {
+    if authority.is_empty() {
+        return false;
+    }
+    if let Some(rest) = authority.strip_prefix('[') {
+        let Some((host, tail)) = rest.split_once(']') else {
+            return false;
+        };
+        if !valid_optional_port(tail) {
+            return false;
+        }
+        return host
+            .parse::<std::net::Ipv6Addr>()
+            .is_ok_and(|addr| addr.is_loopback());
+    }
+    let (host, tail) = match authority.split_once(':') {
+        Some((host, port)) => (host, Some(port)),
+        None => (authority, None),
+    };
+    if let Some(port) = tail
+        && (port.is_empty() || !port.bytes().all(|byte| byte.is_ascii_digit()))
+    {
+        return false;
+    }
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::Ipv4Addr>()
+            .is_ok_and(|addr| addr.is_loopback())
+}
+
+fn valid_optional_port(tail: &str) -> bool {
+    if tail.is_empty() {
+        return true;
+    }
+    tail.strip_prefix(':')
+        .is_some_and(|port| !port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
+/// Whether `request` carries any `Origin` header.
+///
+/// Browsers attach `Origin` to cross-origin WebSocket handshakes and `fetch`
+/// calls; local automation clients do not.
+#[must_use]
+pub fn has_origin(request: &Request) -> bool {
+    request.headers().contains_key(header::ORIGIN)
+}
+
+/// Whether `request` carries a non-`"null"` `Origin` header.
+#[must_use]
+pub fn has_non_null_origin(request: &Request) -> bool {
+    request
+        .headers()
+        .get(header::ORIGIN)
+        .is_some_and(|value| value.as_bytes() != b"null")
+}
+
+/// Whether `request` carries an `application/json` `Content-Type` header
+/// (ignoring optional parameters such as `; charset=utf-8`).
+#[must_use]
+pub fn is_json_content_type(request: &Request) -> bool {
+    request
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|media| media.trim().eq_ignore_ascii_case("application/json"))
 }
 
 /// One JSON response; `charset=utf-8` is part of both adapters' wire surface.
@@ -259,7 +342,43 @@ mod tests {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use tokio::time::{Duration, timeout};
 
-    use super::{BodyError, Shutdown, json, method_not_allowed, read_body, serve, text};
+    use super::{
+        BodyError, Shutdown, is_loopback_authority, json, method_not_allowed, read_body, serve,
+        text,
+    };
+
+    /// Loopback authority validation accepts IPv4/IPv6 loopback literals and
+    /// `localhost` (with optional port) and rejects rebinding domains.
+    /// Removing the host check would allow `evil.com:9222` or
+    /// `localhost.evil.com` to pass.
+    #[test]
+    fn loopback_authority_accepts_only_loopback_hosts() {
+        for good in [
+            "127.0.0.1",
+            "127.0.0.1:9222",
+            "127.0.1.1:4444",
+            "[::1]",
+            "[::1]:9222",
+            "localhost",
+            "LOCALHOST:9222",
+        ] {
+            assert!(is_loopback_authority(good), "{good} should be accepted");
+        }
+        for bad in [
+            "",
+            "evil.com",
+            "evil.com:9222",
+            "localhost.evil.com:9222",
+            "127.0.0.1:abc",
+            "127.0.0.1:",
+            "[::1]:",
+            "[2001:db8::1]:9222",
+            "192.168.1.1:9222",
+            "0.0.0.0:9222",
+        ] {
+            assert!(!is_loopback_authority(bad), "{bad} should be rejected");
+        }
+    }
 
     #[test]
     fn responses_carry_their_content_types() {

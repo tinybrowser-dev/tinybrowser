@@ -41,11 +41,10 @@ mod dispatch;
 mod params;
 use dispatch::{
     BrowserHandler, DispatchError, Handler, PageHandler, RUNTIME_CLEAR_HANDLES, RUNTIME_HANDLE,
-    RUNTIME_HANDLE_READ, RUNTIME_HANDLE_SCHEDULE, RUNTIME_READ, RUNTIME_SCHEDULE, Target, accept,
-    arguments_expression, attach_session, capture_screenshot, css_stylesheets, exception_reply,
-    exception_text_reply, json_io, json_string, open_url, requested_frame, route, run_script,
-    runtime_release_object, runtime_release_object_group, target_id, target_info,
-    wait_for_navigation, ws_io,
+    RUNTIME_HANDLE_READ, RUNTIME_READ, RUNTIME_SCHEDULE, Target, accept, arguments_expression,
+    attach_session, capture_screenshot, css_stylesheets, exception_reply, exception_text_reply,
+    json_io, json_string, open_url, requested_frame, route, run_script, runtime_release_object,
+    runtime_release_object_group, target_id, target_info, wait_for_navigation, ws_io,
 };
 
 /// One default browser context; Playwright requires `browserContextId` on
@@ -75,6 +74,12 @@ pub async fn serve(listener: &TcpListener, browser: &BrowserHandle) -> io::Resul
 }
 
 async fn serve_request(request: Request, state: AppState) -> Response {
+    if !server::is_loopback_host(&request) {
+        return status_response(StatusCode::FORBIDDEN, "non-loopback Host header rejected");
+    }
+    if server::has_origin(&request) {
+        return status_response(StatusCode::FORBIDDEN, "Origin header rejected");
+    }
     let path = request.uri().path().to_owned();
     let route = route_path(&path);
     match route {
@@ -620,8 +625,6 @@ impl Conn {
         messages
     }
 
-    /// Emits the commit event set: frame commit plus the new document's
-    /// execution contexts (default and every known isolated world).
     /// The tab's current document loader id, for lifecycle events that arrive
     /// after commit
     /// (<https://chromedevtools.github.io/devtools-protocol/tot/Page/#event-lifecycleEvent>).
@@ -637,6 +640,8 @@ impl Conn {
         id
     }
 
+    /// Emits the commit event set: frame commit plus the new document's
+    /// execution contexts (default and every known isolated world).
     async fn push_navigated(
         &mut self,
         messages: &mut Vec<Value>,
@@ -1158,6 +1163,7 @@ impl Conn {
         });
         self.unsubscribe_tab_id(id);
         self.loader_ids.remove(&id);
+        self.current_loaders.remove(&id);
         self.isolated_worlds.remove(&id);
         if self.tab.as_ref().is_some_and(|tab| tab.id() == id) {
             self.tab = None;
@@ -1284,87 +1290,23 @@ impl Conn {
         let evaluation = self.next_evaluation;
         self.next_evaluation = self.next_evaluation.saturating_add(1);
         let id = json_string(&evaluation.to_string());
-        let schedule = RUNTIME_HANDLE_SCHEDULE
-            .replace("__ID__", &id)
-            .replace("__SOURCE__", source);
-        if let Err(error) = tab
-            .execute_script(ExecuteScriptOptions {
-                frame,
-                source: browser::ScriptSource::Browser(&schedule),
-                timeout: None,
-            })
-            .await
-        {
-            return exception_reply(&error);
-        }
-        let ready = format!(
-            "Boolean(host.__tb_async_handles && host.__tb_async_handles[{id}] && host.__tb_async_handles[{id}].done)"
-        );
-        // A navigation replaces the main frame's realm, so an awaited slot in
-        // the old realm never settles. Stop waiting as soon as the navigation
-        // commits instead of polling until the timeout, which would also hold
-        // back the tab events the socket loop is waiting to deliver
-        // (<https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-callFunctionOn>).
-        let mut events = tab.subscribe().ok();
-        let run = tab.run_until_js_true(RunUntilJsTrueOptions {
-            frame,
-            source: browser::ScriptSource::Browser(&ready),
-            timeout,
-        });
-        tokio::pin!(run);
-        let settled = loop {
-            tokio::select! {
-                result = &mut run => break result,
-                event = next_tab_event(&mut events) => match event {
-                    Some(TabEvent::Navigated) if frame == FrameId::MAIN => {
-                        return exception_text_reply("execution context was destroyed");
-                    }
-                    Some(_) => {}
-                    None => events = None,
-                },
-            }
-        };
-        match settled {
-            Ok(true) => {}
-            Ok(false) => {
-                // Drop the slot so a late settle cannot pile up results; the
-                // promise closure keeps its own reference to the slot.
-                let _ = tab
-                    .execute_script(ExecuteScriptOptions {
-                        frame,
-                        source: browser::ScriptSource::Browser(&format!(
-                            "(() => {{ if (host.__tb_async_handles) delete host.__tb_async_handles[{id}]; }})()"
-                        )),
-                        timeout: None,
-                    })
-                    .await;
-                return exception_text_reply("awaitPromise timed out");
-            }
-            Err(error) => return exception_reply(&error),
-        }
         let read = RUNTIME_HANDLE_READ
             .replace("__ID__", &id)
             .replace("__GROUP__", &json_string(object_group));
-        let value = match tab
-            .execute_script(ExecuteScriptOptions {
-                frame,
-                source: browser::ScriptSource::Browser(&read),
-                timeout: None,
-            })
-            .await
+        match Self::await_runtime_slot(
+            tab,
+            frame,
+            source,
+            timeout,
+            &id,
+            "__tb_async_handles",
+            &read,
+        )
+        .await
         {
-            Ok(value) => value,
-            Err(error) => return exception_reply(&error),
-        };
-        if let RemoteValue::String(text) = value
-            && let Ok(parsed) = serde_json::from_str::<Value>(&text)
-        {
-            if let Some(error) = parsed.get("error").and_then(Value::as_str) {
-                return exception_text_reply(error);
-            }
-            return json!({"result": parsed.get("value").cloned().unwrap_or(Value::Null)});
+            Ok(parsed) => json!({"result": parsed.get("value").cloned().unwrap_or(Value::Null)}),
+            Err(reply) => reply,
         }
-        exception_text_reply("unexpected script result")
     }
 
     /// Stores the result in a page-side handle and returns its `objectId`;
@@ -1408,8 +1350,30 @@ impl Conn {
         id: u64,
     ) -> Value {
         let id = json_string(&id.to_string());
+        let read = RUNTIME_READ.replace("__ID__", &id);
+        match Self::await_runtime_slot(tab, frame, source, timeout, &id, "__tb_async", &read).await
+        {
+            Ok(parsed) => json!({"result": parsed}),
+            Err(reply) => reply,
+        }
+    }
+
+    /// Schedules `source` into `host.<slot>[id]`, waits for it to settle (or
+    /// for a main-frame navigation to destroy the realm), cleans up on
+    /// timeout, reads the serialized slot via `read`, and surfaces any page
+    /// error as a CDP exception reply.
+    async fn await_runtime_slot(
+        tab: &TabHandle,
+        frame: FrameId,
+        source: &str,
+        timeout: Duration,
+        id: &str,
+        slot: &str,
+        read: &str,
+    ) -> Result<Value, Value> {
         let schedule = RUNTIME_SCHEDULE
-            .replace("__ID__", &id)
+            .replace("__SLOT__", slot)
+            .replace("__ID__", id)
             .replace("__SOURCE__", source);
         if let Err(error) = tab
             .execute_script(ExecuteScriptOptions {
@@ -1419,19 +1383,34 @@ impl Conn {
             })
             .await
         {
-            return exception_reply(&error);
+            return Err(exception_reply(&error));
         }
-        let ready = format!(
-            "Boolean(host.__tb_async && host.__tb_async[{id}] && host.__tb_async[{id}].done)"
-        );
-        match tab
-            .run_until_js_true(RunUntilJsTrueOptions {
-                frame,
-                source: browser::ScriptSource::Browser(&ready),
-                timeout,
-            })
-            .await
-        {
+        let ready = format!("Boolean(host.{slot} && host.{slot}[{id}] && host.{slot}[{id}].done)");
+        // A navigation replaces the main frame's realm, so an awaited slot in
+        // the old realm never settles. Stop waiting as soon as the navigation
+        // commits instead of polling until the timeout, which would also hold
+        // back the tab events the socket loop is waiting to deliver
+        // (<https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-callFunctionOn>).
+        let mut events = tab.subscribe().ok();
+        let run = tab.run_until_js_true(RunUntilJsTrueOptions {
+            frame,
+            source: browser::ScriptSource::Browser(&ready),
+            timeout,
+        });
+        tokio::pin!(run);
+        let settled = loop {
+            tokio::select! {
+                result = &mut run => break result,
+                event = next_tab_event(&mut events) => match event {
+                    Some(TabEvent::Navigated) if frame == FrameId::MAIN => {
+                        return Err(exception_text_reply("execution context was destroyed"));
+                    }
+                    Some(_) => {}
+                    None => events = None,
+                },
+            }
+        };
+        match settled {
             Ok(true) => {}
             Ok(false) => {
                 // Drop the slot so a late settle cannot pile up results; the
@@ -1440,35 +1419,35 @@ impl Conn {
                     .execute_script(ExecuteScriptOptions {
                         frame,
                         source: browser::ScriptSource::Browser(&format!(
-                            "(() => {{ if (host.__tb_async) delete host.__tb_async[{id}]; }})()"
+                            "(() => {{ if (host.{slot}) delete host.{slot}[{id}]; }})()"
                         )),
                         timeout: None,
                     })
                     .await;
-                return exception_text_reply("awaitPromise timed out");
+                return Err(exception_text_reply("awaitPromise timed out"));
             }
-            Err(error) => return exception_reply(&error),
+            Err(error) => return Err(exception_reply(&error)),
         }
         let value = match tab
             .execute_script(ExecuteScriptOptions {
                 frame,
-                source: browser::ScriptSource::Browser(&RUNTIME_READ.replace("__ID__", &id)),
+                source: browser::ScriptSource::Browser(read),
                 timeout: None,
             })
             .await
         {
             Ok(value) => value,
-            Err(error) => return exception_reply(&error),
+            Err(error) => return Err(exception_reply(&error)),
         };
         if let RemoteValue::String(text) = value
             && let Ok(parsed) = serde_json::from_str::<Value>(&text)
         {
             if let Some(error) = parsed.get("error").and_then(Value::as_str) {
-                return exception_text_reply(error);
+                return Err(exception_text_reply(error));
             }
-            return json!({"result": parsed});
+            return Ok(parsed);
         }
-        exception_text_reply("unexpected script result")
+        Err(exception_text_reply("unexpected script result"))
     }
 
     fn subscribe_tab(
@@ -1510,46 +1489,32 @@ impl Conn {
         Ok(())
     }
 
-    fn unsubscribe_tab(&mut self, tab_id: TabId, session: Option<&str>) {
+    fn remove_subscriptions(&mut self, mut matches: impl FnMut(&TabSubscription) -> bool) {
         let mut retained = Vec::new();
         for subscription in self.subscriptions.drain(..) {
-            if subscription.tab_id == tab_id && subscription.session.as_deref() == session {
+            if matches(&subscription) {
                 subscription.forward.abort();
             } else {
                 retained.push(subscription);
             }
         }
         self.subscriptions = retained;
+    }
+
+    fn unsubscribe_tab(&mut self, tab_id: TabId, session: Option<&str>) {
+        self.remove_subscriptions(|s| s.tab_id == tab_id && s.session.as_deref() == session);
     }
 
     fn stop_subscriptions(&mut self) {
-        for subscription in self.subscriptions.drain(..) {
-            subscription.forward.abort();
-        }
+        self.remove_subscriptions(|_| true);
     }
 
     fn unsubscribe_tab_id(&mut self, tab_id: TabId) {
-        let mut retained = Vec::new();
-        for subscription in self.subscriptions.drain(..) {
-            if subscription.tab_id == tab_id {
-                subscription.forward.abort();
-            } else {
-                retained.push(subscription);
-            }
-        }
-        self.subscriptions = retained;
+        self.remove_subscriptions(|s| s.tab_id == tab_id);
     }
 
     fn unsubscribe_session(&mut self, session: &str) {
-        let mut retained = Vec::new();
-        for subscription in self.subscriptions.drain(..) {
-            if subscription.session.as_deref() == Some(session) {
-                subscription.forward.abort();
-            } else {
-                retained.push(subscription);
-            }
-        }
-        self.subscriptions = retained;
+        self.remove_subscriptions(|s| s.session.as_deref() == Some(session));
     }
 }
 

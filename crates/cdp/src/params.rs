@@ -221,7 +221,7 @@ pub(crate) enum CallArgument {
 }
 
 /// `Runtime.getProperties`.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct GetProperties {
     pub(crate) object_id: String,

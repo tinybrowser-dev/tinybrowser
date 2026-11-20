@@ -1579,12 +1579,12 @@ pub(crate) fn exception_text_reply(text: &str) -> Value {
     })
 }
 
-/// Schedules `__SOURCE__` and captures its settled value. Results key by
-/// evaluation ID; a single shared slot would let overlapping evaluations
-/// overwrite each other.
+/// Schedules `__SOURCE__` into `host.__SLOT__[__ID__]` and captures its
+/// settled value. Results key by evaluation ID; a single shared slot would
+/// let overlapping evaluations overwrite each other.
 pub(crate) const RUNTIME_SCHEDULE: &str = r#"(() => {
   const slot = { __proto__: null, done: false };
-  host.__tb_async[__ID__] = slot;
+  host.__SLOT__[__ID__] = slot;
   Promise.resolve((__SOURCE__)).then(
     (v) => { slot.done = true; slot.value = v; },
     (e) => { slot.done = true; slot.error = String((e && e.message) || e); }
@@ -1598,20 +1598,6 @@ pub(crate) const RUNTIME_HANDLE: &str = r"(() => {
   const v = (__SOURCE__);
   return host.stringify(host.remoteObject(v, { __proto__: null, objectGroup: __GROUP__ }));
 })()";
-
-/// Schedules an awaited evaluate whose result becomes a handle (or an inline
-/// primitive), the `evaluateHandle` shape: `awaitPromise` with
-/// `returnByValue: false`. Results key by evaluation ID; a single shared slot
-/// would let overlapping evaluations overwrite each other.
-pub(crate) const RUNTIME_HANDLE_SCHEDULE: &str = r#"(() => {
-  const slot = { __proto__: null, done: false };
-  host.__tb_async_handles[__ID__] = slot;
-  Promise.resolve((__SOURCE__)).then(
-    (v) => { slot.done = true; slot.value = v; },
-    (e) => { slot.done = true; slot.error = String((e && e.message) || e); }
-  );
-  return "scheduled";
-})()"#;
 
 /// Reads the awaited handle result and serializes it with the bridge's one
 /// `RemoteObject` serializer.
