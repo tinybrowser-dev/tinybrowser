@@ -92,6 +92,7 @@ pub struct AgentOptions {
     pub timeout_per_call: Option<Duration>,
     pub max_redirects: u32,
     pub clock: Clock,
+    pub cookie_jar: Option<Arc<Mutex<CookieJar>>>,
     #[cfg(feature = "native")]
     pub proxy: Option<Proxy>,
     #[cfg(feature = "native")]
@@ -124,6 +125,7 @@ impl Default for AgentOptions {
             timeout_per_call: None,
             max_redirects: DEFAULT_MAX_REDIRECTS,
             clock: Clock::default(),
+            cookie_jar: None,
             #[cfg(feature = "native")]
             proxy: None,
             #[cfg(feature = "native")]
@@ -168,6 +170,7 @@ impl Agent {
             max_redirects,
             proxy,
             clock,
+            cookie_jar,
             resolve,
             tls_cas,
         } = options;
@@ -177,7 +180,7 @@ impl Agent {
             identity,
             client_identities: Arc::new(Mutex::new(HashMap::new())),
             max_redirects,
-            jar: Arc::new(Mutex::new(CookieJar::default())),
+            jar: cookie_jar.unwrap_or_else(|| Arc::new(Mutex::new(CookieJar::default()))),
             clock,
             timeout_global,
             timeout_per_call,
@@ -193,7 +196,9 @@ impl Agent {
             identity: options.identity,
             client_identities: Arc::new(Mutex::new(HashMap::new())),
             max_redirects: options.max_redirects,
-            jar: Arc::new(Mutex::new(CookieJar::default())),
+            jar: options
+                .cookie_jar
+                .unwrap_or_else(|| Arc::new(Mutex::new(CookieJar::default()))),
             clock,
             timeout_global: options.timeout_global,
             timeout_per_call: options.timeout_per_call,

@@ -54,6 +54,7 @@ struct ContextState {
     cache: Arc<HttpCache>,
     local_storage: Mutex<HashMap<StorageKey, StorageArea>>,
     indexed_db: Mutex<HashMap<StorageKey, StorageArea>>,
+    session_storage: Mutex<HashMap<u64, HashMap<StorageKey, StorageArea>>>,
 }
 
 impl ContextState {
@@ -71,6 +72,7 @@ impl ContextState {
             cache,
             local_storage: Mutex::new(HashMap::new()),
             indexed_db: Mutex::new(HashMap::new()),
+            session_storage: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -461,7 +463,7 @@ impl GuestTab for Tab {
         let Some(key) = storage_key_from_url(&origin) else {
             return Vec::new();
         };
-        let namespaces = lock(session_storage());
+        let namespaces = lock(&self.context.session_storage);
         let Some(area) = namespaces
             .get(&self.owner)
             .and_then(|namespace| namespace.get(&key))
@@ -475,7 +477,7 @@ impl GuestTab for Tab {
         let Some(key) = storage_key_from_url(&origin) else {
             return;
         };
-        if let Some(area) = lock(session_storage())
+        if let Some(area) = lock(&self.context.session_storage)
             .get_mut(&self.owner)
             .and_then(|namespace| namespace.get_mut(&key))
         {
@@ -861,12 +863,6 @@ fn drain_ready_dials() {
     }
 }
 
-fn session_storage() -> &'static Mutex<HashMap<u64, HashMap<StorageKey, StorageArea>>> {
-    static NAMESPACES: OnceLock<Mutex<HashMap<u64, HashMap<StorageKey, StorageArea>>>> =
-        OnceLock::new();
-    NAMESPACES.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -923,6 +919,19 @@ impl NetworkHost for WasmServices {
         let registry = Arc::clone(&self.registry);
         Box::new(move || registry.cancel(id))
     }
+}
+
+impl StorageHost for WasmServices {
+    fn cookies_for(&self, url: &url::Url, partition_key: Option<&str>) -> String {
+        self.context.agent.cookies_for_partition(url, partition_key)
+    }
+
+    fn set_cookie(&self, value: &str, url: &url::Url, partition_key: Option<&str>) {
+        let _stored = self
+            .context
+            .agent
+            .set_cookie_partition(value, url, partition_key);
+    }
 
     fn cookie_store_records(
         &self,
@@ -948,25 +957,21 @@ impl NetworkHost for WasmServices {
             .set_script_cookie_partition(write, url, partition_key);
     }
 
-    fn cookies_for(&self, url: &url::Url, partition_key: Option<&str>) -> String {
-        self.context.agent.cookies_for_partition(url, partition_key)
+    fn remote_session_get(
+        &self,
+        _window: renderer::WindowId,
+        _origin: &StorageKey,
+        _key: &str,
+    ) -> Option<String> {
+        None
     }
 
-    fn set_cookie(&self, value: &str, url: &url::Url, partition_key: Option<&str>) {
-        let _stored = self
-            .context
-            .agent
-            .set_cookie_partition(value, url, partition_key);
-    }
-}
-
-impl StorageHost for WasmServices {
     fn storage_get(&self, kind: StorageKind, origin: &StorageKey, key: &str) -> Option<String> {
         match kind {
             StorageKind::Local => lock(&self.context.local_storage)
                 .get(origin)
                 .and_then(|area| area.get(key)),
-            StorageKind::Session => lock(session_storage())
+            StorageKind::Session => lock(&self.context.session_storage)
                 .get(&self.owner)
                 .and_then(|namespace| namespace.get(origin))
                 .and_then(|area| area.get(key)),
@@ -981,7 +986,7 @@ impl StorageHost for WasmServices {
             StorageKind::Local => lock(&self.context.local_storage)
                 .get(origin)
                 .map_or_default(StorageArea::keys),
-            StorageKind::Session => lock(session_storage())
+            StorageKind::Session => lock(&self.context.session_storage)
                 .get(&self.owner)
                 .and_then(|namespace| namespace.get(origin))
                 .map_or_default(StorageArea::keys),
@@ -1005,7 +1010,7 @@ impl StorageHost for WasmServices {
                 .entry(origin.clone())
                 .or_default()
                 .set(key, value),
-            StorageKind::Session => lock(session_storage())
+            StorageKind::Session => lock(&self.context.session_storage)
                 .entry(self.owner)
                 .or_default()
                 .entry(origin.clone())
@@ -1030,7 +1035,7 @@ impl StorageHost for WasmServices {
             StorageKind::Local => lock(&self.context.local_storage)
                 .get_mut(origin)?
                 .remove(key),
-            StorageKind::Session => lock(session_storage())
+            StorageKind::Session => lock(&self.context.session_storage)
                 .get_mut(&self.owner)?
                 .get_mut(origin)?
                 .remove(key),
@@ -1047,7 +1052,7 @@ impl StorageHost for WasmServices {
     ) -> Option<StorageChange> {
         match kind {
             StorageKind::Local => lock(&self.context.local_storage).get_mut(origin)?.clear(),
-            StorageKind::Session => lock(session_storage())
+            StorageKind::Session => lock(&self.context.session_storage)
                 .get_mut(&self.owner)?
                 .get_mut(origin)?
                 .clear(),
@@ -1086,15 +1091,6 @@ impl BrowsingContextHost for WasmServices {
     }
 
     fn window_post_message(&self, _window: renderer::WindowId, _message: renderer::PostedMessage) {}
-
-    fn remote_session_get(
-        &self,
-        _window: renderer::WindowId,
-        _origin: &StorageKey,
-        _key: &str,
-    ) -> Option<String> {
-        None
-    }
 }
 
 impl MessagingHost for WasmServices {
@@ -1107,6 +1103,6 @@ impl Drop for WasmServices {
         for id in ids {
             self.registry.cancel(id);
         }
-        lock(session_storage()).remove(&self.owner);
+        lock(&self.context.session_storage).remove(&self.owner);
     }
 }

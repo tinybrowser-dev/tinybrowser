@@ -1318,21 +1318,6 @@ pub trait NetworkHost: Send + Sync + 'static {
     fn dial_sync(&self, _request: DialRequest) -> Result<DialOutcome, DialFailure> {
         Err(DialFailure::Connect)
     }
-
-    fn cookies_for(&self, url: &Url, partition_key: Option<&str>) -> String;
-
-    fn set_cookie(&self, value: &str, url: &Url, partition_key: Option<&str>);
-
-    // https://cookiestore.spec.whatwg.org/#query-cookies
-    fn cookie_store_records(&self, url: &Url, partition_key: Option<&str>) -> Vec<ScriptCookie>;
-
-    // https://cookiestore.spec.whatwg.org/#set-a-cookie
-    fn cookie_store_store(
-        &self,
-        write: &net::ScriptCookieWrite,
-        url: &Url,
-        partition_key: Option<&str>,
-    );
 }
 
 pub trait StorageHost: Send + Sync + 'static {
@@ -1368,6 +1353,28 @@ pub trait StorageHost: Send + Sync + 'static {
         url: &str,
         source: FrameId,
     ) -> Option<StorageChange>;
+
+    fn remote_session_get(
+        &self,
+        window: WindowId,
+        origin: &StorageKey,
+        key: &str,
+    ) -> Option<String>;
+
+    fn cookies_for(&self, url: &Url, partition_key: Option<&str>) -> String;
+
+    fn set_cookie(&self, value: &str, url: &Url, partition_key: Option<&str>);
+
+    // https://cookiestore.spec.whatwg.org/#query-cookies
+    fn cookie_store_records(&self, url: &Url, partition_key: Option<&str>) -> Vec<ScriptCookie>;
+
+    // https://cookiestore.spec.whatwg.org/#set-a-cookie
+    fn cookie_store_store(
+        &self,
+        write: &net::ScriptCookieWrite,
+        url: &Url,
+        partition_key: Option<&str>,
+    );
 }
 
 // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-open
@@ -1541,13 +1548,6 @@ pub trait BrowsingContextHost: Send + Sync + 'static {
     fn window_opener(&self) -> Option<WindowId>;
 
     fn window_post_message(&self, window: WindowId, message: PostedMessage);
-
-    fn remote_session_get(
-        &self,
-        window: WindowId,
-        origin: &StorageKey,
-        key: &str,
-    ) -> Option<String>;
 }
 
 pub trait MessagingHost: Send + Sync + 'static {

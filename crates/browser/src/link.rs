@@ -664,59 +664,6 @@ async fn route_service_call(
             }
             send_reply(&context.responder, id, ServiceReply::Unit).await?;
         }
-        // https://chromium.googlesource.com/chromium/src/+/main/docs/process_model_and_site_isolation.md#process-locks
-        ServiceCall::Network(NetworkCall::CookieGet { url, partition_key }) => {
-            let cookies = context
-                .tabs
-                .authorize_url(assignment.tab, &assignment.site, &url)
-                .map_or_default(|url| {
-                    assignment
-                        .network
-                        .cookies_for(&url, partition_key.as_deref())
-                });
-            send_reply(&context.responder, id, ServiceReply::Cookie(cookies)).await?;
-        }
-        ServiceCall::Network(NetworkCall::CookieSet {
-            value,
-            url,
-            partition_key,
-        }) => {
-            if let Some(url) = context
-                .tabs
-                .authorize_url(assignment.tab, &assignment.site, &url)
-            {
-                assignment
-                    .network
-                    .set_cookie(&value, &url, partition_key.as_deref());
-            }
-            send_reply(&context.responder, id, ServiceReply::Unit).await?;
-        }
-        ServiceCall::Network(NetworkCall::CookieStoreGet { url, partition_key }) => {
-            let records = context
-                .tabs
-                .authorize_url(assignment.tab, &assignment.site, &url)
-                .map_or_default(|url| {
-                    assignment
-                        .network
-                        .cookie_store_records(&url, partition_key.as_deref())
-                });
-            send_reply(&context.responder, id, ServiceReply::CookieStore(records)).await?;
-        }
-        ServiceCall::Network(NetworkCall::CookieStoreSet {
-            write,
-            url,
-            partition_key,
-        }) => {
-            if let Some(url) = context
-                .tabs
-                .authorize_url(assignment.tab, &assignment.site, &url)
-            {
-                assignment
-                    .network
-                    .cookie_store_store(&write, &url, partition_key.as_deref());
-            }
-            send_reply(&context.responder, id, ServiceReply::Unit).await?;
-        }
         ServiceCall::Messaging(MessagingCall::BroadcastPost {
             origin,
             name,
@@ -1069,22 +1016,6 @@ async fn route_window_call(
             }
             send_reply(&context.responder, id, ServiceReply::Unit).await?;
         }
-        BrowsingContextCall::RemoteSessionGet {
-            window,
-            origin,
-            key,
-        } => {
-            let origin = context
-                .tabs
-                .storage_key(assignment.tab, &assignment.site, &origin)
-                .ok_or(RendererViolation)?;
-            let target = TabId::new(window.get());
-            let related = message_related(context, assignment, target);
-            let value = related
-                .then(|| context.sessions.get(target, &origin, &key))
-                .flatten();
-            send_reply(&context.responder, id, ServiceReply::StorageValue(value)).await?;
-        }
     }
     Ok(())
 }
@@ -1167,7 +1098,140 @@ impl StorageRouter<'_> {
                 let origin = self.key(&origin)?;
                 self.clear(kind, &origin, &url, source).await
             }
+            StorageCall::RemoteSessionGet {
+                window,
+                origin,
+                key,
+            } => {
+                let origin = self.key(&origin)?;
+                self.remote_session_get(window, &origin, &key).await
+            }
+            StorageCall::CookieGet { url, partition_key } => {
+                self.cookie_get(&url, partition_key.as_deref()).await
+            }
+            StorageCall::CookieSet {
+                value,
+                url,
+                partition_key,
+            } => {
+                self.cookie_set(&value, &url, partition_key.as_deref())
+                    .await
+            }
+            StorageCall::CookieStoreGet { url, partition_key } => {
+                self.cookie_store_get(&url, partition_key.as_deref()).await
+            }
+            StorageCall::CookieStoreSet {
+                write,
+                url,
+                partition_key,
+            } => {
+                self.cookie_store_set(&write, &url, partition_key.as_deref())
+                    .await
+            }
         }
+    }
+
+    async fn remote_session_get(
+        &self,
+        window: renderer::WindowId,
+        origin: &StorageKey,
+        key: &str,
+    ) -> Result<(), RendererViolation> {
+        let target = TabId::new(window.get());
+        let value = message_related(self.context, self.authority, target)
+            .then(|| self.context.sessions.get(target, origin, key))
+            .flatten();
+        send_reply(
+            &self.context.responder,
+            self.request,
+            ServiceReply::StorageValue(value),
+        )
+        .await
+    }
+
+    // https://chromium.googlesource.com/chromium/src/+/main/docs/process_model_and_site_isolation.md#process-locks
+    async fn cookie_get(
+        &self,
+        url: &str,
+        partition_key: Option<&str>,
+    ) -> Result<(), RendererViolation> {
+        let cookies = self
+            .context
+            .tabs
+            .authorize_url(self.authority.tab, &self.authority.site, url)
+            .map_or_default(|url| {
+                self.context
+                    .partition
+                    .cookies
+                    .cookies_for(&url, partition_key)
+            });
+        send_reply(
+            &self.context.responder,
+            self.request,
+            ServiceReply::Cookie(cookies),
+        )
+        .await
+    }
+
+    async fn cookie_set(
+        &self,
+        value: &str,
+        url: &str,
+        partition_key: Option<&str>,
+    ) -> Result<(), RendererViolation> {
+        if let Some(url) =
+            self.context
+                .tabs
+                .authorize_url(self.authority.tab, &self.authority.site, url)
+        {
+            self.context
+                .partition
+                .cookies
+                .set_cookie(value, &url, partition_key);
+        }
+        send_reply(&self.context.responder, self.request, ServiceReply::Unit).await
+    }
+
+    async fn cookie_store_get(
+        &self,
+        url: &str,
+        partition_key: Option<&str>,
+    ) -> Result<(), RendererViolation> {
+        let records = self
+            .context
+            .tabs
+            .authorize_url(self.authority.tab, &self.authority.site, url)
+            .map_or_default(|url| {
+                self.context
+                    .partition
+                    .cookies
+                    .cookie_store_records(&url, partition_key)
+            });
+        send_reply(
+            &self.context.responder,
+            self.request,
+            ServiceReply::CookieStore(records),
+        )
+        .await
+    }
+
+    async fn cookie_store_set(
+        &self,
+        write: &net::ScriptCookieWrite,
+        url: &str,
+        partition_key: Option<&str>,
+    ) -> Result<(), RendererViolation> {
+        if let Some(url) =
+            self.context
+                .tabs
+                .authorize_url(self.authority.tab, &self.authority.site, url)
+        {
+            self.context
+                .partition
+                .cookies
+                .cookie_store_store(write, &url, partition_key);
+        }
+        send_reply(&self.context.responder, self.request, ServiceReply::Unit).await
     }
 
     fn key(&self, origin: &renderer::SerializedOrigin) -> Result<StorageKey, RendererViolation> {

@@ -9,10 +9,11 @@ use crate::broadcast::RendererEventHub;
 use crate::network::{NetworkContext, TabNetworkHandle};
 use crate::profile::Profile;
 use crate::profile::store::ProfileStore;
-use crate::storage::{SessionStorage, StorageAreas};
+use crate::storage::{CookieStore, SessionStorage, StorageAreas};
 
 #[derive(Clone)]
 pub(crate) struct PartitionServices {
+    pub(crate) cookies: Arc<CookieStore>,
     pub(crate) local_storage: Arc<StorageAreas>,
     pub(crate) indexed_db: Arc<StorageAreas>,
     pub(crate) events: Arc<RendererEventHub>,
@@ -33,10 +34,13 @@ impl BrowserContext {
     pub(crate) fn open(
         data_home: &Path,
         profile: &Profile,
-        network: NetworkContext,
+        mut network_options: net::AgentOptions,
     ) -> io::Result<Self> {
         let store = ProfileStore::open_in(data_home, profile)?;
-        store.load_into(&network.agent())?;
+        let cookies = Arc::new(CookieStore::new(network_options.clock.clone()));
+        store.load_cookies(&cookies)?;
+        network_options.cookie_jar = Some(cookies.jar());
+        let network = NetworkContext::new(network_options);
         let local_storage = Arc::new(StorageAreas::default());
         store.load_local_storage(&local_storage)?;
         let indexed_db = Arc::new(StorageAreas::default());
@@ -46,6 +50,7 @@ impl BrowserContext {
             partition: StoragePartition {
                 network,
                 services: PartitionServices {
+                    cookies,
                     local_storage,
                     indexed_db,
                     events: Arc::new(RendererEventHub::default()),
@@ -53,6 +58,11 @@ impl BrowserContext {
             },
             sessions: Arc::new(SessionStorage::default()),
         })
+    }
+
+    #[must_use]
+    pub(crate) fn identity(&self) -> net::ValidIdentity {
+        self.partition.network.identity()
     }
 
     #[must_use]
@@ -84,11 +94,11 @@ impl BrowserContext {
 
     pub(crate) async fn persist(&self) -> io::Result<()> {
         let store = Arc::clone(&self.store);
-        let agent = self.partition.network.agent();
+        let cookies = Arc::clone(&self.partition.services.cookies);
         let local_storage = Arc::clone(&self.partition.services.local_storage);
         let indexed_db = Arc::clone(&self.partition.services.indexed_db);
         tokio::task::spawn_blocking(move || {
-            store.save_from(&agent)?;
+            store.save_cookies(&cookies)?;
             store.save_local_storage(&local_storage)?;
             store.save_indexed_db(&indexed_db)
         })
@@ -98,11 +108,11 @@ impl BrowserContext {
 
     #[must_use]
     pub(crate) fn cookie_records(&self, url: &Url) -> Vec<net::CookieRecord> {
-        self.partition.network.cookie_records(url)
+        self.partition.services.cookies.cookie_records(url)
     }
 
     pub(crate) fn clear_cookies(&self) {
-        self.partition.network.clear_cookies();
+        self.partition.services.cookies.clear();
     }
 
     pub(crate) fn clear_cache(&self) {
@@ -114,6 +124,6 @@ impl BrowserContext {
     }
 
     pub(crate) fn add_cookie(&self, cookie: &str, url: &Url) -> bool {
-        self.partition.network.add_cookie(cookie, url)
+        self.partition.services.cookies.add_cookie(cookie, url)
     }
 }

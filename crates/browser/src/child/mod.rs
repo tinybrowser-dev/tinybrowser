@@ -280,9 +280,15 @@ impl NetworkHost for HostServices {
             _ => Err(renderer::DialFailure::Connect),
         }
     }
+}
 
+fn claim(origin: &renderer::StorageKey) -> renderer::SerializedOrigin {
+    renderer::SerializedOrigin::from(origin.origin())
+}
+
+impl StorageHost for HostServices {
     fn cookies_for(&self, url: &Url, partition_key: Option<&str>) -> String {
-        match self.call(ServiceCall::Network(NetworkCall::CookieGet {
+        match self.call(ServiceCall::Storage(StorageCall::CookieGet {
             url: url.to_string(),
             partition_key: partition_key.map(str::to_owned),
         })) {
@@ -292,7 +298,7 @@ impl NetworkHost for HostServices {
     }
 
     fn set_cookie(&self, value: &str, url: &Url, partition_key: Option<&str>) {
-        let _result = self.call(ServiceCall::Network(NetworkCall::CookieSet {
+        let _result = self.call(ServiceCall::Storage(StorageCall::CookieSet {
             value: value.to_owned(),
             url: url.to_string(),
             partition_key: partition_key.map(str::to_owned),
@@ -304,7 +310,7 @@ impl NetworkHost for HostServices {
         url: &Url,
         partition_key: Option<&str>,
     ) -> Vec<renderer::ScriptCookie> {
-        match self.call(ServiceCall::Network(NetworkCall::CookieStoreGet {
+        match self.call(ServiceCall::Storage(StorageCall::CookieStoreGet {
             url: url.to_string(),
             partition_key: partition_key.map(str::to_owned),
         })) {
@@ -319,19 +325,28 @@ impl NetworkHost for HostServices {
         url: &Url,
         partition_key: Option<&str>,
     ) {
-        let _reply = self.call(ServiceCall::Network(NetworkCall::CookieStoreSet {
+        let _reply = self.call(ServiceCall::Storage(StorageCall::CookieStoreSet {
             write: write.clone(),
             url: url.to_string(),
             partition_key: partition_key.map(str::to_owned),
         }));
     }
-}
 
-fn claim(origin: &renderer::StorageKey) -> renderer::SerializedOrigin {
-    renderer::SerializedOrigin::from(origin.origin())
-}
-
-impl StorageHost for HostServices {
+    fn remote_session_get(
+        &self,
+        window: WindowId,
+        origin: &renderer::StorageKey,
+        key: &str,
+    ) -> Option<String> {
+        match self.call(ServiceCall::Storage(StorageCall::RemoteSessionGet {
+            window,
+            origin: claim(origin),
+            key: key.to_owned(),
+        })) {
+            Some(ServiceReply::StorageValue(value)) => value,
+            _ => None,
+        }
+    }
     fn storage_get(
         &self,
         kind: StorageKind,
@@ -506,24 +521,6 @@ impl BrowsingContextHost for HostServices {
         let _result = self.call(ServiceCall::BrowsingContext(
             BrowsingContextCall::WindowMessage { window, message },
         ));
-    }
-
-    fn remote_session_get(
-        &self,
-        window: WindowId,
-        origin: &renderer::StorageKey,
-        key: &str,
-    ) -> Option<String> {
-        match self.call(ServiceCall::BrowsingContext(
-            BrowsingContextCall::RemoteSessionGet {
-                window,
-                origin: claim(origin),
-                key: key.to_owned(),
-            },
-        )) {
-            Some(ServiceReply::StorageValue(value)) => value,
-            _ => None,
-        }
     }
 }
 

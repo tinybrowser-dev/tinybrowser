@@ -14,7 +14,6 @@ use self::task::BrowserTask;
 use crate::actor::{NavigationInitiator, TabHandle, TabId};
 use crate::context::BrowserContext;
 use crate::exchange;
-use crate::network::NetworkContext;
 use crate::profile::Profile;
 use crate::profile::default_data_home;
 
@@ -91,14 +90,13 @@ impl Browser {
     pub fn new(options: BrowserOptions) -> Result<Self, BrowserOpenError> {
         let runtime = tokio::runtime::Handle::try_current()
             .map_err(|_| BrowserOpenError::RuntimeUnavailable)?;
-        let network = NetworkContext::new(options.network);
-        let identity = Arc::new(network.identity());
         let data_home = match options.data_home {
             Some(data_home) => data_home,
             None => default_data_home().map_err(BrowserOpenError::Profile)?,
         };
-        let context = BrowserContext::open(&data_home, &options.profile, network)
+        let context = BrowserContext::open(&data_home, &options.profile, options.network)
             .map_err(BrowserOpenError::Profile)?;
+        let identity = Arc::new(context.identity());
         let (client, server) = exchange::local(BROWSER_COMMAND_CAPACITY);
         let handle = BrowserHandle { client, identity };
         let task = BrowserTask::new(server, context, handle.clone());

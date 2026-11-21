@@ -185,20 +185,8 @@ impl NetworkContext {
         }
     }
 
-    pub(crate) fn agent(&self) -> Agent {
-        self.agent.clone()
-    }
-
     pub(crate) fn identity(&self) -> net::ValidIdentity {
         self.agent.identity().clone()
-    }
-
-    pub(crate) fn cookie_records(&self, url: &Url) -> Vec<net::CookieRecord> {
-        self.agent.cookie_records(url)
-    }
-
-    pub(crate) fn clear_cookies(&self) {
-        self.agent.clear_cookies();
     }
 
     pub(crate) fn clear_cache(&self) {
@@ -207,10 +195,6 @@ impl NetworkContext {
 
     pub(crate) fn set_cache_disabled(&self, disabled: bool) {
         self.cache.set_disabled(disabled);
-    }
-
-    pub(crate) fn add_cookie(&self, cookie: &str, url: &Url) -> bool {
-        self.agent.store_cookie_http(cookie, url)
     }
 }
 
@@ -251,47 +235,6 @@ impl TabNetworkHandle {
     #[must_use]
     pub(crate) fn identity(&self, tab: crate::TabId) -> net::ValidIdentity {
         self.dialer.agent().identity_for(Some(tab.get()))
-    }
-
-    #[must_use]
-    pub(crate) fn cookies_for(&self, url: &Url, partition_key: Option<&str>) -> String {
-        self.dialer
-            .agent()
-            .cookies_for_partition(url, partition_key)
-    }
-
-    pub(crate) fn set_cookie(&self, value: &str, url: &Url, partition_key: Option<&str>) {
-        let _stored = self
-            .dialer
-            .agent()
-            .set_cookie_partition(value, url, partition_key);
-    }
-
-    // https://cookiestore.spec.whatwg.org/#query-cookies
-    #[must_use]
-    pub(crate) fn cookie_store_records(
-        &self,
-        url: &Url,
-        partition_key: Option<&str>,
-    ) -> Vec<renderer::ScriptCookie> {
-        self.dialer
-            .agent()
-            .script_cookie_records_partition(url, partition_key)
-            .into_iter()
-            .map(|record| renderer::ScriptCookie::from_record(&record))
-            .collect()
-    }
-
-    // https://cookiestore.spec.whatwg.org/#set-a-cookie
-    pub(crate) fn cookie_store_store(
-        &self,
-        write: &net::ScriptCookieWrite,
-        url: &Url,
-        partition_key: Option<&str>,
-    ) {
-        self.dialer
-            .agent()
-            .set_script_cookie_partition(write, url, partition_key);
     }
 
     pub(crate) fn dial_navigation(
