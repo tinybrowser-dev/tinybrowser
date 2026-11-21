@@ -5,7 +5,7 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
@@ -16,7 +16,7 @@ use url::Url;
 use crate::js::world::World;
 use crate::js::{
     FrameRuntime, JsError, JsFetchId, JsFetchRequest, JsRealm, JsRuntimeHandle, PageTimerId,
-    RealmRequest, SharedJsRuntime, Stop, WorkerScriptError,
+    RealmRequest, SharedJsRuntime, WorkerScriptError,
 };
 use crate::protocol::{
     DialCancellation, DialOutcome, DialRequest, FrameId, PolicyContainer, ReferrerRequest,
@@ -308,50 +308,14 @@ pub(crate) struct WorkerThreadState {
 }
 
 pub(crate) struct WorkerDirectory {
-    services: Arc<dyn crate::protocol::BrowserServices>,
-    identity: net::ValidIdentity,
-    wake: Arc<tokio::sync::Notify>,
-    stop: Arc<Stop>,
-    shared: crate::messaging::SharedHandle,
-    requests: crate::js::WorkerRequests,
-    next_worker: Arc<AtomicU64>,
-    next_broadcast: Arc<AtomicU64>,
-    font_ctx: parley::FontContext,
-    object_urls: crate::js::ObjectUrlStore,
-    shared_buffers: Arc<crate::js::SharedBufferTable>,
+    runtime: Arc<crate::js::SharedRuntime>,
     workers: Mutex<BTreeMap<WorkerId, WorkerHandle>>,
 }
 
 impl WorkerDirectory {
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one argument per process-wide handle the directory shares with worker threads"
-    )]
-    pub(crate) fn new(
-        services: Arc<dyn crate::protocol::BrowserServices>,
-        identity: net::ValidIdentity,
-        wake: Arc<tokio::sync::Notify>,
-        stop: Arc<Stop>,
-        shared: crate::messaging::SharedHandle,
-        requests: crate::js::WorkerRequests,
-        next_worker: Arc<AtomicU64>,
-        next_broadcast: Arc<AtomicU64>,
-        font_ctx: parley::FontContext,
-        object_urls: crate::js::ObjectUrlStore,
-        shared_buffers: Arc<crate::js::SharedBufferTable>,
-    ) -> Self {
+    pub(crate) fn new(runtime: Arc<crate::js::SharedRuntime>) -> Self {
         Self {
-            services,
-            identity,
-            wake,
-            stop,
-            shared,
-            requests,
-            next_worker,
-            next_broadcast,
-            font_ctx,
-            object_urls,
-            shared_buffers,
+            runtime,
             workers: Mutex::new(BTreeMap::new()),
         }
     }
@@ -363,23 +327,15 @@ impl WorkerDirectory {
     // https://bellard.org/quickjs/quickjs.html
     fn thread_runtime(self: &Arc<Self>, js_runtime: JsRuntimeHandle) -> FrameRuntime {
         FrameRuntime {
-            services: Arc::clone(&self.services),
-            identity: Rc::new(RefCell::new(self.identity.clone())),
+            common: Arc::clone(&self.runtime),
+            identity: Rc::new(RefCell::new(self.runtime.initial_identity.clone())),
             js_runtime,
-            wake: Arc::clone(&self.wake),
-            stop: Arc::clone(&self.stop),
             documents: Rc::new(RefCell::new(crate::documents::DocumentStore::default())),
             registry: Rc::new(RefCell::new(crate::js::RealmRegistry::default())),
-            shared: self.shared.clone(),
             pending_storage: Rc::new(RefCell::new(Vec::new())),
             turn_deadline: Rc::new(std::cell::Cell::new(None)),
-            worker_requests: Arc::clone(&self.requests),
-            next_worker: Arc::clone(&self.next_worker),
-            next_broadcast: Arc::clone(&self.next_broadcast),
             worker_dir: Arc::clone(self),
-            font_ctx: self.font_ctx.clone(),
-            object_urls: Arc::clone(&self.object_urls),
-            shared_buffers: Arc::clone(&self.shared_buffers),
+            font_ctx: self.runtime.font_ctx.clone(),
         }
     }
 

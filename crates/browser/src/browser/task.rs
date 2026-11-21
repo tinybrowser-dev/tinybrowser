@@ -34,9 +34,7 @@ struct TabRecord {
     opener: Option<TabId>,
     opener_frame: Option<renderer::FrameId>,
     names: TabNames,
-    sandbox: renderer::SandboxFlags,
-    main_csp: renderer::SandboxFlags,
-    frames: HashMap<renderer::FrameId, FrameEntry>,
+    frames: crate::frames::FrameTree,
     script_created: bool,
 }
 
@@ -49,14 +47,6 @@ impl TabRecord {
 #[derive(Clone)]
 pub(crate) struct TabRegistry {
     records: Arc<Mutex<HashMap<TabId, TabRecord>>>,
-}
-
-#[derive(Clone, Debug)]
-struct FrameEntry {
-    parent: renderer::FrameId,
-    creation: renderer::SandboxFlags,
-    active: renderer::SandboxFlags,
-    site: Option<crate::site::Site>,
 }
 
 impl TabRegistry {
@@ -187,18 +177,24 @@ impl TabRegistry {
 
     // https://html.spec.whatwg.org/multipage/browsers.html#popup-sandboxing-flag-set
     pub(crate) fn set_sandbox(&self, id: TabId, sandbox: renderer::SandboxFlags) {
-        self.lock().entry(id).or_default().sandbox = sandbox;
+        self.lock()
+            .entry(id)
+            .or_default()
+            .frames
+            .set_popup_sandbox(sandbox);
     }
 
     #[cfg(test)]
     pub(crate) fn sandbox(&self, id: TabId) -> renderer::SandboxFlags {
-        self.lock().get(&id).map_or_default(|record| record.sandbox)
+        self.lock()
+            .get(&id)
+            .map_or_default(|record| record.frames.popup_sandbox())
     }
 
     pub(crate) fn main_csp(&self, id: TabId) -> renderer::SandboxFlags {
         self.lock()
             .get(&id)
-            .map_or_default(|record| record.main_csp)
+            .map_or_default(|record| record.frames.main_csp())
     }
 
     // https://html.spec.whatwg.org/multipage/browsers.html#determining-the-creation-sandboxing-flags
@@ -211,33 +207,11 @@ impl TabRegistry {
         kind: renderer::FrameKind,
         reported: renderer::SandboxFlags,
     ) -> bool {
-        if frame == renderer::FrameId::MAIN {
-            return false;
-        }
-        let mut records = self.lock();
-        let record = records.entry(tab).or_default();
-        if record.frames.contains_key(&frame) {
-            return false;
-        }
-        let parent_active = match record.frames.get(&parent) {
-            Some(parent_record) => parent_record.active,
-            None if parent == renderer::FrameId::MAIN => record.sandbox.union(record.main_csp),
-            None => return false,
-        };
-        let creation = match kind {
-            renderer::FrameKind::Child => parent_active.union(reported),
-            renderer::FrameKind::Auxiliary => parent_active.auxiliary_flags(),
-        };
-        record.frames.insert(
-            frame,
-            FrameEntry {
-                parent,
-                creation,
-                active: creation,
-                site: None,
-            },
-        );
-        true
+        self.lock()
+            .entry(tab)
+            .or_default()
+            .frames
+            .register(frame, parent, kind, reported)
     }
 
     pub(crate) fn frame_sandbox(
@@ -246,20 +220,19 @@ impl TabRegistry {
         frame: renderer::FrameId,
     ) -> Option<renderer::SandboxFlags> {
         let records = self.lock();
-        if frame == renderer::FrameId::MAIN {
-            let (sandbox, main_csp) = records
-                .get(&tab)
-                .map_or_default(|r| (r.sandbox, r.main_csp));
-            return Some(sandbox.union(main_csp));
+        match records.get(&tab) {
+            Some(record) => record.frames.sandbox(frame),
+            None if frame == renderer::FrameId::MAIN => Some(renderer::SandboxFlags::empty()),
+            None => None,
         }
-        records
-            .get(&tab)
-            .and_then(|record| record.frames.get(&frame))
-            .map(|entry| entry.active)
     }
 
     pub(crate) fn reset_main_sandbox(&self, tab: TabId, csp: renderer::SandboxFlags) {
-        self.lock().entry(tab).or_default().main_csp = csp;
+        self.lock()
+            .entry(tab)
+            .or_default()
+            .frames
+            .reset_main_csp(csp);
     }
 
     // https://w3c.github.io/webappsec-csp/#sandbox
@@ -270,20 +243,8 @@ impl TabRegistry {
         url: &url::Url,
         csp: renderer::SandboxFlags,
     ) {
-        if frame == renderer::FrameId::MAIN {
-            return;
-        }
-        let mut records = self.lock();
-        if let Some(entry) = records
-            .get_mut(&tab)
-            .and_then(|record| record.frames.get_mut(&frame))
-        {
-            entry.active = entry.creation.union(csp);
-            entry.site = if entry.active.origin_is_opaque() {
-                None
-            } else {
-                crate::site::Site::for_url(url)
-            };
+        if let Some(record) = self.lock().get_mut(&tab) {
+            record.frames.commit_child(frame, url, csp);
         }
     }
 
@@ -294,16 +255,10 @@ impl TabRegistry {
         main: &crate::site::Site,
         claim: &renderer::SerializedOrigin,
     ) -> Option<url::Origin> {
-        if let Some(origin) = main.authorize_origin(claim) {
-            return Some(origin);
+        match self.lock().get(&tab) {
+            Some(record) => record.frames.authorize_origin(main, claim),
+            None => main.authorize_origin(claim),
         }
-        self.lock().get(&tab).and_then(|record| {
-            record
-                .frames
-                .values()
-                .filter_map(|entry| entry.site.as_ref())
-                .find_map(|site| site.authorize_origin(claim))
-        })
     }
 
     pub(crate) fn authorize_url(
@@ -312,29 +267,17 @@ impl TabRegistry {
         main: &crate::site::Site,
         spec: &str,
     ) -> Option<url::Url> {
-        if let Some(url) = main.authorize_url(spec) {
-            return Some(url);
+        match self.lock().get(&tab) {
+            Some(record) => record.frames.authorize_url(main, spec),
+            None => main.authorize_url(spec),
         }
-        self.lock().get(&tab).and_then(|record| {
-            record
-                .frames
-                .values()
-                .filter_map(|entry| entry.site.as_ref())
-                .find_map(|site| site.authorize_url(spec))
-        })
     }
 
     pub(crate) fn allows_url(&self, tab: TabId, main: &crate::site::Site, url: &url::Url) -> bool {
-        if main.allows_url(url) {
-            return true;
+        match self.lock().get(&tab) {
+            Some(record) => record.frames.allows_url(main, url),
+            None => main.allows_url(url),
         }
-        self.lock().get(&tab).is_some_and(|record| {
-            record
-                .frames
-                .values()
-                .filter_map(|entry| entry.site.as_ref())
-                .any(|site| site.allows_url(url))
-        })
     }
 
     pub(crate) fn storage_key(
@@ -352,16 +295,10 @@ impl TabRegistry {
         main: &crate::site::Site,
         claim: &renderer::SerializedOrigin,
     ) -> bool {
-        if main.allows_message_origin(claim) {
-            return true;
+        match self.lock().get(&tab) {
+            Some(record) => record.frames.allows_message_origin(main, claim),
+            None => main.allows_message_origin(claim),
         }
-        self.lock().get(&tab).is_some_and(|record| {
-            record
-                .frames
-                .values()
-                .filter_map(|entry| entry.site.as_ref())
-                .any(|site| site.allows_message_origin(claim))
-        })
     }
 
     pub(crate) fn remove_frame(&self, tab: TabId, frame: renderer::FrameId) -> bool {
@@ -369,16 +306,7 @@ impl TabRegistry {
             return false;
         }
         if let Some(record) = self.lock().get_mut(&tab) {
-            let mut stack = vec![frame];
-            while let Some(target) = stack.pop() {
-                record.frames.remove(&target);
-                let children: Vec<renderer::FrameId> = record
-                    .frames
-                    .iter()
-                    .filter_map(|(id, entry)| (entry.parent == target).then_some(*id))
-                    .collect();
-                stack.extend(children);
-            }
+            return record.frames.remove(frame);
         }
         true
     }

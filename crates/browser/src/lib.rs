@@ -5,6 +5,7 @@ mod browser;
 pub mod child;
 mod context;
 mod exchange;
+mod frames;
 mod history;
 mod link;
 mod manager;

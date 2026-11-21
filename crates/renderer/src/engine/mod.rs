@@ -5,8 +5,7 @@ use self::history::{FrameHistory, FrameHistoryEntry, SameDocumentEntry, Standalo
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
-use std::sync::atomic::AtomicU64;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::Notify;
@@ -107,42 +106,23 @@ impl Engine {
     ) -> Self {
         let js_runtime = SharedJsRuntime::default();
         let init_scripts: Rc<RefCell<Vec<(u64, String)>>> = Rc::new(RefCell::new(Vec::new()));
-        let shared = crate::messaging::SharedHandle::new(crate::messaging::Shared::default());
-        let worker_requests = Arc::new(Mutex::new(Vec::new()));
-        let next_worker = Arc::new(AtomicU64::new(1));
-        let next_broadcast = Arc::new(AtomicU64::new(1));
-        let object_urls = Arc::new(Mutex::new(std::collections::HashMap::new()));
-        let shared_buffers = Arc::new(crate::js::SharedBufferTable::default());
-        let worker_dir = Arc::new(WorkerDirectory::new(
-            Arc::clone(&services),
-            identity.clone(),
-            Arc::clone(&wake),
-            Arc::clone(&stop),
-            shared.clone(),
-            Arc::clone(&worker_requests),
-            Arc::clone(&next_worker),
-            Arc::clone(&next_broadcast),
-            fonts.0.clone(),
-            Arc::clone(&object_urls),
-            Arc::clone(&shared_buffers),
-        ));
-        let runtime = FrameRuntime {
+        let common = Arc::new(crate::js::SharedRuntime::new(
             services,
-            identity: Rc::new(RefCell::new(identity)),
-            js_runtime: js_runtime.handle(),
+            identity.clone(),
             wake,
             stop,
+            fonts.0.clone(),
+        ));
+        let worker_dir = Arc::new(WorkerDirectory::new(Arc::clone(&common)));
+        let runtime = FrameRuntime {
+            common,
+            identity: Rc::new(RefCell::new(identity)),
+            js_runtime: js_runtime.handle(),
             documents: Rc::new(RefCell::new(DocumentStore::default())),
             registry: Rc::new(RefCell::new(RealmRegistry::default())),
-            shared,
             pending_storage: Rc::new(RefCell::new(Vec::new())),
             turn_deadline: Rc::new(std::cell::Cell::new(None)),
-            worker_requests,
-            next_worker,
-            next_broadcast,
             worker_dir,
-            object_urls,
-            shared_buffers,
             font_ctx: fonts.0.clone(),
         };
         let main = Document::with_shared(FrameId::MAIN, &runtime, &init_scripts);

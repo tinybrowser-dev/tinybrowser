@@ -25,7 +25,7 @@ pub(crate) use bindings::selector_matching_elements;
 pub(crate) use bindings::{element_at_point, element_box, viewport_scroll};
 pub(crate) use bridge::js_number;
 pub use runtime::Stop;
-pub(crate) use runtime::{FrameRuntime, ObjectUrlStore, SharedBufferTable, WorkerRequests};
+pub(crate) use runtime::{FrameRuntime, SharedRuntime};
 pub(crate) use world::{DocumentStreamCommand, FrameNavigation, NavigationTarget, RealmRegistry};
 
 use enumerated::Enumerated;

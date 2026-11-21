@@ -2201,7 +2201,6 @@ mod realm_tests {
     use crate::dom::tree::NodeId;
     use crate::js::Stop;
     use crate::js::{JsRealm, SharedJsRuntime, World};
-    use crate::messaging::Shared;
     use crate::protocol::{BrowserServices, FrameId};
     use crate::test_services::NullServices;
 
@@ -2214,44 +2213,23 @@ mod realm_tests {
         html: &str,
     ) -> Rc<RefCell<World>> {
         let identity = net::ValidIdentity::default();
-        let wake = Arc::new(tokio::sync::Notify::new());
-        let stop = Arc::new(Stop::new());
-        let shared = crate::messaging::SharedHandle::new(Shared::default());
-        let worker_requests = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let next_worker = Arc::new(std::sync::atomic::AtomicU64::new(1));
-        let next_broadcast = Arc::new(std::sync::atomic::AtomicU64::new(1));
-        let object_urls = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
-        let shared_buffers = Arc::new(crate::js::SharedBufferTable::default());
-        let worker_dir = Arc::new(crate::worker::WorkerDirectory::new(
+        let common = Arc::new(crate::js::SharedRuntime::new(
             Arc::clone(services),
             identity.clone(),
-            Arc::clone(&wake),
-            Arc::clone(&stop),
-            shared.clone(),
-            Arc::clone(&worker_requests),
-            Arc::clone(&next_worker),
-            Arc::clone(&next_broadcast),
+            Arc::new(tokio::sync::Notify::new()),
+            Arc::new(Stop::new()),
             parley::FontContext::default(),
-            Arc::clone(&object_urls),
-            Arc::clone(&shared_buffers),
         ));
+        let worker_dir = Arc::new(crate::worker::WorkerDirectory::new(Arc::clone(&common)));
         let runtime = crate::js::FrameRuntime {
-            services: Arc::clone(services),
+            common,
             identity: Rc::new(RefCell::new(identity)),
             js_runtime: js_runtime.handle(),
-            wake,
-            stop,
             documents: Rc::clone(documents),
             registry: Rc::clone(registry),
-            shared,
             pending_storage: Rc::new(RefCell::new(Vec::new())),
             turn_deadline: Rc::new(std::cell::Cell::new(None)),
-            worker_requests,
-            next_worker,
-            next_broadcast,
             worker_dir,
-            object_urls,
-            shared_buffers,
             font_ctx: parley::FontContext::default(),
         };
         let mut world = World::new(
