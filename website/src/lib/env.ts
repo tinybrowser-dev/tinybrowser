@@ -15,10 +15,23 @@
  * - `CI`: when truthy, `scripts/build-wasm.ts` fails hard if the Wasm
  *   component is missing instead of skipping.
  */
+import { existsSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 
-export const WEBSITE_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../..")
+function findWebsiteDir(start: string): string {
+  let dir = start
+  while (!existsSync(join(dir, "astro.config.mjs"))) {
+    const parent = dirname(dir)
+    if (parent === dir) {
+      throw new Error(`Could not locate astro.config.mjs from ${start}`)
+    }
+    dir = parent
+  }
+  return dir
+}
+
+export const WEBSITE_DIR = findWebsiteDir(dirname(fileURLToPath(import.meta.url)))
 export const REPO_DIR = resolve(WEBSITE_DIR, "..")
 
 export const WPT_RESULTS_DIR = resolve(WEBSITE_DIR, process.env.WPT_RESULTS_DIR ?? "../wpt-results")

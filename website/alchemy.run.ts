@@ -32,6 +32,10 @@ export default Alchemy.Stack(
     const site = yield* Cloudflare.Website.Astro("Website", {
       sessionKVBindingName: false,
       prerenderEnvironment: "node",
+      memo: {
+        exclude: ["node_modules/**", "dist/**", ".astro/**", ".alchemy/**", ".env", ".env.*"],
+        lockfile: true,
+      },
       assets: {
         notFoundHandling: "404-page",
         runWorkerFirst: ["/api/*"],
