@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -137,6 +138,7 @@ impl Default for AgentOptions {
 pub struct Agent {
     transport: Arc<dyn Transport>,
     identity: crate::ValidIdentity,
+    client_identities: Arc<Mutex<HashMap<u64, crate::ValidIdentity>>>,
     max_redirects: u32,
     jar: Arc<Mutex<CookieJar>>,
     clock: Clock,
@@ -173,6 +175,7 @@ impl Agent {
         Agent {
             transport,
             identity,
+            client_identities: Arc::new(Mutex::new(HashMap::new())),
             max_redirects,
             jar: Arc::new(Mutex::new(CookieJar::default())),
             clock,
@@ -188,6 +191,7 @@ impl Agent {
         Agent {
             transport,
             identity: options.identity,
+            client_identities: Arc::new(Mutex::new(HashMap::new())),
             max_redirects: options.max_redirects,
             jar: Arc::new(Mutex::new(CookieJar::default())),
             clock,
@@ -207,6 +211,34 @@ impl Agent {
     #[must_use]
     pub fn identity(&self) -> &crate::ValidIdentity {
         &self.identity
+    }
+
+    pub fn set_client_identity(&self, client: u64, identity: Option<crate::ValidIdentity>) {
+        let mut overrides = self
+            .client_identities
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        match identity {
+            Some(identity) => {
+                overrides.insert(client, identity);
+            }
+            None => {
+                overrides.remove(&client);
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn identity_for(&self, client: Option<u64>) -> crate::ValidIdentity {
+        let Some(client) = client else {
+            return self.identity.clone();
+        };
+        self.client_identities
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&client)
+            .cloned()
+            .unwrap_or_else(|| self.identity.clone())
     }
 
     fn jar(&self) -> MutexGuard<'_, CookieJar> {
@@ -336,6 +368,7 @@ impl Agent {
 
     fn prepare_outbound(
         &self,
+        identity: &crate::ValidIdentity,
         headers: &mut HeaderMap,
         operation: CookieOp<'_>,
     ) -> Result<(), NetError> {
@@ -345,10 +378,7 @@ impl Agent {
             headers.set(header::COOKIE, value);
         }
         if headers.value("user-agent").is_none() {
-            headers.append(
-                header::USER_AGENT,
-                self.identity.user_agent.header().clone(),
-            );
+            headers.append(header::USER_AGENT, identity.user_agent.header().clone());
         }
         Ok(())
     }
@@ -384,7 +414,7 @@ impl Agent {
         }
         preflight.append(
             header::USER_AGENT,
-            self.identity.user_agent.header().clone(),
+            dial.identity.user_agent.header().clone(),
         );
         let preflight_response = self
             .transport
@@ -462,9 +492,10 @@ impl Agent {
         if !matches!(request.url.scheme(), "http" | "https") {
             return Err(NetError::RejectedRequest);
         }
+        let identity = self.identity_for(request.client);
         let dial = Dial {
             cors: &request.cors,
-            client_hints: self.identity.hints(),
+            identity: &identity,
             initiator_kind: request.initiator_kind,
             initiator: request.initiator.as_ref(),
             on_redirect: request.on_redirect.as_ref(),
@@ -488,10 +519,8 @@ impl Agent {
                 .append(header::ACCEPT, HeaderValue::from_static("*/*"));
         }
         if hop.headers.value("accept-language").is_none() {
-            hop.headers.append(
-                header::ACCEPT_LANGUAGE,
-                self.identity.accept_language().clone(),
-            );
+            hop.headers
+                .append(header::ACCEPT_LANGUAGE, identity.accept_language().clone());
         }
         let empty_body = hop.body.as_ref().is_none_or(Bytes::is_empty);
         if empty_body
@@ -627,7 +656,7 @@ impl Agent {
         let mut hop_headers = hop.headers.clone();
         self.apply_cors_request(dial, hop, &wire, &mut hop_headers, budget.clone())
             .await?;
-        self.prepare_outbound(&mut hop_headers, operation)?;
+        self.prepare_outbound(dial.identity, &mut hop_headers, operation)?;
         prepare_credentials(dial, url, cross_origin, &mut hop_headers)?;
         let send_credentials =
             crate::cors::credentials_admitted(dial.cors.credentials, cross_origin);
@@ -956,13 +985,13 @@ fn prepare_credentials(
     } else {
         headers.remove("cookie");
     }
-    dial.client_hints.write(headers, url);
+    dial.identity.hints().write(headers, url);
     Ok(())
 }
 
 struct Dial<'a> {
     cors: &'a crate::cors::CorsSettings,
-    client_hints: &'a crate::ClientHints,
+    identity: &'a crate::ValidIdentity,
     initiator_kind: InitiatorKind,
     initiator: Option<&'a url::Origin>,
     on_redirect: Option<&'a RedirectGate>,

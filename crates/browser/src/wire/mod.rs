@@ -75,6 +75,10 @@ pub enum Command {
         width: u32,
         height: u32,
     },
+    // https://chromedevtools.github.io/devtools-protocol/tot/Emulation/#method-setUserAgentOverride
+    SetIdentity {
+        identity: Box<net::ValidIdentity>,
+    },
     ContentSize {
         frame: FrameId,
     },

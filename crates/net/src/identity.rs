@@ -8,9 +8,15 @@ use url::Url;
 
 use crate::HeaderError;
 
-pub const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36";
+pub const DEFAULT_USER_AGENT: &str = concat!(
+    "tinybrowser/",
+    env!("CARGO_PKG_VERSION"),
+    " (+https://tinybrowser.ericc.ch)"
+);
 
-const DEFAULT_FULL_VERSION: &str = "152.0.7977.82";
+pub const CHROME_USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36";
+
+const CHROME_FULL_VERSION: &str = "152.0.7977.82";
 
 const DEFAULT_LANGUAGES: [&str; 2] = ["en-US", "en"];
 
@@ -60,6 +66,7 @@ impl<'de> Deserialize<'de> for UserAgent {
 }
 
 const DEFAULT_IDENTITY_USER_AGENT: UserAgent = UserAgent::from_static(DEFAULT_USER_AGENT);
+const CHROME_IDENTITY_USER_AGENT: UserAgent = UserAgent::from_static(CHROME_USER_AGENT);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Brand {
@@ -99,22 +106,13 @@ pub struct Identity {
 
 impl Default for Identity {
     fn default() -> Self {
-        let major = DEFAULT_FULL_VERSION
-            .split_once('.')
-            .map_or(DEFAULT_FULL_VERSION, |(major, _)| major);
+        let full = env!("CARGO_PKG_VERSION");
+        let major = full.split_once('.').map_or(full, |(major, _)| major);
         Self {
             user_agent: DEFAULT_IDENTITY_USER_AGENT,
-            brands: vec![
-                Brand::new("Not_A Brand", "99"),
-                Brand::new("Chromium", major),
-                Brand::new("Google Chrome", major),
-            ],
-            full_version_list: vec![
-                Brand::new("Not_A Brand", "99.0.0.0"),
-                Brand::new("Chromium", DEFAULT_FULL_VERSION),
-                Brand::new("Google Chrome", DEFAULT_FULL_VERSION),
-            ],
-            product: format!("Chrome/{DEFAULT_FULL_VERSION}"),
+            brands: vec![Brand::new("tinybrowser", major)],
+            full_version_list: vec![Brand::new("tinybrowser", full)],
+            product: format!("tinybrowser/{full}"),
             platform: "Linux".to_owned(),
             platform_version: String::new(),
             architecture: "x86".to_owned(),
@@ -125,13 +123,47 @@ impl Default for Identity {
             form_factors: vec!["Desktop".to_owned()],
             navigator_platform: "Linux x86_64".to_owned(),
             languages: DEFAULT_LANGUAGES.map(str::to_owned).to_vec(),
-            vendor: "Google Inc.".to_owned(),
+            vendor: String::new(),
             product_sub: "20030107".to_owned(),
         }
     }
 }
 
 impl Identity {
+    #[must_use]
+    pub fn chrome() -> Self {
+        let major = CHROME_FULL_VERSION
+            .split_once('.')
+            .map_or(CHROME_FULL_VERSION, |(major, _)| major);
+        Self {
+            user_agent: CHROME_IDENTITY_USER_AGENT,
+            brands: vec![
+                Brand::new("Not_A Brand", "99"),
+                Brand::new("Chromium", major),
+                Brand::new("Google Chrome", major),
+            ],
+            full_version_list: vec![
+                Brand::new("Not_A Brand", "99.0.0.0"),
+                Brand::new("Chromium", CHROME_FULL_VERSION),
+                Brand::new("Google Chrome", CHROME_FULL_VERSION),
+            ],
+            product: format!("Chrome/{CHROME_FULL_VERSION}"),
+            vendor: "Google Inc.".to_owned(),
+            ..Self::default()
+        }
+    }
+
+    #[must_use]
+    pub fn custom(user_agent: UserAgent) -> Self {
+        Self {
+            user_agent,
+            brands: Vec::new(),
+            full_version_list: Vec::new(),
+            vendor: String::new(),
+            ..Self::default()
+        }
+    }
+
     // https://wicg.github.io/ua-client-hints/#sec-ch-ua
     #[must_use]
     pub fn sec_ch_ua(&self) -> String {
@@ -177,6 +209,22 @@ pub struct ValidIdentity {
 }
 
 impl ValidIdentity {
+    #[must_use]
+    pub fn chrome() -> Self {
+        Self::try_from(Identity::chrome()).expect("the built-in chrome identity is valid")
+    }
+
+    pub fn parse_spec(spec: &str) -> Result<Self, InvalidIdentity> {
+        if spec.eq_ignore_ascii_case("tinybrowser") {
+            return Ok(Self::default());
+        }
+        if spec.eq_ignore_ascii_case("chrome") {
+            return Ok(Self::chrome());
+        }
+        let user_agent = UserAgent::parse(spec)?;
+        Self::try_from(Identity::custom(user_agent))
+    }
+
     #[must_use]
     pub fn hints(&self) -> &ClientHints {
         &self.hints
@@ -261,7 +309,7 @@ fn is_language_tag(tag: &str) -> bool {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClientHints {
-    ua: HeaderValue,
+    ua: Option<HeaderValue>,
     mobile: HeaderValue,
     platform: HeaderValue,
 }
@@ -271,8 +319,13 @@ impl ClientHints {
         let field = |value: String| {
             HeaderValue::from_str(&value).map_err(|_| HeaderError::InvalidValue(value.into()))
         };
+        let ua = if identity.brands.is_empty() {
+            None
+        } else {
+            Some(field(identity.sec_ch_ua())?)
+        };
         Ok(Self {
-            ua: field(identity.sec_ch_ua())?,
+            ua,
             mobile: field(identity.sec_ch_ua_mobile().to_owned())?,
             platform: field(identity.sec_ch_ua_platform())?,
         })
@@ -283,7 +336,10 @@ impl ClientHints {
         if !secure_context::is_potentially_trustworthy(url) {
             return;
         }
-        headers.insert_wire(HeaderName::from_static("sec-ch-ua"), self.ua.clone());
+        let Some(ua) = &self.ua else {
+            return;
+        };
+        headers.insert_wire(HeaderName::from_static("sec-ch-ua"), ua.clone());
         headers.insert_wire(
             HeaderName::from_static("sec-ch-ua-mobile"),
             self.mobile.clone(),
@@ -316,9 +372,12 @@ mod tests {
     #[test]
     fn the_default_identity_serializes_its_brands_as_the_header() {
         let identity = Identity::default();
+        let major = env!("CARGO_PKG_VERSION")
+            .split_once('.')
+            .map_or(env!("CARGO_PKG_VERSION"), |(major, _)| major);
         assert_eq!(
             identity.sec_ch_ua(),
-            r#""Not_A Brand";v="99", "Chromium";v="152", "Google Chrome";v="152""#
+            format!(r#""tinybrowser";v="{major}""#)
         );
         assert_eq!(identity.sec_ch_ua_mobile(), "?0");
         assert_eq!(identity.sec_ch_ua_platform(), r#""Linux""#);
@@ -327,20 +386,41 @@ mod tests {
     #[test]
     fn the_default_identity_names_one_build_everywhere() {
         let identity = Identity::default();
+        let version = env!("CARGO_PKG_VERSION");
         assert!(
-            identity.user_agent.as_str().contains("Chrome/152.0.0.0"),
-            "the reduced UA carries the major version"
+            identity
+                .user_agent
+                .as_str()
+                .starts_with(&format!("tinybrowser/{version}")),
+            "the default UA identifies tinybrowser"
         );
-        let chromium = identity
-            .full_version_list
-            .iter()
-            .find(|brand| brand.brand == "Chromium")
-            .expect("a Chromium brand");
-        assert!(
-            chromium.version.starts_with("152."),
-            "the full version agrees with the UA major"
+        assert_eq!(identity.product, format!("tinybrowser/{version}"));
+        assert_eq!(identity.vendor, "");
+    }
+
+    #[test]
+    fn parse_spec_selects_presets_or_clears_brands_for_custom_ua() {
+        assert_eq!(
+            ValidIdentity::parse_spec("tinybrowser").expect("tinybrowser preset"),
+            ValidIdentity::default()
         );
-        assert_eq!(identity.product, format!("Chrome/{}", chromium.version));
+        let chrome = ValidIdentity::parse_spec("Chrome").expect("chrome preset");
+        assert!(chrome.user_agent.as_str().contains("Chrome/152.0.0.0"));
+        assert_eq!(chrome.vendor, "Google Inc.");
+        assert_eq!(
+            chrome.sec_ch_ua(),
+            r#""Not_A Brand";v="99", "Chromium";v="152", "Google Chrome";v="152""#
+        );
+
+        let custom = ValidIdentity::parse_spec("my-agent/1.0").expect("custom UA");
+        assert_eq!(custom.user_agent.as_str(), "my-agent/1.0");
+        assert_eq!(custom.brands, [] as [Brand; 0]);
+        assert_eq!(custom.vendor, "");
+        let mut headers = crate::HeaderMap::new();
+        custom
+            .hints()
+            .write(&mut headers, &url("https://example.test/"));
+        assert!(headers.get("sec-ch-ua").is_none());
     }
 
     #[test]

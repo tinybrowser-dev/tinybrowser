@@ -1077,7 +1077,7 @@ fn viewport_size(ctx: Ctx<'_>) -> Vec<f64> {
 
 // https://wicg.github.io/ua-client-hints/#http-ua-hints
 fn identity(ctx: Ctx<'_>) -> Result<Object<'_>> {
-    let identity = world(&ctx)?.borrow().runtime.identity.clone();
+    let identity = world(&ctx)?.borrow().runtime.identity.borrow().clone();
     let object = Object::new(ctx.clone())?;
     object.set("userAgent", identity.user_agent.as_str().to_owned())?;
     object.set("platform", identity.platform.clone())?;
@@ -2237,7 +2237,7 @@ mod realm_tests {
         ));
         let runtime = crate::js::FrameRuntime {
             services: Arc::clone(services),
-            identity,
+            identity: Rc::new(RefCell::new(identity)),
             js_runtime: js_runtime.handle(),
             wake,
             stop,

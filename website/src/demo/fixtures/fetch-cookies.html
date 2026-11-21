@@ -2,53 +2,105 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>Fetch + 302 + Cookies in Wasm</title>
+    <title>Cookies + HttpOnly + 302 Lab</title>
     <style>
       body {
         font-family: sans-serif;
-        margin: 24px;
+        margin: 20px;
         color: #111;
         background: #fcfcfc;
       }
       h1 {
-        font-size: 20px;
+        font-size: 18px;
+        margin: 0 0 8px;
+      }
+      p {
+        font-size: 13px;
+        color: #575757;
         margin: 0 0 12px;
+      }
+      .bar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-bottom: 12px;
+      }
+      button {
+        font-family: sans-serif;
+        font-size: 13px;
+        padding: 5px 10px;
+        border: 1px solid #111;
+        background: #f2f2f2;
+        color: #111;
+        cursor: pointer;
       }
       .card {
         border: 1px solid #cfcfcf;
-        padding: 14px;
+        padding: 12px;
         background: #f2f2f2;
       }
       pre {
         font-family: monospace;
-        font-size: 13px;
+        font-size: 12px;
         white-space: pre-wrap;
         margin: 0;
       }
     </style>
   </head>
   <body>
-    <h1>tinybrowser fetch core in Wasm</h1>
+    <h1>Rust fetch core: 302 + HttpOnly cookies + localStorage</h1>
+    <p>
+      Open <b>Split Sessions</b> and sign in as Alice in Session A and Bob in Session B. Check the
+      <b>Storage</b> tab to inspect HttpOnly cookies invisible to <code>document.cookie</code>.
+    </p>
+    <div class="bar">
+      <button id="login-alice" type="button">Sign in as Alice</button>
+      <button id="login-bob" type="button">Sign in as Bob</button>
+      <button id="echo-btn" type="button">Echo cookies</button>
+    </div>
     <div class="card">
-      <pre id="out">Running subresource script, 302 redirect, and cookie echo...</pre>
+      <pre id="out">Running subresource script, 302 redirect, and cookie echo…</pre>
     </div>
     <script src="/api/demo/hello.js"></script>
     <script>
       const out = document.getElementById("out")
+      function show(extra) {
+        fetch("/api/demo/echo")
+          .then((r) => r.text())
+          .then((jar) => {
+            const ls = localStorage.getItem("tb_role") || "(none)"
+            out.textContent =
+              (extra ? extra + "\n" : "") +
+              "server saw -> " +
+              jar.trim() +
+              "\ndocument.cookie -> " +
+              (document.cookie || "(empty)") +
+              "\nlocalStorage.tb_role -> " +
+              ls +
+              "\nsubresource -> " +
+              (document.body.dataset.subresource || "(blocked)")
+          })
+      }
+
+      document.getElementById("login-alice").addEventListener("click", () => {
+        localStorage.setItem("tb_role", "alice-admin")
+        fetch("/api/demo/login?user=alice")
+          .then((r) => r.text())
+          .then((msg) => show(msg.trim()))
+      })
+
+      document.getElementById("login-bob").addEventListener("click", () => {
+        localStorage.setItem("tb_role", "bob-viewer")
+        fetch("/api/demo/login?user=bob")
+          .then((r) => r.text())
+          .then((msg) => show(msg.trim()))
+      })
+
+      document.getElementById("echo-btn").addEventListener("click", () => show("refreshed"))
+
       fetch("/api/demo/redirect")
         .then((r) => r.text())
-        .then((body) =>
-          fetch("/api/demo/echo")
-            .then((e) => e.text())
-            .then((jar) => {
-              out.textContent =
-                body.trim() +
-                "\n" +
-                jar.trim() +
-                "\nsubresource: " +
-                document.body.dataset.subresource
-            }),
-        )
+        .then((body) => show(body.trim()))
     </script>
   </body>
 </html>

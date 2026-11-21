@@ -108,6 +108,7 @@ pub(crate) enum ScriptMethod {
     GetProperties,
     SetDeviceMetricsOverride,
     ClearDeviceMetricsOverride,
+    SetUserAgentOverride,
     GetStorageKey,
     DomGetDocument,
     DomQuerySelector,
@@ -472,6 +473,16 @@ const ROUTES: &[Route] = &[
         handler: Handler::SetCacheDisabled,
     },
     Route {
+        method: "Network.setUserAgentOverride",
+        target: TargetClass::Page,
+        handler: Handler::Page(PageHandler::Script(ScriptMethod::SetUserAgentOverride)),
+    },
+    Route {
+        method: "Emulation.setUserAgentOverride",
+        target: TargetClass::Page,
+        handler: Handler::Page(PageHandler::Script(ScriptMethod::SetUserAgentOverride)),
+    },
+    Route {
         method: "Emulation.setFocusEmulationEnabled",
         target: TargetClass::Both,
         handler: Handler::Accept(Accepted::FocusIsNotEngineState),
@@ -557,6 +568,7 @@ pub(crate) async fn run_script(
         ScriptMethod::GetProperties => runtime_get_properties(tab, params).await,
         ScriptMethod::SetDeviceMetricsOverride => set_device_metrics(params, tab).await,
         ScriptMethod::ClearDeviceMetricsOverride => clear_device_metrics(tab).await,
+        ScriptMethod::SetUserAgentOverride => set_user_agent_override(params, tab).await,
         ScriptMethod::GetStorageKey => storage_key(tab).await,
         ScriptMethod::DomGetDocument => dom_get_document(tab).await,
         ScriptMethod::DomQuerySelector => dom_query_selector(tab, params).await,
@@ -795,6 +807,82 @@ async fn set_device_metrics(params: &Value, tab: &TabHandle) -> Result<Value, Di
 
 async fn clear_device_metrics(tab: &TabHandle) -> Result<Value, DispatchError> {
     set_viewport(tab, DEFAULT_VIEWPORT.0, DEFAULT_VIEWPORT.1).await
+}
+
+// https://chromedevtools.github.io/devtools-protocol/tot/Emulation/#method-setUserAgentOverride
+async fn set_user_agent_override(params: &Value, tab: &TabHandle) -> Result<Value, DispatchError> {
+    let params: crate::params::UserAgentOverride = crate::params::parse(params)?;
+    let override_identity = if params.user_agent.is_empty() {
+        None
+    } else {
+        let user_agent = browser::UserAgent::parse(&params.user_agent)
+            .map_err(|error| DispatchError::InvalidParams(error.to_string()))?;
+        let mut identity = browser::Identity::custom(user_agent);
+        if let Some(platform) = params.platform {
+            identity.navigator_platform = platform;
+        }
+        if let Some(accept_language) = params.accept_language {
+            let languages: Vec<String> = accept_language
+                .split(',')
+                .map(|part| part.split(';').next().unwrap_or_default().trim().to_owned())
+                .filter(|tag| !tag.is_empty())
+                .collect();
+            if !languages.is_empty() {
+                identity.languages = languages;
+            }
+        }
+        if let Some(meta) = params.user_agent_metadata {
+            if let Some(brands) = meta.brands {
+                identity.brands = brands
+                    .into_iter()
+                    .map(|b| browser::Brand {
+                        brand: b.brand,
+                        version: b.version,
+                    })
+                    .collect();
+            }
+            if let Some(full) = meta.full_version_list {
+                identity.full_version_list = full
+                    .into_iter()
+                    .map(|b| browser::Brand {
+                        brand: b.brand,
+                        version: b.version,
+                    })
+                    .collect();
+            }
+            if let Some(platform) = meta.platform {
+                identity.platform = platform;
+            }
+            if let Some(platform_version) = meta.platform_version {
+                identity.platform_version = platform_version;
+            }
+            if let Some(architecture) = meta.architecture {
+                identity.architecture = architecture;
+            }
+            if let Some(model) = meta.model {
+                identity.model = model;
+            }
+            if let Some(mobile) = meta.mobile {
+                identity.mobile = mobile;
+            }
+            if let Some(bitness) = meta.bitness {
+                identity.bitness = bitness;
+            }
+            if let Some(wow64) = meta.wow64 {
+                identity.wow64 = wow64;
+            }
+            if let Some(form_factors) = meta.form_factors {
+                identity.form_factors = form_factors;
+            }
+        }
+        let valid = browser::ValidIdentity::try_from(identity)
+            .map_err(|error| DispatchError::InvalidParams(error.to_string()))?;
+        Some(valid)
+    };
+    tab.set_identity(override_identity)
+        .await
+        .map_err(|error| DispatchError::Failed(error.to_string()))?;
+    Ok(json!({}))
 }
 
 async fn set_viewport(tab: &TabHandle, width: u32, height: u32) -> Result<Value, DispatchError> {

@@ -244,6 +244,15 @@ pub(crate) struct TabNetworkHandle {
 }
 
 impl TabNetworkHandle {
+    pub(crate) fn set_identity(&self, tab: crate::TabId, identity: Option<net::ValidIdentity>) {
+        self.dialer.agent().set_client_identity(tab.get(), identity);
+    }
+
+    #[must_use]
+    pub(crate) fn identity(&self, tab: crate::TabId) -> net::ValidIdentity {
+        self.dialer.agent().identity_for(Some(tab.get()))
+    }
+
     #[must_use]
     pub(crate) fn cookies_for(&self, url: &Url, partition_key: Option<&str>) -> String {
         self.dialer

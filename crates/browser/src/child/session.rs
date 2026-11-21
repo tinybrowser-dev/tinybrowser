@@ -221,6 +221,7 @@ fn handle_request(
             Command::AddInitScript { .. }
             | Command::RemoveInitScript { .. }
             | Command::SetViewport { .. }
+            | Command::SetIdentity { .. }
             | Command::ContentSize { .. }
             | Command::WaitForJs { .. }
             | Command::CancelWait { .. }
@@ -588,6 +589,10 @@ fn handle_command(engine: &mut Engine, command: Command) -> Handled {
             width,
             height,
         } => Handled::Reply(Reply::Unit(engine.set_viewport(frame, width, height))),
+        Command::SetIdentity { identity } => {
+            engine.set_identity(*identity);
+            Handled::Reply(Reply::Unit(Ok(())))
+        }
         Command::ContentSize { frame } => {
             Handled::Reply(Reply::ContentSize(engine.content_size(frame)))
         }

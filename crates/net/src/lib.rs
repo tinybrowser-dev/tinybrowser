@@ -18,7 +18,8 @@ pub use cookies::{
 };
 pub use error::{NetError, TimeoutKind, TransportError};
 pub use identity::{
-    Brand, ClientHints, DEFAULT_USER_AGENT, Identity, InvalidIdentity, UserAgent, ValidIdentity,
+    Brand, CHROME_USER_AGENT, ClientHints, DEFAULT_USER_AGENT, Identity, InvalidIdentity,
+    UserAgent, ValidIdentity,
 };
 pub use protocol::{
     HeaderError, HeaderMap, InvalidMethod, Method, combined_header, combined_header_in,

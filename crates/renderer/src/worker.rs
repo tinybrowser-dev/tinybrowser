@@ -364,7 +364,7 @@ impl WorkerDirectory {
     fn thread_runtime(self: &Arc<Self>, js_runtime: JsRuntimeHandle) -> FrameRuntime {
         FrameRuntime {
             services: Arc::clone(&self.services),
-            identity: self.identity.clone(),
+            identity: Rc::new(RefCell::new(self.identity.clone())),
             js_runtime,
             wake: Arc::clone(&self.wake),
             stop: Arc::clone(&self.stop),

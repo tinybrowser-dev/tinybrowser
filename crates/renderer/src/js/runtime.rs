@@ -62,7 +62,7 @@ impl SharedBufferTable {
 pub(crate) struct FrameRuntime {
     pub(crate) services: Arc<dyn BrowserServices>,
     // https://wicg.github.io/ua-client-hints/#http-ua-hints
-    pub(crate) identity: net::ValidIdentity,
+    pub(crate) identity: Rc<RefCell<net::ValidIdentity>>,
     pub(crate) js_runtime: JsRuntimeHandle,
     pub(crate) wake: Arc<Notify>,
     pub(crate) stop: Arc<Stop>,

@@ -104,6 +104,10 @@ enum Command {
         height: u32,
         reply: ReplySender<()>,
     },
+    SetIdentity {
+        identity: Option<Box<net::ValidIdentity>>,
+        reply: ReplySender<()>,
+    },
     ViewportSize {
         reply: ReplySender<(u32, u32)>,
     },
@@ -308,6 +312,15 @@ impl TabHandle {
             frame: FrameId::MAIN,
             width,
             height,
+            reply,
+        })
+        .await
+    }
+
+    // https://chromedevtools.github.io/devtools-protocol/tot/Emulation/#method-setUserAgentOverride
+    pub async fn set_identity(&self, identity: Option<net::ValidIdentity>) -> Result<(), TabError> {
+        self.ask(|reply| Command::SetIdentity {
+            identity: identity.map(Box::new),
             reply,
         })
         .await
@@ -1584,12 +1597,12 @@ impl Command {
             Command::Shutdown { .. } => false,
             Command::LoadHtml { reply, .. }
             | Command::Goto { reply, .. }
-            | Command::TraverseHistory { reply, .. } => reply.is_closed(),
+            | Command::TraverseHistory { reply, .. }
+            | Command::RemoveInitScript { reply, .. }
+            | Command::SetViewport { reply, .. }
+            | Command::SetIdentity { reply, .. } => reply.is_closed(),
             Command::Execute { reply, .. } => reply.is_closed(),
             Command::AddInitScript { reply, .. } => reply.is_closed(),
-            Command::RemoveInitScript { reply, .. } | Command::SetViewport { reply, .. } => {
-                reply.is_closed()
-            }
             Command::ViewportSize { reply } => reply.is_closed(),
             Command::ContentSize { reply, .. } => reply.is_closed(),
             Command::Dom { reply, .. } => reply.is_closed(),
@@ -1615,41 +1628,31 @@ impl Command {
                 source,
                 timeout,
                 reply,
-            } => {
-                let result = execute_script(tab, frame, source, timeout).await;
-                let _result = reply.send(result);
-            }
+            } => answer(reply, execute_script(tab, frame, source, timeout).await),
             Command::AddInitScript {
                 source,
                 run_immediately,
                 reply,
-            } => {
-                let result = add_init_script(tab, source, run_immediately).await;
-                let _result = reply.send(result);
-            }
+            } => answer(reply, add_init_script(tab, source, run_immediately).await),
             Command::RemoveInitScript { id: script, reply } => {
-                let result = remove_init_script(tab, script).await;
-                let _result = reply.send(result);
+                answer(reply, remove_init_script(tab, script).await);
             }
             Command::SetViewport {
                 frame,
                 width,
                 height,
                 reply,
-            } => {
-                let result = set_viewport(tab, frame, width, height).await;
-                let _result = reply.send(result);
+            } => answer(reply, set_viewport(tab, frame, width, height).await),
+            Command::SetIdentity { identity, reply } => {
+                answer(reply, set_identity(tab, identity.map(|value| *value)).await);
             }
-            Command::ViewportSize { reply } => {
-                let _result = reply.send(Ok(tab.viewport));
-            }
-            Command::ContentSize { frame, reply } => {
-                let result = tab
-                    .renderer_request(RendererCommand::ContentSize { frame })
+            Command::ViewportSize { reply } => answer(reply, Ok(tab.viewport)),
+            Command::ContentSize { frame, reply } => answer(
+                reply,
+                tab.renderer_request(RendererCommand::ContentSize { frame })
                     .await
-                    .and_then(reply_content_size);
-                let _result = reply.send(result);
-            }
+                    .and_then(reply_content_size),
+            ),
             Command::Dom {
                 frame,
                 request,
@@ -1659,10 +1662,7 @@ impl Command {
                 frame,
                 request,
                 reply,
-            } => {
-                let result = screenshot_frame(tab, frame, request).await;
-                let _result = reply.send(result);
-            }
+            } => answer(reply, screenshot_frame(tab, frame, request).await),
             Command::RunUntilLoadTimeout { timeout, reply } => {
                 if retain_load_waiter(waiters, id, timeout, reply) {
                     return TabOutcome::Retained;
@@ -1771,6 +1771,19 @@ async fn set_viewport(
         tab.viewport = (width, height);
     }
     result
+}
+
+async fn set_identity(tab: &mut Tab, identity: Option<net::ValidIdentity>) -> Result<(), TabError> {
+    tab.network.set_identity(tab.id, identity);
+    let effective = tab.network.identity(tab.id);
+    if tab.renderer.is_some() {
+        tab.renderer_request(RendererCommand::SetIdentity {
+            identity: Box::new(effective),
+        })
+        .await
+        .and_then(reply_unit)?;
+    }
+    Ok(())
 }
 
 async fn screenshot_frame(

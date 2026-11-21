@@ -2539,6 +2539,7 @@ impl Document {
                     .borrow()
                     .runtime
                     .identity
+                    .borrow()
                     .user_agent
                     .as_str()
                     .to_owned();

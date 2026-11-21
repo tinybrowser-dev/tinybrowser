@@ -208,13 +208,56 @@ interface engine {
         insert-text(string),
     }
 
+    /// One stored cookie from a context's cookie jar, including `HttpOnly` entries.
+    record cookie {
+        name: string,
+        value: string,
+        domain: string,
+        path: string,
+        host-only: bool,
+        secure: bool,
+        http-only: bool,
+        same-site: string,
+    }
+
+    /// One key/value entry from Web Storage.
+    record storage-entry {
+        key: string,
+        value: string,
+    }
+
+    /// One isolated browser context owning its own cookie jar, HTTP cache,
+    /// `localStorage`, and `IndexedDB`.
+    resource context {
+        /// Creates a fresh isolated browser context.
+        ///
+        /// `user-agent` accepts `"tinybrowser"` (default), `"chrome"`, or any
+        /// custom User-Agent string (matching the CLI `--user-agent` flag).
+        constructor(user-agent: option<string>) -> result<context, string>;
+        /// Returns this context's default `User-Agent` header value.
+        user-agent: func() -> string;
+        /// Opens a new tab bound to this context and mounts `html` at `url`.
+        open-tab: func(url: string, html: string) -> result<tab, string>;
+        /// Returns every cookie currently stored in this context's jar,
+        /// including `HttpOnly` cookies inaccessible to page script.
+        cookies: func() -> list<cookie>;
+        /// Parses and stores a `Set-Cookie` header value for `url`.
+        set-cookie: func(url: string, header: string) -> result<bool, string>;
+        /// Removes all cookies from this context's jar.
+        clear-cookies: func();
+        /// Returns all `localStorage` entries for the given origin URL.
+        local-storage: func(origin: string) -> list<storage-entry>;
+        /// Clears all `localStorage` entries for the given origin URL.
+        clear-local-storage: func(origin: string);
+    }
+
     /// One page, driven by the host.
     ///
     /// The host owns the loop: it calls `step` after every state change it
     /// causes, then waits out the returned delay before stepping again.
     /// Nothing runs while the host does not step.
     resource tab {
-        /// Mounts `html` as the tab's first document at `url`.
+        /// Mounts `html` as the tab's first document at `url` in the default context.
         ///
         /// Fails when `url` is not a valid absolute `http`/`https` URL, in
         /// which case no tab exists and nothing was mounted.
@@ -231,6 +274,14 @@ interface engine {
         /// Follows redirects and applies cookies and `Sec-Fetch-*` headers
         /// before mounting the resulting document on the next `step`.
         goto: func(url: string) -> result<_, string>;
+        /// Navigates to the previous history entry if available.
+        back: func() -> result<bool, string>;
+        /// Navigates to the next history entry if available.
+        forward: func() -> result<bool, string>;
+        /// Whether `back` has a previous entry to navigate to.
+        can-go-back: func() -> bool;
+        /// Whether `forward` has a next entry to navigate to.
+        can-go-forward: func() -> bool;
         /// This tab's `fetch-request.owner` value.
         owner: func() -> u64;
         /// Current document URL (`location.href`).
@@ -238,9 +289,19 @@ interface engine {
         /// Evaluates `source` in the main frame and returns its string
         /// coercion. Throws surface as the error side.
         eval: func(source: string) -> result<string, string>;
+        /// Evaluates `source` in the main frame with an execution deadline in
+        /// milliseconds. Infinite loops are interrupted when the deadline expires.
+        eval-bounded: func(source: string, timeout-ms: u64) -> result<string, string>;
         /// Dispatches a trusted pointer, wheel, or keyboard event through the
         /// engine's input pipeline.
         dispatch-input: func(event: input-event) -> result<_, string>;
+        /// Overrides this tab's `User-Agent` / identity (`"tinybrowser"`,
+        /// `"chrome"`, a custom User-Agent string, or `none` to reset).
+        set-user-agent: func(value: option<string>) -> result<_, string>;
+        /// Returns this tab's active `User-Agent` header value.
+        user-agent: func() -> string;
+        /// Sets the main frame's live layout viewport in CSS pixels.
+        set-viewport: func(width: u32, height: u32) -> result<_, string>;
         /// Renders the main frame into RGBA pixels at `width` x `height`.
         render: func(width: u32, height: u32) -> result<rendered-frame, string>;
         /// Advances the page one turn: runs ready tasks until the script
@@ -261,6 +322,10 @@ interface engine {
         /// Visible rendered text of the document body (`document.body.innerText`);
         /// empty before the body exists.
         text: func() -> result<string, string>;
+        /// Returns all `sessionStorage` entries for this tab at the given origin URL.
+        session-storage: func(origin: string) -> list<storage-entry>;
+        /// Clears all `sessionStorage` entries for this tab at the given origin URL.
+        clear-session-storage: func(origin: string);
     }
 
     /// Registers a font file (TTF, OTF, WOFF, or WOFF2) into the shared font

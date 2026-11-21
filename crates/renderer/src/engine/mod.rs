@@ -128,7 +128,7 @@ impl Engine {
         ));
         let runtime = FrameRuntime {
             services,
-            identity,
+            identity: Rc::new(RefCell::new(identity)),
             js_runtime: js_runtime.handle(),
             wake,
             stop,
@@ -994,6 +994,11 @@ impl Engine {
         }
         self.frame_mut(frame)?.set_viewport(width, height);
         Ok(())
+    }
+
+    // https://chromedevtools.github.io/devtools-protocol/tot/Emulation/#method-setUserAgentOverride
+    pub fn set_identity(&mut self, identity: net::ValidIdentity) {
+        *self.runtime.identity.borrow_mut() = identity;
     }
 
     // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-addScriptToEvaluateOnNewDocument
@@ -2878,7 +2883,7 @@ mod navigator_tests {
         assert_eq!(evaluate("navigator.language"), "fr-FR");
         assert_eq!(evaluate("navigator.languages.join(',')"), "fr-FR,fr");
         assert_eq!(evaluate("Object.isFrozen(navigator.languages)"), "true");
-        assert_eq!(evaluate("navigator.vendor"), "Google Inc.");
+        assert_eq!(evaluate("navigator.vendor"), "");
         assert_eq!(evaluate("navigator.productSub"), "20030107");
     }
 }
