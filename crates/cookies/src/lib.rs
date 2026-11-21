@@ -851,8 +851,15 @@ fn samesite_allows(
 }
 
 impl CookieOp<'_> {
+    // https://httpwg.org/http-extensions/draft-ietf-httpbis-rfc6265bis.html#name-same-site-and-cross-site
     fn is_same_site_request(&self) -> bool {
         if self.cross_site_redirect {
+            return false;
+        }
+        if self.initiator_kind == InitiatorKind::Fetch
+            && let Some(top_site) = self.partition_key
+            && site(self.url).as_deref() != Some(top_site)
+        {
             return false;
         }
         match self.initiator {
@@ -2019,5 +2026,35 @@ mod tests {
         let b = jar.cookie_string(http(&pages[1], at(NOW + 100)));
         assert!(!b.contains("k0="), "{b}");
         assert!(b.contains("extra=1"), "{b}");
+    }
+
+    // https://httpwg.org/http-extensions/draft-ietf-httpbis-rfc6265bis.html#name-same-site-and-cross-site
+    #[test]
+    fn third_party_iframe_fetch_omits_same_site_cookies() {
+        let bank = url("https://bank.example/api");
+        let bank_origin = bank.origin();
+        let mut jar = CookieJar::default();
+        assert!(jar.store("s=1; Secure; SameSite=Strict", http(&bank, at(NOW))));
+        assert!(jar.store("l=1; Secure; SameSite=Lax", http(&bank, at(NOW))));
+        assert!(jar.store("n=1; Secure; SameSite=None", http(&bank, at(NOW))));
+
+        let embedded_fetch = CookieOp {
+            url: &bank,
+            now: at(NOW + 1),
+            kind: RetrievalKind::Http,
+            initiator_kind: InitiatorKind::Fetch,
+            method_is_safe: true,
+            initiator: Some(&bank_origin),
+            cross_site_redirect: false,
+            same_site_policy: crate::SameSiteCookiePolicy::All,
+            partition_key: Some("https://attacker.example"),
+        };
+        assert_eq!(jar.cookie_string(embedded_fetch), "n=1");
+
+        let first_party_fetch = CookieOp {
+            partition_key: Some("https://bank.example"),
+            ..embedded_fetch
+        };
+        assert_eq!(jar.cookie_string(first_party_fetch), "s=1; l=1; n=1");
     }
 }

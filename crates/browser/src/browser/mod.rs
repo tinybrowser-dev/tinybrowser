@@ -279,6 +279,7 @@ impl From<BrowserOpenError> for io::Error {
 pub enum BrowserError {
     UnknownTab,
     TabIdExhausted,
+    TooManyTabs,
     Stopped,
     Protocol,
 }
@@ -288,6 +289,7 @@ impl fmt::Display for BrowserError {
         match self {
             Self::UnknownTab => formatter.write_str("unknown tab"),
             Self::TabIdExhausted => formatter.write_str("tab identity space exhausted"),
+            Self::TooManyTabs => formatter.write_str("script-created tab limit reached"),
             Self::Stopped => formatter.write_str("browser stopped"),
             Self::Protocol => formatter.write_str("browser protocol mismatch"),
         }

@@ -162,6 +162,15 @@ impl FrameTree {
         })
     }
 
+    pub(crate) fn allows_origin(&self, main: &Site, origin: &url::Origin) -> bool {
+        main.allows_origin(origin)
+            || self
+                .children
+                .values()
+                .filter_map(|entry| entry.site.as_ref())
+                .any(|site| site.allows_origin(origin))
+    }
+
     pub(crate) fn allows_url(&self, main: &Site, url: &Url) -> bool {
         main.allows_url(url)
             || self

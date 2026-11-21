@@ -66,7 +66,7 @@ impl Site {
     }
 
     #[must_use]
-    fn allows_origin(&self, origin: &url::Origin) -> bool {
+    pub(crate) fn allows_origin(&self, origin: &url::Origin) -> bool {
         let Self::Tuple(locked) = self else {
             return false;
         };

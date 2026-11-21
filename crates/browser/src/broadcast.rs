@@ -31,6 +31,15 @@ pub(crate) enum ContextEvent {
     Broadcast(BroadcastMessage),
 }
 
+impl ContextEvent {
+    pub(crate) fn origin(&self) -> &StorageKey {
+        match self {
+            Self::Storage(event) => &event.origin,
+            Self::Broadcast(message) => &message.origin,
+        }
+    }
+}
+
 pub(crate) type EventSink = Box<dyn Fn(&ContextEvent) -> bool + Send + Sync>;
 
 #[derive(Default)]

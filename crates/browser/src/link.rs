@@ -1641,10 +1641,17 @@ fn subscribe_renderer_events(
     partition: &PartitionServices,
     client: &RendererClient,
     kill: &watch::Sender<bool>,
+    renderer: RendererId,
+    registry: Arc<AssignmentRegistry>,
+    tabs: TabRegistry,
 ) {
     let client = client.clone();
     let kill = kill.clone();
     partition.events.subscribe(Box::new(move |event| {
+        // https://chromium.googlesource.com/chromium/src/+/main/docs/process_model_and_site_isolation.md#process-locks
+        if !registry.renderer_hosts_origin(renderer, &tabs, event.origin().origin()) {
+            return true;
+        }
         let notice = match event {
             ContextEvent::Storage(event) => HostNotice::StorageEvent {
                 origin: event.origin.clone(),
@@ -1735,7 +1742,14 @@ pub(crate) async fn spawn_process(
     let (tx, rx) = exchange::pair(COMMAND_CAPACITY, COMMAND_CAPACITY);
     let (client, server, router) = exchange::endpoint(tx, COMMAND_CAPACITY);
     let (kill, kill_rx) = watch::channel(false);
-    subscribe_renderer_events(&partition, &client, &kill);
+    subscribe_renderer_events(
+        &partition,
+        &client,
+        &kill,
+        id,
+        Arc::clone(&registry),
+        tabs.clone(),
+    );
     let alive = Arc::new(AtomicBool::new(true));
     let (ready_tx, ready_rx) = oneshot::channel();
     let writer_task = tokio::spawn(writer_task(

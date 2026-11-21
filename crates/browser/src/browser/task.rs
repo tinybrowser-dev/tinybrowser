@@ -279,6 +279,18 @@ impl TabRegistry {
         }
     }
 
+    pub(crate) fn allows_origin(
+        &self,
+        tab: TabId,
+        main: &crate::site::Site,
+        origin: &url::Origin,
+    ) -> bool {
+        match self.lock().get(&tab) {
+            Some(record) => record.frames.allows_origin(main, origin),
+            None => main.allows_origin(origin),
+        }
+    }
+
     pub(crate) fn allows_url(&self, tab: TabId, main: &crate::site::Site, url: &url::Url) -> bool {
         match self.lock().get(&tab) {
             Some(record) => record.frames.allows_url(main, url),
@@ -395,7 +407,17 @@ impl TabRegistry {
             .get(&id)
             .is_some_and(|record| record.script_created)
     }
+
+    fn script_created_count(&self) -> usize {
+        self.lock()
+            .values()
+            .filter(|record| record.is_live() && record.script_created)
+            .count()
+    }
 }
+
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps — UA-defined cap on concurrent script-created tabs.
+const MAX_SCRIPT_CREATED_TABS: usize = 64;
 
 fn group_root(records: &HashMap<TabId, TabRecord>, tab: TabId) -> TabId {
     let mut root = tab;
@@ -536,6 +558,9 @@ impl BrowserTask {
     }
 
     fn open_window(&mut self, request: OpenWindowOptions) -> Result<TabId, BrowserError> {
+        if self.tabs.script_created_count() >= MAX_SCRIPT_CREATED_TABS {
+            return Err(BrowserError::TooManyTabs);
+        }
         let OpenWindowOptions {
             url,
             target,

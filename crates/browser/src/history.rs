@@ -7,6 +7,10 @@ use renderer::HistorySnapshot as RendererHistorySnapshot;
 use renderer::{FrameId, HistoryHandling};
 use url::Url;
 
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#shared-history-push/replace-state-steps — UA-defined session history limits (128 entries, 640 KiB state).
+const MAX_HISTORY_ENTRIES: usize = 128;
+const MAX_HISTORY_STATE_BYTES: usize = 640 * 1024;
+
 // https://html.spec.whatwg.org/multipage/browsing-the-web.html#session-history
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EntryId(u64);
@@ -389,6 +393,9 @@ impl SessionHistory {
         state: String,
         handling: HistoryHandling,
     ) {
+        if state.len() > MAX_HISTORY_STATE_BYTES {
+            return;
+        }
         let Some(active) = self.active_entry(frame) else {
             return;
         };
@@ -644,7 +651,34 @@ impl SessionHistory {
         } else {
             ids.push(id);
         }
+        self.evict_excess_entries(id);
         id
+    }
+
+    fn evict_excess_entries(&mut self, keep: EntryId) {
+        while self.entries.len() > MAX_HISTORY_ENTRIES {
+            let Some(evict_index) = self.entries.iter().position(|entry| entry.id != keep) else {
+                break;
+            };
+            let evicted = self.entries.remove(evict_index);
+            if let Some(evicted_frame) = self.frame_of(evicted.id)
+                && let Some(ids) = self.frames.get_mut(&evicted_frame)
+            {
+                ids.retain(|candidate| *candidate != evicted.id);
+                for (index, entry_id) in ids.iter().enumerate() {
+                    if let Some(entry) = self.entries.iter_mut().find(|e| e.id == *entry_id) {
+                        entry.local_index = index;
+                    }
+                }
+            }
+            if !self
+                .entries
+                .iter()
+                .any(|entry| entry.document == evicted.document)
+            {
+                self.names.remove(&evicted.document);
+            }
+        }
     }
 
     fn replace_entry(&mut self, id: EntryId, url: Url, name: Option<renderer::ContextName>) {
@@ -1022,5 +1056,36 @@ mod tests {
         history.commit(push("https://example.com/c", None));
         snapshot = history.renderer_snapshot();
         assert_eq!((snapshot.length, snapshot.index), (3, 2));
+    }
+
+    #[test]
+    fn push_state_caps_entry_count_and_state_size() {
+        let mut history = SessionHistory::new(url("https://example.com/0"), None);
+        let oversized = "x".repeat(super::MAX_HISTORY_STATE_BYTES + 1);
+        history.update(
+            FrameId::MAIN,
+            url("https://example.com/huge"),
+            oversized,
+            super::HistoryHandling::Push,
+        );
+        assert_eq!(history.entries.len(), 1);
+        assert_eq!(
+            history.entry_url(history.current_entry()).map(Url::as_str),
+            Some("https://example.com/0")
+        );
+
+        for i in 1..=(super::MAX_HISTORY_ENTRIES + 50) {
+            history.update(
+                FrameId::MAIN,
+                url(&format!("https://example.com/{i}")),
+                format!("state-{i}"),
+                super::HistoryHandling::Push,
+            );
+        }
+        assert_eq!(history.entries.len(), super::MAX_HISTORY_ENTRIES);
+        assert_eq!(
+            history.entry_url(history.current_entry()).map(Url::as_str),
+            Some(format!("https://example.com/{}", super::MAX_HISTORY_ENTRIES + 50).as_str())
+        );
     }
 }
