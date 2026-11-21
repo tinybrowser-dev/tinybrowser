@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-// https://html.spec.whatwg.org/multipage/webstorage.html#disk-space-2 — spec leaves quota to the user agent; tinybrowser uses 5 MiB
+// https://html.spec.whatwg.org/multipage/webstorage.html#disk-space-2 — spec leaves quota to the user agent; tinybrowser uses 5 MiB per origin, 64 MiB aggregate, 16 MiB per tab session.
 pub const STORAGE_QUOTA_BYTES: usize = 5 * 1024 * 1024;
+pub const TOTAL_STORAGE_QUOTA_BYTES: usize = 64 * 1024 * 1024;
+pub const SESSION_STORAGE_QUOTA_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageChange {
@@ -42,20 +44,34 @@ impl StorageArea {
             .map(|(key, value)| (key.as_str(), value.as_str()))
     }
 
+    #[must_use]
+    pub fn used_bytes(&self) -> usize {
+        self.entries
+            .iter()
+            .map(|(stored_key, stored_value)| stored_key.len() + stored_value.len())
+            .sum()
+    }
+
     // https://html.spec.whatwg.org/multipage/webstorage.html#dom-storage-setitem
     pub fn set(&mut self, key: &str, value: &str) -> Result<Option<StorageChange>, StorageError> {
+        self.set_with_limit(key, value, STORAGE_QUOTA_BYTES)
+    }
+
+    // https://html.spec.whatwg.org/multipage/webstorage.html#dom-storage-setitem
+    pub fn set_with_limit(
+        &mut self,
+        key: &str,
+        value: &str,
+        max_bytes: usize,
+    ) -> Result<Option<StorageChange>, StorageError> {
         let existing = self.entries.iter().position(|(stored, _)| stored == key);
         let old = existing.map(|index| self.entries[index].1.clone());
         if old.as_deref() == Some(value) {
             return Ok(None);
         }
-        let used: usize = self
-            .entries
-            .iter()
-            .map(|(stored_key, stored_value)| stored_key.len() + stored_value.len())
-            .sum();
+        let used = self.used_bytes();
         let replaced = old.as_ref().map_or(0, |old| key.len() + old.len());
-        if used - replaced + key.len() + value.len() > STORAGE_QUOTA_BYTES {
+        if used - replaced + key.len() + value.len() > max_bytes.min(STORAGE_QUOTA_BYTES) {
             return Err(StorageError::QuotaExceeded);
         }
         if let Some(index) = existing {

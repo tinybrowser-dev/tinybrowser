@@ -11,7 +11,7 @@ use net::{
 };
 use renderer::{ScriptCookie, StorageChange, StorageError, StorageKey};
 use url::Url;
-use webstorage::StorageArea;
+use webstorage::{SESSION_STORAGE_QUOTA_BYTES, StorageArea, TOTAL_STORAGE_QUOTA_BYTES};
 
 use crate::actor::TabId;
 
@@ -197,7 +197,16 @@ impl SessionStorage {
         let Some(namespace) = namespaces.get_mut(&tab) else {
             return Ok(None);
         };
-        namespace.entry(origin.clone()).or_default().set(key, value)
+        let other_used: usize = namespace
+            .iter()
+            .filter(|(key_origin, _)| *key_origin != origin)
+            .map(|(_, area)| area.used_bytes())
+            .sum();
+        let limit = SESSION_STORAGE_QUOTA_BYTES.saturating_sub(other_used);
+        namespace
+            .entry(origin.clone())
+            .or_default()
+            .set_with_limit(key, value, limit)
     }
 
     pub(crate) fn remove(
@@ -250,8 +259,14 @@ impl StorageAreas {
         value: &str,
     ) -> Result<Option<StorageChange>, StorageError> {
         let mut areas = self.areas.lock().unwrap_or_else(PoisonError::into_inner);
+        let other_used: usize = areas
+            .iter()
+            .filter(|(key_origin, _)| *key_origin != origin)
+            .map(|(_, area)| area.used_bytes())
+            .sum();
+        let limit = TOTAL_STORAGE_QUOTA_BYTES.saturating_sub(other_used);
         let area = areas.entry(origin.clone()).or_default();
-        let change = area.set(key, value)?;
+        let change = area.set_with_limit(key, value, limit)?;
         let Some(change) = change else {
             return Ok(None);
         };
@@ -306,8 +321,14 @@ impl StorageAreas {
             let Some(origin) = StorageKey::parse(&origin) else {
                 continue;
             };
+            let other_used: usize = areas
+                .iter()
+                .filter(|(key_origin, _)| *key_origin != &origin)
+                .map(|(_, area)| area.used_bytes())
+                .sum();
+            let limit = TOTAL_STORAGE_QUOTA_BYTES.saturating_sub(other_used);
             let area = areas.entry(origin).or_default();
-            let _result = area.set(&key, &value);
+            let _result = area.set_with_limit(&key, &value, limit);
         }
     }
 }

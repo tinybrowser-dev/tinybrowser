@@ -1000,26 +1000,40 @@ impl StorageHost for WasmServices {
         &self,
         kind: StorageKind,
         origin: &StorageKey,
-        _url: &str,
+        url: &str,
         key: &str,
         value: &str,
         _source: renderer::FrameId,
     ) -> Result<Option<StorageChange>, renderer::StorageError> {
+        if !wasm_url_matches_origin(url, origin) {
+            return Err(renderer::StorageError::QuotaExceeded);
+        }
         match kind {
-            StorageKind::Local => lock(&self.context.local_storage)
-                .entry(origin.clone())
-                .or_default()
-                .set(key, value),
-            StorageKind::Session => lock(&self.context.session_storage)
-                .entry(self.owner)
-                .or_default()
-                .entry(origin.clone())
-                .or_default()
-                .set(key, value),
-            StorageKind::IndexedDb => lock(&self.context.indexed_db)
-                .entry(origin.clone())
-                .or_default()
-                .set(key, value),
+            StorageKind::Local => set_bounded_area(
+                &mut lock(&self.context.local_storage),
+                origin,
+                key,
+                value,
+                webstorage::TOTAL_STORAGE_QUOTA_BYTES,
+            ),
+            StorageKind::Session => {
+                let mut sessions = lock(&self.context.session_storage);
+                let namespace = sessions.entry(self.owner).or_default();
+                set_bounded_area(
+                    namespace,
+                    origin,
+                    key,
+                    value,
+                    webstorage::SESSION_STORAGE_QUOTA_BYTES,
+                )
+            }
+            StorageKind::IndexedDb => set_bounded_area(
+                &mut lock(&self.context.indexed_db),
+                origin,
+                key,
+                value,
+                webstorage::TOTAL_STORAGE_QUOTA_BYTES,
+            ),
         }
     }
 
@@ -1027,10 +1041,13 @@ impl StorageHost for WasmServices {
         &self,
         kind: StorageKind,
         origin: &StorageKey,
-        _url: &str,
+        url: &str,
         key: &str,
         _source: renderer::FrameId,
     ) -> Option<StorageChange> {
+        if !wasm_url_matches_origin(url, origin) {
+            return None;
+        }
         match kind {
             StorageKind::Local => lock(&self.context.local_storage)
                 .get_mut(origin)?
@@ -1047,9 +1064,12 @@ impl StorageHost for WasmServices {
         &self,
         kind: StorageKind,
         origin: &StorageKey,
-        _url: &str,
+        url: &str,
         _source: renderer::FrameId,
     ) -> Option<StorageChange> {
+        if !wasm_url_matches_origin(url, origin) {
+            return None;
+        }
         match kind {
             StorageKind::Local => lock(&self.context.local_storage).get_mut(origin)?.clear(),
             StorageKind::Session => lock(&self.context.session_storage)
@@ -1059,6 +1079,33 @@ impl StorageHost for WasmServices {
             StorageKind::IndexedDb => lock(&self.context.indexed_db).get_mut(origin)?.clear(),
         }
     }
+}
+
+fn wasm_url_matches_origin(url: &str, origin: &StorageKey) -> bool {
+    url::Url::parse(url)
+        .ok()
+        .and_then(|parsed| StorageKey::from_origin(&parsed.origin()))
+        .as_ref()
+        == Some(origin)
+}
+
+fn set_bounded_area(
+    areas: &mut HashMap<StorageKey, StorageArea>,
+    origin: &StorageKey,
+    key: &str,
+    value: &str,
+    total_limit: usize,
+) -> Result<Option<StorageChange>, renderer::StorageError> {
+    let other_used: usize = areas
+        .iter()
+        .filter(|(key_origin, _)| *key_origin != origin)
+        .map(|(_, area)| area.used_bytes())
+        .sum();
+    let limit = total_limit.saturating_sub(other_used);
+    areas
+        .entry(origin.clone())
+        .or_default()
+        .set_with_limit(key, value, limit)
 }
 
 impl BrowsingContextHost for WasmServices {

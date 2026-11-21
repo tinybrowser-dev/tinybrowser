@@ -277,7 +277,10 @@ impl SessionHistory {
         url: Url,
         name: Option<renderer::ContextName>,
     ) {
-        if frame == FrameId::MAIN || self.frames.contains_key(&frame) {
+        if frame == FrameId::MAIN
+            || self.frames.contains_key(&frame)
+            || url.as_str().len() > MAX_HISTORY_URL_BYTES
+        {
             return;
         }
         let document = self.take_document();
@@ -296,6 +299,7 @@ impl SessionHistory {
             document,
         });
         self.frames.insert(frame, vec![id]);
+        self.evict_excess_entries(id);
     }
 
     // https://html.spec.whatwg.org/multipage/browsing-the-web.html#finalize-a-cross-document-navigation
@@ -369,9 +373,13 @@ impl SessionHistory {
         let Some(id) = self.active_entry(frame) else {
             return;
         };
+        if url.as_str().len() > MAX_HISTORY_URL_BYTES {
+            return;
+        }
         if let Some(entry) = self.entries.iter_mut().find(|entry| entry.id == id) {
             entry.url = url;
         }
+        self.evict_excess_entries(id);
     }
 
     pub(crate) fn discard_pending(&mut self, frame: FrameId) {
@@ -711,6 +719,9 @@ impl SessionHistory {
     }
 
     fn replace_entry(&mut self, id: EntryId, url: Url, name: Option<renderer::ContextName>) {
+        if url.as_str().len() > MAX_HISTORY_URL_BYTES {
+            return;
+        }
         let Some(index) = self.locate_index(id) else {
             return;
         };
@@ -730,6 +741,7 @@ impl SessionHistory {
         {
             self.names.remove(&old_document);
         }
+        self.evict_excess_entries(id);
     }
 
     fn locate(&self, entry: EntryId) -> Option<&Entry> {
