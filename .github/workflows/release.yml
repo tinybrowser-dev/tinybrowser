@@ -278,17 +278,11 @@ jobs:
             ~/.cargo/git
           key: cargo-${{ runner.os }}-x86_64-${{ hashFiles('Cargo.lock') }}
           restore-keys: cargo-${{ runner.os }}-x86_64-
-      - name: sccache
-        uses: mozilla-actions/sccache-action@v0.0.11
-        with:
-          version: "v0.18.0"
       - name: Build
         shell: bash
         env:
           # Override .cargo/config.toml's GCC/Clang CFLAGS for MSVC cl.exe.
           CFLAGS: ""
-          SCCACHE_GHA_ENABLED: "true"
-          RUSTC_WRAPPER: "sccache"
         run: |
           cargo build --release --locked -p tinybrowser --target x86_64-pc-windows-msvc --config 'profile.release.rustflags=[]'
           ls -lh target/x86_64-pc-windows-msvc/release/tinybrowser.exe
