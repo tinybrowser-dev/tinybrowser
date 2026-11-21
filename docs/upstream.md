@@ -137,6 +137,9 @@ The BMP decode feature is not a fork change: which formats an engine carries is 
 
 ### rquickjs (third_party/rquickjs, master)
 
+- 02fd347 use `qjs::JS_ATOM_NULL` (`u32`) instead of `qjs::__JS_ATOM_NULL` (C enum,
+  `i32` on Windows MSVC) in `Ctx::stack_frame` and `position_atom`, fixing the
+  `x86_64-pc-windows-msvc` release build.
 - 030d357 ship bundled `aarch64-linux-android` bindings (`sys/src/bindings/aarch64-linux-android.rs`)
   so the Android/Termux release job builds without enabling `bindgen`/`libclang`.
   Verified identical to `aarch64-unknown-linux-gnu.rs` (and `aarch64-unknown-linux-musl.rs`
