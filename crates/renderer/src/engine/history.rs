@@ -7,6 +7,10 @@ use crate::document::LocalDocumentState;
 use crate::js::FrameNavigation;
 use crate::protocol::FrameId;
 
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#shared-history-push/replace-state-steps — UA-defined renderer history limits.
+const MAX_HISTORY_ENTRIES: usize = 128;
+const MAX_HISTORY_TOTAL_BYTES: usize = 8 * 1024 * 1024;
+
 #[derive(Default)]
 pub(super) struct FrameHistory {
     pub(super) entries: Vec<FrameHistoryEntry>,
@@ -39,6 +43,24 @@ impl FrameHistory {
         self.entries.truncate(self.index.saturating_add(1));
         self.entries.push(entry);
         self.index = self.entries.len().saturating_sub(1);
+        self.evict_excess();
+    }
+
+    fn evict_excess(&mut self) {
+        while self.entries.len() > MAX_HISTORY_ENTRIES
+            || (self.entries.len() > 1 && self.total_bytes() > MAX_HISTORY_TOTAL_BYTES)
+        {
+            self.entries.remove(0);
+            self.index = self.index.saturating_sub(1);
+        }
+    }
+
+    fn total_bytes(&self) -> usize {
+        self.entries
+            .iter()
+            .filter_map(|entry| entry.same_document.as_ref())
+            .map(|same| same.url.len() + same.state.len())
+            .sum()
     }
 
     // https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate
@@ -127,6 +149,10 @@ impl StandaloneHistory {
         let mut step = self.steps[self.index].clone();
         step.insert(frame, local_index);
         self.steps.push(step);
+        if self.steps.len() > MAX_HISTORY_ENTRIES {
+            let excess = self.steps.len() - MAX_HISTORY_ENTRIES;
+            self.steps.drain(..excess);
+        }
         self.index = self.steps.len().saturating_sub(1);
     }
 

@@ -216,7 +216,11 @@ fn serve_upgraded(
     let upgraded = hyper::upgrade::on(request);
     tokio::spawn(async move {
         let Ok(io) = upgraded.await else { return };
-        let socket = WebSocketStream::from_raw_socket(TokioIo::new(io), Role::Server, None).await;
+        let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
+            .max_message_size(Some(8 * 1024 * 1024))
+            .max_frame_size(Some(1024 * 1024));
+        let socket =
+            WebSocketStream::from_raw_socket(TokioIo::new(io), Role::Server, Some(config)).await;
         run_socket(socket, state, tab).await;
     });
     switching_protocols(&accept)

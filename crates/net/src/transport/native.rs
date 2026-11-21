@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::convert::Infallible;
 use std::fmt;
 use std::future::Future;
@@ -36,6 +36,49 @@ pub(crate) enum AddressSpace {
 }
 
 const MAX_HOST_SPACES: usize = 4096;
+
+struct BoundedHostMap<V> {
+    map: HashMap<String, V>,
+    order: VecDeque<String>,
+    cap: usize,
+}
+
+impl<V> BoundedHostMap<V> {
+    fn new(cap: usize) -> Self {
+        Self {
+            map: HashMap::new(),
+            order: VecDeque::new(),
+            cap,
+        }
+    }
+
+    fn get(&self, key: &str) -> Option<&V> {
+        self.map.get(key)
+    }
+
+    fn insert(&mut self, key: String, value: V) {
+        if let Some(slot) = self.map.get_mut(&key) {
+            *slot = value;
+            return;
+        }
+        while self.map.len() >= self.cap {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            self.map.remove(&oldest);
+        }
+        self.order.push_back(key.clone());
+        self.map.insert(key, value);
+    }
+
+    fn remove(&mut self, key: &str) -> Option<V> {
+        let removed = self.map.remove(key)?;
+        if let Some(pos) = self.order.iter().position(|candidate| candidate == key) {
+            self.order.remove(pos);
+        }
+        Some(removed)
+    }
+}
 
 fn unwrap_embedded_ipv4(ip: IpAddr) -> IpAddr {
     let IpAddr::V6(v6) = ip else {
@@ -116,7 +159,7 @@ fn normalize_host(host: &str) -> String {
 pub(crate) struct HostResolver {
     host_map: HostMap,
     system: GaiResolver,
-    pinned: Arc<Mutex<HashMap<String, Vec<SocketAddr>>>>,
+    pinned: Arc<Mutex<BoundedHostMap<Vec<SocketAddr>>>>,
 }
 
 impl Service<Name> for HostResolver {
@@ -234,8 +277,8 @@ pub(crate) struct HttpEngine {
     proxied: Option<ProxiedClient>,
     host_map: HostMap,
     system: GaiResolver,
-    pinned: Arc<Mutex<HashMap<String, Vec<SocketAddr>>>>,
-    host_spaces: Arc<Mutex<HashMap<String, AddressSpace>>>,
+    pinned: Arc<Mutex<BoundedHostMap<Vec<SocketAddr>>>>,
+    host_spaces: Arc<Mutex<BoundedHostMap<AddressSpace>>>,
 }
 
 type ProxiedClient = Client<HttpsConnector<Tunnel<HttpConnector<HostResolver>>>, RequestBody>;
@@ -275,7 +318,7 @@ fn tls_connector(cas: &[TrustedCa]) -> tokio_native_tls::TlsConnector {
 impl HttpEngine {
     pub(crate) fn new(proxy: Option<Proxy>, host_map: HostMap, tls_cas: &[TrustedCa]) -> Self {
         let system = GaiResolver::new();
-        let pinned = Arc::new(Mutex::new(HashMap::new()));
+        let pinned = Arc::new(Mutex::new(BoundedHostMap::new(MAX_HOST_SPACES)));
         let resolver = HostResolver {
             host_map: host_map.clone(),
             system: system.clone(),
@@ -300,7 +343,7 @@ impl HttpEngine {
             host_map,
             system,
             pinned,
-            host_spaces: Arc::new(Mutex::new(HashMap::new())),
+            host_spaces: Arc::new(Mutex::new(BoundedHostMap::new(MAX_HOST_SPACES))),
         }
     }
 
@@ -376,6 +419,12 @@ impl HttpEngine {
             .min()
             .unwrap_or(AddressSpace::Public);
         let initiator_space = self.initiator_space(initiator);
+        if initiator_kind != cookies::InitiatorKind::Navigation
+            && let Some(initiator_space) = initiator_space
+            && target_space < initiator_space
+        {
+            return Err(NetError::RejectedRequest);
+        }
         if literal.is_none() {
             let mut spaces = self
                 .host_spaces
@@ -385,24 +434,15 @@ impl HttpEngine {
                 if target_space < previous {
                     return Err(NetError::RejectedRequest);
                 }
-            } else if spaces.len() >= MAX_HOST_SPACES {
-                return Err(NetError::RejectedRequest);
             } else {
                 spaces.insert(lower.clone(), target_space);
             }
         }
-        if initiator_kind != cookies::InitiatorKind::Navigation
-            && let Some(initiator_space) = initiator_space
-            && target_space < initiator_space
-        {
-            return Err(NetError::RejectedRequest);
-        }
         if literal.is_none() {
-            let mut pinned = self.pinned.lock().unwrap_or_else(PoisonError::into_inner);
-            if !pinned.contains_key(&lower) && pinned.len() >= MAX_HOST_SPACES {
-                return Err(NetError::RejectedRequest);
-            }
-            pinned.insert(lower, resolved);
+            self.pinned
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(lower, resolved);
         }
         Ok(())
     }
@@ -631,5 +671,19 @@ mod tests {
         assert!(is_cloud_metadata("192.0.0.192".parse().expect("ip")));
         assert!(is_cloud_metadata("fd00:ec2::254".parse().expect("ip")));
         assert!(!is_cloud_metadata("127.0.0.1".parse().expect("ip")));
+    }
+
+    #[test]
+    fn bounded_host_map_evicts_oldest_instead_of_wedging() {
+        let mut map = super::BoundedHostMap::new(3);
+        map.insert("a.test".into(), AddressSpace::Public);
+        map.insert("b.test".into(), AddressSpace::Private);
+        map.insert("c.test".into(), AddressSpace::Local);
+        map.insert("d.test".into(), AddressSpace::Public);
+        assert_eq!(map.get("a.test"), None);
+        assert_eq!(map.get("b.test"), Some(&AddressSpace::Private));
+        assert_eq!(map.get("d.test"), Some(&AddressSpace::Public));
+        assert_eq!(map.remove("b.test"), Some(AddressSpace::Private));
+        assert_eq!(map.get("b.test"), None);
     }
 }

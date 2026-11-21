@@ -73,6 +73,7 @@ where
     if shutdown.requested() {
         return Ok(());
     }
+    let permits = std::sync::Arc::new(tokio::sync::Semaphore::new(64));
     let mut tasks = JoinSet::new();
     loop {
         while tasks.try_join_next().is_some() {}
@@ -86,12 +87,17 @@ where
                         continue;
                     }
                 };
-                tasks.spawn(connection(
-                    stream,
-                    state.clone(),
-                    handler.clone(),
-                    shutdown.subscribe(),
-                ));
+                let Ok(permit) = permits.clone().try_acquire_owned() else {
+                    drop(stream);
+                    continue;
+                };
+                let state = state.clone();
+                let handler = handler.clone();
+                let stop = shutdown.subscribe();
+                tasks.spawn(async move {
+                    let _permit = permit;
+                    connection(stream, state, handler, stop).await;
+                });
             }
         }
     }

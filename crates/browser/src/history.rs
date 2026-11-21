@@ -7,9 +7,23 @@ use renderer::HistorySnapshot as RendererHistorySnapshot;
 use renderer::{FrameId, HistoryHandling};
 use url::Url;
 
-// https://html.spec.whatwg.org/multipage/nav-history-apis.html#shared-history-push/replace-state-steps — UA-defined session history limits (128 entries, 640 KiB state).
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#shared-history-push/replace-state-steps — UA-defined session history limits (128 entries, 640 KiB state, 64 KiB URL, 4 KiB title, 8 MiB total).
 const MAX_HISTORY_ENTRIES: usize = 128;
 const MAX_HISTORY_STATE_BYTES: usize = 640 * 1024;
+const MAX_HISTORY_URL_BYTES: usize = 64 * 1024;
+const MAX_HISTORY_TITLE_BYTES: usize = 4 * 1024;
+const MAX_HISTORY_TOTAL_BYTES: usize = 8 * 1024 * 1024;
+
+fn truncate_utf8(mut text: String, max_bytes: usize) -> String {
+    if text.len() > max_bytes {
+        let mut end = max_bytes;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+    }
+    text
+}
 
 // https://html.spec.whatwg.org/multipage/browsing-the-web.html#session-history
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -250,6 +264,7 @@ impl SessionHistory {
         let Some(id) = self.active_entry(frame) else {
             return;
         };
+        let title = truncate_utf8(title, MAX_HISTORY_TITLE_BYTES);
         if let Some(entry) = self.entries.iter_mut().find(|entry| entry.id == id) {
             entry.title = title;
         }
@@ -393,7 +408,7 @@ impl SessionHistory {
         state: String,
         handling: HistoryHandling,
     ) {
-        if state.len() > MAX_HISTORY_STATE_BYTES {
+        if state.len() > MAX_HISTORY_STATE_BYTES || url.as_str().len() > MAX_HISTORY_URL_BYTES {
             return;
         }
         let Some(active) = self.active_entry(frame) else {
@@ -405,6 +420,7 @@ impl SessionHistory {
                     entry.url = url;
                     entry.state = Some(state);
                 }
+                self.evict_excess_entries(active);
             }
             HistoryHandling::Push => {
                 let Some(document) = self.locate(active).map(|entry| entry.document) else {
@@ -655,8 +671,21 @@ impl SessionHistory {
         id
     }
 
+    fn total_bytes(&self) -> usize {
+        self.entries
+            .iter()
+            .map(|entry| {
+                entry.url.as_str().len()
+                    + entry.title.len()
+                    + entry.state.as_ref().map_or(0, String::len)
+            })
+            .sum()
+    }
+
     fn evict_excess_entries(&mut self, keep: EntryId) {
-        while self.entries.len() > MAX_HISTORY_ENTRIES {
+        while self.entries.len() > MAX_HISTORY_ENTRIES
+            || (self.entries.len() > 1 && self.total_bytes() > MAX_HISTORY_TOTAL_BYTES)
+        {
             let Some(evict_index) = self.entries.iter().position(|entry| entry.id != keep) else {
                 break;
             };
@@ -1087,5 +1116,41 @@ mod tests {
             history.entry_url(history.current_entry()).map(Url::as_str),
             Some(format!("https://example.com/{}", super::MAX_HISTORY_ENTRIES + 50).as_str())
         );
+
+        let oversized_url = url(&format!(
+            "https://example.com/{}",
+            "u".repeat(super::MAX_HISTORY_URL_BYTES + 1)
+        ));
+        history.update(
+            FrameId::MAIN,
+            oversized_url,
+            "ok".into(),
+            super::HistoryHandling::Push,
+        );
+        assert_eq!(
+            history.entry_url(history.current_entry()).map(Url::as_str),
+            Some(format!("https://example.com/{}", super::MAX_HISTORY_ENTRIES + 50).as_str())
+        );
+
+        history.set_current_title("t".repeat(super::MAX_HISTORY_TITLE_BYTES + 100));
+        let title_len = history
+            .snapshot()
+            .entries()
+            .last()
+            .expect("entry")
+            .title()
+            .len();
+        assert_eq!(title_len, super::MAX_HISTORY_TITLE_BYTES);
+
+        let chunk = "s".repeat(512 * 1024);
+        for i in 0..30 {
+            history.update(
+                FrameId::MAIN,
+                url(&format!("https://example.com/big/{i}")),
+                chunk.clone(),
+                super::HistoryHandling::Push,
+            );
+        }
+        assert!(history.total_bytes() <= super::MAX_HISTORY_TOTAL_BYTES);
     }
 }
