@@ -279,18 +279,6 @@ impl TabRegistry {
         }
     }
 
-    pub(crate) fn authorize_url(
-        &self,
-        tab: TabId,
-        main: &crate::site::Site,
-        spec: &str,
-    ) -> Option<url::Url> {
-        match self.lock().get(&tab) {
-            Some(record) => record.frames.authorize_url(main, spec),
-            None => main.authorize_url(spec),
-        }
-    }
-
     pub(crate) fn allows_url(&self, tab: TabId, main: &crate::site::Site, url: &url::Url) -> bool {
         match self.lock().get(&tab) {
             Some(record) => record.frames.allows_url(main, url),

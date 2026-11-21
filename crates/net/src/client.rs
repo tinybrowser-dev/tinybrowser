@@ -453,7 +453,7 @@ impl Agent {
                     headers: preflight,
                     body: None,
                     client: dial.client,
-                    initiator: dial.initiator.cloned(),
+                    initiator: wire_initiator(dial.initiator, dial.partition_key),
                     initiator_kind: dial.initiator_kind,
                 },
                 budget,
@@ -699,7 +699,7 @@ impl Agent {
                     headers: hop_headers,
                     body: hop.body.clone(),
                     client: dial.client,
-                    initiator: dial.initiator.cloned(),
+                    initiator: wire_initiator(dial.initiator, dial.partition_key),
                     initiator_kind: dial.initiator_kind,
                 },
                 budget.clone(),
@@ -1000,6 +1000,20 @@ impl FetchMetadata {
 // https://fetch.spec.whatwg.org/#concept-request-credentials-mode
 // https://fetch.spec.whatwg.org/#http-network-or-cache-fetch
 // https://wicg.github.io/ua-client-hints/#http-ua-hints
+// https://wicg.github.io/private-network-access/#determine-the-ip-address-space
+fn wire_initiator(
+    initiator: Option<&url::Origin>,
+    partition_key: Option<&str>,
+) -> Option<url::Origin> {
+    match initiator {
+        Some(origin @ url::Origin::Tuple(..)) => Some(origin.clone()),
+        Some(url::Origin::Opaque(_)) => partition_key
+            .and_then(|site| Url::parse(site).ok())
+            .map(|url| url.origin()),
+        None => None,
+    }
+}
+
 fn prepare_credentials(
     dial: &Dial<'_>,
     url: &Url,

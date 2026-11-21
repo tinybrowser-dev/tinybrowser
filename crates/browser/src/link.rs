@@ -545,7 +545,7 @@ async fn route_service_call(
         return Err(RendererViolation);
     };
     match call {
-        ServiceCall::Network(NetworkCall::Dial(request)) => {
+        ServiceCall::Network(NetworkCall::Dial(mut request)) => {
             // https://fetch.spec.whatwg.org/#concept-request-origin
             let initiator = match context.tabs.authorize_origin(
                 assignment.tab,
@@ -556,6 +556,7 @@ async fn route_service_call(
                 None if request.initiator.is_opaque() => url::Origin::new_opaque(),
                 None => return Err(RendererViolation),
             };
+            request.partition_key = assignment.site.as_partition_key().map(str::to_owned);
             let worker_network = assignment.network.clone();
             let responder = context.responder.clone();
             let worker_kill = context.kill.clone();
@@ -1210,9 +1211,9 @@ impl StorageRouter<'_> {
     async fn cookie_get(&self, url: &str) -> Result<(), RendererViolation> {
         let partition_key = self.authority.site.as_partition_key();
         let cookies = self
-            .context
-            .tabs
-            .authorize_url(self.authority.tab, &self.authority.site, url)
+            .authority
+            .site
+            .authorize_url(url)
             .map_or_default(|url| {
                 self.context
                     .partition
@@ -1229,11 +1230,7 @@ impl StorageRouter<'_> {
 
     async fn cookie_set(&self, value: &str, url: &str) -> Result<(), RendererViolation> {
         let partition_key = self.authority.site.as_partition_key();
-        if let Some(url) =
-            self.context
-                .tabs
-                .authorize_url(self.authority.tab, &self.authority.site, url)
-        {
+        if let Some(url) = self.authority.site.authorize_url(url) {
             self.context
                 .partition
                 .cookies
@@ -1245,9 +1242,9 @@ impl StorageRouter<'_> {
     async fn cookie_store_get(&self, url: &str) -> Result<(), RendererViolation> {
         let partition_key = self.authority.site.as_partition_key();
         let records = self
-            .context
-            .tabs
-            .authorize_url(self.authority.tab, &self.authority.site, url)
+            .authority
+            .site
+            .authorize_url(url)
             .map_or_default(|url| {
                 self.context
                     .partition
@@ -1268,11 +1265,7 @@ impl StorageRouter<'_> {
         url: &str,
     ) -> Result<(), RendererViolation> {
         let partition_key = self.authority.site.as_partition_key();
-        if let Some(url) =
-            self.context
-                .tabs
-                .authorize_url(self.authority.tab, &self.authority.site, url)
-        {
+        if let Some(url) = self.authority.site.authorize_url(url) {
             self.context
                 .partition
                 .cookies
@@ -1282,9 +1275,10 @@ impl StorageRouter<'_> {
     }
 
     fn key(&self, origin: &renderer::SerializedOrigin) -> Result<StorageKey, RendererViolation> {
-        self.context
-            .tabs
-            .storage_key(self.authority.tab, &self.authority.site, origin)
+        self.authority
+            .site
+            .authorize_origin(origin)
+            .and_then(|origin| StorageKey::from_origin(&origin))
             .ok_or(RendererViolation)
     }
 
@@ -1406,12 +1400,7 @@ impl StorageRouter<'_> {
     }
 
     fn authorize(&self, url: Option<&str>) -> Result<(), RendererViolation> {
-        if url.is_some_and(|url| {
-            self.context
-                .tabs
-                .authorize_url(self.authority.tab, &self.authority.site, url)
-                .is_none()
-        }) {
+        if url.is_some_and(|url| self.authority.site.authorize_url(url).is_none()) {
             return Err(RendererViolation);
         }
         Ok(())
@@ -1625,6 +1614,7 @@ fn renderer_command() -> io::Result<Command> {
         "LC_ALL",
         "TZ",
         "SYSTEMROOT",
+        "PREFIX",
     ] {
         if let Ok(value) = std::env::var(key) {
             command.env(key, value);

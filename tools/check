@@ -109,7 +109,7 @@ run_comments() {
   matches="$(grep -rnE '^[[:space:]]*//' src crates tools tests \
     --include='*.rs' --include='*.js' \
     --exclude-dir=generated --exclude-dir=third_party --exclude-dir=node_modules \
-    | grep -vE '^[^:]+:[0-9]+:[[:space:]]*// (SAFETY: [^[:space:]]|https?://[^[:space:]]+( — .+)?)$' || true)"
+    | grep -vE '^[^:]+:[0-9]+:[[:space:]]*// (SAFETY: [^[:space:]].*|https?://[^[:space:]]+( — .+)?)$' || true)"
   local py_matches
   py_matches="$(grep -rnE '^[[:space:]]*#' tools/wpt --include='*.py' --exclude-dir=.venv \
     | grep -vE '^[^:]+:1:#!' \

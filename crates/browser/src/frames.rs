@@ -162,15 +162,6 @@ impl FrameTree {
         })
     }
 
-    pub(crate) fn authorize_url(&self, main: &Site, spec: &str) -> Option<Url> {
-        main.authorize_url(spec).or_else(|| {
-            self.children
-                .values()
-                .filter_map(|entry| entry.site.as_ref())
-                .find_map(|site| site.authorize_url(spec))
-        })
-    }
-
     pub(crate) fn allows_url(&self, main: &Site, url: &Url) -> bool {
         main.allows_url(url)
             || self

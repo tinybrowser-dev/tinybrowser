@@ -1,3 +1,4 @@
+mod sandbox;
 mod session;
 
 const INBOX_CAPACITY: usize = 256;
@@ -27,6 +28,7 @@ use crate::wire::{
 use renderer::{OpenerPolicy, WindowId};
 
 pub fn serve() -> io::Result<()> {
+    sandbox::engage()?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_time()
         .build()?;
