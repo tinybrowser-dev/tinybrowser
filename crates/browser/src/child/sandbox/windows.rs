@@ -246,11 +246,15 @@ mod tests {
                 .join()
                 .expect("worker thread must spawn inside windows sandbox");
             assert_eq!(thread_result, 42);
-            let spawn_err = std::process::Command::new("cmd.exe")
+            let spawn_err = std::process::Command::new(r"C:\Windows\System32\cmd.exe")
                 .args(["/C", "exit", "0"])
                 .status()
                 .expect_err("child process creation must fail");
-            assert_eq!(spawn_err.kind(), std::io::ErrorKind::PermissionDenied);
+            assert!(
+                matches!(spawn_err.raw_os_error(), Some(5 | 725 | 1260 | 1816)),
+                "expected policy/access/quota denial, got {spawn_err:?} (raw={:?})",
+                spawn_err.raw_os_error()
+            );
             return;
         }
         let mut child = std::process::Command::new(std::env::current_exe().expect("test exe"))
