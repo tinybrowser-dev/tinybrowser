@@ -5,16 +5,16 @@ export const prerender = true
 ---
 
 <Base
-  title="Demo · tinybrowser"
-  description="Browse live websites inside tinybrowser compiled to WebAssembly. Click links, run JavaScript, resize the viewport, and watch every HTTP hop."
+  title="Lab · tinybrowser"
+  description="Interactive WebAssembly browser engine lab: cross-origin DevTools inspection, Set-of-Mark agent overlays, isolated cookie jars with HttpOnly inspection, event-loop stepping, and live network chaos."
 >
   <div class="page-head">
     <div class="measure">
-      <h1 class="page-title">Live browser demo</h1>
+      <h1 class="page-title">Browser engine lab</h1>
       <p class="lede">
-        tinybrowser (Blitz, QuickJS, and the Rust fetch stack) compiled to WebAssembly and running
-        inside this tab. Enter a URL, click links on the rendered frame, resize the viewport, or run
-        JavaScript on the page.
+        Real Blitz, QuickJS, and Rust fetch core compiled to WebAssembly. Inspect cross-origin sites
+        that block iframes, split isolated cookie jars, pause the event loop, or inject network
+        faults below the fetch stack.
       </p>
     </div>
     <p class="run-meta" id="demo-status">initializing…</p>
@@ -32,97 +32,218 @@ export const prerender = true
     }
   </script>
 
-  <section class="demo-presets" aria-label="Live presets">
-    <span class="demo-label">Try</span>
-    <button id="preset-hn" type="button" disabled>Hacker News (live)</button>
-    <button id="preset-npr" type="button" disabled>NPR Text (live)</button>
-    <button id="preset-example" type="button" disabled>example.com</button>
-    <button id="preset-interactive" type="button" disabled>Interactive app</button>
-    <button id="preset-fetch" type="button" disabled>302 + cookies</button>
-    <button id="preset-multitab" type="button" disabled>Spawn 8 tabs</button>
-  </section>
-
-  <section class="demo-commands" aria-label="Agent controls">
-    <div class="demo-row">
-      <label class="demo-label" for="demo-url">goto</label>
+  <section class="lab-chrome" aria-label="Navigation and mode controls">
+    <div class="lab-omnibox">
+      <div class="lab-nav-btns" role="group" aria-label="Session history">
+        <button id="nav-back" type="button" disabled title="Back">←</button>
+        <button id="nav-forward" type="button" disabled title="Forward">→</button>
+        <button id="nav-reload" type="button" disabled title="Reload">↻</button>
+      </div>
       <input
         id="demo-url"
         type="url"
         placeholder="https://news.ycombinator.com/"
         spellcheck="false"
+        aria-label="URL"
       />
-      <button id="demo-goto" type="button" disabled>Navigate</button>
+      <span class="lab-badge" id="lab-iframe-badge" hidden></span>
+      <button id="demo-goto" type="button" disabled>Go</button>
     </div>
-    <div class="demo-row">
-      <label class="demo-label" for="demo-eval">eval</label>
-      <input
-        id="demo-eval"
-        type="text"
-        value="document.title + ' · ' + document.querySelectorAll('*').length + ' nodes'"
-        spellcheck="false"
-      />
-      <button id="demo-eval-run" type="button" disabled>Run</button>
-    </div>
-    <div class="demo-actions" aria-label="Quick page actions">
-      <span class="demo-label">actions</span>
-      <button id="action-highlight" type="button" disabled>Highlight headings</button>
-      <button id="action-links" type="button" disabled>Extract links</button>
-      <button id="action-invert" type="button" disabled>Invert colors</button>
-      <button id="action-html" type="button" disabled>Inspect HTML</button>
+
+    <div class="lab-bar">
+      <div class="lab-group" role="group" aria-label="Quick URLs">
+        <span class="demo-label">open</span>
+        <button id="bm-hn" type="button" disabled>HN</button>
+        <button id="bm-npr" type="button" disabled>NPR</button>
+        <button id="bm-example" type="button" disabled>example.com</button>
+        <button id="bm-canvas" type="button" disabled>lab://canvas</button>
+        <button id="bm-cookies" type="button" disabled>lab://cookies</button>
+      </div>
+
+      <div class="lab-group" role="group" aria-label="Stage mode">
+        <span class="demo-label">stage</span>
+        <button id="mode-single" type="button" disabled aria-pressed="true">Single</button>
+        <button id="mode-dual" type="button" disabled aria-pressed="false">Dual viewport</button>
+        <button id="mode-split" type="button" disabled aria-pressed="false">Split sessions</button>
+      </div>
+
+      <div class="lab-group" role="group" aria-label="Event loop">
+        <span class="demo-label">loop</span>
+        <button id="loop-pause" type="button" disabled aria-pressed="false">Live</button>
+        <button id="loop-step" type="button" disabled>Step 1 tick</button>
+      </div>
+
+      <div class="lab-group" role="group" aria-label="User-Agent identity">
+        <span class="demo-label">ua</span>
+        <button id="ua-tinybrowser" type="button" disabled aria-pressed="true">tinybrowser</button>
+        <button id="ua-chrome" type="button" disabled aria-pressed="false">Chrome</button>
+      </div>
     </div>
   </section>
 
-  <section class="demo-grid">
-    <div class="demo-panel">
-      <div class="demo-panel-head">
-        <h2>Rendered frame</h2>
-        <span class="muted" id="demo-frame-meta">640x400 RGBA</span>
-        <div class="demo-toolbar" aria-label="Viewport and scroll">
-          <button id="vp-desktop" type="button" disabled>800×500</button>
-          <button id="vp-tablet" type="button" disabled aria-pressed="true">640×400</button>
-          <button id="vp-mobile" type="button" disabled>375×560</button>
-          <span class="muted" aria-hidden="true">·</span>
+  <section class="lab-grid">
+    <div class="lab-stage-col">
+      <div class="lab-stage-bar">
+        <div class="lab-group" role="group" aria-label="Overlays">
+          <span class="demo-label">overlay</span>
+          <button id="ov-inspect" type="button" disabled aria-pressed="false">Inspect</button>
+          <button id="ov-marks" type="button" disabled aria-pressed="false">Agent marks</button>
+          <button id="ov-diff" type="button" disabled aria-pressed="false">Paint diff</button>
+        </div>
+
+        <div class="lab-group lab-vp-controls" role="group" aria-label="Viewport size">
+          <label class="demo-label" for="vp-width" id="vp-width-label">640×400</label>
+          <input
+            id="vp-width"
+            type="range"
+            min="320"
+            max="880"
+            step="20"
+            value="640"
+            disabled
+            aria-label="Viewport width"
+          />
           <button id="scroll-up" type="button" disabled>Up</button>
           <button id="scroll-down" type="button" disabled>Down</button>
-          <button id="demo-render" type="button" disabled>Re-render</button>
         </div>
       </div>
-      <div class="demo-canvas-wrap">
-        <canvas
-          id="demo-canvas"
-          width="640"
-          height="400"
-          tabindex="0"
-          title="Click, scroll, or type inside the rendered page."
-        ></canvas>
+
+      <div class="lab-stage" id="lab-stage" data-mode="single">
+        <div class="lab-viewport" id="vp-primary" data-active="true">
+          <div class="lab-vp-head">
+            <span class="strong" id="vp-primary-title">Session A</span>
+            <span class="muted" id="demo-frame-meta">640×400 RGBA</span>
+          </div>
+          <div class="lab-canvas-stack">
+            <canvas
+              id="demo-canvas"
+              width="640"
+              height="400"
+              tabindex="0"
+              title="Click, scroll, or type inside the rendered page."
+            ></canvas>
+            <canvas
+              id="demo-overlay"
+              class="lab-overlay-canvas"
+              width="640"
+              height="400"
+              aria-hidden="true"
+            ></canvas>
+          </div>
+        </div>
+
+        <div class="lab-viewport" id="vp-secondary" hidden data-active="false">
+          <div class="lab-vp-head">
+            <span class="strong" id="vp-secondary-title">Mobile 375×400</span>
+            <span class="muted" id="demo-frame-meta-b">375×400 RGBA</span>
+          </div>
+          <div class="lab-canvas-stack">
+            <canvas
+              id="demo-canvas-b"
+              width="375"
+              height="400"
+              tabindex="0"
+              title="Secondary viewport / Session B"
+            ></canvas>
+            <canvas
+              id="demo-overlay-b"
+              class="lab-overlay-canvas"
+              width="375"
+              height="400"
+              aria-hidden="true"
+            ></canvas>
+          </div>
+        </div>
       </div>
+
       <p class="demo-hint" id="demo-hint">
         Click, scroll, or type inside the rendered frame — events go through tinybrowser's real
         input pipeline.
       </p>
     </div>
 
-    <div class="demo-panel">
-      <div class="demo-panel-head">
-        <h2>Agent output</h2>
+    <aside class="lab-inspector" aria-label="Engine inspector">
+      <div class="lab-tabs" role="tablist">
+        <button id="tab-console" role="tab" type="button" aria-selected="true">Console</button>
+        <button id="tab-network" role="tab" type="button" aria-selected="false">
+          Network <span class="muted" id="tab-network-count">0</span>
+        </button>
+        <button id="tab-storage" role="tab" type="button" aria-selected="false">Storage</button>
+        <button id="tab-agent" role="tab" type="button" aria-selected="false">Agent</button>
+        <button id="tab-source" role="tab" type="button" aria-selected="false">Source</button>
       </div>
-      <pre class="demo-pre" id="demo-output">waiting for engine…</pre>
 
-      <div class="demo-panel-head demo-panel-sub">
-        <h2>Live HTTP hops</h2>
-        <span class="muted" id="demo-hops-meta">via /api/hop</span>
+      <div class="lab-panel" id="panel-console" role="tabpanel">
+        <div class="demo-row">
+          <input
+            id="demo-eval"
+            type="text"
+            value="document.title + ' · ' + document.querySelectorAll('*').length + ' nodes'"
+            spellcheck="false"
+            aria-label="JavaScript expression"
+          />
+          <button id="demo-eval-run" type="button" disabled>Run</button>
+        </div>
+        <div class="lab-chips">
+          <button id="action-highlight" type="button" disabled>Highlight</button>
+          <button id="action-invert" type="button" disabled>Dark CSS</button>
+          <button id="action-links" type="button" disabled>Links</button>
+          <button id="action-loop" type="button" disabled>while(true){}</button>
+          <button id="action-multitab" type="button" disabled>Spawn 8 tabs</button>
+        </div>
+        <pre class="demo-pre lab-pre-tall" id="demo-output">waiting for engine…</pre>
       </div>
-      <pre class="demo-pre demo-pre-sm" id="demo-hops">no requests yet</pre>
-    </div>
+
+      <div class="lab-panel" id="panel-network" role="tabpanel" hidden>
+        <div class="lab-chaos" aria-label="Network chaos controls">
+          <button id="chaos-offline" type="button" disabled aria-pressed="false">Offline</button>
+          <button id="chaos-latency" type="button" disabled aria-pressed="false">
+            Latency: 0ms
+          </button>
+          <button id="chaos-css" type="button" disabled aria-pressed="false">Block CSS</button>
+          <button id="chaos-js" type="button" disabled aria-pressed="false">Block JS</button>
+          <button id="chaos-img" type="button" disabled aria-pressed="false">Block Img</button>
+          <button id="chaos-cors" type="button" disabled aria-pressed="false">Strip CORS</button>
+          <button id="chaos-500" type="button" disabled aria-pressed="false">Force 500</button>
+        </div>
+        <p class="lab-note" id="demo-hops-meta">0 requests via /api/hop</p>
+        <div class="lab-hops-list" id="demo-hops">
+          <p class="muted">No requests yet.</p>
+        </div>
+      </div>
+
+      <div class="lab-panel" id="panel-storage" role="tabpanel" hidden>
+        <div class="lab-storage-bar">
+          <span class="strong" id="storage-session-label">Session A jar</span>
+          <button id="storage-add-httponly" type="button" disabled>+ HttpOnly cookie</button>
+          <button id="storage-clear" type="button" disabled>Clear all</button>
+          <button id="storage-refresh" type="button" disabled>Refresh</button>
+        </div>
+        <div class="lab-storage-body" id="storage-body">
+          <p class="muted">No cookies or storage entries yet.</p>
+        </div>
+      </div>
+
+      <div class="lab-panel" id="panel-agent" role="tabpanel" hidden>
+        <div class="lab-storage-bar">
+          <span class="strong" id="agent-count">0 interactive marks</span>
+          <button id="agent-scan" type="button" disabled>Scan page</button>
+        </div>
+        <div class="lab-marks-list" id="agent-marks-list">
+          <p class="muted">Enable Agent marks or click Scan page.</p>
+        </div>
+        <pre class="demo-pre demo-pre-sm" id="agent-text"></pre>
+      </div>
+
+      <div class="lab-panel" id="panel-source" role="tabpanel" hidden>
+        <div class="lab-storage-bar">
+          <button id="source-pull" type="button" disabled>Read live DOM</button>
+          <button id="demo-mount" type="button" disabled>Mount HTML</button>
+        </div>
+        <textarea id="demo-html" class="lab-textarea" rows="16" spellcheck="false"></textarea>
+      </div>
+    </aside>
   </section>
-
-  <details class="demo-source">
-    <summary>Mount custom HTML</summary>
-    <textarea id="demo-html" rows="12" spellcheck="false"></textarea>
-    <div class="demo-source-bar">
-      <button id="demo-mount" type="button" disabled>Mount HTML</button>
-    </div>
-  </details>
 
   <script src="../demo/app.ts"></script>
 </Base>

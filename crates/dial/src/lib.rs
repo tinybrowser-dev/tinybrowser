@@ -212,7 +212,7 @@ pub fn outbound_request<S: BuildHasher>(
     }
     for (name, value) in &request.headers {
         let encoded = isomorphic_encode(value).ok_or(DialFailure::Connect)?;
-        if kind == DialKind::JsFetch && net::cors::is_forbidden_request_header(name, &encoded) {
+        if net::cors::is_forbidden_request_header(name, &encoded) {
             continue;
         }
         if page_no_cors && !net::cors::is_no_cors_safelisted_request_header(name, &encoded) {
@@ -225,15 +225,27 @@ pub fn outbound_request<S: BuildHasher>(
     }
     // https://fetch.spec.whatwg.org/#http-network-or-cache-fetch
     cache_mode_headers(request, &mut outbound);
+    let top_level_document =
+        kind == DialKind::FrameLoad && request.frame == Some(renderer::FrameId::MAIN);
+    // https://w3c.github.io/webappsec-fetch-metadata/#sec-fetch-dest-header
     let destination = match kind {
         DialKind::JsFetch => "empty",
         DialKind::ClassicScript | DialKind::ModuleScript => "script",
         DialKind::Stylesheet => "style",
         DialKind::Image => "image",
         DialKind::Font => "font",
+        DialKind::FrameLoad if top_level_document => "document",
         DialKind::FrameLoad => "iframe",
         DialKind::CspReport => "report",
     };
+    if kind == DialKind::FrameLoad {
+        // https://fetch.spec.whatwg.org/#concept-main-fetch
+        static_header(&mut outbound, "Accept", NAVIGATION_ACCEPT);
+    }
+    if top_level_document {
+        // https://w3c.github.io/webappsec-fetch-metadata/#sec-fetch-user-header
+        static_header(&mut outbound, "Sec-Fetch-User", "?1");
+    }
     static_header(&mut outbound, "Sec-Fetch-Dest", destination);
     static_header(&mut outbound, "Sec-Fetch-Mode", cors.mode.as_str());
     if !request.body.is_empty() {
@@ -336,17 +348,16 @@ fn cache_mode_headers(request: &DialRequest, outbound: &mut Request) {
 // https://wicg.github.io/user-preference-media-features-headers/#sec-ch-prefers-color-scheme
 pub const SEC_CH_PREFERS_COLOR_SCHEME: &str = "dark";
 
+// https://fetch.spec.whatwg.org/#concept-main-fetch
+const NAVIGATION_ACCEPT: &str = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8";
+
 // https://www.w3.org/TR/upgrade-insecure-requests/#preference
 // https://w3c.github.io/webappsec-fetch-metadata/
 // https://wicg.github.io/ua-client-hints/#sec-ch-ua
 // https://w3c.github.io/webappsec-secure-contexts/#is-url-trustworthy
 pub fn apply_navigation_headers(request: &mut Request, url: &Url) {
     static_header(request, "Upgrade-Insecure-Requests", "1");
-    static_header(
-        request,
-        "Accept",
-        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-    );
+    static_header(request, "Accept", NAVIGATION_ACCEPT);
     static_header(request, "Sec-Fetch-Mode", "navigate");
     static_header(request, "Sec-Fetch-User", "?1");
     static_header(request, "Sec-Fetch-Dest", "document");

@@ -18,12 +18,17 @@ use crate::wire::RendererAssignmentId;
 
 // https://fetch.spec.whatwg.org/#keepalive-flag
 const KEEPALIVE_QUOTA: usize = 65_536;
-static KEEPALIVE_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
 
-struct KeepaliveReservation(usize);
+struct KeepaliveReservation {
+    counter: Arc<AtomicUsize>,
+    bytes: usize,
+}
 
 impl KeepaliveReservation {
-    fn acquire(request: &DialRequest) -> Result<Option<Self>, DialFailure> {
+    fn acquire(
+        counter: &Arc<AtomicUsize>,
+        request: &DialRequest,
+    ) -> Result<Option<Self>, DialFailure> {
         if !request.keepalive {
             return Ok(None);
         }
@@ -33,7 +38,7 @@ impl KeepaliveReservation {
         if length > KEEPALIVE_QUOTA {
             return Err(DialFailure::Limit);
         }
-        let mut current = KEEPALIVE_IN_FLIGHT.load(Ordering::Relaxed);
+        let mut current = counter.load(Ordering::Relaxed);
         loop {
             let Some(next) = current.checked_add(length) else {
                 return Err(DialFailure::Limit);
@@ -41,13 +46,14 @@ impl KeepaliveReservation {
             if next > KEEPALIVE_QUOTA {
                 return Err(DialFailure::Limit);
             }
-            match KEEPALIVE_IN_FLIGHT.compare_exchange_weak(
-                current,
-                next,
-                Ordering::AcqRel,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => return Ok(Some(Self(length))),
+            match counter.compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Relaxed)
+            {
+                Ok(_) => {
+                    return Ok(Some(Self {
+                        counter: Arc::clone(counter),
+                        bytes: length,
+                    }));
+                }
                 Err(observed) => current = observed,
             }
         }
@@ -56,7 +62,7 @@ impl KeepaliveReservation {
 
 impl Drop for KeepaliveReservation {
     fn drop(&mut self) {
-        KEEPALIVE_IN_FLIGHT.fetch_sub(self.0, Ordering::AcqRel);
+        self.counter.fetch_sub(self.bytes, Ordering::AcqRel);
     }
 }
 
@@ -173,29 +179,22 @@ impl NetworkContext {
             dialer: Dialer::new(self.agent.clone(), Arc::clone(&self.cache)),
             permits: self.permits.clone(),
             tab: Arc::new(Semaphore::new(MAX_TAB_DIALS)),
+            keepalive: Arc::new(AtomicUsize::new(0)),
             streams: Arc::clone(&self.streams),
             next_stream: Arc::clone(&self.next_stream),
         }
-    }
-
-    pub(crate) fn agent(&self) -> Agent {
-        self.agent.clone()
     }
 
     pub(crate) fn identity(&self) -> net::ValidIdentity {
         self.agent.identity().clone()
     }
 
-    pub(crate) fn cookie_records(&self, url: &Url) -> Vec<net::CookieRecord> {
-        self.agent.cookie_records(url)
+    pub(crate) fn clear_cache(&self) {
+        self.cache.clear();
     }
 
-    pub(crate) fn clear_cookies(&self) {
-        self.agent.clear_cookies();
-    }
-
-    pub(crate) fn add_cookie(&self, cookie: &str, url: &Url) -> bool {
-        self.agent.store_cookie_http(cookie, url)
+    pub(crate) fn set_cache_disabled(&self, disabled: bool) {
+        self.cache.set_disabled(disabled);
     }
 }
 
@@ -223,50 +222,19 @@ pub(crate) struct TabNetworkHandle {
     dialer: Dialer,
     permits: NetworkPermits,
     tab: Arc<Semaphore>,
+    keepalive: Arc<AtomicUsize>,
     streams: StreamMap,
     next_stream: Arc<AtomicU64>,
 }
 
 impl TabNetworkHandle {
+    pub(crate) fn set_identity(&self, tab: crate::TabId, identity: Option<net::ValidIdentity>) {
+        self.dialer.agent().set_client_identity(tab.get(), identity);
+    }
+
     #[must_use]
-    pub(crate) fn cookies_for(&self, url: &Url, partition_key: Option<&str>) -> String {
-        self.dialer
-            .agent()
-            .cookies_for_partition(url, partition_key)
-    }
-
-    pub(crate) fn set_cookie(&self, value: &str, url: &Url, partition_key: Option<&str>) {
-        let _stored = self
-            .dialer
-            .agent()
-            .set_cookie_partition(value, url, partition_key);
-    }
-
-    // https://cookiestore.spec.whatwg.org/#query-cookies
-    #[must_use]
-    pub(crate) fn cookie_store_records(
-        &self,
-        url: &Url,
-        partition_key: Option<&str>,
-    ) -> Vec<renderer::ScriptCookie> {
-        self.dialer
-            .agent()
-            .script_cookie_records_partition(url, partition_key)
-            .into_iter()
-            .map(|record| renderer::ScriptCookie::from_record(&record))
-            .collect()
-    }
-
-    // https://cookiestore.spec.whatwg.org/#set-a-cookie
-    pub(crate) fn cookie_store_store(
-        &self,
-        write: &net::ScriptCookieWrite,
-        url: &Url,
-        partition_key: Option<&str>,
-    ) {
-        self.dialer
-            .agent()
-            .set_script_cookie_partition(write, url, partition_key);
+    pub(crate) fn identity(&self, tab: crate::TabId) -> net::ValidIdentity {
+        self.dialer.agent().identity_for(Some(tab.get()))
     }
 
     pub(crate) fn dial_navigation(
@@ -294,7 +262,8 @@ impl TabNetworkHandle {
         source: Option<&NavigationInitiator>,
     ) -> Result<NavOutcome, DialFailure> {
         let started = Instant::now();
-        logging::trace!(target: "browser::net", "nav start {url}");
+        let redacted = crate::actor::log_url(url);
+        logging::trace!(target: "browser::net", "nav start {redacted}");
         let deadline = started + dial::PAGE_FETCH_TIMEOUT;
         let permits = Self::acquire(&self.permits.navigation, deadline).await?;
         let mut request = Request::new(Method::GET, url.clone());
@@ -325,17 +294,17 @@ impl TabNetworkHandle {
             Err(error) => {
                 logging::trace!(
                     target: "browser::net",
-                    "nav failed {url} in {:?}: {error:?}",
+                    "nav failed {redacted} in {:?}: {error:?}",
                     started.elapsed()
                 );
                 return Err(dial_failure(&error));
             }
         };
         let status = response.status();
-        let final_url = response.final_url();
+        let final_url = crate::actor::log_url(response.final_url());
         logging::trace!(
             target: "browser::net",
-            "nav head {url} -> {status} {final_url} in {:?}",
+            "nav head {redacted} -> {status} {final_url} in {:?}",
             started.elapsed()
         );
         // https://html.spec.whatwg.org/multipage/document-lifecycle.html#initialise-the-document-object
@@ -355,12 +324,12 @@ impl TabNetworkHandle {
         owner: RendererAssignmentId,
     ) -> Result<DialOutcome, DialFailure> {
         let started = Instant::now();
-        let _keepalive = KeepaliveReservation::acquire(request)?;
+        let _keepalive = KeepaliveReservation::acquire(&self.keepalive, request)?;
         logging::trace!(
             target: "browser::net",
             "request start {:?} {}",
             request.policy.kind(),
-            request.url
+            crate::actor::log_url(&request.url)
         );
         let admission = TabAdmission {
             global: &self.permits.global,
@@ -414,7 +383,7 @@ impl TabNetworkHandle {
             store,
             permits,
             kind: request.policy.kind(),
-            url: request.url.to_string(),
+            url: crate::actor::log_url(&request.url),
             tx,
         });
         let id = StreamId::mint(self.next_stream.fetch_add(1, Ordering::Relaxed));
@@ -593,20 +562,19 @@ fn trace_dial_result(
     started: Instant,
     result: Result<&DialOutcome, &DialFailure>,
 ) {
+    let url = crate::actor::log_url(&request.url);
     match result {
         Ok(outcome) => logging::trace!(
             target: "browser::net",
-            "request done {:?} {} -> {} in {:?}",
+            "request done {:?} {url} -> {} in {:?}",
             request.policy.kind(),
-            request.url,
             outcome.status,
             started.elapsed()
         ),
         Err(failure) => logging::trace!(
             target: "browser::net",
-            "request failed {:?} {} in {:?}: {failure:?}",
+            "request failed {:?} {url} in {:?}: {failure:?}",
             request.policy.kind(),
-            request.url,
             started.elapsed()
         ),
     }
@@ -1057,7 +1025,9 @@ mod tests {
         });
         let context = NetworkContext::new(AgentOptions::default());
         let handle = context.tab_handle();
-        let initiator = Url::parse("http://a.test/page").expect("page URL").origin();
+        let initiator = Url::parse("http://localhost/page")
+            .expect("page URL")
+            .origin();
         let owner = RendererAssignmentId::new(1);
 
         let image = dial(
@@ -1106,7 +1076,9 @@ mod tests {
         });
         let context = NetworkContext::new(AgentOptions::default());
         let handle = context.tab_handle();
-        let initiator = Url::parse("http://a.test/page").expect("page URL").origin();
+        let initiator = Url::parse("http://localhost/page")
+            .expect("page URL")
+            .origin();
         let owner = RendererAssignmentId::new(1);
         let url = format!("http://{address}/img");
 

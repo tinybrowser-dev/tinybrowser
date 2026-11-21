@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -91,6 +92,7 @@ pub struct AgentOptions {
     pub timeout_per_call: Option<Duration>,
     pub max_redirects: u32,
     pub clock: Clock,
+    pub cookie_jar: Option<Arc<Mutex<CookieJar>>>,
     #[cfg(feature = "native")]
     pub proxy: Option<Proxy>,
     #[cfg(feature = "native")]
@@ -123,6 +125,7 @@ impl Default for AgentOptions {
             timeout_per_call: None,
             max_redirects: DEFAULT_MAX_REDIRECTS,
             clock: Clock::default(),
+            cookie_jar: None,
             #[cfg(feature = "native")]
             proxy: None,
             #[cfg(feature = "native")]
@@ -137,6 +140,7 @@ impl Default for AgentOptions {
 pub struct Agent {
     transport: Arc<dyn Transport>,
     identity: crate::ValidIdentity,
+    client_identities: Arc<Mutex<HashMap<u64, crate::ValidIdentity>>>,
     max_redirects: u32,
     jar: Arc<Mutex<CookieJar>>,
     clock: Clock,
@@ -166,6 +170,7 @@ impl Agent {
             max_redirects,
             proxy,
             clock,
+            cookie_jar,
             resolve,
             tls_cas,
         } = options;
@@ -173,8 +178,9 @@ impl Agent {
         Agent {
             transport,
             identity,
+            client_identities: Arc::new(Mutex::new(HashMap::new())),
             max_redirects,
-            jar: Arc::new(Mutex::new(CookieJar::default())),
+            jar: cookie_jar.unwrap_or_else(|| Arc::new(Mutex::new(CookieJar::default()))),
             clock,
             timeout_global,
             timeout_per_call,
@@ -188,8 +194,11 @@ impl Agent {
         Agent {
             transport,
             identity: options.identity,
+            client_identities: Arc::new(Mutex::new(HashMap::new())),
             max_redirects: options.max_redirects,
-            jar: Arc::new(Mutex::new(CookieJar::default())),
+            jar: options
+                .cookie_jar
+                .unwrap_or_else(|| Arc::new(Mutex::new(CookieJar::default()))),
             clock,
             timeout_global: options.timeout_global,
             timeout_per_call: options.timeout_per_call,
@@ -207,6 +216,34 @@ impl Agent {
     #[must_use]
     pub fn identity(&self) -> &crate::ValidIdentity {
         &self.identity
+    }
+
+    pub fn set_client_identity(&self, client: u64, identity: Option<crate::ValidIdentity>) {
+        let mut overrides = self
+            .client_identities
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        match identity {
+            Some(identity) => {
+                overrides.insert(client, identity);
+            }
+            None => {
+                overrides.remove(&client);
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn identity_for(&self, client: Option<u64>) -> crate::ValidIdentity {
+        let Some(client) = client else {
+            return self.identity.clone();
+        };
+        self.client_identities
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&client)
+            .cloned()
+            .unwrap_or_else(|| self.identity.clone())
     }
 
     fn jar(&self) -> MutexGuard<'_, CookieJar> {
@@ -334,21 +371,42 @@ impl Agent {
         self.jar().restore(records, self.clock.now());
     }
 
+    // https://www.rfc-editor.org/rfc/rfc9111#section-4.1
+    #[must_use]
+    pub fn outbound_cookie_header(&self, request: &Request) -> Option<String> {
+        let cross_origin = request.cors.origin != request.url.origin();
+        if !crate::cors::credentials_admitted(request.cors.credentials, cross_origin) {
+            return None;
+        }
+        let operation = CookieOp {
+            url: &request.url,
+            now: self.clock.now(),
+            kind: RetrievalKind::Http,
+            initiator_kind: request.initiator_kind,
+            method_is_safe: request.method.is_safe(),
+            initiator: request.initiator.as_ref(),
+            cross_site_redirect: false,
+            same_site_policy: request.same_site_cookie_policy,
+            partition_key: request.partition_key.as_deref(),
+        };
+        let cookie = self.jar().cookie_string(operation);
+        (!cookie.is_empty()).then_some(cookie)
+    }
+
     fn prepare_outbound(
         &self,
+        identity: &crate::ValidIdentity,
         headers: &mut HeaderMap,
         operation: CookieOp<'_>,
     ) -> Result<(), NetError> {
+        headers.remove("cookie");
         let cookie = self.jar().cookie_string(operation);
         if !cookie.is_empty() {
             let value = HeaderValue::from_str(&cookie).map_err(|_| NetError::RejectedRequest)?;
             headers.set(header::COOKIE, value);
         }
         if headers.value("user-agent").is_none() {
-            headers.append(
-                header::USER_AGENT,
-                self.identity.user_agent.header().clone(),
-            );
+            headers.append(header::USER_AGENT, identity.user_agent.header().clone());
         }
         Ok(())
     }
@@ -384,7 +442,7 @@ impl Agent {
         }
         preflight.append(
             header::USER_AGENT,
-            self.identity.user_agent.header().clone(),
+            dial.identity.user_agent.header().clone(),
         );
         let preflight_response = self
             .transport
@@ -395,6 +453,8 @@ impl Agent {
                     headers: preflight,
                     body: None,
                     client: dial.client,
+                    initiator: wire_initiator(dial.initiator, dial.partition_key),
+                    initiator_kind: dial.initiator_kind,
                 },
                 budget,
             )
@@ -462,9 +522,10 @@ impl Agent {
         if !matches!(request.url.scheme(), "http" | "https") {
             return Err(NetError::RejectedRequest);
         }
+        let identity = self.identity_for(request.client);
         let dial = Dial {
             cors: &request.cors,
-            client_hints: self.identity.hints(),
+            identity: &identity,
             initiator_kind: request.initiator_kind,
             initiator: request.initiator.as_ref(),
             on_redirect: request.on_redirect.as_ref(),
@@ -488,10 +549,8 @@ impl Agent {
                 .append(header::ACCEPT, HeaderValue::from_static("*/*"));
         }
         if hop.headers.value("accept-language").is_none() {
-            hop.headers.append(
-                header::ACCEPT_LANGUAGE,
-                self.identity.accept_language().clone(),
-            );
+            hop.headers
+                .append(header::ACCEPT_LANGUAGE, identity.accept_language().clone());
         }
         let empty_body = hop.body.as_ref().is_none_or(Bytes::is_empty);
         if empty_body
@@ -627,7 +686,7 @@ impl Agent {
         let mut hop_headers = hop.headers.clone();
         self.apply_cors_request(dial, hop, &wire, &mut hop_headers, budget.clone())
             .await?;
-        self.prepare_outbound(&mut hop_headers, operation)?;
+        self.prepare_outbound(dial.identity, &mut hop_headers, operation)?;
         prepare_credentials(dial, url, cross_origin, &mut hop_headers)?;
         let send_credentials =
             crate::cors::credentials_admitted(dial.cors.credentials, cross_origin);
@@ -640,6 +699,8 @@ impl Agent {
                     headers: hop_headers,
                     body: hop.body.clone(),
                     client: dial.client,
+                    initiator: wire_initiator(dial.initiator, dial.partition_key),
+                    initiator_kind: dial.initiator_kind,
                 },
                 budget.clone(),
             )
@@ -650,13 +711,7 @@ impl Agent {
             body: reader,
             http2,
         } = wire_response;
-        let content_encoding: Vec<String> =
-            crate::get_decode_split(&response_headers, "content-encoding")
-                .into_iter()
-                .flatten()
-                .map(|coding| coding.to_ascii_lowercase())
-                .filter(|coding| !coding.is_empty())
-                .collect();
+        let content_encoding = parse_content_encoding(&response_headers)?;
         let mut response = Response {
             status,
             status_text: reason_phrase(status, http2),
@@ -945,6 +1000,20 @@ impl FetchMetadata {
 // https://fetch.spec.whatwg.org/#concept-request-credentials-mode
 // https://fetch.spec.whatwg.org/#http-network-or-cache-fetch
 // https://wicg.github.io/ua-client-hints/#http-ua-hints
+// https://wicg.github.io/private-network-access/#determine-the-ip-address-space
+fn wire_initiator(
+    initiator: Option<&url::Origin>,
+    partition_key: Option<&str>,
+) -> Option<url::Origin> {
+    match initiator {
+        Some(origin @ url::Origin::Tuple(..)) => Some(origin.clone()),
+        Some(url::Origin::Opaque(_)) => partition_key
+            .and_then(|site| Url::parse(site).ok())
+            .map(|url| url.origin()),
+        None => None,
+    }
+}
+
 fn prepare_credentials(
     dial: &Dial<'_>,
     url: &Url,
@@ -956,13 +1025,13 @@ fn prepare_credentials(
     } else {
         headers.remove("cookie");
     }
-    dial.client_hints.write(headers, url);
+    dial.identity.hints().write(headers, url);
     Ok(())
 }
 
 struct Dial<'a> {
     cors: &'a crate::cors::CorsSettings,
-    client_hints: &'a crate::ClientHints,
+    identity: &'a crate::ValidIdentity,
     initiator_kind: InitiatorKind,
     initiator: Option<&'a url::Origin>,
     on_redirect: Option<&'a RedirectGate>,
@@ -1204,6 +1273,27 @@ fn apply_url_credentials(headers: &mut HeaderMap, url: &Url) -> Result<(), NetEr
     Ok(())
 }
 
+// https://www.rfc-editor.org/rfc/rfc9110#section-8.4 — UA-defined cap matching Chromium's decoding filter limit to prevent stack overflow on chained encodings
+const MAX_CONTENT_ENCODING_LAYERS: usize = 5;
+
+fn parse_content_encoding(headers: &HeaderMap) -> Result<Vec<String>, NetError> {
+    let codings: Vec<String> = crate::get_decode_split(headers, "content-encoding")
+        .into_iter()
+        .flatten()
+        .map(|coding| coding.to_ascii_lowercase())
+        .filter(|coding| !coding.is_empty())
+        .collect();
+    if codings
+        .iter()
+        .filter(|coding| coding.as_str() != "identity")
+        .count()
+        > MAX_CONTENT_ENCODING_LAYERS
+    {
+        return Err(NetError::Decode("too many content-encoding layers".into()));
+    }
+    Ok(codings)
+}
+
 pub struct Body {
     reader: Box<dyn AsyncRead + Send + Unpin>,
     shared_error: Arc<Mutex<Option<NetError>>>,
@@ -1229,7 +1319,18 @@ impl Body {
         shared_error: Arc<Mutex<Option<NetError>>>,
         shared_input: Arc<AtomicBool>,
     ) -> Self {
+        let mut applied = 0usize;
         for coding in codings.iter().rev() {
+            if coding != "identity" {
+                if applied >= MAX_CONTENT_ENCODING_LAYERS {
+                    set_body_error(
+                        &shared_error,
+                        NetError::Decode("too many content-encoding layers".into()),
+                    );
+                    break;
+                }
+                applied += 1;
+            }
             match coding.as_str() {
                 "identity" => {}
                 "gzip" | "x-gzip" => {

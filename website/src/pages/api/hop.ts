@@ -77,7 +77,7 @@ async function handleHop(request: Request, requestUrl: URL): Promise<Response> {
   if (target.origin === requestUrl.origin && target.pathname.startsWith("/api/demo/")) {
     const cookie = findHeader(hop.headers, "cookie")
     const name = target.pathname.slice("/api/demo/".length)
-    const fixture = handleDemoFixture(name, cookie)
+    const fixture = handleDemoFixture(name, cookie, target.searchParams)
     return serializeResponse(fixture, MAX_WORKER_BODY_BYTES, false)
   }
 

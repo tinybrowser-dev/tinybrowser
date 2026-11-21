@@ -13,12 +13,14 @@ mod transport;
 
 pub use client::{Agent, AgentOptions, Body, Clock, ClockSource, Request, Response};
 pub use cookies::{
-    CookieRecord, CookieSameSite, InitiatorKind, SameSiteCookiePolicy, ScriptCookieWrite,
-    is_public_suffix, origins_same_site, site, site_for_origin,
+    CookieJar, CookieOp, CookieRecord, CookieSameSite, InitiatorKind, RetrievalKind,
+    SameSiteCookiePolicy, ScriptCookieWrite, is_public_suffix, origins_same_site, site,
+    site_for_origin,
 };
 pub use error::{NetError, TimeoutKind, TransportError};
 pub use identity::{
-    Brand, ClientHints, DEFAULT_USER_AGENT, Identity, InvalidIdentity, UserAgent, ValidIdentity,
+    Brand, CHROME_USER_AGENT, ClientHints, DEFAULT_USER_AGENT, Identity, InvalidIdentity,
+    UserAgent, ValidIdentity,
 };
 pub use protocol::{
     HeaderError, HeaderMap, InvalidMethod, Method, combined_header, combined_header_in,

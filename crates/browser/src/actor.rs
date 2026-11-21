@@ -7,7 +7,7 @@ use std::time::Duration;
 use crate::wire::{Command as RendererCommand, Reply};
 use renderer::{
     BrowserEvent, DialFailure, FrameId, MAX_RESPONSE_BODY_BYTES, Mount, RemoteValue, ResourceLimit,
-    ResponseHead, ScriptSource, TabError,
+    ResponseHead, TabError,
 };
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
@@ -29,7 +29,7 @@ const MAX_WAITERS: usize = 256;
 const MAX_SUBSCRIBERS: usize = 256;
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
-fn log_url(url: &Url) -> String {
+pub(crate) fn log_url(url: &Url) -> String {
     let mut logged = url.clone();
     if logged.set_username("").is_ok() {
         let _ = logged.set_password(None);
@@ -102,6 +102,10 @@ enum Command {
         frame: FrameId,
         width: u32,
         height: u32,
+        reply: ReplySender<()>,
+    },
+    SetIdentity {
+        identity: Option<Box<net::ValidIdentity>>,
         reply: ReplySender<()>,
     },
     ViewportSize {
@@ -308,6 +312,15 @@ impl TabHandle {
             frame: FrameId::MAIN,
             width,
             height,
+            reply,
+        })
+        .await
+    }
+
+    // https://chromedevtools.github.io/devtools-protocol/tot/Emulation/#method-setUserAgentOverride
+    pub async fn set_identity(&self, identity: Option<net::ValidIdentity>) -> Result<(), TabError> {
+        self.ask(|reply| Command::SetIdentity {
+            identity: identity.map(Box::new),
             reply,
         })
         .await
@@ -814,20 +827,17 @@ impl Tab {
         result
     }
 
-    async fn renderer_document_state(&mut self) -> Option<(String, String)> {
+    async fn renderer_document_state(&mut self) -> Option<renderer::DocumentLoadState> {
         self.renderer.as_ref()?;
         let reply = self
-            .renderer_request(RendererCommand::ExecuteScript {
+            .renderer_request(RendererCommand::DocumentState {
                 frame: FrameId::MAIN,
-                source: ScriptSource::Page("document.readyState + '\\n' + document.URL".to_owned()),
-                timeout_ms: Some(1_000),
             })
             .await;
-        let Ok(Reply::Value(Ok(RemoteValue::String(state)))) = reply else {
+        let Ok(Reply::DocumentState(Ok(state))) = reply else {
             return None;
         };
-        let (ready, url) = state.split_once('\n')?;
-        Some((ready.to_owned(), url.to_owned()))
+        Some(state)
     }
 
     async fn renderer_request_bytes(
@@ -964,6 +974,8 @@ impl Tab {
     fn advance_document_url(&mut self, url: Url) {
         if url.scheme() != "about" {
             self.document_origin = url.origin();
+            self.tabs
+                .set_main_origin(self.id, self.document_origin.clone());
         }
         self.document_url = url;
     }
@@ -1128,6 +1140,13 @@ impl Tab {
                     self.sync_histories().await;
                     return;
                 }
+                if self
+                    .site
+                    .as_ref()
+                    .is_some_and(|site| !site.allows_url(&url))
+                {
+                    return;
+                }
                 // https://html.spec.whatwg.org/multipage/browsing-the-web.html#resetBCName
                 self.history.sync_current_name(outgoing_name.as_ref());
                 let name = self.tabs.name(self.id);
@@ -1151,10 +1170,12 @@ impl Tab {
                     .nav
                     .as_ref()
                     .map_or_else(|| self.document_url.clone(), |nav| nav.url.clone());
-                let Some((ready, current)) = self.renderer_document_state().await else {
+                let Some(state) = self.renderer_document_state().await else {
                     return;
                 };
-                if ready != "complete" || current != expected.as_str() {
+                if state.ready_state != renderer::ReadyState::Complete
+                    || state.url != expected.as_str()
+                {
                     return;
                 }
                 self.document_loaded = true;
@@ -1584,12 +1605,12 @@ impl Command {
             Command::Shutdown { .. } => false,
             Command::LoadHtml { reply, .. }
             | Command::Goto { reply, .. }
-            | Command::TraverseHistory { reply, .. } => reply.is_closed(),
+            | Command::TraverseHistory { reply, .. }
+            | Command::RemoveInitScript { reply, .. }
+            | Command::SetViewport { reply, .. }
+            | Command::SetIdentity { reply, .. } => reply.is_closed(),
             Command::Execute { reply, .. } => reply.is_closed(),
             Command::AddInitScript { reply, .. } => reply.is_closed(),
-            Command::RemoveInitScript { reply, .. } | Command::SetViewport { reply, .. } => {
-                reply.is_closed()
-            }
             Command::ViewportSize { reply } => reply.is_closed(),
             Command::ContentSize { reply, .. } => reply.is_closed(),
             Command::Dom { reply, .. } => reply.is_closed(),
@@ -1615,41 +1636,31 @@ impl Command {
                 source,
                 timeout,
                 reply,
-            } => {
-                let result = execute_script(tab, frame, source, timeout).await;
-                let _result = reply.send(result);
-            }
+            } => answer(reply, execute_script(tab, frame, source, timeout).await),
             Command::AddInitScript {
                 source,
                 run_immediately,
                 reply,
-            } => {
-                let result = add_init_script(tab, source, run_immediately).await;
-                let _result = reply.send(result);
-            }
+            } => answer(reply, add_init_script(tab, source, run_immediately).await),
             Command::RemoveInitScript { id: script, reply } => {
-                let result = remove_init_script(tab, script).await;
-                let _result = reply.send(result);
+                answer(reply, remove_init_script(tab, script).await);
             }
             Command::SetViewport {
                 frame,
                 width,
                 height,
                 reply,
-            } => {
-                let result = set_viewport(tab, frame, width, height).await;
-                let _result = reply.send(result);
+            } => answer(reply, set_viewport(tab, frame, width, height).await),
+            Command::SetIdentity { identity, reply } => {
+                answer(reply, set_identity(tab, identity.map(|value| *value)).await);
             }
-            Command::ViewportSize { reply } => {
-                let _result = reply.send(Ok(tab.viewport));
-            }
-            Command::ContentSize { frame, reply } => {
-                let result = tab
-                    .renderer_request(RendererCommand::ContentSize { frame })
+            Command::ViewportSize { reply } => answer(reply, Ok(tab.viewport)),
+            Command::ContentSize { frame, reply } => answer(
+                reply,
+                tab.renderer_request(RendererCommand::ContentSize { frame })
                     .await
-                    .and_then(reply_content_size);
-                let _result = reply.send(result);
-            }
+                    .and_then(reply_content_size),
+            ),
             Command::Dom {
                 frame,
                 request,
@@ -1659,10 +1670,7 @@ impl Command {
                 frame,
                 request,
                 reply,
-            } => {
-                let result = screenshot_frame(tab, frame, request).await;
-                let _result = reply.send(result);
-            }
+            } => answer(reply, screenshot_frame(tab, frame, request).await),
             Command::RunUntilLoadTimeout { timeout, reply } => {
                 if retain_load_waiter(waiters, id, timeout, reply) {
                     return TabOutcome::Retained;
@@ -1771,6 +1779,19 @@ async fn set_viewport(
         tab.viewport = (width, height);
     }
     result
+}
+
+async fn set_identity(tab: &mut Tab, identity: Option<net::ValidIdentity>) -> Result<(), TabError> {
+    tab.network.set_identity(tab.id, identity);
+    let effective = tab.network.identity(tab.id);
+    if tab.renderer.is_some() {
+        tab.renderer_request(RendererCommand::SetIdentity {
+            identity: Box::new(effective),
+        })
+        .await
+        .and_then(reply_unit)?;
+    }
+    Ok(())
 }
 
 async fn screenshot_frame(

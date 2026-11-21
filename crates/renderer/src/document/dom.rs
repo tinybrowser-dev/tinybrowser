@@ -13,7 +13,7 @@ use crate::dom::serialization::{
 use crate::dom::tree::{NodeId, qualified_name};
 use crate::dom_string::DomString;
 use crate::js::World;
-use crate::{DomBoxModel, DomNode, DomReply, DomRequest, Parsed, TabError};
+use crate::{DomBoxModel, DomNode, DomReply, DomRequest, DomStyleSheet, Parsed, TabError};
 
 // https://html.spec.whatwg.org/multipage/parsing.html#serialising-html-fragments
 pub(crate) fn element_outer_html(world: &World, node: NodeId) -> Option<DomString> {
@@ -72,6 +72,10 @@ impl Document {
             DomRequest::GetNodeForLocation { x, y } => Ok(self.dom_node_for_location(*x, *y)),
             DomRequest::GetBoxModel { node } => Ok(self.dom_box_model(*node)),
             DomRequest::GetContentQuads { node } => Ok(self.dom_content_quads(*node)),
+            DomRequest::GetComputedStyle { node } => Ok(self.dom_computed_style(*node)),
+            DomRequest::GetStyleSheets => Ok(self.dom_style_sheets()),
+            DomRequest::GetStorageKey => Ok(self.dom_storage_key()),
+            DomRequest::GetFullAxTree => self.dom_full_ax_tree(),
         }
     }
 
@@ -379,6 +383,113 @@ impl Document {
         DomReply::ContentQuads {
             quads: vec![[left, top, right, top, right, bottom, left, bottom]],
         }
+    }
+
+    // https://chromedevtools.github.io/devtools-protocol/tot/CSS/#method-getComputedStyleForNode
+    fn dom_computed_style(&self, remote: u64) -> DomReply {
+        let Some(node) = self.node_by_remote(remote) else {
+            return DomReply::ComputedStyle {
+                properties: Vec::new(),
+            };
+        };
+        let world = self.world.borrow();
+        let Some(mut parsed) = world.document_mut(node) else {
+            return DomReply::ComputedStyle {
+                properties: Vec::new(),
+            };
+        };
+        parsed.document.base.resolve(crate::animation_seconds());
+        let names = parsed
+            .document
+            .base
+            .computed_style_property_names(node.node, None);
+        let properties = names
+            .into_iter()
+            .map(|name| {
+                let value = parsed.document.base.resolved_style_value(node.node, &name);
+                (name, value)
+            })
+            .collect();
+        DomReply::ComputedStyle { properties }
+    }
+
+    // https://chromedevtools.github.io/devtools-protocol/tot/CSS/#event-styleSheetAdded
+    fn dom_style_sheets(&self) -> DomReply {
+        let world = self.world.borrow();
+        let Some(parsed) = world.main_document() else {
+            return DomReply::StyleSheets { sheets: Vec::new() };
+        };
+        let base = &parsed.document.base;
+        let base_url = world.main_base_url();
+        let sheets = base
+            .stylesheet_owner_nodes()
+            .filter_map(|owner| {
+                let sheet_id = base.node_cssom_sheet_id(owner)?;
+                let href = crate::dom::tree::attr(base, owner, "href").map(|raw| {
+                    base_url
+                        .join(raw)
+                        .map_or_else(|_| raw.to_owned(), |url| url.to_string())
+                });
+                let title = crate::dom::tree::attr(base, owner, "title")
+                    .unwrap_or_default()
+                    .to_owned();
+                let disabled = base.cssom_sheet_disabled(sheet_id).unwrap_or(false);
+                let length = base.cssom_rule_count(sheet_id, &[]).unwrap_or(0);
+                Some(DomStyleSheet {
+                    style_sheet_id: sheet_id.to_string(),
+                    is_inline: href.is_none(),
+                    source_url: href.unwrap_or_default(),
+                    title,
+                    disabled,
+                    length,
+                })
+            })
+            .collect();
+        DomReply::StyleSheets { sheets }
+    }
+
+    // https://chromedevtools.github.io/devtools-protocol/tot/Storage/#method-getStorageKey
+    fn dom_storage_key(&self) -> DomReply {
+        let key = self.world.borrow().origin.ascii_serialization();
+        DomReply::StorageKey { key }
+    }
+
+    // https://chromedevtools.github.io/devtools-protocol/tot/Accessibility/#method-getFullAXTree
+    fn dom_full_ax_tree(&self) -> Result<DomReply, TabError> {
+        let Some(root) = self.world.borrow().main_document_root() else {
+            return Err(TabError::Dom {
+                message: "no document".to_owned(),
+            });
+        };
+        let mut nodes = Vec::new();
+        {
+            let world = self.world.borrow();
+            if let Some(mut parsed) = world.document_mut(root) {
+                parsed.document.base.resolve(crate::animation_seconds());
+            }
+            world
+                .with_document(root, |parsed| collect_nodes(parsed, root, &mut nodes))
+                .ok_or_else(|| TabError::Dom {
+                    message: "no document".to_owned(),
+                })?;
+        }
+        let mut ids = HashMap::with_capacity(nodes.len());
+        {
+            let mut world = self.world.borrow_mut();
+            for node in nodes {
+                ids.insert(node, world.remote_id(node));
+            }
+        }
+        let world = self.world.borrow();
+        let focused = world.active_element(root.document);
+        let ax_nodes = world
+            .with_document(root, |parsed| {
+                crate::dom::accessibility::build_ax_tree(&parsed.document.base, root, &ids, focused)
+            })
+            .ok_or_else(|| TabError::Dom {
+                message: "no document".to_owned(),
+            })?;
+        Ok(DomReply::AxTree { nodes: ax_nodes })
     }
 }
 

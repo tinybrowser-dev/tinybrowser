@@ -18,28 +18,6 @@ impl NetworkHost for NullServices {
         completion(Err(DialFailure::Connect));
         Box::new(|| {})
     }
-
-    fn cookies_for(&self, _url: &Url, _partition_key: Option<&str>) -> String {
-        String::new()
-    }
-
-    fn set_cookie(&self, _value: &str, _url: &Url, _partition_key: Option<&str>) {}
-
-    fn cookie_store_records(
-        &self,
-        _url: &Url,
-        _partition_key: Option<&str>,
-    ) -> Vec<crate::protocol::ScriptCookie> {
-        Vec::new()
-    }
-
-    fn cookie_store_store(
-        &self,
-        _write: &net::ScriptCookieWrite,
-        _url: &Url,
-        _partition_key: Option<&str>,
-    ) {
-    }
 }
 
 impl StorageHost for NullServices {
@@ -130,6 +108,37 @@ impl StorageHost for NullServices {
             new_value: None,
         })
     }
+
+    fn remote_session_get(
+        &self,
+        _window: crate::protocol::WindowId,
+        _origin: &crate::protocol::StorageKey,
+        _key: &str,
+    ) -> Option<String> {
+        None
+    }
+
+    fn cookies_for(&self, _url: &Url, _partition_key: Option<&str>) -> String {
+        String::new()
+    }
+
+    fn set_cookie(&self, _value: &str, _url: &Url, _partition_key: Option<&str>) {}
+
+    fn cookie_store_records(
+        &self,
+        _url: &Url,
+        _partition_key: Option<&str>,
+    ) -> Vec<crate::protocol::ScriptCookie> {
+        Vec::new()
+    }
+
+    fn cookie_store_store(
+        &self,
+        _write: &net::ScriptCookieWrite,
+        _url: &Url,
+        _partition_key: Option<&str>,
+    ) {
+    }
 }
 
 impl BrowsingContextHost for NullServices {
@@ -166,15 +175,6 @@ impl BrowsingContextHost for NullServices {
         _window: crate::protocol::WindowId,
         _message: crate::protocol::PostedMessage,
     ) {
-    }
-
-    fn remote_session_get(
-        &self,
-        _window: crate::protocol::WindowId,
-        _origin: &crate::protocol::StorageKey,
-        _key: &str,
-    ) -> Option<String> {
-        None
     }
 }
 

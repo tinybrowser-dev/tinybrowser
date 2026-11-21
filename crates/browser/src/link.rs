@@ -545,13 +545,18 @@ async fn route_service_call(
         return Err(RendererViolation);
     };
     match call {
-        ServiceCall::Network(NetworkCall::Dial(request)) => {
+        ServiceCall::Network(NetworkCall::Dial(mut request)) => {
             // https://fetch.spec.whatwg.org/#concept-request-origin
-            let initiator = match assignment.site.authorize_origin(&request.initiator) {
+            let initiator = match context.tabs.authorize_origin(
+                assignment.tab,
+                &assignment.site,
+                &request.initiator,
+            ) {
                 Some(initiator) => initiator,
                 None if request.initiator.is_opaque() => url::Origin::new_opaque(),
                 None => return Err(RendererViolation),
             };
+            request.partition_key = assignment.site.as_partition_key().map(str::to_owned);
             let worker_network = assignment.network.clone();
             let responder = context.responder.clone();
             let worker_kill = context.kill.clone();
@@ -608,9 +613,22 @@ async fn route_service_call(
                     worker_network.cancel_stream(assignment_id, *stream);
                 }
                 // https://w3c.github.io/webappsec-csp/#sandbox
-                if let (Ok(head), Some(frame)) = (&outcome, request.frame) {
-                    let csp = renderer::SandboxFlags::from_csp_headers(&head.headers);
-                    tabs.commit_frame_sandbox(tab_id, frame, csp);
+                // https://html.spec.whatwg.org/multipage/browsing-the-web.html#check-a-navigation-response's-adherence-to-x-frame-options
+                if request.policy == renderer::RequestPolicy::FrameLoad
+                    && let Some(frame) = request.frame
+                    && frame != FrameId::MAIN
+                    && let Ok(head) = &outcome
+                {
+                    let ancestors = tabs.ancestor_origins(tab_id, frame);
+                    if frame_blocked_by_headers(&head.headers, &head.final_url, &ancestors) {
+                        if let renderer::ResponseBody::Streamed(stream) = &head.body {
+                            worker_network.cancel_stream(assignment_id, *stream);
+                        }
+                        outcome = Err(renderer::DialFailure::Cancelled);
+                    } else {
+                        let csp = renderer::SandboxFlags::from_csp_headers(&head.headers);
+                        tabs.commit_child_frame(tab_id, frame, &head.final_url, csp);
+                    }
                 }
                 dials
                     .lock()
@@ -647,56 +665,15 @@ async fn route_service_call(
             }
             send_reply(&context.responder, id, ServiceReply::Unit).await?;
         }
-        // https://chromium.googlesource.com/chromium/src/+/main/docs/process_model_and_site_isolation.md#process-locks
-        ServiceCall::Network(NetworkCall::CookieGet { url, partition_key }) => {
-            let cookies = assignment.site.authorize_url(&url).map_or_default(|url| {
-                assignment
-                    .network
-                    .cookies_for(&url, partition_key.as_deref())
-            });
-            send_reply(&context.responder, id, ServiceReply::Cookie(cookies)).await?;
-        }
-        ServiceCall::Network(NetworkCall::CookieSet {
-            value,
-            url,
-            partition_key,
-        }) => {
-            if let Some(url) = assignment.site.authorize_url(&url) {
-                assignment
-                    .network
-                    .set_cookie(&value, &url, partition_key.as_deref());
-            }
-            send_reply(&context.responder, id, ServiceReply::Unit).await?;
-        }
-        ServiceCall::Network(NetworkCall::CookieStoreGet { url, partition_key }) => {
-            let records = assignment.site.authorize_url(&url).map_or_default(|url| {
-                assignment
-                    .network
-                    .cookie_store_records(&url, partition_key.as_deref())
-            });
-            send_reply(&context.responder, id, ServiceReply::CookieStore(records)).await?;
-        }
-        ServiceCall::Network(NetworkCall::CookieStoreSet {
-            write,
-            url,
-            partition_key,
-        }) => {
-            if let Some(url) = assignment.site.authorize_url(&url) {
-                assignment
-                    .network
-                    .cookie_store_store(&write, &url, partition_key.as_deref());
-            }
-            send_reply(&context.responder, id, ServiceReply::Unit).await?;
-        }
         ServiceCall::Messaging(MessagingCall::BroadcastPost {
             origin,
             name,
             payload,
             channel,
         }) => {
-            let origin = assignment
-                .site
-                .storage_key(&origin)
+            let origin = context
+                .tabs
+                .storage_key(assignment.tab, &assignment.site, &origin)
                 .ok_or(RendererViolation)?;
             context
                 .partition
@@ -755,7 +732,130 @@ fn navigable_popup_url(url: Url) -> Option<Url> {
     matches!(url.scheme(), "about" | "http" | "https").then_some(url)
 }
 
+// https://html.spec.whatwg.org/multipage/browsing-the-web.html#check-a-navigation-response's-adherence-to-x-frame-options
+// https://w3c.github.io/webappsec-csp/#directive-frame-ancestors
+fn frame_blocked_by_headers(
+    headers: &[(String, String)],
+    url: &Url,
+    ancestors: &[url::Origin],
+) -> bool {
+    let target_origin = url.origin();
+    let mut has_frame_ancestors = false;
+    for (name, value) in headers {
+        if !name.eq_ignore_ascii_case("content-security-policy") {
+            continue;
+        }
+        for policy in value.split(',') {
+            for directive in policy.split(';') {
+                let mut tokens = directive.split_ascii_whitespace();
+                let Some(directive_name) = tokens.next() else {
+                    continue;
+                };
+                if !directive_name.eq_ignore_ascii_case("frame-ancestors") {
+                    continue;
+                }
+                let sources: Vec<&str> = tokens.collect();
+                if sources.is_empty() {
+                    continue;
+                }
+                has_frame_ancestors = true;
+                if ancestors.iter().any(|ancestor| {
+                    !sources
+                        .iter()
+                        .any(|source| ancestor_matches_source(ancestor, &target_origin, source))
+                }) {
+                    return true;
+                }
+            }
+        }
+    }
+    if has_frame_ancestors {
+        return false;
+    }
+    for (name, value) in headers {
+        if !name.eq_ignore_ascii_case("x-frame-options") {
+            continue;
+        }
+        let trimmed = value.trim();
+        if trimmed.eq_ignore_ascii_case("deny") {
+            return true;
+        }
+        if trimmed.eq_ignore_ascii_case("sameorigin")
+            && ancestors.iter().any(|ancestor| ancestor != &target_origin)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn ancestor_matches_source(
+    ancestor: &url::Origin,
+    target_origin: &url::Origin,
+    source: &str,
+) -> bool {
+    if source.eq_ignore_ascii_case("'none'") {
+        return false;
+    }
+    if source.eq_ignore_ascii_case("'self'") {
+        return ancestor == target_origin;
+    }
+    let url::Origin::Tuple(scheme, host, port) = ancestor else {
+        return false;
+    };
+    if source == "*" {
+        return matches!(scheme.as_str(), "http" | "https");
+    }
+    if let Some(required_scheme) = source.strip_suffix(':') {
+        return scheme.eq_ignore_ascii_case(required_scheme);
+    }
+    let (required_scheme, rest) = match source.split_once("://") {
+        Some((s, r)) => (Some(s), r),
+        None => (None, source),
+    };
+    if let Some(required) = required_scheme {
+        if !scheme.eq_ignore_ascii_case(required) {
+            return false;
+        }
+    } else if let url::Origin::Tuple(target_scheme, _, _) = target_origin {
+        let scheme_ok = scheme == target_scheme || (target_scheme == "http" && scheme == "https");
+        if !scheme_ok {
+            return false;
+        }
+    } else {
+        return false;
+    }
+    let authority = rest.split('/').next().unwrap_or(rest);
+    let (host_pattern, required_port) = match authority.rsplit_once(':') {
+        Some((h, p)) if !h.contains(']') => (h, Some(p)),
+        _ => (authority, None),
+    };
+    if let Some(req_port) = required_port {
+        if req_port != "*" && req_port.parse::<u16>().ok() != Some(*port) {
+            return false;
+        }
+    } else {
+        let default_port = match scheme.as_str() {
+            "http" => Some(80u16),
+            "https" => Some(443u16),
+            _ => None,
+        };
+        if default_port != Some(*port) {
+            return false;
+        }
+    }
+    let host_str = host.to_string();
+    if let Some(suffix) = host_pattern.strip_prefix("*.") {
+        let suffix = suffix.to_ascii_lowercase();
+        let host_lower = host_str.to_ascii_lowercase();
+        host_lower.ends_with(&format!(".{suffix}"))
+    } else {
+        host_str.eq_ignore_ascii_case(host_pattern)
+    }
+}
+
 fn window_initiator(
+    tabs: &TabRegistry,
     assignment: &Assignment,
     source: renderer::NavigationSource,
     opener: renderer::OpenerPolicy,
@@ -768,14 +868,13 @@ fn window_initiator(
         secure_context,
     } = source;
     // https://w3c.github.io/webappsec-referrer-policy/#determine-requests-referrer
-    let origin = match assignment.site.authorize_origin(&claim) {
+    let origin = match tabs.authorize_origin(assignment.tab, &assignment.site, &claim) {
         Some(origin) => origin,
         None if claim.is_opaque() => url::Origin::new_opaque(),
         None => return Err(RendererViolation),
     };
-    let referrer = assignment
-        .site
-        .allows_url(&referrer)
+    let referrer = tabs
+        .allows_url(assignment.tab, &assignment.site, &referrer)
         .then_some(referrer)
         .filter(|referrer| referrer.origin() == origin);
     // https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps
@@ -842,7 +941,7 @@ impl WindowRouter<'_> {
             None => None,
         };
         let calling_frame = source.frame;
-        let initiator = window_initiator(assignment, source, opener)?;
+        let initiator = window_initiator(&context.tabs, assignment, source, opener)?;
         // https://html.spec.whatwg.org/multipage/browsers.html#sandbox-propagates-to-auxiliary-browsing-contexts-flag
         let popup_sandbox = active.auxiliary_flags();
         let tab = context
@@ -890,7 +989,7 @@ impl WindowRouter<'_> {
                     "window.open navigation refused: a sandboxed document cannot navigate another browsing context"
                 );
             } else {
-                let initiator = window_initiator(assignment, source, opener)?;
+                let initiator = window_initiator(&context.tabs, assignment, source, opener)?;
                 if let Ok(handle) = context.browser.tab(target).await {
                     tokio::spawn(async move {
                         let _result = handle.goto_from(url.as_str(), initiator).await;
@@ -973,7 +1072,11 @@ async fn route_window_call(
             send_reply(&context.responder, id, ServiceReply::Window(opener)).await?;
         }
         BrowsingContextCall::WindowMessage { window, message } => {
-            if !assignment.site.allows_message_origin(&message.origin) {
+            if !context.tabs.allows_message_origin(
+                assignment.tab,
+                &assignment.site,
+                &message.origin,
+            ) {
                 return Err(RendererViolation);
             }
             let target = TabId::new(window.get());
@@ -983,22 +1086,6 @@ async fn route_window_call(
                     .deliver(target, crate::actor::RemoteWindowMessage { message });
             }
             send_reply(&context.responder, id, ServiceReply::Unit).await?;
-        }
-        BrowsingContextCall::RemoteSessionGet {
-            window,
-            origin,
-            key,
-        } => {
-            let origin = assignment
-                .site
-                .storage_key(&origin)
-                .ok_or(RendererViolation)?;
-            let target = TabId::new(window.get());
-            let related = message_related(context, assignment, target);
-            let value = related
-                .then(|| context.sessions.get(target, &origin, &key))
-                .flatten();
-            send_reply(&context.responder, id, ServiceReply::StorageValue(value)).await?;
         }
     }
     Ok(())
@@ -1042,16 +1129,20 @@ struct StorageRouter<'a> {
 }
 
 impl StorageRouter<'_> {
+    async fn reply(&self, reply: ServiceReply) -> Result<(), RendererViolation> {
+        send_reply(&self.context.responder, self.request, reply).await
+    }
+
     async fn route(&self, call: StorageCall) -> Result<(), RendererViolation> {
         match call {
-            StorageCall::Get { kind, origin, key } => {
-                let origin = self.key(&origin)?;
-                self.get(kind, &origin, &key).await
-            }
-            StorageCall::Keys { kind, origin } => {
-                let origin = self.key(&origin)?;
-                self.keys(kind, &origin).await
-            }
+            StorageCall::Get { kind, origin, key } => match self.key(&origin) {
+                Some(origin) => self.get(kind, &origin, &key).await,
+                None => self.reply(ServiceReply::StorageValue(None)).await,
+            },
+            StorageCall::Keys { kind, origin } => match self.key(&origin) {
+                Some(origin) => self.keys(kind, &origin).await,
+                None => self.reply(ServiceReply::StorageKeys(Vec::new())).await,
+            },
             StorageCall::Set {
                 kind,
                 origin,
@@ -1059,37 +1150,154 @@ impl StorageRouter<'_> {
                 key,
                 value,
                 source,
-            } => {
-                let origin = self.key(&origin)?;
-                self.set(kind, &origin, &url, &key, &value, source).await
-            }
+            } => match self.key(&origin) {
+                Some(origin) => self.set(kind, &origin, &url, &key, &value, source).await,
+                None => {
+                    self.reply(ServiceReply::StorageChanged(Err(
+                        renderer::StorageError::QuotaExceeded,
+                    )))
+                    .await
+                }
+            },
             StorageCall::Remove {
                 kind,
                 origin,
                 url,
                 key,
                 source,
-            } => {
-                let origin = self.key(&origin)?;
-                self.remove(kind, &origin, &url, &key, source).await
-            }
+            } => match self.key(&origin) {
+                Some(origin) => self.remove(kind, &origin, &url, &key, source).await,
+                None => self.reply(ServiceReply::StorageChanged(Ok(None))).await,
+            },
             StorageCall::Clear {
                 kind,
                 origin,
                 url,
                 source,
-            } => {
-                let origin = self.key(&origin)?;
-                self.clear(kind, &origin, &url, source).await
-            }
+            } => match self.key(&origin) {
+                Some(origin) => self.clear(kind, &origin, &url, source).await,
+                None => self.reply(ServiceReply::StorageChanged(Ok(None))).await,
+            },
+            StorageCall::RemoteSessionGet {
+                window,
+                origin,
+                key,
+            } => match self.key(&origin) {
+                Some(origin) => self.remote_session_get(window, &origin, &key).await,
+                None => self.reply(ServiceReply::StorageValue(None)).await,
+            },
+            StorageCall::CookieGet {
+                url,
+                partition_key: _,
+            } => self.cookie_get(&url).await,
+            StorageCall::CookieSet {
+                value,
+                url,
+                partition_key: _,
+            } => self.cookie_set(&value, &url).await,
+            StorageCall::CookieStoreGet {
+                url,
+                partition_key: _,
+            } => self.cookie_store_get(&url).await,
+            StorageCall::CookieStoreSet {
+                write,
+                url,
+                partition_key: _,
+            } => self.cookie_store_set(&write, &url).await,
         }
     }
 
-    fn key(&self, origin: &renderer::SerializedOrigin) -> Result<StorageKey, RendererViolation> {
+    async fn remote_session_get(
+        &self,
+        window: renderer::WindowId,
+        origin: &StorageKey,
+        key: &str,
+    ) -> Result<(), RendererViolation> {
+        let target = TabId::new(window.get());
+        let value = message_related(self.context, self.authority, target)
+            .then(|| self.context.sessions.get(target, origin, key))
+            .flatten();
+        send_reply(
+            &self.context.responder,
+            self.request,
+            ServiceReply::StorageValue(value),
+        )
+        .await
+    }
+
+    // https://chromium.googlesource.com/chromium/src/+/main/docs/process_model_and_site_isolation.md#process-locks
+    // https://privacycg.github.io/CHIPS/
+    async fn cookie_get(&self, url: &str) -> Result<(), RendererViolation> {
+        let partition_key = self.authority.site.as_partition_key();
+        let cookies = self
+            .authority
+            .site
+            .authorize_url(url)
+            .map_or_default(|url| {
+                self.context
+                    .partition
+                    .cookies
+                    .cookies_for(&url, partition_key)
+            });
+        send_reply(
+            &self.context.responder,
+            self.request,
+            ServiceReply::Cookie(cookies),
+        )
+        .await
+    }
+
+    async fn cookie_set(&self, value: &str, url: &str) -> Result<(), RendererViolation> {
+        let partition_key = self.authority.site.as_partition_key();
+        if let Some(url) = self.authority.site.authorize_url(url) {
+            self.context
+                .partition
+                .cookies
+                .set_cookie(value, &url, partition_key);
+        }
+        send_reply(&self.context.responder, self.request, ServiceReply::Unit).await
+    }
+
+    async fn cookie_store_get(&self, url: &str) -> Result<(), RendererViolation> {
+        let partition_key = self.authority.site.as_partition_key();
+        let records = self
+            .authority
+            .site
+            .authorize_url(url)
+            .map_or_default(|url| {
+                self.context
+                    .partition
+                    .cookies
+                    .cookie_store_records(&url, partition_key)
+            });
+        send_reply(
+            &self.context.responder,
+            self.request,
+            ServiceReply::CookieStore(records),
+        )
+        .await
+    }
+
+    async fn cookie_store_set(
+        &self,
+        write: &net::ScriptCookieWrite,
+        url: &str,
+    ) -> Result<(), RendererViolation> {
+        let partition_key = self.authority.site.as_partition_key();
+        if let Some(url) = self.authority.site.authorize_url(url) {
+            self.context
+                .partition
+                .cookies
+                .cookie_store_store(write, &url, partition_key);
+        }
+        send_reply(&self.context.responder, self.request, ServiceReply::Unit).await
+    }
+
+    fn key(&self, origin: &renderer::SerializedOrigin) -> Option<StorageKey> {
         self.authority
             .site
-            .storage_key(origin)
-            .ok_or(RendererViolation)
+            .authorize_origin(origin)
+            .and_then(|origin| StorageKey::from_origin(&origin))
     }
 
     async fn get(
@@ -1098,7 +1306,6 @@ impl StorageRouter<'_> {
         origin: &StorageKey,
         key: &str,
     ) -> Result<(), RendererViolation> {
-        self.authorize(None)?;
         let value = match kind {
             StorageKind::Local => self.context.partition.local_storage.get(origin, key),
             StorageKind::Session => self.context.sessions.get(self.authority.tab, origin, key),
@@ -1113,7 +1320,6 @@ impl StorageRouter<'_> {
     }
 
     async fn keys(&self, kind: StorageKind, origin: &StorageKey) -> Result<(), RendererViolation> {
-        self.authorize(None)?;
         let keys = match kind {
             StorageKind::Local => self.context.partition.local_storage.keys(origin),
             StorageKind::Session => self.context.sessions.keys(self.authority.tab, origin),
@@ -1136,7 +1342,14 @@ impl StorageRouter<'_> {
         value: &str,
         source: FrameId,
     ) -> Result<(), RendererViolation> {
-        self.authorize(Some(url))?;
+        if !self.authorize_url(url) {
+            return send_reply(
+                &self.context.responder,
+                self.request,
+                ServiceReply::StorageChanged(Err(renderer::StorageError::QuotaExceeded)),
+            )
+            .await;
+        }
         let change = match kind {
             StorageKind::Local => self.context.partition.local_storage.set(origin, key, value),
             StorageKind::Session => {
@@ -1169,7 +1382,14 @@ impl StorageRouter<'_> {
         key: &str,
         source: FrameId,
     ) -> Result<(), RendererViolation> {
-        self.authorize(Some(url))?;
+        if !self.authorize_url(url) {
+            return send_reply(
+                &self.context.responder,
+                self.request,
+                ServiceReply::StorageChanged(Ok(None)),
+            )
+            .await;
+        }
         let change = match kind {
             StorageKind::Local => self.context.partition.local_storage.remove(origin, key),
             StorageKind::Session => self
@@ -1194,7 +1414,14 @@ impl StorageRouter<'_> {
         url: &str,
         source: FrameId,
     ) -> Result<(), RendererViolation> {
-        self.authorize(Some(url))?;
+        if !self.authorize_url(url) {
+            return send_reply(
+                &self.context.responder,
+                self.request,
+                ServiceReply::StorageChanged(Ok(None)),
+            )
+            .await;
+        }
         let change = match kind {
             StorageKind::Local => self.context.partition.local_storage.clear(origin),
             StorageKind::Session => self.context.sessions.clear(self.authority.tab, origin),
@@ -1209,11 +1436,8 @@ impl StorageRouter<'_> {
         .await
     }
 
-    fn authorize(&self, url: Option<&str>) -> Result<(), RendererViolation> {
-        if url.is_some_and(|url| self.authority.site.authorize_url(url).is_none()) {
-            return Err(RendererViolation);
-        }
-        Ok(())
+    fn authorize_url(&self, url: &str) -> bool {
+        self.authority.site.authorize_url(url).is_some()
     }
 
     fn publish(
@@ -1310,14 +1534,45 @@ fn fail(alive: &Arc<AtomicBool>, router: &RendererRouter, kill: &watch::Sender<b
     let _ = kill.send(true);
 }
 
+const MAX_STDERR_LINE_BYTES: usize = 16 * 1024;
+
+async fn read_bounded_line<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
+    out: &mut Vec<u8>,
+) -> io::Result<Option<bool>> {
+    out.clear();
+    let mut saw_any = false;
+    let mut truncated = false;
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            return Ok(saw_any.then_some(truncated));
+        }
+        saw_any = true;
+        let newline = available.iter().position(|&b| b == b'\n');
+        let take = newline.map_or(available.len(), |pos| pos + 1);
+        let remaining = MAX_STDERR_LINE_BYTES.saturating_sub(out.len());
+        let copy = take.min(remaining);
+        out.extend_from_slice(&available[..copy]);
+        if take > copy {
+            truncated = true;
+        }
+        reader.consume(take);
+        if newline.is_some() {
+            return Ok(Some(truncated));
+        }
+    }
+}
+
 async fn forward_stderr(stderr: tokio::process::ChildStderr) {
     let mut reader = tokio::io::BufReader::new(stderr);
     let mut bytes = Vec::new();
-    loop {
-        bytes.clear();
-        match reader.read_until(b'\n', &mut bytes).await {
-            Ok(0) | Err(_) => break,
-            Ok(_) => logging::log_forwarded(&String::from_utf8_lossy(&bytes)),
+    while let Ok(Some(truncated)) = read_bounded_line(&mut reader, &mut bytes).await {
+        let text = String::from_utf8_lossy(&bytes);
+        if truncated {
+            logging::log_forwarded(&format!("{text} [truncated]\n"));
+        } else {
+            logging::log_forwarded(&text);
         }
     }
 }
@@ -1326,6 +1581,8 @@ struct SpawnedRenderer {
     child: Child,
     reader: Box<dyn AsyncRead + Send + Unpin>,
     writer: Box<dyn AsyncWrite + Send + Unpin>,
+    #[cfg(windows)]
+    job: crate::child::sandbox::ProcessJob,
 }
 
 #[cfg(unix)]
@@ -1351,6 +1608,18 @@ fn spawn_transport(command: &mut Command) -> io::Result<SpawnedRenderer> {
 fn spawn_transport(command: &mut Command) -> io::Result<SpawnedRenderer> {
     command.stdin(Stdio::piped()).stdout(Stdio::piped());
     let mut child = command.spawn()?;
+    #[cfg(windows)]
+    let job = match child
+        .raw_handle()
+        .ok_or_else(|| io::Error::other("renderer process handle missing"))
+        .and_then(crate::child::sandbox::ProcessJob::assign)
+    {
+        Ok(job) => job,
+        Err(error) => {
+            let _ = child.start_kill();
+            return Err(error);
+        }
+    };
     let Some(stdin) = child.stdin.take() else {
         let _ = child.start_kill();
         return Err(io::Error::other("renderer stdin missing"));
@@ -1363,6 +1632,8 @@ fn spawn_transport(command: &mut Command) -> io::Result<SpawnedRenderer> {
         child,
         reader: Box::new(stdout),
         writer: Box::new(stdin),
+        #[cfg(windows)]
+        job,
     })
 }
 
@@ -1409,6 +1680,32 @@ pub(crate) struct RendererServices {
     pub(crate) tabs: TabRegistry,
 }
 
+fn renderer_command() -> io::Result<Command> {
+    let mut command = Command::new(std::env::current_exe()?);
+    command
+        .arg("--renderer")
+        .env_clear()
+        .env("TINYBROWSER_LOG", logging::level().as_str())
+        .stderr(Stdio::piped());
+    #[cfg(unix)]
+    command.process_group(0);
+    for key in [
+        "FONTCONFIG_FILE",
+        "FONTCONFIG_PATH",
+        "XDG_DATA_DIRS",
+        "LANG",
+        "LC_ALL",
+        "TZ",
+        "SYSTEMROOT",
+        "PREFIX",
+    ] {
+        if let Ok(value) = std::env::var(key) {
+            command.env(key, value);
+        }
+    }
+    Ok(command)
+}
+
 pub(crate) async fn spawn_process(
     id: RendererId,
     site: Option<Site>,
@@ -1423,15 +1720,13 @@ pub(crate) async fn spawn_process(
         registry,
         tabs,
     } = services;
-    let mut command = Command::new(std::env::current_exe()?);
-    command
-        .arg("--renderer")
-        .env("TINYBROWSER_LOG", logging::level().as_str())
-        .stderr(Stdio::piped());
+    let mut command = renderer_command()?;
     let SpawnedRenderer {
         mut child,
         reader,
         writer,
+        #[cfg(windows)]
+        job,
     } = spawn_transport(&mut command)?;
     let Some(stderr) = child.stderr.take() else {
         let _ = child.start_kill();
@@ -1471,7 +1766,12 @@ pub(crate) async fn spawn_process(
     let reader_task = tokio::spawn(reader_task(reader, reader_context, Some(ready_tx)));
     let service_task = tokio::spawn(service_task(server, service_context));
     let stderr_task = tokio::spawn(forward_stderr(stderr));
-    let _reaper = tokio::spawn(child_task(child, kill_rx));
+    let _reaper = tokio::spawn(child_task(
+        child,
+        kill_rx,
+        #[cfg(windows)]
+        job,
+    ));
     if client
         .notify(HostNotice::Hello {
             identity: Box::new(identity),
@@ -1504,7 +1804,11 @@ pub(crate) async fn spawn_process(
     })
 }
 
-async fn child_task(mut child: Child, mut kill: watch::Receiver<bool>) {
+async fn child_task(
+    mut child: Child,
+    mut kill: watch::Receiver<bool>,
+    #[cfg(windows)] _job: crate::child::sandbox::ProcessJob,
+) {
     if *kill.borrow() {
         let _ = child.start_kill();
         let _ = child.wait().await;
@@ -1574,6 +1878,145 @@ mod tests {
             SandboxFlags::empty().union(tab).auxiliary_flags(),
             tab,
             "an iframe's flags reach its popup through the claim"
+        );
+    }
+
+    // https://w3c.github.io/webappsec-csp/#directive-frame-ancestors
+    // https://html.spec.whatwg.org/multipage/document-lifecycle.html#the-x-frame-options-header
+    #[test]
+    fn frame_ancestors_and_xfo_enforce_exact_ancestor_chain() {
+        let target = url::Url::parse("https://app.example.test/embed").expect("target");
+        let same_origin = target.origin();
+        let same_site_other = url::Url::parse("https://other.example.test/")
+            .expect("url")
+            .origin();
+        let partner = url::Url::parse("https://partner.test/")
+            .expect("url")
+            .origin();
+        let sub_partner = url::Url::parse("https://sub.partner.test/")
+            .expect("url")
+            .origin();
+        let evil = url::Url::parse("https://evilpartner.test/")
+            .expect("url")
+            .origin();
+
+        let csp_self = vec![(
+            "content-security-policy".to_owned(),
+            "frame-ancestors 'self'".to_owned(),
+        )];
+        assert!(!super::frame_blocked_by_headers(
+            &csp_self,
+            &target,
+            std::slice::from_ref(&same_origin),
+        ));
+        assert!(super::frame_blocked_by_headers(
+            &csp_self,
+            &target,
+            std::slice::from_ref(&same_site_other),
+        ));
+
+        let csp_allow = vec![(
+            "content-security-policy".to_owned(),
+            "frame-ancestors https://partner.test *.partner.test".to_owned(),
+        )];
+        assert!(!super::frame_blocked_by_headers(
+            &csp_allow,
+            &target,
+            &[partner, sub_partner],
+        ));
+        assert!(super::frame_blocked_by_headers(
+            &csp_allow,
+            &target,
+            std::slice::from_ref(&evil),
+        ));
+
+        let empty_fa_plus_xfo = vec![
+            (
+                "content-security-policy".to_owned(),
+                "frame-ancestors".to_owned(),
+            ),
+            ("x-frame-options".to_owned(), "DENY".to_owned()),
+        ];
+        assert!(super::frame_blocked_by_headers(
+            &empty_fa_plus_xfo,
+            &target,
+            std::slice::from_ref(&same_origin),
+        ));
+
+        let xfo_sameorigin = vec![("x-frame-options".to_owned(), "SAMEORIGIN".to_owned())];
+        assert!(!super::frame_blocked_by_headers(
+            &xfo_sameorigin,
+            &target,
+            std::slice::from_ref(&same_origin),
+        ));
+        assert!(super::frame_blocked_by_headers(
+            &xfo_sameorigin,
+            &target,
+            &[same_origin, evil],
+        ));
+        assert!(super::frame_blocked_by_headers(
+            &xfo_sameorigin,
+            &target,
+            &[same_site_other],
+        ));
+
+        let schemeless = vec![(
+            "content-security-policy".to_owned(),
+            "frame-ancestors partner.test".to_owned(),
+        )];
+        let http_partner = url::Url::parse("http://partner.test/")
+            .expect("url")
+            .origin();
+        let alt_port_partner = url::Url::parse("https://partner.test:8443/")
+            .expect("url")
+            .origin();
+        assert!(super::frame_blocked_by_headers(
+            &schemeless,
+            &target,
+            std::slice::from_ref(&http_partner),
+        ));
+        assert!(super::frame_blocked_by_headers(
+            &schemeless,
+            &target,
+            std::slice::from_ref(&alt_port_partner),
+        ));
+        let http_target = url::Url::parse("http://app.example.test/embed").expect("target");
+        let secure_partner = url::Url::parse("https://partner.test/")
+            .expect("url")
+            .origin();
+        assert!(!super::frame_blocked_by_headers(
+            &schemeless,
+            &http_target,
+            &[http_partner, secure_partner],
+        ));
+    }
+
+    #[tokio::test]
+    async fn read_bounded_line_caps_unbounded_stderr_and_recovers() {
+        let mut input = vec![b'a'; super::MAX_STDERR_LINE_BYTES + 4096];
+        input.push(b'\n');
+        input.extend_from_slice(b"next line\n");
+        let mut reader = tokio::io::BufReader::new(std::io::Cursor::new(input));
+        let mut buf = Vec::new();
+        assert_eq!(
+            super::read_bounded_line(&mut reader, &mut buf)
+                .await
+                .expect("first line"),
+            Some(true)
+        );
+        assert_eq!(buf.len(), super::MAX_STDERR_LINE_BYTES);
+        assert_eq!(
+            super::read_bounded_line(&mut reader, &mut buf)
+                .await
+                .expect("second line"),
+            Some(false)
+        );
+        assert_eq!(buf, b"next line\n");
+        assert_eq!(
+            super::read_bounded_line(&mut reader, &mut buf)
+                .await
+                .expect("eof"),
+            None
         );
     }
 }

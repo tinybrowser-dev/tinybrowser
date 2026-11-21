@@ -841,6 +841,10 @@ pub enum DomRequest {
     GetNodeForLocation { x: f64, y: f64 },
     GetBoxModel { node: u64 },
     GetContentQuads { node: u64 },
+    GetComputedStyle { node: u64 },
+    GetStyleSheets,
+    GetStorageKey,
+    GetFullAxTree,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -876,6 +880,43 @@ pub struct DomBoxModel {
     pub height: i64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DomStyleSheet {
+    pub style_sheet_id: String,
+    pub source_url: String,
+    pub title: String,
+    pub disabled: bool,
+    pub is_inline: bool,
+    pub length: usize,
+}
+
+// https://chromedevtools.github.io/devtools-protocol/tot/Accessibility/#type-AXNode
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AxPropertyValue {
+    Bool(bool),
+    Int(i64),
+    String(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AxProperty {
+    pub name: String,
+    pub value: AxPropertyValue,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AxNode {
+    pub node_id: String,
+    pub ignored: bool,
+    pub role: String,
+    pub name: Option<String>,
+    pub value: Option<String>,
+    pub properties: Vec<AxProperty>,
+    pub parent_id: Option<String>,
+    pub child_ids: Vec<String>,
+    pub backend_dom_node_id: Option<u64>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum DomReply {
     Document { root: DomNode },
@@ -888,6 +929,10 @@ pub enum DomReply {
     NodeForLocation { node_id: u64 },
     BoxModel { model: Option<DomBoxModel> },
     ContentQuads { quads: Vec<[f64; 8]> },
+    ComputedStyle { properties: Vec<(String, String)> },
+    StyleSheets { sheets: Vec<DomStyleSheet> },
+    StorageKey { key: String },
+    AxTree { nodes: Vec<AxNode> },
 }
 
 // https://fetch.spec.whatwg.org/#concept-request-referrer
@@ -1273,21 +1318,6 @@ pub trait NetworkHost: Send + Sync + 'static {
     fn dial_sync(&self, _request: DialRequest) -> Result<DialOutcome, DialFailure> {
         Err(DialFailure::Connect)
     }
-
-    fn cookies_for(&self, url: &Url, partition_key: Option<&str>) -> String;
-
-    fn set_cookie(&self, value: &str, url: &Url, partition_key: Option<&str>);
-
-    // https://cookiestore.spec.whatwg.org/#query-cookies
-    fn cookie_store_records(&self, url: &Url, partition_key: Option<&str>) -> Vec<ScriptCookie>;
-
-    // https://cookiestore.spec.whatwg.org/#set-a-cookie
-    fn cookie_store_store(
-        &self,
-        write: &net::ScriptCookieWrite,
-        url: &Url,
-        partition_key: Option<&str>,
-    );
 }
 
 pub trait StorageHost: Send + Sync + 'static {
@@ -1323,6 +1353,28 @@ pub trait StorageHost: Send + Sync + 'static {
         url: &str,
         source: FrameId,
     ) -> Option<StorageChange>;
+
+    fn remote_session_get(
+        &self,
+        window: WindowId,
+        origin: &StorageKey,
+        key: &str,
+    ) -> Option<String>;
+
+    fn cookies_for(&self, url: &Url, partition_key: Option<&str>) -> String;
+
+    fn set_cookie(&self, value: &str, url: &Url, partition_key: Option<&str>);
+
+    // https://cookiestore.spec.whatwg.org/#query-cookies
+    fn cookie_store_records(&self, url: &Url, partition_key: Option<&str>) -> Vec<ScriptCookie>;
+
+    // https://cookiestore.spec.whatwg.org/#set-a-cookie
+    fn cookie_store_store(
+        &self,
+        write: &net::ScriptCookieWrite,
+        url: &Url,
+        partition_key: Option<&str>,
+    );
 }
 
 // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-open
@@ -1496,13 +1548,6 @@ pub trait BrowsingContextHost: Send + Sync + 'static {
     fn window_opener(&self) -> Option<WindowId>;
 
     fn window_post_message(&self, window: WindowId, message: PostedMessage);
-
-    fn remote_session_get(
-        &self,
-        window: WindowId,
-        origin: &StorageKey,
-        key: &str,
-    ) -> Option<String>;
 }
 
 pub trait MessagingHost: Send + Sync + 'static {

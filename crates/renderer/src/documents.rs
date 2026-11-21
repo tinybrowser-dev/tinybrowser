@@ -432,6 +432,12 @@ impl DocumentStore {
     pub(crate) fn remove(&mut self, id: u32) -> Option<Parsed> {
         self.documents.remove(&id)
     }
+
+    pub(crate) fn contains_node(&self, id: NodeId) -> bool {
+        self.documents
+            .get(&id.document)
+            .is_some_and(|parsed| parsed.document.base.get_node(id.node).is_some())
+    }
 }
 
 #[derive(Clone, Debug)]

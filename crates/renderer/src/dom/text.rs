@@ -1,7 +1,13 @@
 // https://html.spec.whatwg.org/multipage/dom.html#rendered-text-collection-steps
 
-use blitz_dom::{BaseDocument, NodeData};
+use blitz_dom::{BaseDocument, CopyStyleGetters, NodeData};
 use markup5ever::{LocalName, QualName};
+use style::computed_values::float::T as Float;
+use style::computed_values::position::T as Position;
+use style::computed_values::white_space_collapse::T as WhiteSpaceCollapse;
+use style::properties::generated::longhands::visibility::computed_value::T as StyloVisibility;
+use style::values::computed::TextTransform;
+use style::values::specified::box_::{DisplayInside, DisplayOutside};
 
 use crate::dom::tree::{BlitzId, NodeId, html_namespace};
 use crate::dom_string::DomString;
@@ -37,65 +43,24 @@ enum Transform {
     Capitalize,
 }
 
-#[derive(Clone, Copy, Default)]
-struct InlineStyle<'a> {
-    display: Option<&'a str>,
-    white_space: Option<&'a str>,
-    visibility: Option<&'a str>,
-    text_transform: Option<&'a str>,
-    float: Option<&'a str>,
-    position: Option<&'a str>,
-}
-
-impl<'a> InlineStyle<'a> {
-    fn of(base: &'a BaseDocument, node: BlitzId) -> Self {
-        let mut style = Self::default();
-        let Some(attribute) = crate::dom::tree::attr(base, node, "style") else {
-            return style;
-        };
-        for declaration in split_declarations(attribute) {
-            let Some((name, value)) = declaration.split_once(':') else {
-                continue;
-            };
-            let name = name.trim();
-            let slot = if name.eq_ignore_ascii_case("display") {
-                &mut style.display
-            } else if name.eq_ignore_ascii_case("white-space") {
-                &mut style.white_space
-            } else if name.eq_ignore_ascii_case("visibility") {
-                &mut style.visibility
-            } else if name.eq_ignore_ascii_case("text-transform") {
-                &mut style.text_transform
-            } else if name.eq_ignore_ascii_case("float") {
-                &mut style.float
-            } else if name.eq_ignore_ascii_case("position") {
-                &mut style.position
-            } else {
-                continue;
-            };
-            *slot = Some(strip_important(value.trim()));
-        }
-        style
-    }
-
-    fn is_flex(&self) -> bool {
-        self.display.is_some_and(|value| {
-            value.eq_ignore_ascii_case("flex")
-                || value.eq_ignore_ascii_case("grid")
-                || value.eq_ignore_ascii_case("inline-flex")
-                || value.eq_ignore_ascii_case("inline-grid")
+fn is_flex(base: &BaseDocument, node: BlitzId) -> bool {
+    base.get_node(node)
+        .and_then(|tree| tree.primary_styles())
+        .is_some_and(|styles| {
+            matches!(
+                styles.clone_display().inside(),
+                DisplayInside::Flex | DisplayInside::Grid
+            )
         })
-    }
-
-    fn display_none(&self) -> bool {
-        self.display
-            .is_some_and(|value| value.eq_ignore_ascii_case("none"))
-    }
 }
 
 // https://html.spec.whatwg.org/multipage/interaction.html#the-hidden-attribute
-fn not_rendered(base: &BaseDocument, node: BlitzId, style: &InlineStyle<'_>) -> bool {
-    style.display_none() || html_hidden(base, node)
+fn not_rendered(base: &BaseDocument, node: BlitzId) -> bool {
+    let display_none = base
+        .get_node(node)
+        .and_then(|tree| tree.primary_styles())
+        .is_some_and(|styles| styles.clone_display().is_none());
+    display_none || html_hidden(base, node)
 }
 
 // https://html.spec.whatwg.org/multipage/dom.html#the-innertext-idl-attribute
@@ -111,24 +76,25 @@ enum TableBox {
     ColumnGroup,
 }
 
-fn table_box_of(base: &BaseDocument, node: BlitzId, style: &InlineStyle<'_>) -> Option<TableBox> {
-    let keyword = match style.display {
-        Some(display) => display.trim().to_ascii_lowercase(),
-        None => base.resolved_style_value(node, "display"),
-    };
-    table_box_keyword(&keyword)
-}
-
-fn table_box_keyword(keyword: &str) -> Option<TableBox> {
-    Some(match keyword {
-        "table" => TableBox::Table,
-        "inline-table" => TableBox::InlineTable,
-        "table-row" => TableBox::Row,
-        "table-cell" => TableBox::Cell,
-        "table-caption" => TableBox::Caption,
-        "table-row-group" | "table-header-group" | "table-footer-group" => TableBox::RowGroup,
-        "table-column" => TableBox::Column,
-        "table-column-group" => TableBox::ColumnGroup,
+fn table_box_of(base: &BaseDocument, node: BlitzId) -> Option<TableBox> {
+    let styles = base.get_node(node)?.primary_styles()?;
+    let display = styles.clone_display();
+    Some(match display.inside() {
+        DisplayInside::Table => {
+            if display.outside() == DisplayOutside::Inline {
+                TableBox::InlineTable
+            } else {
+                TableBox::Table
+            }
+        }
+        DisplayInside::TableRow => TableBox::Row,
+        DisplayInside::TableCell => TableBox::Cell,
+        DisplayInside::TableRowGroup
+        | DisplayInside::TableHeaderGroup
+        | DisplayInside::TableFooterGroup => TableBox::RowGroup,
+        DisplayInside::TableColumn => TableBox::Column,
+        DisplayInside::TableColumnGroup => TableBox::ColumnGroup,
+        _ if display.outside() == DisplayOutside::TableCaption => TableBox::Caption,
         _ => return None,
     })
 }
@@ -147,53 +113,6 @@ fn html_hidden(base: &BaseDocument, node: BlitzId) -> bool {
         .is_some_and(|value| !value.eq_ignore_ascii_case("until-found"))
 }
 
-fn split_declarations(style: &str) -> Vec<&str> {
-    let mut parts = Vec::new();
-    let mut depth = 0_u32;
-    let mut quote = None;
-    let mut escaped = false;
-    let mut start = 0;
-    for (index, char) in style.char_indices() {
-        match quote {
-            Some(q) => {
-                if escaped {
-                    escaped = false;
-                } else if char == '\\' {
-                    escaped = true;
-                } else if char == q {
-                    quote = None;
-                }
-            }
-            None => match char {
-                '"' | '\'' => quote = Some(char),
-                '(' => depth += 1,
-                ')' => depth = depth.saturating_sub(1),
-                ';' if depth == 0 => {
-                    parts.push(&style[start..index]);
-                    start = index + 1;
-                }
-                _ => {}
-            },
-        }
-    }
-    parts.push(&style[start..]);
-    parts
-}
-
-fn strip_important(value: &str) -> &str {
-    let trimmed = value.trim_end();
-    if let Some(bang) = trimmed.rfind('!') {
-        let marker: String = trimmed[bang + 1..]
-            .chars()
-            .filter(|char| !char.is_whitespace())
-            .collect();
-        if marker.eq_ignore_ascii_case("important") {
-            return trimmed[..bang].trim_end();
-        }
-    }
-    trimmed
-}
-
 fn is_html_tag(base: &BaseDocument, node: BlitzId, tags: &[&str]) -> bool {
     base.get_node(node).is_some_and(|tree| {
         tree.data.downcast_element().is_some_and(|element| {
@@ -203,17 +122,14 @@ fn is_html_tag(base: &BaseDocument, node: BlitzId, tags: &[&str]) -> bool {
     })
 }
 
-fn white_space_of(
-    base: &BaseDocument,
-    node: BlitzId,
-    style: &InlineStyle<'_>,
-    inherited: WhiteSpace,
-) -> WhiteSpace {
-    if let Some(value) = style.white_space {
-        return match value.to_ascii_lowercase().as_str() {
-            "pre" | "pre-wrap" | "break-spaces" => WhiteSpace::Pre,
-            "pre-line" => WhiteSpace::PreLine,
-            _ => WhiteSpace::Normal,
+fn white_space_of(base: &BaseDocument, node: BlitzId, inherited: WhiteSpace) -> WhiteSpace {
+    if let Some(styles) = base.get_node(node).and_then(|tree| tree.primary_styles()) {
+        return match styles.get_inherited_text().white_space_collapse {
+            WhiteSpaceCollapse::Collapse => WhiteSpace::Normal,
+            WhiteSpaceCollapse::Preserve
+            | WhiteSpaceCollapse::BreakSpaces
+            | WhiteSpaceCollapse::PreserveSpaces => WhiteSpace::Pre,
+            WhiteSpaceCollapse::PreserveBreaks => WhiteSpace::PreLine,
         };
     }
     if is_html_tag(base, node, &["pre", "listing", "xmp", "plaintext"]) {
@@ -222,7 +138,7 @@ fn white_space_of(
     inherited
 }
 
-fn level_of(base: &BaseDocument, node: BlitzId, style: &InlineStyle<'_>) -> Level {
+fn level_of(base: &BaseDocument, node: BlitzId) -> Level {
     let Some(tree) = base.get_node(node) else {
         return Level::Hidden;
     };
@@ -234,52 +150,70 @@ fn level_of(base: &BaseDocument, node: BlitzId, style: &InlineStyle<'_>) -> Leve
     if html && (local == "template" || local == "noscript") {
         return Level::Hidden;
     }
-    let blockified = style
-        .float
-        .is_some_and(|value| !value.is_empty() && !value.eq_ignore_ascii_case("none"))
-        || style.position.is_some_and(|value| {
-            value.eq_ignore_ascii_case("absolute") || value.eq_ignore_ascii_case("fixed")
-        });
-    if let Some(display) = style.display {
-        let display = display.to_ascii_lowercase();
-        let display = display.as_str();
-        if display == "none" {
+    if let Some(styles) = tree.primary_styles() {
+        let display = styles.clone_display();
+        if display.is_none() {
             return Level::Hidden;
         }
-        if display == "contents" {
+        if display.is_contents() {
             return Level::Contents;
         }
         if html && local == "p" {
             return Level::Paragraph;
         }
-        if blockified
-            && !matches!(
-                display,
-                "block"
-                    | "flex"
-                    | "grid"
-                    | "table"
-                    | "list-item"
-                    | "inline-block"
-                    | "inline-flex"
-                    | "inline-grid"
-                    | "inline-table"
-            )
-        {
-            return Level::Block;
+        if html && matches!(local, "select" | "option" | "optgroup") {
+            return Level::Paragraph;
         }
-        return match display {
-            "block" | "flex" | "grid" | "table" | "list-item" => Level::Block,
-            "inline-block" | "inline-flex" | "inline-grid" | "inline-table" => Level::Atomic,
-            _ => Level::Inline,
+        let blockified = styles.clone_float() != Float::None
+            || matches!(
+                styles.get_box().position,
+                Position::Absolute | Position::Fixed
+            );
+        return match display.outside() {
+            DisplayOutside::Block | DisplayOutside::TableCaption => Level::Block,
+            DisplayOutside::Inline => {
+                if blockified {
+                    Level::Block
+                } else if matches!(
+                    display.inside(),
+                    DisplayInside::FlowRoot
+                        | DisplayInside::Flex
+                        | DisplayInside::Grid
+                        | DisplayInside::Table
+                ) || (html
+                    && matches!(
+                        local,
+                        "img"
+                            | "input"
+                            | "textarea"
+                            | "iframe"
+                            | "audio"
+                            | "video"
+                            | "canvas"
+                            | "object"
+                            | "embed"
+                            | "param"
+                            | "map"
+                            | "area"
+                            | "applet"
+                            | "button"
+                    ))
+                {
+                    Level::Atomic
+                } else {
+                    Level::Inline
+                }
+            }
+            DisplayOutside::None | DisplayOutside::InternalTable => Level::Inline,
         };
-    }
-    if blockified {
-        return Level::Block;
     }
     if html && local == "p" {
         return Level::Paragraph;
     }
+    default_tag_level(html, local)
+}
+
+fn default_tag_level(html: bool, local: &str) -> Level {
     if !html {
         return if matches!(
             local,
@@ -327,41 +261,41 @@ fn subtree_skipped(base: &BaseDocument, node: BlitzId) -> bool {
     )
 }
 
-fn visibility_of(style: &InlineStyle<'_>, inherited: Visibility) -> Visibility {
-    if let Some(value) = style.visibility {
-        if value.eq_ignore_ascii_case("visible") {
-            return Visibility::Visible;
-        }
-        if value.eq_ignore_ascii_case("hidden") || value.eq_ignore_ascii_case("collapse") {
-            return Visibility::Hidden;
-        }
+fn visibility_of(base: &BaseDocument, node: BlitzId, inherited: Visibility) -> Visibility {
+    if let Some(styles) = base.get_node(node).and_then(|tree| tree.primary_styles()) {
+        return match styles.get_inherited_box().visibility {
+            StyloVisibility::Visible => Visibility::Visible,
+            StyloVisibility::Hidden | StyloVisibility::Collapse => Visibility::Hidden,
+        };
     }
     inherited
 }
 
-fn transform_of(
-    base: &BaseDocument,
-    node: BlitzId,
-    style: &InlineStyle<'_>,
-    inherited: Transform,
-) -> Transform {
-    if let Some(value) = style.text_transform {
-        let mut turkish = false;
-        let mut cursor = Some(node);
-        while let Some(current) = cursor {
-            if let Some(lang) = crate::dom::tree::attr(base, current, "lang") {
-                let lang = lang.to_ascii_lowercase();
-                turkish = lang == "tr" || lang.starts_with("tr-");
-                break;
-            }
-            cursor = base.get_node(current).and_then(|tree| tree.parent);
+fn turkish_lang(base: &BaseDocument, node: BlitzId) -> bool {
+    let mut cursor = Some(node);
+    while let Some(current) = cursor {
+        if let Some(lang) = crate::dom::tree::attr(base, current, "lang") {
+            let lang = lang.to_ascii_lowercase();
+            return lang == "tr" || lang.starts_with("tr-");
         }
-        return match value.to_ascii_lowercase().as_str() {
-            "uppercase" => Transform::Upper(turkish),
-            "lowercase" => Transform::Lower(turkish),
-            "capitalize" => Transform::Capitalize,
-            _ => Transform::None,
-        };
+        cursor = base.get_node(current).and_then(|tree| tree.parent);
+    }
+    false
+}
+
+fn transform_of(base: &BaseDocument, node: BlitzId, inherited: Transform) -> Transform {
+    if let Some(styles) = base.get_node(node).and_then(|tree| tree.primary_styles()) {
+        let tt = styles.clone_text_transform();
+        if tt.intersects(TextTransform::UPPERCASE) {
+            return Transform::Upper(turkish_lang(base, node));
+        }
+        if tt.intersects(TextTransform::LOWERCASE) {
+            return Transform::Lower(turkish_lang(base, node));
+        }
+        if tt.intersects(TextTransform::CAPITALIZE) {
+            return Transform::Capitalize;
+        }
+        return Transform::None;
     }
     inherited
 }
@@ -653,8 +587,7 @@ fn collect_node(
         NodeData::Element(element) => {
             let local: &str = element.name.local.as_str();
             let html = element.name.ns == crate::dom::tree::html_namespace();
-            let style = InlineStyle::of(base, node);
-            let visibility = visibility_of(&style, inherited_visibility);
+            let visibility = visibility_of(base, node, inherited_visibility);
             if html_hidden(base, node) {
                 return;
             }
@@ -662,9 +595,9 @@ fn collect_node(
                 collector.push_forced_break();
                 return;
             }
-            let mode = white_space_of(base, node, &style, inherited_mode);
-            let transform = transform_of(base, node, &style, inherited_transform);
-            if let Some(table_box) = table_box_of(base, node, &style) {
+            let mode = white_space_of(base, node, inherited_mode);
+            let transform = transform_of(base, node, inherited_transform);
+            if let Some(table_box) = table_box_of(base, node) {
                 match table_box {
                     TableBox::Table => {
                         collect_table(collector, node, mode, visibility, transform, true);
@@ -697,7 +630,7 @@ fn collect_node(
                 collector.ensure_breaks(1);
                 return;
             }
-            let mut level = level_of(base, node, &style);
+            let mut level = level_of(base, node);
             if flex_parent && level == Level::Inline {
                 level = Level::Block;
             }
@@ -741,7 +674,7 @@ fn collect_node(
                     let breaks = if level == Level::Paragraph { 2 } else { 1 };
                     let transparent = visibility == Visibility::Hidden;
                     if html && (local == "option" || local == "optgroup") {
-                        if not_rendered(base, node, &style) {
+                        if not_rendered(base, node) {
                             return;
                         }
                         if local == "optgroup" && is_optgroup_ancestor(base, node) {
@@ -756,7 +689,7 @@ fn collect_node(
                             mode,
                             visibility,
                             transform,
-                            style.is_flex(),
+                            is_flex(base, node),
                         );
                         if !transparent {
                             collector.ensure_breaks(1);
@@ -773,7 +706,7 @@ fn collect_node(
                             mode,
                             visibility,
                             transform,
-                            style.is_flex(),
+                            is_flex(base, node),
                         );
                     }
                     if !transparent {
@@ -836,8 +769,7 @@ fn collect_table(
     // https://drafts.csswg.org/css-tables-3/#anonymous-table-boxes
     let mut open_row = false;
     while let Some((current, top, inherited, inherited_mode, inherited_transform)) = stack.pop() {
-        let style = InlineStyle::of(base, current);
-        if not_rendered(base, current, &style) {
+        if not_rendered(base, current) {
             continue;
         }
         let Some(tree) = base.get_node(current) else {
@@ -848,13 +780,13 @@ fn collect_table(
                 .then_some(element.name.local.as_str())
         });
         // https://html.spec.whatwg.org/multipage/dom.html#the-innertext-idl-attribute
-        let table_box = table_box_of(base, current, &style);
+        let table_box = table_box_of(base, current);
         let is_row = matches!(kind, Some("tr")) || table_box == Some(TableBox::Row);
         let is_cell = matches!(kind, Some("td" | "th")) || table_box == Some(TableBox::Cell);
         let is_caption = matches!(kind, Some("caption")) || table_box == Some(TableBox::Caption);
-        let item_visibility = visibility_of(&style, inherited);
-        let item_mode = white_space_of(base, current, &style, inherited_mode);
-        let item_transform = transform_of(base, current, &style, inherited_transform);
+        let item_visibility = visibility_of(base, current, inherited);
+        let item_mode = white_space_of(base, current, inherited_mode);
+        let item_transform = transform_of(base, current, inherited_transform);
         if is_row {
             open_row = false;
             if !first_row {
@@ -941,25 +873,24 @@ fn collect_row(
         let Some(cell_tree) = base.get_node(cell) else {
             continue;
         };
-        let style = InlineStyle::of(base, cell);
         let is_cell = cell_tree.data.downcast_element().is_some_and(|element| {
             (element.name.ns == crate::dom::tree::html_namespace()
                 && matches!(element.name.local.as_str(), "td" | "th"))
-                || table_box_of(base, cell, &style) == Some(TableBox::Cell)
+                || table_box_of(base, cell) == Some(TableBox::Cell)
         });
         if !is_cell {
             continue;
         }
-        if not_rendered(base, cell, &style) {
+        if not_rendered(base, cell) {
             continue;
         }
         if !cell_first {
             collector.push_tab();
         }
         cell_first = false;
-        let cell_visibility = visibility_of(&style, visibility);
-        let cell_mode = white_space_of(base, cell, &style, mode);
-        let cell_transform = transform_of(base, cell, &style, transform);
+        let cell_visibility = visibility_of(base, cell, visibility);
+        let cell_mode = white_space_of(base, cell, mode);
+        let cell_transform = transform_of(base, cell, transform);
         collect_children(
             collector,
             cell,
@@ -987,8 +918,7 @@ fn collect_select(
         return;
     };
     for &child in &tree.children {
-        let style = InlineStyle::of(base, child);
-        if not_rendered(base, child, &style) {
+        if not_rendered(base, child) {
             continue;
         }
         let kind = base.get_node(child).and_then(|tree| {
@@ -1004,9 +934,9 @@ fn collect_select(
                     continue;
                 }
                 collector.ensure_breaks(1);
-                let item_visibility = visibility_of(&style, visibility);
-                let item_mode = white_space_of(base, child, &style, mode);
-                let item_transform = transform_of(base, child, &style, transform);
+                let item_visibility = visibility_of(base, child, visibility);
+                let item_mode = white_space_of(base, child, mode);
+                let item_transform = transform_of(base, child, transform);
                 collect_children(
                     collector,
                     child,
@@ -1052,7 +982,7 @@ fn collect_details(
         mode,
         visibility,
         transform,
-        InlineStyle::of(collector.base, node).is_flex(),
+        is_flex(collector.base, node),
     );
     collector.ensure_breaks(1);
 }
@@ -1091,7 +1021,7 @@ pub(crate) fn rendered_text(base: &BaseDocument, id: NodeId) -> String {
     let parent_flex = base
         .get_node(id.node)
         .and_then(|tree| tree.parent)
-        .is_some_and(|parent| InlineStyle::of(base, parent).is_flex());
+        .is_some_and(|parent| is_flex(base, parent));
     let (top_mode, top_visibility, top_transform) = initial_styles(base, id.node);
     collect_node(
         &mut collector,
@@ -1117,6 +1047,17 @@ pub(crate) fn rendered_text(base: &BaseDocument, id: NodeId) -> String {
 }
 
 fn initial_styles(base: &BaseDocument, node: BlitzId) -> (WhiteSpace, Visibility, Transform) {
+    if base
+        .get_node(node)
+        .and_then(|tree| tree.primary_styles())
+        .is_some()
+    {
+        return (
+            white_space_of(base, node, WhiteSpace::Normal),
+            visibility_of(base, node, Visibility::Visible),
+            transform_of(base, node, Transform::None),
+        );
+    }
     let mut chain = Vec::new();
     let mut cursor = Some(node);
     while let Some(current) = cursor {
@@ -1127,10 +1068,9 @@ fn initial_styles(base: &BaseDocument, node: BlitzId) -> (WhiteSpace, Visibility
     let mut visibility = Visibility::Visible;
     let mut transform = Transform::None;
     for ancestor in chain.into_iter().rev() {
-        let style = InlineStyle::of(base, ancestor);
-        mode = white_space_of(base, ancestor, &style, mode);
-        visibility = visibility_of(&style, visibility);
-        transform = transform_of(base, ancestor, &style, transform);
+        mode = white_space_of(base, ancestor, mode);
+        visibility = visibility_of(base, ancestor, visibility);
+        transform = transform_of(base, ancestor, transform);
     }
     (mode, visibility, transform)
 }
@@ -1146,7 +1086,7 @@ fn being_rendered(base: &BaseDocument, node: BlitzId) -> bool {
         if let Some(element) = tree.data.downcast_element() {
             let html = element.name.ns == crate::dom::tree::html_namespace();
             let local = element.name.local.as_str();
-            if not_rendered(base, current, &InlineStyle::of(base, current)) {
+            if not_rendered(base, current) {
                 return false;
             }
             if html

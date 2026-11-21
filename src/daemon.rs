@@ -22,7 +22,7 @@ pub async fn run(
 ) -> io::Result<()> {
     let registration = match port {
         None => {
-            let runtime = profile_runtime_dir(profile.name())?;
+            let runtime = profile_runtime_dir(profile.name(), data_home);
             fs::create_dir_all(&runtime)?;
             restrict_dir(&runtime)?;
             let Some(lock) = acquire_lock(&runtime)? else {
@@ -36,7 +36,7 @@ pub async fn run(
             logging::debug!(target: "daemon", "runtime dir {}", runtime.display());
             Some((runtime, lock))
         }
-        Some(_) => try_optional_registration(profile.name()),
+        Some(_) => try_optional_registration(profile.name(), data_home),
     };
     let listener = TcpListener::bind(("127.0.0.1", port.unwrap_or(0)))
         .map_err(|error| io::Error::new(error.kind(), format!("bind failed: {error}")))?;
@@ -108,8 +108,8 @@ fn is_webdriver_path(path: &str) -> bool {
     )
 }
 
-fn try_optional_registration(name: &ProfileName) -> Option<(PathBuf, File)> {
-    let runtime = profile_runtime_dir(name).ok()?;
+fn try_optional_registration(name: &ProfileName, data_home: &Path) -> Option<(PathBuf, File)> {
+    let runtime = profile_runtime_dir(name, data_home);
     fs::create_dir_all(&runtime).ok()?;
     restrict_dir(&runtime).ok()?;
     let lock = acquire_lock(&runtime).ok()??;
@@ -117,18 +117,14 @@ fn try_optional_registration(name: &ProfileName) -> Option<(PathBuf, File)> {
     Some((runtime, lock))
 }
 
-fn profile_runtime_dir(name: &ProfileName) -> io::Result<PathBuf> {
-    Ok(runtime_home()?.join("tinybrowser").join(name.as_str()))
-}
-
-fn runtime_home() -> io::Result<PathBuf> {
+fn profile_runtime_dir(name: &ProfileName, data_home: &Path) -> PathBuf {
     if let Some(dir) = env_runtime_dir() {
-        return Ok(dir);
+        return dir.join("tinybrowser").join(name.as_str());
     }
-    Err(io::Error::new(
-        io::ErrorKind::NotFound,
-        "XDG_RUNTIME_DIR is unset",
-    ))
+    data_home
+        .join("tinybrowser")
+        .join("run")
+        .join(name.as_str())
 }
 
 fn env_runtime_dir() -> Option<PathBuf> {
@@ -180,15 +176,33 @@ fn restrict_file(path: &Path) -> io::Result<()> {
 }
 
 fn write_endpoint(runtime: &Path, endpoint: &DaemonEndpoint) -> io::Result<()> {
+    use std::io::Write as _;
+
     let path = runtime.join("daemon.json");
-    let tmp = runtime.join("daemon.json.tmp");
+    let tmp = runtime.join(format!("daemon.{}.tmp", endpoint.pid));
     let body = json!({
         "pid": endpoint.pid,
         "host": endpoint.host,
         "port": endpoint.port,
     });
-    fs::write(&tmp, body.to_string())?;
-    restrict_file(&tmp)?;
-    fs::rename(&tmp, &path)?;
-    restrict_file(&path)
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let write_result = (|| -> io::Result<()> {
+        let mut file = options.open(&tmp)?;
+        restrict_file(&tmp)?;
+        file.write_all(body.to_string().as_bytes())?;
+        file.sync_all()?;
+        fs::rename(&tmp, &path)?;
+        restrict_file(&path)
+    })();
+    if let Err(error) = write_result {
+        let _removed = fs::remove_file(&tmp);
+        return Err(error);
+    }
+    Ok(())
 }

@@ -3,8 +3,9 @@
  *
  * The Wasm component runs the real fetch core (redirects, cookies, CORS,
  * `Sec-Fetch-*`) and calls `startFetch` for one raw HTTP hop at a time. This
- * module relays each hop to `/api/hop` and delivers the result back via the
- * `completeFetch` callback registered by the page driver.
+ * module relays each hop to `/api/hop`, applies any active Lab chaos knobs
+ * below the engine's fetch stack, and delivers the result back via
+ * `completeFetch`.
  */
 
 export interface FetchHeader {
@@ -43,6 +44,7 @@ export interface HopRecord {
   requestHeaders: Array<FetchHeader>
   outcome: FetchOutcome
   durationMs: number
+  chaosNote?: string
 }
 
 export interface HopStart {
@@ -50,6 +52,16 @@ export interface HopStart {
   owner: number
   method: string
   url: string
+}
+
+export interface ChaosConfig {
+  offline: boolean
+  latencyMs: number
+  blockCss: boolean
+  blockJs: boolean
+  blockImages: boolean
+  stripCors: boolean
+  force500: boolean
 }
 
 interface HostHooks {
@@ -63,6 +75,15 @@ interface HostHooks {
 const exchanges = new Map<number, AbortController>()
 let inFlightCount = 0
 let hopUrl = "/api/hop"
+let chaos: ChaosConfig = {
+  offline: false,
+  latencyMs: 0,
+  blockCss: false,
+  blockJs: false,
+  blockImages: false,
+  stripCors: false,
+  force500: false,
+}
 let hooks: HostHooks = {
   completeFetch: () => false,
   onStart: () => {},
@@ -75,6 +96,15 @@ export function configure(next: Partial<HostHooks>): void {
   if (next.hopUrl !== undefined) {
     hopUrl = next.hopUrl
   }
+}
+
+export function setChaos(next: Partial<ChaosConfig>): ChaosConfig {
+  chaos = { ...chaos, ...next }
+  return { ...chaos }
+}
+
+export function getChaos(): ChaosConfig {
+  return { ...chaos }
 }
 
 export function inFlight(): number {
@@ -90,7 +120,7 @@ export function startFetch(request: FetchRequest): boolean {
   inFlightCount += 1
   hooks.onStart({ id, owner, method: request.method, url: request.url })
 
-  void exchange(request, controller.signal).then((outcome) => {
+  void exchangeWithChaos(request, controller.signal).then(({ outcome, chaosNote }) => {
     settle({
       id,
       owner,
@@ -99,6 +129,7 @@ export function startFetch(request: FetchRequest): boolean {
       requestHeaders: request.headers,
       outcome,
       durationMs: Math.round(performance.now() - started),
+      chaosNote,
     })
   })
 
@@ -128,6 +159,102 @@ interface HopAnswer {
   http2?: boolean
   headers?: Array<[string, string]>
   body?: string
+}
+
+function headerValue(headers: Array<FetchHeader>, target: string): string {
+  for (const header of headers) {
+    if (header.name.toLowerCase() === target) return header.value.toLowerCase()
+  }
+  return ""
+}
+
+function classifyBlockedSubresource(request: FetchRequest): string | null {
+  const dest = headerValue(request.headers, "sec-fetch-dest")
+  const pathname = URL.parse(request.url)?.pathname.toLowerCase() ?? ""
+  if (chaos.blockCss && (dest === "style" || pathname.endsWith(".css"))) {
+    return "blocked CSS"
+  }
+  if (
+    chaos.blockJs &&
+    (dest === "script" || pathname.endsWith(".js") || pathname.endsWith(".mjs"))
+  ) {
+    return "blocked JS"
+  }
+  if (
+    chaos.blockImages &&
+    (dest === "image" || /\.(png|jpe?g|gif|webp|svg|ico|avif)$/i.test(pathname))
+  ) {
+    return "blocked image"
+  }
+  return null
+}
+
+function delay(ms: number, signal: AbortSignal): Promise<void> {
+  if (ms <= 0) return Promise.resolve()
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort)
+      resolve()
+    }, ms)
+    function onAbort(): void {
+      clearTimeout(timer)
+      resolve()
+    }
+    signal.addEventListener("abort", onAbort, { once: true })
+  })
+}
+
+async function exchangeWithChaos(
+  request: FetchRequest,
+  signal: AbortSignal,
+): Promise<{ outcome: FetchOutcome; chaosNote?: string }> {
+  if (chaos.latencyMs > 0) {
+    await delay(chaos.latencyMs, signal)
+    if (signal.aborted) {
+      return { outcome: { tag: "err", val: "cancelled" } }
+    }
+  }
+
+  if (chaos.offline) {
+    return { outcome: { tag: "err", val: "connect" }, chaosNote: "offline" }
+  }
+
+  const blocked = classifyBlockedSubresource(request)
+  if (blocked !== null) {
+    return { outcome: { tag: "err", val: "connect" }, chaosNote: blocked }
+  }
+
+  if (chaos.force500) {
+    return {
+      outcome: {
+        tag: "ok",
+        val: {
+          status: 500,
+          http2: true,
+          headers: [{ name: "content-type", value: "text/plain; charset=utf-8" }],
+          body: new TextEncoder().encode("500 injected by tinybrowser lab chaos mode"),
+        },
+      },
+      chaosNote: "forced 500",
+    }
+  }
+
+  const outcome = await exchange(request, signal)
+  if (chaos.stripCors && outcome.tag === "ok") {
+    const filtered = outcome.val.headers.filter(
+      (header) => !header.name.toLowerCase().startsWith("access-control-"),
+    )
+    const stripped = filtered.length !== outcome.val.headers.length
+    return {
+      outcome: {
+        tag: "ok",
+        val: { ...outcome.val, headers: filtered },
+      },
+      chaosNote: stripped ? "stripped CORS" : undefined,
+    }
+  }
+
+  return { outcome }
 }
 
 async function exchange(request: FetchRequest, signal: AbortSignal): Promise<FetchOutcome> {

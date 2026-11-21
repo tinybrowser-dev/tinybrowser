@@ -4,8 +4,8 @@ use std::time::Duration;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use browser::{
-    BrowserHandle, DEFAULT_VIEWPORT, DomNode, DomReply, DomRequest, FrameId, RemoteValue,
-    ScreenshotRequest, TabError, TabEvent, TabHandle, TabId,
+    AxNode, AxPropertyValue, BrowserHandle, DEFAULT_VIEWPORT, DomNode, DomReply, DomRequest,
+    FrameId, RemoteValue, ScreenshotRequest, TabError, TabEvent, TabHandle, TabId,
 };
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
@@ -55,6 +55,8 @@ impl TargetClass {
 pub(crate) enum Handler {
     Accept(Accepted),
     ClearBrowserCookies,
+    ClearBrowserCache,
+    SetCacheDisabled,
     GetTargetInfo,
     Page(PageHandler),
     Browser(BrowserHandler),
@@ -106,6 +108,7 @@ pub(crate) enum ScriptMethod {
     GetProperties,
     SetDeviceMetricsOverride,
     ClearDeviceMetricsOverride,
+    SetUserAgentOverride,
     GetStorageKey,
     DomGetDocument,
     DomQuerySelector,
@@ -123,6 +126,7 @@ pub(crate) enum ScriptMethod {
     InputTouchEvent,
     InputEmulateTouchFromMouse,
     CssGetComputedStyleForNode,
+    AccessibilityGetFullAxTree,
 }
 
 #[derive(Clone, Copy)]
@@ -133,9 +137,7 @@ pub(crate) enum Accepted {
     PageHasNoChildTargets,
     RendererOwnsFonts,
     NoDownloadPipeline,
-    NoHttpCache,
     DefaultEmulatedMedia,
-    CacheAlreadyDisabled,
 }
 
 struct Route {
@@ -424,6 +426,23 @@ const ROUTES: &[Route] = &[
         )),
     },
     Route {
+        method: "Accessibility.enable",
+        target: TargetClass::Page,
+        handler: Handler::Accept(Accepted::DomainWithoutEvents),
+    },
+    Route {
+        method: "Accessibility.disable",
+        target: TargetClass::Page,
+        handler: Handler::Accept(Accepted::DomainWithoutEvents),
+    },
+    Route {
+        method: "Accessibility.getFullAXTree",
+        target: TargetClass::Page,
+        handler: Handler::Page(PageHandler::Script(
+            ScriptMethod::AccessibilityGetFullAxTree,
+        )),
+    },
+    Route {
         method: "Tracing.end",
         target: TargetClass::Page,
         handler: Handler::Page(PageHandler::TracingEnd),
@@ -446,12 +465,22 @@ const ROUTES: &[Route] = &[
     Route {
         method: "Network.clearBrowserCache",
         target: TargetClass::Both,
-        handler: Handler::Accept(Accepted::NoHttpCache),
+        handler: Handler::ClearBrowserCache,
     },
     Route {
         method: "Network.setCacheDisabled",
         target: TargetClass::Both,
-        handler: Handler::Accept(Accepted::CacheAlreadyDisabled),
+        handler: Handler::SetCacheDisabled,
+    },
+    Route {
+        method: "Network.setUserAgentOverride",
+        target: TargetClass::Page,
+        handler: Handler::Page(PageHandler::Script(ScriptMethod::SetUserAgentOverride)),
+    },
+    Route {
+        method: "Emulation.setUserAgentOverride",
+        target: TargetClass::Page,
+        handler: Handler::Page(PageHandler::Script(ScriptMethod::SetUserAgentOverride)),
     },
     Route {
         method: "Emulation.setFocusEmulationEnabled",
@@ -508,17 +537,12 @@ fn premise_holds(reason: Accepted, params: &Value) -> Result<bool, DispatchError
             let params: crate::params::SetEmulatedMedia = crate::params::parse(params)?;
             Ok(emulated_media_is_default(&params))
         }
-        Accepted::CacheAlreadyDisabled => {
-            let params: crate::params::SetCacheDisabled = crate::params::parse(params)?;
-            Ok(params.cache_disabled)
-        }
         Accepted::WaitingForDebugger
         | Accepted::DomainWithoutEvents
         | Accepted::FocusIsNotEngineState
         | Accepted::PageHasNoChildTargets
         | Accepted::RendererOwnsFonts
-        | Accepted::NoDownloadPipeline
-        | Accepted::NoHttpCache => Ok(true),
+        | Accepted::NoDownloadPipeline => Ok(true),
     }
 }
 
@@ -544,6 +568,7 @@ pub(crate) async fn run_script(
         ScriptMethod::GetProperties => runtime_get_properties(tab, params).await,
         ScriptMethod::SetDeviceMetricsOverride => set_device_metrics(params, tab).await,
         ScriptMethod::ClearDeviceMetricsOverride => clear_device_metrics(tab).await,
+        ScriptMethod::SetUserAgentOverride => set_user_agent_override(params, tab).await,
         ScriptMethod::GetStorageKey => storage_key(tab).await,
         ScriptMethod::DomGetDocument => dom_get_document(tab).await,
         ScriptMethod::DomQuerySelector => dom_query_selector(tab, params).await,
@@ -563,6 +588,7 @@ pub(crate) async fn run_script(
             input_emulate_touch_from_mouse(tab, params).await
         }
         ScriptMethod::CssGetComputedStyleForNode => css_computed_style(tab, params).await,
+        ScriptMethod::AccessibilityGetFullAxTree => accessibility_full_tree(tab).await,
     }
 }
 
@@ -783,6 +809,82 @@ async fn clear_device_metrics(tab: &TabHandle) -> Result<Value, DispatchError> {
     set_viewport(tab, DEFAULT_VIEWPORT.0, DEFAULT_VIEWPORT.1).await
 }
 
+// https://chromedevtools.github.io/devtools-protocol/tot/Emulation/#method-setUserAgentOverride
+async fn set_user_agent_override(params: &Value, tab: &TabHandle) -> Result<Value, DispatchError> {
+    let params: crate::params::UserAgentOverride = crate::params::parse(params)?;
+    let override_identity = if params.user_agent.is_empty() {
+        None
+    } else {
+        let user_agent = browser::UserAgent::parse(&params.user_agent)
+            .map_err(|error| DispatchError::InvalidParams(error.to_string()))?;
+        let mut identity = browser::Identity::custom(user_agent);
+        if let Some(platform) = params.platform {
+            identity.navigator_platform = platform;
+        }
+        if let Some(accept_language) = params.accept_language {
+            let languages: Vec<String> = accept_language
+                .split(',')
+                .map(|part| part.split(';').next().unwrap_or_default().trim().to_owned())
+                .filter(|tag| !tag.is_empty())
+                .collect();
+            if !languages.is_empty() {
+                identity.languages = languages;
+            }
+        }
+        if let Some(meta) = params.user_agent_metadata {
+            if let Some(brands) = meta.brands {
+                identity.brands = brands
+                    .into_iter()
+                    .map(|b| browser::Brand {
+                        brand: b.brand,
+                        version: b.version,
+                    })
+                    .collect();
+            }
+            if let Some(full) = meta.full_version_list {
+                identity.full_version_list = full
+                    .into_iter()
+                    .map(|b| browser::Brand {
+                        brand: b.brand,
+                        version: b.version,
+                    })
+                    .collect();
+            }
+            if let Some(platform) = meta.platform {
+                identity.platform = platform;
+            }
+            if let Some(platform_version) = meta.platform_version {
+                identity.platform_version = platform_version;
+            }
+            if let Some(architecture) = meta.architecture {
+                identity.architecture = architecture;
+            }
+            if let Some(model) = meta.model {
+                identity.model = model;
+            }
+            if let Some(mobile) = meta.mobile {
+                identity.mobile = mobile;
+            }
+            if let Some(bitness) = meta.bitness {
+                identity.bitness = bitness;
+            }
+            if let Some(wow64) = meta.wow64 {
+                identity.wow64 = wow64;
+            }
+            if let Some(form_factors) = meta.form_factors {
+                identity.form_factors = form_factors;
+            }
+        }
+        let valid = browser::ValidIdentity::try_from(identity)
+            .map_err(|error| DispatchError::InvalidParams(error.to_string()))?;
+        Some(valid)
+    };
+    tab.set_identity(override_identity)
+        .await
+        .map_err(|error| DispatchError::Failed(error.to_string()))?;
+    Ok(json!({}))
+}
+
 async fn set_viewport(tab: &TabHandle, width: u32, height: u32) -> Result<Value, DispatchError> {
     tab.set_viewport(width, height)
         .await
@@ -811,11 +913,8 @@ fn capture_side(extent: f64) -> u32 {
 }
 
 async fn storage_key(tab: &TabHandle) -> Result<Value, DispatchError> {
-    let value = tab
-        .execute_browser_script("String(location.origin)")
-        .await
-        .map_err(|error| DispatchError::Failed(error.to_string()))?;
-    let RemoteValue::String(key) = value else {
+    let reply = dom_request(tab, DomRequest::GetStorageKey).await?;
+    let DomReply::StorageKey { key } = reply else {
         return Err(DispatchError::BadHelperReply("Storage.getStorageKey"));
     };
     Ok(json!({"storageKey": key}))
@@ -1233,70 +1332,107 @@ pub(crate) async fn dom_content_quads(
 }
 
 pub(crate) async fn css_stylesheets(tab: &TabHandle) -> Result<Vec<Value>, DispatchError> {
-    const SCRIPT: &str = r#"(function(){
-      host.__tb_css_id = host.__tb_css_id || 0;
-      const out = host.array();
-      for (const sheet of document.styleSheets) {
-        const id = String(++host.__tb_css_id);
-        host.push(out, {__proto__: null,
-          styleSheetId: id,
-          sourceURL: sheet.href || "",
-          origin: "regular",
-          title: sheet.title || "",
-          disabled: !!sheet.disabled,
-          isInline: !sheet.href,
-          startLine: 0, startColumn: 0, endLine: 0, endColumn: 0,
-          length: sheet.cssRules ? sheet.cssRules.length : 0,
-        });
-      }
-      return host.stringify(out);
-    })()"#;
-    let value = browser_json(tab, SCRIPT).await?;
-    Ok(value.as_array().cloned().unwrap_or_default())
+    let reply = dom_request(tab, DomRequest::GetStyleSheets).await?;
+    let DomReply::StyleSheets { sheets } = reply else {
+        return Err(DispatchError::BadHelperReply("CSS.enable"));
+    };
+    Ok(sheets
+        .into_iter()
+        .map(|sheet| {
+            json!({
+                "styleSheetId": sheet.style_sheet_id,
+                "sourceURL": sheet.source_url,
+                "origin": "regular",
+                "title": sheet.title,
+                "disabled": sheet.disabled,
+                "isInline": sheet.is_inline,
+                "startLine": 0,
+                "startColumn": 0,
+                "endLine": 0,
+                "endColumn": 0,
+                "length": sheet.length,
+            })
+        })
+        .collect())
 }
 
 pub(crate) async fn css_computed_style(
     tab: &TabHandle,
     params: &Value,
 ) -> Result<Value, DispatchError> {
-    const TEMPLATE: &str = r"(function(){
-      const n = host.__tb_handles[__OBJECT__];
-      if (!n || !globalThis.getComputedStyle) return host.stringify({__proto__: null, computedStyle: []});
-      const style = globalThis.getComputedStyle(n);
-      const computedStyle = host.array();
-      for (let i = 0; i < style.length; i++) {
-        const name = style.item(i);
-        host.push(computedStyle, {__proto__: null, name: name, value: style.getPropertyValue(name)});
-      }
-      return host.stringify({__proto__: null, computedStyle: computedStyle});
-    })()";
     let params: crate::params::ComputedStyleForNode = crate::params::parse(params)?;
     let reply = dom_request(
         tab,
-        DomRequest::ResolveNode {
+        DomRequest::GetComputedStyle {
             node: params.node_id,
         },
     )
     .await?;
-    let DomReply::Resolved {
-        object: Some(object),
-    } = reply
-    else {
-        return Ok(json!({"computedStyle": []}));
+    let DomReply::ComputedStyle { properties } = reply else {
+        return Err(DispatchError::BadHelperReply("CSS.getComputedStyleForNode"));
     };
-    let script = TEMPLATE.replace("__OBJECT__", &json_string(&object.object_id));
-    browser_json(tab, &script).await
+    let computed_style: Vec<Value> = properties
+        .into_iter()
+        .map(|(name, value)| json!({"name": name, "value": value}))
+        .collect();
+    Ok(json!({"computedStyle": computed_style}))
 }
 
-async fn browser_json(tab: &TabHandle, script: &str) -> Result<Value, DispatchError> {
-    let value = tab
-        .execute_browser_script(script)
-        .await
-        .map_err(|error| DispatchError::Failed(error.to_string()))?;
-    let RemoteValue::String(text) = value else {
-        return Err(DispatchError::BadHelperReply("browser helper"));
+// https://chromedevtools.github.io/devtools-protocol/tot/Accessibility/#method-getFullAXTree
+pub(crate) async fn accessibility_full_tree(tab: &TabHandle) -> Result<Value, DispatchError> {
+    let reply = dom_request(tab, DomRequest::GetFullAxTree).await?;
+    let DomReply::AxTree { nodes } = reply else {
+        return Err(DispatchError::BadHelperReply("Accessibility.getFullAXTree"));
     };
-    serde_json::from_str(&text).map_err(|error| DispatchError::Failed(error.to_string()))
+    let nodes: Vec<Value> = nodes.iter().map(ax_node_json).collect();
+    Ok(json!({"nodes": nodes}))
+}
+
+fn ax_node_json(node: &AxNode) -> Value {
+    let mut entry = serde_json::Map::new();
+    entry.insert("nodeId".to_owned(), json!(node.node_id));
+    entry.insert("ignored".to_owned(), json!(node.ignored));
+    entry.insert(
+        "role".to_owned(),
+        json!({"type": "role", "value": node.role}),
+    );
+    if let Some(name) = &node.name {
+        entry.insert(
+            "name".to_owned(),
+            json!({"type": "computedString", "value": name}),
+        );
+    }
+    if let Some(value) = &node.value {
+        entry.insert(
+            "value".to_owned(),
+            json!({"type": "string", "value": value}),
+        );
+    }
+    if !node.properties.is_empty() {
+        let props: Vec<Value> = node
+            .properties
+            .iter()
+            .map(|prop| {
+                let value = match &prop.value {
+                    AxPropertyValue::Bool(flag) => json!({"type": "boolean", "value": flag}),
+                    AxPropertyValue::Int(num) => json!({"type": "integer", "value": num}),
+                    AxPropertyValue::String(text) => json!({"type": "string", "value": text}),
+                };
+                json!({"name": prop.name, "value": value})
+            })
+            .collect();
+        entry.insert("properties".to_owned(), Value::Array(props));
+    }
+    if let Some(parent_id) = &node.parent_id {
+        entry.insert("parentId".to_owned(), json!(parent_id));
+    }
+    if !node.child_ids.is_empty() {
+        entry.insert("childIds".to_owned(), json!(node.child_ids));
+    }
+    if let Some(backend_id) = node.backend_dom_node_id {
+        entry.insert("backendDOMNodeId".to_owned(), json!(backend_id));
+    }
+    Value::Object(entry)
 }
 
 fn viewport_rect(width: f64, height: f64) -> Value {

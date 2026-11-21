@@ -2,7 +2,7 @@
 // https://www.rfc-editor.org/rfc/rfc9111
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Instant, SystemTime};
 
@@ -108,6 +108,7 @@ pub struct HttpCache {
     clock: Clock,
     entries: Mutex<Entries>,
     next_seq: AtomicU64,
+    disabled: AtomicBool,
 }
 
 impl HttpCache {
@@ -117,7 +118,17 @@ impl HttpCache {
             clock,
             entries: Mutex::new(HashMap::new()),
             next_seq: AtomicU64::new(0),
+            disabled: AtomicBool::new(false),
         }
+    }
+
+    pub fn set_disabled(&self, disabled: bool) {
+        self.disabled.store(disabled, Ordering::Relaxed);
+    }
+
+    #[must_use]
+    pub fn is_disabled(&self) -> bool {
+        self.disabled.load(Ordering::Relaxed)
     }
 
     // https://fetch.spec.whatwg.org/#http-network-or-cache-fetch
@@ -130,6 +141,12 @@ impl HttpCache {
         partition: u64,
     ) -> Result<CacheDecision, DialFailure> {
         let mode = effective_mode(request);
+        if self.is_disabled() {
+            if matches!(mode, RequestCache::OnlyIfCached) {
+                return Err(DialFailure::Connect);
+            }
+            return Ok(Self::miss(RequestCache::NoStore, None));
+        }
         let directives = RequestDirectives::parse(sent);
         let stored = self.lookup(request, sent, initiator, partition);
         // https://fetch.spec.whatwg.org/#concept-request-cache-mode
@@ -247,12 +264,15 @@ impl HttpCache {
             self.invalidate_unsafe(request, partition, outcome);
             // https://www.rfc-editor.org/rfc/rfc9110#section-8.7
             // https://www.rfc-editor.org/rfc/rfc9111#section-5.2.1.5
-            if (200..400).contains(&outcome.status) && !directives.no_store {
+            if !self.is_disabled() && (200..400).contains(&outcome.status) && !directives.no_store {
                 self.store_content_location(request, sent, initiator, partition, outcome);
             }
             return;
         }
-        if directives.no_store || !storable(request, outcome, effective_mode(request)) {
+        if self.is_disabled()
+            || directives.no_store
+            || !storable(request, outcome, effective_mode(request))
+        {
             return;
         }
         let entry = CachedResponse::stored_exchange(
@@ -337,7 +357,7 @@ impl HttpCache {
         sent: &[(String, String)],
         head: &DialOutcome,
     ) -> bool {
-        if RequestDirectives::parse(sent).no_store {
+        if self.is_disabled() || RequestDirectives::parse(sent).no_store {
             return false;
         }
         if !request.method.is_safe() {

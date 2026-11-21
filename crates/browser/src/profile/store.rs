@@ -5,10 +5,10 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use net::{Agent, CookieRecord, CookieSameSite};
+use net::{CookieRecord, CookieSameSite};
 
 use super::Profile;
-use crate::storage::StorageAreas;
+use crate::storage::{CookieStore, StorageAreas};
 
 const COOKIES_VERSION: &str = "tinybrowser-cookies-v1";
 const LOCAL_STORAGE_VERSION: &str = "tinybrowser-localstorage-v1";
@@ -43,7 +43,7 @@ impl ProfileStore {
         })
     }
 
-    pub(crate) fn load_into(&self, agent: &Agent) -> io::Result<()> {
+    pub(crate) fn load_cookies(&self, cookies: &CookieStore) -> io::Result<()> {
         let path = self.cookies_path();
         let _disk = self.lock_disk();
         let bytes = match fs::read(&path) {
@@ -55,7 +55,7 @@ impl ProfileStore {
             .ok()
             .and_then(|text| parse_cookies(text).ok());
         if let Some(records) = records {
-            agent.import_cookies(records);
+            cookies.import(records);
             return Ok(());
         }
         let stamp = SystemTime::now()
@@ -69,7 +69,7 @@ impl ProfileStore {
         Ok(())
     }
 
-    pub(crate) fn save_from(&self, agent: &Agent) -> io::Result<()> {
+    pub(crate) fn save_cookies(&self, cookies: &CookieStore) -> io::Result<()> {
         let dir = &self.root;
         let _disk = self.lock_disk();
         fs::create_dir_all(dir)?;
@@ -77,7 +77,7 @@ impl ProfileStore {
         let path = dir.join("cookies");
         let seq = COOKIE_TMP_SEQ.fetch_add(1, Ordering::Relaxed);
         let tmp = dir.join(format!("cookies.{}.{seq}.tmp", std::process::id()));
-        let encoded = encode_cookies(&agent.export_cookies());
+        let encoded = encode_cookies(&cookies.export());
         let write_result = (|| {
             let mut file = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
             restrict(&tmp, 0o600)?;
@@ -178,16 +178,18 @@ impl ProfileStore {
     }
 }
 
+#[cfg(unix)]
 fn restrict(path: &Path, mode: u32) -> io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (path, mode);
-    }
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+}
+
+#[cfg(not(unix))]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "matches fallible unix restrict signature"
+)]
+fn restrict(_path: &Path, _mode: u32) -> io::Result<()> {
     Ok(())
 }
 

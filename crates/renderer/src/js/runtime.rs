@@ -1,5 +1,6 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::ops::Deref;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -59,25 +60,65 @@ impl SharedBufferTable {
 }
 
 #[derive(Clone)]
-pub(crate) struct FrameRuntime {
+pub(crate) struct SharedRuntime {
     pub(crate) services: Arc<dyn BrowserServices>,
     // https://wicg.github.io/ua-client-hints/#http-ua-hints
-    pub(crate) identity: net::ValidIdentity,
-    pub(crate) js_runtime: JsRuntimeHandle,
+    pub(crate) initial_identity: net::ValidIdentity,
     pub(crate) wake: Arc<Notify>,
     pub(crate) stop: Arc<Stop>,
-    pub(crate) documents: Rc<RefCell<DocumentStore>>,
-    pub(crate) registry: Rc<RefCell<RealmRegistry>>,
     pub(crate) shared: SharedHandle,
-    pub(crate) pending_storage: Rc<RefCell<Vec<crate::storage::PendingStorageEvent>>>,
-    pub(crate) turn_deadline: Rc<Cell<Option<Instant>>>,
     pub(crate) worker_requests: WorkerRequests,
     pub(crate) next_worker: Arc<AtomicU64>,
     pub(crate) next_broadcast: Arc<AtomicU64>,
-    pub(crate) worker_dir: Arc<WorkerDirectory>,
     pub(crate) object_urls: ObjectUrlStore,
     pub(crate) shared_buffers: Arc<SharedBufferTable>,
     pub(crate) font_ctx: parley::FontContext,
+}
+
+impl SharedRuntime {
+    pub(crate) fn new(
+        services: Arc<dyn BrowserServices>,
+        initial_identity: net::ValidIdentity,
+        wake: Arc<Notify>,
+        stop: Arc<Stop>,
+        font_ctx: parley::FontContext,
+    ) -> Self {
+        Self {
+            services,
+            initial_identity,
+            wake,
+            stop,
+            shared: SharedHandle::new(crate::messaging::Shared::default()),
+            worker_requests: Arc::new(Mutex::new(Vec::new())),
+            next_worker: Arc::new(AtomicU64::new(1)),
+            next_broadcast: Arc::new(AtomicU64::new(1)),
+            object_urls: Arc::new(Mutex::new(HashMap::new())),
+            shared_buffers: Arc::new(SharedBufferTable::default()),
+            font_ctx,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct FrameRuntime {
+    pub(crate) common: Arc<SharedRuntime>,
+    // https://wicg.github.io/ua-client-hints/#http-ua-hints
+    pub(crate) identity: Rc<RefCell<net::ValidIdentity>>,
+    pub(crate) js_runtime: JsRuntimeHandle,
+    pub(crate) documents: Rc<RefCell<DocumentStore>>,
+    pub(crate) registry: Rc<RefCell<RealmRegistry>>,
+    pub(crate) pending_storage: Rc<RefCell<Vec<crate::storage::PendingStorageEvent>>>,
+    pub(crate) turn_deadline: Rc<Cell<Option<Instant>>>,
+    pub(crate) worker_dir: Arc<WorkerDirectory>,
+    pub(crate) font_ctx: parley::FontContext,
+}
+
+impl Deref for FrameRuntime {
+    type Target = SharedRuntime;
+
+    fn deref(&self) -> &Self::Target {
+        &self.common
+    }
 }
 
 impl FrameRuntime {

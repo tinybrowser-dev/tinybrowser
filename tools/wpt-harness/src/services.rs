@@ -796,7 +796,9 @@ impl NetworkHost for FsServices {
             .expect("spawn the WPT fetch thread");
         Box::new(move || cancel_flag.store(true, Ordering::Release))
     }
+}
 
+impl StorageHost for FsServices {
     fn cookies_for(&self, url: &Url, partition_key: Option<&str>) -> String {
         self.agent.cookies_for_partition(url, partition_key)
     }
@@ -828,9 +830,15 @@ impl NetworkHost for FsServices {
             .set_script_cookie_partition(write, url, partition_key);
         self.publish_cookies();
     }
-}
 
-impl StorageHost for FsServices {
+    fn remote_session_get(
+        &self,
+        _window: WindowId,
+        _origin: &StorageKey,
+        _key: &str,
+    ) -> Option<String> {
+        None
+    }
     fn storage_get(&self, kind: StorageKind, origin: &StorageKey, key: &str) -> Option<String> {
         self.storage
             .lock()
@@ -940,15 +948,6 @@ impl BrowsingContextHost for FsServices {
     }
 
     fn window_post_message(&self, _window: WindowId, _message: PostedMessage) {}
-
-    fn remote_session_get(
-        &self,
-        _window: WindowId,
-        _origin: &StorageKey,
-        _key: &str,
-    ) -> Option<String> {
-        None
-    }
 }
 
 impl MessagingHost for FsServices {

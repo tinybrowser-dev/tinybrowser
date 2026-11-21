@@ -34,9 +34,7 @@ struct TabRecord {
     opener: Option<TabId>,
     opener_frame: Option<renderer::FrameId>,
     names: TabNames,
-    sandbox: renderer::SandboxFlags,
-    main_csp: renderer::SandboxFlags,
-    frames: HashMap<renderer::FrameId, FrameSandbox>,
+    frames: crate::frames::FrameTree,
     script_created: bool,
 }
 
@@ -49,12 +47,6 @@ impl TabRecord {
 #[derive(Clone)]
 pub(crate) struct TabRegistry {
     records: Arc<Mutex<HashMap<TabId, TabRecord>>>,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct FrameSandbox {
-    creation: renderer::SandboxFlags,
-    active: renderer::SandboxFlags,
 }
 
 impl TabRegistry {
@@ -185,18 +177,24 @@ impl TabRegistry {
 
     // https://html.spec.whatwg.org/multipage/browsers.html#popup-sandboxing-flag-set
     pub(crate) fn set_sandbox(&self, id: TabId, sandbox: renderer::SandboxFlags) {
-        self.lock().entry(id).or_default().sandbox = sandbox;
+        self.lock()
+            .entry(id)
+            .or_default()
+            .frames
+            .set_popup_sandbox(sandbox);
     }
 
     #[cfg(test)]
     pub(crate) fn sandbox(&self, id: TabId) -> renderer::SandboxFlags {
-        self.lock().get(&id).map_or_default(|record| record.sandbox)
+        self.lock()
+            .get(&id)
+            .map_or_default(|record| record.frames.popup_sandbox())
     }
 
     pub(crate) fn main_csp(&self, id: TabId) -> renderer::SandboxFlags {
         self.lock()
             .get(&id)
-            .map_or_default(|record| record.main_csp)
+            .map_or_default(|record| record.frames.main_csp())
     }
 
     // https://html.spec.whatwg.org/multipage/browsers.html#determining-the-creation-sandboxing-flags
@@ -209,31 +207,11 @@ impl TabRegistry {
         kind: renderer::FrameKind,
         reported: renderer::SandboxFlags,
     ) -> bool {
-        if frame == renderer::FrameId::MAIN {
-            return false;
-        }
-        let mut records = self.lock();
-        let record = records.entry(tab).or_default();
-        if record.frames.contains_key(&frame) {
-            return false;
-        }
-        let parent_active = match record.frames.get(&parent) {
-            Some(parent_record) => parent_record.active,
-            None if parent == renderer::FrameId::MAIN => record.sandbox,
-            None => renderer::SandboxFlags::parse(Some("")),
-        };
-        let creation = match kind {
-            renderer::FrameKind::Child => parent_active.union(reported),
-            renderer::FrameKind::Auxiliary => parent_active.auxiliary_flags(),
-        };
-        record.frames.insert(
-            frame,
-            FrameSandbox {
-                creation,
-                active: creation,
-            },
-        );
-        true
+        self.lock()
+            .entry(tab)
+            .or_default()
+            .frames
+            .register(frame, parent, kind, reported)
     }
 
     pub(crate) fn frame_sandbox(
@@ -242,38 +220,90 @@ impl TabRegistry {
         frame: renderer::FrameId,
     ) -> Option<renderer::SandboxFlags> {
         let records = self.lock();
-        if frame == renderer::FrameId::MAIN {
-            let (sandbox, main_csp) = records
-                .get(&tab)
-                .map_or_default(|r| (r.sandbox, r.main_csp));
-            return Some(sandbox.union(main_csp));
+        match records.get(&tab) {
+            Some(record) => record.frames.sandbox(frame),
+            None if frame == renderer::FrameId::MAIN => Some(renderer::SandboxFlags::empty()),
+            None => None,
         }
-        records
-            .get(&tab)
-            .and_then(|record| record.frames.get(&frame))
-            .map(|entry| entry.active)
     }
 
-    pub(crate) fn reset_main_sandbox(&self, tab: TabId, csp: renderer::SandboxFlags) {
-        self.lock().entry(tab).or_default().main_csp = csp;
+    pub(crate) fn set_main_origin(&self, tab: TabId, origin: url::Origin) {
+        self.lock()
+            .entry(tab)
+            .or_default()
+            .frames
+            .set_main_origin(origin);
     }
 
-    pub(crate) fn commit_frame_sandbox(
+    pub(crate) fn ancestor_origins(
         &self,
         tab: TabId,
         frame: renderer::FrameId,
+    ) -> Vec<url::Origin> {
+        self.lock()
+            .get(&tab)
+            .map_or_default(|record| record.frames.ancestor_origins(frame))
+    }
+
+    pub(crate) fn reset_main_sandbox(&self, tab: TabId, csp: renderer::SandboxFlags) {
+        self.lock()
+            .entry(tab)
+            .or_default()
+            .frames
+            .reset_main_csp(csp);
+    }
+
+    // https://w3c.github.io/webappsec-csp/#sandbox
+    pub(crate) fn commit_child_frame(
+        &self,
+        tab: TabId,
+        frame: renderer::FrameId,
+        url: &url::Url,
         csp: renderer::SandboxFlags,
     ) {
-        let mut records = self.lock();
-        if frame == renderer::FrameId::MAIN {
-            records.entry(tab).or_default().main_csp = csp;
-            return;
+        if let Some(record) = self.lock().get_mut(&tab) {
+            record.frames.commit_child(frame, url, csp);
         }
-        if let Some(entry) = records
-            .get_mut(&tab)
-            .and_then(|record| record.frames.get_mut(&frame))
-        {
-            entry.active = entry.creation.union(csp);
+    }
+
+    // https://chromium.googlesource.com/chromium/src/+/main/docs/process_model_and_site_isolation.md#process-locks
+    pub(crate) fn authorize_origin(
+        &self,
+        tab: TabId,
+        main: &crate::site::Site,
+        claim: &renderer::SerializedOrigin,
+    ) -> Option<url::Origin> {
+        match self.lock().get(&tab) {
+            Some(record) => record.frames.authorize_origin(main, claim),
+            None => main.authorize_origin(claim),
+        }
+    }
+
+    pub(crate) fn allows_url(&self, tab: TabId, main: &crate::site::Site, url: &url::Url) -> bool {
+        match self.lock().get(&tab) {
+            Some(record) => record.frames.allows_url(main, url),
+            None => main.allows_url(url),
+        }
+    }
+
+    pub(crate) fn storage_key(
+        &self,
+        tab: TabId,
+        main: &crate::site::Site,
+        claim: &renderer::SerializedOrigin,
+    ) -> Option<renderer::StorageKey> {
+        renderer::StorageKey::from_origin(&self.authorize_origin(tab, main, claim)?)
+    }
+
+    pub(crate) fn allows_message_origin(
+        &self,
+        tab: TabId,
+        main: &crate::site::Site,
+        claim: &renderer::SerializedOrigin,
+    ) -> bool {
+        match self.lock().get(&tab) {
+            Some(record) => record.frames.allows_message_origin(main, claim),
+            None => main.allows_message_origin(claim),
         }
     }
 
@@ -282,7 +312,7 @@ impl TabRegistry {
             return false;
         }
         if let Some(record) = self.lock().get_mut(&tab) {
-            record.frames.remove(&frame);
+            return record.frames.remove(frame);
         }
         true
     }
@@ -453,6 +483,14 @@ impl BrowserTask {
             Command::ClearCookies => {
                 self.context.clear_cookies();
                 Reply::ClearCookies
+            }
+            Command::ClearCache => {
+                self.context.clear_cache();
+                Reply::ClearCache
+            }
+            Command::SetCacheDisabled { disabled } => {
+                self.context.set_cache_disabled(disabled);
+                Reply::SetCacheDisabled
             }
             Command::AddCookie { cookie, url } => {
                 Reply::AddCookie(self.context.add_cookie(&cookie, &url))
@@ -732,9 +770,10 @@ mod tests {
             renderer::FrameKind::Child,
             renderer::SandboxFlags::empty(),
         ));
-        tabs.commit_frame_sandbox(
+        tabs.commit_child_frame(
             tab,
             grandchild,
+            &url::Url::parse("https://child.example/").expect("url"),
             renderer::SandboxFlags::parse(Some("allow-scripts allow-popups")),
         );
         let active = tabs.frame_sandbox(tab, grandchild).expect("grandchild");
@@ -767,6 +806,62 @@ mod tests {
         assert_eq!(
             tabs.frame_sandbox(tab, main),
             Some(renderer::SandboxFlags::parse(Some("allow-scripts")))
+        );
+    }
+
+    #[tokio::test]
+    async fn child_frame_origin_is_committed_and_revoked_with_descendants() {
+        let tabs = TabRegistry::new();
+        let tab = TabId::new(42);
+        tabs.add_fixture(tab);
+        let main = renderer::FrameId::MAIN;
+        let child = renderer::FrameId::new(2);
+        let grandchild = renderer::FrameId::new(3);
+        let main_site =
+            crate::site::Site::for_url(&url::Url::parse("https://main.example/").expect("url"))
+                .expect("site");
+        let child_claim =
+            renderer::SerializedOrigin::parse("https://child.example").expect("origin");
+
+        assert!(tabs.register_frame(
+            tab,
+            child,
+            main,
+            renderer::FrameKind::Child,
+            renderer::SandboxFlags::empty(),
+        ));
+        assert!(tabs.register_frame(
+            tab,
+            grandchild,
+            child,
+            renderer::FrameKind::Child,
+            renderer::SandboxFlags::parse(Some("allow-scripts")),
+        ));
+        tabs.commit_child_frame(
+            tab,
+            grandchild,
+            &url::Url::parse("https://child.example/").expect("url"),
+            renderer::SandboxFlags::empty(),
+        );
+        assert!(
+            tabs.authorize_origin(tab, &main_site, &child_claim)
+                .is_none()
+        );
+        tabs.commit_child_frame(
+            tab,
+            child,
+            &url::Url::parse("https://child.example/").expect("url"),
+            renderer::SandboxFlags::empty(),
+        );
+        assert!(
+            tabs.authorize_origin(tab, &main_site, &child_claim)
+                .is_some()
+        );
+        assert!(tabs.remove_frame(tab, child));
+        assert!(tabs.frame_sandbox(tab, grandchild).is_none());
+        assert!(
+            tabs.authorize_origin(tab, &main_site, &child_claim)
+                .is_none()
         );
     }
 }

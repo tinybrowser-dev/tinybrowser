@@ -3,8 +3,10 @@ use std::io;
 use std::iter::Peekable;
 use std::path::PathBuf;
 
-use browser::{AgentOptions, InvalidCa, InvalidProxy, InvalidResolveRule, Profile, ProfileError};
-use browser::{Proxy, TrustedCa};
+use browser::{
+    AgentOptions, InvalidCa, InvalidIdentity, InvalidProxy, InvalidResolveRule, Profile,
+    ProfileError, Proxy, TrustedCa, ValidIdentity,
+};
 use logging::Level;
 
 pub(crate) struct Cli {
@@ -54,6 +56,8 @@ pub(crate) enum CliError {
     InvalidResolve(#[from] InvalidResolveRule),
     #[error(transparent)]
     InvalidProxy(#[from] InvalidProxy),
+    #[error("--user-agent: {0}")]
+    InvalidUserAgent(#[from] InvalidIdentity),
     #[error("--tls-ca {}: {source}", path.display())]
     TlsCa { path: PathBuf, source: TlsCaError },
 }
@@ -105,12 +109,14 @@ Request requirements:
 
 Options:
       --port <PORT>
-          Bind `127.0.0.1:<PORT>` (`0..=65535`). When omitted, requires `XDG_RUNTIME_DIR`,
-          locks the profile, binds an ephemeral port, and writes `daemon.json`.
+          Bind `127.0.0.1:<PORT>` (`0..=65535`). When omitted, locks the profile,
+          binds an ephemeral port, and writes `daemon.json` in the runtime directory.
       --profile <NAME>
           Profile name (`[A-Za-z0-9._-]+`, max 64 bytes) [default: default]
       --proxy <URI>
           Outbound HTTP/HTTPS proxy (`http://<host>[:<port>]` or `https://<host>[:<port>]`)
+      --user-agent <VALUE>
+          Browser identity: `tinybrowser` (default), `chrome`, or a custom User-Agent string
       --resolve <PATTERN=ADDR>
           Override DNS resolution (repeatable): `<host|*.domain>=<ip>[:<port>|fail]`
       --tls-ca <PATH>
@@ -164,6 +170,7 @@ enum Partial {
 struct DaemonArgs {
     port: Option<u16>,
     profile: Option<Profile>,
+    user_agent_set: bool,
     network: AgentOptions,
     tls_ca: Vec<PathBuf>,
 }
@@ -344,6 +351,19 @@ impl<I: Iterator<Item = OsString>> Scanner<I> {
                     });
                 }
                 daemon.network.proxy = Some(proxy);
+                Ok(None)
+            }
+            "user-agent" => {
+                let raw = self.value("user-agent", "<VALUE>", inline)?;
+                let identity = ValidIdentity::parse_spec(&raw)?;
+                let daemon = self.daemon_args(name)?;
+                if daemon.user_agent_set {
+                    return Err(CliError::Repeated {
+                        spelling: "--user-agent <VALUE>",
+                    });
+                }
+                daemon.user_agent_set = true;
+                daemon.network.identity = identity;
                 Ok(None)
             }
             _ => Err(unexpected(name)),

@@ -268,3 +268,37 @@ pub(crate) struct EmulateTouchFromMouse {
     pub(crate) x: f64,
     pub(crate) y: f64,
 }
+
+// https://chromedevtools.github.io/devtools-protocol/tot/Emulation/#type-UserAgentBrandVersion
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UserAgentBrandVersion {
+    pub(crate) brand: String,
+    pub(crate) version: String,
+}
+
+// https://chromedevtools.github.io/devtools-protocol/tot/Emulation/#type-UserAgentMetadata
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UserAgentMetadata {
+    pub(crate) brands: Option<Vec<UserAgentBrandVersion>>,
+    pub(crate) full_version_list: Option<Vec<UserAgentBrandVersion>>,
+    pub(crate) platform: Option<String>,
+    pub(crate) platform_version: Option<String>,
+    pub(crate) architecture: Option<String>,
+    pub(crate) model: Option<String>,
+    pub(crate) mobile: Option<bool>,
+    pub(crate) bitness: Option<String>,
+    pub(crate) wow64: Option<bool>,
+    pub(crate) form_factors: Option<Vec<String>>,
+}
+
+// https://chromedevtools.github.io/devtools-protocol/tot/Emulation/#method-setUserAgentOverride
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UserAgentOverride {
+    pub(crate) user_agent: String,
+    pub(crate) accept_language: Option<String>,
+    pub(crate) platform: Option<String>,
+    pub(crate) user_agent_metadata: Option<UserAgentMetadata>,
+}

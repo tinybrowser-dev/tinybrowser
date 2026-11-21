@@ -86,6 +86,14 @@ impl EmbeddedRenderer {
         self.engine.render_frame(FrameId::MAIN, request)
     }
 
+    pub fn set_viewport(&mut self, width: u32, height: u32) -> Result<(), TabError> {
+        self.engine.set_viewport(FrameId::MAIN, width, height)
+    }
+
+    pub fn set_identity(&mut self, identity: net::ValidIdentity) {
+        self.engine.set_identity(identity);
+    }
+
     #[must_use]
     pub fn drain_ready(&mut self) -> bool {
         self.drain_until(std::time::Instant::now() + crate::TURN_SCRIPT_BUDGET)

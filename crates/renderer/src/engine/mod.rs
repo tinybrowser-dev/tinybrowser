@@ -1,8 +1,11 @@
+mod history;
+
+use self::history::{FrameHistory, FrameHistoryEntry, SameDocumentEntry, StandaloneHistory};
+
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
-use std::sync::atomic::AtomicU64;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::Notify;
@@ -10,7 +13,7 @@ use tokio::time::Instant;
 use url::Url;
 
 use crate::RemoteValue;
-use crate::document::{CreatedFrame, Document, LocalDocumentState, WindowMessage, about_blank};
+use crate::document::{CreatedFrame, Document, WindowMessage, about_blank};
 use crate::js::FrameRuntime;
 use crate::js::Stop;
 use crate::js::world::same_document_url;
@@ -38,153 +41,6 @@ struct SharedRealm {
     options: SharedWorkerOptions,
     // https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model
     owners: Vec<(FrameId, WorkerId)>,
-}
-
-// https://html.spec.whatwg.org/multipage/browsing-the-web.html#session-history-entry
-#[derive(Default)]
-struct FrameHistory {
-    entries: Vec<FrameHistoryEntry>,
-    index: usize,
-    // https://html.spec.whatwg.org/multipage/browsing-the-web.html#finalize-a-cross-document-navigation
-    pending: Option<PendingEntry>,
-}
-
-struct PendingEntry {
-    entry: FrameHistoryEntry,
-    replace: Option<usize>,
-}
-
-#[derive(Clone, Default)]
-struct FrameHistoryEntry {
-    navigation: Option<FrameNavigation>,
-    state: Option<LocalDocumentState>,
-    // https://html.spec.whatwg.org/multipage/browsing-the-web.html#url-and-history-update-steps
-    same_document: Option<SameDocumentEntry>,
-}
-
-#[derive(Clone)]
-struct SameDocumentEntry {
-    url: String,
-    state: String,
-}
-
-impl FrameHistory {
-    fn push(&mut self, entry: FrameHistoryEntry) {
-        self.entries.truncate(self.index.saturating_add(1));
-        self.entries.push(entry);
-        self.index = self.entries.len().saturating_sub(1);
-    }
-
-    // https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate
-    fn replace(&mut self, entry: FrameHistoryEntry) {
-        if let Some(slot) = self.entries.get_mut(self.index) {
-            *slot = entry;
-        } else {
-            self.push(entry);
-        }
-    }
-
-    fn stage(&mut self, entry: FrameHistoryEntry, replace: bool) {
-        self.pending = Some(PendingEntry {
-            entry,
-            replace: replace.then_some(self.index),
-        });
-    }
-
-    fn commit_pending(&mut self) {
-        let Some(pending) = self.pending.take() else {
-            return;
-        };
-        match pending.replace {
-            Some(index) => {
-                if let Some(slot) = self.entries.get_mut(index) {
-                    *slot = pending.entry;
-                } else {
-                    self.push(pending.entry);
-                }
-            }
-            None => self.push(pending.entry),
-        }
-    }
-
-    fn discard_pending(&mut self) {
-        self.pending = None;
-    }
-
-    fn push_same_document(&mut self, entry: SameDocumentEntry) {
-        self.push(FrameHistoryEntry {
-            same_document: Some(entry),
-            ..FrameHistoryEntry::default()
-        });
-    }
-
-    fn replace_same_document(&mut self, entry: SameDocumentEntry) {
-        if let Some(slot) = self.entries.get_mut(self.index) {
-            slot.same_document = Some(entry);
-        }
-    }
-
-    fn at(&self, index: usize) -> Option<&FrameHistoryEntry> {
-        self.entries.get(index)
-    }
-}
-
-// https://html.spec.whatwg.org/multipage/browsing-the-web.html#joint-session-history
-// https://html.spec.whatwg.org/multipage/browsing-the-web.html#traverse-the-history-by-a-delta
-#[derive(Default)]
-struct StandaloneHistory {
-    steps: Vec<BTreeMap<FrameId, usize>>,
-    // https://html.spec.whatwg.org/multipage/browsing-the-web.html#getting-the-history-object-length-and-index
-    index: usize,
-}
-
-impl StandaloneHistory {
-    fn seed() -> Self {
-        Self {
-            steps: vec![BTreeMap::new()],
-            index: 0,
-        }
-    }
-
-    // https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate
-    fn join(&mut self, frame: FrameId, local_index: usize) {
-        self.steps[self.index].insert(frame, local_index);
-    }
-
-    fn active(&self) -> &BTreeMap<FrameId, usize> {
-        &self.steps[self.index]
-    }
-
-    // https://html.spec.whatwg.org/multipage/browsing-the-web.html#clear-the-forward-session-history
-    fn push(&mut self, frame: FrameId, local_index: usize) {
-        self.steps.truncate(self.index.saturating_add(1));
-        let mut step = self.steps[self.index].clone();
-        step.insert(frame, local_index);
-        self.steps.push(step);
-        self.index = self.steps.len().saturating_sub(1);
-    }
-
-    fn replace(&mut self, frame: FrameId, local_index: usize) {
-        self.steps[self.index].insert(frame, local_index);
-    }
-
-    // https://html.spec.whatwg.org/multipage/browsing-the-web.html#getting-the-used-step
-    fn leave(&mut self, frame: FrameId) {
-        for step in &mut self.steps {
-            step.remove(&frame);
-        }
-    }
-
-    fn target(&self, delta: i32) -> Option<usize> {
-        self.index
-            .checked_add_signed(delta as isize)
-            .filter(|target| *target < self.steps.len())
-    }
-
-    // https://html.spec.whatwg.org/multipage/browsing-the-web.html#traverse-the-history-by-a-delta
-    fn local_at(&self, step: usize, frame: FrameId) -> usize {
-        self.steps[step].get(&frame).copied().unwrap_or(0)
-    }
 }
 
 #[derive(Default)]
@@ -250,42 +106,23 @@ impl Engine {
     ) -> Self {
         let js_runtime = SharedJsRuntime::default();
         let init_scripts: Rc<RefCell<Vec<(u64, String)>>> = Rc::new(RefCell::new(Vec::new()));
-        let shared = crate::messaging::SharedHandle::new(crate::messaging::Shared::default());
-        let worker_requests = Arc::new(Mutex::new(Vec::new()));
-        let next_worker = Arc::new(AtomicU64::new(1));
-        let next_broadcast = Arc::new(AtomicU64::new(1));
-        let object_urls = Arc::new(Mutex::new(std::collections::HashMap::new()));
-        let shared_buffers = Arc::new(crate::js::SharedBufferTable::default());
-        let worker_dir = Arc::new(WorkerDirectory::new(
-            Arc::clone(&services),
-            identity.clone(),
-            Arc::clone(&wake),
-            Arc::clone(&stop),
-            shared.clone(),
-            Arc::clone(&worker_requests),
-            Arc::clone(&next_worker),
-            Arc::clone(&next_broadcast),
-            fonts.0.clone(),
-            Arc::clone(&object_urls),
-            Arc::clone(&shared_buffers),
-        ));
-        let runtime = FrameRuntime {
+        let common = Arc::new(crate::js::SharedRuntime::new(
             services,
-            identity,
-            js_runtime: js_runtime.handle(),
+            identity.clone(),
             wake,
             stop,
+            fonts.0.clone(),
+        ));
+        let worker_dir = Arc::new(WorkerDirectory::new(Arc::clone(&common)));
+        let runtime = FrameRuntime {
+            common,
+            identity: Rc::new(RefCell::new(identity)),
+            js_runtime: js_runtime.handle(),
             documents: Rc::new(RefCell::new(DocumentStore::default())),
             registry: Rc::new(RefCell::new(RealmRegistry::default())),
-            shared,
             pending_storage: Rc::new(RefCell::new(Vec::new())),
             turn_deadline: Rc::new(std::cell::Cell::new(None)),
-            worker_requests,
-            next_worker,
-            next_broadcast,
             worker_dir,
-            object_urls,
-            shared_buffers,
             font_ctx: fonts.0.clone(),
         };
         let main = Document::with_shared(FrameId::MAIN, &runtime, &init_scripts);
@@ -1139,6 +976,11 @@ impl Engine {
         Ok(())
     }
 
+    // https://chromedevtools.github.io/devtools-protocol/tot/Emulation/#method-setUserAgentOverride
+    pub fn set_identity(&mut self, identity: net::ValidIdentity) {
+        *self.runtime.identity.borrow_mut() = identity;
+    }
+
     // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-addScriptToEvaluateOnNewDocument
     pub fn add_init_script(&mut self, id: u64, source: &str, run_immediately: bool) {
         self.init_scripts.borrow_mut().push((id, source.to_owned()));
@@ -1161,6 +1003,19 @@ impl Engine {
 
     pub fn content_size(&mut self, frame: FrameId) -> Result<(f32, f32), TabError> {
         Ok(self.frame_mut(frame)?.content_size())
+    }
+
+    pub fn document_state(&self, frame: FrameId) -> Result<crate::DocumentLoadState, TabError> {
+        let document = self
+            .frames
+            .get(&frame)
+            .ok_or(TabError::UnknownFrame { frame: frame.get() })?;
+        let world = document.world();
+        let world = world.borrow();
+        Ok(crate::DocumentLoadState {
+            ready_state: world.main_ready_state(),
+            url: world.document_url.as_str().to_owned(),
+        })
     }
 
     pub fn dom(
@@ -3021,7 +2876,7 @@ mod navigator_tests {
         assert_eq!(evaluate("navigator.language"), "fr-FR");
         assert_eq!(evaluate("navigator.languages.join(',')"), "fr-FR,fr");
         assert_eq!(evaluate("Object.isFrozen(navigator.languages)"), "true");
-        assert_eq!(evaluate("navigator.vendor"), "Google Inc.");
+        assert_eq!(evaluate("navigator.vendor"), "");
         assert_eq!(evaluate("navigator.productSub"), "20030107");
     }
 }

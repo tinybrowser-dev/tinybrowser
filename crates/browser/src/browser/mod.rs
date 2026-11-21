@@ -14,7 +14,6 @@ use self::task::BrowserTask;
 use crate::actor::{NavigationInitiator, TabHandle, TabId};
 use crate::context::BrowserContext;
 use crate::exchange;
-use crate::network::NetworkContext;
 use crate::profile::Profile;
 use crate::profile::default_data_home;
 
@@ -59,6 +58,8 @@ pub(super) enum Command {
     Close,
     CookieRecords { url: Url },
     ClearCookies,
+    ClearCache,
+    SetCacheDisabled { disabled: bool },
     AddCookie { cookie: String, url: Url },
     OpenWindow(OpenWindowOptions),
 }
@@ -71,6 +72,8 @@ pub(super) enum Reply {
     Close(io::Result<()>),
     CookieRecords(Vec<net::CookieRecord>),
     ClearCookies,
+    ClearCache,
+    SetCacheDisabled,
     AddCookie(bool),
     OpenWindow(Result<TabId, BrowserError>),
 }
@@ -87,14 +90,13 @@ impl Browser {
     pub fn new(options: BrowserOptions) -> Result<Self, BrowserOpenError> {
         let runtime = tokio::runtime::Handle::try_current()
             .map_err(|_| BrowserOpenError::RuntimeUnavailable)?;
-        let network = NetworkContext::new(options.network);
-        let identity = Arc::new(network.identity());
         let data_home = match options.data_home {
             Some(data_home) => data_home,
             None => default_data_home().map_err(BrowserOpenError::Profile)?,
         };
-        let context = BrowserContext::open(&data_home, &options.profile, network)
+        let context = BrowserContext::open(&data_home, &options.profile, options.network)
             .map_err(BrowserOpenError::Profile)?;
+        let identity = Arc::new(context.identity());
         let (client, server) = exchange::local(BROWSER_COMMAND_CAPACITY);
         let handle = BrowserHandle { client, identity };
         let task = BrowserTask::new(server, context, handle.clone());
@@ -171,6 +173,20 @@ impl BrowserHandle {
     pub async fn clear_cookies(&self) -> Result<(), BrowserError> {
         match self.call(Command::ClearCookies).await? {
             Reply::ClearCookies => Ok(()),
+            _ => Err(BrowserError::Protocol),
+        }
+    }
+
+    pub async fn clear_cache(&self) -> Result<(), BrowserError> {
+        match self.call(Command::ClearCache).await? {
+            Reply::ClearCache => Ok(()),
+            _ => Err(BrowserError::Protocol),
+        }
+    }
+
+    pub async fn set_cache_disabled(&self, disabled: bool) -> Result<(), BrowserError> {
+        match self.call(Command::SetCacheDisabled { disabled }).await? {
+            Reply::SetCacheDisabled => Ok(()),
             _ => Err(BrowserError::Protocol),
         }
     }

@@ -75,7 +75,14 @@ pub enum Command {
         width: u32,
         height: u32,
     },
+    // https://chromedevtools.github.io/devtools-protocol/tot/Emulation/#method-setUserAgentOverride
+    SetIdentity {
+        identity: Box<net::ValidIdentity>,
+    },
     ContentSize {
+        frame: FrameId,
+    },
+    DocumentState {
         frame: FrameId,
     },
     Dom {
@@ -90,6 +97,7 @@ pub enum Reply {
     Value(Result<RemoteValue, TabError>),
     Screenshot { result: Result<u32, TabError> },
     ContentSize(Result<(f32, f32), TabError>),
+    DocumentState(Result<renderer::DocumentLoadState, TabError>),
     Dom(Result<Box<renderer::DomReply>, TabError>),
 }
 
@@ -184,33 +192,9 @@ pub enum ServiceCall {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum NetworkCall {
     Dial(Box<DialRequest>),
-    CancelDial {
-        id: RequestId,
-    },
-    DialRead {
-        id: StreamId,
-    },
-    CancelStream {
-        id: StreamId,
-    },
-    CookieGet {
-        url: String,
-        partition_key: Option<String>,
-    },
-    CookieSet {
-        value: String,
-        url: String,
-        partition_key: Option<String>,
-    },
-    CookieStoreGet {
-        url: String,
-        partition_key: Option<String>,
-    },
-    CookieStoreSet {
-        write: net::ScriptCookieWrite,
-        url: String,
-        partition_key: Option<String>,
-    },
+    CancelDial { id: RequestId },
+    DialRead { id: StreamId },
+    CancelStream { id: StreamId },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -244,6 +228,29 @@ pub enum StorageCall {
         origin: SerializedOrigin,
         url: String,
         source: FrameId,
+    },
+    RemoteSessionGet {
+        window: WindowId,
+        origin: SerializedOrigin,
+        key: String,
+    },
+    CookieGet {
+        url: String,
+        partition_key: Option<String>,
+    },
+    CookieSet {
+        value: String,
+        url: String,
+        partition_key: Option<String>,
+    },
+    CookieStoreGet {
+        url: String,
+        partition_key: Option<String>,
+    },
+    CookieStoreSet {
+        write: net::ScriptCookieWrite,
+        url: String,
+        partition_key: Option<String>,
     },
 }
 
@@ -287,11 +294,6 @@ pub enum BrowsingContextCall {
         window: WindowId,
         message: PostedMessage,
     },
-    RemoteSessionGet {
-        window: WindowId,
-        origin: SerializedOrigin,
-        key: String,
-    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -327,17 +329,17 @@ impl ServiceReply {
             ServiceCall::Network(NetworkCall::DialRead { .. }) => {
                 ServiceReply::StreamChunk(Err(DialFailure::Connect))
             }
-            ServiceCall::Network(NetworkCall::CookieGet { .. }) => {
+            ServiceCall::Storage(StorageCall::CookieGet { .. }) => {
                 ServiceReply::Cookie(String::new())
             }
-            ServiceCall::Network(NetworkCall::CookieStoreGet { .. }) => {
+            ServiceCall::Storage(StorageCall::CookieStoreGet { .. }) => {
                 ServiceReply::CookieStore(Vec::new())
             }
             ServiceCall::Network(
-                NetworkCall::CancelDial { .. }
-                | NetworkCall::CancelStream { .. }
-                | NetworkCall::CookieSet { .. }
-                | NetworkCall::CookieStoreSet { .. },
+                NetworkCall::CancelDial { .. } | NetworkCall::CancelStream { .. },
+            )
+            | ServiceCall::Storage(
+                StorageCall::CookieSet { .. } | StorageCall::CookieStoreSet { .. },
             )
             | ServiceCall::Messaging(MessagingCall::BroadcastPost { .. })
             | ServiceCall::BrowsingContext(
@@ -347,10 +349,9 @@ impl ServiceReply {
                 | BrowsingContextCall::FrameCreated { .. }
                 | BrowsingContextCall::FrameDestroyed { .. },
             ) => ServiceReply::Unit,
-            ServiceCall::Storage(StorageCall::Get { .. })
-            | ServiceCall::BrowsingContext(BrowsingContextCall::RemoteSessionGet { .. }) => {
-                ServiceReply::StorageValue(None)
-            }
+            ServiceCall::Storage(
+                StorageCall::Get { .. } | StorageCall::RemoteSessionGet { .. },
+            ) => ServiceReply::StorageValue(None),
             ServiceCall::Storage(StorageCall::Keys { .. }) => ServiceReply::StorageKeys(Vec::new()),
             ServiceCall::Storage(
                 StorageCall::Set { .. } | StorageCall::Remove { .. } | StorageCall::Clear { .. },

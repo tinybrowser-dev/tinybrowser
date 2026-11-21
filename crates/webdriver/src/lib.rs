@@ -30,7 +30,6 @@ impl Router {
     pub fn new(browser: BrowserHandle) -> Self {
         let sessions = Arc::new(Mutex::new(Sessions {
             browser,
-            next_session: 0,
             next_window: 0,
             open: HashMap::new(),
         }));
@@ -69,6 +68,9 @@ async fn serve_request(request: Request, state: AppState) -> Response {
     if server::has_origin(&request) {
         return server::text(StatusCode::FORBIDDEN, "Origin header rejected");
     }
+    if server::has_browser_fetch_metadata(&request) {
+        return server::text(StatusCode::FORBIDDEN, "Sec-Fetch-* header rejected");
+    }
     if matches!(
         *request.method(),
         Method::POST | Method::PUT | Method::PATCH
@@ -97,9 +99,26 @@ async fn serve_request(request: Request, state: AppState) -> Response {
     server::json(status, &payload)
 }
 
+// https://w3c.github.io/webdriver/#new-session
+fn random_session_id() -> Result<String, String> {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes).map_err(|_| "failed to generate session id".to_owned())?;
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let mut out = String::with_capacity(36);
+    for (index, byte) in bytes.iter().enumerate() {
+        if matches!(index, 4 | 6 | 8 | 10) {
+            out.push('-');
+        }
+        out.push(HEX[usize::from(byte >> 4)] as char);
+        out.push(HEX[usize::from(byte & 0x0f)] as char);
+    }
+    Ok(out)
+}
+
 struct Sessions {
     browser: BrowserHandle,
-    next_session: u32,
     next_window: u32,
     open: HashMap<String, Session>,
 }
@@ -164,8 +183,7 @@ impl Sessions {
     }
 
     async fn create(&mut self) -> Result<String, String> {
-        self.next_session += 1;
-        let id = format!("s{}", self.next_session);
+        let id = random_session_id()?;
         let mut windows = HashMap::new();
         let mut current = None;
         if let Ok(ids) = self.browser.tabs().await {
