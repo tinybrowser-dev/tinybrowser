@@ -143,7 +143,10 @@ impl Dialer {
         let mut outbound = self.build_outbound(request, initiator, deadline)?;
         outbound.client = client;
         // https://www.rfc-editor.org/rfc/rfc9111#section-4.1
-        let sent = sent_headers(&outbound);
+        let mut sent = sent_headers(&outbound);
+        if let Some(cookie) = self.agent.outbound_cookie_header(&outbound) {
+            sent.push(("cookie".to_owned(), cookie));
+        }
         let (stored, validators) = match self.cache.read(request, &sent, initiator, partition)? {
             CacheDecision::Hit(hit) => return Ok(hit),
             CacheDecision::Miss {

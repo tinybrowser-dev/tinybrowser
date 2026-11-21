@@ -227,6 +227,24 @@ impl TabRegistry {
         }
     }
 
+    pub(crate) fn set_main_origin(&self, tab: TabId, origin: url::Origin) {
+        self.lock()
+            .entry(tab)
+            .or_default()
+            .frames
+            .set_main_origin(origin);
+    }
+
+    pub(crate) fn ancestor_origins(
+        &self,
+        tab: TabId,
+        frame: renderer::FrameId,
+    ) -> Vec<url::Origin> {
+        self.lock()
+            .get(&tab)
+            .map_or_default(|record| record.frames.ancestor_origins(frame))
+    }
+
     pub(crate) fn reset_main_sandbox(&self, tab: TabId, csp: renderer::SandboxFlags) {
         self.lock()
             .entry(tab)

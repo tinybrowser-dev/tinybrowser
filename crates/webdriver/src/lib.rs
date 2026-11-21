@@ -30,7 +30,6 @@ impl Router {
     pub fn new(browser: BrowserHandle) -> Self {
         let sessions = Arc::new(Mutex::new(Sessions {
             browser,
-            next_session: 0,
             next_window: 0,
             open: HashMap::new(),
         }));
@@ -101,12 +100,10 @@ async fn serve_request(request: Request, state: AppState) -> Response {
 }
 
 // https://w3c.github.io/webdriver/#new-session
-fn random_session_id(fallback: u32) -> String {
+fn random_session_id() -> Result<String, String> {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut bytes = [0u8; 16];
-    if getrandom::fill(&mut bytes).is_err() {
-        return format!("s{fallback}");
-    }
+    getrandom::fill(&mut bytes).map_err(|_| "failed to generate session id".to_owned())?;
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     let mut out = String::with_capacity(36);
@@ -117,12 +114,11 @@ fn random_session_id(fallback: u32) -> String {
         out.push(HEX[usize::from(byte >> 4)] as char);
         out.push(HEX[usize::from(byte & 0x0f)] as char);
     }
-    out
+    Ok(out)
 }
 
 struct Sessions {
     browser: BrowserHandle,
-    next_session: u32,
     next_window: u32,
     open: HashMap<String, Session>,
 }
@@ -187,8 +183,7 @@ impl Sessions {
     }
 
     async fn create(&mut self) -> Result<String, String> {
-        self.next_session += 1;
-        let id = random_session_id(self.next_session);
+        let id = random_session_id()?;
         let mut windows = HashMap::new();
         let mut current = None;
         if let Ok(ids) = self.browser.tabs().await {

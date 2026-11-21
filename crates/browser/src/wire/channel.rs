@@ -7,7 +7,7 @@ pub const PROTOCOL_VERSION: u8 = 26;
 
 pub const HEADER_BYTES: usize = 16;
 
-pub const MAX_CONTROL_BYTES: usize = 24 * 1024 * 1024;
+pub const MAX_CONTROL_BYTES: usize = 16 * 1024 * 1024;
 
 pub const MAX_BODY_CHUNK_BYTES: usize = 64 * 1024;
 

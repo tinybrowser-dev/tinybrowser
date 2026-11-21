@@ -371,12 +371,35 @@ impl Agent {
         self.jar().restore(records, self.clock.now());
     }
 
+    // https://www.rfc-editor.org/rfc/rfc9111#section-4.1
+    #[must_use]
+    pub fn outbound_cookie_header(&self, request: &Request) -> Option<String> {
+        let cross_origin = request.cors.origin != request.url.origin();
+        if !crate::cors::credentials_admitted(request.cors.credentials, cross_origin) {
+            return None;
+        }
+        let operation = CookieOp {
+            url: &request.url,
+            now: self.clock.now(),
+            kind: RetrievalKind::Http,
+            initiator_kind: request.initiator_kind,
+            method_is_safe: request.method.is_safe(),
+            initiator: request.initiator.as_ref(),
+            cross_site_redirect: false,
+            same_site_policy: request.same_site_cookie_policy,
+            partition_key: request.partition_key.as_deref(),
+        };
+        let cookie = self.jar().cookie_string(operation);
+        (!cookie.is_empty()).then_some(cookie)
+    }
+
     fn prepare_outbound(
         &self,
         identity: &crate::ValidIdentity,
         headers: &mut HeaderMap,
         operation: CookieOp<'_>,
     ) -> Result<(), NetError> {
+        headers.remove("cookie");
         let cookie = self.jar().cookie_string(operation);
         if !cookie.is_empty() {
             let value = HeaderValue::from_str(&cookie).map_err(|_| NetError::RejectedRequest)?;

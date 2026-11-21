@@ -13,6 +13,7 @@ struct FrameEntry {
     parent: FrameId,
     creation: SandboxFlags,
     active: SandboxFlags,
+    origin: Option<url::Origin>,
     site: Option<Site>,
 }
 
@@ -20,10 +21,40 @@ struct FrameEntry {
 pub(crate) struct FrameTree {
     popup_sandbox: SandboxFlags,
     main_csp: SandboxFlags,
+    main_origin: Option<url::Origin>,
     children: HashMap<FrameId, FrameEntry>,
 }
 
 impl FrameTree {
+    pub(crate) fn set_main_origin(&mut self, origin: url::Origin) {
+        self.main_origin = Some(origin);
+    }
+
+    pub(crate) fn ancestor_origins(&self, frame: FrameId) -> Vec<url::Origin> {
+        let mut ancestors = Vec::new();
+        let mut current = self.children.get(&frame).map(|entry| entry.parent);
+        let mut steps = 0usize;
+        while let Some(parent) = current {
+            if steps > self.children.len() {
+                break;
+            }
+            steps += 1;
+            if parent == FrameId::MAIN {
+                if let Some(origin) = &self.main_origin {
+                    ancestors.push(origin.clone());
+                }
+                break;
+            }
+            let Some(entry) = self.children.get(&parent) else {
+                break;
+            };
+            if let Some(origin) = &entry.origin {
+                ancestors.push(origin.clone());
+            }
+            current = Some(entry.parent);
+        }
+        ancestors
+    }
     // https://html.spec.whatwg.org/multipage/browsers.html#popup-sandboxing-flag-set
     pub(crate) fn set_popup_sandbox(&mut self, sandbox: SandboxFlags) {
         self.popup_sandbox = sandbox;
@@ -67,6 +98,7 @@ impl FrameTree {
                 parent,
                 creation,
                 active: creation,
+                origin: None,
                 site: None,
             },
         );
@@ -86,11 +118,13 @@ impl FrameTree {
         }
         if let Some(entry) = self.children.get_mut(&frame) {
             entry.active = entry.creation.union(csp);
-            entry.site = if entry.active.origin_is_opaque() {
-                None
+            if entry.active.origin_is_opaque() {
+                entry.origin = Some(url::Origin::new_opaque());
+                entry.site = None;
             } else {
-                Site::for_url(url)
-            };
+                entry.origin = Some(url.origin());
+                entry.site = Site::for_url(url);
+            }
         }
     }
 

@@ -262,7 +262,8 @@ impl TabNetworkHandle {
         source: Option<&NavigationInitiator>,
     ) -> Result<NavOutcome, DialFailure> {
         let started = Instant::now();
-        logging::trace!(target: "browser::net", "nav start {url}");
+        let redacted = crate::actor::log_url(url);
+        logging::trace!(target: "browser::net", "nav start {redacted}");
         let deadline = started + dial::PAGE_FETCH_TIMEOUT;
         let permits = Self::acquire(&self.permits.navigation, deadline).await?;
         let mut request = Request::new(Method::GET, url.clone());
@@ -293,17 +294,17 @@ impl TabNetworkHandle {
             Err(error) => {
                 logging::trace!(
                     target: "browser::net",
-                    "nav failed {url} in {:?}: {error:?}",
+                    "nav failed {redacted} in {:?}: {error:?}",
                     started.elapsed()
                 );
                 return Err(dial_failure(&error));
             }
         };
         let status = response.status();
-        let final_url = response.final_url();
+        let final_url = crate::actor::log_url(response.final_url());
         logging::trace!(
             target: "browser::net",
-            "nav head {url} -> {status} {final_url} in {:?}",
+            "nav head {redacted} -> {status} {final_url} in {:?}",
             started.elapsed()
         );
         // https://html.spec.whatwg.org/multipage/document-lifecycle.html#initialise-the-document-object
@@ -328,7 +329,7 @@ impl TabNetworkHandle {
             target: "browser::net",
             "request start {:?} {}",
             request.policy.kind(),
-            request.url
+            crate::actor::log_url(&request.url)
         );
         let admission = TabAdmission {
             global: &self.permits.global,
@@ -382,7 +383,7 @@ impl TabNetworkHandle {
             store,
             permits,
             kind: request.policy.kind(),
-            url: request.url.to_string(),
+            url: crate::actor::log_url(&request.url),
             tx,
         });
         let id = StreamId::mint(self.next_stream.fetch_add(1, Ordering::Relaxed));
@@ -561,20 +562,19 @@ fn trace_dial_result(
     started: Instant,
     result: Result<&DialOutcome, &DialFailure>,
 ) {
+    let url = crate::actor::log_url(&request.url);
     match result {
         Ok(outcome) => logging::trace!(
             target: "browser::net",
-            "request done {:?} {} -> {} in {:?}",
+            "request done {:?} {url} -> {} in {:?}",
             request.policy.kind(),
-            request.url,
             outcome.status,
             started.elapsed()
         ),
         Err(failure) => logging::trace!(
             target: "browser::net",
-            "request failed {:?} {} in {:?}: {failure:?}",
+            "request failed {:?} {url} in {:?}: {failure:?}",
             request.policy.kind(),
-            request.url,
             started.elapsed()
         ),
     }

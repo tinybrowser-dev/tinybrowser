@@ -37,13 +37,33 @@ pub(crate) enum AddressSpace {
 
 const MAX_HOST_SPACES: usize = 4096;
 
+fn unwrap_embedded_ipv4(ip: IpAddr) -> IpAddr {
+    let IpAddr::V6(v6) = ip else {
+        return ip;
+    };
+    if let Some(v4) = v6.to_ipv4_mapped() {
+        return IpAddr::V4(v4);
+    }
+    let s = v6.segments();
+    // https://www.rfc-editor.org/rfc/rfc6052#section-2.1
+    if s[0] == 0x0064 && s[1] == 0xff9b && s[2] == 0 && s[3] == 0 && s[4] == 0 && s[5] == 0 {
+        return IpAddr::V4(Ipv4Addr::from((u32::from(s[6]) << 16) | u32::from(s[7])));
+    }
+    // https://www.rfc-editor.org/rfc/rfc3056#section-2
+    if s[0] == 0x2002 {
+        return IpAddr::V4(Ipv4Addr::from((u32::from(s[1]) << 16) | u32::from(s[2])));
+    }
+    // https://www.rfc-editor.org/rfc/rfc4380#section-4
+    if s[0] == 0x2001 && s[1] == 0x0000 {
+        let inverted = ((u32::from(s[6]) << 16) | u32::from(s[7])) ^ 0xffff_ffff;
+        return IpAddr::V4(Ipv4Addr::from(inverted));
+    }
+    IpAddr::V6(v6)
+}
+
 // https://wicg.github.io/private-network-access/#ip-address-space
 pub(crate) fn classify_ip(ip: IpAddr) -> AddressSpace {
-    let ip = match ip {
-        IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(IpAddr::V6(v6), IpAddr::V4),
-        IpAddr::V4(v4) => IpAddr::V4(v4),
-    };
-    match ip {
+    match unwrap_embedded_ipv4(ip) {
         IpAddr::V4(v4) => {
             let octets = v4.octets();
             if v4.is_loopback() || octets[0] == 0 {
@@ -73,12 +93,17 @@ pub(crate) fn classify_ip(ip: IpAddr) -> AddressSpace {
 pub(crate) fn is_cloud_metadata(ip: IpAddr) -> bool {
     const IMDS_V4: Ipv4Addr = Ipv4Addr::new(169, 254, 169, 254);
     const ECS_V4: Ipv4Addr = Ipv4Addr::new(169, 254, 170, 2);
+    const ALIBABA_V4: Ipv4Addr = Ipv4Addr::new(100, 100, 100, 200);
+    const ORACLE_V4: Ipv4Addr = Ipv4Addr::new(192, 0, 0, 192);
     const IMDS_V6: Ipv6Addr = Ipv6Addr::new(0xfd00, 0x0ec2, 0, 0, 0, 0, 0, 0x0254);
-    let ip = match ip {
-        IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(IpAddr::V6(v6), IpAddr::V4),
-        IpAddr::V4(v4) => IpAddr::V4(v4),
-    };
-    matches!(ip, IpAddr::V4(IMDS_V4 | ECS_V4) | IpAddr::V6(IMDS_V6))
+    matches!(
+        unwrap_embedded_ipv4(ip),
+        IpAddr::V4(IMDS_V4 | ECS_V4 | ALIBABA_V4 | ORACLE_V4) | IpAddr::V6(IMDS_V6)
+    )
+}
+
+fn normalize_host(host: &str) -> String {
+    host.trim_end_matches('.').to_ascii_lowercase()
 }
 
 #[derive(Clone)]
@@ -98,7 +123,7 @@ impl Service<Name> for HostResolver {
     }
 
     fn call(&mut self, name: Name) -> Self::Future {
-        let key = name.as_str().to_ascii_lowercase();
+        let key = normalize_host(name.as_str());
         if let Some(addrs) = self
             .pinned
             .lock()
@@ -281,7 +306,7 @@ impl HttpEngine {
                 url::Host::Ipv4(v4) => classify_ip(IpAddr::V4(*v4)),
                 url::Host::Ipv6(v6) => classify_ip(IpAddr::V6(*v6)),
                 url::Host::Domain(domain) => {
-                    let lower = domain.to_ascii_lowercase();
+                    let lower = normalize_host(domain);
                     if lower == "localhost" || lower.ends_with(".localhost") {
                         AddressSpace::Local
                     } else if let Some(Target::Addr(ip)) = self.host_map.lookup(&lower) {
@@ -310,7 +335,7 @@ impl HttpEngine {
         if self.proxied.is_some() || host.is_empty() || self.host_map.lookup(host).is_some() {
             return Ok(());
         }
-        let lower = host.to_ascii_lowercase();
+        let lower = normalize_host(host);
         let literal = lower
             .strip_prefix('[')
             .and_then(|rest| rest.strip_suffix(']'))
@@ -344,6 +369,7 @@ impl HttpEngine {
             .map(|addr| classify_ip(addr.ip()))
             .min()
             .unwrap_or(AddressSpace::Public);
+        let initiator_space = self.initiator_space(initiator);
         if literal.is_none() {
             let mut spaces = self
                 .host_spaces
@@ -354,23 +380,21 @@ impl HttpEngine {
             {
                 return Err(NetError::RejectedRequest);
             }
-            if spaces.len() >= MAX_HOST_SPACES {
-                spaces.clear();
+            if spaces.len() < MAX_HOST_SPACES {
+                spaces.entry(lower.clone()).or_insert(target_space);
             }
-            spaces.insert(lower.clone(), target_space);
         }
         if initiator_kind != cookies::InitiatorKind::Navigation
-            && let Some(initiator_space) = self.initiator_space(initiator)
+            && let Some(initiator_space) = initiator_space
             && target_space < initiator_space
         {
             return Err(NetError::RejectedRequest);
         }
         if literal.is_none() {
             let mut pinned = self.pinned.lock().unwrap_or_else(PoisonError::into_inner);
-            if pinned.len() >= MAX_HOST_SPACES {
-                pinned.clear();
+            if pinned.len() < MAX_HOST_SPACES {
+                pinned.insert(lower, resolved);
             }
-            pinned.insert(lower, resolved);
         }
         Ok(())
     }
@@ -565,6 +589,17 @@ mod tests {
             ("100.64.0.1", AddressSpace::Private),
             ("169.254.169.254", AddressSpace::Private),
             ("::ffff:169.254.169.254", AddressSpace::Private),
+            ("64:ff9b::127.0.0.1", AddressSpace::Local),
+            ("64:ff9b::10.0.0.1", AddressSpace::Private),
+            ("2002:7f00:0001::1", AddressSpace::Local),
+            (
+                "2001:0000:4136:e378:8000:63bf:3fff:fdd2",
+                AddressSpace::Public,
+            ),
+            (
+                "2001:0000:4136:e378:8000:63bf:80ff:fffe",
+                AddressSpace::Local,
+            ),
             ("fc00::1", AddressSpace::Private),
             ("fe80::1", AddressSpace::Private),
             ("93.184.216.34", AddressSpace::Public),
@@ -577,6 +612,11 @@ mod tests {
         assert!(is_cloud_metadata(
             "::ffff:169.254.169.254".parse().expect("ip")
         ));
+        assert!(is_cloud_metadata(
+            "64:ff9b::169.254.169.254".parse().expect("ip")
+        ));
+        assert!(is_cloud_metadata("100.100.100.200".parse().expect("ip")));
+        assert!(is_cloud_metadata("192.0.0.192".parse().expect("ip")));
         assert!(is_cloud_metadata("fd00:ec2::254".parse().expect("ip")));
         assert!(!is_cloud_metadata("127.0.0.1".parse().expect("ip")));
     }

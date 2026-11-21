@@ -212,7 +212,7 @@ pub fn outbound_request<S: BuildHasher>(
     }
     for (name, value) in &request.headers {
         let encoded = isomorphic_encode(value).ok_or(DialFailure::Connect)?;
-        if kind == DialKind::JsFetch && net::cors::is_forbidden_request_header(name, &encoded) {
+        if net::cors::is_forbidden_request_header(name, &encoded) {
             continue;
         }
         if page_no_cors && !net::cors::is_no_cors_safelisted_request_header(name, &encoded) {

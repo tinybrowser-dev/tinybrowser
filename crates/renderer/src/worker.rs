@@ -341,6 +341,7 @@ impl WorkerDirectory {
 
     // https://html.spec.whatwg.org/multipage/workers.html#dom-worker
     pub(crate) fn spawn_dedicated(self: &Arc<Self>, created: CreatedWorker) -> WorkerId {
+        const MAX_DEDICATED_WORKERS: usize = 64;
         let id = created.id;
         let (commands, received) = std::sync::mpsc::channel();
         let state = WorkerThreadState {
@@ -361,7 +362,16 @@ impl WorkerDirectory {
             next_timer: TimerId::default(),
             closed_local: false,
         };
-        self.workers().insert(id, handle);
+        {
+            let mut workers = self.workers();
+            workers.retain(|_, worker| !worker.is_closed());
+            if workers.len() >= MAX_DEDICATED_WORKERS {
+                state.closed.store(true, Ordering::Release);
+                state.active.store(0, Ordering::Release);
+                return id;
+            }
+            workers.insert(id, handle);
+        }
 
         let directory = Arc::clone(self);
         let thread_state = WorkerThreadState {

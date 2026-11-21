@@ -29,7 +29,7 @@ const MAX_WAITERS: usize = 256;
 const MAX_SUBSCRIBERS: usize = 256;
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
-fn log_url(url: &Url) -> String {
+pub(crate) fn log_url(url: &Url) -> String {
     let mut logged = url.clone();
     if logged.set_username("").is_ok() {
         let _ = logged.set_password(None);
@@ -974,6 +974,8 @@ impl Tab {
     fn advance_document_url(&mut self, url: Url) {
         if url.scheme() != "about" {
             self.document_origin = url.origin();
+            self.tabs
+                .set_main_origin(self.id, self.document_origin.clone());
         }
         self.document_url = url;
     }
@@ -1136,6 +1138,13 @@ impl Tab {
                     // https://html.spec.whatwg.org/multipage/browsing-the-web.html#finalize-a-cross-document-navigation
                     self.history.commit_url(frame, url);
                     self.sync_histories().await;
+                    return;
+                }
+                if self
+                    .site
+                    .as_ref()
+                    .is_some_and(|site| !site.allows_url(&url))
+                {
                     return;
                 }
                 // https://html.spec.whatwg.org/multipage/browsing-the-web.html#resetBCName

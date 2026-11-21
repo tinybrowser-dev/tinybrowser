@@ -24,6 +24,14 @@ impl Site {
         Self::Opaque(tab)
     }
 
+    #[must_use]
+    pub(crate) fn as_partition_key(&self) -> Option<&str> {
+        match self {
+            Self::Tuple(site) => Some(site.as_str()),
+            Self::Opaque(_) => None,
+        }
+    }
+
     // https://url.spec.whatwg.org/#origin
     // https://chromium.googlesource.com/chromium/src/+/main/docs/process_model_and_site_isolation.md#process-locks
     #[must_use]

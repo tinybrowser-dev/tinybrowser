@@ -576,7 +576,6 @@ async fn route_service_call(
             let registry = context.registry.clone();
             let tabs = context.tabs.clone();
             let tab_id = assignment.tab;
-            let main_site = assignment.site.clone();
             tokio::spawn(async move {
                 let mut outcome = race_dial(
                     &worker_network,
@@ -619,7 +618,8 @@ async fn route_service_call(
                     && frame != FrameId::MAIN
                     && let Ok(head) = &outcome
                 {
-                    if frame_blocked_by_headers(&head.headers, &head.final_url, &main_site) {
+                    let ancestors = tabs.ancestor_origins(tab_id, frame);
+                    if frame_blocked_by_headers(&head.headers, &head.final_url, &ancestors) {
                         if let renderer::ResponseBody::Streamed(stream) = &head.body {
                             worker_network.cancel_stream(assignment_id, *stream);
                         }
@@ -736,31 +736,34 @@ fn navigable_popup_url(url: Url) -> Option<Url> {
 fn frame_blocked_by_headers(
     headers: &[(String, String)],
     url: &Url,
-    main_site: &crate::site::Site,
+    ancestors: &[url::Origin],
 ) -> bool {
+    let target_origin = url.origin();
     let mut has_frame_ancestors = false;
     for (name, value) in headers {
-        if name.eq_ignore_ascii_case("content-security-policy") {
-            for policy in value.split(',') {
-                for directive in policy.split(';') {
-                    let mut tokens = directive.split_ascii_whitespace();
-                    let Some(directive_name) = tokens.next() else {
-                        continue;
-                    };
-                    if !directive_name.eq_ignore_ascii_case("frame-ancestors") {
-                        continue;
-                    }
-                    has_frame_ancestors = true;
-                    let sources: Vec<&str> = tokens.collect();
-                    if sources.len() == 1 && sources[0].eq_ignore_ascii_case("'none'") {
-                        return true;
-                    }
-                    if sources.len() == 1
-                        && sources[0].eq_ignore_ascii_case("'self'")
-                        && !main_site.allows_url(url)
-                    {
-                        return true;
-                    }
+        if !name.eq_ignore_ascii_case("content-security-policy") {
+            continue;
+        }
+        for policy in value.split(',') {
+            for directive in policy.split(';') {
+                let mut tokens = directive.split_ascii_whitespace();
+                let Some(directive_name) = tokens.next() else {
+                    continue;
+                };
+                if !directive_name.eq_ignore_ascii_case("frame-ancestors") {
+                    continue;
+                }
+                let sources: Vec<&str> = tokens.collect();
+                if sources.is_empty() {
+                    continue;
+                }
+                has_frame_ancestors = true;
+                if ancestors.iter().any(|ancestor| {
+                    !sources
+                        .iter()
+                        .any(|source| ancestor_matches_source(ancestor, &target_origin, source))
+                }) {
+                    return true;
                 }
             }
         }
@@ -776,11 +779,68 @@ fn frame_blocked_by_headers(
         if trimmed.eq_ignore_ascii_case("deny") {
             return true;
         }
-        if trimmed.eq_ignore_ascii_case("sameorigin") && !main_site.allows_url(url) {
+        if trimmed.eq_ignore_ascii_case("sameorigin")
+            && ancestors.iter().any(|ancestor| ancestor != &target_origin)
+        {
             return true;
         }
     }
     false
+}
+
+fn ancestor_matches_source(
+    ancestor: &url::Origin,
+    target_origin: &url::Origin,
+    source: &str,
+) -> bool {
+    if source.eq_ignore_ascii_case("'none'") {
+        return false;
+    }
+    if source.eq_ignore_ascii_case("'self'") {
+        return ancestor == target_origin;
+    }
+    let url::Origin::Tuple(scheme, host, port) = ancestor else {
+        return false;
+    };
+    if source == "*" {
+        return matches!(scheme.as_str(), "http" | "https");
+    }
+    if let Some(required_scheme) = source.strip_suffix(':') {
+        return scheme.eq_ignore_ascii_case(required_scheme);
+    }
+    let (required_scheme, rest) = match source.split_once("://") {
+        Some((s, r)) => (Some(s), r),
+        None => (None, source),
+    };
+    if let Some(required) = required_scheme
+        && !scheme.eq_ignore_ascii_case(required)
+    {
+        return false;
+    }
+    let authority = rest.split('/').next().unwrap_or(rest);
+    let (host_pattern, required_port) = match authority.rsplit_once(':') {
+        Some((h, p)) if !h.contains(']') => (h, Some(p)),
+        _ => (authority, None),
+    };
+    if let Some(req_port) = required_port {
+        if req_port != "*" && req_port.parse::<u16>().ok() != Some(*port) {
+            return false;
+        }
+    } else if required_scheme.is_some()
+        && let url::Origin::Tuple(target_scheme, _, target_port) = target_origin
+        && scheme == target_scheme
+        && port != target_port
+    {
+        return false;
+    }
+    let host_str = host.to_string();
+    if let Some(suffix) = host_pattern.strip_prefix("*.") {
+        let suffix = suffix.to_ascii_lowercase();
+        let host_lower = host_str.to_ascii_lowercase();
+        host_lower.ends_with(&format!(".{suffix}"))
+    } else {
+        host_str.eq_ignore_ascii_case(host_pattern)
+    }
 }
 
 fn window_initiator(
@@ -1106,28 +1166,24 @@ impl StorageRouter<'_> {
                 let origin = self.key(&origin)?;
                 self.remote_session_get(window, &origin, &key).await
             }
-            StorageCall::CookieGet { url, partition_key } => {
-                self.cookie_get(&url, partition_key.as_deref()).await
-            }
+            StorageCall::CookieGet {
+                url,
+                partition_key: _,
+            } => self.cookie_get(&url).await,
             StorageCall::CookieSet {
                 value,
                 url,
-                partition_key,
-            } => {
-                self.cookie_set(&value, &url, partition_key.as_deref())
-                    .await
-            }
-            StorageCall::CookieStoreGet { url, partition_key } => {
-                self.cookie_store_get(&url, partition_key.as_deref()).await
-            }
+                partition_key: _,
+            } => self.cookie_set(&value, &url).await,
+            StorageCall::CookieStoreGet {
+                url,
+                partition_key: _,
+            } => self.cookie_store_get(&url).await,
             StorageCall::CookieStoreSet {
                 write,
                 url,
-                partition_key,
-            } => {
-                self.cookie_store_set(&write, &url, partition_key.as_deref())
-                    .await
-            }
+                partition_key: _,
+            } => self.cookie_store_set(&write, &url).await,
         }
     }
 
@@ -1150,11 +1206,9 @@ impl StorageRouter<'_> {
     }
 
     // https://chromium.googlesource.com/chromium/src/+/main/docs/process_model_and_site_isolation.md#process-locks
-    async fn cookie_get(
-        &self,
-        url: &str,
-        partition_key: Option<&str>,
-    ) -> Result<(), RendererViolation> {
+    // https://privacycg.github.io/CHIPS/
+    async fn cookie_get(&self, url: &str) -> Result<(), RendererViolation> {
+        let partition_key = self.authority.site.as_partition_key();
         let cookies = self
             .context
             .tabs
@@ -1173,12 +1227,8 @@ impl StorageRouter<'_> {
         .await
     }
 
-    async fn cookie_set(
-        &self,
-        value: &str,
-        url: &str,
-        partition_key: Option<&str>,
-    ) -> Result<(), RendererViolation> {
+    async fn cookie_set(&self, value: &str, url: &str) -> Result<(), RendererViolation> {
+        let partition_key = self.authority.site.as_partition_key();
         if let Some(url) =
             self.context
                 .tabs
@@ -1192,11 +1242,8 @@ impl StorageRouter<'_> {
         send_reply(&self.context.responder, self.request, ServiceReply::Unit).await
     }
 
-    async fn cookie_store_get(
-        &self,
-        url: &str,
-        partition_key: Option<&str>,
-    ) -> Result<(), RendererViolation> {
+    async fn cookie_store_get(&self, url: &str) -> Result<(), RendererViolation> {
+        let partition_key = self.authority.site.as_partition_key();
         let records = self
             .context
             .tabs
@@ -1219,8 +1266,8 @@ impl StorageRouter<'_> {
         &self,
         write: &net::ScriptCookieWrite,
         url: &str,
-        partition_key: Option<&str>,
     ) -> Result<(), RendererViolation> {
+        let partition_key = self.authority.site.as_partition_key();
         if let Some(url) =
             self.context
                 .tabs
@@ -1563,6 +1610,29 @@ pub(crate) struct RendererServices {
     pub(crate) tabs: TabRegistry,
 }
 
+fn renderer_command() -> io::Result<Command> {
+    let mut command = Command::new(std::env::current_exe()?);
+    command
+        .arg("--renderer")
+        .env_clear()
+        .env("TINYBROWSER_LOG", logging::level().as_str())
+        .stderr(Stdio::piped());
+    for key in [
+        "FONTCONFIG_FILE",
+        "FONTCONFIG_PATH",
+        "XDG_DATA_DIRS",
+        "LANG",
+        "LC_ALL",
+        "TZ",
+        "SYSTEMROOT",
+    ] {
+        if let Ok(value) = std::env::var(key) {
+            command.env(key, value);
+        }
+    }
+    Ok(command)
+}
+
 pub(crate) async fn spawn_process(
     id: RendererId,
     site: Option<Site>,
@@ -1577,11 +1647,7 @@ pub(crate) async fn spawn_process(
         registry,
         tabs,
     } = services;
-    let mut command = Command::new(std::env::current_exe()?);
-    command
-        .arg("--renderer")
-        .env("TINYBROWSER_LOG", logging::level().as_str())
-        .stderr(Stdio::piped());
+    let mut command = renderer_command()?;
     let SpawnedRenderer {
         mut child,
         reader,
@@ -1729,5 +1795,85 @@ mod tests {
             tab,
             "an iframe's flags reach its popup through the claim"
         );
+    }
+
+    // https://w3c.github.io/webappsec-csp/#directive-frame-ancestors
+    // https://html.spec.whatwg.org/multipage/document-lifecycle.html#the-x-frame-options-header
+    #[test]
+    fn frame_ancestors_and_xfo_enforce_exact_ancestor_chain() {
+        let target = url::Url::parse("https://app.example.test/embed").expect("target");
+        let same_origin = target.origin();
+        let same_site_other = url::Url::parse("https://other.example.test/")
+            .expect("url")
+            .origin();
+        let partner = url::Url::parse("https://partner.test/")
+            .expect("url")
+            .origin();
+        let sub_partner = url::Url::parse("https://sub.partner.test/")
+            .expect("url")
+            .origin();
+        let evil = url::Url::parse("https://evilpartner.test/")
+            .expect("url")
+            .origin();
+
+        let csp_self = vec![(
+            "content-security-policy".to_owned(),
+            "frame-ancestors 'self'".to_owned(),
+        )];
+        assert!(!super::frame_blocked_by_headers(
+            &csp_self,
+            &target,
+            std::slice::from_ref(&same_origin),
+        ));
+        assert!(super::frame_blocked_by_headers(
+            &csp_self,
+            &target,
+            std::slice::from_ref(&same_site_other),
+        ));
+
+        let csp_allow = vec![(
+            "content-security-policy".to_owned(),
+            "frame-ancestors https://partner.test *.partner.test".to_owned(),
+        )];
+        assert!(!super::frame_blocked_by_headers(
+            &csp_allow,
+            &target,
+            &[partner, sub_partner],
+        ));
+        assert!(super::frame_blocked_by_headers(
+            &csp_allow,
+            &target,
+            std::slice::from_ref(&evil),
+        ));
+
+        let empty_fa_plus_xfo = vec![
+            (
+                "content-security-policy".to_owned(),
+                "frame-ancestors".to_owned(),
+            ),
+            ("x-frame-options".to_owned(), "DENY".to_owned()),
+        ];
+        assert!(super::frame_blocked_by_headers(
+            &empty_fa_plus_xfo,
+            &target,
+            std::slice::from_ref(&same_origin),
+        ));
+
+        let xfo_sameorigin = vec![("x-frame-options".to_owned(), "SAMEORIGIN".to_owned())];
+        assert!(!super::frame_blocked_by_headers(
+            &xfo_sameorigin,
+            &target,
+            std::slice::from_ref(&same_origin),
+        ));
+        assert!(super::frame_blocked_by_headers(
+            &xfo_sameorigin,
+            &target,
+            &[same_origin, evil],
+        ));
+        assert!(super::frame_blocked_by_headers(
+            &xfo_sameorigin,
+            &target,
+            &[same_site_other],
+        ));
     }
 }

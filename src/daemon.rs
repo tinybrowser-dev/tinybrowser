@@ -176,15 +176,33 @@ fn restrict_file(path: &Path) -> io::Result<()> {
 }
 
 fn write_endpoint(runtime: &Path, endpoint: &DaemonEndpoint) -> io::Result<()> {
+    use std::io::Write as _;
+
     let path = runtime.join("daemon.json");
-    let tmp = runtime.join("daemon.json.tmp");
+    let tmp = runtime.join(format!("daemon.{}.tmp", endpoint.pid));
     let body = json!({
         "pid": endpoint.pid,
         "host": endpoint.host,
         "port": endpoint.port,
     });
-    fs::write(&tmp, body.to_string())?;
-    restrict_file(&tmp)?;
-    fs::rename(&tmp, &path)?;
-    restrict_file(&path)
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let write_result = (|| -> io::Result<()> {
+        let mut file = options.open(&tmp)?;
+        restrict_file(&tmp)?;
+        file.write_all(body.to_string().as_bytes())?;
+        file.sync_all()?;
+        fs::rename(&tmp, &path)?;
+        restrict_file(&path)
+    })();
+    if let Err(error) = write_result {
+        let _removed = fs::remove_file(&tmp);
+        return Err(error);
+    }
+    Ok(())
 }
