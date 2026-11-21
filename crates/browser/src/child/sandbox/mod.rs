@@ -7,6 +7,9 @@ mod macos;
 #[cfg(target_os = "windows")]
 mod windows;
 
+#[cfg(windows)]
+pub(crate) use windows::ProcessJob;
+
 use std::io;
 
 pub(super) fn engage() -> io::Result<()> {

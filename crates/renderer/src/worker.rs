@@ -341,7 +341,7 @@ impl WorkerDirectory {
 
     // https://html.spec.whatwg.org/multipage/workers.html#dom-worker
     pub(crate) fn spawn_dedicated(self: &Arc<Self>, created: CreatedWorker) -> WorkerId {
-        const MAX_DEDICATED_WORKERS: usize = 64;
+        const MAX_DEDICATED_WORKERS: usize = 16;
         let id = created.id;
         let (commands, received) = std::sync::mpsc::channel();
         let state = WorkerThreadState {

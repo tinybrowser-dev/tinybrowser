@@ -71,6 +71,8 @@ pub(crate) fn classify_ip(ip: IpAddr) -> AddressSpace {
             } else if v4.is_private()
                 || v4.is_link_local()
                 || (octets[0] == 100 && (octets[1] & 0xc0) == 64)
+                || (octets[0] == 192 && octets[1] == 0 && octets[2] == 0)
+                || (octets[0] == 198 && (octets[1] & 0xfe) == 18)
             {
                 AddressSpace::Private
             } else {
@@ -78,10 +80,14 @@ pub(crate) fn classify_ip(ip: IpAddr) -> AddressSpace {
             }
         }
         IpAddr::V6(v6) => {
-            let first = v6.segments()[0];
+            let s = v6.segments();
             if v6.is_loopback() || v6.is_unspecified() {
                 AddressSpace::Local
-            } else if (first & 0xfe00) == 0xfc00 || (first & 0xffc0) == 0xfe80 {
+            } else if (s[0] & 0xfe00) == 0xfc00
+                || (s[0] & 0xffc0) == 0xfe80
+                || (s[0] == 0x2001 && s[1] == 0x0db8)
+                || (s[0] == 0x0064 && s[1] == 0xff9b && s[2] == 0x0001)
+            {
                 AddressSpace::Private
             } else {
                 AddressSpace::Public
@@ -375,13 +381,14 @@ impl HttpEngine {
                 .host_spaces
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            if let Some(&previous) = spaces.get(&lower)
-                && target_space < previous
-            {
+            if let Some(&previous) = spaces.get(&lower) {
+                if target_space < previous {
+                    return Err(NetError::RejectedRequest);
+                }
+            } else if spaces.len() >= MAX_HOST_SPACES {
                 return Err(NetError::RejectedRequest);
-            }
-            if spaces.len() < MAX_HOST_SPACES {
-                spaces.entry(lower.clone()).or_insert(target_space);
+            } else {
+                spaces.insert(lower.clone(), target_space);
             }
         }
         if initiator_kind != cookies::InitiatorKind::Navigation
@@ -392,9 +399,10 @@ impl HttpEngine {
         }
         if literal.is_none() {
             let mut pinned = self.pinned.lock().unwrap_or_else(PoisonError::into_inner);
-            if pinned.len() < MAX_HOST_SPACES {
-                pinned.insert(lower, resolved);
+            if !pinned.contains_key(&lower) && pinned.len() >= MAX_HOST_SPACES {
+                return Err(NetError::RejectedRequest);
             }
+            pinned.insert(lower, resolved);
         }
         Ok(())
     }
@@ -587,10 +595,14 @@ mod tests {
             ("172.16.0.1", AddressSpace::Private),
             ("192.168.1.1", AddressSpace::Private),
             ("100.64.0.1", AddressSpace::Private),
+            ("192.0.0.1", AddressSpace::Private),
+            ("198.18.0.1", AddressSpace::Private),
             ("169.254.169.254", AddressSpace::Private),
             ("::ffff:169.254.169.254", AddressSpace::Private),
             ("64:ff9b::127.0.0.1", AddressSpace::Local),
             ("64:ff9b::10.0.0.1", AddressSpace::Private),
+            ("64:ff9b:1::1", AddressSpace::Private),
+            ("2001:db8::1", AddressSpace::Private),
             ("2002:7f00:0001::1", AddressSpace::Local),
             (
                 "2001:0000:4136:e378:8000:63bf:3fff:fdd2",

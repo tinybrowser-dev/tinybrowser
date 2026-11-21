@@ -47,6 +47,7 @@ use crate::protocol::{DialRequest, FrameId, ReferrerRequest, RequestPolicy, Targ
 pub(crate) use world::{CreatorInfo, NavigationReferrer, PolicyContainer, RealmRequest, World};
 
 const MAX_RUNTIME_MEMORY: usize = 256 * 1024 * 1024;
+const MAX_WORKER_RUNTIME_MEMORY: usize = 64 * 1024 * 1024;
 const MAX_RUNTIME_STACK: usize = 512 * 1024;
 const DEFAULT_SCRIPT_BUDGET: Duration = Duration::from_secs(20);
 pub const TURN_SCRIPT_BUDGET: Duration = Duration::from_secs(45);
@@ -352,7 +353,11 @@ impl JsRealm {
         worker: bool,
     ) -> Result<Self, JsError> {
         let runtime = shared.get()?;
-        runtime.set_memory_limit(MAX_RUNTIME_MEMORY);
+        runtime.set_memory_limit(if worker {
+            MAX_WORKER_RUNTIME_MEMORY
+        } else {
+            MAX_RUNTIME_MEMORY
+        });
         runtime.set_max_stack_size(MAX_RUNTIME_STACK);
         let context = Context::full(&runtime)?;
         let turn_deadline = Rc::clone(&world.borrow().runtime.turn_deadline);

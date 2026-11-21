@@ -813,9 +813,16 @@ fn ancestor_matches_source(
         Some((s, r)) => (Some(s), r),
         None => (None, source),
     };
-    if let Some(required) = required_scheme
-        && !scheme.eq_ignore_ascii_case(required)
-    {
+    if let Some(required) = required_scheme {
+        if !scheme.eq_ignore_ascii_case(required) {
+            return false;
+        }
+    } else if let url::Origin::Tuple(target_scheme, _, _) = target_origin {
+        let scheme_ok = scheme == target_scheme || (target_scheme == "http" && scheme == "https");
+        if !scheme_ok {
+            return false;
+        }
+    } else {
         return false;
     }
     let authority = rest.split('/').next().unwrap_or(rest);
@@ -827,12 +834,15 @@ fn ancestor_matches_source(
         if req_port != "*" && req_port.parse::<u16>().ok() != Some(*port) {
             return false;
         }
-    } else if required_scheme.is_some()
-        && let url::Origin::Tuple(target_scheme, _, target_port) = target_origin
-        && scheme == target_scheme
-        && port != target_port
-    {
-        return false;
+    } else {
+        let default_port = match scheme.as_str() {
+            "http" => Some(80u16),
+            "https" => Some(443u16),
+            _ => None,
+        };
+        if default_port != Some(*port) {
+            return false;
+        }
     }
     let host_str = host.to_string();
     if let Some(suffix) = host_pattern.strip_prefix("*.") {
@@ -1119,16 +1129,20 @@ struct StorageRouter<'a> {
 }
 
 impl StorageRouter<'_> {
+    async fn reply(&self, reply: ServiceReply) -> Result<(), RendererViolation> {
+        send_reply(&self.context.responder, self.request, reply).await
+    }
+
     async fn route(&self, call: StorageCall) -> Result<(), RendererViolation> {
         match call {
-            StorageCall::Get { kind, origin, key } => {
-                let origin = self.key(&origin)?;
-                self.get(kind, &origin, &key).await
-            }
-            StorageCall::Keys { kind, origin } => {
-                let origin = self.key(&origin)?;
-                self.keys(kind, &origin).await
-            }
+            StorageCall::Get { kind, origin, key } => match self.key(&origin) {
+                Some(origin) => self.get(kind, &origin, &key).await,
+                None => self.reply(ServiceReply::StorageValue(None)).await,
+            },
+            StorageCall::Keys { kind, origin } => match self.key(&origin) {
+                Some(origin) => self.keys(kind, &origin).await,
+                None => self.reply(ServiceReply::StorageKeys(Vec::new())).await,
+            },
             StorageCall::Set {
                 kind,
                 origin,
@@ -1136,37 +1150,42 @@ impl StorageRouter<'_> {
                 key,
                 value,
                 source,
-            } => {
-                let origin = self.key(&origin)?;
-                self.set(kind, &origin, &url, &key, &value, source).await
-            }
+            } => match self.key(&origin) {
+                Some(origin) => self.set(kind, &origin, &url, &key, &value, source).await,
+                None => {
+                    self.reply(ServiceReply::StorageChanged(Err(
+                        renderer::StorageError::QuotaExceeded,
+                    )))
+                    .await
+                }
+            },
             StorageCall::Remove {
                 kind,
                 origin,
                 url,
                 key,
                 source,
-            } => {
-                let origin = self.key(&origin)?;
-                self.remove(kind, &origin, &url, &key, source).await
-            }
+            } => match self.key(&origin) {
+                Some(origin) => self.remove(kind, &origin, &url, &key, source).await,
+                None => self.reply(ServiceReply::StorageChanged(Ok(None))).await,
+            },
             StorageCall::Clear {
                 kind,
                 origin,
                 url,
                 source,
-            } => {
-                let origin = self.key(&origin)?;
-                self.clear(kind, &origin, &url, source).await
-            }
+            } => match self.key(&origin) {
+                Some(origin) => self.clear(kind, &origin, &url, source).await,
+                None => self.reply(ServiceReply::StorageChanged(Ok(None))).await,
+            },
             StorageCall::RemoteSessionGet {
                 window,
                 origin,
                 key,
-            } => {
-                let origin = self.key(&origin)?;
-                self.remote_session_get(window, &origin, &key).await
-            }
+            } => match self.key(&origin) {
+                Some(origin) => self.remote_session_get(window, &origin, &key).await,
+                None => self.reply(ServiceReply::StorageValue(None)).await,
+            },
             StorageCall::CookieGet {
                 url,
                 partition_key: _,
@@ -1274,12 +1293,11 @@ impl StorageRouter<'_> {
         send_reply(&self.context.responder, self.request, ServiceReply::Unit).await
     }
 
-    fn key(&self, origin: &renderer::SerializedOrigin) -> Result<StorageKey, RendererViolation> {
+    fn key(&self, origin: &renderer::SerializedOrigin) -> Option<StorageKey> {
         self.authority
             .site
             .authorize_origin(origin)
             .and_then(|origin| StorageKey::from_origin(&origin))
-            .ok_or(RendererViolation)
     }
 
     async fn get(
@@ -1288,7 +1306,6 @@ impl StorageRouter<'_> {
         origin: &StorageKey,
         key: &str,
     ) -> Result<(), RendererViolation> {
-        self.authorize(None)?;
         let value = match kind {
             StorageKind::Local => self.context.partition.local_storage.get(origin, key),
             StorageKind::Session => self.context.sessions.get(self.authority.tab, origin, key),
@@ -1303,7 +1320,6 @@ impl StorageRouter<'_> {
     }
 
     async fn keys(&self, kind: StorageKind, origin: &StorageKey) -> Result<(), RendererViolation> {
-        self.authorize(None)?;
         let keys = match kind {
             StorageKind::Local => self.context.partition.local_storage.keys(origin),
             StorageKind::Session => self.context.sessions.keys(self.authority.tab, origin),
@@ -1326,7 +1342,14 @@ impl StorageRouter<'_> {
         value: &str,
         source: FrameId,
     ) -> Result<(), RendererViolation> {
-        self.authorize(Some(url))?;
+        if !self.authorize_url(url) {
+            return send_reply(
+                &self.context.responder,
+                self.request,
+                ServiceReply::StorageChanged(Err(renderer::StorageError::QuotaExceeded)),
+            )
+            .await;
+        }
         let change = match kind {
             StorageKind::Local => self.context.partition.local_storage.set(origin, key, value),
             StorageKind::Session => {
@@ -1359,7 +1382,14 @@ impl StorageRouter<'_> {
         key: &str,
         source: FrameId,
     ) -> Result<(), RendererViolation> {
-        self.authorize(Some(url))?;
+        if !self.authorize_url(url) {
+            return send_reply(
+                &self.context.responder,
+                self.request,
+                ServiceReply::StorageChanged(Ok(None)),
+            )
+            .await;
+        }
         let change = match kind {
             StorageKind::Local => self.context.partition.local_storage.remove(origin, key),
             StorageKind::Session => self
@@ -1384,7 +1414,14 @@ impl StorageRouter<'_> {
         url: &str,
         source: FrameId,
     ) -> Result<(), RendererViolation> {
-        self.authorize(Some(url))?;
+        if !self.authorize_url(url) {
+            return send_reply(
+                &self.context.responder,
+                self.request,
+                ServiceReply::StorageChanged(Ok(None)),
+            )
+            .await;
+        }
         let change = match kind {
             StorageKind::Local => self.context.partition.local_storage.clear(origin),
             StorageKind::Session => self.context.sessions.clear(self.authority.tab, origin),
@@ -1399,11 +1436,8 @@ impl StorageRouter<'_> {
         .await
     }
 
-    fn authorize(&self, url: Option<&str>) -> Result<(), RendererViolation> {
-        if url.is_some_and(|url| self.authority.site.authorize_url(url).is_none()) {
-            return Err(RendererViolation);
-        }
-        Ok(())
+    fn authorize_url(&self, url: &str) -> bool {
+        self.authority.site.authorize_url(url).is_some()
     }
 
     fn publish(
@@ -1500,14 +1534,45 @@ fn fail(alive: &Arc<AtomicBool>, router: &RendererRouter, kill: &watch::Sender<b
     let _ = kill.send(true);
 }
 
+const MAX_STDERR_LINE_BYTES: usize = 16 * 1024;
+
+async fn read_bounded_line<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
+    out: &mut Vec<u8>,
+) -> io::Result<Option<bool>> {
+    out.clear();
+    let mut saw_any = false;
+    let mut truncated = false;
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            return Ok(saw_any.then_some(truncated));
+        }
+        saw_any = true;
+        let newline = available.iter().position(|&b| b == b'\n');
+        let take = newline.map_or(available.len(), |pos| pos + 1);
+        let remaining = MAX_STDERR_LINE_BYTES.saturating_sub(out.len());
+        let copy = take.min(remaining);
+        out.extend_from_slice(&available[..copy]);
+        if take > copy {
+            truncated = true;
+        }
+        reader.consume(take);
+        if newline.is_some() {
+            return Ok(Some(truncated));
+        }
+    }
+}
+
 async fn forward_stderr(stderr: tokio::process::ChildStderr) {
     let mut reader = tokio::io::BufReader::new(stderr);
     let mut bytes = Vec::new();
-    loop {
-        bytes.clear();
-        match reader.read_until(b'\n', &mut bytes).await {
-            Ok(0) | Err(_) => break,
-            Ok(_) => logging::log_forwarded(&String::from_utf8_lossy(&bytes)),
+    while let Ok(Some(truncated)) = read_bounded_line(&mut reader, &mut bytes).await {
+        let text = String::from_utf8_lossy(&bytes);
+        if truncated {
+            logging::log_forwarded(&format!("{text} [truncated]\n"));
+        } else {
+            logging::log_forwarded(&text);
         }
     }
 }
@@ -1516,6 +1581,8 @@ struct SpawnedRenderer {
     child: Child,
     reader: Box<dyn AsyncRead + Send + Unpin>,
     writer: Box<dyn AsyncWrite + Send + Unpin>,
+    #[cfg(windows)]
+    job: crate::child::sandbox::ProcessJob,
 }
 
 #[cfg(unix)]
@@ -1541,6 +1608,18 @@ fn spawn_transport(command: &mut Command) -> io::Result<SpawnedRenderer> {
 fn spawn_transport(command: &mut Command) -> io::Result<SpawnedRenderer> {
     command.stdin(Stdio::piped()).stdout(Stdio::piped());
     let mut child = command.spawn()?;
+    #[cfg(windows)]
+    let job = match child
+        .raw_handle()
+        .ok_or_else(|| io::Error::other("renderer process handle missing"))
+        .and_then(crate::child::sandbox::ProcessJob::assign)
+    {
+        Ok(job) => job,
+        Err(error) => {
+            let _ = child.start_kill();
+            return Err(error);
+        }
+    };
     let Some(stdin) = child.stdin.take() else {
         let _ = child.start_kill();
         return Err(io::Error::other("renderer stdin missing"));
@@ -1553,6 +1632,8 @@ fn spawn_transport(command: &mut Command) -> io::Result<SpawnedRenderer> {
         child,
         reader: Box::new(stdout),
         writer: Box::new(stdin),
+        #[cfg(windows)]
+        job,
     })
 }
 
@@ -1606,6 +1687,8 @@ fn renderer_command() -> io::Result<Command> {
         .env_clear()
         .env("TINYBROWSER_LOG", logging::level().as_str())
         .stderr(Stdio::piped());
+    #[cfg(unix)]
+    command.process_group(0);
     for key in [
         "FONTCONFIG_FILE",
         "FONTCONFIG_PATH",
@@ -1642,6 +1725,8 @@ pub(crate) async fn spawn_process(
         mut child,
         reader,
         writer,
+        #[cfg(windows)]
+        job,
     } = spawn_transport(&mut command)?;
     let Some(stderr) = child.stderr.take() else {
         let _ = child.start_kill();
@@ -1681,7 +1766,12 @@ pub(crate) async fn spawn_process(
     let reader_task = tokio::spawn(reader_task(reader, reader_context, Some(ready_tx)));
     let service_task = tokio::spawn(service_task(server, service_context));
     let stderr_task = tokio::spawn(forward_stderr(stderr));
-    let _reaper = tokio::spawn(child_task(child, kill_rx));
+    let _reaper = tokio::spawn(child_task(
+        child,
+        kill_rx,
+        #[cfg(windows)]
+        job,
+    ));
     if client
         .notify(HostNotice::Hello {
             identity: Box::new(identity),
@@ -1714,7 +1804,11 @@ pub(crate) async fn spawn_process(
     })
 }
 
-async fn child_task(mut child: Child, mut kill: watch::Receiver<bool>) {
+async fn child_task(
+    mut child: Child,
+    mut kill: watch::Receiver<bool>,
+    #[cfg(windows)] _job: crate::child::sandbox::ProcessJob,
+) {
     if *kill.borrow() {
         let _ = child.start_kill();
         let _ = child.wait().await;
@@ -1865,5 +1959,64 @@ mod tests {
             &target,
             &[same_site_other],
         ));
+
+        let schemeless = vec![(
+            "content-security-policy".to_owned(),
+            "frame-ancestors partner.test".to_owned(),
+        )];
+        let http_partner = url::Url::parse("http://partner.test/")
+            .expect("url")
+            .origin();
+        let alt_port_partner = url::Url::parse("https://partner.test:8443/")
+            .expect("url")
+            .origin();
+        assert!(super::frame_blocked_by_headers(
+            &schemeless,
+            &target,
+            std::slice::from_ref(&http_partner),
+        ));
+        assert!(super::frame_blocked_by_headers(
+            &schemeless,
+            &target,
+            std::slice::from_ref(&alt_port_partner),
+        ));
+        let http_target = url::Url::parse("http://app.example.test/embed").expect("target");
+        let secure_partner = url::Url::parse("https://partner.test/")
+            .expect("url")
+            .origin();
+        assert!(!super::frame_blocked_by_headers(
+            &schemeless,
+            &http_target,
+            &[http_partner, secure_partner],
+        ));
+    }
+
+    #[tokio::test]
+    async fn read_bounded_line_caps_unbounded_stderr_and_recovers() {
+        let mut input = vec![b'a'; super::MAX_STDERR_LINE_BYTES + 4096];
+        input.push(b'\n');
+        input.extend_from_slice(b"next line\n");
+        let mut reader = tokio::io::BufReader::new(std::io::Cursor::new(input));
+        let mut buf = Vec::new();
+        assert_eq!(
+            super::read_bounded_line(&mut reader, &mut buf)
+                .await
+                .expect("first line"),
+            Some(true)
+        );
+        assert_eq!(buf.len(), super::MAX_STDERR_LINE_BYTES);
+        assert_eq!(
+            super::read_bounded_line(&mut reader, &mut buf)
+                .await
+                .expect("second line"),
+            Some(false)
+        );
+        assert_eq!(buf, b"next line\n");
+        assert_eq!(
+            super::read_bounded_line(&mut reader, &mut buf)
+                .await
+                .expect("eof"),
+            None
+        );
     }
 }

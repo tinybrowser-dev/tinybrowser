@@ -9,7 +9,25 @@ use landlock::{
     ABI, Access, AccessFs, AccessNet, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset,
     RulesetAttr, RulesetCreatedAttr, RulesetStatus,
 };
-use seccompiler::{BpfProgram, SeccompAction, SeccompFilter, SeccompRule, TargetArch};
+use seccompiler::{
+    BpfProgram, SeccompAction, SeccompCmpArgLen, SeccompCmpOp, SeccompCondition, SeccompFilter,
+    SeccompRule, TargetArch,
+};
+
+#[cfg(target_arch = "x86_64")]
+const X32_SYSCALL_BIT: i64 = 0x4000_0000;
+
+const CLONE_THREAD: u64 = 0x0001_0000;
+const CLONE_NAMESPACE_FLAGS: [u64; 8] = [
+    0x0002_0000,
+    0x0200_0000,
+    0x0400_0000,
+    0x0800_0000,
+    0x1000_0000,
+    0x2000_0000,
+    0x4000_0000,
+    0x0000_0080,
+];
 
 pub(super) fn engage() -> io::Result<()> {
     engage_landlock()?;
@@ -40,10 +58,19 @@ fn engage_landlock() -> io::Result<()> {
 
     let status = ruleset.restrict_self().map_err(io::Error::other)?;
     if matches!(status.ruleset, RulesetStatus::NotEnforced) {
-        logging::debug!(
-            target: "renderer::sandbox",
-            "landlock not enforced by host kernel"
-        );
+        #[cfg(target_os = "android")]
+        {
+            logging::debug!(
+                target: "renderer::sandbox",
+                "landlock not enforced by host kernel"
+            );
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            return Err(io::Error::other(
+                "renderer Landlock sandbox not enforced by host kernel",
+            ));
+        }
     }
     Ok(())
 }
@@ -92,32 +119,77 @@ fn allowed_read_paths() -> Vec<PathBuf> {
 
 fn engage_seccomp() -> io::Result<()> {
     let Ok(arch) = TargetArch::try_from(std::env::consts::ARCH) else {
-        logging::debug!(
-            target: "renderer::sandbox",
-            "seccomp unsupported on arch {}",
-            std::env::consts::ARCH
-        );
-        return Ok(());
-    };
-    let program = build_seccomp_program(arch)?;
-    match seccompiler::apply_filter_all_threads(&program) {
-        Ok(()) => Ok(()),
-        Err(seccompiler::Error::Seccomp(error)) if error.raw_os_error() == Some(libc::ENOSYS) => {
+        #[cfg(target_os = "android")]
+        {
             logging::debug!(
                 target: "renderer::sandbox",
-                "seccomp not supported by host kernel"
+                "seccomp unsupported on arch {}",
+                std::env::consts::ARCH
             );
-            Ok(())
+            return Ok(());
         }
-        Err(error) => Err(io::Error::other(error)),
+        #[cfg(not(target_os = "android"))]
+        {
+            return Err(io::Error::other(format!(
+                "seccomp unsupported on arch {}",
+                std::env::consts::ARCH
+            )));
+        }
+    };
+    let clone3_program = build_clone3_fallback_program(arch)?;
+    let main_program = build_seccomp_program(arch)?;
+    for program in [&clone3_program, &main_program] {
+        match seccompiler::apply_filter_all_threads(program) {
+            Ok(()) => {}
+            #[cfg(target_os = "android")]
+            Err(seccompiler::Error::Seccomp(error))
+                if error.raw_os_error() == Some(libc::ENOSYS) =>
+            {
+                logging::debug!(
+                    target: "renderer::sandbox",
+                    "seccomp not supported by host kernel"
+                );
+                return Ok(());
+            }
+            Err(error) => return Err(io::Error::other(error)),
+        }
     }
+    Ok(())
+}
+
+// https://raw.githubusercontent.com/chromium/chromium/main/sandbox/linux/seccomp-bpf-helpers/baseline_policy.cc
+fn build_clone3_fallback_program(arch: TargetArch) -> io::Result<BpfProgram> {
+    let mut rules: BTreeMap<i64, Vec<SeccompRule>> = BTreeMap::new();
+    rules.insert(libc::SYS_clone3, Vec::new());
+    #[cfg(target_arch = "x86_64")]
+    rules.insert(libc::SYS_clone3 | X32_SYSCALL_BIT, Vec::new());
+    let enosys = u32::try_from(libc::ENOSYS).unwrap_or(38);
+    let filter = SeccompFilter::new(
+        rules,
+        SeccompAction::Allow,
+        SeccompAction::Errno(enosys),
+        arch,
+    )
+    .map_err(io::Error::other)?;
+    filter.try_into().map_err(io::Error::other)
 }
 
 fn build_seccomp_program(arch: TargetArch) -> io::Result<BpfProgram> {
     let mut rules: BTreeMap<i64, Vec<SeccompRule>> = BTreeMap::new();
     for syscall in denied_syscalls() {
         rules.insert(syscall, Vec::new());
+        #[cfg(target_arch = "x86_64")]
+        rules.insert(syscall | X32_SYSCALL_BIT, Vec::new());
     }
+    #[cfg(target_arch = "x86_64")]
+    for x32_nr in 512..=547 {
+        rules.insert(x32_nr | X32_SYSCALL_BIT, Vec::new());
+    }
+    let clone_deny_rules = clone_deny_rules()?;
+    rules.insert(libc::SYS_clone, clone_deny_rules);
+    #[cfg(target_arch = "x86_64")]
+    rules.insert(libc::SYS_clone | X32_SYSCALL_BIT, Vec::new());
+
     let eperm = u32::try_from(libc::EPERM).unwrap_or(1);
     let filter = SeccompFilter::new(
         rules,
@@ -127,6 +199,29 @@ fn build_seccomp_program(arch: TargetArch) -> io::Result<BpfProgram> {
     )
     .map_err(io::Error::other)?;
     filter.try_into().map_err(io::Error::other)
+}
+
+fn clone_deny_rules() -> io::Result<Vec<SeccompRule>> {
+    let mut rules = Vec::with_capacity(1 + CLONE_NAMESPACE_FLAGS.len());
+    let not_thread = SeccompCondition::new(
+        0,
+        SeccompCmpArgLen::Qword,
+        SeccompCmpOp::MaskedEq(CLONE_THREAD),
+        0,
+    )
+    .map_err(io::Error::other)?;
+    rules.push(SeccompRule::new(vec![not_thread]).map_err(io::Error::other)?);
+    for flag in CLONE_NAMESPACE_FLAGS {
+        let has_ns = SeccompCondition::new(
+            0,
+            SeccompCmpArgLen::Qword,
+            SeccompCmpOp::MaskedEq(flag),
+            flag,
+        )
+        .map_err(io::Error::other)?;
+        rules.push(SeccompRule::new(vec![has_ns]).map_err(io::Error::other)?);
+    }
+    Ok(rules)
 }
 
 fn denied_syscalls() -> Vec<i64> {
@@ -143,6 +238,9 @@ fn denied_syscalls() -> Vec<i64> {
         libc::SYS_ptrace,
         libc::SYS_process_vm_readv,
         libc::SYS_process_vm_writev,
+        libc::SYS_pidfd_open,
+        libc::SYS_pidfd_getfd,
+        libc::SYS_kcmp,
         libc::SYS_mount,
         libc::SYS_umount2,
         libc::SYS_chroot,
@@ -187,7 +285,9 @@ mod tests {
     #[test]
     fn seccomp_filter_compiles_for_host_arch() {
         let arch = TargetArch::try_from(std::env::consts::ARCH).expect("host arch");
+        let clone3 = build_clone3_fallback_program(arch).expect("clone3 bpf");
         let program = build_seccomp_program(arch).expect("bpf program");
+        assert_ne!(clone3.len(), 0);
         assert_ne!(program.len(), 0);
     }
 
@@ -196,6 +296,10 @@ mod tests {
         const CHILD_ENV: &str = "TINYBROWSER_SANDBOX_TEST_CHILD";
         if std::env::var_os(CHILD_ENV).is_some() {
             engage().expect("sandbox engage");
+            let thread_result = std::thread::spawn(|| 42usize)
+                .join()
+                .expect("worker thread must still spawn under clone3->clone fallback");
+            assert_eq!(thread_result, 42);
             let fs_err = std::fs::read("/etc/passwd").expect_err("filesystem read must fail");
             assert_eq!(fs_err.kind(), io::ErrorKind::PermissionDenied);
             let net_err =
