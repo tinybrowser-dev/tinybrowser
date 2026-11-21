@@ -59,6 +59,8 @@ pub struct WireRequest {
     pub url: Url,
     pub headers: HeaderMap,
     pub body: Option<Bytes>,
+    // https://fetch.spec.whatwg.org/#concept-request-client
+    pub client: Option<u64>,
 }
 
 impl std::fmt::Debug for WireRequest {
@@ -69,6 +71,7 @@ impl std::fmt::Debug for WireRequest {
             .field("url", &self.url)
             .field("headers", &self.headers)
             .field("has_body", &self.body.is_some())
+            .field("client", &self.client)
             .finish()
     }
 }

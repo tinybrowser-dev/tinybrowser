@@ -1,14 +1,14 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use dial::body::{BodyEvent, BodyReader};
-use dial::{CacheDecision, HttpCache, Validators, refused_redirect, watch_redirects};
+use dial::{Admission, BodySink, DialHead, Dialer, HttpCache, StreamInput, StreamStart};
 use net::{Agent, AgentOptions, InitiatorKind, Method, Request};
-use renderer::{
-    BodyDelivery, DialFailure, DialKind, DialOutcome, DialRequest, ResponseBody, StreamId,
-};
+use renderer::{DialFailure, DialKind, DialOutcome, DialRequest, ResponseBody, StreamId};
 use tokio::sync::Semaphore;
 use tokio::sync::mpsc::UnboundedSender;
 use url::Url;
@@ -60,20 +60,52 @@ impl Drop for KeepaliveReservation {
     }
 }
 
-enum DialProgress {
-    Done(Box<DialOutcome>),
-    Response {
-        response: Box<net::Response>,
-        permits: DialPermits,
-    },
-}
-
 pub(crate) use dial::dial_failure;
-use dial::{DialHead, outbound_request};
 
 struct DialPermits {
     _global: tokio::sync::OwnedSemaphorePermit,
     _tab: tokio::sync::OwnedSemaphorePermit,
+}
+
+struct TabAdmission<'a> {
+    global: &'a Arc<Semaphore>,
+    tab: &'a Arc<Semaphore>,
+}
+
+impl Admission for TabAdmission<'_> {
+    type Permit = DialPermits;
+
+    fn acquire(
+        &self,
+        deadline: Instant,
+    ) -> Pin<Box<dyn Future<Output = Result<DialPermits, DialFailure>> + Send + '_>> {
+        Box::pin(async move {
+            let global = TabNetworkHandle::acquire(self.global, deadline).await?;
+            let tab = TabNetworkHandle::acquire(self.tab, deadline).await?;
+            Ok(DialPermits {
+                _global: global,
+                _tab: tab,
+            })
+        })
+    }
+}
+
+struct TabBodySink<'a> {
+    handle: &'a TabNetworkHandle,
+    owner: RendererAssignmentId,
+}
+
+impl BodySink<DialPermits> for TabBodySink<'_> {
+    fn start_stream(&self, input: StreamInput<'_, DialPermits>) -> StreamStart<DialPermits> {
+        StreamStart::Streamed(Box::new(self.handle.start_stream(
+            input.request,
+            input.sent,
+            input.initiator,
+            self.owner,
+            *input.response,
+            input.permit,
+        )))
+    }
 }
 
 #[cfg(test)]
@@ -138,13 +170,11 @@ impl NetworkContext {
     #[must_use]
     pub(crate) fn tab_handle(&self) -> TabNetworkHandle {
         TabNetworkHandle {
-            agent: self.agent.clone(),
+            dialer: Dialer::new(self.agent.clone(), Arc::clone(&self.cache)),
             permits: self.permits.clone(),
             tab: Arc::new(Semaphore::new(MAX_TAB_DIALS)),
-            cache: Arc::clone(&self.cache),
             streams: Arc::clone(&self.streams),
             next_stream: Arc::clone(&self.next_stream),
-            sheets: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -190,24 +220,26 @@ const MAX_TAB_DIALS: usize = 8;
 
 #[derive(Clone)]
 pub(crate) struct TabNetworkHandle {
-    agent: Agent,
+    dialer: Dialer,
     permits: NetworkPermits,
     tab: Arc<Semaphore>,
-    cache: Arc<HttpCache>,
     streams: StreamMap,
     next_stream: Arc<AtomicU64>,
-    // https://w3c.github.io/webappsec-referrer-policy/#integration-with-css
-    sheets: Arc<Mutex<HashMap<url::Origin, HashSet<Url>>>>,
 }
 
 impl TabNetworkHandle {
     #[must_use]
     pub(crate) fn cookies_for(&self, url: &Url, partition_key: Option<&str>) -> String {
-        self.agent.cookies_for_partition(url, partition_key)
+        self.dialer
+            .agent()
+            .cookies_for_partition(url, partition_key)
     }
 
     pub(crate) fn set_cookie(&self, value: &str, url: &Url, partition_key: Option<&str>) {
-        let _stored = self.agent.set_cookie_partition(value, url, partition_key);
+        let _stored = self
+            .dialer
+            .agent()
+            .set_cookie_partition(value, url, partition_key);
     }
 
     // https://cookiestore.spec.whatwg.org/#query-cookies
@@ -217,7 +249,8 @@ impl TabNetworkHandle {
         url: &Url,
         partition_key: Option<&str>,
     ) -> Vec<renderer::ScriptCookie> {
-        self.agent
+        self.dialer
+            .agent()
             .script_cookie_records_partition(url, partition_key)
             .into_iter()
             .map(|record| renderer::ScriptCookie::from_record(&record))
@@ -231,7 +264,8 @@ impl TabNetworkHandle {
         url: &Url,
         partition_key: Option<&str>,
     ) {
-        self.agent
+        self.dialer
+            .agent()
             .set_script_cookie_partition(write, url, partition_key);
     }
 
@@ -286,7 +320,7 @@ impl TabNetworkHandle {
             };
             request.referrer_policy = source.referrer_policy;
         }
-        let response = match self.agent.send(request).await {
+        let response = match self.dialer.agent().send(request).await {
             Ok(response) => response,
             Err(error) => {
                 logging::trace!(
@@ -320,128 +354,28 @@ impl TabNetworkHandle {
         initiator: &url::Origin,
         owner: RendererAssignmentId,
     ) -> Result<DialOutcome, DialFailure> {
-        self.dial_request_unfiltered(request, initiator, owner)
-            .await
-            .map(|outcome| orb_filter(request, outcome))
-    }
-
-    async fn dial_request_unfiltered(
-        &self,
-        request: &DialRequest,
-        initiator: &url::Origin,
-        owner: RendererAssignmentId,
-    ) -> Result<DialOutcome, DialFailure> {
         let started = Instant::now();
         let _keepalive = KeepaliveReservation::acquire(request)?;
-        let deadline = Instant::now() + dial::budget(request);
-        let outbound = self.build_outbound(request, initiator, deadline)?;
-        // https://www.rfc-editor.org/rfc/rfc9111#section-4.1
-        let sent = dial::sent_headers(&outbound);
-        let (stored, validators) = match self.cache.read(request, &sent, initiator, owner.get())? {
-            CacheDecision::Hit(hit) => {
-                trace_dial_result(request, started, Ok(&hit));
-                return Ok(hit);
-            }
-            CacheDecision::Miss {
-                stored, validators, ..
-            } => (stored, validators),
-        };
         logging::trace!(
             target: "browser::net",
             "request start {:?} {}",
             request.policy.kind(),
             request.url
         );
-        let result = async {
-            match self
-                .send_head(request, initiator, stored.as_ref(), &validators, outbound)
-                .await?
-            {
-                DialProgress::Done(outcome) => {
-                    self.cache
-                        .remember(request, &sent, initiator, owner.get(), &outcome);
-                    Ok(*outcome)
-                }
-                DialProgress::Response { response, permits } => match request.delivery {
-                    BodyDelivery::Buffer => {
-                        let _permits = permits;
-                        let head = DialHead::read(request, &response);
-                        let body = if head.null_body() {
-                            ResponseBody::Bytes(Vec::new())
-                        } else {
-                            let mut reader =
-                                BodyReader::new(*response, request.integrity.clone(), true).await;
-                            loop {
-                                match reader.next().await {
-                                    BodyEvent::Chunk(_) => {}
-                                    BodyEvent::Done(body) => {
-                                        break ResponseBody::Bytes(body);
-                                    }
-                                    BodyEvent::DecodeError => {
-                                        break ResponseBody::Undecodable;
-                                    }
-                                    BodyEvent::Failed(failure) => return Err(failure),
-                                }
-                            }
-                        };
-                        let outcome = head.into_outcome(body);
-                        self.cache
-                            .remember(request, &sent, initiator, owner.get(), &outcome);
-                        Ok(outcome)
-                    }
-                    BodyDelivery::Stream => {
-                        Ok(self.start_stream(request, &sent, initiator, owner, *response, permits))
-                    }
-                },
-            }
-        }
-        .await;
-        if let Ok(outcome) = &result {
-            self.remember_sheet(request, initiator, outcome.status, &outcome.final_url);
-        }
+        let admission = TabAdmission {
+            global: &self.permits.global,
+            tab: &self.tab,
+        };
+        let sink = TabBodySink {
+            handle: self,
+            owner,
+        };
+        let result = self
+            .dialer
+            .dial(request, initiator, owner.get(), None, &admission, &sink)
+            .await;
         trace_dial_result(request, started, result.as_ref());
         result
-    }
-
-    async fn send_head(
-        &self,
-        request: &DialRequest,
-        initiator: &url::Origin,
-        stored: Option<&DialOutcome>,
-        validators: &Validators,
-        mut outbound: Request,
-    ) -> Result<DialProgress, DialFailure> {
-        let deadline = Instant::now() + dial::budget(request);
-        let global = Self::acquire(&self.permits.global, deadline).await?;
-        let tab = Self::acquire(&self.tab, deadline).await?;
-        validators.apply(&mut outbound)?;
-        let blocked_redirect = watch_redirects(request, initiator, &mut outbound);
-        let response = match self.agent.send(outbound).await {
-            Ok(response) => response,
-            Err(error) => {
-                let done =
-                    refused_redirect(&blocked_redirect).ok_or_else(|| dial_failure(&error))?;
-                return Ok(DialProgress::Done(Box::new(done)));
-            }
-        };
-        if request.integrity.is_some() && response.response_type().is_opaque() {
-            return Err(DialFailure::Connect);
-        }
-        if response.status() == 304
-            && let Some(stored) = stored
-        {
-            // https://www.rfc-editor.org/rfc/rfc9111#section-4.3.4
-            let merged = HttpCache::merge_not_modified(stored, &response, validators)
-                .ok_or(DialFailure::Connect)?;
-            return Ok(DialProgress::Done(Box::new(merged)));
-        }
-        Ok(DialProgress::Response {
-            response: Box::new(response),
-            permits: DialPermits {
-                _global: global,
-                _tab: tab,
-            },
-        })
     }
 
     fn start_stream(
@@ -453,22 +387,22 @@ impl TabNetworkHandle {
         response: net::Response,
         permits: DialPermits,
     ) -> DialOutcome {
+        let cache = self.dialer.cache();
         let head = DialHead::read(request, &response);
         let opaque = head.null_body();
         let mut outcome = head.into_outcome(ResponseBody::Bytes(Vec::new()));
         // https://www.rfc-editor.org/rfc/rfc9111#section-4.4
-        self.cache.invalidate_unsafe(request, owner.get(), &outcome);
+        cache.invalidate_unsafe(request, owner.get(), &outcome);
         // https://fetch.spec.whatwg.org/#concept-filtered-response-opaque
         if opaque {
             return outcome;
         }
         let (tx, rx) = tokio::sync::mpsc::channel(STREAM_CHUNK_DEPTH);
-        let store = self
-            .cache
+        let store = cache
             .may_store(request, sent, &outcome)
             .then(|| PendingStore {
                 outcome: outcome.clone(),
-                cache: Arc::clone(&self.cache),
+                cache: Arc::clone(cache),
                 request: request.clone(),
                 sent: sent.to_vec(),
                 initiator: initiator.clone(),
@@ -564,47 +498,6 @@ impl TabNetworkHandle {
         }
     }
 
-    // https://w3c.github.io/webappsec-referrer-policy/#integration-with-css
-    fn remember_sheet(
-        &self,
-        request: &DialRequest,
-        initiator: &url::Origin,
-        status: u16,
-        final_url: &Url,
-    ) {
-        if request.policy.kind() != DialKind::Stylesheet || !(200..300).contains(&status) {
-            return;
-        }
-        // https://w3c.github.io/webappsec-referrer-policy/#strip-url
-        if !initiator.is_tuple() {
-            return;
-        }
-        let mut sheets = self
-            .sheets
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let loaded = sheets.entry(initiator.clone()).or_default();
-        for url in [&request.url, final_url] {
-            // https://w3c.github.io/webappsec-referrer-policy/#strip-url
-            let mut url = url.clone();
-            url.set_fragment(None);
-            loaded.insert(url);
-        }
-    }
-
-    fn build_outbound(
-        &self,
-        request: &DialRequest,
-        initiator: &url::Origin,
-        deadline: Instant,
-    ) -> Result<Request, DialFailure> {
-        let sheets = self
-            .sheets
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        outbound_request(request, initiator, deadline, &sheets)
-    }
-
     async fn acquire(
         semaphore: &Arc<Semaphore>,
         deadline: Instant,
@@ -620,41 +513,6 @@ impl TabNetworkHandle {
             Err(_) => Err(DialFailure::QueueFull),
         }
     }
-}
-
-// https://github.com/annevk/orb
-fn orb_filter(request: &DialRequest, outcome: DialOutcome) -> DialOutcome {
-    if request.policy.exposes_response() || !outcome.response_type.is_opaque() {
-        return outcome;
-    }
-    let nosniff = outcome.headers.iter().any(|(name, value)| {
-        name.eq_ignore_ascii_case("x-content-type-options")
-            && value
-                .split(',')
-                .any(|option| option.trim().eq_ignore_ascii_case("nosniff"))
-    });
-    let body = match &outcome.body {
-        ResponseBody::Bytes(bytes) => Some(bytes.as_slice()),
-        ResponseBody::Undecodable | ResponseBody::Streamed(_) => None,
-    };
-    if net::orb::blocks(outcome.content_type.as_deref(), nosniff, body) {
-        return DialOutcome {
-            content_type: None,
-            headers: Vec::new(),
-            body: ResponseBody::Bytes(Vec::new()),
-            ..outcome
-        };
-    }
-    let headers = outcome
-        .headers
-        .iter()
-        .filter(|(name, _)| {
-            name.eq_ignore_ascii_case("content-type")
-                || name.eq_ignore_ascii_case("x-content-type-options")
-        })
-        .cloned()
-        .collect();
-    DialOutcome { headers, ..outcome }
 }
 
 struct PendingStore {
@@ -760,6 +618,12 @@ fn opaque_origin() -> url::Origin {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
+    use dial::dialer::orb_filter;
+    use dial::outbound_request;
+    use renderer::BodyDelivery;
+
     use super::*;
     use dial::referrer_authorized;
     use renderer::RequestPolicy;

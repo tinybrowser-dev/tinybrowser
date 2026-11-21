@@ -206,6 +206,7 @@ impl Transport for HttpEngine {
                 url: wire_url,
                 headers,
                 body,
+                client: _,
             } = request;
             if budget.is_expired() {
                 return Err(timed_out(budget.timeout_kind(TimeoutKind::Global)));

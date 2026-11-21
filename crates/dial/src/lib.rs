@@ -3,6 +3,9 @@
 
 pub mod body;
 pub mod cache;
+pub mod dialer;
+
+pub use dialer::{Admission, BodySink, BufferedOnly, Dialer, StreamInput, StreamStart, Unlimited};
 
 fn document_url(origin: &url::Origin) -> Url {
     net::origin_url(origin).unwrap_or_else(net::about_blank)

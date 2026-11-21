@@ -5,7 +5,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll};
+use std::task::{Context, Poll, Waker};
 
 use bytes::Bytes;
 use net::{
@@ -21,18 +21,28 @@ use crate::lock;
 
 pub(crate) type Answer = Result<FetchResponse, FetchError>;
 
-struct Exchange {
-    answer: Mutex<Option<Answer>>,
+struct ExchangeState {
+    answer: Option<Answer>,
+    waker: Option<Waker>,
 }
 
-struct PollContext {
-    owner: u64,
-    opened: Option<u64>,
+struct Exchange {
+    state: Mutex<ExchangeState>,
+}
+
+impl Exchange {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(ExchangeState {
+                answer: None,
+                waker: None,
+            }),
+        }
+    }
 }
 
 pub(crate) struct HostTransport {
     exchanges: Mutex<HashMap<u64, Arc<Exchange>>>,
-    polled: Mutex<Option<PollContext>>,
     max_body_bytes: u64,
     next_id: AtomicU64,
 }
@@ -41,31 +51,28 @@ impl HostTransport {
     pub(crate) fn new(max_body_bytes: u64) -> Self {
         Self {
             exchanges: Mutex::new(HashMap::new()),
-            polled: Mutex::new(None),
             max_body_bytes,
             next_id: AtomicU64::new(1),
         }
     }
 
-    pub(crate) fn begin_poll(&self, owner: u64) {
-        *lock(&self.polled) = Some(PollContext {
-            owner,
-            opened: None,
-        });
-    }
-
-    pub(crate) fn end_poll(&self) -> Option<u64> {
-        lock(&self.polled).take().and_then(|context| context.opened)
-    }
-
-    pub(crate) fn complete(&self, id: u64, answer: Answer) {
-        if let Some(exchange) = lock(&self.exchanges).remove(&id) {
-            *lock(&exchange.answer) = Some(answer);
+    pub(crate) fn complete(&self, id: u64, answer: Answer) -> bool {
+        let Some(exchange) = lock(&self.exchanges).remove(&id) else {
+            return false;
+        };
+        let waker = {
+            let mut state = lock(&exchange.state);
+            state.answer = Some(answer);
+            state.waker.take()
+        };
+        if let Some(waker) = waker {
+            waker.wake();
         }
+        true
     }
 
-    pub(crate) fn abandon(&self, id: u64) {
-        lock(&self.exchanges).remove(&id);
+    pub(crate) fn abandon(&self, id: u64) -> bool {
+        lock(&self.exchanges).remove(&id).is_some()
     }
 }
 
@@ -76,14 +83,10 @@ impl Transport for HostTransport {
         budget: HopBudget,
     ) -> Pin<Box<dyn Future<Output = Result<WireResponse, NetError>> + Send + '_>> {
         Box::pin(async move {
-            let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-            let owner = {
-                let mut polled = lock(&self.polled);
-                let Some(context) = polled.as_mut() else {
-                    return Err(refused("the fetch core ran outside a dial poll"));
-                };
-                context.owner
+            let Some(owner) = request.client else {
+                return Err(refused("the fetch request has no client"));
             };
+            let id = self.next_id.fetch_add(1, Ordering::Relaxed);
             let host_request = FetchRequest {
                 id,
                 owner,
@@ -103,19 +106,17 @@ impl Transport for HostTransport {
                     .map(|left| u64::try_from(left.as_millis()).unwrap_or(u64::MAX)),
                 max_body_bytes: self.max_body_bytes,
             };
-            let exchange = Arc::new(Exchange {
-                answer: Mutex::new(None),
-            });
+            let exchange = Arc::new(Exchange::new());
             lock(&self.exchanges).insert(id, Arc::clone(&exchange));
             if !host::start_fetch(&host_request) {
-                self.abandon(id);
+                let _removed = self.abandon(id);
                 return Err(refused("the host refused the exchange"));
             }
-            if let Some(context) = lock(&self.polled).as_mut() {
-                context.opened = Some(id);
-            }
             let answer = AnswerSlot {
+                id,
+                transport: self,
                 exchange: &exchange,
+                done: false,
             }
             .await;
             let FetchResponse {
@@ -164,16 +165,32 @@ impl HostTransport {
 }
 
 struct AnswerSlot<'a> {
+    id: u64,
+    transport: &'a HostTransport,
     exchange: &'a Exchange,
+    done: bool,
 }
 
 impl Future for AnswerSlot<'_> {
     type Output = Answer;
 
-    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Answer> {
-        match lock(&self.exchange.answer).take() {
-            Some(answer) => Poll::Ready(answer),
-            None => Poll::Pending,
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Answer> {
+        let mut state = lock(&self.exchange.state);
+        if let Some(answer) = state.answer.take() {
+            drop(state);
+            self.done = true;
+            Poll::Ready(answer)
+        } else {
+            state.waker = Some(cx.waker().clone());
+            Poll::Pending
+        }
+    }
+}
+
+impl Drop for AnswerSlot<'_> {
+    fn drop(&mut self) {
+        if !self.done && self.transport.abandon(self.id) {
+            host::cancel_fetch(self.id);
         }
     }
 }
@@ -184,8 +201,24 @@ fn refused(reason: &str) -> NetError {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::sync::atomic::AtomicBool;
+    use std::task::Wake;
+
     use renderer::DialFailure;
+
+    use super::*;
+
+    struct FlagWaker(AtomicBool);
+
+    impl Wake for FlagWaker {
+        fn wake(self: Arc<Self>) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
 
     #[test]
     fn host_failures_map_to_dial_failures() {
@@ -216,17 +249,34 @@ mod tests {
     }
 
     #[test]
-    fn poll_context_and_abandon_bookkeeping() {
+    fn complete_wakes_registered_waker_and_abandon_prevents_delivery() {
         let transport = HostTransport::new(1024);
-        transport.begin_poll(7);
-        assert_eq!(transport.end_poll(), None);
+        let exchange = Arc::new(Exchange::new());
+        lock(&transport.exchanges).insert(7, Arc::clone(&exchange));
 
-        let exchange = Arc::new(Exchange {
-            answer: Mutex::new(None),
-        });
-        lock(&transport.exchanges).insert(42, Arc::clone(&exchange));
-        transport.abandon(42);
-        transport.complete(42, Err(FetchError::Connect));
-        assert!(lock(&exchange.answer).is_none());
+        let flag = Arc::new(FlagWaker(AtomicBool::new(false)));
+        let waker = Waker::from(Arc::clone(&flag));
+        let mut cx = Context::from_waker(&waker);
+        let mut slot = AnswerSlot {
+            id: 7,
+            transport: &transport,
+            exchange: &exchange,
+            done: false,
+        };
+        assert!(Pin::new(&mut slot).poll(&mut cx).is_pending());
+        assert!(!flag.0.load(Ordering::SeqCst));
+
+        assert!(transport.complete(7, Err(FetchError::Timeout)));
+        assert!(flag.0.load(Ordering::SeqCst));
+        assert!(matches!(
+            Pin::new(&mut slot).poll(&mut cx),
+            Poll::Ready(Err(FetchError::Timeout))
+        ));
+
+        let abandoned = Arc::new(Exchange::new());
+        lock(&transport.exchanges).insert(42, Arc::clone(&abandoned));
+        assert!(transport.abandon(42));
+        assert!(!transport.complete(42, Err(FetchError::Connect)));
+        assert!(lock(&abandoned.state).answer.is_none());
     }
 }

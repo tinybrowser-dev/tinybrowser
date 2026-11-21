@@ -2,13 +2,14 @@ mod driver;
 mod host_transport;
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
-use std::task::{Context, Poll, Waker};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
+use std::task::{Context, Poll, Wake, Waker};
 
+use dial::{BufferedOnly, Dialer, HttpCache, Unlimited};
 use net::{Agent, AgentOptions, Transport};
 use renderer::{
     BrowserEvent, BrowsingContextHost, DialCancellation, DialCompletion, DialFailure, DialOutcome,
@@ -34,12 +35,12 @@ use crate::bindings::exports::tinybrowser::browser::engine::{
     Event, FrameEvent, Guest, GuestTab, HistoryHandling as HostHistoryHandling, InputEvent,
     PointerEvent, RenderedFrame, WheelEvent,
 };
-use crate::bindings::tinybrowser::browser::host;
 use crate::bindings::tinybrowser::browser::types::{FetchError, FetchResponse};
 use crate::host_transport::HostTransport;
 
 struct Network {
     agent: Agent,
+    cache: Arc<HttpCache>,
     transport: Arc<HostTransport>,
 }
 
@@ -49,14 +50,17 @@ fn network() -> &'static Network {
         let transport = Arc::new(HostTransport::new(
             u64::try_from(renderer::MAX_RESPONSE_BODY_BYTES).unwrap_or(u64::MAX),
         ));
-        let agent = Agent::with_transport(
-            AgentOptions {
-                timeout_per_call: Some(dial::PAGE_FETCH_TIMEOUT),
-                ..AgentOptions::default()
-            },
-            Arc::clone(&transport) as Arc<dyn Transport>,
-        );
-        Network { agent, transport }
+        let options = AgentOptions {
+            timeout_per_call: Some(dial::PAGE_FETCH_TIMEOUT),
+            ..AgentOptions::default()
+        };
+        let cache = Arc::new(HttpCache::new(options.clock.clone()));
+        let agent = Agent::with_transport(options, Arc::clone(&transport) as Arc<dyn Transport>);
+        Network {
+            agent,
+            cache,
+            transport,
+        }
     })
 }
 
@@ -76,14 +80,10 @@ impl Guest for Component {
     }
 
     fn complete_fetch(id: u64, result: Result<FetchResponse, FetchError>) -> bool {
-        let Some((registry, dial_id)) = lock(waiting_dials()).remove(&id) else {
+        if !network().transport.complete(id, result) {
             return false;
-        };
-        let Some(dial) = lock(&registry.dials).remove(&dial_id) else {
-            return false;
-        };
-        network().transport.complete(id, result);
-        DialRegistry::poll(&registry, dial_id, dial);
+        }
+        drain_ready_dials();
         true
     }
 }
@@ -157,14 +157,16 @@ impl GuestTab for Tab {
         let id = NEXT_DIAL.fetch_add(1, Ordering::Relaxed);
         *self.active_navigation_dial.borrow_mut() = Some(id);
         let dial = Dial {
-            owner: self.owner,
             task: DialTask::Navigation {
-                future: Box::pin(driver::navigate(network().agent.clone(), parsed)),
+                future: Box::pin(driver::navigate(
+                    network().agent.clone(),
+                    parsed,
+                    self.owner,
+                )),
                 slot: Arc::clone(&self.pending_navigation),
             },
-            waiting_on: None,
         };
-        DialRegistry::poll(&self.services.registry, id, dial);
+        DialRegistry::spawn(&self.services.registry, id, dial);
         Ok(())
     }
 
@@ -210,6 +212,7 @@ impl GuestTab for Tab {
     }
 
     fn step(&self) -> Option<u64> {
+        drain_ready_dials();
         if let Some(outcome) = lock(&self.pending_navigation).take() {
             *self.active_navigation_dial.borrow_mut() = None;
             match outcome {
@@ -413,9 +416,7 @@ struct DialRegistry {
 }
 
 struct Dial {
-    owner: u64,
     task: DialTask,
-    waiting_on: Option<u64>,
 }
 
 enum DialTask {
@@ -465,6 +466,23 @@ impl Dial {
     }
 }
 
+struct DialWaker {
+    registry: Weak<DialRegistry>,
+    id: u64,
+}
+
+impl Wake for DialWaker {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        if let Some(registry) = self.registry.upgrade() {
+            lock(ready_queue()).push_back((registry, self.id));
+        }
+    }
+}
+
 impl DialRegistry {
     fn new() -> Self {
         Self {
@@ -472,50 +490,41 @@ impl DialRegistry {
         }
     }
 
-    fn poll(registry: &Arc<Self>, id: u64, mut dial: Dial) {
-        let transport = &network().transport;
-        let mut context = Context::from_waker(Waker::noop());
-        transport.begin_poll(dial.owner);
-        let polled = dial.poll_once(&mut context);
-        let opened = transport.end_poll();
-        match polled {
-            Poll::Ready(()) => {}
-            Poll::Pending => match opened {
-                Some(host_id) => {
-                    dial.waiting_on = Some(host_id);
-                    lock(waiting_dials()).insert(host_id, (Arc::clone(registry), id));
-                    lock(&registry.dials).insert(id, dial);
-                }
-                None => {
-                    dial.fail(DialFailure::Connect);
-                }
-            },
-        }
+    fn spawn(registry: &Arc<Self>, id: u64, dial: Dial) {
+        lock(&registry.dials).insert(id, dial);
+        lock(ready_queue()).push_back((Arc::clone(registry), id));
+        drain_ready_dials();
     }
 
     fn cancel(&self, id: u64) {
         let Some(mut dial) = lock(&self.dials).remove(&id) else {
             return;
         };
-        Self::stop(&mut dial);
         dial.fail(DialFailure::Cancelled);
-    }
-
-    fn stop(dial: &mut Dial) {
-        let Some(host_id) = dial.waiting_on.take() else {
-            return;
-        };
-        lock(waiting_dials()).remove(&host_id);
-        network().transport.abandon(host_id);
-        host::cancel_fetch(host_id);
     }
 }
 
-type Parked = (Arc<DialRegistry>, u64);
+type ReadyEntry = (Arc<DialRegistry>, u64);
 
-fn waiting_dials() -> &'static Mutex<HashMap<u64, Parked>> {
-    static WAITING: OnceLock<Mutex<HashMap<u64, Parked>>> = OnceLock::new();
-    WAITING.get_or_init(|| Mutex::new(HashMap::new()))
+fn ready_queue() -> &'static Mutex<VecDeque<ReadyEntry>> {
+    static READY: OnceLock<Mutex<VecDeque<ReadyEntry>>> = OnceLock::new();
+    READY.get_or_init(|| Mutex::new(VecDeque::new()))
+}
+
+fn drain_ready_dials() {
+    while let Some((registry, id)) = lock(ready_queue()).pop_front() {
+        let Some(mut dial) = lock(&registry.dials).remove(&id) else {
+            continue;
+        };
+        let waker = Waker::from(Arc::new(DialWaker {
+            registry: Arc::downgrade(&registry),
+            id,
+        }));
+        let mut context = Context::from_waker(&waker);
+        if dial.poll_once(&mut context).is_pending() {
+            lock(&registry.dials).insert(id, dial);
+        }
+    }
 }
 
 fn local_storage() -> &'static Mutex<HashMap<renderer::StorageKey, StorageArea>> {
@@ -543,13 +552,16 @@ static NEXT_DIAL: AtomicU64 = AtomicU64::new(1);
 
 struct WasmServices {
     owner: u64,
+    dialer: Dialer,
     registry: Arc<DialRegistry>,
 }
 
 impl WasmServices {
     fn new() -> Self {
+        let net = network();
         Self {
             owner: NEXT_OWNER.fetch_add(1, Ordering::Relaxed),
+            dialer: Dialer::new(net.agent.clone(), Arc::clone(&net.cache)),
             registry: Arc::new(DialRegistry::new()),
         }
     }
@@ -562,15 +574,26 @@ impl NetworkHost for WasmServices {
             return Box::new(|| {});
         };
         let id = NEXT_DIAL.fetch_add(1, Ordering::Relaxed);
+        let dialer = self.dialer.clone();
+        let owner = self.owner;
         let dial = Dial {
-            owner: self.owner,
             task: DialTask::Subresource {
-                future: Box::pin(driver::run(network().agent.clone(), request, initiator)),
+                future: Box::pin(async move {
+                    dialer
+                        .dial(
+                            &request,
+                            &initiator,
+                            owner,
+                            Some(owner),
+                            &Unlimited,
+                            &BufferedOnly,
+                        )
+                        .await
+                }),
                 completion: Some(completion),
             },
-            waiting_on: None,
         };
-        DialRegistry::poll(&self.registry, id, dial);
+        DialRegistry::spawn(&self.registry, id, dial);
         let registry = Arc::clone(&self.registry);
         Box::new(move || registry.cancel(id))
     }

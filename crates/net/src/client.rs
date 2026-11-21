@@ -356,13 +356,14 @@ impl Agent {
     // https://fetch.spec.whatwg.org/#cors-preflight-fetch
     async fn cors_preflight(
         &self,
-        settings: &crate::cors::CorsSettings,
+        dial: &Dial<'_>,
         origin_header: &HeaderValue,
         hop: &Hop,
         headers: &HeaderMap,
         wire: &Url,
         budget: HopBudget,
     ) -> Result<(), NetError> {
+        let settings = dial.cors;
         let method = &hop.method;
         let unsafe_names = crate::cors::unsafe_request_header_names(headers);
         if !crate::cors::needs_preflight(method, &unsafe_names) {
@@ -393,6 +394,7 @@ impl Agent {
                     url: wire.clone(),
                     headers: preflight,
                     body: None,
+                    client: dial.client,
                 },
                 budget,
             )
@@ -417,18 +419,18 @@ impl Agent {
     // https://fetch.spec.whatwg.org/#append-a-request-origin-header — step 3 keeps Origin on a same-origin cors POST after 307/308; Chrome and Firefox fail the same WPT subtests
     async fn apply_cors_request(
         &self,
-        settings: &crate::cors::CorsSettings,
+        dial: &Dial<'_>,
         hop: &Hop,
         wire: &Url,
         headers: &mut HeaderMap,
         budget: HopBudget,
     ) -> Result<(), NetError> {
-        let serialized_origin = hop.append_origin(settings, wire);
+        let serialized_origin = hop.append_origin(dial.cors, wire);
         let origin_header =
             HeaderValue::from_str(&serialized_origin).map_err(|_| NetError::RejectedRequest)?;
         // https://fetch.spec.whatwg.org/#main-fetch — CSP report-uri sends no-cors with redirect mode "error" and refuses 3xx on response, matching Chromium
         if hop.response_type == crate::cors::ResponseType::Cors {
-            self.cors_preflight(settings, &origin_header, hop, headers, wire, budget)
+            self.cors_preflight(dial, &origin_header, hop, headers, wire, budget)
                 .await?;
         }
         // https://fetch.spec.whatwg.org/#append-a-request-origin-header — step 3 keeps Origin on a same-origin cors POST after 307/308; Chrome and Firefox fail the same WPT subtests
@@ -468,6 +470,7 @@ impl Agent {
             on_redirect: request.on_redirect.as_ref(),
             same_site_cookie_policy: request.same_site_cookie_policy,
             partition_key: request.partition_key.as_deref(),
+            client: request.client,
         };
         let mut hop = Hop {
             method: request.method,
@@ -622,7 +625,7 @@ impl Agent {
             partition_key: dial.partition_key,
         };
         let mut hop_headers = hop.headers.clone();
-        self.apply_cors_request(dial.cors, hop, &wire, &mut hop_headers, budget.clone())
+        self.apply_cors_request(dial, hop, &wire, &mut hop_headers, budget.clone())
             .await?;
         self.prepare_outbound(&mut hop_headers, operation)?;
         prepare_credentials(dial, url, cross_origin, &mut hop_headers)?;
@@ -636,6 +639,7 @@ impl Agent {
                     url: wire,
                     headers: hop_headers,
                     body: hop.body.clone(),
+                    client: dial.client,
                 },
                 budget.clone(),
             )
@@ -734,6 +738,8 @@ pub struct Request {
     pub same_site_cookie_policy: SameSiteCookiePolicy,
     // https://github.com/privacycg/CHIPS#computing-the-cookie-partition-key
     pub partition_key: Option<String>,
+    // https://fetch.spec.whatwg.org/#concept-request-client
+    pub client: Option<u64>,
 }
 
 impl std::fmt::Debug for Request {
@@ -753,6 +759,7 @@ impl std::fmt::Debug for Request {
             .field("referrer_policy", &self.referrer_policy)
             .field("same_site_cookie_policy", &self.same_site_cookie_policy)
             .field("partition_key", &self.partition_key)
+            .field("client", &self.client)
             .finish()
     }
 }
@@ -780,6 +787,7 @@ impl Request {
             referrer_policy: ReferrerPolicy::default(),
             same_site_cookie_policy: SameSiteCookiePolicy::All,
             partition_key: None,
+            client: None,
         }
     }
 }
@@ -960,6 +968,7 @@ struct Dial<'a> {
     on_redirect: Option<&'a RedirectGate>,
     same_site_cookie_policy: SameSiteCookiePolicy,
     partition_key: Option<&'a str>,
+    client: Option<u64>,
 }
 
 impl Dial<'_> {
