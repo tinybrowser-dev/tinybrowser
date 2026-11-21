@@ -175,6 +175,19 @@ fn build_clone3_fallback_program(arch: TargetArch) -> io::Result<BpfProgram> {
 }
 
 fn build_seccomp_program(arch: TargetArch) -> io::Result<BpfProgram> {
+    let rules = seccomp_rule_map()?;
+    let eperm = u32::try_from(libc::EPERM).unwrap_or(1);
+    let filter = SeccompFilter::new(
+        rules,
+        SeccompAction::Allow,
+        SeccompAction::Errno(eperm),
+        arch,
+    )
+    .map_err(io::Error::other)?;
+    filter.try_into().map_err(io::Error::other)
+}
+
+fn seccomp_rule_map() -> io::Result<BTreeMap<i64, Vec<SeccompRule>>> {
     let mut rules: BTreeMap<i64, Vec<SeccompRule>> = BTreeMap::new();
     for syscall in denied_syscalls() {
         rules.insert(syscall, Vec::new());
@@ -189,16 +202,7 @@ fn build_seccomp_program(arch: TargetArch) -> io::Result<BpfProgram> {
     rules.insert(libc::SYS_clone, clone_deny_rules);
     #[cfg(target_arch = "x86_64")]
     rules.insert(libc::SYS_clone | X32_SYSCALL_BIT, Vec::new());
-
-    let eperm = u32::try_from(libc::EPERM).unwrap_or(1);
-    let filter = SeccompFilter::new(
-        rules,
-        SeccompAction::Allow,
-        SeccompAction::Errno(eperm),
-        arch,
-    )
-    .map_err(io::Error::other)?;
-    filter.try_into().map_err(io::Error::other)
+    Ok(rules)
 }
 
 fn clone_deny_rules() -> io::Result<Vec<SeccompRule>> {
@@ -289,6 +293,21 @@ mod tests {
         let program = build_seccomp_program(arch).expect("bpf program");
         assert_ne!(clone3.len(), 0);
         assert_ne!(program.len(), 0);
+
+        let rules = seccomp_rule_map().expect("rule map");
+        assert!(rules.contains_key(&libc::SYS_pidfd_open));
+        assert!(rules.contains_key(&libc::SYS_pidfd_getfd));
+        assert!(rules.contains_key(&libc::SYS_kcmp));
+        assert_eq!(
+            rules.get(&libc::SYS_clone).map(Vec::len),
+            Some(1 + CLONE_NAMESPACE_FLAGS.len())
+        );
+        #[cfg(target_arch = "x86_64")]
+        {
+            assert!(rules.contains_key(&(libc::SYS_socket | X32_SYSCALL_BIT)));
+            assert!(rules.contains_key(&(libc::SYS_clone | X32_SYSCALL_BIT)));
+            assert!(rules.contains_key(&(0x0208 | X32_SYSCALL_BIT)));
+        }
     }
 
     #[test]
@@ -302,9 +321,21 @@ mod tests {
             assert_eq!(thread_result, 42);
             let fs_err = std::fs::read("/etc/passwd").expect_err("filesystem read must fail");
             assert_eq!(fs_err.kind(), io::ErrorKind::PermissionDenied);
-            let net_err =
-                std::net::TcpStream::connect("127.0.0.1:1").expect_err("socket must fail");
-            assert_eq!(net_err.kind(), io::ErrorKind::PermissionDenied);
+            let write_err = std::fs::write("/tmp/tinybrowser-sandbox-escape-test", b"x")
+                .expect_err("filesystem write must fail");
+            assert_eq!(write_err.kind(), io::ErrorKind::PermissionDenied);
+            let proc_err =
+                std::fs::read("/proc/self/status").expect_err("unlisted proc read must fail");
+            assert_eq!(proc_err.kind(), io::ErrorKind::PermissionDenied);
+            let tcp_err =
+                std::net::TcpStream::connect("127.0.0.1:1").expect_err("tcp socket must fail");
+            assert_eq!(tcp_err.kind(), io::ErrorKind::PermissionDenied);
+            let udp_err =
+                std::net::UdpSocket::bind("127.0.0.1:0").expect_err("udp socket must fail");
+            assert_eq!(udp_err.kind(), io::ErrorKind::PermissionDenied);
+            let unix_err =
+                std::os::unix::net::UnixStream::pair().expect_err("unix socketpair must fail");
+            assert_eq!(unix_err.kind(), io::ErrorKind::PermissionDenied);
             let exec_err = std::process::Command::new("/bin/sh")
                 .arg("-c")
                 .arg("true")

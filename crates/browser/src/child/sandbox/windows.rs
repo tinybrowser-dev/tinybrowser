@@ -226,3 +226,40 @@ pub(crate) use ffi::ProcessJob;
 pub(super) fn engage() -> std::io::Result<()> {
     ffi::engage()
 }
+
+#[cfg(test)]
+mod tests {
+    use std::os::windows::io::AsRawHandle;
+
+    use super::*;
+
+    #[test]
+    fn sandbox_blocks_child_process_creation_in_child() {
+        const CHILD_ENV: &str = "TINYBROWSER_WINDOWS_SANDBOX_TEST_CHILD";
+        if std::env::var_os(CHILD_ENV).is_some() {
+            engage().expect("windows sandbox engage");
+            let thread_result = std::thread::spawn(|| 42usize)
+                .join()
+                .expect("worker thread must spawn inside windows sandbox");
+            assert_eq!(thread_result, 42);
+            let spawn_err = std::process::Command::new("cmd.exe")
+                .args(["/C", "exit", "0"])
+                .status()
+                .expect_err("child process creation must fail");
+            assert_eq!(spawn_err.kind(), std::io::ErrorKind::PermissionDenied);
+            return;
+        }
+        let mut child = std::process::Command::new(std::env::current_exe().expect("test exe"))
+            .arg("--exact")
+            .arg("child::sandbox::windows::tests::sandbox_blocks_child_process_creation_in_child")
+            .env(CHILD_ENV, "1")
+            .spawn()
+            .expect("spawn sandbox child");
+        let _job = ProcessJob::assign(child.as_raw_handle()).expect("assign child to parent job");
+        let status = child.wait().expect("wait sandbox child");
+        assert!(
+            status.success(),
+            "windows sandbox child test failed: {status}"
+        );
+    }
+}
