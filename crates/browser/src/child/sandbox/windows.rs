@@ -115,10 +115,12 @@ mod ffi {
 
     fn lower_token_privileges_and_integrity() -> io::Result<()> {
         let mut token: HANDLE = ptr::null_mut();
-        // SAFETY: `GetCurrentProcess()` returns the current process pseudo-handle and `token` is a stack out-pointer.
+        // SAFETY: `GetCurrentProcess()` returns the current process pseudo-handle.
+        let current = unsafe { GetCurrentProcess() };
+        // SAFETY: `current` is the current process pseudo-handle and `token` is a stack out-pointer.
         let ok = unsafe {
             OpenProcessToken(
-                GetCurrentProcess(),
+                current,
                 TOKEN_ADJUST_PRIVILEGES | TOKEN_ADJUST_DEFAULT,
                 &raw mut token,
             )
@@ -179,11 +181,10 @@ mod ffi {
                 u32::try_from(size_of::<TOKEN_MANDATORY_LABEL>()).unwrap_or(0),
             )
         };
-        // SAFETY: `low_sid` was allocated by `AllocateAndInitializeSid` and `token` by `OpenProcessToken`.
-        unsafe {
-            FreeSid(low_sid);
-            CloseHandle(token);
-        }
+        // SAFETY: `low_sid` was allocated by `AllocateAndInitializeSid`.
+        unsafe { FreeSid(low_sid) };
+        // SAFETY: `token` was opened by `OpenProcessToken`.
+        unsafe { CloseHandle(token) };
         if ok == 0 {
             return Err(io::Error::last_os_error());
         }
