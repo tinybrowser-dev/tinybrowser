@@ -118,7 +118,7 @@ fn backup_path(path: &Path) -> PathBuf {
 pub(crate) fn open(path: &Path) -> io::Result<File> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
-        let _ = restrict_dir(parent);
+        restrict_dir(parent);
     }
     let mut options = File::options();
     options.create(true).append(true);
@@ -128,31 +128,27 @@ pub(crate) fn open(path: &Path) -> io::Result<File> {
         options.mode(0o600);
     }
     let file = options.open(path)?;
-    let _ = restrict_file(path);
+    restrict_file(path);
     Ok(file)
 }
 
 #[cfg(unix)]
-fn restrict_dir(path: &Path) -> io::Result<()> {
+fn restrict_dir(path: &Path) {
     use std::os::unix::fs::PermissionsExt as _;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+    let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o700));
 }
 
 #[cfg(not(unix))]
-fn restrict_dir(_path: &Path) -> io::Result<()> {
-    Ok(())
-}
+fn restrict_dir(_path: &Path) {}
 
 #[cfg(unix)]
-fn restrict_file(path: &Path) -> io::Result<()> {
+fn restrict_file(path: &Path) {
     use std::os::unix::fs::PermissionsExt as _;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+    let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
 }
 
 #[cfg(not(unix))]
-fn restrict_file(_path: &Path) -> io::Result<()> {
-    Ok(())
-}
+fn restrict_file(_path: &Path) {}
 
 #[cfg(test)]
 mod tests {

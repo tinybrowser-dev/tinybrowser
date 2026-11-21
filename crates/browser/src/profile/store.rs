@@ -178,16 +178,18 @@ impl ProfileStore {
     }
 }
 
+#[cfg(unix)]
 fn restrict(path: &Path, mode: u32) -> io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (path, mode);
-    }
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+}
+
+#[cfg(not(unix))]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "matches fallible unix restrict signature"
+)]
+fn restrict(_path: &Path, _mode: u32) -> io::Result<()> {
     Ok(())
 }
 

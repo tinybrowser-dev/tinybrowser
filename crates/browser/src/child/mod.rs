@@ -89,6 +89,10 @@ fn endpoint() -> io::Result<(Box<dyn Read + Send>, Box<dyn Write + Send>)> {
 }
 
 #[cfg(not(unix))]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "matches fallible unix endpoint signature"
+)]
 fn endpoint() -> io::Result<(Box<dyn Read + Send>, Box<dyn Write + Send>)> {
     Ok((Box::new(std::io::stdin()), Box::new(std::io::stdout())))
 }

@@ -40,17 +40,18 @@ mod ffi {
         let profile = CString::new(PROFILE).map_err(io::Error::other)?;
         let mut error_buf: *mut c_char = ptr::null_mut();
         // SAFETY: `profile` is a valid NUL-terminated C string and `error_buf` is a stack out-pointer populated by libSystem on error.
-        let rc = unsafe { sandbox_init(profile.as_ptr(), 0, &mut error_buf) };
+        let rc = unsafe { sandbox_init(profile.as_ptr(), 0, &raw mut error_buf) };
         if rc == 0 {
             return Ok(());
         }
         let message = if error_buf.is_null() {
             "sandbox_init failed".to_owned()
         } else {
-            // SAFETY: libSystem allocated `error_buf` as a NUL-terminated string and requires freeing it via `sandbox_free_error`.
+            // SAFETY: libSystem allocated `error_buf` as a NUL-terminated string.
             let text = unsafe { CStr::from_ptr(error_buf) }
                 .to_string_lossy()
                 .into_owned();
+            // SAFETY: `error_buf` was allocated by `sandbox_init` and must be freed via `sandbox_free_error`.
             unsafe { sandbox_free_error(error_buf) };
             text
         };

@@ -62,6 +62,7 @@ mod ffi {
                 | JOB_OBJECT_LIMIT_ACTIVE_PROCESS
                 | JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION;
             limits.BasicLimitInformation.ActiveProcessLimit = 1;
+            // SAFETY: `guard.0` is a valid job handle and `limits` matches `JobObjectExtendedLimitInformation`.
             let ok = unsafe {
                 SetInformationJobObject(
                     guard.0,
@@ -84,6 +85,7 @@ mod ffi {
                     | JOB_OBJECT_UILIMIT_SYSTEMPARAMETERS
                     | JOB_OBJECT_UILIMIT_WRITECLIPBOARD,
             };
+            // SAFETY: `guard.0` is a valid job handle and `ui` matches `JobObjectBasicUIRestrictions`.
             let ok = unsafe {
                 SetInformationJobObject(
                     guard.0,
@@ -118,7 +120,7 @@ mod ffi {
             OpenProcessToken(
                 GetCurrentProcess(),
                 TOKEN_ADJUST_PRIVILEGES | TOKEN_ADJUST_DEFAULT,
-                &mut token,
+                &raw mut token,
             )
         };
         if ok == 0 {
@@ -141,7 +143,7 @@ mod ffi {
         // SAFETY: Allocates the well-known S-1-16-4096 Low Mandatory Integrity SID, freed below with `FreeSid`.
         let ok = unsafe {
             AllocateAndInitializeSid(
-                &SECURITY_MANDATORY_LABEL_AUTHORITY,
+                &raw const SECURITY_MANDATORY_LABEL_AUTHORITY,
                 1,
                 low_rid,
                 0,
@@ -151,7 +153,7 @@ mod ffi {
                 0,
                 0,
                 0,
-                &mut low_sid,
+                &raw mut low_sid,
             )
         };
         if ok == 0 {
