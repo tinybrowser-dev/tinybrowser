@@ -425,6 +425,8 @@ impl Agent {
                     headers: preflight,
                     body: None,
                     client: dial.client,
+                    initiator: dial.initiator.cloned(),
+                    initiator_kind: dial.initiator_kind,
                 },
                 budget,
             )
@@ -669,6 +671,8 @@ impl Agent {
                     headers: hop_headers,
                     body: hop.body.clone(),
                     client: dial.client,
+                    initiator: dial.initiator.cloned(),
+                    initiator_kind: dial.initiator_kind,
                 },
                 budget.clone(),
             )
@@ -679,13 +683,7 @@ impl Agent {
             body: reader,
             http2,
         } = wire_response;
-        let content_encoding: Vec<String> =
-            crate::get_decode_split(&response_headers, "content-encoding")
-                .into_iter()
-                .flatten()
-                .map(|coding| coding.to_ascii_lowercase())
-                .filter(|coding| !coding.is_empty())
-                .collect();
+        let content_encoding = parse_content_encoding(&response_headers)?;
         let mut response = Response {
             status,
             status_text: reason_phrase(status, http2),
@@ -1233,6 +1231,27 @@ fn apply_url_credentials(headers: &mut HeaderMap, url: &Url) -> Result<(), NetEr
     Ok(())
 }
 
+// https://www.rfc-editor.org/rfc/rfc9110#section-8.4 — UA-defined cap matching Chromium's decoding filter limit to prevent stack overflow on chained encodings
+const MAX_CONTENT_ENCODING_LAYERS: usize = 5;
+
+fn parse_content_encoding(headers: &HeaderMap) -> Result<Vec<String>, NetError> {
+    let codings: Vec<String> = crate::get_decode_split(headers, "content-encoding")
+        .into_iter()
+        .flatten()
+        .map(|coding| coding.to_ascii_lowercase())
+        .filter(|coding| !coding.is_empty())
+        .collect();
+    if codings
+        .iter()
+        .filter(|coding| coding.as_str() != "identity")
+        .count()
+        > MAX_CONTENT_ENCODING_LAYERS
+    {
+        return Err(NetError::Decode("too many content-encoding layers".into()));
+    }
+    Ok(codings)
+}
+
 pub struct Body {
     reader: Box<dyn AsyncRead + Send + Unpin>,
     shared_error: Arc<Mutex<Option<NetError>>>,
@@ -1258,7 +1277,18 @@ impl Body {
         shared_error: Arc<Mutex<Option<NetError>>>,
         shared_input: Arc<AtomicBool>,
     ) -> Self {
+        let mut applied = 0usize;
         for coding in codings.iter().rev() {
+            if coding != "identity" {
+                if applied >= MAX_CONTENT_ENCODING_LAYERS {
+                    set_body_error(
+                        &shared_error,
+                        NetError::Decode("too many content-encoding layers".into()),
+                    );
+                    break;
+                }
+                applied += 1;
+            }
             match coding.as_str() {
                 "identity" => {}
                 "gzip" | "x-gzip" => {

@@ -97,11 +97,17 @@ pub(crate) fn animation_seconds() -> f64 {
 }
 
 // https://html.spec.whatwg.org/multipage/dom.html#current-document-readiness
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ReadyState {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ReadyState {
     Loading,
     Interactive,
     Complete,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DocumentLoadState {
+    pub ready_state: ReadyState,
+    pub url: String,
 }
 
 pub(crate) struct Parsed {

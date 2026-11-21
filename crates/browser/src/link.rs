@@ -547,7 +547,11 @@ async fn route_service_call(
     match call {
         ServiceCall::Network(NetworkCall::Dial(request)) => {
             // https://fetch.spec.whatwg.org/#concept-request-origin
-            let initiator = match assignment.site.authorize_origin(&request.initiator) {
+            let initiator = match context.tabs.authorize_origin(
+                assignment.tab,
+                &assignment.site,
+                &request.initiator,
+            ) {
                 Some(initiator) => initiator,
                 None if request.initiator.is_opaque() => url::Origin::new_opaque(),
                 None => return Err(RendererViolation),
@@ -572,6 +576,7 @@ async fn route_service_call(
             let registry = context.registry.clone();
             let tabs = context.tabs.clone();
             let tab_id = assignment.tab;
+            let main_site = assignment.site.clone();
             tokio::spawn(async move {
                 let mut outcome = race_dial(
                     &worker_network,
@@ -608,9 +613,21 @@ async fn route_service_call(
                     worker_network.cancel_stream(assignment_id, *stream);
                 }
                 // https://w3c.github.io/webappsec-csp/#sandbox
-                if let (Ok(head), Some(frame)) = (&outcome, request.frame) {
-                    let csp = renderer::SandboxFlags::from_csp_headers(&head.headers);
-                    tabs.commit_frame_sandbox(tab_id, frame, csp);
+                // https://html.spec.whatwg.org/multipage/browsing-the-web.html#check-a-navigation-response's-adherence-to-x-frame-options
+                if request.policy == renderer::RequestPolicy::FrameLoad
+                    && let Some(frame) = request.frame
+                    && frame != FrameId::MAIN
+                    && let Ok(head) = &outcome
+                {
+                    if frame_blocked_by_headers(&head.headers, &head.final_url, &main_site) {
+                        if let renderer::ResponseBody::Streamed(stream) = &head.body {
+                            worker_network.cancel_stream(assignment_id, *stream);
+                        }
+                        outcome = Err(renderer::DialFailure::Cancelled);
+                    } else {
+                        let csp = renderer::SandboxFlags::from_csp_headers(&head.headers);
+                        tabs.commit_child_frame(tab_id, frame, &head.final_url, csp);
+                    }
                 }
                 dials
                     .lock()
@@ -649,11 +666,14 @@ async fn route_service_call(
         }
         // https://chromium.googlesource.com/chromium/src/+/main/docs/process_model_and_site_isolation.md#process-locks
         ServiceCall::Network(NetworkCall::CookieGet { url, partition_key }) => {
-            let cookies = assignment.site.authorize_url(&url).map_or_default(|url| {
-                assignment
-                    .network
-                    .cookies_for(&url, partition_key.as_deref())
-            });
+            let cookies = context
+                .tabs
+                .authorize_url(assignment.tab, &assignment.site, &url)
+                .map_or_default(|url| {
+                    assignment
+                        .network
+                        .cookies_for(&url, partition_key.as_deref())
+                });
             send_reply(&context.responder, id, ServiceReply::Cookie(cookies)).await?;
         }
         ServiceCall::Network(NetworkCall::CookieSet {
@@ -661,7 +681,10 @@ async fn route_service_call(
             url,
             partition_key,
         }) => {
-            if let Some(url) = assignment.site.authorize_url(&url) {
+            if let Some(url) = context
+                .tabs
+                .authorize_url(assignment.tab, &assignment.site, &url)
+            {
                 assignment
                     .network
                     .set_cookie(&value, &url, partition_key.as_deref());
@@ -669,11 +692,14 @@ async fn route_service_call(
             send_reply(&context.responder, id, ServiceReply::Unit).await?;
         }
         ServiceCall::Network(NetworkCall::CookieStoreGet { url, partition_key }) => {
-            let records = assignment.site.authorize_url(&url).map_or_default(|url| {
-                assignment
-                    .network
-                    .cookie_store_records(&url, partition_key.as_deref())
-            });
+            let records = context
+                .tabs
+                .authorize_url(assignment.tab, &assignment.site, &url)
+                .map_or_default(|url| {
+                    assignment
+                        .network
+                        .cookie_store_records(&url, partition_key.as_deref())
+                });
             send_reply(&context.responder, id, ServiceReply::CookieStore(records)).await?;
         }
         ServiceCall::Network(NetworkCall::CookieStoreSet {
@@ -681,7 +707,10 @@ async fn route_service_call(
             url,
             partition_key,
         }) => {
-            if let Some(url) = assignment.site.authorize_url(&url) {
+            if let Some(url) = context
+                .tabs
+                .authorize_url(assignment.tab, &assignment.site, &url)
+            {
                 assignment
                     .network
                     .cookie_store_store(&write, &url, partition_key.as_deref());
@@ -694,9 +723,9 @@ async fn route_service_call(
             payload,
             channel,
         }) => {
-            let origin = assignment
-                .site
-                .storage_key(&origin)
+            let origin = context
+                .tabs
+                .storage_key(assignment.tab, &assignment.site, &origin)
                 .ok_or(RendererViolation)?;
             context
                 .partition
@@ -755,7 +784,60 @@ fn navigable_popup_url(url: Url) -> Option<Url> {
     matches!(url.scheme(), "about" | "http" | "https").then_some(url)
 }
 
+// https://html.spec.whatwg.org/multipage/browsing-the-web.html#check-a-navigation-response's-adherence-to-x-frame-options
+// https://w3c.github.io/webappsec-csp/#directive-frame-ancestors
+fn frame_blocked_by_headers(
+    headers: &[(String, String)],
+    url: &Url,
+    main_site: &crate::site::Site,
+) -> bool {
+    let mut has_frame_ancestors = false;
+    for (name, value) in headers {
+        if name.eq_ignore_ascii_case("content-security-policy") {
+            for policy in value.split(',') {
+                for directive in policy.split(';') {
+                    let mut tokens = directive.split_ascii_whitespace();
+                    let Some(directive_name) = tokens.next() else {
+                        continue;
+                    };
+                    if !directive_name.eq_ignore_ascii_case("frame-ancestors") {
+                        continue;
+                    }
+                    has_frame_ancestors = true;
+                    let sources: Vec<&str> = tokens.collect();
+                    if sources.len() == 1 && sources[0].eq_ignore_ascii_case("'none'") {
+                        return true;
+                    }
+                    if sources.len() == 1
+                        && sources[0].eq_ignore_ascii_case("'self'")
+                        && !main_site.allows_url(url)
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    if has_frame_ancestors {
+        return false;
+    }
+    for (name, value) in headers {
+        if !name.eq_ignore_ascii_case("x-frame-options") {
+            continue;
+        }
+        let trimmed = value.trim();
+        if trimmed.eq_ignore_ascii_case("deny") {
+            return true;
+        }
+        if trimmed.eq_ignore_ascii_case("sameorigin") && !main_site.allows_url(url) {
+            return true;
+        }
+    }
+    false
+}
+
 fn window_initiator(
+    tabs: &TabRegistry,
     assignment: &Assignment,
     source: renderer::NavigationSource,
     opener: renderer::OpenerPolicy,
@@ -768,14 +850,13 @@ fn window_initiator(
         secure_context,
     } = source;
     // https://w3c.github.io/webappsec-referrer-policy/#determine-requests-referrer
-    let origin = match assignment.site.authorize_origin(&claim) {
+    let origin = match tabs.authorize_origin(assignment.tab, &assignment.site, &claim) {
         Some(origin) => origin,
         None if claim.is_opaque() => url::Origin::new_opaque(),
         None => return Err(RendererViolation),
     };
-    let referrer = assignment
-        .site
-        .allows_url(&referrer)
+    let referrer = tabs
+        .allows_url(assignment.tab, &assignment.site, &referrer)
         .then_some(referrer)
         .filter(|referrer| referrer.origin() == origin);
     // https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps
@@ -842,7 +923,7 @@ impl WindowRouter<'_> {
             None => None,
         };
         let calling_frame = source.frame;
-        let initiator = window_initiator(assignment, source, opener)?;
+        let initiator = window_initiator(&context.tabs, assignment, source, opener)?;
         // https://html.spec.whatwg.org/multipage/browsers.html#sandbox-propagates-to-auxiliary-browsing-contexts-flag
         let popup_sandbox = active.auxiliary_flags();
         let tab = context
@@ -890,7 +971,7 @@ impl WindowRouter<'_> {
                     "window.open navigation refused: a sandboxed document cannot navigate another browsing context"
                 );
             } else {
-                let initiator = window_initiator(assignment, source, opener)?;
+                let initiator = window_initiator(&context.tabs, assignment, source, opener)?;
                 if let Ok(handle) = context.browser.tab(target).await {
                     tokio::spawn(async move {
                         let _result = handle.goto_from(url.as_str(), initiator).await;
@@ -973,7 +1054,11 @@ async fn route_window_call(
             send_reply(&context.responder, id, ServiceReply::Window(opener)).await?;
         }
         BrowsingContextCall::WindowMessage { window, message } => {
-            if !assignment.site.allows_message_origin(&message.origin) {
+            if !context.tabs.allows_message_origin(
+                assignment.tab,
+                &assignment.site,
+                &message.origin,
+            ) {
                 return Err(RendererViolation);
             }
             let target = TabId::new(window.get());
@@ -989,9 +1074,9 @@ async fn route_window_call(
             origin,
             key,
         } => {
-            let origin = assignment
-                .site
-                .storage_key(&origin)
+            let origin = context
+                .tabs
+                .storage_key(assignment.tab, &assignment.site, &origin)
                 .ok_or(RendererViolation)?;
             let target = TabId::new(window.get());
             let related = message_related(context, assignment, target);
@@ -1086,9 +1171,9 @@ impl StorageRouter<'_> {
     }
 
     fn key(&self, origin: &renderer::SerializedOrigin) -> Result<StorageKey, RendererViolation> {
-        self.authority
-            .site
-            .storage_key(origin)
+        self.context
+            .tabs
+            .storage_key(self.authority.tab, &self.authority.site, origin)
             .ok_or(RendererViolation)
     }
 
@@ -1210,7 +1295,12 @@ impl StorageRouter<'_> {
     }
 
     fn authorize(&self, url: Option<&str>) -> Result<(), RendererViolation> {
-        if url.is_some_and(|url| self.authority.site.authorize_url(url).is_none()) {
+        if url.is_some_and(|url| {
+            self.context
+                .tabs
+                .authorize_url(self.authority.tab, &self.authority.site, url)
+                .is_none()
+        }) {
             return Err(RendererViolation);
         }
         Ok(())

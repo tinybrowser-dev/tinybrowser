@@ -1,4 +1,4 @@
-use renderer::{SerializedOrigin, StorageKey};
+use renderer::SerializedOrigin;
 use url::Url;
 
 use crate::actor::TabId;
@@ -47,12 +47,6 @@ impl Site {
             SerializedOrigin::Tuple(origin) if self.allows_origin(origin) => Some(origin.clone()),
             SerializedOrigin::Tuple(_) | SerializedOrigin::Opaque => None,
         }
-    }
-
-    // https://html.spec.whatwg.org/multipage/webstorage.html#the-localstorage-attribute
-    #[must_use]
-    pub(crate) fn storage_key(&self, claim: &SerializedOrigin) -> Option<StorageKey> {
-        StorageKey::from_origin(&self.authorize_origin(claim)?)
     }
 
     #[must_use]
@@ -165,29 +159,37 @@ mod tests {
 
     #[test]
     fn storage_keys_are_tuple_origins() {
+        use renderer::StorageKey;
+
         let locked =
             Site::for_url(&Url::parse("https://www.example.test/").expect("url")).expect("site");
-        let key = locked
-            .storage_key(&claim("https://ads.example.test/path?q#f"))
-            .expect("a same-site tuple origin");
+        let key = StorageKey::from_origin(
+            &locked
+                .authorize_origin(&claim("https://ads.example.test/path?q#f"))
+                .expect("a same-site tuple origin"),
+        )
+        .expect("storage key");
         assert_eq!(key.to_string(), "https://ads.example.test");
         for spelling in [
             "https://ads.example.test/",
             "https://ads.example.test/a?b#c",
             "HTTPS://ADS.EXAMPLE.TEST",
         ] {
-            assert_eq!(
-                locked.storage_key(&claim(spelling)).as_ref(),
-                Some(&key),
-                "{spelling}"
-            );
+            let authorized = locked
+                .authorize_origin(&claim(spelling))
+                .and_then(|origin| StorageKey::from_origin(&origin));
+            assert_eq!(authorized.as_ref(), Some(&key), "{spelling}");
         }
-        assert!(locked.storage_key(&claim("null")).is_none());
-        assert!(locked.storage_key(&claim("https://other.test")).is_none());
+        assert!(locked.authorize_origin(&claim("null")).is_none());
+        assert!(
+            locked
+                .authorize_origin(&claim("https://other.test"))
+                .is_none()
+        );
 
         let opaque = Site::opaque(TabId::new(7));
-        assert!(opaque.storage_key(&claim("null")).is_none());
-        assert!(opaque.storage_key(&claim("about:blank")).is_none());
+        assert!(opaque.authorize_origin(&claim("null")).is_none());
+        assert!(opaque.authorize_origin(&claim("about:blank")).is_none());
     }
 
     fn claim(spec: &str) -> SerializedOrigin {

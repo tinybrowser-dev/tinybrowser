@@ -1025,6 +1025,19 @@ impl Engine {
         Ok(self.frame_mut(frame)?.content_size())
     }
 
+    pub fn document_state(&self, frame: FrameId) -> Result<crate::DocumentLoadState, TabError> {
+        let document = self
+            .frames
+            .get(&frame)
+            .ok_or(TabError::UnknownFrame { frame: frame.get() })?;
+        let world = document.world();
+        let world = world.borrow();
+        Ok(crate::DocumentLoadState {
+            ready_state: world.main_ready_state(),
+            url: world.document_url.as_str().to_owned(),
+        })
+    }
+
     pub fn dom(
         &mut self,
         frame: FrameId,

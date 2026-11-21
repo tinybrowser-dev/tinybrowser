@@ -1,9 +1,11 @@
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::fmt;
 use std::future::Future;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::pin::Pin;
 use std::str::FromStr;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Context, Poll};
 
 use bytes::Bytes;
@@ -25,10 +27,65 @@ use crate::error::{NetError, TimeoutKind, TransportError};
 use crate::protocol::{HeaderMap, basic_authorization};
 use crate::resolve::{HostMap, ResolveFailure, Target};
 
+// https://wicg.github.io/private-network-access/#ip-address-space
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum AddressSpace {
+    Local,
+    Private,
+    Public,
+}
+
+const MAX_HOST_SPACES: usize = 4096;
+
+// https://wicg.github.io/private-network-access/#ip-address-space
+pub(crate) fn classify_ip(ip: IpAddr) -> AddressSpace {
+    let ip = match ip {
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(IpAddr::V6(v6), IpAddr::V4),
+        IpAddr::V4(v4) => IpAddr::V4(v4),
+    };
+    match ip {
+        IpAddr::V4(v4) => {
+            let octets = v4.octets();
+            if v4.is_loopback() || octets[0] == 0 {
+                AddressSpace::Local
+            } else if v4.is_private()
+                || v4.is_link_local()
+                || (octets[0] == 100 && (octets[1] & 0xc0) == 64)
+            {
+                AddressSpace::Private
+            } else {
+                AddressSpace::Public
+            }
+        }
+        IpAddr::V6(v6) => {
+            let first = v6.segments()[0];
+            if v6.is_loopback() || v6.is_unspecified() {
+                AddressSpace::Local
+            } else if (first & 0xfe00) == 0xfc00 || (first & 0xffc0) == 0xfe80 {
+                AddressSpace::Private
+            } else {
+                AddressSpace::Public
+            }
+        }
+    }
+}
+
+pub(crate) fn is_cloud_metadata(ip: IpAddr) -> bool {
+    const IMDS_V4: Ipv4Addr = Ipv4Addr::new(169, 254, 169, 254);
+    const ECS_V4: Ipv4Addr = Ipv4Addr::new(169, 254, 170, 2);
+    const IMDS_V6: Ipv6Addr = Ipv6Addr::new(0xfd00, 0x0ec2, 0, 0, 0, 0, 0, 0x0254);
+    let ip = match ip {
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(IpAddr::V6(v6), IpAddr::V4),
+        IpAddr::V4(v4) => IpAddr::V4(v4),
+    };
+    matches!(ip, IpAddr::V4(IMDS_V4 | ECS_V4) | IpAddr::V6(IMDS_V6))
+}
+
 #[derive(Clone)]
 pub(crate) struct HostResolver {
     host_map: HostMap,
     system: GaiResolver,
+    pinned: Arc<Mutex<HashMap<String, Vec<SocketAddr>>>>,
 }
 
 impl Service<Name> for HostResolver {
@@ -41,6 +98,15 @@ impl Service<Name> for HostResolver {
     }
 
     fn call(&mut self, name: Name) -> Self::Future {
+        let key = name.as_str().to_ascii_lowercase();
+        if let Some(addrs) = self
+            .pinned
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&key)
+        {
+            return Box::pin(async move { Ok(addrs.into_iter()) });
+        }
         match self.host_map.lookup(name.as_str()) {
             Some(Target::Addr(ip)) => {
                 Box::pin(async move { Ok(vec![SocketAddr::new(ip.into(), 0)].into_iter()) })
@@ -135,6 +201,10 @@ impl fmt::Debug for Proxy {
 pub(crate) struct HttpEngine {
     client: Client<HttpsConnector<HttpConnector<HostResolver>>, RequestBody>,
     proxied: Option<ProxiedClient>,
+    host_map: HostMap,
+    system: GaiResolver,
+    pinned: Arc<Mutex<HashMap<String, Vec<SocketAddr>>>>,
+    host_spaces: Arc<Mutex<HashMap<String, AddressSpace>>>,
 }
 
 type ProxiedClient = Client<HttpsConnector<Tunnel<HttpConnector<HostResolver>>>, RequestBody>;
@@ -173,9 +243,12 @@ fn tls_connector(cas: &[TrustedCa]) -> tokio_native_tls::TlsConnector {
 
 impl HttpEngine {
     pub(crate) fn new(proxy: Option<Proxy>, host_map: HostMap, tls_cas: &[TrustedCa]) -> Self {
+        let system = GaiResolver::new();
+        let pinned = Arc::new(Mutex::new(HashMap::new()));
         let resolver = HostResolver {
-            host_map,
-            system: GaiResolver::new(),
+            host_map: host_map.clone(),
+            system: system.clone(),
+            pinned: Arc::clone(&pinned),
         };
         let mut http = HttpConnector::new_with_resolver(resolver);
         http.enforce_http(false);
@@ -190,7 +263,116 @@ impl HttpEngine {
         });
         let connector = HttpsConnector::from((http, tls));
         let client = Client::builder(TokioExecutor::new()).build(connector);
-        Self { client, proxied }
+        Self {
+            client,
+            proxied,
+            host_map,
+            system,
+            pinned,
+            host_spaces: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    fn initiator_space(&self, initiator: Option<&url::Origin>) -> Option<AddressSpace> {
+        let origin = initiator?;
+        match origin {
+            url::Origin::Opaque(_) => Some(AddressSpace::Public),
+            url::Origin::Tuple(_, host, _) => Some(match host {
+                url::Host::Ipv4(v4) => classify_ip(IpAddr::V4(*v4)),
+                url::Host::Ipv6(v6) => classify_ip(IpAddr::V6(*v6)),
+                url::Host::Domain(domain) => {
+                    let lower = domain.to_ascii_lowercase();
+                    if lower == "localhost" || lower.ends_with(".localhost") {
+                        AddressSpace::Local
+                    } else if let Some(Target::Addr(ip)) = self.host_map.lookup(&lower) {
+                        classify_ip(ip.into())
+                    } else {
+                        self.host_spaces
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .get(&lower)
+                            .copied()
+                            .unwrap_or(AddressSpace::Public)
+                    }
+                }
+            }),
+        }
+    }
+
+    // https://wicg.github.io/private-network-access/#integration-with-fetch
+    async fn enforce_private_network_access(
+        &self,
+        host: &str,
+        initiator: Option<&url::Origin>,
+        initiator_kind: cookies::InitiatorKind,
+        budget: &HopBudget,
+    ) -> Result<(), NetError> {
+        if self.proxied.is_some() || host.is_empty() || self.host_map.lookup(host).is_some() {
+            return Ok(());
+        }
+        let lower = host.to_ascii_lowercase();
+        let literal = lower
+            .strip_prefix('[')
+            .and_then(|rest| rest.strip_suffix(']'))
+            .unwrap_or(&lower)
+            .parse::<IpAddr>()
+            .ok();
+        let resolved: Vec<SocketAddr> = if let Some(ip) = literal {
+            vec![SocketAddr::new(ip, 0)]
+        } else {
+            let Ok(name) = Name::from_str(&lower) else {
+                return Ok(());
+            };
+            let mut system = self.system.clone();
+            let addrs = within(
+                budget.clone(),
+                TimeoutKind::Global,
+                Service::call(&mut system, name),
+            )
+            .await?
+            .map_err(|_| NetError::Transport(TransportError::Dns(host.into())))?;
+            addrs.collect()
+        };
+        if resolved.is_empty() {
+            return Ok(());
+        }
+        if resolved.iter().any(|addr| is_cloud_metadata(addr.ip())) {
+            return Err(NetError::RejectedRequest);
+        }
+        let target_space = resolved
+            .iter()
+            .map(|addr| classify_ip(addr.ip()))
+            .min()
+            .unwrap_or(AddressSpace::Public);
+        if literal.is_none() {
+            let mut spaces = self
+                .host_spaces
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if let Some(&previous) = spaces.get(&lower)
+                && target_space < previous
+            {
+                return Err(NetError::RejectedRequest);
+            }
+            if spaces.len() >= MAX_HOST_SPACES {
+                spaces.clear();
+            }
+            spaces.insert(lower.clone(), target_space);
+        }
+        if initiator_kind != cookies::InitiatorKind::Navigation
+            && let Some(initiator_space) = self.initiator_space(initiator)
+            && target_space < initiator_space
+        {
+            return Err(NetError::RejectedRequest);
+        }
+        if literal.is_none() {
+            let mut pinned = self.pinned.lock().unwrap_or_else(PoisonError::into_inner);
+            if pinned.len() >= MAX_HOST_SPACES {
+                pinned.clear();
+            }
+            pinned.insert(lower, resolved);
+        }
+        Ok(())
     }
 }
 
@@ -207,10 +389,15 @@ impl Transport for HttpEngine {
                 headers,
                 body,
                 client: _,
+                initiator,
+                initiator_kind,
             } = request;
             if budget.is_expired() {
                 return Err(timed_out(budget.timeout_kind(TimeoutKind::Global)));
             }
+            let host = wire_url.host_str().unwrap_or_default().to_owned();
+            self.enforce_private_network_access(&host, initiator.as_ref(), initiator_kind, &budget)
+                .await?;
             let request_body = match body {
                 Some(bytes) => Full::new(bytes).boxed(),
                 None => Empty::<Bytes>::new().boxed(),
@@ -236,7 +423,6 @@ impl Transport for HttpEngine {
                 request.headers_mut().append(name.clone(), value.clone());
             }
 
-            let host = wire_url.host_str().unwrap_or_default().to_owned();
             let request_future = match &self.proxied {
                 Some(proxied) => proxied.request(request),
                 None => self.client.request(request),
@@ -359,4 +545,39 @@ fn map_client_error(error: hyper_util::client::legacy::Error, host: &str) -> Net
         return NetError::Transport(TransportError::Connect(error.to_string().into()));
     }
     NetError::Transport(TransportError::Io(std::io::Error::other(error)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AddressSpace, classify_ip, is_cloud_metadata};
+    use std::net::IpAddr;
+
+    #[test]
+    fn ip_address_spaces_and_metadata_are_classified() {
+        for (addr, expected) in [
+            ("127.0.0.1", AddressSpace::Local),
+            ("::1", AddressSpace::Local),
+            ("::ffff:127.0.0.1", AddressSpace::Local),
+            ("0.0.0.0", AddressSpace::Local),
+            ("10.0.0.1", AddressSpace::Private),
+            ("172.16.0.1", AddressSpace::Private),
+            ("192.168.1.1", AddressSpace::Private),
+            ("100.64.0.1", AddressSpace::Private),
+            ("169.254.169.254", AddressSpace::Private),
+            ("::ffff:169.254.169.254", AddressSpace::Private),
+            ("fc00::1", AddressSpace::Private),
+            ("fe80::1", AddressSpace::Private),
+            ("93.184.216.34", AddressSpace::Public),
+            ("2606:2800:220:1::248", AddressSpace::Public),
+        ] {
+            let ip: IpAddr = addr.parse().expect("ip");
+            assert_eq!(classify_ip(ip), expected, "{addr}");
+        }
+        assert!(is_cloud_metadata("169.254.169.254".parse().expect("ip")));
+        assert!(is_cloud_metadata(
+            "::ffff:169.254.169.254".parse().expect("ip")
+        ));
+        assert!(is_cloud_metadata("fd00:ec2::254".parse().expect("ip")));
+        assert!(!is_cloud_metadata("127.0.0.1".parse().expect("ip")));
+    }
 }

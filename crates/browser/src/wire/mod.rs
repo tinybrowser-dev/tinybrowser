@@ -82,6 +82,9 @@ pub enum Command {
     ContentSize {
         frame: FrameId,
     },
+    DocumentState {
+        frame: FrameId,
+    },
     Dom {
         frame: FrameId,
         request: renderer::DomRequest,
@@ -94,6 +97,7 @@ pub enum Reply {
     Value(Result<RemoteValue, TabError>),
     Screenshot { result: Result<u32, TabError> },
     ContentSize(Result<(f32, f32), TabError>),
+    DocumentState(Result<renderer::DocumentLoadState, TabError>),
     Dom(Result<Box<renderer::DomReply>, TabError>),
 }
 

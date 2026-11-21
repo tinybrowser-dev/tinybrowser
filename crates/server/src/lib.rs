@@ -189,6 +189,20 @@ pub fn has_origin(request: &Request) -> bool {
     request.headers().contains_key(header::ORIGIN)
 }
 
+// https://w3c.github.io/webappsec-fetch-metadata/
+#[must_use]
+pub fn has_browser_fetch_metadata(request: &Request) -> bool {
+    const HEADERS: [&str; 4] = [
+        "sec-fetch-site",
+        "sec-fetch-mode",
+        "sec-fetch-dest",
+        "sec-fetch-user",
+    ];
+    HEADERS
+        .iter()
+        .any(|name| request.headers().contains_key(*name))
+}
+
 #[must_use]
 pub fn is_json_content_type(request: &Request) -> bool {
     request

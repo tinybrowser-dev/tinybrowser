@@ -1082,7 +1082,9 @@ mod tests {
         });
         let context = NetworkContext::new(AgentOptions::default());
         let handle = context.tab_handle();
-        let initiator = Url::parse("http://a.test/page").expect("page URL").origin();
+        let initiator = Url::parse("http://localhost/page")
+            .expect("page URL")
+            .origin();
         let owner = RendererAssignmentId::new(1);
 
         let image = dial(
@@ -1131,7 +1133,9 @@ mod tests {
         });
         let context = NetworkContext::new(AgentOptions::default());
         let handle = context.tab_handle();
-        let initiator = Url::parse("http://a.test/page").expect("page URL").origin();
+        let initiator = Url::parse("http://localhost/page")
+            .expect("page URL")
+            .origin();
         let owner = RendererAssignmentId::new(1);
         let url = format!("http://{address}/img");
 

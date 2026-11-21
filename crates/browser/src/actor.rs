@@ -7,7 +7,7 @@ use std::time::Duration;
 use crate::wire::{Command as RendererCommand, Reply};
 use renderer::{
     BrowserEvent, DialFailure, FrameId, MAX_RESPONSE_BODY_BYTES, Mount, RemoteValue, ResourceLimit,
-    ResponseHead, ScriptSource, TabError,
+    ResponseHead, TabError,
 };
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
@@ -827,20 +827,17 @@ impl Tab {
         result
     }
 
-    async fn renderer_document_state(&mut self) -> Option<(String, String)> {
+    async fn renderer_document_state(&mut self) -> Option<renderer::DocumentLoadState> {
         self.renderer.as_ref()?;
         let reply = self
-            .renderer_request(RendererCommand::ExecuteScript {
+            .renderer_request(RendererCommand::DocumentState {
                 frame: FrameId::MAIN,
-                source: ScriptSource::Page("document.readyState + '\\n' + document.URL".to_owned()),
-                timeout_ms: Some(1_000),
             })
             .await;
-        let Ok(Reply::Value(Ok(RemoteValue::String(state)))) = reply else {
+        let Ok(Reply::DocumentState(Ok(state))) = reply else {
             return None;
         };
-        let (ready, url) = state.split_once('\n')?;
-        Some((ready.to_owned(), url.to_owned()))
+        Some(state)
     }
 
     async fn renderer_request_bytes(
@@ -1164,10 +1161,12 @@ impl Tab {
                     .nav
                     .as_ref()
                     .map_or_else(|| self.document_url.clone(), |nav| nav.url.clone());
-                let Some((ready, current)) = self.renderer_document_state().await else {
+                let Some(state) = self.renderer_document_state().await else {
                     return;
                 };
-                if ready != "complete" || current != expected.as_str() {
+                if state.ready_state != renderer::ReadyState::Complete
+                    || state.url != expected.as_str()
+                {
                     return;
                 }
                 self.document_loaded = true;

@@ -78,6 +78,9 @@ async fn serve_request(request: Request, state: AppState) -> Response {
     if server::has_origin(&request) {
         return status_response(StatusCode::FORBIDDEN, "Origin header rejected");
     }
+    if server::has_browser_fetch_metadata(&request) {
+        return status_response(StatusCode::FORBIDDEN, "Sec-Fetch-* header rejected");
+    }
     let path = request.uri().path().to_owned();
     let route = route_path(&path);
     match route {

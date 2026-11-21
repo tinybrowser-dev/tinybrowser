@@ -4037,6 +4037,7 @@ version = "0.0.1"
 dependencies = [
  "base64",
  "browser",
+ "getrandom",
  "http",
  "serde_json",
  "server",
