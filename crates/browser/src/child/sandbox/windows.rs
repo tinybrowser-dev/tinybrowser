@@ -139,13 +139,14 @@ mod ffi {
         }
 
         let mut low_sid: PSID = ptr::null_mut();
-        let low_rid = u32::try_from(SECURITY_MANDATORY_LOW_RID).unwrap_or(0x1000);
+        let integrity_rid = u32::try_from(SECURITY_MANDATORY_LOW_RID).unwrap_or(0x1000);
+        let authority = SECURITY_MANDATORY_LABEL_AUTHORITY;
         // SAFETY: Allocates the well-known S-1-16-4096 Low Mandatory Integrity SID, freed below with `FreeSid`.
         let ok = unsafe {
             AllocateAndInitializeSid(
-                &raw const SECURITY_MANDATORY_LABEL_AUTHORITY,
+                &raw const authority,
                 1,
-                low_rid,
+                integrity_rid,
                 0,
                 0,
                 0,

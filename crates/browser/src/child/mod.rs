@@ -1,4 +1,4 @@
-mod sandbox;
+pub(crate) mod sandbox;
 mod session;
 
 const INBOX_CAPACITY: usize = 256;
