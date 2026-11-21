@@ -12,7 +12,7 @@
 #
 # Deploy goes through Alchemy (`Cloudflare.Website.Astro`), which runs the
 # Astro build and uploads the Worker + static assets to Cloudflare. The stack
-# refuses any stage but production.
+# refuses any stage but prod.
 
 name: Website
 
@@ -36,7 +36,7 @@ permissions:
 
 # One deployment at a time; a queued run waits rather than racing the upload.
 concurrency:
-  group: deploy-production
+  group: deploy-prod
   cancel-in-progress: false
 
 jobs:
@@ -101,7 +101,7 @@ jobs:
       - name: Deploy to Cloudflare
         if: env.CLOUDFLARE_API_TOKEN != ''
         working-directory: website
-        run: bunx alchemy deploy --stage production --yes
+        run: bunx alchemy deploy --stage prod --yes
 
       # Without the token there is nowhere to deploy yet, but the site still
       # builds so the push is checked and the log says why nothing shipped.

@@ -37,7 +37,7 @@ fn short_v_prints_the_version() {
     assert!(output.status.success());
     let out = String::from_utf8_lossy(&output.stdout);
     assert!(out.contains("tinybrowser"), "{out}");
-    assert!(out.contains("0.1.0"), "{out}");
+    assert!(out.contains(env!("CARGO_PKG_VERSION")), "{out}");
 }
 
 #[test]
@@ -52,7 +52,7 @@ fn version_short_circuits_anywhere() {
         assert!(output.status.success(), "{args:?}");
         let out = String::from_utf8_lossy(&output.stdout);
         assert!(out.contains("tinybrowser"), "{args:?}: {out}");
-        assert!(out.contains("0.1.0"), "{args:?}: {out}");
+        assert!(out.contains(env!("CARGO_PKG_VERSION")), "{args:?}: {out}");
     }
 }
 

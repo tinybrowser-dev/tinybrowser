@@ -23,11 +23,9 @@ export default Alchemy.Stack(
   Effect.gen(function* () {
     const ctx = yield* AlchemyContext
     const stack = yield* Stack
-    if (!ctx.dev && stack.stage !== "production") {
+    if (!ctx.dev && stack.stage !== "prod") {
       return yield* Effect.die(
-        new Error(
-          `tinybrowser only deploys to production; got "${stack.stage}". Pass --stage production.`,
-        ),
+        new Error(`tinybrowser only deploys to prod; got "${stack.stage}". Pass --stage prod.`),
       )
     }
 
