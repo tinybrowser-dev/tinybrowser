@@ -251,7 +251,7 @@ mod tests {
                 .status()
                 .expect_err("child process creation must fail");
             assert!(
-                matches!(spawn_err.raw_os_error(), Some(5 | 725 | 1260 | 1816)),
+                matches!(spawn_err.raw_os_error(), Some(5 | 367 | 1260 | 1816)),
                 "expected policy/access/quota denial, got {spawn_err:?} (raw={:?})",
                 spawn_err.raw_os_error()
             );
