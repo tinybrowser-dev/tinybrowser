@@ -454,6 +454,14 @@ impl BrowserTask {
                 self.context.clear_cookies();
                 Reply::ClearCookies
             }
+            Command::ClearCache => {
+                self.context.clear_cache();
+                Reply::ClearCache
+            }
+            Command::SetCacheDisabled { disabled } => {
+                self.context.set_cache_disabled(disabled);
+                Reply::SetCacheDisabled
+            }
             Command::AddCookie { cookie, url } => {
                 Reply::AddCookie(self.context.add_cookie(&cookie, &url))
             }

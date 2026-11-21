@@ -18,12 +18,17 @@ use crate::wire::RendererAssignmentId;
 
 // https://fetch.spec.whatwg.org/#keepalive-flag
 const KEEPALIVE_QUOTA: usize = 65_536;
-static KEEPALIVE_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
 
-struct KeepaliveReservation(usize);
+struct KeepaliveReservation {
+    counter: Arc<AtomicUsize>,
+    bytes: usize,
+}
 
 impl KeepaliveReservation {
-    fn acquire(request: &DialRequest) -> Result<Option<Self>, DialFailure> {
+    fn acquire(
+        counter: &Arc<AtomicUsize>,
+        request: &DialRequest,
+    ) -> Result<Option<Self>, DialFailure> {
         if !request.keepalive {
             return Ok(None);
         }
@@ -33,7 +38,7 @@ impl KeepaliveReservation {
         if length > KEEPALIVE_QUOTA {
             return Err(DialFailure::Limit);
         }
-        let mut current = KEEPALIVE_IN_FLIGHT.load(Ordering::Relaxed);
+        let mut current = counter.load(Ordering::Relaxed);
         loop {
             let Some(next) = current.checked_add(length) else {
                 return Err(DialFailure::Limit);
@@ -41,13 +46,14 @@ impl KeepaliveReservation {
             if next > KEEPALIVE_QUOTA {
                 return Err(DialFailure::Limit);
             }
-            match KEEPALIVE_IN_FLIGHT.compare_exchange_weak(
-                current,
-                next,
-                Ordering::AcqRel,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => return Ok(Some(Self(length))),
+            match counter.compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Relaxed)
+            {
+                Ok(_) => {
+                    return Ok(Some(Self {
+                        counter: Arc::clone(counter),
+                        bytes: length,
+                    }));
+                }
                 Err(observed) => current = observed,
             }
         }
@@ -56,7 +62,7 @@ impl KeepaliveReservation {
 
 impl Drop for KeepaliveReservation {
     fn drop(&mut self) {
-        KEEPALIVE_IN_FLIGHT.fetch_sub(self.0, Ordering::AcqRel);
+        self.counter.fetch_sub(self.bytes, Ordering::AcqRel);
     }
 }
 
@@ -173,6 +179,7 @@ impl NetworkContext {
             dialer: Dialer::new(self.agent.clone(), Arc::clone(&self.cache)),
             permits: self.permits.clone(),
             tab: Arc::new(Semaphore::new(MAX_TAB_DIALS)),
+            keepalive: Arc::new(AtomicUsize::new(0)),
             streams: Arc::clone(&self.streams),
             next_stream: Arc::clone(&self.next_stream),
         }
@@ -192,6 +199,14 @@ impl NetworkContext {
 
     pub(crate) fn clear_cookies(&self) {
         self.agent.clear_cookies();
+    }
+
+    pub(crate) fn clear_cache(&self) {
+        self.cache.clear();
+    }
+
+    pub(crate) fn set_cache_disabled(&self, disabled: bool) {
+        self.cache.set_disabled(disabled);
     }
 
     pub(crate) fn add_cookie(&self, cookie: &str, url: &Url) -> bool {
@@ -223,6 +238,7 @@ pub(crate) struct TabNetworkHandle {
     dialer: Dialer,
     permits: NetworkPermits,
     tab: Arc<Semaphore>,
+    keepalive: Arc<AtomicUsize>,
     streams: StreamMap,
     next_stream: Arc<AtomicU64>,
 }
@@ -355,7 +371,7 @@ impl TabNetworkHandle {
         owner: RendererAssignmentId,
     ) -> Result<DialOutcome, DialFailure> {
         let started = Instant::now();
-        let _keepalive = KeepaliveReservation::acquire(request)?;
+        let _keepalive = KeepaliveReservation::acquire(&self.keepalive, request)?;
         logging::trace!(
             target: "browser::net",
             "request start {:?} {}",

@@ -810,6 +810,21 @@ impl Conn {
                     .map_err(|error| DispatchError::Failed(error.to_string()))?;
                 Ok(json!({}))
             }
+            Handler::ClearBrowserCache => {
+                self.browser
+                    .clear_cache()
+                    .await
+                    .map_err(|error| DispatchError::Failed(error.to_string()))?;
+                Ok(json!({}))
+            }
+            Handler::SetCacheDisabled => {
+                let params: params::SetCacheDisabled = params::parse(params)?;
+                self.browser
+                    .set_cache_disabled(params.cache_disabled)
+                    .await
+                    .map_err(|error| DispatchError::Failed(error.to_string()))?;
+                Ok(json!({}))
+            }
             Handler::GetTargetInfo => match target {
                 Target::Page(tab) => {
                     let mut info = target_info(&self.browser, tab.id()).await;
@@ -1604,17 +1619,35 @@ mod tests {
         let outcome = conn.dispatch_text(&print_media.to_string()).await;
         assert_eq!(outcome.reply["error"]["code"], json!(-32601));
 
-        let cache_enabled = json!({
+        let cache_disabled = json!({
             "id": 3,
+            "method": "Network.setCacheDisabled",
+            "params": {"cacheDisabled": true},
+            "sessionId": session,
+        });
+        let outcome = conn.dispatch_text(&cache_disabled.to_string()).await;
+        assert_eq!(outcome.reply["result"], json!({}));
+
+        let cache_enabled = json!({
+            "id": 4,
             "method": "Network.setCacheDisabled",
             "params": {"cacheDisabled": false},
             "sessionId": session,
         });
         let outcome = conn.dispatch_text(&cache_enabled.to_string()).await;
-        assert_eq!(outcome.reply["error"]["code"], json!(-32601));
+        assert_eq!(outcome.reply["result"], json!({}));
+
+        let clear_cache = json!({
+            "id": 5,
+            "method": "Network.clearBrowserCache",
+            "params": {},
+            "sessionId": session,
+        });
+        let outcome = conn.dispatch_text(&clear_cache.to_string()).await;
+        assert_eq!(outcome.reply["result"], json!({}));
 
         let get_properties = json!({
-            "id": 4,
+            "id": 6,
             "method": "Runtime.getProperties",
             "params": {"ownProperties": true},
             "sessionId": session,

@@ -59,6 +59,8 @@ pub(super) enum Command {
     Close,
     CookieRecords { url: Url },
     ClearCookies,
+    ClearCache,
+    SetCacheDisabled { disabled: bool },
     AddCookie { cookie: String, url: Url },
     OpenWindow(OpenWindowOptions),
 }
@@ -71,6 +73,8 @@ pub(super) enum Reply {
     Close(io::Result<()>),
     CookieRecords(Vec<net::CookieRecord>),
     ClearCookies,
+    ClearCache,
+    SetCacheDisabled,
     AddCookie(bool),
     OpenWindow(Result<TabId, BrowserError>),
 }
@@ -171,6 +175,20 @@ impl BrowserHandle {
     pub async fn clear_cookies(&self) -> Result<(), BrowserError> {
         match self.call(Command::ClearCookies).await? {
             Reply::ClearCookies => Ok(()),
+            _ => Err(BrowserError::Protocol),
+        }
+    }
+
+    pub async fn clear_cache(&self) -> Result<(), BrowserError> {
+        match self.call(Command::ClearCache).await? {
+            Reply::ClearCache => Ok(()),
+            _ => Err(BrowserError::Protocol),
+        }
+    }
+
+    pub async fn set_cache_disabled(&self, disabled: bool) -> Result<(), BrowserError> {
+        match self.call(Command::SetCacheDisabled { disabled }).await? {
+            Reply::SetCacheDisabled => Ok(()),
             _ => Err(BrowserError::Protocol),
         }
     }

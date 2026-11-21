@@ -105,8 +105,8 @@ Request requirements:
 
 Options:
       --port <PORT>
-          Bind `127.0.0.1:<PORT>` (`0..=65535`). When omitted, requires `XDG_RUNTIME_DIR`,
-          locks the profile, binds an ephemeral port, and writes `daemon.json`.
+          Bind `127.0.0.1:<PORT>` (`0..=65535`). When omitted, locks the profile,
+          binds an ephemeral port, and writes `daemon.json` in the runtime directory.
       --profile <NAME>
           Profile name (`[A-Za-z0-9._-]+`, max 64 bytes) [default: default]
       --proxy <URI>

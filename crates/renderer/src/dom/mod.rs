@@ -1,5 +1,6 @@
 // https://dom.spec.whatwg.org/#concept-node-adopt
 
+pub(crate) mod accessibility;
 pub(crate) mod adoption;
 pub(crate) mod equality;
 pub(crate) mod forms;

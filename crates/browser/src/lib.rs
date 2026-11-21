@@ -23,9 +23,9 @@ pub use net::{
 };
 pub use profile::{Profile, ProfileError, ProfileName, default_data_home};
 pub use renderer::{
-    DEFAULT_VIEWPORT, DomBoxModel, DomNode, DomRemoteNode, DomReply, DomRequest, FrameId,
-    RemoteValue, ResourceLimit, ScreenshotClip, ScreenshotRequest, ScriptFailure, ScriptSource,
-    TabError,
+    AxNode, AxProperty, AxPropertyValue, DEFAULT_VIEWPORT, DomBoxModel, DomNode, DomRemoteNode,
+    DomReply, DomRequest, DomStyleSheet, FrameId, RemoteValue, ResourceLimit, ScreenshotClip,
+    ScreenshotRequest, ScriptFailure, ScriptSource, TabError,
 };
 
 pub use dial::SEC_CH_PREFERS_COLOR_SCHEME;

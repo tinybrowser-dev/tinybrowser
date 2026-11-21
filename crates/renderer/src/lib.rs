@@ -72,16 +72,17 @@ impl Fonts {
 
 pub use js::{Stop, TURN_SCRIPT_BUDGET};
 pub use protocol::{
-    BodyDelivery, BrowserEvent, BrowserServices, BrowsingContextHost, ContextName, CookiePolicy,
-    CorsMode, CorsRequest, DialCancellation, DialCompletion, DialFailure, DialKind, DialOutcome,
-    DialRequest, DomBoxModel, DomNode, DomRemoteNode, DomReply, DomRequest, FrameId, FrameKind,
-    HistoryHandling, HistorySnapshot, HttpHead, MAX_RESPONSE_BODY_BYTES, MessagingHost, Mount,
-    NameChange, NavigationSource, NetworkHost, OpenerPolicy, PolicyContainer, PostedMessage,
-    ReferrerRequest, RendererEvent, RequestCache, RequestPolicy, ResourceLimit, ResponseBody,
-    ResponseHead, ResponseSource, STORAGE_QUOTA_BYTES, SandboxFlags, ScreenshotClip,
-    ScreenshotRequest, ScriptCookie, ScriptFailure, ScriptSource, SerializedOrigin, StorageChange,
-    StorageError, StorageHost, StorageKey, StorageKind, StreamId, TabError, TabState, TargetName,
-    TargetOrigin, TimerId, WindowId,
+    AxNode, AxProperty, AxPropertyValue, BodyDelivery, BrowserEvent, BrowserServices,
+    BrowsingContextHost, ContextName, CookiePolicy, CorsMode, CorsRequest, DialCancellation,
+    DialCompletion, DialFailure, DialKind, DialOutcome, DialRequest, DomBoxModel, DomNode,
+    DomRemoteNode, DomReply, DomRequest, DomStyleSheet, FrameId, FrameKind, HistoryHandling,
+    HistorySnapshot, HttpHead, MAX_RESPONSE_BODY_BYTES, MessagingHost, Mount, NameChange,
+    NavigationSource, NetworkHost, OpenerPolicy, PolicyContainer, PostedMessage, ReferrerRequest,
+    RendererEvent, RequestCache, RequestPolicy, ResourceLimit, ResponseBody, ResponseHead,
+    ResponseSource, STORAGE_QUOTA_BYTES, SandboxFlags, ScreenshotClip, ScreenshotRequest,
+    ScriptCookie, ScriptFailure, ScriptSource, SerializedOrigin, StorageChange, StorageError,
+    StorageHost, StorageKey, StorageKind, StreamId, TabError, TabState, TargetName, TargetOrigin,
+    TimerId, WindowId,
 };
 pub use remote::RemoteValue;
 pub use storage::PendingStorageEvent;

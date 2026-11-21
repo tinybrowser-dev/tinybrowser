@@ -97,11 +97,30 @@ pub fn default_data_home() -> io::Result<PathBuf> {
     if let Some(dir) = env::var_os("XDG_DATA_HOME").filter(|value| !value.is_empty()) {
         return Ok(PathBuf::from(dir));
     }
+    #[cfg(windows)]
+    {
+        for var in ["LOCALAPPDATA", "APPDATA"] {
+            if let Some(dir) = env::var_os(var).filter(|value| !value.is_empty()) {
+                return Ok(PathBuf::from(dir));
+            }
+        }
+        if let Some(home) = env::var_os("USERPROFILE").filter(|value| !value.is_empty()) {
+            return Ok(PathBuf::from(home).join("AppData").join("Local"));
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(home) = env::var_os("HOME").filter(|value| !value.is_empty()) {
+            return Ok(PathBuf::from(home)
+                .join("Library")
+                .join("Application Support"));
+        }
+    }
     if let Some(home) = env::var_os("HOME").filter(|value| !value.is_empty()) {
         return Ok(PathBuf::from(home).join(".local/share"));
     }
     Err(io::Error::new(
         io::ErrorKind::NotFound,
-        "XDG_DATA_HOME and HOME are unset",
+        "cannot determine data directory: XDG_DATA_HOME and HOME are unset",
     ))
 }

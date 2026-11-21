@@ -105,6 +105,14 @@ impl BrowserContext {
         self.partition.network.clear_cookies();
     }
 
+    pub(crate) fn clear_cache(&self) {
+        self.partition.network.clear_cache();
+    }
+
+    pub(crate) fn set_cache_disabled(&self, disabled: bool) {
+        self.partition.network.set_cache_disabled(disabled);
+    }
+
     pub(crate) fn add_cookie(&self, cookie: &str, url: &Url) -> bool {
         self.partition.network.add_cookie(cookie, url)
     }

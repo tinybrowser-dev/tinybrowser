@@ -97,6 +97,10 @@ impl<K: Eq + Hash> WrapperCache<K> {
     pub(crate) fn clear(&mut self) {
         self.entries.clear();
     }
+
+    pub(crate) fn len(&self) -> usize {
+        self.entries.len()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -556,6 +560,25 @@ impl RealmRegistry {
             .retain(|node, _| node.document_id() != id);
         self.adopted_ids
             .retain(|from, to| from.document_id() != id && to.document_id() != id);
+    }
+
+    pub(crate) fn prune_dead_wrappers(&mut self, documents: &DocumentStore) {
+        if self.wrappers.len() <= 256 {
+            return;
+        }
+        self.wrappers.retain(|node| documents.contains_node(*node));
+        self.same_object
+            .retain(|(node, _)| documents.contains_node(*node));
+        self.creation_realms
+            .retain(|node, _| documents.contains_node(*node));
+        self.canvas_nodes
+            .retain(|node, _| documents.contains_node(*node));
+        self.canvases.retain(|_, slot| match slot.owner {
+            CanvasOwner::Element(node) => documents.contains_node(node),
+            CanvasOwner::Offscreen { .. } => true,
+        });
+        self.adopted_ids
+            .retain(|_, to| documents.contains_node(*to));
     }
 
     pub(crate) fn wrapper(&self, id: NodeId) -> Option<Persistent<Value<'static>>> {
@@ -1635,6 +1658,14 @@ impl World {
             .borrow_mut()
             .forget_realm(self.realm_id());
         self.document = None;
+    }
+
+    pub(crate) fn prune_dead_wrappers(&self) {
+        let documents = self.runtime.documents.borrow();
+        self.runtime
+            .registry
+            .borrow_mut()
+            .prune_dead_wrappers(&documents);
     }
 
     pub(crate) fn registry(&self) -> Rc<RefCell<RealmRegistry>> {

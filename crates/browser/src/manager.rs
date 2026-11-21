@@ -217,17 +217,50 @@ fn renderer_process_limit() -> usize {
     {
         return limit;
     }
-    let available_kib = std::fs::read_to_string("/proc/meminfo")
-        .ok()
-        .and_then(|text| {
-            text.lines().find_map(|line| {
-                line.strip_prefix("MemAvailable:")?
-                    .split_whitespace()
-                    .next()?
-                    .parse::<usize>()
-                    .ok()
-            })
-        })
-        .unwrap_or(512 * 1024);
-    (available_kib / (64 * 1024)).clamp(1, 128)
+    if let Some(available_kib) = system_memory_kib() {
+        return (available_kib / (64 * 1024)).clamp(1, 128);
+    }
+    std::thread::available_parallelism()
+        .map_or(1, std::num::NonZeroUsize::get)
+        .saturating_mul(2)
+        .clamp(1, 128)
+}
+
+fn system_memory_kib() -> Option<usize> {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        let text = std::fs::read_to_string("/proc/meminfo").ok()?;
+        parse_meminfo_kib(&text, "MemAvailable:").or_else(|| parse_meminfo_kib(&text, "MemTotal:"))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let output = std::process::Command::new("sysctl")
+            .args(["-n", "hw.memsize"])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let bytes = std::str::from_utf8(&output.stdout)
+            .ok()?
+            .trim()
+            .parse::<u64>()
+            .ok()?;
+        usize::try_from(bytes / 1024).ok()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
+    {
+        None
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn parse_meminfo_kib(text: &str, prefix: &str) -> Option<usize> {
+    text.lines().find_map(|line| {
+        line.strip_prefix(prefix)?
+            .split_whitespace()
+            .next()?
+            .parse::<usize>()
+            .ok()
+    })
 }
