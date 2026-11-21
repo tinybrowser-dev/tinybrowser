@@ -95,3 +95,43 @@ jobs:
           SCCACHE_GHA_ENABLED: "true"
           RUSTC_WRAPPER: "sccache"
         run: tools/playwright/run smoke.spec.ts
+
+  sandbox:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@v7
+      - name: Toolchain
+        shell: bash
+        run: |
+          rustup toolchain install --profile minimal \
+            --component rust-src --component clippy
+          cargo --version
+      - name: Submodules (build inputs only, shallow)
+        shell: bash
+        run: |
+          git submodule update --init --depth 1 --jobs 4 \
+            third_party/blitz third_party/rquickjs third_party/html5ever
+          git -C third_party/rquickjs submodule update --init --depth 1 sys/quickjs
+      - name: Cargo cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+      - name: Clippy and sandbox tests
+        shell: bash
+        run: |
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            export CFLAGS=""
+          fi
+          cargo clippy -p browser --all-targets -- -D warnings
+          cargo test -p browser -- child::sandbox --nocapture
