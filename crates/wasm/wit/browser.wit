@@ -182,6 +182,32 @@ interface engine {
         event: event,
     }
 
+    /// Pointer coordinates in viewport CSS pixels and button index (0 = primary).
+    record pointer-event {
+        x: f64,
+        y: f64,
+        button: u8,
+    }
+
+    /// Wheel scroll deltas at viewport CSS pixel coordinates.
+    record wheel-event {
+        x: f64,
+        y: f64,
+        delta-x: f64,
+        delta-y: f64,
+    }
+
+    /// One user input event dispatched through the engine's trusted input pipeline.
+    variant input-event {
+        pointer-move(pointer-event),
+        pointer-down(pointer-event),
+        pointer-up(pointer-event),
+        wheel(wheel-event),
+        key-down(string),
+        key-up(string),
+        insert-text(string),
+    }
+
     /// One page, driven by the host.
     ///
     /// The host owns the loop: it calls `step` after every state change it
@@ -212,6 +238,9 @@ interface engine {
         /// Evaluates `source` in the main frame and returns its string
         /// coercion. Throws surface as the error side.
         eval: func(source: string) -> result<string, string>;
+        /// Dispatches a trusted pointer, wheel, or keyboard event through the
+        /// engine's input pipeline.
+        dispatch-input: func(event: input-event) -> result<_, string>;
         /// Renders the main frame into RGBA pixels at `width` x `height`.
         render: func(width: u32, height: u32) -> result<rendered-frame, string>;
         /// Advances the page one turn: runs ready tasks until the script

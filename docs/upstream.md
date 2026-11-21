@@ -137,6 +137,12 @@ The BMP decode feature is not a fork change: which formats an engine carries is 
 
 ### rquickjs (third_party/rquickjs, master)
 
+- 030d357 ship bundled `aarch64-linux-android` bindings (`sys/src/bindings/aarch64-linux-android.rs`)
+  so the Android/Termux release job builds without enabling `bindgen`/`libclang`.
+  Verified identical to `aarch64-unknown-linux-gnu.rs` (and `aarch64-unknown-linux-musl.rs`
+  / `aarch64-apple-darwin.rs`): the bindgen allowlist emits only `JS*`/`js*` symbols,
+  `::core::ffi::*` primitives, and `pub type size_t = ::core::ffi::c_ulong` (exact
+  AAPCS64 LP64 on bionic), with zero `__ANDROID__`-conditional FFI declarations.
 - 5a1f877 expose the `[[IsHTMLDDA]]` slot. `HTMLAllCollection` is the one
   interface with the slot: `typeof document.all` reports `"undefined"`,
   `ToBoolean` is false, and loose equality treats it like `null`

@@ -672,7 +672,7 @@ impl JsRealm {
         let ports = ports.to_vec();
         self.with_budget(None, MicrotaskCheckpoint::Perform, || {
             self.context.with(|ctx| {
-                let deliver: Function = ctx.globals().get("__tbWorkerEvent")?;
+                let deliver: Function = bridge::object(&ctx)?.get("__tbWorkerEvent")?;
                 deliver.call::<_, ()>((worker, payload, ports))?;
                 Ok(())
             })
@@ -689,7 +689,7 @@ impl JsRealm {
     ) -> Result<(), JsError> {
         self.with_budget(None, MicrotaskCheckpoint::Perform, || {
             self.context.with(|ctx| {
-                let deliver: Function = ctx.globals().get("__tbWorkerErrorEvent")?;
+                let deliver: Function = bridge::object(&ctx)?.get("__tbWorkerErrorEvent")?;
                 deliver.call::<_, ()>((worker, message, filename, lineno, colno))?;
                 Ok(())
             })
@@ -700,7 +700,7 @@ impl JsRealm {
     pub(crate) fn deliver_worker_load_error(&self, worker: u64) -> Result<(), JsError> {
         self.with_budget(None, MicrotaskCheckpoint::Perform, || {
             self.context.with(|ctx| {
-                let deliver: Function = ctx.globals().get("__tbWorkerLoadErrorEvent")?;
+                let deliver: Function = bridge::object(&ctx)?.get("__tbWorkerLoadErrorEvent")?;
                 deliver.call::<_, ()>((worker,))?;
                 Ok(())
             })
@@ -715,7 +715,7 @@ impl JsRealm {
         let ports = ports.to_vec();
         self.with_budget(None, MicrotaskCheckpoint::Perform, || {
             self.context.with(|ctx| {
-                let deliver: Function = ctx.globals().get("__tbWorkerDeliverMessage")?;
+                let deliver: Function = bridge::object(&ctx)?.get("__tbWorkerDeliverMessage")?;
                 deliver.call::<_, ()>((payload, ports))?;
                 Ok(())
             })
@@ -726,7 +726,7 @@ impl JsRealm {
     pub(crate) fn deliver_shared_connect(&self, endpoint: u64) -> Result<(), JsError> {
         self.with_budget(None, MicrotaskCheckpoint::Perform, || {
             self.context.with(|ctx| {
-                let deliver: Function = ctx.globals().get("__tbWorkerConnect")?;
+                let deliver: Function = bridge::object(&ctx)?.get("__tbWorkerConnect")?;
                 deliver.call::<_, ()>((endpoint,))?;
                 Ok(())
             })
@@ -1864,7 +1864,8 @@ impl JsRealm {
 
 // https://cookiestore.spec.whatwg.org/#process-cookie-changes
 fn process_cookie_changes_now(ctx: &Ctx<'_>) -> rquickjs::Result<()> {
-    let process: Option<rquickjs::Function> = ctx.globals().get("__tbCookieStoreProcessChanges")?;
+    let process: Option<rquickjs::Function> =
+        bridge::object(ctx)?.get("__tbCookieStoreProcessChanges")?;
     let Some(process) = process else {
         return Ok(());
     };

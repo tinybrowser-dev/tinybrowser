@@ -55,3 +55,120 @@ impl BodyReader {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::Arc;
+
+    use base64::Engine as _;
+    use bytes::Bytes;
+    use net::{
+        Agent, AgentOptions, HopBudget, Method, NetError, Request, TimeoutKind, Transport,
+        TransportError, WireRequest, WireResponse, buffered_body,
+    };
+    use sha2::{Digest as _, Sha256};
+
+    use super::*;
+
+    struct FixedTransport(Bytes);
+
+    impl Transport for FixedTransport {
+        fn exchange(
+            &self,
+            _request: WireRequest,
+            _budget: HopBudget,
+        ) -> Pin<Box<dyn Future<Output = Result<WireResponse, NetError>> + Send + '_>> {
+            let body = self.0.clone();
+            Box::pin(async move {
+                Ok(WireResponse {
+                    status: 200,
+                    headers: net::HeaderMap::new(),
+                    body: buffered_body(body),
+                    http2: false,
+                })
+            })
+        }
+    }
+
+    async fn read_all(body: Bytes, integrity: Option<String>) -> BodyEvent {
+        let agent = Agent::with_transport(
+            AgentOptions::default(),
+            Arc::new(FixedTransport(body)) as Arc<dyn Transport>,
+        );
+        let request = Request::new(
+            Method::GET,
+            url::Url::parse("https://example.test/res").unwrap(),
+        );
+        let response = agent.send(request).await.expect("send");
+        let mut reader = BodyReader::new(response, integrity, true).await;
+        loop {
+            match reader.next().await {
+                BodyEvent::Chunk(_) => {}
+                terminal => return terminal,
+            }
+        }
+    }
+
+    fn sha256_sri(bytes: &[u8]) -> String {
+        let digest = Sha256::digest(bytes);
+        format!(
+            "sha256-{}",
+            base64::engine::general_purpose::STANDARD.encode(digest)
+        )
+    }
+
+    #[tokio::test]
+    async fn body_reader_enforces_sri_and_size_cap() {
+        let ok = read_all(Bytes::from_static(b"hi"), Some(sha256_sri(b"hi"))).await;
+        assert!(matches!(ok, BodyEvent::Done(ref data) if data == b"hi"));
+
+        let bad_sri = read_all(Bytes::from_static(b"hi"), Some(sha256_sri(b"ho"))).await;
+        assert!(matches!(bad_sri, BodyEvent::Failed(DialFailure::Connect)));
+
+        let oversized = Bytes::from(vec![0u8; renderer::MAX_RESPONSE_BODY_BYTES + 1]);
+        let capped = read_all(oversized, None).await;
+        assert!(matches!(capped, BodyEvent::Failed(DialFailure::Limit)));
+    }
+
+    #[test]
+    fn dial_failure_maps_every_net_error_variant() {
+        let cases = [
+            (
+                NetError::Transport(TransportError::Dns("x".into())),
+                DialFailure::Dns,
+            ),
+            (
+                NetError::Transport(TransportError::Connect("x".into())),
+                DialFailure::Connect,
+            ),
+            (
+                NetError::Transport(TransportError::Io(std::io::Error::other("x"))),
+                DialFailure::Connect,
+            ),
+            (
+                NetError::Transport(TransportError::Tls("x".into())),
+                DialFailure::Tls,
+            ),
+            (
+                NetError::Transport(TransportError::Timeout(TimeoutKind::PerCall)),
+                DialFailure::Timeout,
+            ),
+            (
+                NetError::Transport(TransportError::Capacity),
+                DialFailure::QueueFull,
+            ),
+            (
+                NetError::Transport(TransportError::BodyTooLarge),
+                DialFailure::Limit,
+            ),
+            (NetError::RedirectLimit, DialFailure::Limit),
+            (NetError::RejectedRequest, DialFailure::Connect),
+            (NetError::Decode("x".into()), DialFailure::Connect),
+        ];
+        for (error, expected) in cases {
+            assert_eq!(dial_failure(&error), expected, "{error:?}");
+        }
+    }
+}

@@ -31,7 +31,8 @@ mod bindings {
 }
 
 use crate::bindings::exports::tinybrowser::browser::engine::{
-    Event, FrameEvent, Guest, GuestTab, HistoryHandling as HostHistoryHandling, RenderedFrame,
+    Event, FrameEvent, Guest, GuestTab, HistoryHandling as HostHistoryHandling, InputEvent,
+    PointerEvent, RenderedFrame, WheelEvent,
 };
 use crate::bindings::tinybrowser::browser::host;
 use crate::bindings::tinybrowser::browser::types::{FetchError, FetchResponse};
@@ -179,6 +180,15 @@ impl GuestTab for Tab {
         self.with_renderer(|renderer| renderer.eval(&source))
     }
 
+    fn dispatch_input(&self, event: InputEvent) -> Result<(), String> {
+        let script = input_action_script(&event)?;
+        self.renderer
+            .borrow_mut()
+            .execute_browser(&script, None)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
     fn render(&self, width: u32, height: u32) -> Result<RenderedFrame, String> {
         if width == 0 || height == 0 {
             return Err("viewport dimensions must be positive".into());
@@ -276,6 +286,96 @@ impl Tab {
         }
         let _discarded = lock(&self.pending_navigation).take();
     }
+}
+
+fn finite(value: f64, name: &str) -> Result<f64, String> {
+    value
+        .is_finite()
+        .then_some(value)
+        .ok_or_else(|| format!("non-finite {name}"))
+}
+
+fn js_string_literal(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 || c == '\u{2028}' || c == '\u{2029}' => {
+                use std::fmt::Write as _;
+                let _ = write!(out, "\\u{:04X}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+// https://w3c.github.io/webdriver/#perform-actions
+fn input_action_script(event: &InputEvent) -> Result<String, String> {
+    let payload = match event {
+        InputEvent::PointerMove(PointerEvent { x, y, .. }) => {
+            let x = finite(*x, "x")?;
+            let y = finite(*y, "y")?;
+            format!(
+                r#"[{{"type":"pointer","id":"mouse","parameters":{{"pointerType":"mouse"}},"actions":[{{"type":"pointerMove","origin":"viewport","x":{x},"y":{y}}}]}}]"#
+            )
+        }
+        InputEvent::PointerDown(PointerEvent { x, y, button }) => {
+            let x = finite(*x, "x")?;
+            let y = finite(*y, "y")?;
+            format!(
+                r#"[{{"type":"pointer","id":"mouse","parameters":{{"pointerType":"mouse"}},"actions":[{{"type":"pointerMove","origin":"viewport","x":{x},"y":{y}}},{{"type":"pointerDown","button":{button}}}]}}]"#
+            )
+        }
+        InputEvent::PointerUp(PointerEvent { x, y, button }) => {
+            let x = finite(*x, "x")?;
+            let y = finite(*y, "y")?;
+            format!(
+                r#"[{{"type":"pointer","id":"mouse","parameters":{{"pointerType":"mouse"}},"actions":[{{"type":"pointerMove","origin":"viewport","x":{x},"y":{y}}},{{"type":"pointerUp","button":{button}}}]}}]"#
+            )
+        }
+        InputEvent::Wheel(WheelEvent {
+            x,
+            y,
+            delta_x,
+            delta_y,
+        }) => {
+            let x = finite(*x, "x")?;
+            let y = finite(*y, "y")?;
+            let dx = finite(*delta_x, "delta-x")?;
+            let dy = finite(*delta_y, "delta-y")?;
+            format!(
+                r#"[{{"type":"wheel","id":"wheel","actions":[{{"type":"scroll","x":{x},"y":{y},"deltaX":{dx},"deltaY":{dy}}}]}}]"#
+            )
+        }
+        InputEvent::KeyDown(key) => {
+            let key = js_string_literal(key);
+            format!(
+                r#"[{{"type":"key","id":"keyboard","actions":[{{"type":"keyDown","value":{key}}}]}}]"#
+            )
+        }
+        InputEvent::KeyUp(key) => {
+            let key = js_string_literal(key);
+            format!(
+                r#"[{{"type":"key","id":"keyboard","actions":[{{"type":"keyUp","value":{key}}}]}}]"#
+            )
+        }
+        InputEvent::InsertText(text) => {
+            let text = js_string_literal(text);
+            format!(
+                r#"[{{"type":"key","id":"keyboard","actions":[{{"type":"insertText","value":{text}}}]}}]"#
+            )
+        }
+    };
+    Ok(format!(
+        "(function(){{return host.__tbWebDriverActions({payload});}})()"
+    ))
 }
 
 fn to_event(event: RendererEvent) -> Option<Event> {

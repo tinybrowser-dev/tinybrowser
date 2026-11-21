@@ -27,6 +27,7 @@ native = [
     "tokio/net",
     "tokio/time",
 ]
+vendored-tls = ["native-tls?/vendored"]
 
 [dependencies]
 base64 = "0.23"

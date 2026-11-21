@@ -1,15 +1,16 @@
 # Priorities
 
-The current cut is the wasm demo (vault brief); these tiers rank
-web-platform work behind it. Chrome extensions are a separate, later
-track with their own corpus.
+The current cut is the `v0.0.1` release (Linux, macOS, Windows, Android/Termux,
+and the `wasm32-wasip2` demo); these tiers rank web-platform work behind it.
+Chrome extensions and WebMCP are parked until after release.
 
 P0 is not flat. The tiers group it by measured reach; Next effort
 ranks the work by reach and the current WPT gap together. Reach is the
 share of page loads that use the API in Chrome UseCounter (2026-10-20
 snapshot, all platforms, official channels).
-WPT is the test-file pass rate from CI run 39980734258 (2026-10-23,
-testharness + crashtest + reftest + test262, `--exclude=worker`).
+WPT baseline rates below are from CI run 39980734258 (2026-10-23,
+testharness + crashtest + reftest + test262, `--exclude=worker`), with
+post-cut milestones noted inline where a directory has since moved.
 UseCounter counts pages that touch an API, including feature probes,
 and has no counter for the oldest DOM calls (`querySelector`,
 `addEventListener`), so the HTML/DOM numbers are lower bounds.
@@ -89,26 +90,26 @@ Ordered by reach × current gap:
 1. **css layout + cssom** — standing workstream, not one push:
    `display` 93.2%, `matchMedia()` 66.2%, `getBoundingClientRect()`
    71.0% against 44.1% for css; `css/cssom-view` 17.1%, `css/cssom`
-   29.5%.
-2. **cookies** — read on 78.7% of pages against 32.6% WPT. SameSite and
-   partitioned cookies are in; `CookieStore` (11.9%) is 40/48 files. The
-   rest needs service workers.
-3. **csp** — 68.9% reach against 26.6%. A response-header path with a
-   small surface.
-4. **fetch** — 72.7% reach against 34.8%. The Body/Headers/stream
-   rewrite took `fetch/api` from 26.2% to 71.8%; what remains is
-   `sendBeacon()` (52.6% of pages, 13/16 files), `fetch/metadata` 1/87,
-   `fetch/h1-parsing` 1/20, and `fetch/http-cache` 12/15.
-5. **html forms and semantics** — 81.0% of pages have a form; html is
+   29.5%, grid 38.7%.
+2. **html forms and semantics** — 81.0% of pages have a form; html is
    46.7%, but `html/semantics` is 32.2% and `html/webappapis` 20.4%.
    Controls, submission, and script/timer plumbing.
-6. **selectors** — 84.2% reach against `css/selectors` 51.0%.
-7. **dom parsing and events** — `dom/events` 28.0% behind universal DOM
-   reach, with `dom/traversal` now at 97.9%; parser work stays in
-   `domparsing`.
+3. **selectors** — 84.2% reach against `css/selectors` 51.0%.
+4. **dom events and parsing** — `dom/events` 28.0% behind universal DOM
+   reach (`dom/traversal` is now 13/18 files / 97.9% subtests); parser
+   work stays in `domparsing`.
+5. **fetch tail** — `fetch/api` is 71.8%, `sendBeacon()` 13/16,
+   `fetch/http-cache` 12/15; remaining holes are `fetch/metadata` 1/87
+   and `fetch/h1-parsing` 1/20.
+6. **csp tail** — 68.9% reach; `content-security-policy/` is 703/884
+   files (55.3% subtests).
 
-`encoding` (68–79%) and `messaging` (82.1%) pass enough that they need
-targeted fixes, not a push.
+Landed and past the big push: `workers` (dedicated + shared, 248/248
+files), `IndexedDB` (165/234 files; upgrade blocking / connection
+scheduling left in P1), `cookies` (`SameSite`, CHIPS, `CookieStore`
+40/48 — remainder blocked on service workers), `referrer-policy`
+(890/899 files, at the Stylo ceiling), `encoding` (68–79%), and
+`messaging` (82.1%).
 
 ## P1
 
@@ -154,8 +155,7 @@ Out: Chrome Web Store install/auth, native messaging, MV2.
 
 ## P2
 
-wasm (the wasm demo is the current cut; this tier is about wasm as a
-page technology), webmcp, ai.
+wasm (as a page technology; the embeddable `wasm32-wasip2` demo shipped), webmcp, ai.
 
 ## Skip
 

@@ -66,6 +66,15 @@ impl EmbeddedRenderer {
             .execute_remote_in(FrameId::MAIN, crate::ScriptSource::Page(source), timeout)
     }
 
+    pub fn execute_browser(
+        &mut self,
+        source: &str,
+        timeout: Option<Duration>,
+    ) -> Result<RemoteValue, TabError> {
+        self.engine
+            .execute_remote_in(FrameId::MAIN, crate::ScriptSource::Browser(source), timeout)
+    }
+
     pub fn screenshot(&mut self, request: &crate::ScreenshotRequest) -> Result<Vec<u8>, TabError> {
         self.engine.screenshot_frame(FrameId::MAIN, request)
     }

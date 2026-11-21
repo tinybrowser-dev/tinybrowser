@@ -92,11 +92,13 @@ export const prerender = true
           id="demo-canvas"
           width="640"
           height="400"
-          title="Click links or buttons inside the rendered page. Scroll with the mouse wheel."
+          tabindex="0"
+          title="Click, scroll, or type inside the rendered page."
         ></canvas>
       </div>
       <p class="demo-hint" id="demo-hint">
-        Click any link or button in the rendered frame, or scroll over it.
+        Click, scroll, or type inside the rendered frame — events go through tinybrowser's real
+        input pipeline.
       </p>
     </div>
 

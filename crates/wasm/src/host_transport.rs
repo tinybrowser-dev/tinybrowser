@@ -123,7 +123,13 @@ impl Transport for HostTransport {
                 http2,
                 headers,
                 body,
-            } = answer.map_err(|error| Self::map_error(error, &request, &budget))?;
+            } = answer.map_err(|error| {
+                Self::map_error(
+                    error,
+                    request.url.host_str().unwrap_or_default(),
+                    budget.timeout_kind(TimeoutKind::PerCall),
+                )
+            })?;
             let mut mapped = net::HeaderMap::new();
             for Header { name, value } in headers {
                 let value = isomorphic_encode(&value)
@@ -143,16 +149,12 @@ impl Transport for HostTransport {
 }
 
 impl HostTransport {
-    fn map_error(error: FetchError, request: &WireRequest, budget: &HopBudget) -> NetError {
+    fn map_error(error: FetchError, host: &str, timeout_kind: TimeoutKind) -> NetError {
         let transport = match error {
-            FetchError::Dns => {
-                TransportError::Dns(request.url.host_str().unwrap_or_default().into())
-            }
+            FetchError::Dns => TransportError::Dns(host.into()),
             FetchError::Connect => TransportError::Connect("host exchange failed".into()),
             FetchError::Tls => TransportError::Tls("host tls failure".into()),
-            FetchError::Timeout => {
-                TransportError::Timeout(budget.timeout_kind(TimeoutKind::PerCall))
-            }
+            FetchError::Timeout => TransportError::Timeout(timeout_kind),
             FetchError::Limit => TransportError::BodyTooLarge,
             FetchError::QueueFull => TransportError::Capacity,
             FetchError::Cancelled => TransportError::Connect("host cancelled the exchange".into()),
@@ -178,4 +180,53 @@ impl Future for AnswerSlot<'_> {
 
 fn refused(reason: &str) -> NetError {
     NetError::Transport(TransportError::Connect(reason.into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use renderer::DialFailure;
+
+    #[test]
+    fn host_failures_map_to_dial_failures() {
+        let cases = [
+            (FetchError::Dns, DialFailure::Dns),
+            (FetchError::Connect, DialFailure::Connect),
+            (FetchError::Tls, DialFailure::Tls),
+            (FetchError::Timeout, DialFailure::Timeout),
+            (FetchError::Limit, DialFailure::Limit),
+            (FetchError::QueueFull, DialFailure::QueueFull),
+            (FetchError::Cancelled, DialFailure::Connect),
+        ];
+        for (error, expected) in cases {
+            let mapped = HostTransport::map_error(error, "example.test", TimeoutKind::PerCall);
+            assert_eq!(dial::dial_failure(&mapped), expected, "{error:?}");
+        }
+        let dns = HostTransport::map_error(FetchError::Dns, "missing.test", TimeoutKind::PerCall);
+        assert!(
+            matches!(dns, NetError::Transport(TransportError::Dns(ref host)) if host.as_ref() == "missing.test")
+        );
+    }
+
+    #[test]
+    fn non_ascii_header_bytes_survive_isomorphic_round_trip() {
+        let raw = b"caf\xE9";
+        let decoded = isomorphic_decode(raw);
+        assert_eq!(isomorphic_encode(&decoded).as_deref(), Some(raw.as_slice()));
+    }
+
+    #[test]
+    fn poll_context_and_abandon_bookkeeping() {
+        let transport = HostTransport::new(1024);
+        transport.begin_poll(7);
+        assert_eq!(transport.end_poll(), None);
+
+        let exchange = Arc::new(Exchange {
+            answer: Mutex::new(None),
+        });
+        lock(&transport.exchanges).insert(42, Arc::clone(&exchange));
+        transport.abandon(42);
+        transport.complete(42, Err(FetchError::Connect));
+        assert!(lock(&exchange.answer).is_none());
+    }
 }

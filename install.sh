@@ -2,7 +2,7 @@
 # Install tinybrowser from GitHub Releases.
 #
 # Environment overrides:
-#   TINYBROWSER_VERSION      Tag to install (e.g. "0.1.0" or "v0.1.0"). Default: latest release.
+#   TINYBROWSER_VERSION      Tag to install (e.g. "0.0.1" or "v0.0.1"). Default: latest release.
 #   TINYBROWSER_INSTALL_DIR  Destination directory. Default: $PREFIX/bin on Termux, else ~/.local/bin.
 set -eu
 
@@ -20,6 +20,12 @@ need_cmd() {
 detect_target() {
   os="$(uname -s)"
   arch="$(uname -m)"
+  if [ "$os" = "Linux" ] && [ "$arch" = "aarch64" ]; then
+    if [ -n "${TERMUX_VERSION:-}" ] || [ -d /data/data/com.termux ] || [ "$(uname -o 2>/dev/null || true)" = "Android" ]; then
+      printf 'aarch64-linux-android'
+      return
+    fi
+  fi
   case "$os:$arch" in
     Linux:x86_64)
       printf 'x86_64-unknown-linux-gnu'
@@ -31,7 +37,7 @@ detect_target() {
       printf 'x86_64-apple-darwin'
       ;;
     *)
-      fail "no prebuilt binary for ${os}/${arch} yet (supported: Linux x86_64, macOS arm64/x86_64). Build from source: https://github.com/${REPO}#building-from-source"
+      fail "no prebuilt binary for ${os}/${arch} yet (supported: Linux x86_64, macOS arm64/x86_64, Android/Termux aarch64). Build from source: https://github.com/${REPO}#building-from-source"
       ;;
   esac
 }

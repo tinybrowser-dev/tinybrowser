@@ -461,6 +461,6 @@
   });
 
   if (!kOpaqueOrigin) {
-    globalThis.__tbCookieStoreProcessChanges = processCookieChanges;
+    host.__tbCookieStoreProcessChanges = processCookieChanges;
   }
 })();

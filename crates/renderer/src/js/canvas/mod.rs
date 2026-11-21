@@ -894,7 +894,9 @@ fn begin_layer<'js>(this: This<Object<'js>>, options: Opt<Value<'js>>) -> Result
             && filter.is_object()
             && !filter.is_null()
         {
-            if let Ok(validate) = ctx.globals().get::<_, Function>("__tbValidateFilter") {
+            if let Ok(bridge) = crate::js::bridge::object(ctx)
+                && let Ok(validate) = bridge.get::<_, Function>("__tbValidateFilter")
+            {
                 validate.call::<_, ()>((filter.clone(),))?;
             }
             matrix = color_matrix_from_filter(&filter);

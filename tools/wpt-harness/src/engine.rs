@@ -370,10 +370,12 @@ async fn run_reftest(
 const SCREENSHOT_FRAMES: u32 = 3;
 
 fn has_pending_frame_callbacks(session: &mut Session) -> bool {
-    session
-        .renderer
-        .eval("String(globalThis.__tbPendingFrameCallbacks())")
-        .is_ok_and(|count| count != "0")
+    matches!(
+        session
+            .renderer
+            .execute_browser("String(host.__tbPendingFrameCallbacks())", None),
+        Ok(renderer::RemoteValue::String(count)) if count != "0"
+    )
 }
 
 async fn advance(session: &mut Session, virtual_time: bool, delay: Duration) {

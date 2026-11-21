@@ -124,7 +124,7 @@
   Object.defineProperty(CanvasFilter.prototype, Symbol.toStringTag, { value: 'CanvasFilter' });
 
   globalThis.CanvasFilter = CanvasFilter;
-  globalThis.__tbValidateFilter = function (init) {
+  host.__tbValidateFilter = function (init) {
     if (init === null || init === undefined) return;
     if (Array.isArray(init)) {
       init.forEach(validate);

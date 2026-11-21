@@ -315,6 +315,77 @@ jobs:
           path: dist/${{ steps.package.outputs.name }}.zip
           retention-days: 7
 
+  android-aarch64:
+    name: android-aarch64 (Termux)
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+      - name: Toolchain
+        run: |
+          rustup toolchain install --profile minimal --component rust-src
+          rustup target add aarch64-linux-android
+          cargo --version
+      - name: Submodules (build inputs only, shallow)
+        run: |
+          git submodule update --init --depth 1 --jobs 4 \
+            third_party/blitz third_party/rquickjs third_party/html5ever
+          git -C third_party/rquickjs submodule update --init --depth 1 sys/quickjs
+      - name: Cargo cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-android-aarch64-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-android-aarch64-
+      - name: sccache
+        uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          version: "v0.18.0"
+      - name: Build
+        env:
+          OPENSSL_NO_VENDOR: "0"
+          SCCACHE_GHA_ENABLED: "true"
+          RUSTC_WRAPPER: "sccache"
+        run: |
+          set -euo pipefail
+          ndk_root="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-}}"
+          if [[ -z "$ndk_root" ]]; then
+            echo "::error::Android NDK not found on runner"
+            exit 1
+          fi
+          toolchain="$ndk_root/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export PATH="$toolchain:$PATH"
+          export CC_aarch64_linux_android="$toolchain/aarch64-linux-android24-clang"
+          export CXX_aarch64_linux_android="$toolchain/aarch64-linux-android24-clang++"
+          export AR_aarch64_linux_android="$toolchain/llvm-ar"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$toolchain/aarch64-linux-android24-clang"
+          export ANDROID_NDK_ROOT="$ndk_root"
+          cargo build --release --locked -p tinybrowser --features vendored-tls --target aarch64-linux-android
+          ls -lh target/aarch64-linux-android/release/tinybrowser
+          file target/aarch64-linux-android/release/tinybrowser
+      - name: Package
+        id: package
+        run: |
+          set -euo pipefail
+          version="${{ needs.verify.outputs.version }}"
+          target=aarch64-linux-android
+          name="tinybrowser-$version-$target"
+          mkdir -p "dist/$name"
+          cp "target/$target/release/tinybrowser" "dist/$name/"
+          cp LICENSE NOTICE CREDITS.md "dist/$name/"
+          tar --owner=0 --group=0 -C dist -czf "dist/$name.tar.gz" "$name"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          ls -lh "dist/$name.tar.gz"
+      - name: Upload the release assets
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: dist/${{ steps.package.outputs.name }}.tar.gz
+          retention-days: 7
+
   wasm32-wasip2:
     name: wasm32-wasip2
     needs: verify
@@ -416,7 +487,7 @@ jobs:
 
   publish:
     name: publish
-    needs: [verify, linux-x86_64, macos-aarch64, macos-x86_64, windows-x86_64, wasm32-wasip2, smoke]
+    needs: [verify, linux-x86_64, macos-aarch64, macos-x86_64, windows-x86_64, android-aarch64, wasm32-wasip2, smoke]
     if: github.ref_type == 'tag'
     runs-on: ubuntu-24.04
     timeout-minutes: 10

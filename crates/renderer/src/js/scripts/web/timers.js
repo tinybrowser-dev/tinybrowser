@@ -90,7 +90,7 @@ globalThis.cancelAnimationFrame = function(id) {
   globalThis.clearTimeout(Number(id) - 1);
 };
 // https://html.spec.whatwg.org/multipage/imagebitmap-and-animations.html#run-the-animation-frame-callbacks
-globalThis.__tbPendingFrameCallbacks = function() {
+host.__tbPendingFrameCallbacks = function() {
   return pendingFrameCallbacks;
 };
 if (typeof globalThis.console === 'undefined') {

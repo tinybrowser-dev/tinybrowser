@@ -1,7 +1,7 @@
 # Install tinybrowser from GitHub Releases on Windows.
 #
 # Environment overrides:
-#   TINYBROWSER_VERSION      Tag to install (e.g. "0.1.0" or "v0.1.0"). Default: latest release.
+#   TINYBROWSER_VERSION      Tag to install (e.g. "0.0.1" or "v0.0.1"). Default: latest release.
 #   TINYBROWSER_INSTALL_DIR  Destination directory. Default: $env:LOCALAPPDATA\tinybrowser\bin.
 
 $ErrorActionPreference = "Stop"

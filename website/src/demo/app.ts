@@ -22,12 +22,35 @@ interface FrameEvent {
   event: { tag: string; val?: unknown }
 }
 
+interface PointerEventPayload {
+  x: number
+  y: number
+  button: number
+}
+
+interface WheelEventPayload {
+  x: number
+  y: number
+  deltaX: number
+  deltaY: number
+}
+
+type InputEvent =
+  | { tag: "pointer-move"; val: PointerEventPayload }
+  | { tag: "pointer-down"; val: PointerEventPayload }
+  | { tag: "pointer-up"; val: PointerEventPayload }
+  | { tag: "wheel"; val: WheelEventPayload }
+  | { tag: "key-down"; val: string }
+  | { tag: "key-up"; val: string }
+  | { tag: "insert-text"; val: string }
+
 interface WasmTab {
   mount(url: string, html: string): void
   goto(url: string): void
   owner(): bigint
   url(): string
   eval(source: string): string
+  dispatchInput(event: InputEvent): void
   render(width: number, height: number): RenderedFrame
   step(): bigint | undefined
   events(): Array<FrameEvent>
@@ -49,13 +72,6 @@ interface HostModule {
     onWake?: () => void
   }): void
   inFlight(): number
-}
-
-interface HitResult {
-  kind: "link" | "click" | "none"
-  tag?: string
-  href?: string
-  label?: string
 }
 
 function queryRequired<T extends Element>(selector: string): T {
@@ -326,83 +342,55 @@ function runEval(sourceOverride?: string, label?: string): void {
   }
 }
 
-async function handleCanvasClick(event: MouseEvent): Promise<void> {
-  if (!activeTab) return
-  const rect = canvasEl.getBoundingClientRect()
-  if (rect.width === 0 || rect.height === 0) return
-  const x = Math.round(((event.clientX - rect.left) / rect.width) * canvasEl.width)
-  const y = Math.round(((event.clientY - rect.top) / rect.height) * canvasEl.height)
-
-  const hitScript = `(() => {
-    const x = ${x}, y = ${y};
-    const candidates = Array.from(document.querySelectorAll('a[href], button, input, summary, [onclick]'));
-    let best = null;
-    let bestArea = Infinity;
-    for (const el of candidates) {
-      const r = el.getBoundingClientRect();
-      if (r.width <= 0 || r.height <= 0) continue;
-      if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) {
-        const area = r.width * r.height;
-        if (area < bestArea) {
-          best = el;
-          bestArea = area;
-        }
-      }
-    }
-    if (!best) return JSON.stringify({ kind: 'none' });
-    const link = best.closest ? best.closest('a[href]') : (best.tagName === 'A' ? best : null);
-    if (link && link.href && (link.href.startsWith('http://') || link.href.startsWith('https://'))) {
-      return JSON.stringify({
-        kind: 'link',
-        tag: 'a',
-        href: link.href,
-        label: (link.textContent || '').trim().slice(0, 60)
-      });
-    }
-    if (typeof best.click === 'function') best.click();
-    return JSON.stringify({
-      kind: 'click',
-      tag: (best.tagName || '').toLowerCase(),
-      label: (best.textContent || best.value || '').trim().slice(0, 60)
-    });
-  })()`
-
-  let parsed: HitResult
-  try {
-    parsed = JSON.parse(activeTab.eval(hitScript)) as HitResult
-  } catch (error: unknown) {
-    hintEl.textContent = `click(${x}, ${y}) error: ${formatError(error)}`
-    return
-  }
-
-  if (parsed.kind === "link" && parsed.href) {
-    hintEl.textContent = `Clicked link (${x}, ${y}) -> ${parsed.href}`
-    await runGoto(parsed.href)
-    return
-  }
-
-  if (parsed.kind === "click") {
-    hintEl.textContent = `Clicked <${parsed.tag ?? "el"}> "${parsed.label ?? ""}" at (${x}, ${y})`
-    activeTab.step()
-    updateInspector(`click(${x}, ${y}) -> <${parsed.tag ?? "el"}> ${parsed.label ?? ""}`)
-    renderActiveTab()
-    return
-  }
-
-  hintEl.textContent = `No link or button at (${x}, ${y}). Try clicking a link or button on the page.`
+const WEBDRIVER_KEYS: Record<string, string> = {
+  Backspace: "\uE003",
+  Tab: "\uE004",
+  Enter: "\uE006",
+  Shift: "\uE008",
+  Control: "\uE009",
+  Alt: "\uE00A",
+  Escape: "\uE00C",
+  " ": "\uE00D",
+  PageUp: "\uE00E",
+  PageDown: "\uE00F",
+  End: "\uE010",
+  Home: "\uE011",
+  ArrowLeft: "\uE012",
+  ArrowUp: "\uE013",
+  ArrowRight: "\uE014",
+  ArrowDown: "\uE015",
+  Delete: "\uE017",
 }
 
-function scrollPage(deltaY: number): void {
+function canvasPoint(event: MouseEvent): { x: number; y: number } | null {
+  const rect = canvasEl.getBoundingClientRect()
+  if (rect.width === 0 || rect.height === 0) return null
+  return {
+    x: ((event.clientX - rect.left) / rect.width) * canvasEl.width,
+    y: ((event.clientY - rect.top) / rect.height) * canvasEl.height,
+  }
+}
+
+function dispatchInputEvent(event: InputEvent, statusHint?: string): void {
   if (!activeTab) return
   try {
-    const pos = activeTab.eval(
-      `(() => { window.scrollBy(0, ${Math.round(deltaY)}); return Math.round(window.scrollY); })()`,
-    )
-    renderActiveTab()
-    hintEl.textContent = `Scrolled to y=${pos}px`
+    activeTab.dispatchInput(event)
   } catch (error: unknown) {
-    hintEl.textContent = `scroll failed: ${formatError(error)}`
+    hintEl.textContent = `input error: ${formatError(error)}`
+    return
   }
+  if (statusHint !== undefined) {
+    hintEl.textContent = statusHint
+  }
+  pumpGeneration += 1
+  void pumpTab(activeTab, pumpGeneration)
+}
+
+function scrollPage(deltaY: number, x = viewportWidth / 2, y = viewportHeight / 2): void {
+  dispatchInputEvent(
+    { tag: "wheel", val: { x, y, deltaX: 0, deltaY } },
+    `wheel(${Math.round(x)}, ${Math.round(y)}, dy=${Math.round(deltaY)})`,
+  )
 }
 
 function setViewport(width: number, height: number, activeButton: HTMLButtonElement): void {
@@ -530,16 +518,51 @@ mountButton.addEventListener("click", () => {
 
 renderButton.addEventListener("click", renderActiveTab)
 
-canvasEl.addEventListener("click", (event) => {
-  void handleCanvasClick(event)
+canvasEl.addEventListener("pointerdown", (event) => {
+  const point = canvasPoint(event)
+  if (!point) return
+  canvasEl.focus()
+  dispatchInputEvent(
+    { tag: "pointer-down", val: { x: point.x, y: point.y, button: event.button } },
+    `pointerDown(${Math.round(point.x)}, ${Math.round(point.y)})`,
+  )
+})
+
+canvasEl.addEventListener("pointerup", (event) => {
+  const point = canvasPoint(event)
+  if (!point) return
+  dispatchInputEvent(
+    { tag: "pointer-up", val: { x: point.x, y: point.y, button: event.button } },
+    `pointerUp(${Math.round(point.x)}, ${Math.round(point.y)})`,
+  )
+})
+
+canvasEl.addEventListener("keydown", (event) => {
+  if (!activeTab) return
+  if (event.metaKey || event.ctrlKey) return
+  const mapped = WEBDRIVER_KEYS[event.key] ?? (event.key.length === 1 ? event.key : null)
+  if (mapped === null) return
+  event.preventDefault()
+  dispatchInputEvent({ tag: "key-down", val: mapped }, `keyDown(${event.key})`)
+})
+
+canvasEl.addEventListener("keyup", (event) => {
+  if (!activeTab) return
+  if (event.metaKey || event.ctrlKey) return
+  const mapped = WEBDRIVER_KEYS[event.key] ?? (event.key.length === 1 ? event.key : null)
+  if (mapped === null) return
+  event.preventDefault()
+  dispatchInputEvent({ tag: "key-up", val: mapped })
 })
 
 canvasEl.addEventListener(
   "wheel",
   (event) => {
     if (!activeTab) return
+    const point = canvasPoint(event)
+    if (!point) return
     event.preventDefault()
-    scrollPage(event.deltaY)
+    scrollPage(event.deltaY, point.x, point.y)
   },
   { passive: false },
 )

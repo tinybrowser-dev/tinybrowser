@@ -306,13 +306,27 @@
   const wheelItem = item => {
     const x = item.x || 0;
     const y = item.y || 0;
+    const dx = item.deltaX || 0;
+    const dy = item.deltaY || 0;
     const node = at(x, y);
     if (!node) return;
     // https://w3c.github.io/uievents/#events-wheel
     const accepted = fire(node, new WheelEvent('wheel', mouseInit(x, y, 0, {
-      deltaX: item.deltaX || 0, deltaY: item.deltaY || 0,
+      deltaX: dx, deltaY: dy,
     })));
-    if (accepted && typeof node.scrollBy === 'function') node.scrollBy(item.deltaX || 0, item.deltaY || 0);
+    if (!accepted) return;
+    for (let current = node; current && current.nodeType === 1; current = current.parentElement) {
+      if (current === document.documentElement || current === document.body) break;
+      const canScrollY = dy !== 0 && current.scrollHeight > current.clientHeight;
+      const canScrollX = dx !== 0 && current.scrollWidth > current.clientWidth;
+      if ((canScrollY || canScrollX) && typeof current.scrollBy === 'function') {
+        const beforeX = current.scrollLeft;
+        const beforeY = current.scrollTop;
+        current.scrollBy(dx, dy);
+        if (current.scrollLeft !== beforeX || current.scrollTop !== beforeY) return;
+      }
+    }
+    if (typeof globalThis.scrollBy === 'function') globalThis.scrollBy(dx, dy);
   };
   // https://w3c.github.io/webdriver/#element-send-keys
   const hookChangeOnBlur = element => {

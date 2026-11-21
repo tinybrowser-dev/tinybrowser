@@ -462,7 +462,7 @@ class FontFace {
       return state.loadPromise;
     }
     if (state.bytes !== null) {
-      if (!__tbValidateFont(state.bytes)) {
+      if (!host.__tbValidateFont(state.bytes)) {
         this._fail(__tbFontError('invalid font data', 'SyntaxError'));
       } else {
         this._complete();
@@ -489,7 +489,7 @@ class FontFace {
           .then(buffer => {
             if (buffer === false) return false;
             const bytes = new Uint8Array(buffer);
-            if (!__tbValidateFont(bytes)) return false;
+            if (!host.__tbValidateFont(bytes)) return false;
             state.bytes = bytes;
             this._complete();
             return state.status !== 'error';
@@ -512,7 +512,7 @@ class FontFace {
     const state = __tbFontFaceState(this);
     if (state.status === 'error') return;
     if (state.attached && state.bytes !== null && state.token === 0) {
-      const token = globalThis.__tbRegisterFont(
+      const token = host.__tbRegisterFont(
         state.family, state.bytes, state.weight, state.style, state.stretch,
       );
       if (token === 0) {
@@ -537,7 +537,7 @@ class FontFace {
   _register() {
     const state = __tbFontFaceState(this);
     if (!state.attached || state.token !== 0 || state.bytes === null) return;
-    state.token = globalThis.__tbRegisterFont(
+    state.token = host.__tbRegisterFont(
       state.family, state.bytes, state.weight, state.style, state.stretch,
     );
   }
@@ -545,7 +545,7 @@ class FontFace {
   _unregister() {
     const state = __tbFontFaceState(this);
     if (state.token !== 0) {
-      globalThis.__tbUnregisterFont(state.token);
+      host.__tbUnregisterFont(state.token);
       state.token = 0;
     }
   }

@@ -3541,4 +3541,61 @@ mod realm_tests {
         );
         assert_eq!(load_state(&mut engine), ("complete".into(), "true".into()));
     }
+
+    #[test]
+    fn no_engine_hooks_leak_onto_page_global() {
+        let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
+        let mut engine = crate::engine::Engine::new(
+            services,
+            Arc::new(Stop::new()),
+            Arc::new(tokio::sync::Notify::new()),
+            net::ValidIdentity::default(),
+        );
+        mount_html(&mut engine, "<p>ok</p>");
+        let leaked = engine
+            .eval_in(
+                FrameId::MAIN,
+                "Object.getOwnPropertyNames(globalThis).filter(n => n.startsWith('__tb')).join(',')",
+            )
+            .expect("eval");
+        assert_eq!(leaked, "");
+    }
+
+    #[test]
+    fn embedded_browser_script_dispatches_trusted_input() {
+        let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
+        let mut embedded = crate::EmbeddedRenderer::new(services, net::ValidIdentity::default());
+        let mount = crate::Mount {
+            head: crate::ResponseHead::local(
+                url::Url::parse("https://example.test/").expect("url"),
+                Some("text/html; charset=utf-8".into()),
+                None,
+            ),
+            tab: crate::TabState::default(),
+            body: b"<!doctype html><body style=\"margin:0\">\
+                    <button id=\"b\" style=\"width:120px;height:40px\">go</button>\
+                    <script>\
+                    window.__log = [];\
+                    b.addEventListener('pointerdown', e => window.__log.push('pd:' + e.isTrusted));\
+                    b.addEventListener('click', e => window.__log.push('ck:' + e.isTrusted));\
+                    </script></body>"
+                .to_vec(),
+        };
+        embedded.mount(&mount).expect("mount");
+        let _frame = embedded
+            .render(&crate::ScreenshotRequest {
+                viewport_width: 300,
+                viewport_height: 200,
+                clip: None,
+            })
+            .expect("render");
+        embedded
+            .execute_browser(
+                r#"(function(){return host.__tbWebDriverActions([{"type":"pointer","id":"mouse","parameters":{"pointerType":"mouse"},"actions":[{"type":"pointerMove","origin":"viewport","x":20,"y":20},{"type":"pointerDown","button":0},{"type":"pointerUp","button":0}]}]);})()"#,
+                None,
+            )
+            .expect("input");
+        let log = embedded.eval("window.__log.join(',')").expect("eval");
+        assert_eq!(log, "pd:true,ck:true");
+    }
 }

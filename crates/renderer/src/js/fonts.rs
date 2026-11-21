@@ -12,13 +12,10 @@ use crate::js::bindings::world;
 use crate::js::world::{FontFamilyEntry, FontRegistration};
 
 pub(crate) fn install(ctx: &Ctx<'_>) -> Result<()> {
-    ctx.globals()
-        .set("__tbRegisterFont", Func::from(register_font))?;
-    ctx.globals()
-        .set("__tbUnregisterFont", Func::from(unregister_font))?;
-    ctx.globals()
-        .set("__tbValidateFont", Func::from(validate_font))?;
     let bridge = crate::js::bridge::object(ctx)?;
+    bridge.set("__tbRegisterFont", Func::from(register_font))?;
+    bridge.set("__tbUnregisterFont", Func::from(unregister_font))?;
+    bridge.set("__tbValidateFont", Func::from(validate_font))?;
     bridge.set("__tbFontFamilyAvailable", Func::from(family_available))?;
     Ok(())
 }

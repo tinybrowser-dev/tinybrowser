@@ -124,7 +124,7 @@
 
     if (host.__tbIsSharedWorker === true) {
       // https://html.spec.whatwg.org/multipage/workers.html#dom-sharedworkerglobalscope-onconnect
-      globalThis.__tbWorkerConnect = function(endpoint) {
+      host.__tbWorkerConnect = function(endpoint) {
         const materialized = __tbMaterializePorts([endpoint]);
         const port = materialized.ports[endpoint];
         globalThis.dispatchEvent(new MessageEvent('connect', {
@@ -190,7 +190,7 @@
       });
     }
 
-    globalThis.__tbWorkerDeliverMessage = function(payload, portIds) {
+    host.__tbWorkerDeliverMessage = function(payload, portIds) {
       const materialized = __tbMaterializePorts(portIds);
       let data;
       try {
@@ -336,7 +336,7 @@
     });
   }
 
-  globalThis.__tbWorkerEvent = function(id, payload, portIds) {
+  host.__tbWorkerEvent = function(id, payload, portIds) {
     const worker = __tbWorkers.get(id);
     if (worker === undefined) {
       __tbDiscardPorts(portIds);
@@ -357,7 +357,7 @@
     }));
     __tbFirePortCloses(materialized.closes);
   };
-  globalThis.__tbWorkerErrorEvent = function(id, message, filename, lineno, colno) {
+  host.__tbWorkerErrorEvent = function(id, message, filename, lineno, colno) {
     const worker = __tbWorkers.get(id);
     if (worker === undefined) return;
     const event = new ErrorEvent('error', {
@@ -376,7 +376,7 @@
     });
   };
   // https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model
-  globalThis.__tbWorkerLoadErrorEvent = function(id) {
+  host.__tbWorkerLoadErrorEvent = function(id) {
     const worker = __tbWorkers.get(id);
     if (worker === undefined) return;
     worker.dispatchEvent(new Event('error'));

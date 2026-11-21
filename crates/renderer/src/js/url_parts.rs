@@ -3,7 +3,9 @@
 use rquickjs::{Ctx, Result, prelude::Func};
 
 use std::borrow::Cow;
+use std::fmt::Write as _;
 
+use encoding_rs::EncoderResult;
 use url::quirks;
 
 const PROTOCOL: u32 = 0;
@@ -164,25 +166,43 @@ pub(super) fn encoding_parse_url(
     encoding: &'static encoding_rs::Encoding,
 ) -> Option<url::Url> {
     let mut url = base.join(href).ok()?;
-    if encoding.name() == encoding_rs::UTF_8.name() {
+    // https://url.spec.whatwg.org/#query-state
+    if encoding.name() == encoding_rs::UTF_8.name()
+        || !matches!(url.scheme(), "ftp" | "file" | "http" | "https")
+    {
         return Some(url);
     }
-    let Some((_, raw)) = href.split_once('?') else {
+    let before_fragment = href.split('#').next().unwrap_or_default();
+    let Some((_, raw)) = before_fragment.split_once('?') else {
         return Some(url);
     };
-    let raw = raw.split('#').next().unwrap_or_default();
-    let (bytes, _, _) = encoding.encode(raw);
-    let mut encoded = String::with_capacity(bytes.len());
-    for byte in bytes.as_ref() {
-        if byte.is_ascii() {
-            encoded.push(*byte as char);
-        } else {
-            encoded.push('%');
-            encoded.push(HEX[(byte >> 4) as usize] as char);
-            encoded.push(HEX[(byte & 0xf) as usize] as char);
+    // https://url.spec.whatwg.org/#string-percent-encode-after-encoding
+    let mut encoder = encoding.new_encoder();
+    let mut query = String::with_capacity(raw.len());
+    let mut remaining = raw;
+    let mut buffer = [0u8; 256];
+    loop {
+        let (result, read, written) =
+            encoder.encode_from_utf8_without_replacement(remaining, &mut buffer, true);
+        for &byte in &buffer[..written] {
+            if byte.is_ascii() {
+                query.push(byte as char);
+            } else {
+                query.push('%');
+                query.push(HEX[(byte >> 4) as usize] as char);
+                query.push(HEX[(byte & 0xf) as usize] as char);
+            }
+        }
+        remaining = &remaining[read..];
+        match result {
+            EncoderResult::InputEmpty => break,
+            EncoderResult::OutputFull => {}
+            EncoderResult::Unmappable(ch) => {
+                let _ = write!(query, "%26%23{}%3B", ch as u32);
+            }
         }
     }
-    url.set_query(Some(&encoded));
+    url.set_query(Some(&query));
     Some(url)
 }
 
@@ -211,8 +231,39 @@ mod tests {
         let shift_jis =
             encoding_parse_url("x?q=\u{65E5}", &base, encoding_rs::SHIFT_JIS).expect("parse");
         assert_eq!(shift_jis.as_str(), "https://example.com/x?q=%93%FA");
+        let unmappable =
+            encoding_parse_url("x?q=\u{AC00}", &base, encoding_rs::SHIFT_JIS).expect("parse");
+        assert_eq!(
+            unmappable.as_str(),
+            "https://example.com/x?q=%26%2344032%3B"
+        );
+        let iso = encoding_parse_url("x?q=\u{65E5}\u{AC00}a", &base, encoding_rs::ISO_2022_JP)
+            .expect("parse");
+        assert_eq!(
+            iso.as_str(),
+            "https://example.com/x?q=%1B$BF|%1B(B%26%2344032%3Ba"
+        );
         let utf8 = encoding_parse_url("x?q=\u{65E5}", &base, encoding_rs::UTF_8).expect("parse");
         assert_eq!(utf8.as_str(), "https://example.com/x?q=%E6%97%A5");
+    }
+
+    #[test]
+    fn non_special_and_websocket_schemes_always_use_utf8_queries() {
+        let base = url::Url::parse("https://example.com/page").unwrap();
+        let ws = encoding_parse_url(
+            "ws://example.invalid/?x=\u{00E5}",
+            &base,
+            encoding_rs::WINDOWS_1252,
+        )
+        .expect("parse");
+        assert_eq!(ws.as_str(), "ws://example.invalid/?x=%C3%A5");
+        let mailto = encoding_parse_url(
+            "mailto:a@b.invalid?x=\u{00E5}",
+            &base,
+            encoding_rs::WINDOWS_1252,
+        )
+        .expect("parse");
+        assert_eq!(mailto.as_str(), "mailto:a@b.invalid?x=%C3%A5");
     }
 
     #[test]
@@ -220,6 +271,9 @@ mod tests {
         let base = url::Url::parse("https://example.com/p?already=1").unwrap();
         let fragment = encoding_parse_url("#top", &base, encoding_rs::SHIFT_JIS).expect("parse");
         assert_eq!(fragment.as_str(), "https://example.com/p?already=1#top");
+        let fragment_with_query =
+            encoding_parse_url("x#a?b", &base, encoding_rs::SHIFT_JIS).expect("parse");
+        assert_eq!(fragment_with_query.as_str(), "https://example.com/x#a?b");
         let empty = encoding_parse_url("x?", &base, encoding_rs::SHIFT_JIS).expect("parse");
         assert_eq!(empty.as_str(), "https://example.com/x?");
     }
