@@ -370,28 +370,7 @@ impl Document {
                 old_url,
                 url,
                 handling,
-            } => {
-                // https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate-to-a-fragment
-                self.apply_document_url_same_origin(url.as_str());
-                // https://drafts.csswg.org/selectors-4/#the-target-pseudo
-                self.update_url_target();
-                let url = url.to_string();
-                self.history_updates.push(crate::document::HistoryUpdate {
-                    url: url.clone(),
-                    state: "null".to_owned(),
-                    handling,
-                });
-                let length = self.world.borrow().history.length;
-                self.fire_js(|js| {
-                    js.restore_history(None, length)?;
-                    js.fire_hash_change(&old_url, &url)
-                });
-                self.record_event(RendererEvent::Browser(BrowserEvent::HistoryUpdated {
-                    url,
-                    state: "null".to_owned(),
-                    handling,
-                }));
-            }
+            } => self.apply_fragment_navigation(&old_url, &url, handling),
             RealmRequest::HistoryTraverse { delta } => {
                 // https://html.spec.whatwg.org/multipage/browsing-the-web.html#traverse-the-history-by-a-delta
                 self.frame_traversals.push(delta);
@@ -416,6 +395,20 @@ impl Document {
             RealmRequest::HtmlWrite(write) => {
                 self.write_text(&write.html);
             }
+            RealmRequest::Binding { name, payload } => {
+                // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#event-bindingCalled
+                self.record_event(RendererEvent::Browser(BrowserEvent::Binding {
+                    name,
+                    payload,
+                }));
+            }
+            RealmRequest::Console { level, args } => {
+                // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#event-consoleAPICalled
+                self.record_event(RendererEvent::Browser(BrowserEvent::Console {
+                    level,
+                    args,
+                }));
+            }
             RealmRequest::DocumentStream(command) => {
                 let closed = matches!(command, crate::js::DocumentStreamCommand::Close);
                 self.apply_document_stream(command);
@@ -423,6 +416,34 @@ impl Document {
             }
             RealmRequest::RejectionTasks => self.tasks.push_back(Task::RejectionTasks),
         }
+    }
+
+    fn apply_fragment_navigation(
+        &mut self,
+        old_url: &str,
+        url: &url::Url,
+        handling: crate::protocol::HistoryHandling,
+    ) {
+        // https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate-to-a-fragment
+        self.apply_document_url_same_origin(url.as_str());
+        // https://drafts.csswg.org/selectors-4/#the-target-pseudo
+        self.update_url_target();
+        let url = url.to_string();
+        self.history_updates.push(crate::document::HistoryUpdate {
+            url: url.clone(),
+            state: "null".to_owned(),
+            handling,
+        });
+        let length = self.world.borrow().history.length;
+        self.fire_js(|js| {
+            js.restore_history(None, length)?;
+            js.fire_hash_change(old_url, &url)
+        });
+        self.record_event(RendererEvent::Browser(BrowserEvent::HistoryUpdated {
+            url,
+            state: "null".to_owned(),
+            handling,
+        }));
     }
 
     fn queue_dynamic_script(&mut self, element: NodeId) {

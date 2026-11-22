@@ -1,0 +1,166 @@
+diff --git a/packages/playwright-core/src/server/chromium/crConnection.ts b/packages/playwright-core/src/server/chromium/crConnection.ts
+index f3e9072..5c422fd 100644
+--- a/packages/playwright-core/src/server/chromium/crConnection.ts
++++ b/packages/playwright-core/src/server/chromium/crConnection.ts
+@@ -42,6 +42,44 @@ export type ConnectionEventMap = {
+ // should ignore.
+ export const kBrowserCloseMessageId = -9999;
+ 
++// Conformance-sweep instrumentation: per-test CDP command latencies and event
++// names, exposed through globalThis so the tinybrowser test fixture can dump
++// them per test. Answers "what was this timeout waiting on?".
++type CdpTraceBucket = {
++  testId: string | null;
++  start: number;
++  pending: Map<number, { method: string, sessionId: string, start: number }>;
++  sends: Array<{ method: string, sessionId: string, ms: number }>;
++  events: string[];
++};
++
++type CdpTrace = {
++  bucket: CdpTraceBucket;
++  mark(testId: string): void;
++  flush(status: string): (CdpTraceBucket & { status: string, durationMs: number, inflight: Array<{ method: string, sessionId: string, ms: number }> }) | null;
++};
++
++const cdpTraceGlobal = globalThis as any;
++const cdpTrace: CdpTrace = cdpTraceGlobal.__pwCdp ??= {
++  bucket: {
++    testId: null,
++    start: Date.now(),
++    pending: new Map(),
++    sends: [],
++    events: [],
++  },
++  mark(testId: string) {
++    this.bucket = { testId, start: Date.now(), pending: new Map(), sends: [], events: [] };
++  },
++  flush(status: string) {
++    const bucket = this.bucket;
++    if (!bucket.testId)
++      return null;
++    const inflight = [...bucket.pending.values()].map(entry => ({ method: entry.method, sessionId: entry.sessionId, ms: Date.now() - entry.start }));
++    return { testId: bucket.testId, sends: bucket.sends, events: bucket.events, status, durationMs: Date.now() - bucket.start, inflight };
++  },
++};
++
+ export class CRConnection extends SdkObject {
+   private _lastId = 0;
+   private readonly _transport: ConnectionTransport;
+@@ -142,6 +180,7 @@ export class CRSession extends SdkObject<Protocol.EventMap & ConnectionEventMap>
+     if (this._crashed || this._closed || this._connection._closed || this._connection._browserDisconnectedLogs)
+       throw new ProtocolError(this._crashed ? 'crashed' : 'closed', undefined, this._connection._browserDisconnectedLogs);
+     const id = this._connection._rawSend(this._sessionId, method, params);
++    cdpTrace.bucket.pending.set(id, { method: method as string, sessionId: this._sessionId, start: Date.now() });
+     return new Promise((resolve, reject) => {
+       this._callbacks.set(id, { resolve, reject, error: new ProtocolError('error', method) });
+     });
+@@ -152,6 +191,11 @@ export class CRSession extends SdkObject<Protocol.EventMap & ConnectionEventMap>
+   }
+ 
+   _onMessage(object: ProtocolResponse) {
++    const sent = object.id ? cdpTrace.bucket.pending.get(object.id) : undefined;
++    if (sent) {
++      cdpTrace.bucket.pending.delete(object.id);
++      cdpTrace.bucket.sends.push({ method: sent.method, sessionId: sent.sessionId, ms: Date.now() - sent.start });
++    }
+     if (object.id && this._callbacks.has(object.id)) {
+       const callback = this._callbacks.get(object.id)!;
+       this._callbacks.delete(object.id);
+@@ -165,6 +209,8 @@ export class CRSession extends SdkObject<Protocol.EventMap & ConnectionEventMap>
+       // Message to a closed session, just ignore it.
+     } else {
+       assert(!object.id, object?.error?.message || undefined);
++      if (object.method)
++        cdpTrace.bucket.events.push(object.method);
+       Promise.resolve().then(() => {
+         if (this._eventListener)
+           this._eventListener(object.method!, object.params);
+diff --git a/tests/config/serverFixtures.ts b/tests/config/serverFixtures.ts
+index 11d2792..c0690fa 100644
+--- a/tests/config/serverFixtures.ts
++++ b/tests/config/serverFixtures.ts
+@@ -43,7 +43,8 @@ export const serverFixtures: Fixtures<ServerFixtures, ServerWorkerOptions> = {
+     const assetsPath = path.join(__dirname, '..', 'assets');
+     const cachedPath = path.join(__dirname, '..', 'assets', 'cached');
+ 
+-    const port = 8907 + workerInfo.workerIndex * 4;
++    // tinybrowser sweep: parallel spec runs each get their own port base.
++    const port = (process.env.PWTEST_PORT_BASE ? Number(process.env.PWTEST_PORT_BASE) : 8907) + workerInfo.workerIndex * 4;
+     const server = await TestServer.create(assetsPath, port, loopback);
+     server.enableHTTPCache(cachedPath);
+ 
+diff --git a/tests/tinybrowser/tinybrowserTest.ts b/tests/tinybrowser/tinybrowserTest.ts
+new file mode 100644
+index 0000000..93d0e21
+--- /dev/null
++++ b/tests/tinybrowser/tinybrowserTest.ts
+@@ -0,0 +1,68 @@
++import { chromium } from 'playwright-core';
++import type { Browser, BrowserContext } from 'playwright-core';
++import { appendFileSync, mkdirSync } from 'node:fs';
++import { join } from 'node:path';
++import { baseTest } from '../config/baseTest';
++import type { PageTestFixtures, PageWorkerFixtures } from '../page/pageTestApi';
++
++export { expect } from '@playwright/test';
++
++type TinybrowserWorkerFixtures = PageWorkerFixtures & {
++  tinybrowserBrowser: Browser;
++  tinybrowserContext: BrowserContext;
++};
++
++export const tinybrowserTest = baseTest.extend<PageTestFixtures, TinybrowserWorkerFixtures>({
++  cdpTrace: [async ({}, use, testInfo) => {
++    const global = globalThis as { __pwCdp?: { mark(testId: string): void, flush(status: string): any } };
++    global.__pwCdp?.mark(testInfo.titlePath.join(' › '));
++    await use(undefined);
++    const record = global.__pwCdp?.flush(testInfo.status);
++    const dir = process.env.PW_CDP_TRACE_DIR;
++    if (record && dir) {
++      mkdirSync(dir, { recursive: true });
++      const worker = process.env.TEST_WORKER_INDEX ?? process.pid;
++      appendFileSync(join(dir, `worker-${worker}.jsonl`), `${JSON.stringify(record)}\n`);
++    }
++  }, { auto: true }],
++  tinybrowserBrowser: [async ({}, use) => {
++    const origin = process.env.TINYBROWSER_CDP_ORIGIN;
++    if (!origin)
++      throw new Error('TINYBROWSER_CDP_ORIGIN must point at a tinybrowser CDP endpoint');
++    const browser = await chromium.connectOverCDP(origin);
++    await use(browser);
++    await browser.close();
++  }, { scope: 'worker' }],
++
++  tinybrowserContext: [async ({ tinybrowserBrowser }, use) => {
++    await use(tinybrowserBrowser.contexts()[0]);
++  }, { scope: 'worker' }],
++
++  browserVersion: [async ({ tinybrowserBrowser }, use) => {
++    await use(tinybrowserBrowser.version());
++  }, { scope: 'worker' }],
++
++  browserMajorVersion: [async ({ browserVersion }, use) => {
++    await use(Number(browserVersion.split('.')[0]) || 0);
++  }, { scope: 'worker' }],
++
++  isBidi: [false, { scope: 'worker' }],
++  isAndroid: [false, { scope: 'worker' }],
++  isElectron: [false, { scope: 'worker' }],
++  electronMajorVersion: [0, { scope: 'worker' }],
++  isHeadlessShell: [false, { scope: 'worker' }],
++  isFrozenWebkit: [false, { scope: 'worker' }],
++
++  page: async ({ tinybrowserBrowser, tinybrowserContext, server }, use) => {
++    const page = await tinybrowserContext.newPage();
++    await use(page);
++    await page.close().catch(() => {});
++    await tinybrowserContext.clearCookies().catch(() => {});
++    const cdp = await tinybrowserBrowser.newBrowserCDPSession().catch(() => null);
++    for (const prefix of [server.PREFIX, server.CROSS_PROCESS_PREFIX]) {
++      const origin = new URL(prefix).origin;
++      await cdp?.send('Storage.clearDataForOrigin', { origin, storageTypes: 'local_storage' }).catch(() => {});
++    }
++    await cdp?.detach().catch(() => {});
++  },
++});

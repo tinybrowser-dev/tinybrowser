@@ -601,7 +601,34 @@
     set onresourcetimingbufferfull(value) {
       __tbHandlerData.set(this, typeof value === 'function' ? value : null);
     }
-    toJSON() { return { timeOrigin: __tbTimeOrigin }; }
+    // https://www.w3.org/TR/navigation-timing/#sec-navigation-timing-interface
+    get timing() {
+      const t = Math.floor(__tbTimeOrigin);
+      return {
+        navigationStart: t,
+        unloadEventStart: 0,
+        unloadEventEnd: 0,
+        redirectStart: 0,
+        redirectEnd: 0,
+        fetchStart: t,
+        domainLookupStart: t,
+        domainLookupEnd: t,
+        connectStart: t,
+        connectEnd: t,
+        secureConnectionStart: 0,
+        requestStart: t,
+        responseStart: t,
+        responseEnd: t,
+        domLoading: t,
+        domInteractive: t,
+        domContentLoadedEventStart: t,
+        domContentLoadedEventEnd: t,
+        domComplete: t,
+        loadEventStart: t,
+        loadEventEnd: t,
+      };
+    }
+    toJSON() { return { timeOrigin: __tbTimeOrigin, timing: this.timing }; }
   }
   __tbDefineProperty(Performance.prototype, Symbol.toStringTag, {
     value: 'Performance', writable: false, enumerable: false, configurable: true,

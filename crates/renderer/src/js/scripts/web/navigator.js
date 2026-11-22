@@ -202,7 +202,7 @@
     get hardwareConcurrency() { return 1; }
     get maxTouchPoints() { return 0; }
     get cookieEnabled() { return true; }
-    get webdriver() { return false; }
+    get webdriver() { return true; }
     get userActivation() {
       return userActivation;
     }

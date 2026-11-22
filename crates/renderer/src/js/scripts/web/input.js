@@ -21,14 +21,28 @@
     const rect = element.getBoundingClientRect();
     return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
   };
+  let shiftDown = false;
+  let ctrlDown = false;
+  let altDown = false;
+  let metaDown = false;
+  const modifierInit = mask => {
+    const m = mask || 0;
+    return {
+      altKey: altDown || !!(m & 1),
+      ctrlKey: ctrlDown || !!(m & 2),
+      metaKey: metaDown || !!(m & 4),
+      shiftKey: shiftDown || !!(m & 8),
+    };
+  };
   const mouseInit = (x, y, buttons, extra) => Object.assign({
     bubbles: true, cancelable: true, composed: true, view: globalThis,
     clientX: x, clientY: y, screenX: x, screenY: y, buttons: buttons || 0,
-  }, extra || {});
+  }, modifierInit(extra && extra.modifiers), extra || {});
   const pointerInit = (state, x, y, buttonsOrExtra, maybeExtra) => {
     const extra = maybeExtra === undefined ? null : maybeExtra;
     return Object.assign(mouseInit(x, y, state.buttons, extra), {
       pointerId: 1, isPrimary: true, pointerType: state.pointerType,
+      pressure: state.buttons ? 0.5 : 0,
     });
   };
   const fire = (node, event) => node ? host.__tbDispatchTargetTrusted(node, event) : false;
@@ -70,28 +84,43 @@
         fire(next, new MouseEvent('mouseenter', mouseInit(x, y, state.buttons)));
       }
       state.x = x; state.y = y; state.target = next;
-      fire(next, new PointerEvent('pointermove', pointerInit(state, x, y, state.buttons)));
-      fire(next, new MouseEvent('mousemove', mouseInit(x, y, state.buttons)));
+      const moveExtra = item.modifiers ? { modifiers: item.modifiers } : null;
+      fire(next, new PointerEvent('pointermove', pointerInit(state, x, y, state.buttons, moveExtra)));
+      fire(next, new MouseEvent('mousemove', mouseInit(x, y, state.buttons, moveExtra)));
     } else if (item.type === 'pointerDown') {
+      if (item.x !== undefined) state.x = item.x;
+      if (item.y !== undefined) state.y = item.y;
       const button = item.button || 0;
+      const detail = item.clickCount || 1;
+      const extra = { button: button, detail: detail, modifiers: item.modifiers || 0 };
       state.buttons |= 1 << button;
       const node = at(state.x, state.y);
       state.target = node;
       if (node && typeof node.focus === 'function') { try { node.focus(); } catch (error) {} }
       setActive(node);
-      fire(node, new PointerEvent('pointerdown', pointerInit(state, state.x, state.y, state.buttons, { button: button })));
-      fire(node, new MouseEvent('mousedown', mouseInit(state.x, state.y, state.buttons, { button: button })));
+      fire(node, new PointerEvent('pointerdown', pointerInit(state, state.x, state.y, state.buttons, extra)));
+      fire(node, new MouseEvent('mousedown', mouseInit(state.x, state.y, state.buttons, extra)));
+      if (button === 2) {
+        fire(node, new MouseEvent('contextmenu', mouseInit(state.x, state.y, state.buttons, extra)));
+      }
     } else if (item.type === 'pointerUp') {
+      if (item.x !== undefined) state.x = item.x;
+      if (item.y !== undefined) state.y = item.y;
       const button = item.button || 0;
+      const detail = item.clickCount || 1;
+      const extra = { button: button, detail: detail, modifiers: item.modifiers || 0 };
       // https://w3c.github.io/uievents/#dom-mouseevent-buttons
       state.buttons &= ~(1 << button);
       clearActive();
       const node = at(state.x, state.y);
-      fire(node, new PointerEvent('pointerup', pointerInit(state, state.x, state.y, state.buttons, { button: button })));
-      fire(node, new MouseEvent('mouseup', mouseInit(state.x, state.y, state.buttons, { button: button })));
+      fire(node, new PointerEvent('pointerup', pointerInit(state, state.x, state.y, state.buttons, extra)));
+      fire(node, new MouseEvent('mouseup', mouseInit(state.x, state.y, state.buttons, extra)));
       if (button === 0) {
         // https://html.spec.whatwg.org/multipage/interaction.html#activation-behavior
-        fire(node, new MouseEvent('click', mouseInit(state.x, state.y, 0, { button: 0 })));
+        fire(node, new MouseEvent('click', mouseInit(state.x, state.y, 0, extra)));
+        if (detail === 2) {
+          fire(node, new MouseEvent('dblclick', mouseInit(state.x, state.y, 0, extra)));
+        }
       }
     } else if (item.type === 'pointerCancel') {
       fire(at(state.x, state.y), new PointerEvent('pointercancel', pointerInit(state, state.x, state.y, state.buttons)));
@@ -107,7 +136,7 @@
     '\uE010': ['End', 'End'], '\uE011': ['Home', 'Home'],
     '\uE012': ['ArrowLeft', 'ArrowLeft'], '\uE013': ['ArrowUp', 'ArrowUp'],
     '\uE014': ['ArrowRight', 'ArrowRight'], '\uE015': ['ArrowDown', 'ArrowDown'],
-    '\uE017': ['Delete', 'Delete'],
+    '\uE017': ['Delete', 'Delete'], '\uE03D': ['Meta', 'MetaLeft'],
   };
   const keyOf = value => {
     if (specialKeys[value]) return { key: specialKeys[value][0], code: specialKeys[value][1] };
@@ -210,27 +239,95 @@
     setCaret(element, start + text.length);
     fireInput(element, inputType, data);
   };
+  const contentEditableHost = () => {
+    const element = document.activeElement;
+    if (!element || !element.isContentEditable) return null;
+    return element;
+  };
+  const replaceContentEditable = (element, text, inputType, data) => {
+    const before = new InputEvent('beforeinput', {
+      bubbles: true, cancelable: true, composed: true, inputType: inputType, data: data,
+    });
+    if (!fire(element, before)) return;
+    const insertFragment = (range, value) => {
+      const parts = value.split('\n');
+      let last = null;
+      for (let i = 0; i < parts.length; i++) {
+        if (i > 0) {
+          const br = document.createElement('br');
+          range.insertNode(br);
+          range.setStartAfter(br);
+          range.collapse(true);
+          last = br;
+        }
+        if (parts[i]) {
+          const textNode = document.createTextNode(parts[i]);
+          range.insertNode(textNode);
+          range.setStartAfter(textNode);
+          range.collapse(true);
+          last = textNode;
+        }
+      }
+      return last;
+    };
+    const sel = typeof globalThis.getSelection === 'function' ? globalThis.getSelection() : null;
+    if (sel && sel.rangeCount > 0) {
+      const range = sel.getRangeAt(0);
+      if (element.contains(range.commonAncestorContainer)) {
+        if (range.collapsed && !text && range.startContainer.nodeType === 3) {
+          const textLen = range.startContainer.nodeValue ? range.startContainer.nodeValue.length : 0;
+          if (inputType === 'deleteContentBackward' && range.startOffset > 0) {
+            range.setStart(range.startContainer, range.startOffset - 1);
+          } else if (inputType === 'deleteContentForward' && range.endOffset < textLen) {
+            range.setEnd(range.endContainer, range.endOffset + 1);
+          }
+        }
+        range.deleteContents();
+        if (text) insertFragment(range, text);
+        fireInput(element, inputType, data);
+        return;
+      }
+    }
+    element.textContent = '';
+    if (text) {
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      range.collapse(false);
+      insertFragment(range, text);
+    }
+    fireInput(element, inputType, data);
+  };
   const insertText = text => {
     const element = textControl();
-    if (!element) return;
-    const start = caretStart(element);
-    const end = Math.max(start, caretEnd(element));
-    replaceRange(element, text, start, end, 'insertText', text);
+    if (element) {
+      const start = caretStart(element);
+      const end = Math.max(start, caretEnd(element));
+      replaceRange(element, text, start, end, 'insertText', text);
+      return;
+    }
+    const editable = contentEditableHost();
+    if (editable) replaceContentEditable(editable, text, 'insertText', text);
   };
   const deleteText = backwards => {
     const element = textControl();
-    if (!element) return;
-    const length = editText(element).length;
-    const start = caretStart(element);
-    const end = Math.max(start, caretEnd(element));
-    if (start === end) {
-      if (backwards && start === 0) return;
-      if (!backwards && end === length) return;
-      const from = backwards ? start - 1 : start;
-      const to = backwards ? end : end + 1;
-      replaceRange(element, '', from, to, backwards ? 'deleteContentBackward' : 'deleteContentForward', null);
-    } else {
-      replaceRange(element, '', start, end, 'deleteContentBackward', null);
+    if (element) {
+      const length = editText(element).length;
+      const start = caretStart(element);
+      const end = Math.max(start, caretEnd(element));
+      if (start === end) {
+        if (backwards && start === 0) return;
+        if (!backwards && end === length) return;
+        const from = backwards ? start - 1 : start;
+        const to = backwards ? end : end + 1;
+        replaceRange(element, '', from, to, backwards ? 'deleteContentBackward' : 'deleteContentForward', null);
+      } else {
+        replaceRange(element, '', start, end, 'deleteContentBackward', null);
+      }
+      return;
+    }
+    const editable = contentEditableHost();
+    if (editable) {
+      replaceContentEditable(editable, '', backwards ? 'deleteContentBackward' : 'deleteContentForward', null);
     }
   };
   const moveCaret = to => {
@@ -246,7 +343,6 @@
     else position = start === end ? Math.min(length, end + 1) : end;
     setCaret(element, position);
   };
-  let shiftDown = false;
   // https://html.spec.whatwg.org/multipage/form-elements.html#the-input-element:radio-button-group
   const radioArrow = direction => {
     const current = document.activeElement;
@@ -265,13 +361,17 @@
     const value = item.value === undefined ? '' : String(item.value);
     const info = keyOf(value);
     const node = document.activeElement || document.body || document.documentElement;
+    const mods = modifierInit(item.modifiers || 0);
     if (down) {
-      const accepted = fire(node, new KeyboardEvent('keydown', {
+      if (value === '\uE008') shiftDown = true;
+      else if (value === '\uE009') ctrlDown = true;
+      else if (value === '\uE00A') altDown = true;
+      else if (value === '\uE03D') metaDown = true;
+      const accepted = fire(node, new KeyboardEvent('keydown', Object.assign({
         bubbles: true, cancelable: true, key: info.key, code: info.code,
-      }));
+      }, modifierInit(item.modifiers || 0))));
       if (accepted) {
-        if (value === '\uE008') shiftDown = true;
-        else if (value === '\uE00D') {
+        if (value === '\uE00D') {
           const focused = document.activeElement;
           if (focused && focused.localName === 'input'
               && (focused.type === 'checkbox' || focused.type === 'radio')
@@ -286,21 +386,30 @@
           radioArrow(1);
         } else if (value === '\uE013') {
           radioArrow(-1);
-        } else if (value.length === 1) insertText(value);
-        else if (value === '\uE003') deleteText(true);
+        } else if (value === '\uE003') deleteText(true);
         else if (value === '\uE017') deleteText(false);
         else if (value === '\uE011') moveCaret('home');
         else if (value === '\uE010') moveCaret('end');
         else if (value === '\uE012') moveCaret('left');
         else if (value === '\uE014') moveCaret('right');
+        else if (value.length === 1 && value.charCodeAt(0) < 0xE000
+            && !mods.ctrlKey && !mods.altKey && !mods.metaKey) insertText(value);
       }
-      if (value.length === 1 && value.charCodeAt(0) < 0xE000) {
-        fire(node, new KeyboardEvent('keypress', { bubbles: true, cancelable: true, key: info.key, code: info.code }));
+      if ((value.length === 1 && value.charCodeAt(0) < 0xE000)
+          || value === '\uE006' || value === '\uE007') {
+        fire(node, new KeyboardEvent('keypress', Object.assign({
+          bubbles: true, cancelable: true, key: info.key, code: info.code,
+        }, modifierInit(item.modifiers || 0))));
       }
     } else {
       if (value === '\uE00D') clearActive();
       if (value === '\uE008') shiftDown = false;
-      fire(node, new KeyboardEvent('keyup', { bubbles: true, cancelable: true, key: info.key, code: info.code }));
+      else if (value === '\uE009') ctrlDown = false;
+      else if (value === '\uE00A') altDown = false;
+      else if (value === '\uE03D') metaDown = false;
+      fire(node, new KeyboardEvent('keyup', Object.assign({
+        bubbles: true, cancelable: true, key: info.key, code: info.code,
+      }, mods)));
     }
   };
   const wheelItem = item => {

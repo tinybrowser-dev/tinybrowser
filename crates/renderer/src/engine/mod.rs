@@ -59,6 +59,8 @@ pub struct Engine {
     js_runtime: SharedJsRuntime,
     // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-addScriptToEvaluateOnNewDocument
     init_scripts: Rc<RefCell<Vec<(u64, String)>>>,
+    // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-addBinding
+    bindings: Rc<RefCell<Vec<String>>>,
     frame_history: HashMap<FrameId, FrameHistory>,
     pending_events: Vec<(FrameId, BrowserEvent)>,
     // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-history-back
@@ -106,6 +108,7 @@ impl Engine {
     ) -> Self {
         let js_runtime = SharedJsRuntime::default();
         let init_scripts: Rc<RefCell<Vec<(u64, String)>>> = Rc::new(RefCell::new(Vec::new()));
+        let bindings: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
         let common = Arc::new(crate::js::SharedRuntime::new(
             services,
             identity.clone(),
@@ -125,7 +128,7 @@ impl Engine {
             worker_dir,
             font_ctx: fonts.0.clone(),
         };
-        let main = Document::with_shared(FrameId::MAIN, &runtime, &init_scripts);
+        let main = Document::with_shared(FrameId::MAIN, &runtime, &init_scripts, &bindings);
         let mut frames = BTreeMap::new();
         frames.insert(FrameId::MAIN, main);
         Self {
@@ -133,6 +136,7 @@ impl Engine {
             frames,
             js_runtime,
             init_scripts,
+            bindings,
             frame_history: HashMap::new(),
             pending_events: Vec::new(),
             deferred_events: Vec::new(),
@@ -886,6 +890,7 @@ impl Engine {
             self.init_scripts
                 .borrow_mut()
                 .clone_from(&mount.head.init_scripts);
+            self.bindings.borrow_mut().clone_from(&mount.head.bindings);
         }
         let mut mounted = None;
         if frame == FrameId::MAIN && self.joint_history.is_some() {
@@ -1001,6 +1006,22 @@ impl Engine {
             .retain(|(script_id, _)| *script_id != id);
     }
 
+    // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-addBinding
+    pub fn add_binding(&mut self, name: &str, run_immediately: bool) {
+        if !self.bindings.borrow().iter().any(|binding| binding == name) {
+            self.bindings.borrow_mut().push(name.to_owned());
+        }
+        if !run_immediately {
+            return;
+        }
+        let frames: Vec<FrameId> = self.frames.keys().copied().collect();
+        for frame in frames {
+            if let Some(document) = self.frames.get_mut(&frame) {
+                document.run_binding(name);
+            }
+        }
+    }
+
     pub fn content_size(&mut self, frame: FrameId) -> Result<(f32, f32), TabError> {
         Ok(self.frame_mut(frame)?.content_size())
     }
@@ -1032,7 +1053,7 @@ impl Engine {
         request: &crate::ScreenshotRequest,
     ) -> Result<Vec<u8>, TabError> {
         let image = self.render_frame(frame, request)?;
-        crate::render::encode_png(&image).map_err(|error| TabError::Render {
+        crate::render::encode_screenshot(&image, request.format).map_err(|error| TabError::Render {
             message: error.to_string(),
         })
     }
@@ -1068,11 +1089,15 @@ impl Engine {
                 ));
             sync_canvas_images(&world, &mut parsed);
             crate::render::resolve_until_settled(&mut parsed.document.base);
-            let image = crate::render::paint(&mut parsed.document.base, width, height).map_err(
-                |error| TabError::Render {
-                    message: error.to_string(),
-                },
-            )?;
+            let image = crate::render::paint(
+                &mut parsed.document.base,
+                width,
+                height,
+                request.omit_background,
+            )
+            .map_err(|error| TabError::Render {
+                message: error.to_string(),
+            })?;
             parsed.document.base.set_viewport(previous);
             image
         };
@@ -1854,7 +1879,9 @@ impl Engine {
             document.queue_fragment_navigation(url);
             return NavOutcome::Fragment;
         }
-        self.load_frame_url(child, &url, initiator, navigation);
+        if !self.load_frame_url(child, &url, initiator, navigation) {
+            return NavOutcome::KeptDocument;
+        }
         if let (Some(embedder), Some(container)) = (embedder, container) {
             self.mark_frame_load_pending(container, embedder);
         }
@@ -2098,7 +2125,7 @@ impl Engine {
         url: &Url,
         initiator: FrameId,
         navigation: &FrameNavigation,
-    ) {
+    ) -> bool {
         // https://w3c.github.io/webappsec-csp/#effective-directive-for-a-request
         let embedder = self.runtime.shared.borrow().tree.parent(child);
         let check_frame_src = self.frame_src_applies(child, url);
@@ -2106,7 +2133,7 @@ impl Engine {
             && let Some(embedder) = embedder
             && self.frame_src_blocked(embedder, child, url)
         {
-            return;
+            return false;
         }
         let frame_gate = (check_frame_src && matches!(url.scheme(), "http" | "https"))
             .then(|| {
@@ -2132,6 +2159,16 @@ impl Engine {
                 self.load_blob_frame(child, initiator, url, navigation);
             }
             "http" | "https" => {
+                // https://github.com/privacycg/CHIPS#computing-the-cookie-partition-key
+                let top_level_navigation = {
+                    let shared = self.runtime.shared.borrow();
+                    shared.tree.top_level(child) == child
+                };
+                if top_level_navigation
+                    && self.delegate_cross_site_navigation(child, initiator, url, navigation)
+                {
+                    return false;
+                }
                 // https://html.spec.whatwg.org/multipage/browsers.html#concept-origin
                 let origin = self
                     .frames
@@ -2160,11 +2197,6 @@ impl Engine {
                     .frames
                     .get(&initiator)
                     .map(|document| document.world().borrow().policy.cross_origin_isolated);
-                // https://github.com/privacycg/CHIPS#computing-the-cookie-partition-key
-                let top_level_navigation = {
-                    let shared = self.runtime.shared.borrow();
-                    shared.tree.top_level(child) == child
-                };
                 let partition_key = if top_level_navigation {
                     net::site_for_origin(&url.origin())
                 } else {
@@ -2198,6 +2230,41 @@ impl Engine {
                 self.inherit_policy(child, initiator);
             }
         }
+        true
+    }
+
+    fn delegate_cross_site_navigation(
+        &self,
+        child: FrameId,
+        initiator: FrameId,
+        url: &Url,
+        navigation: &FrameNavigation,
+    ) -> bool {
+        if navigation.method != net::Method::GET || !navigation.body.is_empty() {
+            return false;
+        }
+        if self
+            .frames
+            .get(&child)
+            .and_then(|document| net::site(document.url()))
+            == net::site(url)
+        {
+            return false;
+        }
+        let (_, referrer_policy) = self.navigation_referrer(initiator, navigation);
+        let Some(document) = self.frames.get(&initiator) else {
+            return false;
+        };
+        let world = document.world();
+        let world = world.borrow();
+        let source = crate::protocol::NavigationSource {
+            origin: crate::protocol::SerializedOrigin::from(&world.origin),
+            referrer: world.referrer_url.clone(),
+            referrer_policy,
+            frame: initiator,
+            secure_context: world.is_secure_context(),
+        };
+        self.runtime.services.navigate_top_level(url, &source)
     }
 
     // https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate-to-a-javascript:-url
@@ -3966,6 +4033,8 @@ mod messaging_tests {
                     viewport_width: 64,
                     viewport_height: 64,
                     clip: None,
+                    format: crate::ScreenshotFormat::Png,
+                    omit_background: false,
                 },
             )
             .expect("render");

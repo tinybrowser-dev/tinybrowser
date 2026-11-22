@@ -28,7 +28,7 @@ detect_target() {
   fi
   case "$os:$arch" in
     Linux:x86_64)
-      printf 'x86_64-unknown-linux-gnu'
+      printf 'x86_64-unknown-linux-musl'
       ;;
     Darwin:arm64 | Darwin:aarch64)
       printf 'aarch64-apple-darwin'

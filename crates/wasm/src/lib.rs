@@ -378,6 +378,8 @@ impl GuestTab for Tab {
                 viewport_width: width,
                 viewport_height: height,
                 clip: None,
+                format: renderer::ScreenshotFormat::Png,
+                omit_background: false,
             })
             .map_err(|error| error.to_string())?;
         Ok(RenderedFrame {
@@ -738,7 +740,10 @@ fn to_event(event: RendererEvent) -> Option<Event> {
             BrowserEvent::DomContentLoaded => Some(Event::DomContentLoaded),
             BrowserEvent::NavigationStarted { .. }
             | BrowserEvent::FrameAdded { .. }
-            | BrowserEvent::FrameRemoved => None,
+            | BrowserEvent::FrameRemoved
+            | BrowserEvent::RealmReplaced
+            | BrowserEvent::Binding { .. }
+            | BrowserEvent::Console { .. } => None,
         },
         RendererEvent::Timer(id) => Some(Event::Timer(id.get())),
         RendererEvent::Fetch { status } => Some(Event::Fetch(status)),

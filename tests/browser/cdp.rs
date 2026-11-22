@@ -1,6 +1,6 @@
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::fixture::{Fixture, TestServer, evaluate, load_page, ok};
 use serde_json::json;
@@ -727,4 +727,126 @@ fn dom_resolve_node_returns_an_object_id_runtime_can_use() {
         )
         .expect("resolve again");
     assert_eq!(again["object"]["objectId"], resolved["object"]["objectId"]);
+}
+
+#[test]
+fn runtime_reports_console_calls_from_page_scripts() {
+    let (_fixture, mut client) = start();
+
+    let created = client
+        .call("Target.createTarget", &json!({"url": "about:blank"}), None)
+        .expect("create");
+    let target_id = created["targetId"].as_str().expect("target id").to_owned();
+    let attached = client
+        .call(
+            "Target.attachToTarget",
+            &json!({"targetId": target_id, "flatten": true}),
+            None,
+        )
+        .expect("attach");
+    let session = attached["sessionId"].as_str().expect("session").to_owned();
+
+    client
+        .call("Page.enable", &json!({}), Some(&session))
+        .expect("page enable");
+    client
+        .call("Runtime.enable", &json!({}), Some(&session))
+        .expect("runtime enable");
+    client
+        .call(
+            "Runtime.evaluate",
+            &json!({
+                "expression": "console.debug('marker'); console.log(1, 'two'); 'done'",
+                "returnByValue": true,
+            }),
+            Some(&session),
+        )
+        .expect("evaluate");
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut seen = Vec::new();
+    while Instant::now() < deadline {
+        let Some(event) = client
+            .read_event(Duration::from_millis(200))
+            .expect("read event")
+        else {
+            continue;
+        };
+        if event["method"] == json!("Runtime.consoleAPICalled") {
+            seen.push(event["params"].clone());
+            if seen.len() == 2 {
+                break;
+            }
+        }
+    }
+    assert_eq!(seen.len(), 2, "two console calls, got {seen:?}");
+    assert_eq!(seen[0]["type"], json!("debug"));
+    assert_eq!(seen[0]["args"][0]["value"], json!("marker"));
+    assert_eq!(seen[1]["type"], json!("log"));
+    assert_eq!(seen[1]["args"][0]["value"], json!(1));
+    assert_eq!(seen[1]["args"][1]["value"], json!("two"));
+}
+
+#[test]
+fn document_open_announces_replaced_contexts() {
+    let (_fixture, mut client) = start();
+
+    let created = client
+        .call("Target.createTarget", &json!({"url": "about:blank"}), None)
+        .expect("create");
+    let target_id = created["targetId"].as_str().expect("target id").to_owned();
+    let attached = client
+        .call(
+            "Target.attachToTarget",
+            &json!({"targetId": target_id, "flatten": true}),
+            None,
+        )
+        .expect("attach");
+    let session = attached["sessionId"].as_str().expect("session").to_owned();
+
+    client
+        .call("Page.enable", &json!({}), Some(&session))
+        .expect("page enable");
+    client
+        .call("Runtime.enable", &json!({}), Some(&session))
+        .expect("runtime enable");
+    client
+        .call(
+            "Runtime.evaluate",
+            &json!({
+                "expression": "document.open(); document.write('<p>replaced</p>'); document.close(); 'reopened'",
+                "returnByValue": true,
+            }),
+            Some(&session),
+        )
+        .expect("reopen");
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut cleared = false;
+    let mut created_contexts = Vec::new();
+    while Instant::now() < deadline {
+        let Some(event) = client
+            .read_event(Duration::from_millis(200))
+            .expect("read event")
+        else {
+            continue;
+        };
+        match event["method"].as_str() {
+            Some("Runtime.executionContextsCleared") => cleared = true,
+            Some("Runtime.executionContextCreated") => {
+                created_contexts.push(event["params"]["context"].clone());
+            }
+            _ => {}
+        }
+        if cleared && !created_contexts.is_empty() {
+            break;
+        }
+    }
+    assert!(cleared, "executionContextsCleared after document.open");
+    assert!(
+        created_contexts
+            .iter()
+            .any(|context| context["auxData"]["isDefault"] == json!(true)),
+        "a fresh default context is announced, got {created_contexts:?}"
+    );
 }

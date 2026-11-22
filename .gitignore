@@ -1,5 +1,6 @@
 /target/
 .direnv/
+.playwright/
 __pycache__/
 *.egg-info/
 # Coverage runs write these next to the working directory.

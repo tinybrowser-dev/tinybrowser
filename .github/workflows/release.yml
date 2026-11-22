@@ -74,11 +74,9 @@ jobs:
           echo "releasing v$workspace_version"
 
   linux-x86_64:
-    name: linux-x86_64
+    name: linux-x86_64 (static musl)
     needs: verify
-    # The oldest still-supported Ubuntu LTS sets the glibc floor (2.35); a
-    # binary built here runs on newer distributions.
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v7
@@ -86,10 +84,11 @@ jobs:
         run: >
           sudo apt-get update -qq &&
           sudo apt-get install -y -qq --no-install-recommends
-          libfontconfig1-dev libssl-dev pkg-config
+          musl-tools perl make
       - name: Toolchain
         run: |
           rustup toolchain install --profile minimal --component rust-src
+          rustup target add x86_64-unknown-linux-musl
           cargo --version
       - name: Submodules (build inputs only, shallow)
         run: |
@@ -102,28 +101,32 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: cargo-${{ runner.os }}-
+          key: cargo-${{ runner.os }}-musl-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-musl-
       - name: sccache
         uses: mozilla-actions/sccache-action@v0.0.11
         with:
           version: "v0.18.0"
       - name: Build
         env:
+          OPENSSL_NO_VENDOR: "0"
+          CC_x86_64_unknown_linux_musl: "musl-gcc"
           SCCACHE_GHA_ENABLED: "true"
           RUSTC_WRAPPER: "sccache"
         run: |
-          cargo build --release --locked -p tinybrowser
-          ls -l target/release/tinybrowser
+          cargo build --release --locked -p tinybrowser --features vendored-tls --target x86_64-unknown-linux-musl
+          ls -lh target/x86_64-unknown-linux-musl/release/tinybrowser
+          file target/x86_64-unknown-linux-musl/release/tinybrowser
+          file target/x86_64-unknown-linux-musl/release/tinybrowser | grep -q "statically linked"
       - name: Package
         id: package
         run: |
           set -euo pipefail
           version="${{ needs.verify.outputs.version }}"
-          target=x86_64-unknown-linux-gnu
+          target=x86_64-unknown-linux-musl
           name="tinybrowser-$version-$target"
           mkdir -p "dist/$name"
-          cp target/release/tinybrowser "dist/$name/"
+          cp "target/$target/release/tinybrowser" "dist/$name/"
           cp LICENSE NOTICE CREDITS.md "dist/$name/"
           tar --owner=0 --group=0 -C dist -czf "dist/$name.tar.gz" "$name"
           echo "name=$name" >> "$GITHUB_OUTPUT"
@@ -457,7 +460,7 @@ jobs:
       - name: Download the release asset
         uses: actions/download-artifact@v8
         with:
-          name: tinybrowser-${{ needs.verify.outputs.version }}-x86_64-unknown-linux-gnu
+          name: tinybrowser-${{ needs.verify.outputs.version }}-x86_64-unknown-linux-musl
           path: dist
       - name: Unpack
         run: |

@@ -381,6 +381,16 @@ where
     }
 }
 
+// https://html.spec.whatwg.org/multipage/browsers.html#processes
+fn report_reader_error(context: &ReaderContext, error: &std::io::Error) {
+    let killed = *context.kill.borrow();
+    if killed {
+        logging::debug!(target: "browser::link", "renderer channel closed: {error}");
+    } else {
+        logging::error!(target: "browser::link", "bad renderer message: {error}");
+    }
+}
+
 async fn reader_task(
     mut reader: Box<dyn AsyncRead + Send + Unpin>,
     context: ReaderContext,
@@ -393,7 +403,7 @@ async fn reader_task(
             Ok(Some(frame)) => frame,
             Ok(None) => break,
             Err(error) => {
-                logging::error!(target: "browser::link", "bad renderer message: {error}");
+                report_reader_error(&context, &error);
                 break;
             }
         };
@@ -402,7 +412,7 @@ async fn reader_task(
                 match crate::wire::channel::decode_control::<FromRenderer>(&buffer) {
                     Ok(message) => message,
                     Err(error) => {
-                        logging::error!(target: "browser::link", "bad renderer message: {error}");
+                        report_reader_error(&context, &error);
                         break;
                     }
                 }
@@ -1041,6 +1051,22 @@ async fn route_window_call(
             }
             .navigate(name, url, opener, source)
             .await?;
+        }
+        BrowsingContextCall::NavigateTopLevel { url, source } => {
+            if let Some(url) = navigable_popup_url(url) {
+                let initiator = window_initiator(
+                    &context.tabs,
+                    assignment,
+                    source,
+                    renderer::OpenerPolicy::Keep,
+                )?;
+                if let Ok(handle) = context.browser.tab(assignment.tab).await {
+                    tokio::spawn(async move {
+                        let _result = handle.goto_from(url.as_str(), initiator).await;
+                    });
+                }
+            }
+            send_reply(&context.responder, id, ServiceReply::Unit).await?;
         }
         BrowsingContextCall::FrameCreated {
             frame,

@@ -2751,6 +2751,7 @@ dependencies = [
  "enumerated",
  "fixed_decimal",
  "flate2",
+ "fontconfig-parser",
  "getrandom",
  "icu_calendar",
  "icu_datetime",

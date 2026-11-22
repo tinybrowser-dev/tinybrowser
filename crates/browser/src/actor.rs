@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use crate::wire::{Command as RendererCommand, Reply};
 use renderer::{
-    BrowserEvent, DialFailure, FrameId, MAX_RESPONSE_BODY_BYTES, Mount, RemoteValue, ResourceLimit,
-    ResponseHead, TabError,
+    BrowserEvent, ConsoleLevel, DialFailure, FrameId, MAX_RESPONSE_BODY_BYTES, Mount, RemoteValue,
+    ResourceLimit, ResponseHead, TabError,
 };
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
@@ -43,12 +43,44 @@ pub(crate) fn log_url(url: &Url) -> String {
 pub struct TabId(u64);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NavigationFailure {
+    Aborted,
+    ConnectionRefused,
+    CertAuthorityInvalid,
+    Failed,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub enum TabEvent {
     Navigated,
     SameDocumentNavigation,
     Load,
     DomContentLoaded,
-    NavigationFailed,
+    NavigationFailed(NavigationFailure),
+    // https://chromedevtools.github.io/devtools-protocol/tot/Network/#event-requestWillBeSent
+    NavigationRequested {
+        url: String,
+    },
+    // https://chromedevtools.github.io/devtools-protocol/tot/Network/#event-responseReceived
+    NavigationResponded {
+        status: u16,
+        status_text: String,
+        url: String,
+        headers: Vec<(String, String)>,
+        body: Vec<u8>,
+    },
+    // https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#document-open-steps
+    RealmReplaced,
+    // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#event-bindingCalled
+    Binding {
+        name: String,
+        payload: String,
+    },
+    // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#event-consoleAPICalled
+    Console {
+        level: ConsoleLevel,
+        args: String,
+    },
 }
 
 impl TabId {
@@ -93,6 +125,12 @@ enum Command {
         source: String,
         run_immediately: bool,
         reply: ReplySender<u64>,
+    },
+    // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-addBinding
+    AddBinding {
+        name: String,
+        run_immediately: bool,
+        reply: ReplySender<()>,
     },
     RemoveInitScript {
         id: u64,
@@ -233,10 +271,27 @@ impl TabHandle {
     }
 
     pub async fn goto(&self, url: &str) -> Result<(), TabError> {
+        self.goto_with_referrer(url, None).await
+    }
+
+    // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-navigate
+    pub async fn goto_with_referrer(
+        &self,
+        url: &str,
+        referrer: Option<&str>,
+    ) -> Result<(), TabError> {
+        let initiator = referrer
+            .and_then(|spec| Url::parse(spec).ok())
+            .map(|referrer_url| NavigationInitiator {
+                origin: referrer_url.origin(),
+                referrer: Some(referrer_url),
+                referrer_policy: net::ReferrerPolicy::UnsafeUrl,
+                secure_context: true,
+            });
         self.ask(|reply| Command::Goto {
             request: GotoRequest {
                 url: url.to_owned(),
-                initiator: None,
+                initiator,
             },
             reply,
         })
@@ -342,6 +397,16 @@ impl TabHandle {
     pub async fn remove_init_script(&self, id: u64) -> Result<(), TabError> {
         self.ask(|reply| Command::RemoveInitScript { id, reply })
             .await
+    }
+
+    // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-addBinding
+    pub async fn add_binding(&self, name: &str, run_immediately: bool) -> Result<(), TabError> {
+        self.ask(|reply| Command::AddBinding {
+            name: name.to_owned(),
+            run_immediately,
+            reply,
+        })
+        .await
     }
 
     pub async fn screenshot(
@@ -573,6 +638,8 @@ struct Tab {
     viewport: (u32, u32),
     // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-addScriptToEvaluateOnNewDocument
     init_scripts: Vec<(u64, String)>,
+    // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-addBinding
+    bindings: Vec<String>,
     next_init_script: u64,
     history: SessionHistory,
     traversal: Option<crate::history::EntryId>,
@@ -619,6 +686,7 @@ impl Tab {
             document_url: net::about_blank(),
             viewport: renderer::DEFAULT_VIEWPORT,
             init_scripts: Vec::new(),
+            bindings: Vec::new(),
             next_init_script: 1,
             history: SessionHistory::new(net::about_blank(), initial_name),
             traversal: None,
@@ -644,6 +712,7 @@ impl Tab {
                 history: self.history.renderer_snapshot(),
                 viewport: Some(self.viewport),
                 init_scripts: self.init_scripts.clone(),
+                bindings: self.bindings.clone(),
                 ..ResponseHead::local(
                     url.clone(),
                     Some("text/html; charset=utf-8".to_owned()),
@@ -703,7 +772,9 @@ impl Tab {
         let url = Url::parse(spec)
             .or_else(|_| self.document_url.join(spec))
             .map_err(|_| TabError::InvalidUrl { spec: spec.into() })?;
-        if !matches!(url.scheme(), "http" | "https" | "data") {
+        if !(matches!(url.scheme(), "http" | "https" | "data")
+            || (url.scheme() == "about" && url.path() == "blank"))
+        {
             return Err(TabError::InvalidUrl { spec: spec.into() });
         }
         Ok(url)
@@ -747,13 +818,14 @@ impl Tab {
         site: &Site,
         mount: Mount,
         mut body: net::Body,
-    ) -> Result<(), TabError> {
+    ) -> Result<Vec<u8>, TabError> {
         self.ensure_renderer(site).await?;
         self.pending_mount = None;
         self.document_loaded = false;
         let renderer = self.renderer.as_ref().ok_or(TabError::ActorStopped)?;
         let stream = renderer.start_response(FrameId::MAIN, &mount).await?;
         let mut received = 0usize;
+        let mut captured = Vec::new();
         loop {
             match body.read_chunk().await {
                 Ok(Some(chunk)) => {
@@ -765,6 +837,7 @@ impl Tab {
                             "navigation body exceeds {MAX_RESPONSE_BODY_BYTES} bytes ({received} received)"
                         )));
                     }
+                    captured.extend_from_slice(&chunk);
                     for piece in chunk.chunks(crate::wire::channel::MAX_BODY_CHUNK_BYTES) {
                         if let Err(error) = stream.write(piece.to_vec()).await {
                             drop(stream);
@@ -786,7 +859,7 @@ impl Tab {
         if result.is_err() {
             self.drop_renderer();
         }
-        result
+        result.map(|()| captured)
     }
 
     fn drop_renderer(&mut self) {
@@ -864,6 +937,7 @@ impl Tab {
             .unwrap_or_else(|| blank_mount(self.current_tab_state()));
         mount.head.viewport = Some(self.viewport);
         mount.head.init_scripts = self.init_scripts.clone();
+        mount.head.bindings = self.bindings.clone();
         let site = Site::for_url(&self.document_url)
             .or_else(|| self.site.clone())
             .unwrap_or_else(|| Site::opaque(self.id));
@@ -872,18 +946,26 @@ impl Tab {
 
     // https://fetch.spec.whatwg.org/#data-url-processor
     fn take_data_navigation(&mut self) -> Option<Url> {
-        let data = self
-            .nav
-            .as_ref()
-            .is_some_and(|nav| !nav.submitted && nav.url.scheme() == "data");
-        if !data {
+        let local = self.nav.as_ref().is_some_and(|nav| {
+            !nav.submitted
+                && (nav.url.scheme() == "data"
+                    || (nav.url.scheme() == "about" && nav.url.path() == "blank"))
+        });
+        if !local {
             return None;
         }
         self.nav.take().map(|nav| nav.url)
     }
 
     async fn commit_data_navigation(&mut self, url: Url) -> bool {
-        let Some((content_type, body)) = renderer::decode_data_url_bounded(url.as_str()) else {
+        let (content_type, body) = if url.scheme() == "about" && url.path() == "blank" {
+            (
+                "text/html; charset=utf-8".to_owned(),
+                b"<!doctype html><title></title>".to_vec(),
+            )
+        } else if let Some(decoded) = renderer::decode_data_url_bounded(url.as_str()) {
+            decoded
+        } else {
             self.navigation_failed = true;
             return false;
         };
@@ -906,6 +988,7 @@ impl Tab {
                 history: history.renderer_snapshot(),
                 viewport: Some(self.viewport),
                 init_scripts: self.init_scripts.clone(),
+                bindings: self.bindings.clone(),
                 ..ResponseHead::local(url.clone(), Some(content_type), None)
             },
             tab: state,
@@ -980,6 +1063,34 @@ impl Tab {
         self.document_url = url;
     }
 
+    // https://html.spec.whatwg.org/multipage/browsing-the-web.html#finalize-a-cross-document-navigation
+    async fn commit_main_navigation(
+        &mut self,
+        url: Url,
+        outgoing_name: Option<&renderer::ContextName>,
+    ) {
+        if self
+            .site
+            .as_ref()
+            .is_some_and(|site| !site.allows_url(&url))
+        {
+            return;
+        }
+        // https://html.spec.whatwg.org/multipage/browsing-the-web.html#resetBCName
+        self.history.sync_current_name(outgoing_name);
+        let name = self.tabs.name(self.id);
+        self.history.commit(Commit::Push {
+            url: url.clone(),
+            name: name.clone(),
+        });
+        self.tabs.settle_document_name(self.id, outgoing_name, name);
+        self.advance_document_url(url);
+        self.document_loaded = false;
+        self.navigation_failed = false;
+        self.sync_histories().await;
+        self.record_event(TabEvent::Navigated).await;
+    }
+
     // https://html.spec.whatwg.org/multipage/document-sequences.html#navigable
     // https://html.spec.whatwg.org/multipage/browsing-the-web.html#resetBCName
     fn commit_state(&self, url: &Url) -> renderer::TabState {
@@ -1007,7 +1118,7 @@ impl Tab {
             .restore_commit(self.id, names.previous, &names.installed);
     }
 
-    fn launch_navigation(&mut self) {
+    async fn launch_navigation(&mut self) {
         let Some(nav) = self.nav.as_ref() else {
             return;
         };
@@ -1019,14 +1130,24 @@ impl Tab {
         let initiator = nav.initiator.clone();
         self.cancel_dial();
         let (cancel, cancel_rx) = watch::channel(false);
-        let guard =
-            self.network
-                .dial_navigation(epoch, url, initiator, self.dial_tx.clone(), cancel_rx);
+        let guard = self.network.dial_navigation(
+            epoch,
+            url.clone(),
+            initiator,
+            self.dial_tx.clone(),
+            cancel_rx,
+        );
         self.dial_cancel = Some(cancel);
         self.dial_guard = Some(guard);
         if let Some(nav) = self.nav.as_mut() {
             nav.submitted = true;
         }
+        let _ = self
+            .events
+            .notify(TabEvent::NavigationRequested {
+                url: url.to_string(),
+            })
+            .await;
     }
 
     fn cancel_dial(&mut self) {
@@ -1050,13 +1171,34 @@ impl Tab {
         self.document_loaded = false;
         match result {
             Ok(outcome) => {
-                let mounted = self.commit_navigation(outcome).await;
-                self.record_event(if mounted {
-                    TabEvent::Navigated
+                let status = outcome.net.status();
+                // https://html.spec.whatwg.org/multipage/browsing-the-web.html#process-a-navigate-response
+                if status == 204 || status == 205 {
+                    self.traversal = None;
+                    self.navigation_failed = true;
+                    self.record_event(TabEvent::NavigationFailed(NavigationFailure::Aborted))
+                        .await;
+                    return;
+                }
+                let status_text = outcome.net.status_text().to_owned();
+                let url = outcome.net.final_url().to_string();
+                let headers = outcome.net.headers().to_vec();
+                let body = self.commit_navigation(outcome).await;
+                if let Some(body) = body {
+                    // https://chromedevtools.github.io/devtools-protocol/tot/Network/#event-responseReceived
+                    self.record_event(TabEvent::NavigationResponded {
+                        status,
+                        status_text,
+                        url,
+                        headers,
+                        body,
+                    })
+                    .await;
+                    self.record_event(TabEvent::Navigated).await;
                 } else {
-                    TabEvent::NavigationFailed
-                })
-                .await;
+                    self.record_event(TabEvent::NavigationFailed(NavigationFailure::Failed))
+                        .await;
+                }
             }
             Err(failure) => {
                 logging::error!(
@@ -1064,14 +1206,26 @@ impl Tab {
                     "navigation dial failed for {}: {failure:?}",
                     url.as_ref().map(log_url).as_deref().unwrap_or("unknown")
                 );
+                let detail = format!("{failure:?}").to_ascii_lowercase();
+                let reason = if detail.contains("refused") {
+                    NavigationFailure::ConnectionRefused
+                } else if detail.contains("tls")
+                    || detail.contains("cert")
+                    || detail.contains("ssl")
+                    || detail.contains("handshake")
+                {
+                    NavigationFailure::CertAuthorityInvalid
+                } else {
+                    NavigationFailure::Failed
+                };
                 self.traversal = None;
                 self.navigation_failed = true;
-                self.record_event(TabEvent::NavigationFailed).await;
+                self.record_event(TabEvent::NavigationFailed(reason)).await;
             }
         }
     }
 
-    async fn commit_navigation(&mut self, outcome: NavOutcome) -> bool {
+    async fn commit_navigation(&mut self, outcome: NavOutcome) -> Option<Vec<u8>> {
         let final_url = outcome.head.url.clone();
         let site = Site::for_url(&final_url).unwrap_or_else(|| Site::opaque(self.id));
         // https://w3c.github.io/webappsec-csp/#sandbox
@@ -1090,16 +1244,17 @@ impl Tab {
                 log_url(&final_url)
             );
             self.navigation_failed = true;
-            return false;
+            return None;
         }
         let head = ResponseHead {
             history: history.renderer_snapshot(),
             viewport: Some(self.viewport),
             init_scripts: self.init_scripts.clone(),
+            bindings: self.bindings.clone(),
             ..outcome.head
         };
         let previous_names = self.begin_commit(&state);
-        if let Err(error) = self
+        let body = match self
             .mount_stream(
                 &site,
                 Mount {
@@ -1111,21 +1266,24 @@ impl Tab {
             )
             .await
         {
-            self.abort_commit(previous_names);
-            self.tabs.reset_main_sandbox(self.id, previous_csp);
-            logging::error!(
-                target: "browser::tab",
-                "navigation mount failed for {}: {error}",
-                log_url(&final_url)
-            );
-            self.navigation_failed = true;
-            return false;
-        }
+            Ok(body) => body,
+            Err(error) => {
+                self.abort_commit(previous_names);
+                self.tabs.reset_main_sandbox(self.id, previous_csp);
+                logging::error!(
+                    target: "browser::tab",
+                    "navigation mount failed for {}: {error}",
+                    log_url(&final_url)
+                );
+                self.navigation_failed = true;
+                return None;
+            }
+        };
         self.history = history;
         self.advance_document_url(final_url);
         let title = self.document_title().await;
         self.history.set_current_title(title);
-        true
+        Some(body)
     }
 
     async fn handle_renderer_event(&mut self, frame: FrameId, event: &BrowserEvent) {
@@ -1140,27 +1298,8 @@ impl Tab {
                     self.sync_histories().await;
                     return;
                 }
-                if self
-                    .site
-                    .as_ref()
-                    .is_some_and(|site| !site.allows_url(&url))
-                {
-                    return;
-                }
-                // https://html.spec.whatwg.org/multipage/browsing-the-web.html#resetBCName
-                self.history.sync_current_name(outgoing_name.as_ref());
-                let name = self.tabs.name(self.id);
-                self.history.commit(Commit::Push {
-                    url: url.clone(),
-                    name: name.clone(),
-                });
-                self.tabs
-                    .settle_document_name(self.id, outgoing_name.as_ref(), name);
-                self.advance_document_url(url);
-                self.document_loaded = false;
-                self.navigation_failed = false;
-                self.sync_histories().await;
-                self.record_event(TabEvent::Navigated).await;
+                self.commit_main_navigation(url, outgoing_name.as_ref())
+                    .await;
             }
             BrowserEvent::Load => {
                 if frame != FrameId::MAIN {
@@ -1221,6 +1360,26 @@ impl Tab {
             }
             BrowserEvent::HistoryTraversal { delta } => {
                 let _result = self.traverse(HistoryStep::Delta(*delta), frame).await;
+            }
+            // https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#document-open-steps
+            BrowserEvent::RealmReplaced => {
+                self.record_event(TabEvent::RealmReplaced).await;
+            }
+            // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#event-bindingCalled
+            BrowserEvent::Binding { name, payload } => {
+                self.record_event(TabEvent::Binding {
+                    name: name.clone(),
+                    payload: payload.clone(),
+                })
+                .await;
+            }
+            // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#event-consoleAPICalled
+            BrowserEvent::Console { level, args } => {
+                self.record_event(TabEvent::Console {
+                    level: *level,
+                    args: args.clone(),
+                })
+                .await;
             }
         }
     }
@@ -1479,12 +1638,12 @@ async fn coordinator_loop(
             tab.record_event(if mounted {
                 TabEvent::Navigated
             } else {
-                TabEvent::NavigationFailed
+                TabEvent::NavigationFailed(NavigationFailure::Failed)
             })
             .await;
             continue;
         }
-        tab.launch_navigation();
+        tab.launch_navigation().await;
         let deadline = next_waiter_deadline(&waiters);
         let wake = {
             let dial_rx = &mut tab.dial_rx;
@@ -1608,7 +1767,8 @@ impl Command {
             | Command::TraverseHistory { reply, .. }
             | Command::RemoveInitScript { reply, .. }
             | Command::SetViewport { reply, .. }
-            | Command::SetIdentity { reply, .. } => reply.is_closed(),
+            | Command::SetIdentity { reply, .. }
+            | Command::AddBinding { reply, .. } => reply.is_closed(),
             Command::Execute { reply, .. } => reply.is_closed(),
             Command::AddInitScript { reply, .. } => reply.is_closed(),
             Command::ViewportSize { reply } => reply.is_closed(),
@@ -1642,6 +1802,12 @@ impl Command {
                 run_immediately,
                 reply,
             } => answer(reply, add_init_script(tab, source, run_immediately).await),
+            // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-addBinding
+            Command::AddBinding {
+                name,
+                run_immediately,
+                reply,
+            } => answer(reply, add_binding(tab, name, run_immediately).await),
             Command::RemoveInitScript { id: script, reply } => {
                 answer(reply, remove_init_script(tab, script).await);
             }
@@ -1756,6 +1922,26 @@ async fn remove_init_script(tab: &mut Tab, id: u64) -> Result<(), TabError> {
         tab.renderer_request(RendererCommand::RemoveInitScript { id })
             .await
             .and_then(reply_unit)
+    } else {
+        Ok(())
+    }
+}
+
+// https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-addBinding
+async fn add_binding(tab: &mut Tab, name: String, run_immediately: bool) -> Result<(), TabError> {
+    if !tab.bindings.contains(&name) {
+        tab.bindings.push(name.clone());
+    }
+    if run_immediately && tab.renderer.is_none() {
+        tab.mount_virtual().await?;
+    }
+    if tab.renderer.is_some() {
+        tab.renderer_request(RendererCommand::AddBinding {
+            name,
+            run_immediately,
+        })
+        .await
+        .and_then(reply_unit)
     } else {
         Ok(())
     }

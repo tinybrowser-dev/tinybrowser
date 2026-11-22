@@ -1,0 +1,133 @@
+diff --git a/tests/page/pageTest.ts b/tests/page/pageTest.ts
+index 85c532a..d163d08 100644
+--- a/tests/page/pageTest.ts
++++ b/tests/page/pageTest.ts
+@@ -20,6 +20,7 @@ import type { TestModeTestFixtures, TestModeWorkerFixtures, TestModeWorkerOption
+ import { androidTest } from '../android/androidTest';
+ import { browserTest } from '../config/browserTest';
+ import { electronTest } from '../electron/electronTest';
++import { tinybrowserTest } from '../tinybrowser/tinybrowserTest';
+ import { webviewTest } from '../webview/webviewTest';
+ import type { PageTestFixtures, PageWorkerFixtures } from './pageTestApi';
+ import type { ServerFixtures, ServerWorkerOptions } from '../config/serverFixtures';
+@@ -34,6 +35,8 @@ if (process.env.PWPAGE_IMPL === 'electron')
+   impl = electronTest;
+ if (process.env.PWPAGE_IMPL === 'webkit-webview')
+   impl = webviewTest;
++if (process.env.PWPAGE_IMPL === 'tinybrowser')
++  impl = tinybrowserTest;
+ 
+ export const test = impl;
+ 
+diff --git a/tests/tinybrowser/playwright.config.ts b/tests/tinybrowser/playwright.config.ts
+new file mode 100644
+index 0000000..7dca891
+--- /dev/null
++++ b/tests/tinybrowser/playwright.config.ts
+@@ -0,0 +1,46 @@
++import type { Config, PlaywrightTestOptions, PlaywrightWorkerOptions } from '@playwright/test';
++import * as path from 'path';
++import type { ServerWorkerOptions } from '../config/serverFixtures';
++
++process.env.PWTEST_UNDER_TEST = '1';
++process.env.PWPAGE_IMPL = 'tinybrowser';
++
++const outputDir = path.join(__dirname, '..', '..', 'test-results');
++const testDir = path.join(__dirname, '..', 'page');
++
++const config: Config<ServerWorkerOptions & PlaywrightWorkerOptions & PlaywrightTestOptions> = {
++  testDir,
++  outputDir,
++  expect: {
++    timeout: 1000,
++  },
++  timeout: 3000,
++  globalTimeout: 600000,
++  workers: 1,
++  retries: 0,
++  forbidOnly: !!process.env.CI,
++  reporter: [
++    ['line'],
++    ['json', { outputFile: process.env.PWTEST_JSON_OUTPUT || path.join(outputDir, 'tinybrowser-report.json') }],
++  ],
++  projects: [
++    {
++      name: 'tinybrowser-page',
++      use: {
++        browserName: 'chromium',
++        actionTimeout: 1500,
++        navigationTimeout: 2000,
++      },
++      testDir,
++      metadata: {
++        platform: 'tinybrowser',
++        headless: 'headless',
++        browserName: 'chromium',
++        mode: 'default',
++        video: false,
++      },
++    },
++  ],
++};
++
++export default config;
+diff --git a/tests/tinybrowser/tinybrowserTest.ts b/tests/tinybrowser/tinybrowserTest.ts
+new file mode 100644
+index 0000000..c419bf3
+--- /dev/null
++++ b/tests/tinybrowser/tinybrowserTest.ts
+@@ -0,0 +1,54 @@
++import { chromium } from 'playwright-core';
++import type { Browser, BrowserContext } from 'playwright-core';
++import { baseTest } from '../config/baseTest';
++import type { PageTestFixtures, PageWorkerFixtures } from '../page/pageTestApi';
++
++export { expect } from '@playwright/test';
++
++type TinybrowserWorkerFixtures = PageWorkerFixtures & {
++  tinybrowserBrowser: Browser;
++  tinybrowserContext: BrowserContext;
++};
++
++export const tinybrowserTest = baseTest.extend<PageTestFixtures, TinybrowserWorkerFixtures>({
++  tinybrowserBrowser: [async ({}, use) => {
++    const origin = process.env.TINYBROWSER_CDP_ORIGIN;
++    if (!origin)
++      throw new Error('TINYBROWSER_CDP_ORIGIN must point at a tinybrowser CDP endpoint');
++    const browser = await chromium.connectOverCDP(origin);
++    await use(browser);
++    await browser.close();
++  }, { scope: 'worker' }],
++
++  tinybrowserContext: [async ({ tinybrowserBrowser }, use) => {
++    await use(tinybrowserBrowser.contexts()[0]);
++  }, { scope: 'worker' }],
++
++  browserVersion: [async ({ tinybrowserBrowser }, use) => {
++    await use(tinybrowserBrowser.version());
++  }, { scope: 'worker' }],
++
++  browserMajorVersion: [async ({ browserVersion }, use) => {
++    await use(Number(browserVersion.split('.')[0]) || 0);
++  }, { scope: 'worker' }],
++
++  isBidi: [false, { scope: 'worker' }],
++  isAndroid: [false, { scope: 'worker' }],
++  isElectron: [false, { scope: 'worker' }],
++  electronMajorVersion: [0, { scope: 'worker' }],
++  isHeadlessShell: [false, { scope: 'worker' }],
++  isFrozenWebkit: [false, { scope: 'worker' }],
++
++  page: async ({ tinybrowserBrowser, tinybrowserContext, server }, use) => {
++    const page = await tinybrowserContext.newPage();
++    await use(page);
++    await page.close().catch(() => {});
++    await tinybrowserContext.clearCookies().catch(() => {});
++    const cdp = await tinybrowserBrowser.newBrowserCDPSession().catch(() => null);
++    for (const prefix of [server.PREFIX, server.CROSS_PROCESS_PREFIX]) {
++      const origin = new URL(prefix).origin;
++      await cdp?.send('Storage.clearDataForOrigin', { origin, storageTypes: 'local_storage' }).catch(() => {});
++    }
++    await cdp?.detach().catch(() => {});
++  },
++});

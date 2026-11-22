@@ -1074,6 +1074,8 @@ pub(crate) struct World {
     realm: u64,
     // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-addScriptToEvaluateOnNewDocument
     pub(crate) init_scripts: Rc<RefCell<Vec<(u64, String)>>>,
+    // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-addBinding
+    pub(crate) bindings: Rc<RefCell<Vec<String>>>,
     pub(crate) viewport_size: Cell<(u32, u32)>,
     pending_frames: Vec<(FrameId, NodeId)>,
     deferred_scripts: Vec<NodeId>,
@@ -1084,6 +1086,10 @@ pub(crate) struct World {
     pub(crate) worker_close_requested: Rc<Cell<bool>>,
     // https://w3c.github.io/webappsec-csp/#can-compile-strings
     pub(crate) compiling_handler: Cell<bool>,
+    // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-evaluate
+    pub(crate) browser_eval_depth: Cell<usize>,
+    // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-evaluate — replies live outside the realm: a document.open() step replaces it mid-evaluation.
+    pub(crate) evaluation_replies: RefCell<HashMap<String, String>>,
     // https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#timer-initialisation-steps
     pub(crate) timer_string: Cell<bool>,
     owned: HashSet<u32>,
@@ -1247,6 +1253,16 @@ pub(crate) enum RealmRequest {
     DeclarativeRefresh(String),
     HtmlWrite(HtmlWrite),
     DocumentStream(DocumentStreamCommand),
+    // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#event-bindingCalled
+    Binding {
+        name: String,
+        payload: String,
+    },
+    // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#event-consoleAPICalled
+    Console {
+        level: crate::protocol::ConsoleLevel,
+        args: String,
+    },
     // https://html.spec.whatwg.org/multipage/webappapis.html#notify-about-rejected-promises
     RejectionTasks,
 }
@@ -1458,6 +1474,7 @@ impl World {
         frame: FrameId,
         runtime: &FrameRuntime,
         init_scripts: Rc<RefCell<Vec<(u64, String)>>>,
+        bindings: Rc<RefCell<Vec<String>>>,
     ) -> Self {
         let secure_context = secure_context::is_secure_environment(&document_url, None);
         let realm = runtime.registry.borrow_mut().allocate_realm();
@@ -1476,6 +1493,9 @@ impl World {
             realm_context: None,
             worker_close_requested: Rc::new(Cell::new(false)),
             compiling_handler: Cell::new(false),
+            browser_eval_depth: Cell::new(0),
+            evaluation_replies: RefCell::new(HashMap::new()),
+            bindings,
             timer_string: Cell::new(false),
             owned: HashSet::new(),
             origin: document_url.origin(),
@@ -1542,6 +1562,7 @@ impl World {
             frame,
             runtime,
             Rc::new(RefCell::new(Vec::new())),
+            Rc::new(RefCell::new(Vec::new())),
         );
         world.kind = GlobalKind::DedicatedWorker {
             id,
@@ -1565,6 +1586,7 @@ impl World {
             document_url,
             frame,
             runtime,
+            Rc::new(RefCell::new(Vec::new())),
             Rc::new(RefCell::new(Vec::new())),
         );
         world.kind = GlobalKind::SharedWorker { id, name, module };
@@ -2710,6 +2732,8 @@ impl World {
                     | RealmRequest::AbortFetch(_)
                     | RealmRequest::HistoryPush { .. }
                     | RealmRequest::HistoryTraverse { .. }
+                    | RealmRequest::Binding { .. }
+                    | RealmRequest::Console { .. }
             )
         });
     }
@@ -2725,6 +2749,8 @@ impl World {
                     | RealmRequest::AbortFetch(_)
                     | RealmRequest::HistoryPush { .. }
                     | RealmRequest::HistoryTraverse { .. }
+                    | RealmRequest::Binding { .. }
+                    | RealmRequest::Console { .. }
             )
         });
     }

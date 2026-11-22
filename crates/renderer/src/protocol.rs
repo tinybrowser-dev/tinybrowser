@@ -211,7 +211,7 @@ impl TimerId {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum RendererEvent {
     Browser(BrowserEvent),
     Timer(TimerId),
@@ -230,7 +230,7 @@ impl RendererEvent {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum BrowserEvent {
     Load,
     // https://html.spec.whatwg.org/multipage/parsing.html#the-end
@@ -263,6 +263,73 @@ pub enum BrowserEvent {
     HistoryTraversal {
         delta: i32,
     },
+    // https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#document-open-steps — the renderer replaces the realm the spec keeps, so the replacement is announced.
+    RealmReplaced,
+    // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#event-bindingCalled — the payload is pre-serialized by the page.
+    Binding {
+        name: String,
+        payload: String,
+    },
+    // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#event-consoleAPICalled — args are pre-serialized RemoteObjects; the CDP layer parses them where the shape is owned.
+    Console {
+        level: ConsoleLevel,
+        args: String,
+    },
+}
+
+// https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#type-ConsoleApiType
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ConsoleLevel {
+    Log,
+    Debug,
+    Info,
+    Warning,
+    Error,
+    Trace,
+    Dir,
+    Table,
+    StartGroup,
+    StartGroupCollapsed,
+    EndGroup,
+}
+
+impl ConsoleLevel {
+    // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#type-ConsoleApiType
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Log => "log",
+            Self::Debug => "debug",
+            Self::Info => "info",
+            Self::Warning => "warning",
+            Self::Error => "error",
+            Self::Trace => "trace",
+            Self::Dir => "dir",
+            Self::Table => "table",
+            Self::StartGroup => "startGroup",
+            Self::StartGroupCollapsed => "startGroupCollapsed",
+            Self::EndGroup => "endGroup",
+        }
+    }
+
+    #[must_use]
+    pub fn parse_js(name: &str) -> Option<Self> {
+        match name {
+            "log" => Some(Self::Log),
+            "debug" => Some(Self::Debug),
+            "info" => Some(Self::Info),
+            "warning" => Some(Self::Warning),
+            "error" => Some(Self::Error),
+            "trace" => Some(Self::Trace),
+            "dir" => Some(Self::Dir),
+            "table" => Some(Self::Table),
+            "startGroup" => Some(Self::StartGroup),
+            "startGroupCollapsed" => Some(Self::StartGroupCollapsed),
+            "endGroup" => Some(Self::EndGroup),
+            _ => None,
+        }
+    }
 }
 
 // https://cookiestore.spec.whatwg.org/#cookie-list-item
@@ -583,6 +650,8 @@ pub struct ResponseHead {
     pub viewport: Option<(u32, u32)>,
     // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-addScriptToEvaluateOnNewDocument
     pub init_scripts: Vec<(u64, String)>,
+    // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-addBinding
+    pub bindings: Vec<String>,
     pub source: ResponseSource,
 }
 
@@ -711,6 +780,7 @@ impl ResponseHead {
             history: HistorySnapshot::default(),
             viewport: None,
             init_scripts: Vec::new(),
+            bindings: Vec::new(),
             source: ResponseSource::Http(HttpHead {
                 status,
                 policy: {
@@ -759,6 +829,7 @@ impl ResponseHead {
             history: HistorySnapshot::default(),
             viewport: None,
             init_scripts: Vec::new(),
+            bindings: Vec::new(),
             source: ResponseSource::Local { inherited },
         }
     }
@@ -812,11 +883,25 @@ pub enum DialKind {
     CspReport,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ScreenshotFormat {
+    #[default]
+    Png,
+    Jpeg {
+        quality: u8,
+    },
+    Webp,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ScreenshotRequest {
     pub viewport_width: u32,
     pub viewport_height: u32,
     pub clip: Option<ScreenshotClip>,
+    #[serde(default)]
+    pub format: ScreenshotFormat,
+    #[serde(default)]
+    pub omit_background: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -841,6 +926,7 @@ pub enum DomRequest {
     GetNodeForLocation { x: f64, y: f64 },
     GetBoxModel { node: u64 },
     GetContentQuads { node: u64 },
+    ScrollIntoViewIfNeeded { node: u64 },
     GetComputedStyle { node: u64 },
     GetStyleSheets,
     GetStorageKey,
@@ -929,6 +1015,7 @@ pub enum DomReply {
     NodeForLocation { node_id: u64 },
     BoxModel { model: Option<DomBoxModel> },
     ContentQuads { quads: Vec<[f64; 8]> },
+    Unit,
     ComputedStyle { properties: Vec<(String, String)> },
     StyleSheets { sheets: Vec<DomStyleSheet> },
     StorageKey { key: String },
@@ -1539,6 +1626,11 @@ pub trait BrowsingContextHost: Send + Sync + 'static {
         opener: OpenerPolicy,
         source: &NavigationSource,
     ) -> Option<WindowId>;
+
+    // https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate
+    fn navigate_top_level(&self, _url: &Url, _source: &NavigationSource) -> bool {
+        false
+    }
 
     // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-name
     fn set_window_name(&self, change: NameChange);

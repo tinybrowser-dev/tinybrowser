@@ -94,11 +94,27 @@ host.__tbPendingFrameCallbacks = function() {
   return pendingFrameCallbacks;
 };
 if (typeof globalThis.console === 'undefined') {
+  // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#event-consoleAPICalled
+  const call = (type) => (...parts) => {
+    const args = [];
+    for (let index = 0; index < parts.length; index++)
+      args[index] = host.remoteObject(parts[index]);
+    host.__tbConsoleCall(type, host.apply(host.stringify, null, [args]));
+  };
   const noop = function() {};
   globalThis.console = {
-    log: noop, info: noop, warn: noop, error: noop, debug: noop,
-    trace: noop, dir: noop, group: noop, groupEnd: noop, table: noop,
-    assert: noop, time: noop, timeEnd: noop, count: noop,
+    log: call('log'), info: call('info'), warn: call('warning'),
+    error: call('error'), debug: call('debug'), trace: call('trace'),
+    dir: call('dir'), table: call('table'),
+    group: call('startGroup'), groupCollapsed: call('startGroupCollapsed'),
+    groupEnd: call('endGroup'),
+    assert: (condition, ...parts) => {
+      if (condition) return;
+      host.__tbConsoleCall('error', host.apply(host.stringify, null, [
+        ['Assertion failed:', ...parts.map((part) => host.remoteObject(part))],
+      ]));
+    },
+    time: noop, timeEnd: noop, count: noop,
   };
 }
 // https://html.spec.whatwg.org/multipage/dom.html#dom-document-cookie

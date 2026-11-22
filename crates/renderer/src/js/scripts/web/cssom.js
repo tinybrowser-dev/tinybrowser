@@ -1272,6 +1272,52 @@ let __tbCssomRuleAt;
     enumerable: true,
     configurable: true,
   });
+  if (typeof globalThis.ShadowRoot === 'function') {
+    const __tbShadowAdoptedStyleNodes = new WeakMap();
+    const __tbShadowAdoptedStyleSheets = shadow => {
+      if (!(shadow instanceof globalThis.ShadowRoot)) {
+        throw new TypeError('Illegal invocation');
+      }
+      let list = __tbAdoptedSheetArrays.get(shadow);
+      if (list !== undefined) return list;
+      list = __tbObservableSheetArray(sheets => {
+        const css = sheets.map(sheet => {
+          const rules = sheet && sheet.cssRules ? sheet.cssRules : [];
+          let text = '';
+          for (let i = 0; i < rules.length; i++) text += `${rules[i].cssText}\n`;
+          return text;
+        }).join('\n');
+        let style = __tbShadowAdoptedStyleNodes.get(shadow);
+        if (!css) {
+          if (style && style.parentNode === shadow) shadow.removeChild(style);
+          return;
+        }
+        if (!style) {
+          style = (shadow.ownerDocument || document).createElement('style');
+          __tbShadowAdoptedStyleNodes.set(shadow, style);
+        }
+        style.textContent = css;
+        if (style.parentNode !== shadow) shadow.appendChild(style);
+      });
+      __tbAdoptedSheetArrays.set(shadow, list);
+      return list;
+    };
+    Object.defineProperty(globalThis.ShadowRoot.prototype, 'adoptedStyleSheets', {
+      get() { return __tbShadowAdoptedStyleSheets(this); },
+      set(value) {
+        // https://drafts.csswg.org/cssom/#dom-documentorshadowroot-adoptedstylesheets
+        const list = __tbShadowAdoptedStyleSheets(this);
+        const sheets = [];
+        if (value !== null && value !== undefined) {
+          for (const sheet of __tbArrayFrom(value)) sheets.push(__tbAdoptedSheet(sheet));
+        }
+        list.length = 0;
+        if (sheets.length !== 0) list.push(...sheets);
+      },
+      enumerable: true,
+      configurable: true,
+    });
+  }
   // https://webidl.spec.whatwg.org/#namespace-object
   const css = {
     // https://drafts.csswg.org/cssom/#dom-css-escape

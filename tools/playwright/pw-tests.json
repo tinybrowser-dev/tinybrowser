@@ -1,0 +1,15 @@
+[
+  "elementhandle-bounding-box.spec.ts",
+  "locator-evaluate.spec.ts",
+  "locator-query.spec.ts",
+  "page-add-init-script.spec.ts",
+  "page-basic.spec.ts",
+  "page-check.spec.ts",
+  "page-click.spec.ts",
+  "page-evaluate.spec.ts",
+  "page-fill.spec.ts",
+  "page-goto.spec.ts",
+  "page-history.spec.ts",
+  "page-screenshot.spec.ts",
+  "page-select-option.spec.ts"
+]

@@ -11,6 +11,43 @@ host.__tb_set_add = __tbSetAdd;
 host.__tb_handle_group = __tbObjectCreate(null);
 host.__tb_groups = __tbObjectCreate(null);
 
+const __tbRawStringify = host.stringify;
+const __tbSafeStringify = (value, depth = 0) => {
+  if (depth > 150) {
+    throw new Error('Cannot serialize result: object reference chain is too long.');
+  }
+  if (value === null) return 'null';
+  const kind = typeof value;
+  if (kind === 'boolean') return value ? 'true' : 'false';
+  if (kind === 'number') return __tbNumberIsFinite(value) ? __tbStringCtor(value) : 'null';
+  if (kind === 'string') return host.apply(__tbRawStringify, null, [value]);
+  if (kind !== 'object') return undefined;
+  if (__tbIsArray(value)) {
+    let out = '[';
+    for (let i = 0; i < value.length; i++) {
+      if (i > 0) out += ',';
+      const item = __tbSafeStringify(value[i], depth + 1);
+      out += item === undefined ? 'null' : item;
+    }
+    return out + ']';
+  }
+  const keys = __tbGetOwnPropertyNames(value);
+  let out = '{';
+  let first = true;
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    const desc = __tbGetOwnPropertyDescriptor(value, key);
+    if (!desc || !desc.enumerable) continue;
+    const encoded = __tbSafeStringify(value[key], depth + 1);
+    if (encoded === undefined) continue;
+    if (!first) out += ',';
+    first = false;
+    out += host.apply(__tbRawStringify, null, [key]) + ':' + encoded;
+  }
+  return out + '}';
+};
+host.stringify = value => __tbSafeStringify(value, 0);
+
 const __tbIsNode = value => typeof value === 'object' && value !== null &&
   typeof value.nodeType === 'number' && typeof value.nodeName === 'string';
 

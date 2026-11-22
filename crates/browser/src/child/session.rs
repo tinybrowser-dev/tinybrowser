@@ -222,6 +222,7 @@ fn handle_request(
                 Reply::DocumentState(Err(stream_error("unknown assignment")))
             }
             Command::AddInitScript { .. }
+            | Command::AddBinding { .. }
             | Command::RemoveInitScript { .. }
             | Command::SetViewport { .. }
             | Command::SetIdentity { .. }
@@ -581,6 +582,14 @@ fn handle_command(engine: &mut Engine, command: Command) -> Handled {
             run_immediately,
         } => {
             engine.add_init_script(id, &source, run_immediately);
+            Handled::Reply(Reply::Unit(Ok(())))
+        }
+        // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-addBinding
+        Command::AddBinding {
+            name,
+            run_immediately,
+        } => {
+            engine.add_binding(&name, run_immediately);
             Handled::Reply(Reply::Unit(Ok(())))
         }
         Command::RemoveInitScript { id } => {

@@ -22,7 +22,7 @@ mod observers;
 mod reactions;
 
 pub(crate) use bindings::selector_matching_elements;
-pub(crate) use bindings::{element_at_point, element_box, viewport_scroll};
+pub(crate) use bindings::{bounding_rect, element_at_point, element_client_rects};
 pub(crate) use bridge::js_number;
 pub use runtime::Stop;
 pub(crate) use runtime::{FrameRuntime, SharedRuntime};
@@ -42,7 +42,9 @@ use rquickjs::{
 };
 use url::Url;
 
-use crate::protocol::{DialRequest, FrameId, ReferrerRequest, RequestPolicy, TargetName, WindowId};
+use crate::protocol::{
+    ConsoleLevel, DialRequest, FrameId, ReferrerRequest, RequestPolicy, TargetName, WindowId,
+};
 
 pub(crate) use world::{CreatorInfo, NavigationReferrer, PolicyContainer, RealmRequest, World};
 
@@ -301,6 +303,10 @@ impl SharedJsRuntime {
                 if world.borrow().compiling_handler.get() {
                     return true;
                 }
+                // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-evaluate
+                if world.borrow().browser_eval_depth.get() > 0 {
+                    return true;
+                }
                 match csp_eval_violations(&ctx, &world, source) {
                     Ok(violations) if !crate::csp::blocks(&violations) => true,
                     Ok(violations) => {
@@ -328,6 +334,13 @@ pub(crate) struct JsRealm {
 }
 
 impl JsRealm {
+    // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-addBinding
+    pub(crate) fn add_binding(&self, name: &str) -> Result<(), JsError> {
+        let world = self.world.clone();
+        self.context
+            .with(|ctx| install_binding_global(&ctx, &world, name))
+    }
+
     pub(crate) fn new(
         shared: &JsRuntimeHandle,
         world: Rc<RefCell<World>>,
@@ -573,6 +586,22 @@ impl JsRealm {
                 let value: Value = match source {
                     crate::ScriptSource::Page(source) => eval_classic(&ctx, source)?,
                     crate::ScriptSource::Browser(source) => {
+                        struct BrowserEvalGuard<'a>(&'a Rc<RefCell<World>>);
+                        impl Drop for BrowserEvalGuard<'_> {
+                            fn drop(&mut self) {
+                                let world = self.0.borrow();
+                                world
+                                    .browser_eval_depth
+                                    .set(world.browser_eval_depth.get().saturating_sub(1));
+                            }
+                        }
+                        {
+                            let world = self.world.borrow();
+                            world
+                                .browser_eval_depth
+                                .set(world.browser_eval_depth.get().saturating_add(1));
+                        }
+                        let _guard = BrowserEvalGuard(&self.world);
                         let evaluate: Function = ctx.eval(format!(
                             "(function(host) {{ 'use strict'; return (\n{source}\n); }})"
                         ))?;
@@ -1529,6 +1558,75 @@ impl JsRealm {
             }),
         )?;
 
+        // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#event-consoleAPICalled
+        let console_outbox = Rc::clone(outbox);
+        bridge::object(ctx)?.set(
+            "__tbConsoleCall",
+            Func::from(
+                move |ctx: Ctx<'_>, level: String, args: String| -> rquickjs::Result<()> {
+                    let level = ConsoleLevel::parse_js(&level)
+                        .ok_or_else(|| Exception::throw_type(&ctx, "unknown console level"))?;
+                    console_outbox
+                        .borrow_mut()
+                        .push_back(RealmRequest::Console { level, args });
+                    Ok(())
+                },
+            ),
+        )?;
+
+        Ok(())
+    }
+
+    // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-addBinding
+    fn install_binding_globals(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<(), JsError> {
+        let names: Vec<String> = world.borrow().bindings.borrow().clone();
+        for name in names {
+            install_binding_global(ctx, world, &name)?;
+        }
+        Ok(())
+    }
+
+    // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-evaluate
+    fn install_evaluation_host_functions(
+        ctx: &Ctx<'_>,
+        world: &Rc<RefCell<World>>,
+    ) -> Result<(), JsError> {
+        let complete_world = Rc::clone(world);
+        bridge::object(ctx)?.set(
+            "__tbCompleteEvaluation",
+            Func::from(move |id: String, text: String| {
+                complete_world
+                    .borrow_mut()
+                    .evaluation_replies
+                    .borrow_mut()
+                    .insert(id, text);
+            }),
+        )?;
+
+        let has_world = Rc::clone(world);
+        bridge::object(ctx)?.set(
+            "__tbHasEvaluation",
+            Func::from(move |id: String| {
+                has_world
+                    .borrow()
+                    .evaluation_replies
+                    .borrow()
+                    .contains_key(&id)
+            }),
+        )?;
+
+        let take_world = Rc::clone(world);
+        bridge::object(ctx)?.set(
+            "__tbTakeEvaluation",
+            Func::from(move |id: String| -> Option<String> {
+                take_world
+                    .borrow_mut()
+                    .evaluation_replies
+                    .borrow_mut()
+                    .remove(&id)
+            }),
+        )?;
+
         Ok(())
     }
 
@@ -1539,6 +1637,8 @@ impl JsRealm {
     ) -> Result<(), JsError> {
         let outbox = Rc::clone(&self.world.borrow().outbox);
         Self::install_timer_host_functions(ctx, &outbox)?;
+        Self::install_evaluation_host_functions(ctx, world)?;
+        Self::install_binding_globals(ctx, world)?;
         install_header_policy_host_functions(ctx)?;
         install_mime_host_functions(ctx)?;
         install_sync_fetch(ctx, world)?;
@@ -2726,12 +2826,32 @@ fn eval_classic<'js, V: FromJs<'js>>(ctx: &rquickjs::Ctx<'js>, source: &str) -> 
 }
 
 fn exception_text(caught: Value<'_>) -> Option<String> {
-    let exception = caught.into_exception()?;
-    Some(format!(
-        "{} | {}",
-        exception.message().unwrap_or_default(),
-        exception.stack().unwrap_or_default()
-    ))
+    if let Some(exception) = caught.as_exception() {
+        return Some(format!(
+            "{} | {}",
+            exception.message().unwrap_or_default(),
+            exception.stack().unwrap_or_default()
+        ));
+    }
+    if caught.is_null() {
+        return Some("null".to_owned());
+    }
+    if caught.is_undefined() {
+        return Some("undefined".to_owned());
+    }
+    if let Some(text) = caught.as_string().and_then(|text| text.to_string().ok()) {
+        return Some(text);
+    }
+    if let Some(number) = caught.as_number() {
+        return Some(number.to_string());
+    }
+    if let Some(flag) = caught.as_bool() {
+        return Some(flag.to_string());
+    }
+    let ctx = caught.ctx().clone();
+    rquickjs::Coerced::<String>::from_js(&ctx, caught)
+        .ok()
+        .map(|coerced| coerced.0)
 }
 
 fn caught_error(ctx: &rquickjs::Ctx<'_>, error: rquickjs::Error) -> JsError {
@@ -2783,6 +2903,27 @@ fn is_script_parse_error(caught: &Value<'_>) -> bool {
         .filter(|line| !line.trim().is_empty())
         .collect();
     frames.len() == 1 && !frames[0].contains('(')
+}
+
+// https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#event-bindingCalled
+fn install_binding_global(
+    ctx: &Ctx<'_>,
+    world: &Rc<RefCell<World>>,
+    name: &str,
+) -> Result<(), JsError> {
+    let outbox = Rc::clone(&world.borrow().outbox);
+    let binding_name = name.to_owned();
+    let global_name = binding_name.clone();
+    ctx.globals().set(
+        global_name.as_str(),
+        Func::from(move |payload: String| {
+            outbox.borrow_mut().push_back(RealmRequest::Binding {
+                name: binding_name.clone(),
+                payload,
+            });
+        }),
+    )?;
+    Ok(())
 }
 
 fn decode_value<'js>(ctx: &rquickjs::Ctx<'js>, value: Value<'js>) -> Result<ScriptValue, JsError> {

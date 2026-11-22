@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use browser::{
-    BrowserHandle, ExecuteScriptOptions, FrameId, RemoteValue, RunUntilJsTrueOptions, TabEvent,
-    TabHandle, TabId,
+    BrowserHandle, ConsoleLevel, ExecuteScriptOptions, FrameId, RemoteValue, RunUntilJsTrueOptions,
+    TabEvent, TabHandle, TabId,
 };
 use bytes::Bytes;
 use futures_util::{SinkExt as _, StreamExt as _};
@@ -29,10 +29,11 @@ mod dispatch;
 mod params;
 use dispatch::{
     BrowserHandler, DispatchError, Handler, PageHandler, RUNTIME_CLEAR_HANDLES, RUNTIME_HANDLE,
-    RUNTIME_HANDLE_READ, RUNTIME_READ, RUNTIME_SCHEDULE, Target, accept, arguments_expression,
+    RUNTIME_READ, RUNTIME_SCHEDULE, Target, accept, add_binding, arguments_expression,
     attach_session, capture_screenshot, css_stylesheets, exception_reply, exception_text_reply,
-    json_io, json_string, open_url, requested_frame, route, run_script, runtime_release_object,
-    runtime_release_object_group, target_id, target_info, wait_for_navigation, ws_io,
+    json_io, json_string, open_url, open_url_with_referrer, requested_frame, route, run_script,
+    runtime_release_object, runtime_release_object_group, target_id, target_info,
+    wait_for_navigation, ws_io,
 };
 
 const DEFAULT_BROWSER_CONTEXT_ID: &str = "tinybrowser-default";
@@ -425,15 +426,21 @@ struct Conn {
     subscriptions: Vec<TabSubscription>,
     tab_events_tx: mpsc::Sender<ConnEvent>,
     tab_events_rx: mpsc::Receiver<ConnEvent>,
+    deferred_tx: Option<mpsc::UnboundedSender<Value>>,
     clock_origin: Instant,
     auto_attach: bool,
     events: Vec<Value>,
     loader_ids: HashMap<TabId, String>,
     // https://chromedevtools.github.io/devtools-protocol/tot/Page/#event-lifecycleEvent
     current_loaders: HashMap<TabId, String>,
+    // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#event-consoleAPICalled
+    default_contexts: HashMap<TabId, u64>,
     // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-setLifecycleEventsEnabled
     lifecycle_events: bool,
     isolated_worlds: HashMap<TabId, Vec<String>>,
+    omit_background: HashMap<TabId, bool>,
+    response_bodies: HashMap<String, Vec<u8>>,
+    response_body_order: VecDeque<String>,
     next_loader: u64,
     next_context: u64,
     next_evaluation: u64,
@@ -454,6 +461,12 @@ struct ConnEvent {
 struct Outcome {
     reply: Value,
     close: bool,
+    deferred: bool,
+}
+
+enum DispatchResult {
+    Immediate(Value),
+    Deferred,
 }
 
 enum RuntimeEntry {
@@ -514,78 +527,263 @@ impl Conn {
         let timestamp = self.clock_origin.elapsed().as_secs_f64();
         let tab = incoming.tab;
         let session = incoming.session;
+        let tab_id = tab.id();
+        let sess = session.as_deref();
         match incoming.event {
             TabEvent::Navigated => {
-                self.push_navigated(&mut messages, &tab, session.as_deref())
-                    .await;
-                if self.lifecycle_events {
-                    let mut lifecycle = json!({
-                        "method": "Page.lifecycleEvent",
-                        "params": {
-                            "frameId": tab.id().to_string(),
-                            "loaderId": self.current_loader(tab.id()),
-                            "name": "init",
-                            "timestamp": timestamp,
-                        },
-                    });
-                    attach_session(&mut lifecycle, session.as_deref());
-                    messages.push(lifecycle);
-                }
+                self.push_navigated(&mut messages, &tab, sess).await;
+                self.push_lifecycle_event(&mut messages, tab_id, "init", timestamp, sess);
             }
             TabEvent::SameDocumentNavigation => {
                 let url = tab.document_url().await.unwrap_or_default();
-                let mut navigated = json!({
-                    "method": "Page.navigatedWithinDocument",
-                    "params": {"frameId": tab.id().to_string(), "url": url},
-                });
-                attach_session(&mut navigated, session.as_deref());
-                messages.push(navigated);
+                push_event(
+                    &mut messages,
+                    "Page.navigatedWithinDocument",
+                    &json!({"frameId": tab_id.to_string(), "url": url}),
+                    sess,
+                );
             }
             TabEvent::Load => {
-                if self.lifecycle_events {
-                    let mut lifecycle = json!({
-                        "method": "Page.lifecycleEvent",
-                        "params": {
-                            "frameId": tab.id().to_string(),
-                            "loaderId": self.current_loader(tab.id()),
-                            "name": "load",
-                            "timestamp": timestamp,
-                        },
-                    });
-                    attach_session(&mut lifecycle, session.as_deref());
-                    messages.push(lifecycle);
-                }
-                let mut load = json!({
-                    "method": "Page.loadEventFired",
-                    "params": {"timestamp": timestamp},
-                });
-                attach_session(&mut load, session.as_deref());
-                messages.push(load);
+                self.push_lifecycle_event(&mut messages, tab_id, "load", timestamp, sess);
+                push_event(
+                    &mut messages,
+                    "Page.loadEventFired",
+                    &json!({"timestamp": timestamp}),
+                    sess,
+                );
             }
             TabEvent::DomContentLoaded => {
-                if self.lifecycle_events {
-                    let mut lifecycle = json!({
-                        "method": "Page.lifecycleEvent",
-                        "params": {
-                            "frameId": tab.id().to_string(),
-                            "loaderId": self.current_loader(tab.id()),
-                            "name": "DOMContentLoaded",
-                            "timestamp": timestamp,
-                        },
-                    });
-                    attach_session(&mut lifecycle, session.as_deref());
-                    messages.push(lifecycle);
-                }
-                let mut fired = json!({
-                    "method": "Page.domContentEventFired",
-                    "params": {"timestamp": timestamp},
-                });
-                attach_session(&mut fired, session.as_deref());
-                messages.push(fired);
+                self.push_lifecycle_event(
+                    &mut messages,
+                    tab_id,
+                    "DOMContentLoaded",
+                    timestamp,
+                    sess,
+                );
+                push_event(
+                    &mut messages,
+                    "Page.domContentEventFired",
+                    &json!({"timestamp": timestamp}),
+                    sess,
+                );
             }
-            TabEvent::NavigationFailed => {}
+            TabEvent::NavigationFailed(_) => {}
+            TabEvent::NavigationRequested { url } => {
+                self.push_navigation_requested(&mut messages, tab_id, &url, timestamp, sess);
+            }
+            TabEvent::NavigationResponded {
+                status,
+                status_text,
+                url,
+                headers,
+                body,
+            } => {
+                let response = NavigationResponse {
+                    status,
+                    status_text,
+                    url,
+                    headers,
+                    body,
+                };
+                self.push_navigation_responded(&mut messages, tab_id, response, timestamp, sess);
+            }
+            TabEvent::RealmReplaced => {
+                // https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#document-open-steps
+                let frame_id = tab_id.to_string();
+                self.push_execution_contexts(&mut messages, tab_id, &frame_id, sess);
+            }
+            TabEvent::Binding { name, payload } => {
+                // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#event-bindingCalled
+                let context = self
+                    .default_contexts
+                    .get(&tab_id)
+                    .copied()
+                    .unwrap_or_default();
+                push_event(
+                    &mut messages,
+                    "Runtime.bindingCalled",
+                    &json!({"name": name, "payload": payload, "executionContextId": context}),
+                    sess,
+                );
+            }
+            TabEvent::Console { level, args } => {
+                // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#event-consoleAPICalled
+                self.push_console_called(&mut messages, tab_id, level, &args, timestamp, sess);
+            }
         }
         messages
+    }
+
+    // https://chromedevtools.github.io/devtools-protocol/tot/Page/#event-lifecycleEvent
+    fn push_lifecycle_event(
+        &self,
+        messages: &mut Vec<Value>,
+        tab: TabId,
+        name: &str,
+        timestamp: f64,
+        session: Option<&str>,
+    ) {
+        if !self.lifecycle_events {
+            return;
+        }
+        let mut lifecycle = json!({
+            "method": "Page.lifecycleEvent",
+            "params": {
+                "frameId": tab.to_string(),
+                "loaderId": self.current_loader(tab),
+                "name": name,
+                "timestamp": timestamp,
+            },
+        });
+        attach_session(&mut lifecycle, session);
+        messages.push(lifecycle);
+    }
+
+    // https://chromedevtools.github.io/devtools-protocol/tot/Network/#event-requestWillBeSent
+    fn push_navigation_requested(
+        &mut self,
+        messages: &mut Vec<Value>,
+        tab: TabId,
+        url: &str,
+        timestamp: f64,
+        session: Option<&str>,
+    ) {
+        let loader_id = if let Some(id) = self.loader_ids.get(&tab) {
+            id.clone()
+        } else {
+            let id = self.next_loader_id();
+            self.loader_ids.insert(tab, id.clone());
+            id
+        };
+        let mut sent = json!({
+            "method": "Network.requestWillBeSent",
+            "params": {
+                "requestId": loader_id,
+                "loaderId": loader_id,
+                "documentURL": url,
+                "request": {
+                    "url": url,
+                    "method": "GET",
+                    "headers": {},
+                },
+                "timestamp": timestamp,
+                "type": "Document",
+                "frameId": tab.to_string(),
+                "initiator": {"type": "other"},
+            },
+        });
+        attach_session(&mut sent, session);
+        messages.push(sent);
+    }
+
+    // https://chromedevtools.github.io/devtools-protocol/tot/Network/#event-responseReceived
+    fn push_navigation_responded(
+        &mut self,
+        messages: &mut Vec<Value>,
+        tab: TabId,
+        response: NavigationResponse,
+        timestamp: f64,
+        session: Option<&str>,
+    ) {
+        let Some(request_id) = self.loader_ids.get(&tab).cloned() else {
+            return;
+        };
+        if response.body.len() <= 4 * 1024 * 1024 {
+            while self.response_body_order.len() >= 32 {
+                if let Some(oldest) = self.response_body_order.pop_front() {
+                    self.response_bodies.remove(&oldest);
+                }
+            }
+            if !self.response_bodies.contains_key(&request_id) {
+                self.response_body_order.push_back(request_id.clone());
+            }
+            self.response_bodies
+                .insert(request_id.clone(), response.body);
+        }
+        let mut header_map = serde_json::Map::new();
+        for (name, value) in response.headers {
+            header_map.insert(name, Value::String(value));
+        }
+        let headers = Value::Object(header_map);
+        let mut received = json!({
+            "method": "Network.responseReceived",
+            "params": {
+                "requestId": request_id,
+                "timestamp": timestamp,
+                "type": "Document",
+                "response": {
+                    "url": response.url,
+                    "status": response.status,
+                    "statusText": response.status_text,
+                    "headers": headers,
+                    "mimeType": "",
+                    "connectionReused": false,
+                    "connectionId": 0,
+                    "fromDiskCache": false,
+                    "fromPrefetchCache": false,
+                    "encodedDataLength": 0,
+                    "timing": {
+                        "requestTime": timestamp,
+                        "proxyStart": -1,
+                        "proxyEnd": -1,
+                        "dnsStart": -1,
+                        "dnsEnd": -1,
+                        "connectStart": -1,
+                        "connectEnd": -1,
+                        "sslStart": -1,
+                        "sslEnd": -1,
+                        "workerStart": -1,
+                        "workerReady": -1,
+                        "workerFetchStart": -1,
+                        "workerRespondWithSetCacheKey": -1,
+                        "sendStart": 0,
+                        "sendEnd": 0,
+                        "pushStart": 0,
+                        "pushEnd": 0,
+                        "receiveHeadersEnd": 0,
+                    },
+                },
+            },
+        });
+        attach_session(&mut received, session);
+        messages.push(received);
+        let mut finished = json!({
+            "method": "Network.loadingFinished",
+            "params": {
+                "requestId": request_id,
+                "timestamp": timestamp,
+                "encodedDataLength": 0,
+            },
+        });
+        attach_session(&mut finished, session);
+        messages.push(finished);
+    }
+
+    // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#event-consoleAPICalled
+    fn push_console_called(
+        &self,
+        messages: &mut Vec<Value>,
+        tab: TabId,
+        level: ConsoleLevel,
+        args: &str,
+        timestamp: f64,
+        session: Option<&str>,
+    ) {
+        let Ok(args) = serde_json::from_str::<Value>(args) else {
+            return;
+        };
+        let context = self.default_contexts.get(&tab).copied().unwrap_or_default();
+        let mut called = json!({
+            "method": "Runtime.consoleAPICalled",
+            "params": {
+                "type": level.as_str(),
+                "args": args,
+                "executionContextId": context,
+                "timestamp": timestamp,
+            },
+        });
+        attach_session(&mut called, session);
+        messages.push(called);
     }
 
     // https://chromedevtools.github.io/devtools-protocol/tot/Page/#event-lifecycleEvent
@@ -626,13 +824,24 @@ impl Conn {
         });
         attach_session(&mut navigated, session);
         messages.push(navigated);
+        self.push_execution_contexts(messages, tab_id, &frame_id, session);
+        let _ = tab.execute_browser_script(RUNTIME_CLEAR_HANDLES).await;
+    }
+
+    // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#event-executionContextCreated
+    fn push_execution_contexts(
+        &mut self,
+        messages: &mut Vec<Value>,
+        tab_id: TabId,
+        frame_id: &str,
+        session: Option<&str>,
+    ) {
         let mut cleared = json!({
             "method": "Runtime.executionContextsCleared",
             "params": {},
         });
         attach_session(&mut cleared, session);
         messages.push(cleared);
-        let _ = tab.execute_browser_script(RUNTIME_CLEAR_HANDLES).await;
         let mut worlds = vec![String::new()];
         if let Some(isolated) = self.isolated_worlds.get(&tab_id) {
             worlds.extend(isolated.iter().cloned());
@@ -641,6 +850,9 @@ impl Conn {
             let context_id = self.next_context;
             self.next_context = self.next_context.saturating_add(1);
             let default = world.is_empty();
+            if default {
+                self.default_contexts.insert(tab_id, context_id);
+            }
             let mut created = json!({
                 "method": "Runtime.executionContextCreated",
                 "params": {"context": {
@@ -731,6 +943,7 @@ impl Conn {
                         "error": {"code": -32700, "message": err.to_string()},
                     }),
                     close: false,
+                    deferred: false,
                 };
             }
         };
@@ -742,6 +955,7 @@ impl Conn {
                     "error": {"code": -32600, "message": "missing method"},
                 }),
                 close: false,
+                deferred: false,
             };
         };
         let empty = json!({});
@@ -750,15 +964,21 @@ impl Conn {
             .filter(|value| !value.is_null())
             .unwrap_or(&empty);
         let session = parsed.get("sessionId").and_then(Value::as_str);
-        match self.dispatch(method, params, session).await {
-            Ok(result) => {
+        match self.dispatch(method, params, &id, session).await {
+            Ok(DispatchResult::Immediate(result)) => {
                 let mut reply = json!({"id": id, "result": result});
                 attach_session(&mut reply, session);
                 Outcome {
                     reply,
                     close: method == "Browser.close",
+                    deferred: false,
                 }
             }
+            Ok(DispatchResult::Deferred) => Outcome {
+                reply: Value::Null,
+                close: false,
+                deferred: true,
+            },
             Err(error) => {
                 let mut reply = json!({
                     "id": id,
@@ -771,6 +991,7 @@ impl Conn {
                 Outcome {
                     reply,
                     close: false,
+                    deferred: false,
                 }
             }
         }
@@ -780,8 +1001,9 @@ impl Conn {
         &mut self,
         method: &str,
         params: &Value,
+        request_id: &Value,
         session: Option<&str>,
-    ) -> Result<Value, DispatchError> {
+    ) -> Result<DispatchResult, DispatchError> {
         if method != "Browser.close" && self.browser.is_closed() {
             return Err(DispatchError::Failed("browser closed".into()));
         }
@@ -797,7 +1019,7 @@ impl Conn {
             },
         };
         let handler = route(method, &target).ok_or(DispatchError::MethodNotFound)?;
-        self.dispatch_handler(handler, params, &target, session)
+        self.dispatch_handler(handler, params, &target, request_id, session)
             .await
     }
 
@@ -806,23 +1028,24 @@ impl Conn {
         handler: Handler,
         params: &Value,
         target: &Target,
+        request_id: &Value,
         session: Option<&str>,
-    ) -> Result<Value, DispatchError> {
+    ) -> Result<DispatchResult, DispatchError> {
         match handler {
-            Handler::Accept(reason) => accept(reason, params),
+            Handler::Accept(reason) => accept(reason, params).map(DispatchResult::Immediate),
             Handler::ClearBrowserCookies => {
                 self.browser
                     .clear_cookies()
                     .await
                     .map_err(|error| DispatchError::Failed(error.to_string()))?;
-                Ok(json!({}))
+                Ok(DispatchResult::Immediate(json!({})))
             }
             Handler::ClearBrowserCache => {
                 self.browser
                     .clear_cache()
                     .await
                     .map_err(|error| DispatchError::Failed(error.to_string()))?;
-                Ok(json!({}))
+                Ok(DispatchResult::Immediate(json!({})))
             }
             Handler::SetCacheDisabled => {
                 let params: params::SetCacheDisabled = params::parse(params)?;
@@ -830,7 +1053,7 @@ impl Conn {
                     .set_cache_disabled(params.cache_disabled)
                     .await
                     .map_err(|error| DispatchError::Failed(error.to_string()))?;
-                Ok(json!({}))
+                Ok(DispatchResult::Immediate(json!({})))
             }
             Handler::GetTargetInfo => match target {
                 Target::Page(tab) => {
@@ -838,15 +1061,24 @@ impl Conn {
                     if let Some(object) = info.as_object_mut() {
                         object.insert("attached".into(), json!(true));
                     }
-                    Ok(json!({"targetInfo": info}))
+                    Ok(DispatchResult::Immediate(json!({"targetInfo": info})))
                 }
-                Target::Browser => self.target_info_for(params).await,
+                Target::Browser => self
+                    .target_info_for(params)
+                    .await
+                    .map(DispatchResult::Immediate),
             },
             Handler::Page(handler) => match target {
-                Target::Page(tab) => self.dispatch_page(handler, params, tab, session).await,
+                Target::Page(tab) => {
+                    self.dispatch_page(handler, params, tab, request_id, session)
+                        .await
+                }
                 Target::Browser => Err(DispatchError::MethodNotFound),
             },
-            Handler::Browser(handler) => self.dispatch_browser(handler, params, session).await,
+            Handler::Browser(handler) => self
+                .dispatch_browser(handler, params, session)
+                .await
+                .map(DispatchResult::Immediate),
         }
     }
 
@@ -855,9 +1087,39 @@ impl Conn {
         handler: PageHandler,
         params: &Value,
         tab: &TabHandle,
+        request_id: &Value,
+        session: Option<&str>,
+    ) -> Result<DispatchResult, DispatchError> {
+        match handler {
+            PageHandler::RuntimeEvaluate => {
+                let (source, options) = RuntimeEntry::Evaluate.decode(params)?;
+                self.dispatch_runtime(source, options, tab, request_id, session)
+                    .await
+            }
+            PageHandler::RuntimeCallFunctionOn => {
+                let (source, options) = RuntimeEntry::CallFunctionOn.decode(params)?;
+                self.dispatch_runtime(source, options, tab, request_id, session)
+                    .await
+            }
+            PageHandler::Navigate => self.navigate_tab(params, tab, request_id, session).await,
+            other => self
+                .dispatch_page_sync(other, params, tab, session)
+                .await
+                .map(DispatchResult::Immediate),
+        }
+    }
+
+    async fn dispatch_page_sync(
+        &mut self,
+        handler: PageHandler,
+        params: &Value,
+        tab: &TabHandle,
         session: Option<&str>,
     ) -> Result<Value, DispatchError> {
         match handler {
+            PageHandler::RuntimeEvaluate
+            | PageHandler::RuntimeCallFunctionOn
+            | PageHandler::Navigate => Err(DispatchError::MethodNotFound),
             PageHandler::Enable => {
                 self.subscribe_tab(tab, session)?;
                 Ok(json!({}))
@@ -866,26 +1128,36 @@ impl Conn {
                 self.unsubscribe_tab(tab.id(), session);
                 Ok(json!({}))
             }
-            PageHandler::Navigate => self.navigate_tab(params, tab).await,
             PageHandler::NavigateToHistoryEntry => {
                 self.navigate_to_history_entry(params, tab).await
             }
-            PageHandler::CaptureScreenshot => capture_screenshot(tab, params).await,
+            PageHandler::CaptureScreenshot => {
+                let omit = self
+                    .omit_background
+                    .get(&tab.id())
+                    .copied()
+                    .unwrap_or(false);
+                capture_screenshot(tab, params, omit).await
+            }
+            PageHandler::SetDefaultBackgroundColorOverride => {
+                self.set_default_background_color_override(params, tab)
+            }
+            PageHandler::NetworkGetResponseBody => self.get_response_body(params),
+            PageHandler::NetworkSetExtraHttpHeaders => {
+                let params: params::SetExtraHttpHeaders = params::parse(params)?;
+                if !params.headers.values().all(Value::is_string) {
+                    return Err(DispatchError::InvalidParams("headers".to_owned()));
+                }
+                Ok(json!({}))
+            }
             PageHandler::CreateIsolatedWorld => self.create_isolated_world(params, tab, session),
             PageHandler::SetLifecycleEventsEnabled => {
                 let params: params::SetLifecycleEventsEnabled = params::parse(params)?;
                 self.lifecycle_events = params.enabled;
                 Ok(json!({}))
             }
-            PageHandler::RuntimeEvaluate => {
-                let (source, options) = RuntimeEntry::Evaluate.decode(params)?;
-                self.dispatch_runtime(source, options, tab).await
-            }
-            PageHandler::RuntimeCallFunctionOn => {
-                let (source, options) = RuntimeEntry::CallFunctionOn.decode(params)?;
-                self.dispatch_runtime(source, options, tab).await
-            }
             PageHandler::RuntimeEnable => {
+                self.default_contexts.insert(tab.id(), tab.id().get());
                 self.push_session_event(
                     session,
                     "Runtime.executionContextCreated",
@@ -904,6 +1176,7 @@ impl Conn {
                 Ok(json!({}))
             }
             PageHandler::RuntimeDisable | PageHandler::CssDisable => Ok(json!({})),
+            PageHandler::RuntimeAddBinding => add_binding(params, tab).await,
             PageHandler::RuntimeReleaseObject => runtime_release_object(tab, params).await,
             PageHandler::RuntimeReleaseObjectGroup => {
                 runtime_release_object_group(tab, params).await
@@ -1057,7 +1330,14 @@ impl Conn {
             .create_tab()
             .await
             .map_err(|err| DispatchError::Failed(err.to_string()))?;
-        if let Err(error) = open_url(&tab, url).await {
+        let open_result = if url.is_empty() || url == "about:blank" {
+            tab.load_html("<!doctype html><title></title>")
+                .await
+                .map_err(|err| DispatchError::Failed(err.to_string()))
+        } else {
+            open_url(&tab, url).await
+        };
+        if let Err(error) = open_result {
             let _result = self.browser.close_tab(tab.id()).await;
             return Err(error);
         }
@@ -1108,6 +1388,7 @@ impl Conn {
         self.loader_ids.remove(&id);
         self.current_loaders.remove(&id);
         self.isolated_worlds.remove(&id);
+        self.omit_background.remove(&id);
         if self.tab.as_ref().is_some_and(|tab| tab.id() == id) {
             self.tab = None;
         }
@@ -1131,29 +1412,84 @@ impl Conn {
         &mut self,
         params: &Value,
         tab: &TabHandle,
-    ) -> Result<Value, DispatchError> {
+        request_id: &Value,
+        session: Option<&str>,
+    ) -> Result<DispatchResult, DispatchError> {
         let params: params::Navigate = params::parse(params)?;
-        let url = params.url.as_str();
+        let url = if params.url.is_empty() {
+            "about:blank"
+        } else {
+            params.url.as_str()
+        };
         let frame_id = tab.id().to_string();
         let loader_id = self.next_loader_id();
-        if url.is_empty() || url == "about:blank" {
-            open_url(tab, url).await?;
-            return Ok(json!({"frameId": frame_id, "loaderId": loader_id}));
-        }
         // https://chromedevtools.github.io/devtools-protocol/tot/Page/#event-frameNavigated
         self.loader_ids.insert(tab.id(), loader_id.clone());
         let events = tab
             .subscribe()
             .map_err(|error| DispatchError::Failed(error.to_string()))?;
-        open_url(tab, url).await?;
+        open_url_with_referrer(tab, url, params.referrer.as_deref()).await?;
+        if let Some(tx) = self.deferred_tx.clone() {
+            let req_id = request_id.clone();
+            let session = session.map(str::to_owned);
+            tokio::spawn(async move {
+                let result = match wait_for_navigation(events, Duration::from_secs(30)).await {
+                    Ok(()) => json!({"frameId": frame_id, "loaderId": loader_id}),
+                    Err(error_text) => json!({
+                        "frameId": frame_id,
+                        "loaderId": loader_id,
+                        "errorText": error_text,
+                    }),
+                };
+                let mut reply = json!({"id": req_id, "result": result});
+                attach_session(&mut reply, session.as_deref());
+                let _ = tx.send(reply);
+            });
+            return Ok(DispatchResult::Deferred);
+        }
         match wait_for_navigation(events, Duration::from_secs(30)).await {
-            Ok(()) => Ok(json!({"frameId": frame_id, "loaderId": loader_id})),
-            Err(error_text) => Ok(json!({
+            Ok(()) => Ok(DispatchResult::Immediate(json!({
+                "frameId": frame_id,
+                "loaderId": loader_id,
+            }))),
+            Err(error_text) => Ok(DispatchResult::Immediate(json!({
                 "frameId": frame_id,
                 "loaderId": loader_id,
                 "errorText": error_text,
-            })),
+            }))),
         }
+    }
+
+    fn set_default_background_color_override(
+        &mut self,
+        params: &Value,
+        tab: &TabHandle,
+    ) -> Result<Value, DispatchError> {
+        let params: params::DefaultBackgroundColorOverride = params::parse(params)?;
+        let omit = params
+            .color
+            .and_then(|color| color.a)
+            .is_some_and(|alpha| alpha == 0.0);
+        if omit {
+            self.omit_background.insert(tab.id(), true);
+        } else {
+            self.omit_background.remove(&tab.id());
+        }
+        Ok(json!({}))
+    }
+
+    fn get_response_body(&self, params: &Value) -> Result<Value, DispatchError> {
+        use base64::Engine as _;
+        let params: params::GetResponseBody = params::parse(params)?;
+        let Some(bytes) = self.response_bodies.get(&params.request_id) else {
+            return Err(DispatchError::Failed(
+                "No resource with given identifier found".into(),
+            ));
+        };
+        Ok(json!({
+            "body": base64::engine::general_purpose::STANDARD.encode(bytes),
+            "base64Encoded": true,
+        }))
     }
 
     fn push_session_event(&mut self, session: Option<&str>, method: &str, params: &Value) {
@@ -1167,7 +1503,9 @@ impl Conn {
         source: RuntimeSource,
         options: params::RuntimeOptions,
         tab: &TabHandle,
-    ) -> Result<Value, DispatchError> {
+        request_id: &Value,
+        session: Option<&str>,
+    ) -> Result<DispatchResult, DispatchError> {
         let frame = requested_frame(tab, options.frame_id.as_deref())?;
         let return_by_value = options.return_by_value.unwrap_or(false);
         let await_promise = options.await_promise.unwrap_or(false);
@@ -1196,48 +1534,65 @@ impl Conn {
                 )
             }
         };
-        if return_by_value {
-            let id = self.next_evaluation;
+        if return_by_value || await_promise {
+            let evaluation = self.next_evaluation;
             self.next_evaluation = self.next_evaluation.saturating_add(1);
-            Ok(Self::runtime_value(tab, frame, &source, await_timeout, id).await)
-        } else if await_promise {
-            Ok(self
-                .runtime_handle_awaited(tab, frame, &source, await_timeout, object_group)
-                .await)
-        } else {
-            Ok(self.runtime_handle(tab, frame, &source, object_group).await)
+            let eval_id = json_string(&evaluation.to_string());
+            let make = if return_by_value {
+                "host.remoteObject(v, { __proto__: null, returnByValue: true })".to_owned()
+            } else {
+                format!(
+                    "{{ __proto__: null, value: host.remoteObject(v, {{ __proto__: null, objectGroup: {} }}) }}",
+                    json_string(object_group)
+                )
+            };
+            if let Err(reply) =
+                Self::schedule_runtime_slot(tab, frame, &source, &make, &eval_id).await
+            {
+                return Ok(DispatchResult::Immediate(reply));
+            }
+            match Self::try_read_runtime_slot(tab, frame, &eval_id).await {
+                Ok(Some(parsed)) => {
+                    return Ok(DispatchResult::Immediate(format_runtime_result(
+                        &parsed,
+                        return_by_value,
+                    )));
+                }
+                Err(reply) => return Ok(DispatchResult::Immediate(reply)),
+                Ok(None) => {}
+            }
+            if let Some(tx) = self.deferred_tx.clone() {
+                let tab = tab.clone();
+                let req_id = request_id.clone();
+                let session = session.map(str::to_owned);
+                tokio::spawn(async move {
+                    let result = match Self::wait_and_read_runtime_slot(
+                        &tab,
+                        frame,
+                        await_timeout,
+                        &eval_id,
+                    )
+                    .await
+                    {
+                        Ok(parsed) => format_runtime_result(&parsed, return_by_value),
+                        Err(reply) => reply,
+                    };
+                    let mut reply = json!({"id": req_id, "result": result});
+                    attach_session(&mut reply, session.as_deref());
+                    let _ = tx.send(reply);
+                });
+                return Ok(DispatchResult::Deferred);
+            }
+            let result =
+                match Self::wait_and_read_runtime_slot(tab, frame, await_timeout, &eval_id).await {
+                    Ok(parsed) => format_runtime_result(&parsed, return_by_value),
+                    Err(reply) => reply,
+                };
+            return Ok(DispatchResult::Immediate(result));
         }
-    }
-
-    // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-callFunctionOn
-    async fn runtime_handle_awaited(
-        &mut self,
-        tab: &TabHandle,
-        frame: FrameId,
-        source: &str,
-        timeout: Duration,
-        object_group: &str,
-    ) -> Value {
-        let evaluation = self.next_evaluation;
-        self.next_evaluation = self.next_evaluation.saturating_add(1);
-        let id = json_string(&evaluation.to_string());
-        let read = RUNTIME_HANDLE_READ
-            .replace("__ID__", &id)
-            .replace("__GROUP__", &json_string(object_group));
-        match Self::await_runtime_slot(
-            tab,
-            frame,
-            source,
-            timeout,
-            &id,
-            "__tb_async_handles",
-            &read,
-        )
-        .await
-        {
-            Ok(parsed) => json!({"result": parsed.get("value").cloned().unwrap_or(Value::Null)}),
-            Err(reply) => reply,
-        }
+        Ok(DispatchResult::Immediate(
+            self.runtime_handle(tab, frame, &source, object_group).await,
+        ))
     }
 
     async fn runtime_handle(
@@ -1269,46 +1624,62 @@ impl Conn {
         exception_text_reply("unexpected script result")
     }
 
-    async fn runtime_value(
+    async fn schedule_runtime_slot(
         tab: &TabHandle,
         frame: FrameId,
         source: &str,
-        timeout: Duration,
-        id: u64,
-    ) -> Value {
-        let id = json_string(&id.to_string());
-        let read = RUNTIME_READ.replace("__ID__", &id);
-        match Self::await_runtime_slot(tab, frame, source, timeout, &id, "__tb_async", &read).await
-        {
-            Ok(parsed) => json!({"result": parsed}),
-            Err(reply) => reply,
-        }
+        make: &str,
+        id: &str,
+    ) -> Result<(), Value> {
+        let schedule = RUNTIME_SCHEDULE
+            .replace("__ID__", id)
+            .replace("__MAKE__", make)
+            .replace("__SOURCE__", source);
+        tab.execute_script(ExecuteScriptOptions {
+            frame,
+            source: browser::ScriptSource::Browser(&schedule),
+            timeout: None,
+        })
+        .await
+        .map(|_| ())
+        .map_err(|error| exception_reply(&error))
     }
 
-    async fn await_runtime_slot(
+    async fn try_read_runtime_slot(
         tab: &TabHandle,
         frame: FrameId,
-        source: &str,
-        timeout: Duration,
         id: &str,
-        slot: &str,
-        read: &str,
-    ) -> Result<Value, Value> {
-        let schedule = RUNTIME_SCHEDULE
-            .replace("__SLOT__", slot)
-            .replace("__ID__", id)
-            .replace("__SOURCE__", source);
-        if let Err(error) = tab
+    ) -> Result<Option<Value>, Value> {
+        let read = RUNTIME_READ.replace("__ID__", id);
+        let value = tab
             .execute_script(ExecuteScriptOptions {
                 frame,
-                source: browser::ScriptSource::Browser(&schedule),
+                source: browser::ScriptSource::Browser(&read),
                 timeout: None,
             })
             .await
+            .map_err(|error| exception_reply(&error))?;
+        if let RemoteValue::String(text) = value
+            && let Ok(parsed) = serde_json::from_str::<Value>(&text)
         {
-            return Err(exception_reply(&error));
+            if parsed.get("pending").and_then(Value::as_bool) == Some(true) {
+                return Ok(None);
+            }
+            if let Some(error) = parsed.get("error").and_then(Value::as_str) {
+                return Err(exception_text_reply(error));
+            }
+            return Ok(Some(parsed));
         }
-        let ready = format!("Boolean(host.{slot} && host.{slot}[{id}] && host.{slot}[{id}].done)");
+        Err(exception_text_reply("unexpected script result"))
+    }
+
+    async fn wait_and_read_runtime_slot(
+        tab: &TabHandle,
+        frame: FrameId,
+        timeout: Duration,
+        id: &str,
+    ) -> Result<Value, Value> {
+        let ready = format!("Boolean(host.__tbHasEvaluation({id}))");
         // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-callFunctionOn
         let mut events = tab.subscribe().ok();
         let run = tab.run_until_js_true(RunUntilJsTrueOptions {
@@ -1336,7 +1707,7 @@ impl Conn {
                     .execute_script(ExecuteScriptOptions {
                         frame,
                         source: browser::ScriptSource::Browser(&format!(
-                            "(() => {{ if (host.{slot}) delete host.{slot}[{id}]; }})()"
+                            "(() => {{ host.__tbTakeEvaluation({id}); }})()"
                         )),
                         timeout: None,
                     })
@@ -1345,26 +1716,10 @@ impl Conn {
             }
             Err(error) => return Err(exception_reply(&error)),
         }
-        let value = match tab
-            .execute_script(ExecuteScriptOptions {
-                frame,
-                source: browser::ScriptSource::Browser(read),
-                timeout: None,
-            })
-            .await
-        {
-            Ok(value) => value,
-            Err(error) => return Err(exception_reply(&error)),
-        };
-        if let RemoteValue::String(text) = value
-            && let Ok(parsed) = serde_json::from_str::<Value>(&text)
-        {
-            if let Some(error) = parsed.get("error").and_then(Value::as_str) {
-                return Err(exception_text_reply(error));
-            }
-            return Ok(parsed);
+        match Self::try_read_runtime_slot(tab, frame, id).await? {
+            Some(parsed) => Ok(parsed),
+            None => Err(exception_text_reply("unexpected script result")),
         }
-        Err(exception_text_reply("unexpected script result"))
     }
 
     fn subscribe_tab(
@@ -1448,6 +1803,7 @@ async fn run_socket(
     tab: Option<TabHandle>,
 ) {
     let (tab_events_tx, tab_events_rx) = mpsc::channel(256);
+    let (deferred_tx, mut deferred_rx) = mpsc::unbounded_channel();
     let mut conn = Conn {
         browser: state.browser,
         sessions: HashMap::new(),
@@ -1457,13 +1813,18 @@ async fn run_socket(
         subscriptions: Vec::new(),
         tab_events_tx,
         tab_events_rx,
+        deferred_tx: Some(deferred_tx),
         clock_origin: Instant::now(),
         auto_attach: false,
         events: Vec::new(),
         loader_ids: HashMap::new(),
         current_loaders: HashMap::new(),
+        default_contexts: HashMap::new(),
         lifecycle_events: false,
         isolated_worlds: HashMap::new(),
+        omit_background: HashMap::new(),
+        response_bodies: HashMap::new(),
+        response_body_order: VecDeque::new(),
         next_loader: 1,
         next_context: 1000,
         next_evaluation: 1,
@@ -1471,12 +1832,22 @@ async fn run_socket(
     loop {
         let wake = tokio::select! {
             event = conn.tab_events_rx.recv() => SocketWake::Event(event),
+            reply = deferred_rx.recv() => SocketWake::Deferred(reply),
             incoming = socket.next() => SocketWake::Incoming(incoming),
         };
         match wake {
             SocketWake::Event(Some(event)) => {
                 let messages = conn.event_messages(event).await;
                 if send_messages(&mut socket, messages).await.is_err() {
+                    break;
+                }
+            }
+            SocketWake::Deferred(Some(reply)) => {
+                if socket
+                    .send(WsMessage::text(reply.to_string()))
+                    .await
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -1489,10 +1860,11 @@ async fn run_socket(
                     break;
                 }
                 let close = outcome.close;
-                if socket
-                    .send(WsMessage::text(outcome.reply.to_string()))
-                    .await
-                    .is_err()
+                if !outcome.deferred
+                    && socket
+                        .send(WsMessage::text(outcome.reply.to_string()))
+                        .await
+                        .is_err()
                 {
                     break;
                 }
@@ -1503,16 +1875,39 @@ async fn run_socket(
             SocketWake::Incoming(Some(Ok(WsMessage::Ping(payload)))) => {
                 let _result = socket.send(WsMessage::Pong(payload)).await;
             }
-            SocketWake::Incoming(Some(Ok(_))) => {}
+            SocketWake::Deferred(None) | SocketWake::Incoming(Some(Ok(_))) => {}
         }
     }
     conn.stop_subscriptions();
     let _result = socket.send(WsMessage::Close(None)).await;
 }
 
+struct NavigationResponse {
+    status: u16,
+    status_text: String,
+    url: String,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+}
+
 enum SocketWake {
     Event(Option<ConnEvent>),
+    Deferred(Option<Value>),
     Incoming(Option<Result<WsMessage, tungstenite::Error>>),
+}
+
+fn push_event(messages: &mut Vec<Value>, method: &str, params: &Value, session: Option<&str>) {
+    let mut message = json!({"method": method, "params": params});
+    attach_session(&mut message, session);
+    messages.push(message);
+}
+
+fn format_runtime_result(parsed: &Value, return_by_value: bool) -> Value {
+    if return_by_value {
+        json!({"result": parsed})
+    } else {
+        json!({"result": parsed.get("value").cloned().unwrap_or(Value::Null)})
+    }
 }
 
 async fn send_messages(
@@ -1560,13 +1955,18 @@ mod tests {
             subscriptions: Vec::new(),
             tab_events_tx,
             tab_events_rx,
+            deferred_tx: None,
             clock_origin: Instant::now(),
             auto_attach: false,
             events: Vec::new(),
             loader_ids: HashMap::new(),
             current_loaders: HashMap::new(),
+            default_contexts: HashMap::new(),
             lifecycle_events: false,
             isolated_worlds: HashMap::new(),
+            omit_background: HashMap::new(),
+            response_bodies: HashMap::new(),
+            response_body_order: VecDeque::new(),
             next_loader: 1,
             next_context: 1000,
             next_evaluation: 1,

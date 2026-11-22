@@ -348,6 +348,8 @@ async fn take_screenshot(sessions: &Sessions, session: &str) -> (u16, Value) {
                 viewport_width: browser::DEFAULT_VIEWPORT.0,
                 viewport_height: browser::DEFAULT_VIEWPORT.1,
                 clip: None,
+                format: browser::ScreenshotFormat::Png,
+                omit_background: false,
             };
             match window.tab.screenshot(request).await {
                 Ok(png) => ok(json!(BASE64_STANDARD.encode(&png))),

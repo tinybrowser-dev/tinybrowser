@@ -74,7 +74,16 @@ style_traits = { package = "stylo_traits", version = "0.24.0" }
 # `writing-mode` layout (each box laid out in its own writing-mode frame) and
 # the Stylo pref that generates the property; the renderer enables it because
 # CSSOM View's geometry and scrolling algorithms depend on it.
-blitz-dom = { version = "=0.3.0-beta.4", features = ["floats", "writing-mode"] }
+blitz-dom = { version = "=0.3.0-beta.4", default-features = false, features = [
+    "svg",
+    "woff",
+    "accessibility",
+    "file-input",
+    "custom-widget",
+    "text-transform-icu",
+    "floats",
+    "writing-mode",
+] }
 blitz-html = "=0.3.0-beta.4"
 blitz-paint = "=0.3.0-beta.4"
 # Patched to the blitz fork's vendored copy: the published 0.3.0-beta.4 lacks
@@ -106,6 +115,12 @@ blitz-traits = "=0.3.0-beta.4"
 # Inflates the build-compressed JS shims (`js::blob`). Same instance `png`
 # already retains, so this adds no new crate to the binary.
 flate2 = "1"
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+blitz-dom = { version = "=0.3.0-beta.4", default-features = false, features = ["system-fonts"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+fontconfig-parser = "0.5"
 
 [build-dependencies]
 # Compresses the embedded JS shims in `build.rs`. Host-side only: nothing

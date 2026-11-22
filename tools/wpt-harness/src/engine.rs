@@ -445,6 +445,8 @@ fn screenshot_request() -> renderer::ScreenshotRequest {
         viewport_width: width,
         viewport_height: height,
         clip: None,
+        format: renderer::ScreenshotFormat::Png,
+        omit_background: false,
     }
 }
 

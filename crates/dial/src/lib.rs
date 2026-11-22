@@ -68,6 +68,7 @@ use renderer::{DialFailure, DialKind, DialOutcome, DialRequest, ResponseBody, Re
 use url::Url;
 
 // https://fetch.spec.whatwg.org/#concept-response
+#[derive(Clone)]
 pub struct DialHead {
     status: u16,
     status_text: String,
@@ -143,6 +144,26 @@ impl DialHead {
     #[must_use]
     pub fn null_body(&self) -> bool {
         self.null_body
+    }
+
+    #[must_use]
+    pub fn status(&self) -> u16 {
+        self.status
+    }
+
+    #[must_use]
+    pub fn status_text(&self) -> &str {
+        &self.status_text
+    }
+
+    #[must_use]
+    pub fn final_url(&self) -> &Url {
+        &self.final_url
+    }
+
+    #[must_use]
+    pub fn headers(&self) -> &[(String, String)] {
+        &self.headers
     }
 
     // https://html.spec.whatwg.org/multipage/document-lifecycle.html#initialise-the-document-object

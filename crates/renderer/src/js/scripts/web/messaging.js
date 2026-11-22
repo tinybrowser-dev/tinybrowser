@@ -1450,6 +1450,106 @@ Object.defineProperty(globalThis, 'name', {
       });
     }
   }
+  // https://html.spec.whatwg.org/multipage/nav-history-apis.html#the-window-object
+  if (typeof globalThis.Window !== 'function') {
+    function Window() {
+      throw new TypeError('Illegal constructor');
+    }
+    Object.defineProperty(Window, Symbol.hasInstance, {
+      value(instance) { return instance === globalThis; },
+      configurable: true,
+    });
+    Object.defineProperty(globalThis, 'Window', {
+      value: Window,
+      writable: true,
+      enumerable: false,
+      configurable: true,
+    });
+    if (typeof Symbol !== 'undefined' && Symbol.toStringTag) {
+      Object.defineProperty(globalThis, Symbol.toStringTag, {
+        value: 'Window',
+        configurable: true,
+      });
+    }
+  }
+  // https://html.spec.whatwg.org/multipage/interaction.html#contenteditable
+  Object.defineProperties(globalThis.HTMLElement.prototype, {
+    contentEditable: {
+      get() {
+        const attr = this.getAttribute('contenteditable');
+        if (attr === null) return 'inherit';
+        const lower = attr.toLowerCase();
+        if (lower === '' || lower === 'true') return 'true';
+        if (lower === 'false') return 'false';
+        if (lower === 'plaintext-only') return 'plaintext-only';
+        return 'inherit';
+      },
+      set(value) {
+        const lower = String(value).toLowerCase();
+        if (lower === 'inherit') {
+          this.removeAttribute('contenteditable');
+        } else if (lower === 'true' || lower === 'false' || lower === 'plaintext-only') {
+          this.setAttribute('contenteditable', lower);
+        } else {
+          throw new DOMException(
+            `The value provided ('${value}') is not one of 'true', 'false', 'plaintext-only', or 'inherit'.`,
+            'SyntaxError',
+          );
+        }
+      },
+      enumerable: true,
+      configurable: true,
+    },
+    isContentEditable: {
+      get() {
+        for (let node = this; node && node.nodeType === 1; node = node.parentElement) {
+          const attr = node.getAttribute('contenteditable');
+          if (attr === null) continue;
+          const lower = attr.toLowerCase();
+          if (lower === '' || lower === 'true' || lower === 'plaintext-only') return true;
+          if (lower === 'false') return false;
+        }
+        return false;
+      },
+      enumerable: true,
+      configurable: true,
+    },
+    // https://html.spec.whatwg.org/multipage/popover.html#the-popover-attribute
+    popover: {
+      get() {
+        const attr = this.getAttribute('popover');
+        if (attr === null) return null;
+        const lower = attr.toLowerCase();
+        if (lower === '' || lower === 'auto') return 'auto';
+        if (lower === 'manual') return 'manual';
+        return 'manual';
+      },
+      set(value) {
+        if (value === null) this.removeAttribute('popover');
+        else this.setAttribute('popover', String(value));
+      },
+      enumerable: true,
+      configurable: true,
+    },
+    showPopover: {
+      value() {},
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    },
+    hidePopover: {
+      value() {},
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    },
+    togglePopover: {
+      value(force) { return Boolean(force); },
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    },
+  });
   // https://html.spec.whatwg.org/multipage/webappapis.html#windoweventhandlers
   for (const name of host.__tb_windowHandlerNames || []) {
     Object.defineProperty(globalThis, name, {

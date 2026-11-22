@@ -41,7 +41,7 @@ jobs:
         run: >
           sudo apt-get update -qq &&
           sudo apt-get install -y -qq --no-install-recommends
-          libfontconfig1-dev libssl-dev pkg-config
+          libssl-dev pkg-config
       - name: Toolchain
         run: |
           rustup toolchain install --profile minimal \
@@ -90,11 +90,11 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: tools/playwright/package-lock.json
-      - name: Playwright smoke
+      - name: Playwright internal bridge
         env:
           SCCACHE_GHA_ENABLED: "true"
           RUSTC_WRAPPER: "sccache"
-        run: tools/playwright/run smoke.spec.ts
+        run: tools/playwright/run internal-bridge.spec.js
 
   sandbox:
     strategy:

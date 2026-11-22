@@ -1684,49 +1684,9 @@ impl JsNode {
             return Vec::new();
         };
         let world = world.borrow();
-        let Some(mut parsed) = world.document_mut(id) else {
-            return Vec::new();
-        };
-        let base = &mut parsed.document.base;
-        base.resolve(crate::animation_seconds());
-        let Some(node) = base.get_node(id.node) else {
-            return Vec::new();
-        };
-        if !has_associated_box(base, node) {
-            return Vec::new();
-        }
-        let mut rects: Vec<(f64, f64, f64, f64)> = base
-            .node_client_rects(id.node)
-            .into_iter()
-            .map(|rect| (rect.x, rect.y, rect.width, rect.height))
-            .collect();
-        // https://drafts.csswg.org/css-inline-3/#invisible-line-boxes
-        if rects.is_empty() {
-            let position = node.absolute_position(0.0, 0.0);
-            let size = node.final_layout().size;
-            let scroll = base.viewport_scroll();
-            rects.push((
-                f64::from(position.x) - scroll.x,
-                f64::from(position.y) - scroll.y,
-                f64::from(size.width),
-                f64::from(size.height),
-            ));
-        }
+        let rects = element_client_rects(&world, id);
         if bounding {
-            let Some((first, rest)) = rects.split_first() else {
-                return Vec::new();
-            };
-            let mut left = first.0;
-            let mut top = first.1;
-            let mut right = first.0 + first.2;
-            let mut bottom = first.1 + first.3;
-            for rect in rest {
-                left = left.min(rect.0);
-                top = top.min(rect.1);
-                right = right.max(rect.0 + rect.2);
-                bottom = bottom.max(rect.1 + rect.3);
-            }
-            return vec![(left, top, right - left, bottom - top)];
+            return bounding_rect(&rects).into_iter().collect();
         }
         rects
     }
@@ -3438,6 +3398,54 @@ impl From<element_generated::ScrollIntoViewContainer> for blitz_dom::ScrollIntoV
             element_generated::ScrollIntoViewContainer::Nearest => Self::Nearest,
         }
     }
+}
+
+// https://drafts.csswg.org/cssom-view/#dom-element-getclientrects
+pub(crate) fn element_client_rects(world: &World, id: NodeId) -> Vec<(f64, f64, f64, f64)> {
+    let Some(mut parsed) = world.document_mut(id) else {
+        return Vec::new();
+    };
+    let base = &mut parsed.document.base;
+    base.resolve(crate::animation_seconds());
+    let Some(node) = base.get_node(id.node) else {
+        return Vec::new();
+    };
+    if !has_associated_box(base, node) {
+        return Vec::new();
+    }
+    let mut rects: Vec<(f64, f64, f64, f64)> = base
+        .node_client_rects(id.node)
+        .into_iter()
+        .map(|rect| (rect.x, rect.y, rect.width, rect.height))
+        .collect();
+    // https://drafts.csswg.org/css-inline-3/#invisible-line-boxes
+    if rects.is_empty() {
+        let position = node.absolute_position(0.0, 0.0);
+        let size = node.final_layout().size;
+        let scroll = base.viewport_scroll();
+        rects.push((
+            f64::from(position.x) - scroll.x,
+            f64::from(position.y) - scroll.y,
+            f64::from(size.width),
+            f64::from(size.height),
+        ));
+    }
+    rects
+}
+
+pub(crate) fn bounding_rect(rects: &[(f64, f64, f64, f64)]) -> Option<(f64, f64, f64, f64)> {
+    let (first, rest) = rects.split_first()?;
+    let mut left = first.0;
+    let mut top = first.1;
+    let mut right = first.0 + first.2;
+    let mut bottom = first.1 + first.3;
+    for rect in rest {
+        left = left.min(rect.0);
+        top = top.min(rect.1);
+        right = right.max(rect.0 + rect.2);
+        bottom = bottom.max(rect.1 + rect.3);
+    }
+    Some((left, top, right - left, bottom - top))
 }
 
 impl From<element_generated::ScrollLogicalPosition> for blitz_dom::ScrollLogicalPosition {

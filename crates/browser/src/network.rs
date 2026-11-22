@@ -147,6 +147,8 @@ fn abort_stream(entry: Option<StreamEntry>) {
 pub(crate) struct NavOutcome {
     pub head: renderer::ResponseHead,
     pub body: net::Body,
+    // https://fetch.spec.whatwg.org/#concept-response
+    pub net: DialHead,
     _permit: tokio::sync::OwnedSemaphorePermit,
 }
 
@@ -308,11 +310,13 @@ impl TabNetworkHandle {
             started.elapsed()
         );
         // https://html.spec.whatwg.org/multipage/document-lifecycle.html#initialise-the-document-object
-        let head = DialHead::internal(&response).into_document_head();
+        let net_head = DialHead::internal(&response);
+        let head = net_head.clone().into_document_head();
         let body = response.into_body().await;
         Ok(NavOutcome {
             head,
             body,
+            net: net_head,
             _permit: permits,
         })
     }

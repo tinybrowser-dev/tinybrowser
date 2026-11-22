@@ -67,6 +67,11 @@ pub enum Command {
         // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-addScriptToEvaluateOnNewDocument
         run_immediately: bool,
     },
+    // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-addBinding
+    AddBinding {
+        name: String,
+        run_immediately: bool,
+    },
     RemoveInitScript {
         id: u64,
     },
@@ -276,6 +281,10 @@ pub enum BrowsingContextCall {
         opener: OpenerPolicy,
         source: NavigationSource,
     },
+    NavigateTopLevel {
+        url: Url,
+        source: NavigationSource,
+    },
     // https://html.spec.whatwg.org/multipage/browsers.html#determining-the-creation-sandboxing-flags
     FrameCreated {
         frame: FrameId,
@@ -346,6 +355,7 @@ impl ServiceReply {
                 BrowsingContextCall::WindowClose { .. }
                 | BrowsingContextCall::WindowMessage { .. }
                 | BrowsingContextCall::WindowName { .. }
+                | BrowsingContextCall::NavigateTopLevel { .. }
                 | BrowsingContextCall::FrameCreated { .. }
                 | BrowsingContextCall::FrameDestroyed { .. },
             ) => ServiceReply::Unit,

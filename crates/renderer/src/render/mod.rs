@@ -5,7 +5,7 @@ mod providers;
 pub(crate) use blitz::{
     INVALID_BASE_URL, MAX_VIEWPORT_SIDE, blitz_base_url, paint, resolve_until_settled,
 };
-pub(crate) use png::encode_png;
+pub(crate) use png::encode_screenshot;
 pub(crate) use providers::{BlitzFetch, CountingHandler, TinyNetProvider, TinyShell};
 
 // https://html.spec.whatwg.org/multipage/rendering.html#images
@@ -91,15 +91,6 @@ impl RgbaImage {
             data,
         })
     }
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct NodeBox {
-    pub node: crate::dom::tree::NodeId,
-    pub x: f32,
-    pub y: f32,
-    pub width: f32,
-    pub height: f32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

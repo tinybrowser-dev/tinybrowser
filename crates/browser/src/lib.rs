@@ -15,7 +15,9 @@ mod site;
 mod storage;
 mod wire;
 
-pub use actor::{ExecuteScriptOptions, RunUntilJsTrueOptions, TabEvent, TabHandle, TabId};
+pub use actor::{
+    ExecuteScriptOptions, NavigationFailure, RunUntilJsTrueOptions, TabEvent, TabHandle, TabId,
+};
 pub use browser::{Browser, BrowserError, BrowserHandle, BrowserOpenError, BrowserOptions};
 pub use history::{EntryId, HistoryEntry, HistorySnapshot};
 pub use net::{
@@ -23,10 +25,11 @@ pub use net::{
     InvalidProxy, InvalidResolveRule, Proxy, ResolveRule, TrustedCa, UserAgent, ValidIdentity,
 };
 pub use profile::{Profile, ProfileError, ProfileName, default_data_home};
+pub use renderer::ConsoleLevel;
 pub use renderer::{
     AxNode, AxProperty, AxPropertyValue, DEFAULT_VIEWPORT, DomBoxModel, DomNode, DomRemoteNode,
     DomReply, DomRequest, DomStyleSheet, FrameId, RemoteValue, ResourceLimit, ScreenshotClip,
-    ScreenshotRequest, ScriptFailure, ScriptSource, TabError,
+    ScreenshotFormat, ScreenshotRequest, ScriptFailure, ScriptSource, TabError,
 };
 
 pub use dial::SEC_CH_PREFERS_COLOR_SCHEME;

@@ -1270,7 +1270,9 @@ impl Worker {
             | RealmRequest::WorkerBlocked(_, _)
             | RealmRequest::DeclarativeRefresh(_)
             | RealmRequest::HtmlWrite(_)
-            | RealmRequest::DocumentStream(_) => {}
+            | RealmRequest::DocumentStream(_)
+            | RealmRequest::Binding { .. }
+            | RealmRequest::Console { .. } => {}
         }
     }
 

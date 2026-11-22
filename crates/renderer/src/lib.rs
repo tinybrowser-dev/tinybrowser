@@ -31,8 +31,199 @@ pub use embedded::EmbeddedRenderer;
 pub use engine::{DEFAULT_VIEWPORT, Engine, decode_data_url, decode_data_url_bounded};
 pub use render::RgbaImage;
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct Fonts(parley::FontContext);
+
+impl Default for Fonts {
+    fn default() -> Self {
+        #[cfg(target_os = "linux")]
+        {
+            static SYSTEM_FONTS: std::sync::OnceLock<Fonts> = std::sync::OnceLock::new();
+            SYSTEM_FONTS.get_or_init(load_linux_system_fonts).clone()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Self(parley::FontContext::default())
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn collect_linux_font_files(
+    dir: &std::path::Path,
+    seen_dirs: &mut std::collections::HashSet<std::path::PathBuf>,
+    out: &mut Vec<std::path::PathBuf>,
+) {
+    let Ok(canonical) = std::fs::canonicalize(dir) else {
+        return;
+    };
+    if !seen_dirs.insert(canonical) {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_linux_font_files(&path, seen_dirs, out);
+        } else if path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| {
+                ext.eq_ignore_ascii_case("ttf")
+                    || ext.eq_ignore_ascii_case("otf")
+                    || ext.eq_ignore_ascii_case("ttc")
+                    || ext.eq_ignore_ascii_case("otc")
+            })
+        {
+            out.push(path);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn apply_linux_generic_families(
+    font_ctx: &mut parley::FontContext,
+    aliases: &[fontconfig_parser::Alias],
+    first_family: Option<parley::fontique::FamilyId>,
+) {
+    use parley::fontique::GenericFamily;
+
+    let generic_specs: [(&str, GenericFamily, &[&str]); 6] = [
+        (
+            "sans-serif",
+            GenericFamily::SansSerif,
+            &["DejaVu Sans", "Liberation Sans", "Noto Sans", "FreeSans"],
+        ),
+        (
+            "serif",
+            GenericFamily::Serif,
+            &[
+                "DejaVu Serif",
+                "Liberation Serif",
+                "Noto Serif",
+                "FreeSerif",
+            ],
+        ),
+        (
+            "monospace",
+            GenericFamily::Monospace,
+            &[
+                "DejaVu Sans Mono",
+                "Liberation Mono",
+                "Noto Sans Mono",
+                "FreeMono",
+            ],
+        ),
+        (
+            "system-ui",
+            GenericFamily::SystemUi,
+            &["DejaVu Sans", "Liberation Sans", "Noto Sans", "FreeSans"],
+        ),
+        (
+            "cursive",
+            GenericFamily::Cursive,
+            &["DejaVu Sans", "Liberation Sans", "Noto Sans"],
+        ),
+        (
+            "fantasy",
+            GenericFamily::Fantasy,
+            &["DejaVu Serif", "Liberation Serif", "Noto Serif"],
+        ),
+    ];
+
+    for (name, generic, fallbacks) in generic_specs {
+        let mut ids = Vec::new();
+        for alias in aliases {
+            if alias.alias.eq_ignore_ascii_case(name) {
+                for candidate in alias
+                    .prefer
+                    .iter()
+                    .chain(alias.accept.iter())
+                    .chain(alias.default.iter())
+                {
+                    if let Some(id) = font_ctx.collection.family_id(candidate)
+                        && !ids.contains(&id)
+                    {
+                        ids.push(id);
+                    }
+                }
+            }
+        }
+        for candidate in fallbacks {
+            if let Some(id) = font_ctx.collection.family_id(candidate)
+                && !ids.contains(&id)
+            {
+                ids.push(id);
+            }
+        }
+        if ids.is_empty()
+            && let Some(id) = first_family
+        {
+            ids.push(id);
+        }
+        if !ids.is_empty() {
+            font_ctx
+                .collection
+                .set_generic_families(generic, ids.into_iter());
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn load_linux_system_fonts() -> Fonts {
+    use std::collections::HashSet;
+    use std::path::{Path, PathBuf};
+
+    use parley::fontique::Blob;
+
+    let mut config = fontconfig_parser::FontConfig::default();
+    if let Ok(path) = std::env::var("FONTCONFIG_FILE") {
+        let _ = config.merge_config(Path::new(&path));
+    } else {
+        let _ = config.merge_config(Path::new("/etc/fonts/fonts.conf"));
+    }
+
+    let mut dirs: Vec<PathBuf> = config.dirs.into_iter().map(|dir| dir.path).collect();
+    dirs.push(PathBuf::from("/usr/share/fonts"));
+    dirs.push(PathBuf::from("/usr/local/share/fonts"));
+    if let Ok(xdg_data) = std::env::var("XDG_DATA_HOME")
+        && !xdg_data.is_empty()
+    {
+        dirs.push(PathBuf::from(xdg_data).join("fonts"));
+    } else if let Ok(home) = std::env::var("HOME")
+        && !home.is_empty()
+    {
+        dirs.push(PathBuf::from(&home).join(".local/share/fonts"));
+        dirs.push(PathBuf::from(home).join(".fonts"));
+    }
+
+    let mut seen_dirs = HashSet::new();
+    let mut files = Vec::new();
+    for dir in dirs {
+        collect_linux_font_files(&dir, &mut seen_dirs, &mut files);
+    }
+
+    let mut font_ctx = parley::FontContext::default();
+    let mut first_family = None;
+    for path in files {
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        let registered = font_ctx
+            .collection
+            .register_fonts(Blob::new(Arc::new(bytes)), None);
+        if first_family.is_none()
+            && let Some((family, _)) = registered.first()
+        {
+            first_family = Some(*family);
+        }
+    }
+
+    apply_linux_generic_families(&mut font_ctx, &config.aliases, first_family);
+    Fonts(font_ctx)
+}
 
 impl Fonts {
     pub fn register_font(&mut self, data: Arc<dyn AsRef<[u8]> + Send + Sync>) -> usize {
@@ -73,16 +264,16 @@ impl Fonts {
 pub use js::{Stop, TURN_SCRIPT_BUDGET};
 pub use protocol::{
     AxNode, AxProperty, AxPropertyValue, BodyDelivery, BrowserEvent, BrowserServices,
-    BrowsingContextHost, ContextName, CookiePolicy, CorsMode, CorsRequest, DialCancellation,
-    DialCompletion, DialFailure, DialKind, DialOutcome, DialRequest, DomBoxModel, DomNode,
-    DomRemoteNode, DomReply, DomRequest, DomStyleSheet, FrameId, FrameKind, HistoryHandling,
-    HistorySnapshot, HttpHead, MAX_RESPONSE_BODY_BYTES, MessagingHost, Mount, NameChange,
-    NavigationSource, NetworkHost, OpenerPolicy, PolicyContainer, PostedMessage, ReferrerRequest,
-    RendererEvent, RequestCache, RequestPolicy, ResourceLimit, ResponseBody, ResponseHead,
-    ResponseSource, STORAGE_QUOTA_BYTES, SandboxFlags, ScreenshotClip, ScreenshotRequest,
-    ScriptCookie, ScriptFailure, ScriptSource, SerializedOrigin, StorageChange, StorageError,
-    StorageHost, StorageKey, StorageKind, StreamId, TabError, TabState, TargetName, TargetOrigin,
-    TimerId, WindowId,
+    BrowsingContextHost, ConsoleLevel, ContextName, CookiePolicy, CorsMode, CorsRequest,
+    DialCancellation, DialCompletion, DialFailure, DialKind, DialOutcome, DialRequest, DomBoxModel,
+    DomNode, DomRemoteNode, DomReply, DomRequest, DomStyleSheet, FrameId, FrameKind,
+    HistoryHandling, HistorySnapshot, HttpHead, MAX_RESPONSE_BODY_BYTES, MessagingHost, Mount,
+    NameChange, NavigationSource, NetworkHost, OpenerPolicy, PolicyContainer, PostedMessage,
+    ReferrerRequest, RendererEvent, RequestCache, RequestPolicy, ResourceLimit, ResponseBody,
+    ResponseHead, ResponseSource, STORAGE_QUOTA_BYTES, SandboxFlags, ScreenshotClip,
+    ScreenshotFormat, ScreenshotRequest, ScriptCookie, ScriptFailure, ScriptSource,
+    SerializedOrigin, StorageChange, StorageError, StorageHost, StorageKey, StorageKind, StreamId,
+    TabError, TabState, TargetName, TargetOrigin, TimerId, WindowId,
 };
 pub use remote::RemoteValue;
 pub use storage::PendingStorageEvent;

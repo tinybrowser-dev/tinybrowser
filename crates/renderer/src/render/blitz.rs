@@ -45,7 +45,7 @@ pub(crate) fn render_html(html: &str, width: u32, height: u32) -> Result<RgbaIma
     let document = blitz_html::HtmlDocument::from_html(html, config);
     let mut base: blitz_dom::BaseDocument = document.into();
     base.resolve(crate::animation_seconds());
-    paint(&mut base, width, height)
+    paint(&mut base, width, height, false)
 }
 
 #[cfg(test)]
@@ -58,6 +58,7 @@ pub(crate) fn paint(
     base: &mut blitz_dom::BaseDocument,
     width: u32,
     height: u32,
+    omit_background: bool,
 ) -> Result<RgbaImage, RenderError> {
     check_dims(width, height)?;
     let mut painter = anyrender_tiny_skia::TinySkiaScenePainter::new(width, height);
@@ -67,7 +68,12 @@ pub(crate) fn paint(
     let mut data = Vec::with_capacity(pixels.len());
     for pixel in pixels.as_chunks::<4>().0 {
         let [r, g, b, a] = [pixel[0], pixel[1], pixel[2], pixel[3]];
-        data.extend_from_slice(&over_white(r, g, b, a));
+        let rgba = if omit_background {
+            unpremultiply(r, g, b, a)
+        } else {
+            over_white(r, g, b, a)
+        };
+        data.extend_from_slice(&rgba);
     }
     Ok(RgbaImage {
         width,
@@ -89,6 +95,17 @@ fn check_dims(width: u32, height: u32) -> Result<(), RenderError> {
 fn over_white(red: u8, green: u8, blue: u8, alpha: u8) -> [u8; 4] {
     let blend = |component: u8| component.saturating_add(u8::MAX - alpha);
     [blend(red), blend(green), blend(blue), u8::MAX]
+}
+
+fn unpremultiply(red: u8, green: u8, blue: u8, alpha: u8) -> [u8; 4] {
+    if alpha == 0 || alpha == u8::MAX {
+        return [red, green, blue, alpha];
+    }
+    let scale = |component: u8| -> u8 {
+        let v = (u16::from(component) * 255 + u16::from(alpha) / 2) / u16::from(alpha);
+        u8::try_from(v).unwrap_or(255)
+    };
+    [scale(red), scale(green), scale(blue), alpha]
 }
 
 #[cfg(test)]
@@ -186,7 +203,7 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-        let image = paint(&mut base, 200, 120).expect("blitz render");
+        let image = paint(&mut base, 200, 120, false).expect("blitz render");
         let middle = &image.data[((60 * 200 + 100) * 4) as usize..][..4];
         assert!(
             middle[2] > 200 && middle[3] == 255,

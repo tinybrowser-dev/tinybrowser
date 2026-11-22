@@ -63,6 +63,14 @@ fn is_focusable_in(base: &blitz_dom::BaseDocument, node: BlitzId) -> bool {
     if element.name.ns != html_namespace() {
         return false;
     }
+    // https://html.spec.whatwg.org/multipage/interaction.html#contenteditable
+    if attr(base, node, "contenteditable").is_some_and(|value| {
+        value.is_empty()
+            || value.eq_ignore_ascii_case("true")
+            || value.eq_ignore_ascii_case("plaintext-only")
+    }) {
+        return true;
+    }
     match element.name.local.as_str() {
         "input" => !is_hidden_input(base, node),
         "a" => attr(base, node, "href").is_some(),

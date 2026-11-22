@@ -35,7 +35,6 @@
       # nightly toolchain with `rust-src`.
       runtimeLibs = pkgs.lib.makeLibraryPath [
         pkgs.openssl
-        pkgs.fontconfig
         pkgs.stdenv.cc.cc
       ];
       # cargo test binaries are unwrapped, so libssl and libstdc++ must be
@@ -67,7 +66,6 @@
           ];
           buildInputs = [
             pkgs.openssl
-            pkgs.fontconfig
           ];
           env = {
             OPENSSL_NO_VENDOR = "1";

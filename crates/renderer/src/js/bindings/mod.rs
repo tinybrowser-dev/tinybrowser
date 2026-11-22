@@ -1170,59 +1170,7 @@ pub(super) fn webdriver_element(ctx: Ctx<'_>, remote_id: f64) -> Result<Value<'_
     wrap_node(&ctx, node)
 }
 
-pub(crate) fn layout_boxes(world: &World, document: NodeId) -> Vec<crate::render::NodeBox> {
-    let Some(mut parsed) = world.document_mut(document) else {
-        return Vec::new();
-    };
-    let base = &mut parsed.document.base;
-    base.resolve(crate::animation_seconds());
-    let mut boxes = Vec::new();
-    let mut stack = vec![base.root_node().id];
-    while let Some(id) = stack.pop() {
-        let Some(node) = base.get_node(id) else {
-            continue;
-        };
-        if node.data.downcast_element().is_some() {
-            let position = node.absolute_position(0.0, 0.0);
-            let size = node.final_layout().size;
-            boxes.push(crate::render::NodeBox {
-                node: NodeId {
-                    document: document.document,
-                    node: id,
-                },
-                x: position.x,
-                y: position.y,
-                width: size.width,
-                height: size.height,
-            });
-        }
-        stack.extend(node.children.iter().rev().copied());
-    }
-    boxes
-}
-
-pub(crate) fn element_box(world: &World, node: NodeId) -> Option<(f64, f64, f64, f64)> {
-    layout_boxes(world, node)
-        .into_iter()
-        .find(|item| item.node == node)
-        .map(|item| {
-            (
-                f64::from(item.x),
-                f64::from(item.y),
-                f64::from(item.width),
-                f64::from(item.height),
-            )
-        })
-}
-
-// https://drafts.csswg.org/cssom-view/#scrolling-viewport
-pub(crate) fn viewport_scroll(world: &World, node: NodeId) -> (f64, f64) {
-    let Some(parsed) = world.document(node) else {
-        return (0.0, 0.0);
-    };
-    let scroll = parsed.document.base.viewport_scroll();
-    (scroll.x, scroll.y)
-}
+pub(crate) use node::element::{bounding_rect, element_client_rects};
 
 // https://drafts.csswg.org/cssom-view/#dom-document-elementfrompoint
 #[expect(
@@ -2218,7 +2166,7 @@ mod realm_tests {
             identity.clone(),
             Arc::new(tokio::sync::Notify::new()),
             Arc::new(Stop::new()),
-            parley::FontContext::default(),
+            crate::Fonts::default().0,
         ));
         let worker_dir = Arc::new(crate::worker::WorkerDirectory::new(Arc::clone(&common)));
         let runtime = crate::js::FrameRuntime {
@@ -2230,17 +2178,21 @@ mod realm_tests {
             pending_storage: Rc::new(RefCell::new(Vec::new())),
             turn_deadline: Rc::new(std::cell::Cell::new(None)),
             worker_dir,
-            font_ctx: parley::FontContext::default(),
+            font_ctx: crate::Fonts::default().0,
         };
         let mut world = World::new(
             Url::parse(url).expect("test url"),
             FrameId::MAIN,
             &runtime,
             Rc::new(RefCell::new(Vec::new())),
+            Rc::new(RefCell::new(Vec::new())),
         );
         let id = world.replace_document(crate::parse_html(
             html,
-            blitz_dom::DocumentConfig::default(),
+            blitz_dom::DocumentConfig {
+                font_ctx: Some(crate::Fonts::default().0),
+                ..blitz_dom::DocumentConfig::default()
+            },
         ));
         let world = Rc::new(RefCell::new(world));
         registry.borrow_mut().insert_document(id, &world);
@@ -2971,6 +2923,7 @@ mod realm_tests {
             child_frame,
             &main.borrow().runtime,
             Rc::new(RefCell::new(Vec::new())),
+            Rc::new(RefCell::new(Vec::new())),
         )));
         registry.borrow_mut().insert_frame(child_frame, &child);
         let _realm =
@@ -3565,6 +3518,8 @@ mod realm_tests {
                 viewport_width: 300,
                 viewport_height: 200,
                 clip: None,
+                format: crate::ScreenshotFormat::Png,
+                omit_background: false,
             })
             .expect("render");
         embedded

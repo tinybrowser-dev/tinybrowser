@@ -296,12 +296,13 @@ fn materialize_iframe_document(
 ) {
     // https://html.spec.whatwg.org/multipage/document-sequences.html#creating-browsing-contexts
     let base_url = world_rc.borrow().main_base_url();
-    let (runtime, referrer_url, init_scripts, viewport) = {
+    let (runtime, referrer_url, init_scripts, bindings, viewport) = {
         let world = world_rc.borrow();
         (
             world.runtime.clone(),
             world.referrer_url.clone(),
             Rc::clone(&world.init_scripts),
+            Rc::clone(&world.bindings),
             world.viewport_size.get(),
         )
     };
@@ -312,7 +313,7 @@ fn materialize_iframe_document(
     } else {
         world_rc.borrow().origin.clone()
     };
-    let mut document = Document::with_shared(frame, &runtime, &init_scripts);
+    let mut document = Document::with_shared(frame, &runtime, &init_scripts, &bindings);
     document.set_viewport_size(viewport);
     {
         let world_handle = document.world();
@@ -353,7 +354,7 @@ fn materialize_auxiliary_document(
     opener: crate::protocol::OpenerPolicy,
     new_frames: &Rc<RefCell<Vec<CreatedFrame>>>,
 ) {
-    let (runtime, url, origin, policy, sandbox, init_scripts, viewport) = {
+    let (runtime, url, origin, policy, sandbox, init_scripts, bindings, viewport) = {
         let world = world_rc.borrow();
         (
             world.runtime.clone(),
@@ -362,10 +363,11 @@ fn materialize_auxiliary_document(
             world.policy.clone(),
             world.sandbox.auxiliary_flags(),
             Rc::clone(&world.init_scripts),
+            Rc::clone(&world.bindings),
             world.viewport_size.get(),
         )
     };
-    let mut document = Document::with_shared(frame, &runtime, &init_scripts);
+    let mut document = Document::with_shared(frame, &runtime, &init_scripts, &bindings);
     document.set_viewport_size(viewport);
     // https://html.spec.whatwg.org/multipage/document-sequences.html#creating-a-new-auxiliary-browsing-context
     {
@@ -619,6 +621,7 @@ impl Document {
         frame: FrameId,
         runtime: &FrameRuntime,
         init_scripts: &Rc<RefCell<Vec<(u64, String)>>>,
+        bindings: &Rc<RefCell<Vec<String>>>,
     ) -> Self {
         let document_url = about_blank();
         runtime.shared.borrow_mut().begin_document(frame);
@@ -627,6 +630,7 @@ impl Document {
             frame,
             runtime,
             Rc::clone(init_scripts),
+            Rc::clone(bindings),
         )));
         runtime.registry.borrow_mut().insert_frame(frame, &world);
         let new_frames: Rc<RefCell<Vec<CreatedFrame>>> = Rc::new(RefCell::new(Vec::new()));
@@ -790,13 +794,14 @@ impl Document {
             return;
         }
         let base_url = self.base_url();
-        let (runtime, referrer_url, origin, init_scripts, viewport) = {
+        let (runtime, referrer_url, origin, init_scripts, bindings, viewport) = {
             let world = self.world.borrow();
             (
                 world.runtime.clone(),
                 world.referrer_url.clone(),
                 world.origin.clone(),
                 Rc::clone(&world.init_scripts),
+                Rc::clone(&world.bindings),
                 world.viewport_size.get(),
             )
         };
@@ -811,7 +816,7 @@ impl Document {
             } else {
                 origin.clone()
             };
-            let mut document = Document::with_shared(frame, &runtime, &init_scripts);
+            let mut document = Document::with_shared(frame, &runtime, &init_scripts, &bindings);
             // https://html.spec.whatwg.org/multipage/iframe-embed-object.html#the-iframe-element:html-element-insertion-steps
             document.set_viewport_size(viewport);
             {
@@ -1912,6 +1917,20 @@ impl Document {
         }
     }
 
+    // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-addBinding
+    pub(crate) fn run_binding(&mut self, name: &str) {
+        if !self.ensure_js_ok() {
+            return;
+        }
+        let failed = match self.js.as_ref() {
+            Some(js) => js.add_binding(name).is_err(),
+            None => true,
+        };
+        if failed {
+            self.record_event(RendererEvent::ScriptFailed);
+        }
+    }
+
     fn reset_js_realm(&mut self, reason: RealmReset) {
         // https://html.spec.whatwg.org/multipage/webappapis.html#concept-task-runnable
         for task in std::mem::take(&mut self.tasks) {
@@ -1927,6 +1946,12 @@ impl Document {
         }
         if reason == RealmReset::Navigation {
             self.shared.borrow_mut().begin_document(self.frame);
+            // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-evaluate
+            self.world
+                .borrow_mut()
+                .evaluation_replies
+                .borrow_mut()
+                .clear();
         }
         let old = std::mem::replace(
             &mut self.dials,
@@ -1934,6 +1959,9 @@ impl Document {
         );
         old.terminate();
         self.load_delay = LoadDelay::default();
+        if reason == RealmReset::Reopen {
+            self.record_event(RendererEvent::Browser(BrowserEvent::RealmReplaced));
+        }
         self.events.retain(|event| {
             !matches!(
                 event,

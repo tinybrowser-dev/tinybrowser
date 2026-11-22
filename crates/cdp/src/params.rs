@@ -51,6 +51,31 @@ pub(crate) struct GetTargetInfo {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Navigate {
     pub(crate) url: String,
+    pub(crate) referrer: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RgbaColor {
+    pub(crate) a: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DefaultBackgroundColorOverride {
+    pub(crate) color: Option<RgbaColor>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct GetResponseBody {
+    pub(crate) request_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SetExtraHttpHeaders {
+    pub(crate) headers: serde_json::Map<String, Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -63,6 +88,7 @@ pub(crate) struct NavigateToHistoryEntry {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CaptureScreenshot {
     pub(crate) format: Option<String>,
+    pub(crate) quality: Option<u8>,
     pub(crate) clip: Option<ScreenshotClip>,
     pub(crate) frame_id: Option<String>,
 }
@@ -89,6 +115,12 @@ pub(crate) struct AddInitScript {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct AddBinding {
+    pub(crate) name: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct RemoveInitScript {
     pub(crate) identifier: String,
 }
@@ -104,6 +136,8 @@ pub(crate) struct SetDeviceMetrics {
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct MediaFeature {
+    #[serde(default)]
+    pub(crate) name: String,
     pub(crate) value: String,
 }
 
@@ -226,6 +260,8 @@ pub(crate) struct MouseEvent {
     pub(crate) x: f64,
     pub(crate) y: f64,
     pub(crate) button: Option<String>,
+    pub(crate) click_count: Option<u32>,
+    pub(crate) modifiers: Option<u32>,
     pub(crate) delta_x: Option<f64>,
     pub(crate) delta_y: Option<f64>,
 }
@@ -237,6 +273,7 @@ pub(crate) struct KeyEvent {
     pub(crate) kind: String,
     pub(crate) key: Option<String>,
     pub(crate) text: Option<String>,
+    pub(crate) modifiers: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]

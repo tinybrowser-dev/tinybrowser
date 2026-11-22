@@ -481,6 +481,18 @@ impl BrowsingContextHost for HostServices {
         }
     }
 
+    fn navigate_top_level(&self, url: &Url, source: &renderer::NavigationSource) -> bool {
+        matches!(
+            self.call(ServiceCall::BrowsingContext(
+                BrowsingContextCall::NavigateTopLevel {
+                    url: url.clone(),
+                    source: source.clone(),
+                },
+            )),
+            Some(ServiceReply::Unit)
+        )
+    }
+
     fn frame_created(
         &self,
         frame: FrameId,

@@ -72,6 +72,9 @@ impl Document {
             DomRequest::GetNodeForLocation { x, y } => Ok(self.dom_node_for_location(*x, *y)),
             DomRequest::GetBoxModel { node } => Ok(self.dom_box_model(*node)),
             DomRequest::GetContentQuads { node } => Ok(self.dom_content_quads(*node)),
+            DomRequest::ScrollIntoViewIfNeeded { node } => {
+                Ok(self.dom_scroll_into_view_if_needed(*node))
+            }
             DomRequest::GetComputedStyle { node } => Ok(self.dom_computed_style(*node)),
             DomRequest::GetStyleSheets => Ok(self.dom_style_sheets()),
             DomRequest::GetStorageKey => Ok(self.dom_storage_key()),
@@ -333,8 +336,7 @@ impl Document {
             let Some(root) = world.main_document_root() else {
                 return DomReply::NodeForLocation { node_id: 0 };
             };
-            let (scroll_x, scroll_y) = crate::js::viewport_scroll(&world, root);
-            crate::js::element_at_point(&world, root, x - scroll_x, y - scroll_y)
+            crate::js::element_at_point(&world, root, x, y)
         };
         DomReply::NodeForLocation {
             node_id: node.map_or(0, |node| self.remote_id(node)),
@@ -346,12 +348,10 @@ impl Document {
             return DomReply::BoxModel { model: None };
         };
         let world = self.world.borrow();
-        let Some((left, top, width, height)) = crate::js::element_box(&world, node) else {
+        let rects = crate::js::element_client_rects(&world, node);
+        let Some((left, top, width, height)) = crate::js::bounding_rect(&rects) else {
             return DomReply::BoxModel { model: None };
         };
-        let (scroll_x, scroll_y) = crate::js::viewport_scroll(&world, node);
-        let left = left - scroll_x;
-        let top = top - scroll_y;
         let right = left + width;
         let bottom = top + height;
         let quad = [left, top, right, top, right, bottom, left, bottom];
@@ -372,17 +372,42 @@ impl Document {
             return DomReply::ContentQuads { quads: Vec::new() };
         };
         let world = self.world.borrow();
-        let Some((left, top, width, height)) = crate::js::element_box(&world, node) else {
-            return DomReply::ContentQuads { quads: Vec::new() };
+        let quads = crate::js::element_client_rects(&world, node)
+            .into_iter()
+            .map(|(left, top, width, height)| {
+                let right = left + width;
+                let bottom = top + height;
+                [left, top, right, top, right, bottom, left, bottom]
+            })
+            .collect();
+        DomReply::ContentQuads { quads }
+    }
+
+    // https://chromedevtools.github.io/devtools-protocol/tot/DOM/#method-scrollIntoViewIfNeeded
+    fn dom_scroll_into_view_if_needed(&self, remote: u64) -> DomReply {
+        let Some(node) = self.target_node(remote) else {
+            return DomReply::Unit;
         };
-        let (scroll_x, scroll_y) = crate::js::viewport_scroll(&world, node);
-        let left = left - scroll_x;
-        let top = top - scroll_y;
-        let right = left + width;
-        let bottom = top + height;
-        DomReply::ContentQuads {
-            quads: vec![[left, top, right, top, right, bottom, left, bottom]],
+        let world = self.world.borrow();
+        let Some(mut parsed) = world.document_mut(node) else {
+            return DomReply::Unit;
+        };
+        parsed.document.base.resolve(crate::animation_seconds());
+        if parsed
+            .document
+            .base
+            .get_node(node.node)
+            .is_some_and(blitz_dom::Node::has_boxes)
+        {
+            parsed.document.base.scroll_into_view(
+                node.node,
+                blitz_dom::ScrollBehavior::Instant,
+                blitz_dom::ScrollLogicalPosition::Center,
+                blitz_dom::ScrollLogicalPosition::Center,
+                blitz_dom::ScrollIntoViewContainer::All,
+            );
         }
+        DomReply::Unit
     }
 
     // https://chromedevtools.github.io/devtools-protocol/tot/CSS/#method-getComputedStyleForNode

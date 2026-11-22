@@ -1,0 +1,406 @@
+{
+  "elementhandle-bounding-box.spec.ts::should get bounding box of element inside a cross-origin iframe": {
+    "expected": "FAIL",
+    "reason": "TypeError: Cannot read properties of undefined (reading 'waitForSelector')"
+  },
+  "elementhandle-bounding-box.spec.ts::should handle nested frames": {
+    "expected": "FAIL",
+    "reason": "TimeoutError: locator.elementHandle: Timeout 1500ms exceeded."
+  },
+  "locator-query.spec.ts::count() should not throw during navigation": {
+    "expected": "FAIL",
+    "reason": "TypeError: Cannot read properties of undefined (reading 'setContent')"
+  },
+  "locator-query.spec.ts::should allow some, but not all nested frameLocators": {
+    "expected": "FAIL",
+    "reason": "Error: expect(locator).toHaveText(expected) failed"
+  },
+  "locator-query.spec.ts::should enforce same frame for has/leftOf/rightOf/above/below/near": {
+    "expected": "FAIL",
+    "reason": "Error: expect(received).toContain(expected) // indexOf"
+  },
+  "locator-query.spec.ts::should keep the capture when removing a common frame prefix": {
+    "expected": "FAIL",
+    "reason": "Error: expect(locator).toHaveAttribute(expected) failed"
+  },
+  "locator-query.spec.ts::should support has:locator": {
+    "expected": "FAIL",
+    "reason": "Error: expect(locator).toHaveCount(expected) failed"
+  },
+  "page-add-init-script.spec.ts::init script should run only once in iframe": {
+    "expected": "FAIL",
+    "reason": "Error: expect(received).toEqual(expected) // deep equality"
+  },
+  "page-basic.spec.ts::frame.press should work": {
+    "expected": "FAIL",
+    "reason": "TypeError: Cannot read properties of null (reading 'press')"
+  },
+  "page-basic.spec.ts::page.close should work with window.close": {
+    "expected": "FAIL",
+    "reason": "TimeoutError: page.waitForEvent: Timeout 1500ms exceeded while waiting for event \"popup\""
+  },
+  "page-basic.spec.ts::page.frame should respect name": {
+    "expected": "FAIL",
+    "reason": "Error: expect(received).toBeTruthy()"
+  },
+  "page-basic.spec.ts::page.frame should respect url": {
+    "expected": "FAIL",
+    "reason": "TypeError: Cannot read properties of null (reading 'url')"
+  },
+  "page-basic.spec.ts::page.url should include hashes": {
+    "expected": "FAIL",
+    "reason": "Error: expect(received).toBe(expected) // Object.is equality"
+  },
+  "page-basic.spec.ts::should have sane user agent": {
+    "expected": "FAIL",
+    "reason": "Error: expect(received).toBe(expected) // Object.is equality"
+  },
+  "page-basic.spec.ts::should provide access to the opener page": {
+    "expected": "FAIL",
+    "reason": "TimeoutError: page.waitForEvent: Timeout 1500ms exceeded while waiting for event \"popup\""
+  },
+  "page-click.spec.ts::ensure events are dispatched in the individual tasks": {
+    "expected": "FAIL",
+    "reason": "Error: expect(received).toEqual(expected) // deep equality"
+  },
+  "page-click.spec.ts::should click a button that is overlaid by a permission popup": {
+    "expected": "FAIL",
+    "reason": "Error: page.evaluate: script: cannot read property 'getCurrentPosition' of undefined |     at <anonymous> (<input>:2:5)"
+  },
+  "page-click.spec.ts::should click button inside frameset": {
+    "expected": "FAIL",
+    "reason": "TypeError: elementHandle.contentFrame: Cannot read properties of null (reading 'frameId')"
+  },
+  "page-click.spec.ts::should click in a nested transformed iframe": {
+    "expected": "FAIL",
+    "reason": "TimeoutError: locator.evaluate: Timeout 1500ms exceeded."
+  },
+  "page-click.spec.ts::should click in a transformed iframe": {
+    "expected": "FAIL",
+    "reason": "TimeoutError: locator.click: Timeout 1500ms exceeded."
+  },
+  "page-click.spec.ts::should click in a transformed iframe with force": {
+    "expected": "FAIL",
+    "reason": "TimeoutError: locator.click: Timeout 1500ms exceeded."
+  },
+  "page-click.spec.ts::should click in an iframe with border": {
+    "expected": "FAIL",
+    "reason": "TimeoutError: locator.click: Timeout 1500ms exceeded."
+  },
+  "page-click.spec.ts::should click in an iframe with border 2": {
+    "expected": "FAIL",
+    "reason": "TimeoutError: locator.click: Timeout 1500ms exceeded."
+  },
+  "page-click.spec.ts::should click into shadow root with slotted div": {
+    "expected": "FAIL",
+    "reason": "TimeoutError: locator.click: Timeout 1500ms exceeded."
+  },
+  "page-click.spec.ts::should click on checkbox input and toggle": {
+    "expected": "FAIL",
+    "reason": "Error: expect(received).toEqual(expected) // deep equality"
+  },
+  "page-click.spec.ts::should click svg": {
+    "expected": "FAIL",
+    "reason": "TimeoutError: page.click: Timeout 1500ms exceeded."
+  },
+  "page-click.spec.ts::should click the button if window.Node is removed": {
+    "expected": "FAIL",
+    "reason": "Error: page.click: script: Node is not defined |     at previewNode (eval_script:7806:27)"
+  },
+  "page-click.spec.ts::should click the button inside an iframe": {
+    "expected": "FAIL",
+    "reason": "TypeError: Cannot read properties of undefined (reading '$')"
+  },
+  "page-click.spec.ts::should click the button when window.innerWidth is corrupted": {
+    "expected": "FAIL",
+    "reason": "TimeoutError: page.click: Timeout 1500ms exceeded."
+  },
+  "page-click.spec.ts::should click the button with fixed position inside an iframe": {
+    "expected": "SKIP",
+    "reason": "skipped"
+  },
+  "page-click.spec.ts::should fail when element is animating from outside the viewport with force": {
+    "expected": "FAIL",
+    "reason": "Error: expect(received).toContain(expected) // indexOf"
+  },
+  "page-click.spec.ts::should fail when obscured and not waiting for hit target": {
+    "expected": "FAIL",
+    "reason": "Error: elementHandle.click: Element is not visible"
+  },
+  "page-click.spec.ts::should issue clicks in parallel in page and popup": {
+    "expected": "FAIL",
+    "reason": "TimeoutError: page.waitForEvent: Timeout 1500ms exceeded while waiting for event \"popup\""
+  },
+  "page-click.spec.ts::should not hang when frame is detached": {
+    "expected": "FAIL",
+    "reason": "TypeError: Cannot read properties of undefined (reading 'goto')"
+  },
+  "page-click.spec.ts::should not wait with noAutoWaiting 2": {
+    "expected": "FAIL",
+    "reason": "TypeError: Cannot read properties of undefined (reading 'message')"
+  },
+  "page-click.spec.ts::should report nice error when element is detached and force-clicked": {
+    "expected": "FAIL",
+    "reason": "Error: expect(received).toContain(expected) // indexOf"
+  },
+  "page-click.spec.ts::should retry when element is animating from outside the viewport": {
+    "expected": "FAIL",
+    "reason": "Error: elementHandle.click: Element is not attached to the DOM"
+  },
+  "page-click.spec.ts::should scroll and click the button with smooth scroll behavior": {
+    "expected": "FAIL",
+    "reason": "Test timeout of 3000ms exceeded."
+  },
+  "page-click.spec.ts::should select the text by triple clicking": {
+    "expected": "FAIL",
+    "reason": "Error: expect(received).toBe(expected) // Object.is equality"
+  },
+  "page-click.spec.ts::should wait for stable position": {
+    "expected": "FAIL",
+    "reason": "Error: expect(received).toBe(expected) // Object.is equality"
+  },
+  "page-evaluate.spec.ts::should await promise from popup": {
+    "expected": "FAIL",
+    "reason": "Error: page.evaluate: script: not a function |     at <anonymous> (<input>:3:16)"
+  },
+  "page-evaluate.spec.ts::should not throw an error when evaluation does a synchronous navigation and returns an object": {
+    "expected": "FAIL",
+    "reason": "Error: page.evaluate: script: not a function |     at <anonymous> (<input>:2:21)"
+  },
+  "page-evaluate.spec.ts::should not throw an error when evaluation does a synchronous navigation and returns undefined": {
+    "expected": "FAIL",
+    "reason": "Error: page.evaluate: script: not a function |     at <anonymous> (<input>:2:21)"
+  },
+  "page-evaluate.spec.ts::should properly serialize window.performance object": {
+    "expected": "FAIL",
+    "reason": "Error: expect(received).toEqual(expected) // deep equality"
+  },
+  "page-evaluate.spec.ts::should simulate a user gesture": {
+    "expected": "FAIL",
+    "reason": "Error: page.evaluate: script: not a function |     at <anonymous> (<input>:3:14)"
+  },
+  "page-evaluate.spec.ts::should throw a nice error after a navigation": {
+    "expected": "FAIL",
+    "reason": "Error: page.evaluate: script: not a function |     at <anonymous> (<input>:2:21)"
+  },
+  "page-evaluate.spec.ts::should throw for too deep reference chain": {
+    "expected": "FAIL",
+    "reason": "Error: expect(received).rejects.toThrow()"
+  },
+  "page-evaluate.spec.ts::should throw when evaluation triggers reload": {
+    "expected": "FAIL",
+    "reason": "Error: expect(received).toContain(expected) // indexOf"
+  },
+  "page-evaluate.spec.ts::should throw when frame is detached": {
+    "expected": "FAIL",
+    "reason": "TypeError: Cannot read properties of undefined (reading 'evaluate')"
+  },
+  "page-evaluate.spec.ts::should transfer 100Mb of data from page to node.js": {
+    "expected": "FAIL",
+    "reason": "Error: page.evaluate: script: Job raised an exception"
+  },
+  "page-fill.spec.ts::should be able to fill input[type=number] with empty string": {
+    "expected": "FAIL",
+    "reason": "Error: expect(received).toBe(expected) // Object.is equality"
+  },
+  "page-fill.spec.ts::should throw nice error without injected script stack when element is not an <input>": {
+    "expected": "FAIL",
+    "reason": "Error: expect(received).toContain(expected) // indexOf"
+  },
+  "page-fill.spec.ts::should throw on unsupported inputs": {
+    "expected": "FAIL",
+    "reason": "Error: expect(received).toContain(expected) // indexOf"
+  },
+  "page-goto.spec.ts::js redirect overrides url bar navigation ": {
+    "expected": "FAIL",
+    "reason": "Error: Test timeout of 3000ms exceeded"
+  },
+  "page-goto.spec.ts::should capture cross-process iframe navigation request": {
+    "expected": "FAIL",
+    "reason": "Error: expect(received).toBe(expected) // Object.is equality"
+  },
+  "page-goto.spec.ts::should capture iframe navigation request": {
+    "expected": "FAIL",
+    "reason": "Error: expect(received).toBe(expected) // Object.is equality"
+  },
+  "page-goto.spec.ts::should fail when main resources failed to load": {
+    "expected": "FAIL",
+    "reason": "Error: expect(received).toContain(expected) // indexOf"
+  },
+  "page-goto.spec.ts::should fail when replaced by another navigation": {
+    "expected": "FAIL",
+    "reason": "TimeoutError: page.goto: Timeout 2ms exceeded."
+  },
+  "page-goto.spec.ts::should navigate from file URL to about:blank": {
+    "expected": "FAIL",
+    "reason": "Error: page.goto: Protocol error (Page.navigate): Cannot navigate to invalid URL"
+  },
+  "page-goto.spec.ts::should not resolve goto upon window.stop()": {
+    "expected": "FAIL",
+    "reason": "Error: expect(received).toBe(expected) // Object.is equality"
+  },
+  "page-goto.spec.ts::should return from goto if new navigation is started": {
+    "expected": "FAIL",
+    "reason": "TimeoutError: page.goto: Timeout 2000ms exceeded."
+  },
+  "page-goto.spec.ts::should return last response in redirect chain": {
+    "expected": "FAIL",
+    "reason": "Error: expect(received).toBe(expected) // Object.is equality"
+  },
+  "page-goto.spec.ts::should succeed on url bar navigation when there is pending navigation": {
+    "expected": "FAIL",
+    "reason": "Test timeout of 3000ms exceeded."
+  },
+  "page-goto.spec.ts::should wait for load when iframe attaches and detaches": {
+    "expected": "FAIL",
+    "reason": "TimeoutError: page.waitForEvent: Timeout 1500ms exceeded while waiting for event \"framedetached\""
+  },
+  "page-goto.spec.ts::should work with Cross-Origin-Opener-Policy after redirect": {
+    "expected": "FAIL",
+    "reason": "Error: expect(received).toEqual(expected) // deep equality"
+  },
+  "page-goto.spec.ts::should work with Cross-Origin-Opener-Policy and interception": {
+    "expected": "FAIL",
+    "reason": "Error: page.route: Protocol error (Fetch.enable): 'Fetch.enable' wasn't found"
+  },
+  "page-goto.spec.ts::should work with file URL": {
+    "expected": "FAIL",
+    "reason": "Error: page.goto: Protocol error (Page.navigate): Cannot navigate to invalid URL"
+  },
+  "page-goto.spec.ts::should work with file URL with subframes": {
+    "expected": "FAIL",
+    "reason": "Error: page.goto: Protocol error (Page.navigate): Cannot navigate to invalid URL"
+  },
+  "page-goto.spec.ts::should work with lazy loading iframes": {
+    "expected": "FAIL",
+    "reason": "Error: expect(received).toBe(expected) // Object.is equality"
+  },
+  "page-history.spec.ts::goBack/goForward should work with bfcache-able pages": {
+    "expected": "FAIL",
+    "reason": "Test timeout of 3000ms exceeded."
+  },
+  "page-history.spec.ts::page.goBack during renderer-initiated navigation": {
+    "expected": "FAIL",
+    "reason": "Test timeout of 3000ms exceeded."
+  },
+  "page-history.spec.ts::page.goBack should work for file urls": {
+    "expected": "FAIL",
+    "reason": "Error: page.goto: Protocol error (Page.navigate): Cannot navigate to invalid URL"
+  },
+  "page-history.spec.ts::page.goBack should work with HistoryAPI": {
+    "expected": "FAIL",
+    "reason": "Error: expect(received).toBe(expected) // Object.is equality"
+  },
+  "page-history.spec.ts::page.goForward during renderer-initiated navigation": {
+    "expected": "FAIL",
+    "reason": "Test timeout of 3000ms exceeded."
+  },
+  "page-history.spec.ts::page.reload during renderer-initiated navigation": {
+    "expected": "FAIL",
+    "reason": "Test timeout of 3000ms exceeded."
+  },
+  "page-history.spec.ts::regression test for issue 20791": {
+    "expected": "FAIL",
+    "reason": "Test timeout of 3000ms exceeded."
+  },
+  "page-history.spec.ts::should reload proper page": {
+    "expected": "FAIL",
+    "reason": "TimeoutError: page.waitForEvent: Timeout 1500ms exceeded while waiting for event \"popup\""
+  },
+  "page-screenshot.spec.ts::mask option › should mask in parallel": {
+    "expected": "FAIL",
+    "reason": "Test timeout of 3000ms exceeded."
+  },
+  "page-screenshot.spec.ts::mask option › should mask inside iframe": {
+    "expected": "FAIL",
+    "reason": "Test timeout of 3000ms exceeded."
+  },
+  "page-screenshot.spec.ts::mask option › should work when subframe has stalled navigation": {
+    "expected": "FAIL",
+    "reason": "Error: page.route: Protocol error (Fetch.enable): 'Fetch.enable' wasn't found"
+  },
+  "page-screenshot.spec.ts::mask option › should work with elementhandle": {
+    "expected": "FAIL",
+    "reason": "Error: elementHandle.screenshot: Node is either not visible or not an HTMLElement"
+  },
+  "page-screenshot.spec.ts::mask option › should work with locator": {
+    "expected": "FAIL",
+    "reason": "Error: locator.screenshot: Node is either not visible or not an HTMLElement"
+  },
+  "page-screenshot.spec.ts::page screenshot animations › should capture screenshots after layoutchanges in transitionend event": {
+    "expected": "FAIL",
+    "reason": "Error: expect(locator).toBeVisible() failed"
+  },
+  "page-screenshot.spec.ts::page screenshot animations › should fire transitionend for finite transitions": {
+    "expected": "FAIL",
+    "reason": "Error: locator.screenshot: Node is either not visible or not an HTMLElement"
+  },
+  "page-screenshot.spec.ts::page screenshot animations › should not capture infinite css animation": {
+    "expected": "FAIL",
+    "reason": "Error: locator.screenshot: Node is either not visible or not an HTMLElement"
+  },
+  "page-screenshot.spec.ts::page screenshot animations › should not capture infinite web animations": {
+    "expected": "FAIL",
+    "reason": "Error: locator.screenshot: Node is either not visible or not an HTMLElement"
+  },
+  "page-screenshot.spec.ts::page screenshot animations › should not capture pseudo element css animation": {
+    "expected": "FAIL",
+    "reason": "Error: locator.screenshot: Node is either not visible or not an HTMLElement"
+  },
+  "page-screenshot.spec.ts::page screenshot animations › should not change animation with playbackRate equal to 0": {
+    "expected": "FAIL",
+    "reason": "Error: page.evaluate: not a function"
+  },
+  "page-screenshot.spec.ts::page screenshot animations › should stop animations that happen right before screenshot": {
+    "expected": "FAIL",
+    "reason": "Error: expect(received).toBe(expected) // Object.is equality"
+  },
+  "page-screenshot.spec.ts::page screenshot animations › should trigger particular events for INfinite css animation": {
+    "expected": "FAIL",
+    "reason": "Error: locator.evaluate: not a function"
+  },
+  "page-screenshot.spec.ts::page screenshot animations › should trigger particular events for css transitions": {
+    "expected": "FAIL",
+    "reason": "Error: locator.evaluate: not a function"
+  },
+  "page-screenshot.spec.ts::page screenshot animations › should trigger particular events for finite css animation": {
+    "expected": "FAIL",
+    "reason": "Error: locator.evaluate: not a function"
+  },
+  "page-screenshot.spec.ts::page screenshot › quality option should work for webp": {
+    "expected": "FAIL",
+    "reason": "Error: expect(received).toBeLessThan(expected)"
+  },
+  "page-screenshot.spec.ts::page screenshot › should capture blinking caret if explicitly asked for": {
+    "expected": "FAIL",
+    "reason": "Error: locator.screenshot: Node is either not visible or not an HTMLElement"
+  },
+  "page-screenshot.spec.ts::page screenshot › should capture blinking caret in shadow dom": {
+    "expected": "FAIL",
+    "reason": "Error: locator.screenshot: Element is not attached to the DOM"
+  },
+  "page-screenshot.spec.ts::page screenshot › should clip rect with fullPage": {
+    "expected": "FAIL",
+    "reason": "Error: expect(Buffer).toMatchSnapshot(expected) failed"
+  },
+  "page-screenshot.spec.ts::page screenshot › should not capture blinking caret by default": {
+    "expected": "FAIL",
+    "reason": "Error: locator.screenshot: Node is either not visible or not an HTMLElement"
+  },
+  "page-screenshot.spec.ts::page screenshot › should take fullPage screenshots during navigation": {
+    "expected": "FAIL",
+    "reason": "Error: page.screenshot: script: cannot read property 'evaluate' of undefined |     at <anonymous> (eval_script:1:30)"
+  },
+  "page-screenshot.spec.ts::page screenshot › should work while navigating": {
+    "expected": "FAIL",
+    "reason": "TimeoutError: page.screenshot: Timeout 1500ms exceeded."
+  },
+  "page-screenshot.spec.ts::page screenshot › webp screenshots should be lossless by default": {
+    "expected": "FAIL",
+    "reason": "Error: expect(received).toBe(expected) // Object.is equality"
+  },
+  "page-select-option.spec.ts::should work when re-defining top-level Event class": {
+    "expected": "FAIL",
+    "reason": "Error: page.selectOption: not a function"
+  }
+}

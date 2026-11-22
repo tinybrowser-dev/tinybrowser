@@ -5,7 +5,8 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use browser::{
     AxNode, AxPropertyValue, BrowserHandle, DEFAULT_VIEWPORT, DomNode, DomReply, DomRequest,
-    FrameId, RemoteValue, ScreenshotRequest, TabError, TabEvent, TabHandle, TabId,
+    FrameId, RemoteValue, ScreenshotFormat, ScreenshotRequest, TabError, TabEvent, TabHandle,
+    TabId,
 };
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
@@ -69,12 +70,16 @@ pub(crate) enum PageHandler {
     Navigate,
     NavigateToHistoryEntry,
     CaptureScreenshot,
+    SetDefaultBackgroundColorOverride,
+    NetworkGetResponseBody,
+    NetworkSetExtraHttpHeaders,
     CreateIsolatedWorld,
     SetLifecycleEventsEnabled,
     RuntimeEvaluate,
     RuntimeCallFunctionOn,
     RuntimeEnable,
     RuntimeDisable,
+    RuntimeAddBinding,
     RuntimeReleaseObject,
     RuntimeReleaseObjectGroup,
     CssEnable,
@@ -120,6 +125,7 @@ pub(crate) enum ScriptMethod {
     DomGetNodeForLocation,
     DomGetBoxModel,
     DomGetContentQuads,
+    DomScrollIntoViewIfNeeded,
     InputMouseEvent,
     InputKeyEvent,
     InputInsertText,
@@ -312,9 +318,29 @@ const ROUTES: &[Route] = &[
         handler: Handler::Page(PageHandler::RuntimeCallFunctionOn),
     },
     Route {
+        method: "Emulation.setDefaultBackgroundColorOverride",
+        target: TargetClass::Page,
+        handler: Handler::Page(PageHandler::SetDefaultBackgroundColorOverride),
+    },
+    Route {
+        method: "Network.getResponseBody",
+        target: TargetClass::Page,
+        handler: Handler::Page(PageHandler::NetworkGetResponseBody),
+    },
+    Route {
+        method: "Network.setExtraHTTPHeaders",
+        target: TargetClass::Page,
+        handler: Handler::Page(PageHandler::NetworkSetExtraHttpHeaders),
+    },
+    Route {
         method: "Runtime.getProperties",
         target: TargetClass::Page,
         handler: Handler::Page(PageHandler::Script(ScriptMethod::GetProperties)),
+    },
+    Route {
+        method: "Runtime.addBinding",
+        target: TargetClass::Page,
+        handler: Handler::Page(PageHandler::RuntimeAddBinding),
     },
     Route {
         method: "Runtime.releaseObject",
@@ -382,6 +408,11 @@ const ROUTES: &[Route] = &[
         handler: Handler::Page(PageHandler::Script(ScriptMethod::DomGetContentQuads)),
     },
     Route {
+        method: "DOM.scrollIntoViewIfNeeded",
+        target: TargetClass::Page,
+        handler: Handler::Page(PageHandler::Script(ScriptMethod::DomScrollIntoViewIfNeeded)),
+    },
+    Route {
         method: "Input.dispatchMouseEvent",
         target: TargetClass::Page,
         handler: Handler::Page(PageHandler::Script(ScriptMethod::InputMouseEvent)),
@@ -407,6 +438,11 @@ const ROUTES: &[Route] = &[
         handler: Handler::Page(PageHandler::Script(
             ScriptMethod::InputEmulateTouchFromMouse,
         )),
+    },
+    Route {
+        method: "Input.setInterceptDrags",
+        target: TargetClass::Page,
+        handler: Handler::Accept(Accepted::DomainWithoutEvents),
     },
     Route {
         method: "CSS.enable",
@@ -580,6 +616,9 @@ pub(crate) async fn run_script(
         ScriptMethod::DomGetNodeForLocation => dom_node_for_location(tab, params).await,
         ScriptMethod::DomGetBoxModel => dom_box_model(tab, params).await,
         ScriptMethod::DomGetContentQuads => dom_content_quads(tab, params).await,
+        ScriptMethod::DomScrollIntoViewIfNeeded => {
+            dom_scroll_into_view_if_needed(tab, params).await
+        }
         ScriptMethod::InputMouseEvent => input_mouse_event(tab, params).await,
         ScriptMethod::InputKeyEvent => input_key_event(tab, params).await,
         ScriptMethod::InputInsertText => input_insert_text(tab, params).await,
@@ -745,13 +784,24 @@ fn emulated_media_is_default(params: &crate::params::SetEmulatedMedia) -> bool {
     if params
         .media
         .as_deref()
-        .is_some_and(|media| !media.is_empty())
+        .is_some_and(|media| !media.is_empty() && media != "screen")
     {
         return false;
     }
     match &params.features {
         None => true,
-        Some(features) => features.iter().all(|feature| feature.value.is_empty()),
+        Some(features) => features.iter().all(|feature| {
+            feature.value.is_empty()
+                || matches!(
+                    (feature.name.as_str(), feature.value.as_str()),
+                    ("prefers-color-scheme", "light")
+                        | (
+                            "prefers-reduced-motion" | "prefers-contrast",
+                            "no-preference"
+                        )
+                        | ("forced-colors", "none")
+                )
+        }),
     }
 }
 
@@ -771,6 +821,15 @@ async fn remove_init_script(params: &Value, tab: &TabHandle) -> Result<Value, Di
         .parse::<u64>()
         .map_err(|_| DispatchError::InvalidParams("identifier".to_owned()))?;
     tab.remove_init_script(id)
+        .await
+        .map_err(|error| DispatchError::Failed(error.to_string()))?;
+    Ok(json!({}))
+}
+
+// https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-addBinding
+pub(crate) async fn add_binding(params: &Value, tab: &TabHandle) -> Result<Value, DispatchError> {
+    let params: crate::params::AddBinding = crate::params::parse(params)?;
+    tab.add_binding(&params.name, true)
         .await
         .map_err(|error| DispatchError::Failed(error.to_string()))?;
     Ok(json!({}))
@@ -941,26 +1000,74 @@ pub(crate) async fn input_mouse_event(
         "forward" => 4,
         _ => 0,
     };
+    let modifiers = params.modifiers.unwrap_or(0);
     if kind == "mouseWheel" {
         let actions = json!({"actions": [{"type": "wheel", "id": "wheel", "actions": [{
             "type": "scroll", "x": params.x, "y": params.y,
             "deltaX": params.delta_x.unwrap_or(0.0),
             "deltaY": params.delta_y.unwrap_or(0.0),
+            "modifiers": modifiers,
         }]}]});
         return run_actions(tab, &actions).await;
     }
-    let mut items =
-        vec![json!({"type": "pointerMove", "origin": "viewport", "x": params.x, "y": params.y})];
-    match kind {
-        "mousePressed" => items.push(json!({"type": "pointerDown", "button": button})),
-        "mouseReleased" => items.push(json!({"type": "pointerUp", "button": button})),
-        _ => {}
-    }
+    let item = match kind {
+        "mousePressed" => json!({
+            "type": "pointerDown",
+            "x": params.x,
+            "y": params.y,
+            "button": button,
+            "clickCount": params.click_count.unwrap_or(1),
+            "modifiers": modifiers,
+        }),
+        "mouseReleased" => json!({
+            "type": "pointerUp",
+            "x": params.x,
+            "y": params.y,
+            "button": button,
+            "clickCount": params.click_count.unwrap_or(1),
+            "modifiers": modifiers,
+        }),
+        _ => json!({
+            "type": "pointerMove",
+            "origin": "viewport",
+            "x": params.x,
+            "y": params.y,
+            "modifiers": modifiers,
+        }),
+    };
     let actions = json!({"actions": [{
         "type": "pointer", "id": "mouse", "parameters": {"pointerType": "mouse"},
-        "actions": items,
+        "actions": [item],
     }]});
     run_actions(tab, &actions).await
+}
+
+fn cdp_key_value<'a>(key: &'a str, text: &'a str, kind: &str) -> &'a str {
+    if kind == "char" {
+        return text;
+    }
+    match key {
+        "Backspace" => "\u{E003}",
+        "Tab" => "\u{E004}",
+        "Enter" => "\u{E006}",
+        "Shift" => "\u{E008}",
+        "Control" => "\u{E009}",
+        "Alt" => "\u{E00A}",
+        "Escape" => "\u{E00C}",
+        " " => "\u{E00D}",
+        "PageUp" => "\u{E00E}",
+        "PageDown" => "\u{E00F}",
+        "End" => "\u{E010}",
+        "Home" => "\u{E011}",
+        "ArrowLeft" => "\u{E012}",
+        "ArrowUp" => "\u{E013}",
+        "ArrowRight" => "\u{E014}",
+        "ArrowDown" => "\u{E015}",
+        "Delete" => "\u{E017}",
+        "Meta" => "\u{E03D}",
+        "" => text,
+        other => other,
+    }
 }
 
 pub(crate) async fn input_key_event(
@@ -971,7 +1078,7 @@ pub(crate) async fn input_key_event(
     let kind = params.kind.as_str();
     let key = params.key.as_deref().unwrap_or("");
     let text = params.text.as_deref().unwrap_or("");
-    let value = if kind == "char" { text } else { key };
+    let value = cdp_key_value(key, text, kind);
     if value.is_empty() {
         return Ok(json!({}));
     }
@@ -979,6 +1086,7 @@ pub(crate) async fn input_key_event(
     let actions = json!({"actions": [{"type": "key", "id": "keyboard", "actions": [{
         "type": if down { "keyDown" } else { "keyUp" },
         "value": value,
+        "modifiers": params.modifiers.unwrap_or(0),
     }]}]});
     run_actions(tab, &actions).await
 }
@@ -1296,21 +1404,26 @@ pub(crate) async fn dom_box_model(tab: &TabHandle, params: &Value) -> Result<Val
     let node = match target_node(tab, &target).await? {
         TargetNode::Default => 0,
         TargetNode::Node(id) => id,
-        TargetNode::Missing => return Ok(json!({"model": null})),
+        TargetNode::Missing => {
+            return Err(DispatchError::Failed("Could not compute box model.".into()));
+        }
     };
     let reply = dom_request(tab, DomRequest::GetBoxModel { node }).await?;
     let DomReply::BoxModel { model } = reply else {
         return Err(DispatchError::BadHelperReply("DOM.getBoxModel"));
     };
+    let Some(model) = model else {
+        return Err(DispatchError::Failed("Could not compute box model.".into()));
+    };
     Ok(json!({
-        "model": model.map(|model| json!({
+        "model": {
             "content": model.content,
             "padding": model.padding,
             "border": model.border,
             "margin": model.margin,
             "width": model.width,
             "height": model.height,
-        })),
+        },
     }))
 }
 
@@ -1329,6 +1442,24 @@ pub(crate) async fn dom_content_quads(
         return Err(DispatchError::BadHelperReply("DOM.getContentQuads"));
     };
     Ok(json!({"quads": quads}))
+}
+
+// https://chromedevtools.github.io/devtools-protocol/tot/DOM/#method-scrollIntoViewIfNeeded
+pub(crate) async fn dom_scroll_into_view_if_needed(
+    tab: &TabHandle,
+    params: &Value,
+) -> Result<Value, DispatchError> {
+    let target: crate::params::NodeTarget = crate::params::parse(params)?;
+    let node = match target_node(tab, &target).await? {
+        TargetNode::Default => 0,
+        TargetNode::Node(id) => id,
+        TargetNode::Missing => return Ok(json!({})),
+    };
+    let reply = dom_request(tab, DomRequest::ScrollIntoViewIfNeeded { node }).await?;
+    let DomReply::Unit = reply else {
+        return Err(DispatchError::BadHelperReply("DOM.scrollIntoViewIfNeeded"));
+    };
+    Ok(json!({}))
 }
 
 pub(crate) async fn css_stylesheets(tab: &TabHandle) -> Result<Vec<Value>, DispatchError> {
@@ -1442,14 +1573,21 @@ fn viewport_rect(width: f64, height: f64) -> Value {
 pub(crate) async fn capture_screenshot(
     tab: &TabHandle,
     params: &Value,
+    omit_background: bool,
 ) -> Result<Value, DispatchError> {
     let params: crate::params::CaptureScreenshot = crate::params::parse(params)?;
-    let format = params.format.as_deref().unwrap_or("png");
-    if !format.eq_ignore_ascii_case("png") {
-        return Err(DispatchError::Failed(
-            "only png screenshots are supported".into(),
-        ));
-    }
+    let format = match params.format.as_deref().unwrap_or("png") {
+        s if s.eq_ignore_ascii_case("png") => ScreenshotFormat::Png,
+        s if s.eq_ignore_ascii_case("jpeg") => ScreenshotFormat::Jpeg {
+            quality: params.quality.unwrap_or(80),
+        },
+        s if s.eq_ignore_ascii_case("webp") => ScreenshotFormat::Webp,
+        other => {
+            return Err(DispatchError::Failed(format!(
+                "unsupported screenshot format: {other}"
+            )));
+        }
+    };
     let clip = params.clip;
     let viewport_width = capture_side(clip.map_or(f64::from(DEFAULT_VIEWPORT.0), |clip| {
         f64::from(clip.x + clip.width)
@@ -1461,6 +1599,8 @@ pub(crate) async fn capture_screenshot(
         viewport_width,
         viewport_height,
         clip,
+        format,
+        omit_background,
     };
     let frame = requested_frame(tab, params.frame_id.as_deref())?;
     let png = tab
@@ -1504,8 +1644,17 @@ pub(crate) async fn wait_for_navigation(
         loop {
             match events.recv().await {
                 Some(TabEvent::Navigated) => return Ok(()),
-                Some(TabEvent::NavigationFailed) => {
-                    return Err("net::ERR_FAILED");
+                Some(TabEvent::NavigationFailed(reason)) => {
+                    return Err(match reason {
+                        browser::NavigationFailure::Aborted => "net::ERR_ABORTED",
+                        browser::NavigationFailure::ConnectionRefused => {
+                            "net::ERR_CONNECTION_REFUSED"
+                        }
+                        browser::NavigationFailure::CertAuthorityInvalid => {
+                            "net::ERR_CERT_AUTHORITY_INVALID"
+                        }
+                        browser::NavigationFailure::Failed => "net::ERR_FAILED",
+                    });
                 }
                 Some(_) => {}
                 None => return Err("net::ERR_ABORTED"),
@@ -1520,15 +1669,28 @@ pub(crate) async fn wait_for_navigation(
 }
 
 pub(crate) async fn open_url(tab: &TabHandle, url: &str) -> Result<(), DispatchError> {
-    if url.is_empty() || url == "about:blank" {
+    open_url_with_referrer(tab, url, None).await
+}
+
+pub(crate) async fn open_url_with_referrer(
+    tab: &TabHandle,
+    url: &str,
+    referrer: Option<&str>,
+) -> Result<(), DispatchError> {
+    if url.is_empty() {
         tab.load_html("<!doctype html><title></title>")
             .await
             .map_err(|err| DispatchError::Failed(err.to_string()))?;
         return Ok(());
     }
-    tab.goto(url)
+    tab.goto_with_referrer(url, referrer)
         .await
-        .map_err(|err| DispatchError::Failed(err.to_string()))?;
+        .map_err(|err| match err {
+            TabError::InvalidUrl { .. } => {
+                DispatchError::Failed("Cannot navigate to invalid URL".to_owned())
+            }
+            other => DispatchError::Failed(other.to_string()),
+        })?;
     Ok(())
 }
 
@@ -1581,11 +1743,16 @@ pub(crate) fn exception_text_reply(text: &str) -> Value {
 }
 
 pub(crate) const RUNTIME_SCHEDULE: &str = r#"(() => {
-  const slot = { __proto__: null, done: false };
-  host.__SLOT__[__ID__] = slot;
+  const settle = (id, make) => {
+    let text;
+    try { text = host.stringify(make()); }
+    catch (e) { text = host.stringify({ __proto__: null, error: String((e && e.message) || e) }); }
+    host.__tbCompleteEvaluation(id, text);
+  };
+  const id = __ID__;
   Promise.resolve((__SOURCE__)).then(
-    (v) => { slot.done = true; slot.value = v; },
-    (e) => { slot.done = true; slot.error = String((e && e.message) || e); }
+    (v) => settle(id, () => (__MAKE__)),
+    (e) => settle(id, () => ({ __proto__: null, error: String((e && e.message) || e) })),
   );
   return "scheduled";
 })()"#;
@@ -1595,12 +1762,12 @@ pub(crate) const RUNTIME_HANDLE: &str = r"(() => {
   return host.stringify(host.remoteObject(v, { __proto__: null, objectGroup: __GROUP__ }));
 })()";
 
-pub(crate) const RUNTIME_HANDLE_READ: &str = r"(() => {
-  const slot = host.__tb_async_handles && host.__tb_async_handles[__ID__];
-  if (!slot || !slot.done) return host.stringify({ __proto__: null, pending: true });
-  delete host.__tb_async_handles[__ID__];
-  if (slot.error !== undefined) return host.stringify({ __proto__: null, error: slot.error });
-  return host.stringify({ __proto__: null, value: host.remoteObject(slot.value, { __proto__: null, objectGroup: __GROUP__ }) });
+// https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-evaluate — replies live outside the realm: a document.open() step replaces it mid-evaluation.
+pub(crate) const RUNTIME_READ: &str = r"(() => {
+  const text = host.__tbTakeEvaluation(__ID__);
+  return (text === null || text === undefined)
+    ? host.stringify({ __proto__: null, pending: true })
+    : text;
 })()";
 
 pub(crate) const RUNTIME_RELEASE: &str = r#"(() => {
@@ -1684,16 +1851,6 @@ pub(crate) const RUNTIME_GET_PROPERTIES: &str = r#"(() => {
     result: result,
     internalProperties: internal,
   }});
-})()"#;
-
-pub(crate) const RUNTIME_READ: &str = r#"(() => {
-  const s = host.__tb_async && host.__tb_async[__ID__];
-  if (!s || !s.done) return host.stringify({__proto__: null, pending: true });
-  delete host.__tb_async[__ID__];
-  if (s.error !== undefined) return host.stringify({__proto__: null, error: s.error });
-  const remote = host.remoteObject(s.value, { __proto__: null, returnByValue: true });
-  try { return host.stringify(remote); }
-  catch (e) { return host.stringify({__proto__: null, type: "object"}); }
 })()"#;
 
 pub(crate) async fn target_info(browser: &BrowserHandle, id: TabId) -> Value {

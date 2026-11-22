@@ -48,11 +48,6 @@ pub(crate) fn install(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
     let table = Object::new(ctx.clone())?;
     table.set_prototype(None)?;
     bridge.set("__tb_handles", table)?;
-    for name in ["__tb_async", "__tb_async_handles"] {
-        let table = Object::new(ctx.clone())?;
-        table.set_prototype(None)?;
-        bridge.set(name, table)?;
-    }
     bridge.set("evaluatePage", Func::from(evaluate_page))?;
     bridge.set("__tb_mint", Func::from(mint_handle))?;
     let secure_context = world.borrow().is_secure_context();

@@ -1812,7 +1812,7 @@ pub(in crate::js::bindings) fn fragment_base_url(
         .unwrap_or_else(|| {
             (
                 crate::render::INVALID_BASE_URL.to_owned(),
-                parley::FontContext::default(),
+                crate::Fonts::default().0,
             )
         })
 }
