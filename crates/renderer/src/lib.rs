@@ -32,19 +32,14 @@ pub use engine::{DEFAULT_VIEWPORT, Engine, decode_data_url, decode_data_url_boun
 pub use render::RgbaImage;
 
 #[derive(Clone)]
+#[cfg_attr(not(target_os = "linux"), derive(Default))]
 pub struct Fonts(parley::FontContext);
 
+#[cfg(target_os = "linux")]
 impl Default for Fonts {
     fn default() -> Self {
-        #[cfg(target_os = "linux")]
-        {
-            static SYSTEM_FONTS: std::sync::OnceLock<Fonts> = std::sync::OnceLock::new();
-            SYSTEM_FONTS.get_or_init(load_linux_system_fonts).clone()
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            Self(parley::FontContext::default())
-        }
+        static SYSTEM_FONTS: std::sync::OnceLock<Fonts> = std::sync::OnceLock::new();
+        SYSTEM_FONTS.get_or_init(load_linux_system_fonts).clone()
     }
 }
 

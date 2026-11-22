@@ -90,27 +90,23 @@ index 11d2792..c0690fa 100644
      const server = await TestServer.create(assetsPath, port, loopback);
      server.enableHTTPCache(cachedPath);
  
+
 diff --git a/tests/tinybrowser/tinybrowserTest.ts b/tests/tinybrowser/tinybrowserTest.ts
-new file mode 100644
-index 0000000..93d0e21
---- /dev/null
+index c419bf3..93d0e21 100644
+--- a/tests/tinybrowser/tinybrowserTest.ts
 +++ b/tests/tinybrowser/tinybrowserTest.ts
-@@ -0,0 +1,68 @@
-+import { chromium } from 'playwright-core';
-+import type { Browser, BrowserContext } from 'playwright-core';
+@@ -1,5 +1,7 @@
+ import { chromium } from 'playwright-core';
+ import type { Browser, BrowserContext } from 'playwright-core';
 +import { appendFileSync, mkdirSync } from 'node:fs';
 +import { join } from 'node:path';
-+import { baseTest } from '../config/baseTest';
-+import type { PageTestFixtures, PageWorkerFixtures } from '../page/pageTestApi';
-+
-+export { expect } from '@playwright/test';
-+
-+type TinybrowserWorkerFixtures = PageWorkerFixtures & {
-+  tinybrowserBrowser: Browser;
-+  tinybrowserContext: BrowserContext;
-+};
-+
-+export const tinybrowserTest = baseTest.extend<PageTestFixtures, TinybrowserWorkerFixtures>({
+ import { baseTest } from '../config/baseTest';
+ import type { PageTestFixtures, PageWorkerFixtures } from '../page/pageTestApi';
+ 
+@@ -11,6 +13,18 @@ type TinybrowserWorkerFixtures = PageWorkerFixtures & {
+ };
+ 
+ export const tinybrowserTest = baseTest.extend<PageTestFixtures, TinybrowserWorkerFixtures>({
 +  cdpTrace: [async ({}, use, testInfo) => {
 +    const global = globalThis as { __pwCdp?: { mark(testId: string): void, flush(status: string): any } };
 +    global.__pwCdp?.mark(testInfo.titlePath.join(' › '));
@@ -123,44 +119,6 @@ index 0000000..93d0e21
 +      appendFileSync(join(dir, `worker-${worker}.jsonl`), `${JSON.stringify(record)}\n`);
 +    }
 +  }, { auto: true }],
-+  tinybrowserBrowser: [async ({}, use) => {
-+    const origin = process.env.TINYBROWSER_CDP_ORIGIN;
-+    if (!origin)
-+      throw new Error('TINYBROWSER_CDP_ORIGIN must point at a tinybrowser CDP endpoint');
-+    const browser = await chromium.connectOverCDP(origin);
-+    await use(browser);
-+    await browser.close();
-+  }, { scope: 'worker' }],
-+
-+  tinybrowserContext: [async ({ tinybrowserBrowser }, use) => {
-+    await use(tinybrowserBrowser.contexts()[0]);
-+  }, { scope: 'worker' }],
-+
-+  browserVersion: [async ({ tinybrowserBrowser }, use) => {
-+    await use(tinybrowserBrowser.version());
-+  }, { scope: 'worker' }],
-+
-+  browserMajorVersion: [async ({ browserVersion }, use) => {
-+    await use(Number(browserVersion.split('.')[0]) || 0);
-+  }, { scope: 'worker' }],
-+
-+  isBidi: [false, { scope: 'worker' }],
-+  isAndroid: [false, { scope: 'worker' }],
-+  isElectron: [false, { scope: 'worker' }],
-+  electronMajorVersion: [0, { scope: 'worker' }],
-+  isHeadlessShell: [false, { scope: 'worker' }],
-+  isFrozenWebkit: [false, { scope: 'worker' }],
-+
-+  page: async ({ tinybrowserBrowser, tinybrowserContext, server }, use) => {
-+    const page = await tinybrowserContext.newPage();
-+    await use(page);
-+    await page.close().catch(() => {});
-+    await tinybrowserContext.clearCookies().catch(() => {});
-+    const cdp = await tinybrowserBrowser.newBrowserCDPSession().catch(() => null);
-+    for (const prefix of [server.PREFIX, server.CROSS_PROCESS_PREFIX]) {
-+      const origin = new URL(prefix).origin;
-+      await cdp?.send('Storage.clearDataForOrigin', { origin, storageTypes: 'local_storage' }).catch(() => {});
-+    }
-+    await cdp?.detach().catch(() => {});
-+  },
-+});
+   tinybrowserBrowser: [async ({}, use) => {
+     const origin = process.env.TINYBROWSER_CDP_ORIGIN;
+     if (!origin)
