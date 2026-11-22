@@ -27,7 +27,7 @@ Or download an archive directly from [GitHub Releases](https://github.com/tinybr
 
 | Target | Status | Notes |
 | --- | --- | --- |
-| `x86_64-unknown-linux-gnu` | Shipped | Built on Ubuntu 22.04 (glibc 2.35+). Requires system `libssl3` and `libfontconfig1`. |
+| `x86_64-unknown-linux-musl` | Shipped | Fully static binary (musl + vendored OpenSSL, pure-Rust font discovery). Zero runtime shared library dependencies; works on Alpine and any Linux x64 distro. |
 | `aarch64-apple-darwin` | Shipped | Apple Silicon macOS (11.0+). Uses system Security.framework. |
 | `x86_64-apple-darwin` | Shipped | Intel macOS (11.0+). Uses system Security.framework. |
 | `x86_64-pc-windows-msvc` | Shipped | Windows x64 (`.zip`). Uses system Schannel. |
@@ -94,7 +94,7 @@ The `wasm32-wasip2` release tarball ships `tinybrowser.wasm` implementing [crate
 
 ## Building from source
 
-Requires the pinned nightly toolchain in [rust-toolchain.toml](rust-toolchain.toml) (or Nix via `nix develop`) plus `libssl-dev`, `libfontconfig1-dev`, and `pkg-config`:
+Requires the pinned nightly toolchain in [rust-toolchain.toml](rust-toolchain.toml) (or Nix via `nix develop`) plus `libssl-dev` and `pkg-config` (or `--features vendored-tls` with `OPENSSL_NO_VENDOR=0` for a self-contained TLS build):
 
 ```sh
 git submodule update --init --depth 1 third_party/blitz third_party/rquickjs third_party/html5ever

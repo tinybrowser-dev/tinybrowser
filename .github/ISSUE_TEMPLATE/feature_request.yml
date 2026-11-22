@@ -1,0 +1,17 @@
+name: Feature request
+description: Suggest a web platform API, CDP method, or CLI improvement
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Use case / spec reference
+      description: What are you trying to do, and which WHATWG/W3C/CDP spec defines the behavior?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+    validations:
+      required: false

@@ -1,0 +1,30 @@
+name: Bug report
+description: Report a rendering, JavaScript, CDP, WebDriver, or CLI bug
+labels: ["bug"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: A concise description of the bug and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: URL, HTML/JS snippet, or Playwright/WebDriver script that reproduces the issue.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: tinybrowser version & platform
+      placeholder: "e.g. tinybrowser 0.0.1, Linux x86_64 (musl)"
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Output from running with `--log-level debug` (optional).
