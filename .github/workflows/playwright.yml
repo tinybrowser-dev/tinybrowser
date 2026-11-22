@@ -77,11 +77,11 @@ jobs:
         env:
           SCCACHE_GHA_ENABLED: "true"
           RUSTC_WRAPPER: "sccache"
-        run: cargo build -p tinybrowser
+        run: cargo build --profile wpt -p tinybrowser
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "24"
       - name: Setup upstream Playwright
         run: node tools/playwright/upstream-setup.mjs
       - name: Run upstream Playwright gate
-        run: TINYBROWSER_BINARY="$PWD/target/debug/tinybrowser" node tools/playwright/upstream-run.mjs
+        run: TINYBROWSER_BINARY="$PWD/target/wpt/tinybrowser" node tools/playwright/upstream-run.mjs

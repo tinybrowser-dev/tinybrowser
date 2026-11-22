@@ -391,10 +391,6 @@
     "expected": "FAIL",
     "reason": "Error: page.screenshot: script: cannot read property 'evaluate' of undefined |     at <anonymous> (eval_script:1:30)"
   },
-  "page-screenshot.spec.ts::page screenshot › should work while navigating": {
-    "expected": "FAIL",
-    "reason": "TimeoutError: page.screenshot: Timeout 1500ms exceeded."
-  },
   "page-screenshot.spec.ts::page screenshot › webp screenshots should be lossless by default": {
     "expected": "FAIL",
     "reason": "Error: expect(received).toBe(expected) // Object.is equality"

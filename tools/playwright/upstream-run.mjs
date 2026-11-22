@@ -39,15 +39,16 @@ function resolveBinary() {
   if (process.env.TINYBROWSER_BINARY) {
     return resolve(process.env.TINYBROWSER_BINARY);
   }
-  const wptBin = resolve(ROOT, "target/wpt/tinybrowser");
-  if (existsSync(wptBin)) {
-    return wptBin;
-  }
-  const out = spawnSync(resolve(ROOT, "tools/binary-path"), { encoding: "utf8" });
+  const out = spawnSync(resolve(ROOT, "tools/binary-path"), ["--profile", "wpt"], {
+    encoding: "utf8",
+  });
   if (out.status === 0 && out.stdout.trim()) {
-    return resolve(out.stdout.trim());
+    const candidate = resolve(out.stdout.trim());
+    if (existsSync(candidate)) {
+      return candidate;
+    }
   }
-  return resolve(ROOT, "target/debug/tinybrowser");
+  return resolve(ROOT, "target/wpt/tinybrowser");
 }
 
 function waitForStatus(origin, timeoutMs = 10_000) {
@@ -297,6 +298,7 @@ async function main() {  const opts = parseArgs(process.argv.slice(2));
   const binary = resolveBinary();
   if (!existsSync(binary)) {
     console.error(`[pw-run] tinybrowser binary not found at ${binary}`);
+    console.error("[pw-run] build it with: cargo build --profile wpt -p tinybrowser");
     process.exit(1);
   }
 

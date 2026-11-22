@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, readdirSync, rmSync } from "node:fs";
+import { cpSync, existsSync, readdirSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,6 +8,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "../..");
 const PW_DIR = resolve(ROOT, ".playwright");
 const PATCH_DIR = resolve(__dirname, "patches");
+const SNAPSHOT_DIR = resolve(__dirname, "snapshots");
 const PW_REPO = "https://github.com/microsoft/playwright.git";
 const PW_TAG = "v1.63.0";
 
@@ -27,11 +28,20 @@ function run(cmd, cmdArgs, cwd = ROOT) {
   }
 }
 
+function installSnapshots() {
+  if (!existsSync(SNAPSHOT_DIR)) {
+    return;
+  }
+  console.log("[pw-setup] installing tinybrowser screenshot baselines");
+  cpSync(SNAPSHOT_DIR, join(PW_DIR, "tests"), { recursive: true });
+}
+
 if (force && existsSync(PW_DIR)) {
   rmSync(PW_DIR, { recursive: true, force: true });
 }
 
 if (existsSync(PW_DIR)) {
+  installSnapshots();
   console.log("[pw-setup] .playwright/ already exists (use --force to redo)");
   process.exit(0);
 }
@@ -48,6 +58,8 @@ for (const patch of patches) {
   console.log(`[pw-setup] applying ${patch}`);
   run("git", ["apply", "--whitespace=nowarn", join(PATCH_DIR, patch)], PW_DIR);
 }
+
+installSnapshots();
 
 if (skipBuild) {
   process.exit(0);
