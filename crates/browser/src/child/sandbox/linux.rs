@@ -229,7 +229,7 @@ fn clone_deny_rules() -> io::Result<Vec<SeccompRule>> {
 }
 
 fn denied_syscalls() -> Vec<i64> {
-    let mut list = Vec::from([
+    vec![
         libc::SYS_socket,
         libc::SYS_socketpair,
         libc::SYS_connect,
@@ -273,13 +273,11 @@ fn denied_syscalls() -> Vec<i64> {
         libc::SYS_swapon,
         libc::SYS_swapoff,
         libc::SYS_personality,
-    ]);
-    #[cfg(target_arch = "x86_64")]
-    {
-        list.push(libc::SYS_fork);
-        list.push(libc::SYS_vfork);
-    }
-    list
+        #[cfg(target_arch = "x86_64")]
+        libc::SYS_fork,
+        #[cfg(target_arch = "x86_64")]
+        libc::SYS_vfork,
+    ]
 }
 
 #[cfg(test)]
