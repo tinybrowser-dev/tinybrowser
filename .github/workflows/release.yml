@@ -117,7 +117,7 @@ jobs:
           cargo build --release --locked -p tinybrowser --features vendored-tls --target x86_64-unknown-linux-musl
           ls -lh target/x86_64-unknown-linux-musl/release/tinybrowser
           file target/x86_64-unknown-linux-musl/release/tinybrowser
-          file target/x86_64-unknown-linux-musl/release/tinybrowser | grep -q "statically linked"
+          file target/x86_64-unknown-linux-musl/release/tinybrowser | grep -qE "static(-pie)? linked"
       - name: Package
         id: package
         run: |
