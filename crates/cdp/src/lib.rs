@@ -872,23 +872,28 @@ impl Conn {
         }
     }
 
+    // https://chromedevtools.github.io/devtools-protocol/tot/Target/#method-getTargetInfo
     async fn target_info_for(&mut self, params: &Value) -> Result<Value, DispatchError> {
         let params: params::GetTargetInfo = params::parse(params)?;
-        let id = match params.target_id {
-            Some(raw) => raw
-                .parse::<u64>()
-                .map(TabId::new)
-                .map_err(|_| DispatchError::InvalidParams("targetId".to_owned()))?,
-            None => self
-                .browser
-                .tabs()
-                .await
-                .map_err(|error| DispatchError::Failed(error.to_string()))?
-                .first()
-                .copied()
-                .ok_or_else(|| DispatchError::Failed("no target".into()))?,
-        };
-        Ok(json!({"targetInfo": target_info(&self.browser, id).await}))
+        match params.target_id {
+            Some(raw) => {
+                let id = raw
+                    .parse::<u64>()
+                    .map(TabId::new)
+                    .map_err(|_| DispatchError::InvalidParams("targetId".to_owned()))?;
+                Ok(json!({"targetInfo": target_info(&self.browser, id).await}))
+            }
+            None => Ok(json!({
+                "targetInfo": {
+                    "targetId": "browser",
+                    "type": "browser",
+                    "title": "",
+                    "url": "",
+                    "attached": true,
+                    "canAccessOpener": false,
+                }
+            })),
+        }
     }
 
     async fn set_auto_attach(

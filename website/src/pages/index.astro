@@ -7,30 +7,31 @@ const unixCmd =
   "curl -fsSL https://raw.githubusercontent.com/tinybrowser-dev/tinybrowser/main/install.sh | sh"
 const winCmd =
   "irm https://raw.githubusercontent.com/tinybrowser-dev/tinybrowser/main/install.ps1 | iex"
-const startCmd = `tinybrowser\n# or bind a specific port (serves both CDP and WebDriver):\ntinybrowser --port 4444`
-const agentPrompt = `Install tinybrowser (a ~12 MiB headless browser for AI agents) and set it up for browser automation:
+const startCmd = `tinybrowser &\n# or bind a specific port (serves both CDP and WebDriver):\ntinybrowser --port 4444 &`
+const sourceCmd = `git clone https://github.com/tinybrowser-dev/tinybrowser.git && cd tinybrowser\ngit submodule update --init --depth 1 third_party/blitz third_party/rquickjs third_party/html5ever\ngit -C third_party/rquickjs submodule update --init --depth 1 sys/quickjs\ncargo build --release -p tinybrowser`
+const agentPrompt = `Install tinybrowser (a ~17 MiB headless browser for AI agents) and set it up for browser automation:
 
 1. Install the binary:
    - macOS / Linux: ${unixCmd}
    - Windows (PowerShell): ${winCmd}
    - Ensure the install directory (~/.local/bin or %LOCALAPPDATA%\\tinybrowser\\bin) is on PATH, then run \`tinybrowser --help\` to inspect all endpoints, flags, and paths.
-2. Start the background daemon (serves both CDP and W3C WebDriver on one loopback port):
-   - Auto-port (profile-locked): \`tinybrowser\`
+2. Start the server (runs in the foreground, so append \`&\` to background it; serves both CDP and W3C WebDriver on one loopback port):
+   - Auto-port (profile-locked): \`tinybrowser &\`
      Writes \`{ "pid", "host": "127.0.0.1", "port" }\` to \`$XDG_RUNTIME_DIR/tinybrowser/default/daemon.json\`.
-   - Fixed port: \`tinybrowser --port 4444\`
+   - Fixed port: \`tinybrowser --port 4444 &\`
    Done when \`GET http://127.0.0.1:<port>/status\` returns 200.
 3. Connect over CDP (\`chromium.connectOverCDP("http://127.0.0.1:<port>")\`, using \`browser.contexts()[0].pages()[0]\`) or W3C WebDriver (\`POST http://127.0.0.1:<port>/session\`).`
 ---
 
 <Base
   title="tinybrowser"
-  description="A headless web browser for AI agents and automated tools in a single ~12 MiB Rust binary."
+  description="A headless web browser for AI agents and automated tools in a single ~17 MiB Rust binary."
 >
   <section class="home measure">
     <h1>tinybrowser</h1>
     <p class="lede">
       A headless web browser for AI agents and automated tools. It opens web pages, runs JavaScript,
-      fills forms, and takes screenshots in a single ~12 MiB binary.
+      fills forms, and takes screenshots in a single ~17 MiB binary.
     </p>
     <p class="links">
       <a href="/demo">Try live demo</a>
@@ -44,7 +45,7 @@ const agentPrompt = `Install tinybrowser (a ~12 MiB headless browser for AI agen
     <h2>Why tinybrowser</h2>
     <dl class="strengths">
       <dt>Single binary</dt>
-      <dd>One ~12 MiB Rust binary with no sidecars or separate browser download.</dd>
+      <dd>One ~17 MiB Rust binary with no sidecars or separate browser download.</dd>
 
       <dt>Works with existing tools</dt>
       <dd>
@@ -89,6 +90,15 @@ const agentPrompt = `Install tinybrowser (a ~12 MiB headless browser for AI agen
           </button>
         </div>
         <pre class="code-block"><code>{startCmd}</code></pre>
+      </div>
+      <div>
+        <div class="install-head">
+          <span class="install-label">Build from source</span>
+          <button type="button" class="copy-btn" data-copy={sourceCmd} data-label="Copy">
+            Copy
+          </button>
+        </div>
+        <pre class="code-block"><code>{sourceCmd}</code></pre>
       </div>
     </div>
 

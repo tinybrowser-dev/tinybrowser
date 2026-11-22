@@ -44,40 +44,6 @@ impl Default for Fonts {
 }
 
 #[cfg(target_os = "linux")]
-fn collect_linux_font_files(
-    dir: &std::path::Path,
-    seen_dirs: &mut std::collections::HashSet<std::path::PathBuf>,
-    out: &mut Vec<std::path::PathBuf>,
-) {
-    let Ok(canonical) = std::fs::canonicalize(dir) else {
-        return;
-    };
-    if !seen_dirs.insert(canonical) {
-        return;
-    }
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_linux_font_files(&path, seen_dirs, out);
-        } else if path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| {
-                ext.eq_ignore_ascii_case("ttf")
-                    || ext.eq_ignore_ascii_case("otf")
-                    || ext.eq_ignore_ascii_case("ttc")
-                    || ext.eq_ignore_ascii_case("otc")
-            })
-        {
-            out.push(path);
-        }
-    }
-}
-
-#[cfg(target_os = "linux")]
 fn apply_linux_generic_families(
     font_ctx: &mut parley::FontContext,
     aliases: &[fontconfig_parser::Alias],
@@ -171,8 +137,6 @@ fn load_linux_system_fonts() -> Fonts {
     use std::collections::HashSet;
     use std::path::{Path, PathBuf};
 
-    use parley::fontique::Blob;
-
     let mut config = fontconfig_parser::FontConfig::default();
     if let Ok(path) = std::env::var("FONTCONFIG_FILE") {
         let _ = config.merge_config(Path::new(&path));
@@ -195,27 +159,18 @@ fn load_linux_system_fonts() -> Fonts {
     }
 
     let mut seen_dirs = HashSet::new();
-    let mut files = Vec::new();
+    let mut unique_dirs = Vec::new();
     for dir in dirs {
-        collect_linux_font_files(&dir, &mut seen_dirs, &mut files);
-    }
-
-    let mut font_ctx = parley::FontContext::default();
-    let mut first_family = None;
-    for path in files {
-        let Ok(bytes) = std::fs::read(&path) else {
-            continue;
-        };
-        let registered = font_ctx
-            .collection
-            .register_fonts(Blob::new(Arc::new(bytes)), None);
-        if first_family.is_none()
-            && let Some((family, _)) = registered.first()
+        if let Ok(canonical) = std::fs::canonicalize(&dir)
+            && seen_dirs.insert(canonical.clone())
         {
-            first_family = Some(*family);
+            unique_dirs.push(canonical);
         }
     }
 
+    let mut font_ctx = parley::FontContext::default();
+    font_ctx.collection.load_fonts_from_paths(&unique_dirs);
+    let first_family = font_ctx.collection.family_ids().next();
     apply_linux_generic_families(&mut font_ctx, &config.aliases, first_family);
     Fonts(font_ctx)
 }

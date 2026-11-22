@@ -2,7 +2,7 @@
 
 A small, spec-first headless browser for AI agents.
 
-One ~12 MiB Rust binary (Blitz, Stylo, html5ever, Taffy, QuickJS) with no sidecars or browser download — also embeddable as a WASI Preview 2 component.
+One ~17 MiB Rust binary (Blitz, Stylo, html5ever, Taffy, QuickJS) with no sidecars or browser download — also embeddable as a WASI Preview 2 component.
 
 - **Live Wasm demo:** <https://tinybrowser.ericc.ch/demo>
 - **WPT conformance dashboard:** <https://tinybrowser.ericc.ch/wpt>
@@ -37,17 +37,17 @@ Or download an archive directly from [GitHub Releases](https://github.com/tinybr
 
 ## Usage
 
-`tinybrowser` runs a unified loopback daemon serving both **Chrome DevTools Protocol (CDP)** and **W3C Classic WebDriver** on the same port.
+`tinybrowser` runs a unified loopback server in the foreground, serving both **Chrome DevTools Protocol (CDP)** and **W3C Classic WebDriver** on the same port. Append `&` (or run it under a process supervisor) to keep it in the background.
 
 ```sh
 # Profile-locked ephemeral port (writes $XDG_RUNTIME_DIR/tinybrowser/<profile>/daemon.json):
-tinybrowser
+tinybrowser &
 
 # Named profile:
-tinybrowser --profile agent
+tinybrowser --profile agent &
 
 # Explicit port:
-tinybrowser --port 4444
+tinybrowser --port 4444 &
 ```
 
 When started without `--port`, the daemon acquires `$XDG_RUNTIME_DIR/tinybrowser/<profile>/lock`, binds a loopback port, and writes its endpoint to `$XDG_RUNTIME_DIR/tinybrowser/<profile>/daemon.json`:
@@ -70,7 +70,7 @@ await page.screenshot({ path: "example.png" });
 
 Or connect any W3C WebDriver client to `http://127.0.0.1:<port>` (`GET /status`, `POST /session`).
 
-Optional network and logging flags: `--port <PORT>`, `--profile <NAME>`, `--proxy <URI>`, `--resolve <PATTERN=ADDR>`, `--tls-ca <PATH>`, `--log-level <LEVEL>`, `--log-file <PATH>`, `--verbose`. Run `tinybrowser --help` for full endpoint and path documentation.
+Optional network and logging flags: `--port <PORT>`, `--profile <NAME>`, `--user-agent <VALUE>`, `--proxy <URI>`, `--resolve <PATTERN=ADDR>`, `--tls-ca <PATH>`, `--log-level <LEVEL>`, `--log-file <PATH>`, `--verbose`. Run `tinybrowser --help` for full endpoint and path documentation.
 
 ### Embedded Wasm component
 
@@ -100,6 +100,14 @@ Requires the pinned nightly toolchain in [rust-toolchain.toml](rust-toolchain.to
 git submodule update --init --depth 1 third_party/blitz third_party/rquickjs third_party/html5ever
 git -C third_party/rquickjs submodule update --init --depth 1 sys/quickjs
 cargo build --release -p tinybrowser
+```
+
+For a fully static Linux `x86_64` binary (`musl` + vendored OpenSSL), install `musl-tools`, `make`, `perl`, and `lld`, add the musl target, and build with `musl-gcc`:
+
+```sh
+rustup target add x86_64-unknown-linux-musl
+CC_x86_64_unknown_linux_musl=musl-gcc \
+  cargo build --release -p tinybrowser --features vendored-tls --target x86_64-unknown-linux-musl
 ```
 
 Run workspace checks with `tools/check clippy` and unit tests with `cargo test --workspace`.

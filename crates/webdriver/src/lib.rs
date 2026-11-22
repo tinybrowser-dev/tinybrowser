@@ -245,6 +245,7 @@ async fn dispatch(method: &str, path: &str, body: &str, sessions: &mut Sessions)
         ("DELETE", ["session", session]) => delete_session(sessions, session).await,
         ("POST", ["session", session, "url"]) => navigate(sessions, session, body).await,
         ("GET", ["session", session, "url"]) => current_url(sessions, session).await,
+        ("GET", ["session", session, "title"]) => get_title(sessions, session).await,
         ("GET", ["session", session, "screenshot"]) => take_screenshot(sessions, session).await,
         ("POST", ["session", session, "execute", "sync"]) => {
             execute(sessions, session, body, false).await
@@ -334,6 +335,17 @@ async fn current_url(sessions: &Sessions, session: &str) -> (u16, Value) {
     match current(sessions, session) {
         Some(window) => match window.tab.document_url().await {
             Ok(url) => ok(json!(url)),
+            Err(err) => error(500, "unknown error", &err.to_string()),
+        },
+        None => error(404, "invalid session id", session),
+    }
+}
+
+// https://w3c.github.io/webdriver/#get-title
+async fn get_title(sessions: &Sessions, session: &str) -> (u16, Value) {
+    match current(sessions, session) {
+        Some(window) => match window.tab.document_title().await {
+            Ok(title) => ok(json!(title)),
             Err(err) => error(500, "unknown error", &err.to_string()),
         },
         None => error(404, "invalid session id", session),
