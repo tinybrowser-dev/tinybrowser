@@ -1,8 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
-  <rect width="64" height="64" rx="12" fill="#111111"/>
-  <rect x="8" y="12" width="48" height="40" rx="4" fill="none" stroke="#f5f5f5" stroke-width="3.5"/>
-  <line x1="8" y1="22" x2="56" y2="22" stroke="#f5f5f5" stroke-width="3"/>
-  <circle cx="15" cy="17" r="1.8" fill="#f5f5f5"/>
-  <circle cx="21" cy="17" r="1.8" fill="#f5f5f5"/>
-  <text x="32" y="43" text-anchor="middle" font-family="ui-monospace, monospace" font-size="16" font-weight="700" fill="#f5f5f5">tb</text>
+  <style>
+    :root { --fg0: #111111; --fg1: #575757; --fg2: #cfcfcf; }
+    @media (prefers-color-scheme: dark) { :root { --fg0: #ededed; --fg1: #a3a3a3; --fg2: #333333; } }
+  </style>
+  <path d="M8 8H56V56H38V26H8Z" fill="var(--fg2)"/>
+  <path d="M8 30H34V56H22V42H8Z" fill="var(--fg1)"/>
+  <rect x="8" y="46" width="10" height="10" fill="var(--fg0)"/>
 </svg>

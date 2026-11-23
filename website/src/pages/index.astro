@@ -8,7 +8,6 @@ const unixCmd =
 const winCmd =
   "irm https://raw.githubusercontent.com/tinybrowser-dev/tinybrowser/main/install.ps1 | iex"
 const startCmd = `tinybrowser &\n# or bind a specific port (serves both CDP and WebDriver):\ntinybrowser --port 4444 &`
-const sourceCmd = `git clone https://github.com/tinybrowser-dev/tinybrowser.git && cd tinybrowser\ngit submodule update --init --depth 1 third_party/blitz third_party/rquickjs third_party/html5ever\ngit -C third_party/rquickjs submodule update --init --depth 1 sys/quickjs\ncargo build --release -p tinybrowser`
 const agentPrompt = `Install tinybrowser (a ~17 MiB headless browser for AI agents) and set it up for browser automation:
 
 1. Install the binary:
@@ -27,35 +26,18 @@ const agentPrompt = `Install tinybrowser (a ~17 MiB headless browser for AI agen
   title="tinybrowser"
   description="A headless web browser for AI agents and automated tools in a single ~17 MiB Rust binary."
 >
-  <section class="home measure">
+  <section class="home home-col">
     <h1>tinybrowser</h1>
     <p class="lede">
       A headless web browser for AI agents and automated tools. It opens web pages, runs JavaScript,
       fills forms, and takes screenshots in a single ~17 MiB binary.
     </p>
     <p class="links">
-      <a href="/demo">Try live demo</a>
-      <a href="#install">Install</a>
-      <a href="/wpt">Web standards score</a>
-      <a href="https://github.com/tinybrowser-dev/tinybrowser" rel="noreferrer">GitHub</a>
+      <a href="/demo">Try tinybrowser in your browser</a>
     </p>
   </section>
 
-  <section class="section measure">
-    <h2>Why tinybrowser</h2>
-    <dl class="strengths">
-      <dt>Single binary</dt>
-      <dd>One ~17 MiB Rust binary with no sidecars or separate browser download.</dd>
-
-      <dt>Works with existing tools</dt>
-      <dd>
-        Supports Chrome DevTools Protocol (Playwright) and WebDriver. It also compiles to
-        WebAssembly (WASI Preview 2) so you can embed it in another app or browser tab.
-      </dd>
-    </dl>
-  </section>
-
-  <section class="section measure" id="install">
+  <section class="section home-col" id="install">
     <h2>Install</h2>
 
     <div class="install-list">
@@ -91,22 +73,12 @@ const agentPrompt = `Install tinybrowser (a ~17 MiB headless browser for AI agen
         </div>
         <pre class="code-block"><code>{startCmd}</code></pre>
       </div>
-      <div>
-        <div class="install-head">
-          <span class="install-label">Build from source</span>
-          <button type="button" class="copy-btn" data-copy={sourceCmd} data-label="Copy">
-            Copy
-          </button>
-        </div>
-        <pre class="code-block"><code>{sourceCmd}</code></pre>
-      </div>
     </div>
 
     <p class="links">
       <a href="https://github.com/tinybrowser-dev/tinybrowser/releases" rel="noreferrer">
-        Download from GitHub Releases
+        GitHub Releases
       </a>
-      <a href="/demo">Run tinybrowser in this tab</a>
     </p>
   </section>
 

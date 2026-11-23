@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <style>
+    :root { --fg0: #111111; --fg1: #575757; --fg2: #cfcfcf; }
+    @media (prefers-color-scheme: dark) { :root { --fg0: #ededed; --fg1: #a3a3a3; --fg2: #333333; } }
+  </style>
+  <path d="M8 8H56V56H38V26H8Z" fill="var(--fg2)"/>
+  <path d="M8 30H34V56H22V42H8Z" fill="var(--fg1)"/>
+  <rect x="8" y="46" width="10" height="10" fill="var(--fg0)"/>
+</svg>

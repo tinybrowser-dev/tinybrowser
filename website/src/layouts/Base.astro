@@ -25,6 +25,7 @@ const pathname = Astro.url.pathname
     <meta name="description" content={description} />
     <link rel="canonical" href={canonical} />
 
+    <link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="preload" href={sans} as="font" type="font/woff2" crossorigin />
 
@@ -59,7 +60,14 @@ const pathname = Astro.url.pathname
 
     <header class="site-header">
       <nav class="wrap site-nav" aria-label="Main">
-        <a href="/" aria-current={pathname === "/" ? "page" : undefined}>tinybrowser</a>
+        <a class="brand" href="/" aria-current={pathname === "/" ? "page" : undefined}>
+          <svg class="brand-mark" viewBox="0 0 64 64" aria-hidden="true">
+            <path d="M8 8H56V56H38V26H8Z" fill="var(--fg-2)"></path>
+            <path d="M8 30H34V56H22V42H8Z" fill="var(--fg-1)"></path>
+            <rect x="8" y="46" width="10" height="10" fill="var(--fg-0)"></rect>
+          </svg>
+          <span>tinybrowser</span>
+        </a>
         <a href="/demo" aria-current={pathname.startsWith("/demo") ? "page" : undefined}>Demo</a>
         <a href="/wpt" aria-current={pathname.startsWith("/wpt") ? "page" : undefined}>WPT</a>
         <a href="https://github.com/tinybrowser-dev/tinybrowser" rel="noreferrer">GitHub</a>

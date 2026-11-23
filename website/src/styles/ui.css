@@ -15,6 +15,18 @@
   padding-block: var(--space-1);
 }
 
+.site-nav .brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.brand-mark {
+  width: 1.5rem;
+  height: 1.5rem;
+  flex: none;
+}
+
 .site-nav [aria-current="page"] {
   text-decoration-color: currentcolor;
 }
@@ -32,30 +44,17 @@ html:not([data-js]) #theme-toggle {
   display: none;
 }
 
+.home-col {
+  max-width: 60ch;
+  margin-inline: auto;
+}
+
 .home > * + * {
   margin-top: var(--space-4);
 }
 
 .home .links {
   margin-top: var(--space-5);
-}
-
-.strengths {
-  margin: 0;
-}
-
-.strengths dt {
-  color: var(--fg-0);
-  font-weight: 600;
-}
-
-.strengths dd {
-  margin: 0;
-  color: var(--fg-1);
-}
-
-.strengths dd + dt {
-  margin-top: var(--space-4);
 }
 
 .install-list {
