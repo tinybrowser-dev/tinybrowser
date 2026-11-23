@@ -1244,9 +1244,10 @@ fn dispatch<'js>(
     window: Option<&Rc<RefCell<World>>>,
 ) -> Result<bool> {
     let composed = event.borrow().state().composed;
+    let typ = event.borrow().state().typ.clone();
     let event_value = Class::into_value(event.clone());
     let related = related_target_value(ctx, &event_value)?;
-    let path = build_path(ctx, target, window, composed, related.as_ref())?;
+    let path = build_path(ctx, target, window, composed, &typ, related.as_ref())?;
     if path.is_empty() {
         return skip_dispatch(ctx, event, &event_value, related.is_some());
     }
@@ -1261,7 +1262,6 @@ fn dispatch<'js>(
         state.path = path.iter().map(|item| item.reference.clone()).collect();
     }
     let bubbles = event.borrow().state().bubbles;
-    let typ = event.borrow().state().typ.clone();
     // https://dom.spec.whatwg.org/#concept-event-dispatch
     // https://html.spec.whatwg.org/multipage/input.html#the-input-element:legacy-pre-activation-behavior
     let is_activation_event =
@@ -1644,6 +1644,7 @@ fn build_path<'js>(
     target: EventTargetKey,
     window: Option<&Rc<RefCell<World>>>,
     composed: bool,
+    typ: &str,
     related: Option<&Value<'js>>,
 ) -> Result<Vec<PathItem<'js>>> {
     let reference = target_reference(ctx, target, window)?;
@@ -1715,8 +1716,8 @@ fn build_path<'js>(
                     };
                 }
             }
-            if reached_document {
-                // https://dom.spec.whatwg.org/#get-the-parent
+            // https://dom.spec.whatwg.org/#get-the-parent
+            if reached_document && typ != "load" && world.borrow().has_browsing_context() {
                 let window_reference = EventTargetRef {
                     key: EventTargetKey::Window,
                     world,

@@ -1696,7 +1696,16 @@ async fn coordinator_loop(
                 }
             }
             Wake::Renderer(None) => {
+                let loading = tab.waiting_for_load();
                 tab.drop_renderer();
+                if loading {
+                    tab.cancel_dial();
+                    tab.nav = None;
+                    tab.traversal = None;
+                    tab.navigation_failed = true;
+                    tab.record_event(TabEvent::NavigationFailed(NavigationFailure::Failed))
+                        .await;
+                }
                 fail_waiters(&mut tab, &server, &mut waiters, &TabError::ActorStopped).await;
             }
             Wake::Delivery(Some(message)) => {
@@ -2094,7 +2103,9 @@ async fn fail_waiters(
     error: &TabError,
 ) {
     for waiter in waiters.drain(..) {
-        if let Some(id) = waiter.renderer_waiter() {
+        if tab.renderer.is_some()
+            && let Some(id) = waiter.renderer_waiter()
+        {
             let _result = tab
                 .renderer_request(RendererCommand::CancelWait { id })
                 .await;

@@ -1201,22 +1201,31 @@ impl Engine {
 
     #[must_use]
     pub fn drain_ready_until(&mut self, deadline: std::time::Instant) -> bool {
+        self.drain_ready_slice(deadline, deadline)
+    }
+
+    #[must_use]
+    pub fn drain_ready_slice(
+        &mut self,
+        yield_deadline: std::time::Instant,
+        script_deadline: std::time::Instant,
+    ) -> bool {
         // https://html.spec.whatwg.org/multipage/iframe-embed-object.html#dom-iframe-contentdocument
         // https://html.spec.whatwg.org/multipage/webappapis.html#task-queue
-        let _turn = self.runtime.open_turn(deadline);
+        let _turn = self.runtime.open_turn(script_deadline);
         self.reconcile_frames();
         loop {
             if self.runtime.stop.is_set() {
                 return false;
             }
-            if std::time::Instant::now() >= deadline {
+            if std::time::Instant::now() >= yield_deadline {
                 return self.has_ready_work();
             }
             self.drain_storage_events();
             let mut ran = false;
             let frames: Vec<FrameId> = self.frames.keys().copied().collect();
             for frame in frames {
-                if std::time::Instant::now() >= deadline {
+                if std::time::Instant::now() >= yield_deadline {
                     return self.has_ready_work();
                 }
                 let more = self
@@ -1230,7 +1239,7 @@ impl Engine {
             }
             let worker_ids: Vec<WorkerId> = self.workers.keys().copied().collect();
             for id in worker_ids {
-                if std::time::Instant::now() >= deadline {
+                if std::time::Instant::now() >= yield_deadline {
                     return self.has_ready_work();
                 }
                 if self.workers.get_mut(&id).is_some_and(Worker::drain_step) {
@@ -1242,7 +1251,7 @@ impl Engine {
             let mut dedicated_ran = false;
             self.runtime.worker_dir.with_workers(|workers| {
                 for worker in workers.values_mut() {
-                    if std::time::Instant::now() >= deadline {
+                    if std::time::Instant::now() >= yield_deadline {
                         break;
                     }
                     if worker.drain_step() {

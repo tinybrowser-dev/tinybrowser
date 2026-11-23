@@ -5,8 +5,6 @@ use std::net::TcpListener;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use base64::Engine as _;
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use browser::{
     BrowserHandle, CookieRecord, CookieSameSite, RemoteValue, ScreenshotRequest, ScriptFailure,
     TabError, TabHandle,
@@ -59,6 +57,15 @@ struct AppState {
     sessions: Arc<Mutex<Sessions>>,
 }
 
+enum Reply {
+    Json(Value),
+    Png(Vec<u8>),
+}
+
+fn json_reply((status, value): (u16, Value)) -> (u16, Reply) {
+    (status, Reply::Json(value))
+}
+
 const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 
 async fn serve_request(request: Request, state: AppState) -> Response {
@@ -93,10 +100,12 @@ async fn serve_request(request: Request, state: AppState) -> Response {
             return server::text(StatusCode::BAD_REQUEST, "invalid request body");
         }
     };
-    let mut sessions = state.sessions.lock().await;
-    let (status, payload) = dispatch(&method, &path, &body, &mut sessions).await;
+    let (status, reply) = dispatch(&method, &path, &body, &state.sessions).await;
     let status = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-    server::json(status, &payload)
+    match reply {
+        Reply::Json(value) => server::json(status, &value),
+        Reply::Png(bytes) => server::bytes(status, "image/png", bytes),
+    }
 }
 
 // https://w3c.github.io/webdriver/#new-session
@@ -137,7 +146,28 @@ struct Window {
     tab: TabHandle,
 }
 
+struct WindowSnapshot {
+    browser: BrowserHandle,
+    tab: TabHandle,
+    handle: String,
+    implicit_timeout: Duration,
+    script_timeout: Duration,
+    page_load_timeout: Duration,
+}
+
 impl Sessions {
+    fn snapshot(&self, session: &str) -> Option<WindowSnapshot> {
+        let found = self.open.get(session)?;
+        let window = found.windows.get(&found.current)?;
+        Some(WindowSnapshot {
+            browser: self.browser.clone(),
+            tab: window.tab.clone(),
+            handle: found.current.clone(),
+            implicit_timeout: found.implicit_timeout,
+            script_timeout: found.script_timeout,
+            page_load_timeout: found.page_load_timeout,
+        })
+    }
     // https://w3c.github.io/webdriver/#get-window-handles
     async fn sync_windows(&mut self, session: &str) {
         let browser = self.browser.clone();
@@ -223,48 +253,88 @@ impl Sessions {
     }
 }
 
-async fn dispatch(method: &str, path: &str, body: &str, sessions: &mut Sessions) -> (u16, Value) {
+async fn snapshot_session(sessions: &Mutex<Sessions>, session: &str) -> Option<WindowSnapshot> {
+    let mut guard = sessions.lock().await;
+    guard.sync_windows(session).await;
+    guard.snapshot(session)
+}
+
+async fn with_session_sync(
+    sessions: &Mutex<Sessions>,
+    session: &str,
+    action: impl FnOnce(&mut Sessions) -> (u16, Value),
+) -> (u16, Value) {
+    let mut guard = sessions.lock().await;
+    guard.sync_windows(session).await;
+    action(&mut guard)
+}
+
+async fn dispatch(
+    method: &str,
+    path: &str,
+    body: &str,
+    sessions: &Mutex<Sessions>,
+) -> (u16, Reply) {
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-    // https://w3c.github.io/webdriver/#get-window-handles
-    if let ["session", session, ..] = segments.as_slice() {
-        sessions.sync_windows(session).await;
-    }
-    match (method, segments.as_slice()) {
+    let result = match (method, segments.as_slice()) {
         ("GET", ["status"]) => ok(json!({"ready": true, "message": "ready"})),
-        ("POST", ["session"]) => {
-            if !sessions.open.is_empty() {
-                return error(500, "session not created", "already have a session");
-            }
-            match sessions.create().await {
-                Ok(id) => {
-                    ok(json!({"sessionId": id, "capabilities": {"browserName": "tinybrowser"}}))
-                }
-                Err(err) => error(500, "session not created", &err),
-            }
-        }
+        ("POST", ["session"]) => create_session(sessions).await,
         ("DELETE", ["session", session]) => delete_session(sessions, session).await,
         ("POST", ["session", session, "url"]) => navigate(sessions, session, body).await,
         ("GET", ["session", session, "url"]) => current_url(sessions, session).await,
         ("GET", ["session", session, "title"]) => get_title(sessions, session).await,
-        ("GET", ["session", session, "screenshot"]) => take_screenshot(sessions, session).await,
+        // https://w3c.github.io/webdriver/#take-screenshot
+        ("POST", ["session", session, "screenshot"]) => {
+            return take_screenshot(sessions, session).await;
+        }
         ("POST", ["session", session, "execute", "sync"]) => {
             execute(sessions, session, body, false).await
         }
         ("POST", ["session", session, "execute", "async"]) => {
             execute(sessions, session, body, true).await
         }
-        ("GET", ["session", session, "window"]) => current_window(sessions, session),
-        ("GET", ["session", session, "window", "handles"]) => window_handles(sessions, session),
-        ("POST", ["session", session, "window"]) => switch_window(sessions, session, body),
-        ("POST", ["session", session, "window", "new"]) => new_window(sessions, session).await,
-        ("DELETE", ["session", session, "window"]) => close_window(sessions, session).await,
-        ("GET", ["session", session, "window", "rect"]) => window_rect(sessions, session),
-        ("POST", ["session", session, "window", "rect"]) => {
-            set_window_rect(sessions, session, body)
+        ("GET", ["session", session, "window"]) => {
+            with_session_sync(sessions, session, |guard| current_window(guard, session)).await
         }
-        ("POST", ["session", session, "timeouts"]) => set_timeouts(sessions, session, body),
-        ("GET", ["session", session, "timeouts"]) => get_timeouts(sessions, session),
-        ("POST", ["session", session, "permissions"]) => set_permission(sessions, session, body),
+        ("GET", ["session", session, "window", "handles"]) => {
+            with_session_sync(sessions, session, |guard| window_handles(guard, session)).await
+        }
+        ("POST", ["session", session, "window"]) => {
+            with_session_sync(sessions, session, |guard| {
+                switch_window(guard, session, body)
+            })
+            .await
+        }
+        ("POST", ["session", session, "window", "new"]) => {
+            let mut guard = sessions.lock().await;
+            guard.sync_windows(session).await;
+            new_window(&mut guard, session).await
+        }
+        ("DELETE", ["session", session, "window"]) => close_window(sessions, session).await,
+        ("GET", ["session", session, "window", "rect"]) => {
+            with_session_sync(sessions, session, |guard| window_rect(guard, session)).await
+        }
+        ("POST", ["session", session, "window", "rect"]) => {
+            with_session_sync(sessions, session, |guard| {
+                set_window_rect(guard, session, body)
+            })
+            .await
+        }
+        ("POST", ["session", session, "timeouts"]) => {
+            with_session_sync(sessions, session, |guard| {
+                set_timeouts(guard, session, body)
+            })
+            .await
+        }
+        ("GET", ["session", session, "timeouts"]) => {
+            with_session_sync(sessions, session, |guard| get_timeouts(guard, session)).await
+        }
+        ("POST", ["session", session, "permissions"]) => {
+            with_session_sync(sessions, session, |guard| {
+                set_permission(guard, session, body)
+            })
+            .await
+        }
         ("POST", ["session", session, "element"]) => find_element(sessions, session, body).await,
         ("POST", ["session", session, "elements"]) => find_elements(sessions, session, body).await,
         ("POST", ["session", session, "element", element, "click"]) => {
@@ -285,42 +355,57 @@ async fn dispatch(method: &str, path: &str, body: &str, sessions: &mut Sessions)
         ("POST", ["session", session, "window", op])
             if matches!(*op, "minimize" | "maximize" | "fullscreen") =>
         {
-            window_op(sessions, session)
+            with_session_sync(sessions, session, |guard| window_op(guard, session)).await
         }
         ("POST", ["session", session, "actions"]) => perform_actions(sessions, session, body).await,
         ("DELETE", ["session", session, "actions"]) => {
-            if sessions.open.contains_key(*session) {
-                ok(Value::Null)
-            } else {
-                error(404, "invalid session id", session)
-            }
+            with_session_sync(sessions, session, |guard| {
+                if guard.open.contains_key(*session) {
+                    ok(Value::Null)
+                } else {
+                    error(404, "invalid session id", session)
+                }
+            })
+            .await
         }
         _ => error(404, "unknown command", path),
+    };
+    json_reply(result)
+}
+
+async fn create_session(sessions: &Mutex<Sessions>) -> (u16, Value) {
+    let mut guard = sessions.lock().await;
+    if !guard.open.is_empty() {
+        return error(500, "session not created", "already have a session");
+    }
+    match guard.create().await {
+        Ok(id) => ok(json!({"sessionId": id, "capabilities": {"browserName": "tinybrowser"}})),
+        Err(err) => error(500, "session not created", &err),
     }
 }
 
-async fn navigate(sessions: &mut Sessions, session: &str, body: &str) -> (u16, Value) {
+async fn navigate(sessions: &Mutex<Sessions>, session: &str, body: &str) -> (u16, Value) {
     let Some(url) = serde_json::from_str::<Value>(body)
         .ok()
         .and_then(|value| value.get("url").and_then(Value::as_str).map(str::to_owned))
     else {
         return error(400, "invalid argument", "missing url");
     };
-    let page_load_timeout = match sessions.open.get(session) {
-        Some(found) => found.page_load_timeout,
-        None => return error(404, "invalid session id", session),
-    };
-    let Some(window) = current(sessions, session) else {
+    let Some(snapshot) = snapshot_session(sessions, session).await else {
         return error(404, "invalid session id", session);
     };
-    match window.tab.goto(&url).await {
+    match snapshot.tab.goto(&url).await {
         Ok(()) => {
-            match window.tab.run_until_load_timeout(page_load_timeout).await {
+            match snapshot
+                .tab
+                .run_until_load_timeout(snapshot.page_load_timeout)
+                .await
+            {
                 Ok(false) => return error(500, "timeout", "navigation timed out"),
                 Ok(true) => {}
                 Err(err) => return error(500, "unknown error", &err.to_string()),
             }
-            match window.tab.last_navigation_failed().await {
+            match snapshot.tab.last_navigation_failed().await {
                 Ok(true) => error(500, "unknown error", "navigation failed"),
                 Ok(false) => ok(Value::Null),
                 Err(err) => error(500, "unknown error", &err.to_string()),
@@ -331,9 +416,9 @@ async fn navigate(sessions: &mut Sessions, session: &str, body: &str) -> (u16, V
     }
 }
 
-async fn current_url(sessions: &Sessions, session: &str) -> (u16, Value) {
-    match current(sessions, session) {
-        Some(window) => match window.tab.document_url().await {
+async fn current_url(sessions: &Mutex<Sessions>, session: &str) -> (u16, Value) {
+    match snapshot_session(sessions, session).await {
+        Some(snapshot) => match snapshot.tab.document_url().await {
             Ok(url) => ok(json!(url)),
             Err(err) => error(500, "unknown error", &err.to_string()),
         },
@@ -342,9 +427,9 @@ async fn current_url(sessions: &Sessions, session: &str) -> (u16, Value) {
 }
 
 // https://w3c.github.io/webdriver/#get-title
-async fn get_title(sessions: &Sessions, session: &str) -> (u16, Value) {
-    match current(sessions, session) {
-        Some(window) => match window.tab.document_title().await {
+async fn get_title(sessions: &Mutex<Sessions>, session: &str) -> (u16, Value) {
+    match snapshot_session(sessions, session).await {
+        Some(snapshot) => match snapshot.tab.document_title().await {
             Ok(title) => ok(json!(title)),
             Err(err) => error(500, "unknown error", &err.to_string()),
         },
@@ -353,9 +438,9 @@ async fn get_title(sessions: &Sessions, session: &str) -> (u16, Value) {
 }
 
 // https://w3c.github.io/webdriver/#take-screenshot
-async fn take_screenshot(sessions: &Sessions, session: &str) -> (u16, Value) {
-    match current(sessions, session) {
-        Some(window) => {
+async fn take_screenshot(sessions: &Mutex<Sessions>, session: &str) -> (u16, Reply) {
+    match snapshot_session(sessions, session).await {
+        Some(snapshot) => {
             let request = ScreenshotRequest {
                 viewport_width: browser::DEFAULT_VIEWPORT.0,
                 viewport_height: browser::DEFAULT_VIEWPORT.1,
@@ -363,17 +448,17 @@ async fn take_screenshot(sessions: &Sessions, session: &str) -> (u16, Value) {
                 format: browser::ScreenshotFormat::Png,
                 omit_background: false,
             };
-            match window.tab.screenshot(request).await {
-                Ok(png) => ok(json!(BASE64_STANDARD.encode(&png))),
-                Err(err) => error(500, "unable to capture screen", &err.to_string()),
+            match snapshot.tab.screenshot(request).await {
+                Ok(png) => (200, Reply::Png(png)),
+                Err(err) => json_reply(error(500, "unable to capture screen", &err.to_string())),
             }
         }
-        None => error(404, "invalid session id", session),
+        None => json_reply(error(404, "invalid session id", session)),
     }
 }
 
 async fn execute(
-    sessions: &mut Sessions,
+    sessions: &Mutex<Sessions>,
     session: &str,
     body: &str,
     asynchronous: bool,
@@ -387,37 +472,43 @@ async fn execute(
         .and_then(Value::as_str)
         .unwrap_or_default();
     let args = parsed.get("args").cloned().unwrap_or(json!([]));
-    let (script_timeout, handle) = match sessions.open.get(session) {
-        Some(found) => (found.script_timeout, found.current.clone()),
-        None => return error(404, "invalid session id", session),
-    };
-    let Some(window) = current(sessions, session) else {
+    let Some(snapshot) = snapshot_session(sessions, session).await else {
         return error(404, "invalid session id", session);
     };
     let started = Instant::now();
     let wrapped = wrap_script(script, &args, asynchronous);
-    match window
+    match snapshot
         .tab
         .execute_script(browser::ExecuteScriptOptions {
             frame: browser::FrameId::MAIN,
             source: browser::ScriptSource::Browser(&wrapped),
-            timeout: Some(script_timeout),
+            timeout: Some(snapshot.script_timeout),
         })
         .await
     {
         Err(err) => script_error(&err),
         Ok(_) if asynchronous => {
-            wait_for_async(window, &handle, remaining(started, script_timeout)).await
+            wait_for_async(
+                &snapshot.tab,
+                &snapshot.handle,
+                remaining(started, snapshot.script_timeout),
+            )
+            .await
         }
-        Ok(value) => match window
+        Ok(value) => match snapshot
             .tab
             .execute_browser_script("host.webDriver.wait === true")
             .await
         {
             Ok(RemoteValue::Bool(true)) => {
-                wait_for_async(window, &handle, remaining(started, script_timeout)).await
+                wait_for_async(
+                    &snapshot.tab,
+                    &snapshot.handle,
+                    remaining(started, snapshot.script_timeout),
+                )
+                .await
             }
-            Ok(_) => ok(encode_scoped(&value, &handle)),
+            Ok(_) => ok(encode_scoped(&value, &snapshot.handle)),
             Err(err) => script_error(&err),
         },
     }
@@ -427,9 +518,8 @@ fn remaining(started: Instant, budget: Duration) -> Duration {
     budget.saturating_sub(started.elapsed())
 }
 
-async fn wait_for_async(window: &Window, handle: &str, script_timeout: Duration) -> (u16, Value) {
-    match window
-        .tab
+async fn wait_for_async(tab: &TabHandle, handle: &str, script_timeout: Duration) -> (u16, Value) {
+    match tab
         .run_until_js_true(browser::RunUntilJsTrueOptions {
             frame: browser::FrameId::MAIN,
             source: browser::ScriptSource::Browser("host.webDriver.done === true"),
@@ -441,14 +531,12 @@ async fn wait_for_async(window: &Window, handle: &str, script_timeout: Duration)
         Ok(true) => {}
         Err(err) => return error(500, "unknown error", &err.to_string()),
     }
-    match window
-        .tab
+    match tab
         .execute_browser_script("host.webDriver.failed === true")
         .await
     {
         Ok(RemoteValue::Bool(true)) => {
-            let message = match window
-                .tab
+            let message = match tab
                 .execute_browser_script("String(host.webDriver.error)")
                 .await
             {
@@ -461,11 +549,7 @@ async fn wait_for_async(window: &Window, handle: &str, script_timeout: Duration)
         Ok(_) => {}
         Err(err) => return script_error(&err),
     }
-    match window
-        .tab
-        .execute_browser_script("host.webDriver.value")
-        .await
-    {
+    match tab.execute_browser_script("host.webDriver.value").await {
         Ok(value) => ok(encode_scoped(&value, handle)),
         Err(err) => script_error(&err),
     }
@@ -559,15 +643,7 @@ fn encode(value: &RemoteValue) -> Value {
 }
 
 // https://w3c.github.io/webdriver/#find-elements
-async fn find_matches(
-    sessions: &Sessions,
-    session: &str,
-    body: &str,
-) -> Result<Vec<u64>, (u16, Value)> {
-    // https://w3c.github.io/webdriver/#processing-model
-    if current(sessions, session).is_none() {
-        return Err(error(404, "invalid session id", session));
-    }
+async fn find_matches(snapshot: &WindowSnapshot, body: &str) -> Result<Vec<u64>, (u16, Value)> {
     let parsed: Value = serde_json::from_str(body)
         .map_err(|err| error(400, "invalid argument", &err.to_string()))?;
     let Some(using) = parsed.get("using").and_then(Value::as_str) else {
@@ -583,27 +659,18 @@ async fn find_matches(
             "only the css selector strategy is supported",
         ));
     }
-    let Some(window) = current(sessions, session) else {
-        return Err(error(404, "invalid session id", session));
-    };
     // https://w3c.github.io/webdriver/#dfn-implicit-wait
-    let (implicit_timeout, script_timeout) = sessions
-        .open
-        .get(session)
-        .map_or((Duration::ZERO, DEFAULT_SCRIPT_TIMEOUT), |found| {
-            (found.implicit_timeout, found.script_timeout)
-        });
-    let timeout = if implicit_timeout.is_zero() {
-        script_timeout
+    let timeout = if snapshot.implicit_timeout.is_zero() {
+        snapshot.script_timeout
     } else {
-        implicit_timeout
+        snapshot.implicit_timeout
     };
     let script = format!(
         "(function(){{try{{return Array.from(document.querySelectorAll({}))}}\
          catch(e){{return 'invalid selector'}}}})()",
         json!(selector)
     );
-    match window
+    match snapshot
         .tab
         .execute_script(browser::ExecuteScriptOptions {
             frame: browser::FrameId::MAIN,
@@ -630,13 +697,13 @@ async fn find_matches(
 }
 
 // https://w3c.github.io/webdriver/#find-element
-async fn find_element(sessions: &Sessions, session: &str, body: &str) -> (u16, Value) {
-    let Some(handle) = current_handle(sessions, session) else {
+async fn find_element(sessions: &Mutex<Sessions>, session: &str, body: &str) -> (u16, Value) {
+    let Some(snapshot) = snapshot_session(sessions, session).await else {
         return error(404, "invalid session id", session);
     };
-    match find_matches(sessions, session, body).await {
+    match find_matches(&snapshot, body).await {
         Ok(matches) => match matches.first() {
-            Some(id) => ok(json!({ ELEMENT_KEY: format!("{handle}:{id}") })),
+            Some(id) => ok(json!({ ELEMENT_KEY: format!("{}:{id}", snapshot.handle) })),
             None => error(404, "no such element", "no element matches the selector"),
         },
         Err(reply) => reply,
@@ -644,15 +711,15 @@ async fn find_element(sessions: &Sessions, session: &str, body: &str) -> (u16, V
 }
 
 // https://w3c.github.io/webdriver/#find-elements
-async fn find_elements(sessions: &Sessions, session: &str, body: &str) -> (u16, Value) {
-    let Some(handle) = current_handle(sessions, session) else {
+async fn find_elements(sessions: &Mutex<Sessions>, session: &str, body: &str) -> (u16, Value) {
+    let Some(snapshot) = snapshot_session(sessions, session).await else {
         return error(404, "invalid session id", session);
     };
-    match find_matches(sessions, session, body).await {
+    match find_matches(&snapshot, body).await {
         Ok(matches) => ok(Value::Array(
             matches
                 .iter()
-                .map(|id| json!({ ELEMENT_KEY: format!("{handle}:{id}") }))
+                .map(|id| json!({ ELEMENT_KEY: format!("{}:{id}", snapshot.handle) }))
                 .collect(),
         )),
         Err(reply) => reply,
@@ -671,27 +738,23 @@ fn element_remote(element: &str) -> Result<(&str, u64), (u16, Value)> {
     Ok((handle, id))
 }
 
-fn is_current_handle(sessions: &Sessions, session: &str, handle: &str) -> bool {
-    current_handle(sessions, session).is_some_and(|current| current == handle)
-}
-
 // https://w3c.github.io/webdriver/#element-click
-async fn element_click(sessions: &Sessions, session: &str, element: &str) -> (u16, Value) {
-    let Some(window) = current(sessions, session) else {
+async fn element_click(sessions: &Mutex<Sessions>, session: &str, element: &str) -> (u16, Value) {
+    let Some(snapshot) = snapshot_session(sessions, session).await else {
         return error(404, "invalid session id", session);
     };
     let (handle, remote) = match element_remote(element) {
         Ok(remote) => remote,
         Err(reply) => return reply,
     };
-    if !is_current_handle(sessions, session, handle) {
+    if snapshot.handle != handle {
         return error(404, "no such element", "element belongs to another window");
     }
     let script = format!(
         "(function(){{const el=host.__tb_webdriver_element({remote});\
          if(el===null)return false;host.__tb_webdriver_click(el);return true;}})()"
     );
-    match window.tab.execute_browser_script(&script).await {
+    match snapshot.tab.execute_browser_script(&script).await {
         Ok(RemoteValue::Bool(true)) => ok(Value::Null),
         Ok(_) => error(404, "no such element", "unknown element id"),
         Err(err) => script_error(&err),
@@ -700,7 +763,7 @@ async fn element_click(sessions: &Sessions, session: &str, element: &str) -> (u1
 
 // https://w3c.github.io/webdriver/#element-send-keys
 async fn element_send_keys(
-    sessions: &Sessions,
+    sessions: &Mutex<Sessions>,
     session: &str,
     element: &str,
     body: &str,
@@ -714,14 +777,14 @@ async fn element_send_keys(
         Some(Value::Array(items)) => items.iter().filter_map(Value::as_str).collect::<String>(),
         _ => return error(400, "invalid argument", "text is required"),
     };
-    let Some(window) = current(sessions, session) else {
+    let Some(snapshot) = snapshot_session(sessions, session).await else {
         return error(404, "invalid session id", session);
     };
     let (handle, remote) = match element_remote(element) {
         Ok(remote) => remote,
         Err(reply) => return reply,
     };
-    if !is_current_handle(sessions, session, handle) {
+    if snapshot.handle != handle {
         return error(404, "no such element", "element belongs to another window");
     }
     let script = format!(
@@ -729,7 +792,7 @@ async fn element_send_keys(
          if(el===null)return false;host.__tbWebDriverSendKeys(el, {});return true;}})()",
         json!(text)
     );
-    match window.tab.execute_browser_script(&script).await {
+    match snapshot.tab.execute_browser_script(&script).await {
         Ok(RemoteValue::Bool(true)) => ok(Value::Null),
         Ok(_) => error(404, "no such element", "unknown element id"),
         Err(err) => script_error(&err),
@@ -764,7 +827,7 @@ fn set_permission(sessions: &mut Sessions, session: &str, body: &str) -> (u16, V
 }
 
 // https://w3c.github.io/webdriver/#perform-actions
-async fn perform_actions(sessions: &Sessions, session: &str, body: &str) -> (u16, Value) {
+async fn perform_actions(sessions: &Mutex<Sessions>, session: &str, body: &str) -> (u16, Value) {
     let parsed: Value = match serde_json::from_str(body) {
         Ok(value) => value,
         Err(err) => return error(400, "invalid argument", &err.to_string()),
@@ -772,7 +835,7 @@ async fn perform_actions(sessions: &Sessions, session: &str, body: &str) -> (u16
     let Some(sources) = parsed.get("actions").and_then(Value::as_array) else {
         return error(400, "invalid argument", "actions is required");
     };
-    let Some(window) = current(sessions, session) else {
+    let Some(snapshot) = snapshot_session(sessions, session).await else {
         return error(404, "invalid session id", session);
     };
     let mut resolved = Vec::with_capacity(sources.len());
@@ -790,7 +853,7 @@ async fn perform_actions(sessions: &Sessions, session: &str, body: &str) -> (u16
                     Ok(remote) => remote,
                     Err(reply) => return reply,
                 };
-                if !is_current_handle(sessions, session, handle) {
+                if snapshot.handle != handle {
                     return error(404, "no such element", "element belongs to another window");
                 }
                 *origin = json!({"__tbRemote": remote});
@@ -802,18 +865,15 @@ async fn perform_actions(sessions: &Sessions, session: &str, body: &str) -> (u16
         "(function(){{return host.__tbWebDriverActions({});}})()",
         serde_json::to_string(&Value::Array(resolved)).unwrap_or_else(|_| "[]".to_owned())
     );
-    match window.tab.execute_browser_script(&script).await {
+    match snapshot.tab.execute_browser_script(&script).await {
         Ok(RemoteValue::Bool(true)) => ok(Value::Null),
         Ok(_) => error(500, "unknown error", "actions were not performed"),
         Err(err) => script_error(&err),
     }
 }
 
-async fn context_url(sessions: &Sessions, session: &str) -> Result<url::Url, (u16, Value)> {
-    let Some(window) = current(sessions, session) else {
-        return Err(error(404, "invalid session id", session));
-    };
-    let spec = window
+async fn context_url(snapshot: &WindowSnapshot) -> Result<url::Url, (u16, Value)> {
+    let spec = snapshot
         .tab
         .document_url()
         .await
@@ -846,24 +906,30 @@ fn cookie_json(record: &CookieRecord) -> Value {
 }
 
 // https://w3c.github.io/webdriver/#get-all-cookies
-async fn get_cookies(sessions: &Sessions, session: &str) -> (u16, Value) {
-    let url = match context_url(sessions, session).await {
+async fn get_cookies(sessions: &Mutex<Sessions>, session: &str) -> (u16, Value) {
+    let Some(snapshot) = snapshot_session(sessions, session).await else {
+        return error(404, "invalid session id", session);
+    };
+    let url = match context_url(&snapshot).await {
         Ok(url) => url,
         Err(reply) => return reply,
     };
-    match sessions.browser.cookie_records(&url).await {
+    match snapshot.browser.cookie_records(&url).await {
         Ok(records) => ok(json!(records.iter().map(cookie_json).collect::<Vec<_>>())),
         Err(err) => error(500, "unknown error", &err.to_string()),
     }
 }
 
 // https://w3c.github.io/webdriver/#get-named-cookie
-async fn get_named_cookie(sessions: &Sessions, session: &str, name: &str) -> (u16, Value) {
-    let url = match context_url(sessions, session).await {
+async fn get_named_cookie(sessions: &Mutex<Sessions>, session: &str, name: &str) -> (u16, Value) {
+    let Some(snapshot) = snapshot_session(sessions, session).await else {
+        return error(404, "invalid session id", session);
+    };
+    let url = match context_url(&snapshot).await {
         Ok(url) => url,
         Err(reply) => return reply,
     };
-    match sessions.browser.cookie_records(&url).await {
+    match snapshot.browser.cookie_records(&url).await {
         Ok(records) => match records.iter().find(|record| record.name == name) {
             Some(record) => ok(cookie_json(record)),
             None => error(404, "no such cookie", "no cookie with that name"),
@@ -936,10 +1002,10 @@ fn set_cookie_line(cookie: &Value) -> Result<String, (u16, Value)> {
 }
 
 // https://w3c.github.io/webdriver/#add-cookie
-async fn add_cookie(sessions: &Sessions, session: &str, body: &str) -> (u16, Value) {
-    if current(sessions, session).is_none() {
+async fn add_cookie(sessions: &Mutex<Sessions>, session: &str, body: &str) -> (u16, Value) {
+    let Some(snapshot) = snapshot_session(sessions, session).await else {
         return error(404, "invalid session id", session);
-    }
+    };
     let parsed: Value = match serde_json::from_str(body) {
         Ok(value) => value,
         Err(err) => return error(400, "invalid argument", &err.to_string()),
@@ -951,7 +1017,7 @@ async fn add_cookie(sessions: &Sessions, session: &str, body: &str) -> (u16, Val
         Ok(line) => line,
         Err(reply) => return reply,
     };
-    let url = match context_url(sessions, session).await {
+    let url = match context_url(&snapshot).await {
         Ok(url) => url,
         Err(reply) => return reply,
     };
@@ -972,7 +1038,7 @@ async fn add_cookie(sessions: &Sessions, session: &str, body: &str) -> (u16, Val
             );
         }
     }
-    match sessions.browser.add_cookie(&line, &url).await {
+    match snapshot.browser.add_cookie(&line, &url).await {
         Ok(true) => ok(Value::Null),
         Ok(false) => error(500, "unable to set cookie", "the cookie was rejected"),
         Err(err) => error(500, "unknown error", &err.to_string()),
@@ -980,11 +1046,11 @@ async fn add_cookie(sessions: &Sessions, session: &str, body: &str) -> (u16, Val
 }
 
 // https://w3c.github.io/webdriver/#delete-all-cookies — empties the profile-wide cookie jar, matching Chrome's browser-scoped clearBrowsingData
-async fn delete_cookies(sessions: &Sessions, session: &str) -> (u16, Value) {
-    if current(sessions, session).is_none() {
+async fn delete_cookies(sessions: &Mutex<Sessions>, session: &str) -> (u16, Value) {
+    let Some(snapshot) = snapshot_session(sessions, session).await else {
         return error(404, "invalid session id", session);
-    }
-    match sessions.browser.clear_cookies().await {
+    };
+    match snapshot.browser.clear_cookies().await {
         Ok(()) => ok(Value::Null),
         Err(err) => error(500, "unknown error", &err.to_string()),
     }
@@ -1059,22 +1125,22 @@ fn set_window_rect(sessions: &mut Sessions, session: &str, body: &str) -> (u16, 
 }
 
 // https://w3c.github.io/webdriver/#get-element-rect
-async fn element_rect(sessions: &Sessions, session: &str, element: &str) -> (u16, Value) {
-    let Some(window) = current(sessions, session) else {
+async fn element_rect(sessions: &Mutex<Sessions>, session: &str, element: &str) -> (u16, Value) {
+    let Some(snapshot) = snapshot_session(sessions, session).await else {
         return error(404, "invalid session id", session);
     };
     let (handle, remote) = match element_remote(element) {
         Ok(remote) => remote,
         Err(reply) => return reply,
     };
-    if !is_current_handle(sessions, session, handle) {
+    if snapshot.handle != handle {
         return error(404, "no such element", "element belongs to another window");
     }
     let script = format!(
         "(function(){{const el=host.__tb_webdriver_element({remote});\
          if(el===null)return null;return JSON.stringify(el.getBoundingClientRect());}})()"
     );
-    match window.tab.execute_browser_script(&script).await {
+    match snapshot.tab.execute_browser_script(&script).await {
         Ok(RemoteValue::String(text)) => match serde_json::from_str::<Value>(&text) {
             Ok(rect) => ok(json!({
                 "x": rect.get("x").cloned().unwrap_or(json!(0)),
@@ -1196,20 +1262,32 @@ async fn new_window(sessions: &mut Sessions, session: &str) -> (u16, Value) {
 }
 
 // https://w3c.github.io/webdriver/#delete-session
-async fn delete_session(sessions: &mut Sessions, session: &str) -> (u16, Value) {
-    let Some(found) = sessions.open.remove(session) else {
-        return ok(Value::Null);
+async fn delete_session(sessions: &Mutex<Sessions>, session: &str) -> (u16, Value) {
+    let (browser, tabs) = {
+        let mut guard = sessions.lock().await;
+        guard.sync_windows(session).await;
+        let Some(found) = guard.open.remove(session) else {
+            return ok(Value::Null);
+        };
+        let tabs: Vec<_> = found
+            .windows
+            .into_values()
+            .map(|window| window.tab.id())
+            .collect();
+        (guard.browser.clone(), tabs)
     };
-    for window in found.windows.into_values() {
-        let _result = sessions.browser.close_tab(window.tab.id()).await;
+    for tab_id in tabs {
+        let _result = browser.close_tab(tab_id).await;
     }
     ok(Value::Null)
 }
 
 // https://w3c.github.io/webdriver/#close-window
-async fn close_window(sessions: &mut Sessions, session: &str) -> (u16, Value) {
-    let (tab_id, remaining) = {
-        let Some(found) = sessions.open.get_mut(session) else {
+async fn close_window(sessions: &Mutex<Sessions>, session: &str) -> (u16, Value) {
+    let (browser, tab_id, remaining) = {
+        let mut guard = sessions.lock().await;
+        guard.sync_windows(session).await;
+        let Some(found) = guard.open.get_mut(session) else {
             return error(404, "invalid session id", session);
         };
         let Some(window) = found.windows.remove(&found.current) else {
@@ -1220,27 +1298,13 @@ async fn close_window(sessions: &mut Sessions, session: &str) -> (u16, Value) {
         if let Some(next) = remaining.first() {
             found.current.clone_from(next);
         }
-        (tab_id, remaining)
+        if remaining.is_empty() {
+            guard.open.remove(session);
+        }
+        (guard.browser.clone(), tab_id, remaining)
     };
-    let _result = sessions.browser.close_tab(tab_id).await;
-    if remaining.is_empty() {
-        sessions.open.remove(session);
-    }
+    let _result = browser.close_tab(tab_id).await;
     ok(json!(remaining))
-}
-
-fn current_handle(sessions: &Sessions, session: &str) -> Option<String> {
-    sessions
-        .open
-        .get(session)
-        .map(|found| found.current.clone())
-}
-
-fn current<'a>(sessions: &'a Sessions, session: &str) -> Option<&'a Window> {
-    sessions
-        .open
-        .get(session)
-        .and_then(|found| found.windows.get(&found.current))
 }
 
 fn ok(value: Value) -> (u16, Value) {

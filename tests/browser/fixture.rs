@@ -329,6 +329,43 @@ pub(crate) fn pid_alive(pid: u32) -> bool {
     std::path::Path::new("/proc").join(pid.to_string()).exists()
 }
 
+pub(crate) fn renderer_children(daemon: u32) -> Vec<u32> {
+    let mut children = Vec::new();
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return children;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name.to_str().and_then(|name| name.parse::<u32>().ok()) else {
+            continue;
+        };
+        let Ok(cmdline) = std::fs::read(entry.path().join("cmdline")) else {
+            continue;
+        };
+        if !cmdline
+            .split(|byte| *byte == 0)
+            .any(|arg| arg == b"--renderer")
+        {
+            continue;
+        }
+        let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) else {
+            continue;
+        };
+        let Some((_, after_comm)) = stat.rsplit_once(')') else {
+            continue;
+        };
+        if after_comm
+            .split_whitespace()
+            .nth(1)
+            .and_then(|ppid| ppid.parse::<u32>().ok())
+            == Some(daemon)
+        {
+            children.push(pid);
+        }
+    }
+    children
+}
+
 fn request_target(head: &str) -> Option<&str> {
     let line = head.lines().next()?;
     let mut parts = line.split_whitespace();

@@ -303,10 +303,22 @@ impl Drop for RendererHandle {
 
 struct RendererViolation;
 
-struct ReaderContext {
+#[derive(Clone)]
+struct LinkFailure {
     router: RendererRouter,
     alive: Arc<AtomicBool>,
     kill: watch::Sender<bool>,
+    renderer: RendererId,
+    registry: Arc<AssignmentRegistry>,
+}
+
+impl LinkFailure {
+    fn trigger(&self) {
+        self.alive.store(false, Ordering::Relaxed);
+        self.router.close();
+        self.registry.close_renderer(self.renderer);
+        let _ = self.kill.send(true);
+    }
 }
 
 struct ActiveDial {
@@ -329,9 +341,7 @@ struct ServiceContext {
 async fn writer_task(
     mut rx: exchange::Receiver<ToRenderer>,
     mut writer: Box<dyn AsyncWrite + Send + Unpin>,
-    alive: Arc<AtomicBool>,
-    router: RendererRouter,
-    kill: watch::Sender<bool>,
+    failure: LinkFailure,
     mut kill_rx: watch::Receiver<bool>,
 ) {
     if *kill_rx.borrow() {
@@ -348,7 +358,7 @@ async fn writer_task(
         };
         let result = write_to_renderer(&mut *writer, &message).await;
         if result.is_err() {
-            fail(&alive, &router, &kill);
+            failure.trigger();
             return;
         }
     }
@@ -382,8 +392,8 @@ where
 }
 
 // https://html.spec.whatwg.org/multipage/browsers.html#processes
-fn report_reader_error(context: &ReaderContext, error: &std::io::Error) {
-    let killed = *context.kill.borrow();
+fn report_reader_error(failure: &LinkFailure, error: &std::io::Error) {
+    let killed = *failure.kill.borrow();
     if killed {
         logging::debug!(target: "browser::link", "renderer channel closed: {error}");
     } else {
@@ -393,7 +403,7 @@ fn report_reader_error(context: &ReaderContext, error: &std::io::Error) {
 
 async fn reader_task(
     mut reader: Box<dyn AsyncRead + Send + Unpin>,
-    context: ReaderContext,
+    failure: LinkFailure,
     ready: Option<oneshot::Sender<bool>>,
 ) {
     let mut ready = ready;
@@ -403,7 +413,7 @@ async fn reader_task(
             Ok(Some(frame)) => frame,
             Ok(None) => break,
             Err(error) => {
-                report_reader_error(&context, &error);
+                report_reader_error(&failure, &error);
                 break;
             }
         };
@@ -412,7 +422,7 @@ async fn reader_task(
                 match crate::wire::channel::decode_control::<FromRenderer>(&buffer) {
                     Ok(message) => message,
                     Err(error) => {
-                        report_reader_error(&context, &error);
+                        report_reader_error(&failure, &error);
                         break;
                     }
                 }
@@ -434,14 +444,14 @@ async fn reader_task(
             }
             continue;
         }
-        if context.router.route(message).is_err() {
+        if failure.router.route(message).is_err() {
             break;
         }
     }
     if let Some(ready_tx) = ready {
         let _ = ready_tx.send(false);
     }
-    fail(&context.alive, &context.router, &context.kill);
+    failure.trigger();
 }
 
 async fn service_task(mut server: BrowserServiceServer, context: ServiceContext) {
@@ -1554,12 +1564,6 @@ async fn send_reply(
         .map_err(|_| RendererViolation)
 }
 
-fn fail(alive: &Arc<AtomicBool>, router: &RendererRouter, kill: &watch::Sender<bool>) {
-    alive.store(false, Ordering::Relaxed);
-    router.close();
-    let _ = kill.send(true);
-}
-
 const MAX_STDERR_LINE_BYTES: usize = 16 * 1024;
 
 async fn read_bounded_line<R: tokio::io::AsyncBufRead + Unpin>(
@@ -1778,20 +1782,15 @@ pub(crate) async fn spawn_process(
     );
     let alive = Arc::new(AtomicBool::new(true));
     let (ready_tx, ready_rx) = oneshot::channel();
-    let writer_task = tokio::spawn(writer_task(
-        rx,
-        writer,
-        Arc::clone(&alive),
-        router.clone(),
-        kill.clone(),
-        kill_rx.clone(),
-    ));
-    let site = Arc::new(Mutex::new(site));
-    let reader_context = ReaderContext {
+    let failure = LinkFailure {
         router: router.clone(),
         alive: Arc::clone(&alive),
         kill: kill.clone(),
+        renderer: id,
+        registry: Arc::clone(&registry),
     };
+    let writer_task = tokio::spawn(writer_task(rx, writer, failure.clone(), kill_rx.clone()));
+    let site = Arc::new(Mutex::new(site));
     let service_context = ServiceContext {
         responder: server.responder(),
         renderer: id,
@@ -1803,7 +1802,7 @@ pub(crate) async fn spawn_process(
         browser,
         dials: Arc::new(Mutex::new(HashMap::new())),
     };
-    let reader_task = tokio::spawn(reader_task(reader, reader_context, Some(ready_tx)));
+    let reader_task = tokio::spawn(reader_task(reader, failure, Some(ready_tx)));
     let service_task = tokio::spawn(service_task(server, service_context));
     let stderr_task = tokio::spawn(forward_stderr(stderr));
     let _reaper = tokio::spawn(child_task(

@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use crate::fixture::{Fixture, TestServer, ok, pid_alive};
+use crate::fixture::{Fixture, TestServer, ok, pid_alive, renderer_children};
 use serde_json::{Value, json};
 
 fn attach(client: &mut cdp::Client, target: &str) -> String {
@@ -58,43 +58,6 @@ fn eval(client: &mut cdp::Client, target: &str, script: &str) -> Result<String, 
 
 fn daemon_pid(fixture: &Fixture) -> u32 {
     u32::try_from(fixture.wait_json()["pid"].as_u64().expect("daemon pid")).expect("pid")
-}
-
-fn renderer_children(daemon: u32) -> Vec<u32> {
-    let mut children = Vec::new();
-    let Ok(entries) = std::fs::read_dir("/proc") else {
-        return children;
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let Some(pid) = name.to_str().and_then(|name| name.parse::<u32>().ok()) else {
-            continue;
-        };
-        let Ok(cmdline) = std::fs::read(entry.path().join("cmdline")) else {
-            continue;
-        };
-        if !cmdline
-            .split(|byte| *byte == 0)
-            .any(|arg| arg == b"--renderer")
-        {
-            continue;
-        }
-        let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) else {
-            continue;
-        };
-        let Some((_, after_comm)) = stat.rsplit_once(')') else {
-            continue;
-        };
-        if after_comm
-            .split_whitespace()
-            .nth(1)
-            .and_then(|ppid| ppid.parse::<u32>().ok())
-            == Some(daemon)
-        {
-            children.push(pid);
-        }
-    }
-    children
 }
 
 fn wait_for_renderers(daemon: u32, expect_empty: bool, timeout: Duration) {

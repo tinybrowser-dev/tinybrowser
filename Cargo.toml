@@ -103,7 +103,6 @@ thiserror = "2"
 tokio = { version = "1.53", default-features = false, features = ["rt-multi-thread", "net", "sync", "time"] }
 
 [dev-dependencies]
-base64 = "0.23"
 # The process-level tests read the built-in identity so a version bump does not
 # leave an assertion naming the old build.
 net = { workspace = true, features = ["native"] }

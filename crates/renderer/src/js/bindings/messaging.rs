@@ -761,7 +761,10 @@ fn frame_viewport_scroll(ctx: Ctx<'_>, frame: f64) -> Vec<f64> {
     let Some(mut parsed) = world.document_mut_by_id(document) else {
         return vec![0.0, 0.0];
     };
-    parsed.document.base.resolve(crate::animation_seconds());
+    parsed
+        .document
+        .base
+        .resolve_if_needed(crate::animation_seconds());
     let scroll = parsed.document.base.viewport_scroll();
     vec![scroll.x, scroll.y]
 }
@@ -783,7 +786,10 @@ fn frame_scroll_viewport(ctx: Ctx<'_>, frame: f64, x: f64, y: f64, behavior: Str
     let Some(mut parsed) = world.document_mut_by_id(document) else {
         return;
     };
-    parsed.document.base.resolve(crate::animation_seconds());
+    parsed
+        .document
+        .base
+        .resolve_if_needed(crate::animation_seconds());
     let Some(root) = super::node::scrolling::root_element(&parsed) else {
         return;
     };

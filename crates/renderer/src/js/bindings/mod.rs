@@ -945,7 +945,7 @@ fn resolved_style<'js>(
     };
     let base = &mut parsed.document.base;
     // https://drafts.csswg.org/cssom/#dom-window-getcomputedstyle
-    base.resolve(crate::animation_seconds());
+    base.resolve_if_needed(crate::animation_seconds());
     match computed_pseudo_element(pseudo) {
         Some(pseudo) => base.resolved_pseudo_style_value(id.node, pseudo, &property),
         None if pseudo != 0 => String::new(),
@@ -1027,7 +1027,7 @@ fn has_computed_style<'js>(ctx: Ctx<'js>, element: Value<'js>) -> bool {
         };
         let base = &mut parsed.document.base;
         // https://drafts.csswg.org/cssom/#dom-window-getcomputedstyle
-        base.resolve(crate::animation_seconds());
+        base.resolve_if_needed(crate::animation_seconds());
         if !crate::dom::tree::is_connected(base, id.node)
             || !crate::dom::tree::is_in_flat_tree(base, id.node)
         {
@@ -1051,7 +1051,7 @@ fn has_computed_style<'js>(ctx: Ctx<'js>, element: Value<'js>) -> bool {
         return false;
     };
     let base = &mut parsed.document.base;
-    base.resolve(crate::animation_seconds());
+    base.resolve_if_needed(crate::animation_seconds());
     base.get_node(container.node).is_some_and(|node| {
         node.try_stylo_element_data()
             .as_ref()

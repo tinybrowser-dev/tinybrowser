@@ -3577,7 +3577,6 @@ dependencies = [
 name = "tinybrowser"
 version = "0.0.1"
 dependencies = [
- "base64",
  "browser",
  "cdp",
  "logging",
@@ -4080,7 +4079,6 @@ dependencies = [
 name = "webdriver"
 version = "0.0.1"
 dependencies = [
- "base64",
  "browser",
  "getrandom",
  "http",

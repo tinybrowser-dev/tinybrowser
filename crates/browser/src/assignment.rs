@@ -81,6 +81,13 @@ impl Assignment {
         self.publish(&RendererWake::WaiterSettled(id))
     }
 
+    pub(crate) fn close_subscribers(&self) {
+        self.subscribers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
+    }
+
     fn publish(&self, wake: &RendererWake) -> bool {
         let mut saturated = false;
         self.subscribers
@@ -193,6 +200,20 @@ impl AssignmentRegistry {
         assignments
             .iter()
             .any(|assignment| tabs.allows_origin(assignment.tab, &assignment.site, origin))
+    }
+
+    pub(crate) fn close_renderer(&self, renderer: crate::manager::RendererId) {
+        let assignments: Vec<Arc<Assignment>> = self
+            .live
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+            .filter_map(Weak::upgrade)
+            .filter(|assignment| assignment.hosted_by(renderer))
+            .collect();
+        for assignment in assignments {
+            assignment.close_subscribers();
+        }
     }
 
     pub(crate) fn was_released(&self, id: RendererAssignmentId) -> bool {

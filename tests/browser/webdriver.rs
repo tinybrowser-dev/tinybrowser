@@ -4,8 +4,7 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::fixture::{Fixture, TestServer, ok};
-use base64::Engine as _;
+use crate::fixture::{Fixture, PIXEL, TestServer, ok, renderer_children};
 use serde_json::{Value, json};
 
 fn start(extra_args: Vec<String>) -> (String, Fixture) {
@@ -31,7 +30,13 @@ fn start_in(mut fixture: Fixture, extra_args: Vec<String>) -> (String, Fixture) 
     (format!("127.0.0.1:{port}"), fixture)
 }
 
-fn request(addr: &str, method: &str, path: &str, body: Option<&str>) -> Value {
+struct HttpResponse {
+    status: u16,
+    content_type: Option<String>,
+    body: Vec<u8>,
+}
+
+fn send(addr: &str, method: &str, path: &str, body: Option<&str>) -> HttpResponse {
     let payload = body.unwrap_or("");
     let mut last_error = None;
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -48,9 +53,27 @@ fn request(addr: &str, method: &str, path: &str, body: Option<&str>) -> Value {
                 stream.write_all(req.as_bytes()).expect("write");
                 let mut buf = Vec::new();
                 stream.read_to_end(&mut buf).expect("read");
-                let text = String::from_utf8_lossy(&buf);
-                let json_body = text.split("\r\n\r\n").nth(1).expect("http body");
-                return serde_json::from_str(json_body).expect("json");
+                let split = buf
+                    .windows(4)
+                    .position(|window| window == b"\r\n\r\n")
+                    .expect("http header terminator");
+                let head = String::from_utf8_lossy(&buf[..split]);
+                let mut lines = head.split("\r\n");
+                let status = lines
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .and_then(|code| code.parse().ok())
+                    .expect("status line");
+                let content_type = lines.find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-type")
+                        .then(|| value.trim().to_owned())
+                });
+                return HttpResponse {
+                    status,
+                    content_type,
+                    body: buf[split + 4..].to_vec(),
+                };
             }
             Err(error) => {
                 last_error = Some(error);
@@ -59,6 +82,10 @@ fn request(addr: &str, method: &str, path: &str, body: Option<&str>) -> Value {
         }
     }
     panic!("webdriver not reachable: {last_error:?}");
+}
+
+fn request(addr: &str, method: &str, path: &str, body: Option<&str>) -> Value {
+    serde_json::from_slice(&send(addr, method, path, body).body).expect("json")
 }
 
 const TLS_SERVER_CERT_PEM: &str = include_str!("../fixtures/tls/loopback-127.0.0.1.crt.pem");
@@ -395,6 +422,65 @@ fn navigate_returns_after_load_not_after_timers() {
         Some(r#"{"script":"return typeof window.late","args":[]}"#),
     );
     assert_eq!(late["value"], json!("undefined"));
+}
+
+#[test]
+fn image_load_capture_stops_at_the_document() {
+    let server = TestServer::start(
+        vec![
+            (
+                "/",
+                ok(
+                    "text/html",
+                    b"<!doctype html><title>load path</title><script>\
+window.windowHits = [];\
+window.documentHits = [];\
+window.addEventListener('load', (event) => { window.windowHits.push(event.target === window ? 'window' : event.target.tagName); }, true);\
+document.addEventListener('load', (event) => { window.documentHits.push(event.target.tagName); }, true);\
+</script><img src=\"/pixel.png\">",
+                ),
+            ),
+            ("/pixel.png", ok("image/png", PIXEL)),
+        ],
+        None,
+    );
+    let server_addr = server.address();
+
+    let (addr, _fixture) = start(Vec::new());
+    let created = request(&addr, "POST", "/session", Some("{}"));
+    let id = created["value"]["sessionId"]
+        .as_str()
+        .expect("session id")
+        .to_owned();
+    let navigated = request(
+        &addr,
+        "POST",
+        &format!("/session/{id}/url"),
+        Some(&format!(r#"{{"url":"http://{server_addr}/"}}"#)),
+    );
+    assert_eq!(navigated["value"], json!(null));
+
+    let hits = request(
+        &addr,
+        "POST",
+        &format!("/session/{id}/execute/sync"),
+        Some(
+            r#"{"script":"return JSON.stringify({window: window.windowHits, document: window.documentHits})","args":[]}"#,
+        ),
+    );
+    let hits: Value =
+        serde_json::from_str(hits["value"].as_str().expect("hits string")).expect("hits json");
+    // https://dom.spec.whatwg.org/#get-the-parent
+    assert_eq!(
+        hits["window"],
+        json!(["window"]),
+        "image load reached window"
+    );
+    assert_eq!(
+        hits["document"],
+        json!(["IMG"]),
+        "image load skipped document"
+    );
 }
 
 #[test]
@@ -874,20 +960,95 @@ fn unknown_element_click_and_perform_actions_validation() {
 }
 
 #[test]
-fn take_screenshot_returns_base64_png() {
+fn take_screenshot_returns_png_bytes() {
     let (addr, _fixture) = start(Vec::new());
     let created = request(&addr, "POST", "/session", Some("{}"));
     let id = created["value"]["sessionId"]
         .as_str()
         .expect("session id")
         .to_owned();
-    let shot = request(&addr, "GET", &format!("/session/{id}/screenshot"), None);
-    let data = shot["value"].as_str().expect("base64 string");
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(data)
-        .expect("base64 png");
-    assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n", "not a PNG");
-    let width = u32::from_be_bytes(bytes[16..20].try_into().expect("width"));
-    let height = u32::from_be_bytes(bytes[20..24].try_into().expect("height"));
+    let shot = send(&addr, "POST", &format!("/session/{id}/screenshot"), None);
+    assert_eq!(shot.status, 200);
+    assert_eq!(shot.content_type.as_deref(), Some("image/png"));
+    assert_eq!(&shot.body[..8], b"\x89PNG\r\n\x1a\n", "not a PNG");
+    let width = u32::from_be_bytes(shot.body[16..20].try_into().expect("width"));
+    let height = u32::from_be_bytes(shot.body[20..24].try_into().expect("height"));
     assert_eq!((width, height), (800, 600), "unexpected viewport capture");
+}
+
+#[test]
+fn renderer_death_fails_a_pending_navigation_and_the_session_recovers() {
+    let server = TestServer::start(
+        vec![
+            (
+                "/",
+                ok(
+                    "text/html",
+                    b"<!doctype html><title>held</title><img src=\"/held\">",
+                ),
+            ),
+            ("/held", ok("image/png", PIXEL)),
+        ],
+        Some("/held"),
+    );
+    let url = format!("http://{}/", server.address());
+    let (addr, mut fixture) = start_in(
+        Fixture::new("tinybrowser-webdriver-renderer-death"),
+        Vec::new(),
+    );
+    let daemon = fixture.children()[0].id();
+
+    let created = request(&addr, "POST", "/session", Some("{}"));
+    let id = created["value"]["sessionId"]
+        .as_str()
+        .expect("session id")
+        .to_owned();
+    let body = json!({"url": url}).to_string();
+    let navigate_addr = addr.clone();
+    let navigate_id = id.clone();
+    let pending = thread::spawn(move || {
+        let started = Instant::now();
+        let reply = request(
+            &navigate_addr,
+            "POST",
+            &format!("/session/{navigate_id}/url"),
+            Some(&body),
+        );
+        (started.elapsed(), reply)
+    });
+    server.wait("/held");
+
+    let renderers = renderer_children(daemon);
+    assert!(!renderers.is_empty(), "the document has no renderer");
+    for pid in renderers {
+        let killed = Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .status()
+            .expect("kill");
+        assert!(killed.success(), "SIGKILL renderer {pid}");
+    }
+
+    let (elapsed, reply) = pending.join().expect("pending navigation panicked");
+    assert_eq!(reply["value"]["error"], json!("unknown error"), "{reply}");
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "pending navigation never failed after the renderer died: {elapsed:?}"
+    );
+
+    let executed = request(
+        &addr,
+        "POST",
+        &format!("/session/{id}/execute/sync"),
+        Some(r#"{"script":"return 2+2","args":[]}"#),
+    );
+    assert_eq!(executed["value"], json!(4.0), "{executed}");
+
+    server.release();
+    let recovered = request(
+        &addr,
+        "POST",
+        &format!("/session/{id}/url"),
+        Some(&json!({"url": format!("http://{}/", server.address())}).to_string()),
+    );
+    assert_eq!(recovered["value"], Value::Null, "{recovered}");
 }

@@ -392,7 +392,10 @@ impl Document {
         let Some(mut parsed) = world.document_mut(node) else {
             return DomReply::Unit;
         };
-        parsed.document.base.resolve(crate::animation_seconds());
+        parsed
+            .document
+            .base
+            .resolve_if_needed(crate::animation_seconds());
         if parsed
             .document
             .base
@@ -423,7 +426,10 @@ impl Document {
                 properties: Vec::new(),
             };
         };
-        parsed.document.base.resolve(crate::animation_seconds());
+        parsed
+            .document
+            .base
+            .resolve_if_needed(crate::animation_seconds());
         let names = parsed
             .document
             .base
@@ -490,7 +496,10 @@ impl Document {
         {
             let world = self.world.borrow();
             if let Some(mut parsed) = world.document_mut(root) {
-                parsed.document.base.resolve(crate::animation_seconds());
+                parsed
+                    .document
+                    .base
+                    .resolve_if_needed(crate::animation_seconds());
             }
             world
                 .with_document(root, |parsed| collect_nodes(parsed, root, &mut nodes))

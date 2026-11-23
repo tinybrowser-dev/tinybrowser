@@ -242,6 +242,16 @@ pub fn text(status: StatusCode, message: &str) -> Response {
 }
 
 #[must_use]
+pub fn bytes(status: StatusCode, content_type: &'static str, body: Vec<u8>) -> Response {
+    let mut response = Response::new(Full::new(Bytes::from(body)));
+    *response.status_mut() = status;
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+    response
+}
+
+#[must_use]
 pub fn method_not_allowed(allow: &'static str) -> Response {
     let mut response = Response::new(Full::new(Bytes::new()));
     *response.status_mut() = StatusCode::METHOD_NOT_ALLOWED;

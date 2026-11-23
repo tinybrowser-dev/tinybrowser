@@ -341,18 +341,22 @@ async fn poll_inbox(inbox: &mut exchange::Receiver<ToRenderer>) -> Polled {
     }
 }
 
+const DRAIN_SLICE: Duration = Duration::from_millis(50);
+
 fn drain_engines(
     engines: &mut HashMap<RendererAssignmentId, Engine>,
     outbox: &exchange::BlockingSender<FromRenderer>,
 ) -> Drained {
-    let deadline = std::time::Instant::now() + TURN_SCRIPT_BUDGET;
+    let now = std::time::Instant::now();
+    let yield_deadline = now + DRAIN_SLICE;
+    let script_deadline = now + TURN_SCRIPT_BUDGET;
     let mut yielded = false;
     for (assignment, engine) in engines {
-        if std::time::Instant::now() >= deadline {
+        if std::time::Instant::now() >= yield_deadline {
             yielded = true;
             break;
         }
-        if engine.drain_ready_until(deadline) {
+        if engine.drain_ready_slice(yield_deadline, script_deadline) {
             yielded = true;
         }
         if !publish(*assignment, engine, outbox) {

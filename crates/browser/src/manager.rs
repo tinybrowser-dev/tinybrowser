@@ -72,13 +72,24 @@ impl RendererProcessManager {
         site: Site,
         network: TabNetworkHandle,
     ) -> io::Result<Arc<Assignment>> {
-        let (process, assignment) = self.acquire_reserved(tab, site, network).await?;
-        if let Err(error) = process.assign_notify(assignment.id()).await {
-            drop(assignment);
-            return Err(error);
+        let mut last_error = None;
+        for _ in 0..2 {
+            let (process, assignment) = self
+                .acquire_reserved(tab, site.clone(), network.clone())
+                .await?;
+            match process.assign_notify(assignment.id()).await {
+                Ok(()) => {
+                    fill_spare(&self.inner);
+                    return Ok(assignment);
+                }
+                Err(error) => {
+                    process.alive.store(false, Ordering::Relaxed);
+                    drop(assignment);
+                    last_error = Some(error);
+                }
+            }
         }
-        fill_spare(&self.inner);
-        Ok(assignment)
+        Err(last_error.unwrap_or_else(|| io::Error::other("renderer assignment failed")))
     }
 
     async fn acquire_reserved(
@@ -88,7 +99,11 @@ impl RendererProcessManager {
         network: TabNetworkHandle,
     ) -> io::Result<(Arc<RendererHandle>, Arc<Assignment>)> {
         let mut state = self.inner.state.lock().await;
-        let process = if let Some(spare) = state.spare.take() {
+        let spare = state
+            .spare
+            .take()
+            .filter(|spare| spare.alive.load(Ordering::Relaxed));
+        let process = if let Some(spare) = spare {
             spare.bind(&site)?;
             spare
         } else if let Some(process) = spawn_slot(&self.inner, Some(site.clone())).await? {

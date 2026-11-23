@@ -27,6 +27,13 @@ pub(crate) struct AttachToTarget {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CreateTarget {
     pub(crate) url: String,
+    pub(crate) browser_context_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DisposeBrowserContext {
+    pub(crate) browser_context_id: String,
 }
 
 #[derive(Debug, Deserialize)]

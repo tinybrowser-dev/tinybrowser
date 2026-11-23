@@ -1,6 +1,7 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
@@ -53,6 +54,7 @@ impl Router {
                 browser,
                 bound,
                 stop: shutdown,
+                contexts: Arc::new(Mutex::new(BrowserContexts::default())),
             },
         }
     }
@@ -262,11 +264,71 @@ fn status_response(status: StatusCode, message: &'static str) -> Response {
     server::text(status, message)
 }
 
+#[derive(Default)]
+struct BrowserContexts {
+    next: u64,
+    created: HashSet<String>,
+    tabs: HashMap<TabId, String>,
+}
+
+impl BrowserContexts {
+    fn create(&mut self) -> String {
+        self.next = self.next.saturating_add(1);
+        let id = format!("ctx-{}", self.next);
+        self.created.insert(id.clone());
+        id
+    }
+
+    fn contains(&self, id: &str) -> bool {
+        id == DEFAULT_BROWSER_CONTEXT_ID || self.created.contains(id)
+    }
+
+    fn list(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self.created.iter().cloned().collect();
+        ids.sort();
+        ids
+    }
+
+    fn assign_tab(&mut self, tab: TabId, context_id: &str) {
+        if context_id != DEFAULT_BROWSER_CONTEXT_ID {
+            self.tabs.insert(tab, context_id.to_owned());
+        }
+    }
+
+    fn remove_tab(&mut self, tab: TabId) {
+        self.tabs.remove(&tab);
+    }
+
+    fn context_of(&self, tab: TabId) -> String {
+        self.tabs
+            .get(&tab)
+            .cloned()
+            .unwrap_or_else(|| DEFAULT_BROWSER_CONTEXT_ID.to_owned())
+    }
+
+    fn dispose(&mut self, context_id: &str) -> Option<Vec<TabId>> {
+        if !self.created.remove(context_id) {
+            return None;
+        }
+        let tabs: Vec<TabId> = self
+            .tabs
+            .iter()
+            .filter(|(_, assigned)| assigned.as_str() == context_id)
+            .map(|(tab, _)| *tab)
+            .collect();
+        for tab in &tabs {
+            self.tabs.remove(tab);
+        }
+        Some(tabs)
+    }
+}
+
 #[derive(Clone)]
 struct AppState {
     browser: BrowserHandle,
     bound: SocketAddr,
     stop: Shutdown,
+    contexts: Arc<Mutex<BrowserContexts>>,
 }
 
 fn version_json(state: &AppState) -> Value {
@@ -419,6 +481,7 @@ fn connect_ws(addr: SocketAddr, path: &str) -> io::Result<Client> {
 
 struct Conn {
     browser: BrowserHandle,
+    contexts: Arc<Mutex<BrowserContexts>>,
     sessions: HashMap<String, Target>,
     next_session: u64,
     tab: Option<TabHandle>,
@@ -872,6 +935,13 @@ impl Conn {
         }
     }
 
+    fn context_of(&self, id: TabId) -> String {
+        self.contexts
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .context_of(id)
+    }
+
     // https://chromedevtools.github.io/devtools-protocol/tot/Target/#method-getTargetInfo
     async fn target_info_for(&mut self, params: &Value) -> Result<Value, DispatchError> {
         let params: params::GetTargetInfo = params::parse(params)?;
@@ -881,7 +951,8 @@ impl Conn {
                     .parse::<u64>()
                     .map(TabId::new)
                     .map_err(|_| DispatchError::InvalidParams("targetId".to_owned()))?;
-                Ok(json!({"targetInfo": target_info(&self.browser, id).await}))
+                let context_id = self.context_of(id);
+                Ok(json!({"targetInfo": target_info(&self.browser, id, &context_id).await}))
             }
             None => Ok(json!({
                 "targetInfo": {
@@ -923,7 +994,8 @@ impl Conn {
     }
 
     async fn push_attached(&mut self, session: Option<&str>, session_id: &str, tab: &TabHandle) {
-        let mut info = target_info(&self.browser, tab.id()).await;
+        let context_id = self.context_of(tab.id());
+        let mut info = target_info(&self.browser, tab.id(), &context_id).await;
         if let Some(object) = info.as_object_mut() {
             object.insert("attached".into(), json!(true));
         }
@@ -1062,7 +1134,8 @@ impl Conn {
             }
             Handler::GetTargetInfo => match target {
                 Target::Page(tab) => {
-                    let mut info = target_info(&self.browser, tab.id()).await;
+                    let context_id = self.context_of(tab.id());
+                    let mut info = target_info(&self.browser, tab.id(), &context_id).await;
                     if let Some(object) = info.as_object_mut() {
                         object.insert("attached".into(), json!(true));
                     }
@@ -1294,6 +1367,28 @@ impl Conn {
             BrowserHandler::GetTargets => self.target_list().await,
             BrowserHandler::CreateTarget => self.create_target(params, session).await,
             BrowserHandler::CloseTarget => self.close_target(params, session).await,
+            // https://chromedevtools.github.io/devtools-protocol/tot/Target/#method-createBrowserContext
+            BrowserHandler::CreateBrowserContext => {
+                let id = self
+                    .contexts
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .create();
+                Ok(json!({ "browserContextId": id }))
+            }
+            // https://chromedevtools.github.io/devtools-protocol/tot/Target/#method-disposeBrowserContext
+            BrowserHandler::DisposeBrowserContext => {
+                self.dispose_browser_context(params, session).await
+            }
+            // https://chromedevtools.github.io/devtools-protocol/tot/Target/#method-getBrowserContexts
+            BrowserHandler::GetBrowserContexts => {
+                let ids = self
+                    .contexts
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .list();
+                Ok(json!({ "browserContextIds": ids }))
+            }
             BrowserHandler::AttachToTarget => {
                 let params: params::AttachToTarget = params::parse(params)?;
                 let id = target_id(&params.target_id)?;
@@ -1329,6 +1424,15 @@ impl Conn {
         session: Option<&str>,
     ) -> Result<Value, DispatchError> {
         let params: params::CreateTarget = params::parse(params)?;
+        if let Some(context_id) = params.browser_context_id.as_deref()
+            && !self
+                .contexts
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .contains(context_id)
+        {
+            return Err(DispatchError::InvalidParams("browserContextId".to_owned()));
+        }
         let url = params.url.as_str();
         let tab = self
             .browser
@@ -1346,11 +1450,40 @@ impl Conn {
             let _result = self.browser.close_tab(tab.id()).await;
             return Err(error);
         }
+        if let Some(context_id) = params.browser_context_id.as_deref() {
+            self.contexts
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .assign_tab(tab.id(), context_id);
+        }
         if self.auto_attach {
             let session_id = self.mint(Target::Page(tab.clone()));
             self.push_attached(session, &session_id, &tab).await;
         }
         Ok(json!({ "targetId": tab.id().to_string() }))
+    }
+
+    async fn dispose_browser_context(
+        &mut self,
+        params: &Value,
+        session: Option<&str>,
+    ) -> Result<Value, DispatchError> {
+        let params: params::DisposeBrowserContext = params::parse(params)?;
+        let Some(tabs) = self
+            .contexts
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .dispose(&params.browser_context_id)
+        else {
+            return Err(DispatchError::Failed(format!(
+                "unknown browser context: {}",
+                params.browser_context_id
+            )));
+        };
+        for id in tabs {
+            let _ = self.close_tab_id(id, session).await;
+        }
+        Ok(json!({}))
     }
 
     async fn close_target(
@@ -1360,6 +1493,15 @@ impl Conn {
     ) -> Result<Value, DispatchError> {
         let params: params::CloseTarget = params::parse(params)?;
         let id = target_id(&params.target_id)?;
+        self.close_tab_id(id, session).await?;
+        Ok(json!({ "success": true }))
+    }
+
+    async fn close_tab_id(
+        &mut self,
+        id: TabId,
+        session: Option<&str>,
+    ) -> Result<(), DispatchError> {
         if self.auto_attach {
             let detached: Vec<String> = self
                 .sessions
@@ -1385,6 +1527,10 @@ impl Conn {
             .close_tab(id)
             .await
             .map_err(|err| DispatchError::Failed(err.to_string()))?;
+        self.contexts
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove_tab(id);
         self.sessions.retain(|_, session| match session {
             Target::Page(tab) => tab.id() != id,
             Target::Browser => true,
@@ -1397,7 +1543,7 @@ impl Conn {
         if self.tab.as_ref().is_some_and(|tab| tab.id() == id) {
             self.tab = None;
         }
-        Ok(json!({ "success": true }))
+        Ok(())
     }
 
     async fn target_list(&self) -> Result<Value, DispatchError> {
@@ -1408,7 +1554,8 @@ impl Conn {
             .await
             .map_err(|error| DispatchError::Failed(error.to_string()))?
         {
-            target_infos.push(target_info(&self.browser, id).await);
+            let context_id = self.context_of(id);
+            target_infos.push(target_info(&self.browser, id, &context_id).await);
         }
         Ok(json!({ "targetInfos": target_infos }))
     }
@@ -1811,6 +1958,7 @@ async fn run_socket(
     let (deferred_tx, mut deferred_rx) = mpsc::unbounded_channel();
     let mut conn = Conn {
         browser: state.browser,
+        contexts: state.contexts,
         sessions: HashMap::new(),
         next_session: 1,
         tab,
@@ -1953,6 +2101,7 @@ mod tests {
         let (tab_events_tx, tab_events_rx) = mpsc::channel(8);
         Conn {
             browser: browser.handle().clone(),
+            contexts: Arc::new(Mutex::new(BrowserContexts::default())),
             sessions: HashMap::new(),
             next_session: 1,
             tab: None,

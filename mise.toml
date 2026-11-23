@@ -1,0 +1,5 @@
+# rust-toolchain.toml is the single toolchain pin. Without this, mise's rust
+# tool falls back to the global stable version and sets RUSTUP_TOOLCHAIN,
+# overriding the nightly the workspace requires (`profile-rustflags`, build-std).
+[settings]
+idiomatic_version_file_enable_tools = ["rust"]

@@ -42,6 +42,9 @@ impl Document {
         let _turn = self.js.as_ref().map(crate::js::JsRealm::enter_turn);
         self.run_task(task);
         self.pump_blitz_messages();
+        if !self.load_fired && !self.world.borrow().parser_active {
+            let _ = self.check_load();
+        }
         self.world.borrow().prune_dead_wrappers();
         // https://html.spec.whatwg.org/multipage/iframe-embed-object.html#dom-iframe-contentdocument
         !self.stop.is_set()

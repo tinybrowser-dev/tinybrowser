@@ -13,8 +13,6 @@ use tokio::sync::mpsc;
 
 use crate::params::CallArgument;
 
-use crate::DEFAULT_BROWSER_CONTEXT_ID;
-
 const MAX_SCREENSHOT_DIM: f64 = 4096.0;
 
 #[derive(Clone)]
@@ -96,6 +94,9 @@ pub(crate) enum BrowserHandler {
     GetTargets,
     CreateTarget,
     CloseTarget,
+    CreateBrowserContext,
+    DisposeBrowserContext,
+    GetBrowserContexts,
     AttachToTarget,
     AttachToBrowserTarget,
     DetachFromTarget,
@@ -197,6 +198,21 @@ const ROUTES: &[Route] = &[
         method: "Target.closeTarget",
         target: TargetClass::Browser,
         handler: Handler::Browser(BrowserHandler::CloseTarget),
+    },
+    Route {
+        method: "Target.createBrowserContext",
+        target: TargetClass::Browser,
+        handler: Handler::Browser(BrowserHandler::CreateBrowserContext),
+    },
+    Route {
+        method: "Target.disposeBrowserContext",
+        target: TargetClass::Browser,
+        handler: Handler::Browser(BrowserHandler::DisposeBrowserContext),
+    },
+    Route {
+        method: "Target.getBrowserContexts",
+        target: TargetClass::Browser,
+        handler: Handler::Browser(BrowserHandler::GetBrowserContexts),
     },
     Route {
         method: "Target.attachToTarget",
@@ -1853,7 +1869,11 @@ pub(crate) const RUNTIME_GET_PROPERTIES: &str = r#"(() => {
   }});
 })()"#;
 
-pub(crate) async fn target_info(browser: &BrowserHandle, id: TabId) -> Value {
+pub(crate) async fn target_info(
+    browser: &BrowserHandle,
+    id: TabId,
+    browser_context_id: &str,
+) -> Value {
     let (url, title) = match browser.tab(id).await {
         Ok(tab) => {
             let url = tab
@@ -1872,7 +1892,7 @@ pub(crate) async fn target_info(browser: &BrowserHandle, id: TabId) -> Value {
         "url": url,
         "attached": false,
         "canAccessOpener": false,
-        "browserContextId": DEFAULT_BROWSER_CONTEXT_ID,
+        "browserContextId": browser_context_id,
     })
 }
 

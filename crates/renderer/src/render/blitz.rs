@@ -18,12 +18,16 @@ pub(crate) fn resolve_until_settled(base: &mut blitz_dom::BaseDocument) -> u32 {
     let mut passes = 0;
     for _ in 0..8 {
         base.handle_messages();
-        if base.has_pending_critical_resources() || !base.has_changes() {
+        if base.has_pending_critical_resources() {
+            break;
+        }
+        let first_animation_sample = passes == 0 && base.is_animating();
+        if !base.has_changes() && !first_animation_sample {
             break;
         }
         base.resolve(crate::animation_seconds());
         passes += 1;
-        if !base.has_changes() && !base.has_pending_critical_resources() {
+        if !base.has_changes() {
             break;
         }
     }

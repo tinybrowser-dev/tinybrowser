@@ -102,7 +102,7 @@ fn measure<T>(
     let world = world.borrow();
     let mut parsed = world.document_mut(id)?;
     let base = &mut parsed.document.base;
-    base.resolve(crate::animation_seconds());
+    base.resolve_if_needed(crate::animation_seconds());
     let node = base.get_node(id.node)?;
     read(base, node)
 }
@@ -111,7 +111,7 @@ fn measure<T>(
 fn offset_parent_id(parsed: &mut Parsed, id: NodeId) -> Option<NodeId> {
     let root = scrolling::root_element(parsed)?;
     let base = &mut parsed.document.base;
-    base.resolve(crate::animation_seconds());
+    base.resolve_if_needed(crate::animation_seconds());
     let node = base.get_node(id.node)?;
     if !has_associated_box(base, node) || root == id || is_html_body(node) {
         return None;
