@@ -55,6 +55,10 @@ pub(crate) struct RealmRegistry {
     pub(crate) svg_rasters: super::canvas::SvgRasterCache,
     next_bitmap: u64,
     next_decoder: u64,
+    // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#textFieldSelection
+    selections: HashMap<NodeId, (u32, u32, u8)>,
+    // https://html.spec.whatwg.org/multipage/interaction.html#focusable-area
+    active_elements: HashMap<u32, NodeId>,
 }
 
 pub(crate) struct PrivateSlots {
@@ -571,6 +575,33 @@ impl RealmRegistry {
             .retain(|node, _| node.document_id() != id);
         self.adopted_ids
             .retain(|from, to| from.document_id() != id && to.document_id() != id);
+        self.selections.retain(|node, _| node.document_id() != id);
+        self.active_elements.remove(&id);
+    }
+
+    // https://html.spec.whatwg.org/multipage/interaction.html#focused-area-of-the-document
+    pub(crate) fn active_element(&self, document: u32) -> Option<NodeId> {
+        self.active_elements.get(&document).copied()
+    }
+
+    pub(crate) fn set_active_element(&mut self, document: u32, node: Option<NodeId>) {
+        match node {
+            Some(node) => {
+                self.active_elements.insert(document, node);
+            }
+            None => {
+                self.active_elements.remove(&document);
+            }
+        }
+    }
+
+    // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#textFieldSelection
+    pub(crate) fn selection_of(&self, id: NodeId) -> (u32, u32, u8) {
+        self.selections.get(&id).copied().unwrap_or((0, 0, 0))
+    }
+
+    pub(crate) fn set_selection(&mut self, id: NodeId, start: u32, end: u32, direction: u8) {
+        self.selections.insert(id, (start, end, direction));
     }
 
     pub(crate) fn prune_dead_wrappers(&mut self, documents: &DocumentStore) {
@@ -1321,9 +1352,6 @@ pub(crate) struct DocumentState {
 
     pub(crate) custom_construction: Vec<NodeId>,
     implementations: HashMap<u32, Persistent<Value<'static>>>,
-    // https://html.spec.whatwg.org/multipage/interaction.html#focused-area-of-the-document
-    active_elements: HashMap<u32, NodeId>,
-    selections: HashMap<NodeId, (u32, u32, u8)>,
     remote_ids: HashMap<NodeId, u64>,
     remote_nodes: HashMap<u64, NodeId>,
     // https://html.spec.whatwg.org/multipage/urls-and-fetching.html#nonce-attributes
@@ -1392,8 +1420,6 @@ impl DocumentState {
         self.worker_owner_csp = None;
         self.custom_construction.clear();
         self.implementations.clear();
-        self.active_elements.clear();
-        self.selections.clear();
         self.remote_ids.clear();
         self.remote_nodes.clear();
         self.dialog_return_values.clear();
@@ -1919,6 +1945,14 @@ impl World {
 
     pub(crate) fn realm_id(&self) -> u64 {
         self.realm
+    }
+
+    // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-createIsolatedWorld
+    pub(crate) fn scoped_handle(&self, handle: String) -> String {
+        match &self.isolated_name {
+            Some(name) => format!("iw:{name}:{handle}"),
+            None => handle,
+        }
     }
 
     pub(crate) fn main_document_id(&self) -> Option<u32> {
@@ -3196,15 +3230,18 @@ impl World {
     }
 
     pub(crate) fn active_element(&self, document: u32) -> Option<NodeId> {
-        self.state.active_elements.get(&document).copied()
+        self.runtime.registry.borrow().active_element(document)
     }
 
     pub(crate) fn selection_of(&self, id: NodeId) -> (u32, u32, u8) {
-        self.state.selections.get(&id).copied().unwrap_or((0, 0, 0))
+        self.runtime.registry.borrow().selection_of(id)
     }
 
     pub(crate) fn set_selection(&mut self, id: NodeId, start: u32, end: u32, direction: u8) {
-        self.state.selections.insert(id, (start, end, direction));
+        self.runtime
+            .registry
+            .borrow_mut()
+            .set_selection(id, start, end, direction);
     }
 
     // https://w3c.github.io/webdriver/#elements
@@ -3305,14 +3342,10 @@ impl World {
     }
 
     pub(crate) fn set_active_element(&mut self, document: u32, node: Option<NodeId>) {
-        match node {
-            Some(node) => {
-                self.state.active_elements.insert(document, node);
-            }
-            None => {
-                self.state.active_elements.remove(&document);
-            }
-        }
+        self.runtime
+            .registry
+            .borrow_mut()
+            .set_active_element(document, node);
         // https://drafts.csswg.org/selectors-4/#the-focus-pseudo
         if let Some(parsed) = self.runtime.documents.borrow_mut().get_mut(document) {
             match node {

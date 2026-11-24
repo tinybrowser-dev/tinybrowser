@@ -1627,6 +1627,26 @@ impl Document {
         out
     }
 
+    // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-createIsolatedWorld
+    fn ensure_isolated(&mut self, name: &str) -> Result<(), TabError> {
+        if self.isolated_js.contains_key(name) {
+            return Ok(());
+        }
+        let isolated_world = Rc::new(RefCell::new(World::new_isolated(
+            &self.world.borrow(),
+            name.to_owned(),
+        )));
+        let realm = crate::js::JsRealm::new(
+            &self.js_runtime,
+            Rc::clone(&isolated_world),
+            Arc::clone(&self.stop),
+        )
+        .map_err(TabError::from)?;
+        self.isolated_js
+            .insert(name.to_owned(), (isolated_world, realm));
+        Ok(())
+    }
+
     pub(crate) fn execute_script_deadline(
         &mut self,
         source: crate::ScriptSource<&str>,
@@ -1638,20 +1658,7 @@ impl Document {
             source,
         } = source
         {
-            if !self.isolated_js.contains_key(name) {
-                let isolated_world = Rc::new(RefCell::new(World::new_isolated(
-                    &self.world.borrow(),
-                    name.to_owned(),
-                )));
-                let realm = crate::js::JsRealm::new(
-                    &self.js_runtime,
-                    Rc::clone(&isolated_world),
-                    Arc::clone(&self.stop),
-                )
-                .map_err(TabError::from)?;
-                self.isolated_js
-                    .insert(name.to_owned(), (isolated_world, realm));
-            }
+            self.ensure_isolated(name)?;
             let Some((isolated_world, isolated_realm)) = self.isolated_js.get(name) else {
                 return Err(TabError::Script(ScriptFailure::HostMissing));
             };
@@ -3200,12 +3207,21 @@ impl Document {
                 .collect()
         };
         if !settled.is_empty() {
-            self.fire_js(|js| {
+            let apply = |js: &crate::js::JsRealm| {
                 for (sheet, path, loaded) in &settled {
                     js.font_face_settled(*sheet, path.clone(), *loaded)?;
                 }
                 Ok(())
-            });
+            };
+            self.fire_js(apply);
+            let failed = self
+                .isolated_js
+                .values()
+                .map(|(_, realm)| apply(realm).is_err())
+                .fold(false, |any, failed| any | failed);
+            if failed {
+                self.record_event(RendererEvent::ScriptFailed);
+            }
         }
     }
 

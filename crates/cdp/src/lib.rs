@@ -1288,7 +1288,15 @@ impl Conn {
                 );
                 Ok(json!({}))
             }
-            PageHandler::Script(method) => run_script(method, params, tab).await,
+            PageHandler::Script(method) => {
+                let world = params
+                    .get("executionContextId")
+                    .and_then(Value::as_u64)
+                    .and_then(|id| self.isolated_contexts.get(&id))
+                    .filter(|(owner, _)| *owner == tab.id())
+                    .map(|(_, name)| name.clone());
+                run_script(method, params, tab, world.as_deref()).await
+            }
         }
     }
 

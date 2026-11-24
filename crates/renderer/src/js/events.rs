@@ -781,7 +781,8 @@ pub(crate) fn add_listener_in<'js>(
     let typ = bindings::webidl_to_string(ctx, typ)?;
     let callback = listener_callback(ctx, callback)?;
     let options = ListenerOptions::read(ctx, options)?;
-    add_listener_parsed_in(ctx, world, target, typ, callback, options)
+    let world = listener_world(ctx, world, target)?;
+    add_listener_parsed_in(ctx, &world, target, typ, callback, options)
 }
 
 pub(crate) fn add_listener_parsed(
@@ -870,7 +871,8 @@ pub(crate) fn remove_listener_in<'js>(
     let typ = bindings::webidl_to_string(ctx, typ)?;
     let callback = listener_callback(ctx, callback)?;
     let capture = ListenerOptions::read_capture(ctx, options)?;
-    remove_listener_parsed_in(ctx, world, target, &typ, callback.as_ref(), capture)
+    let world = listener_world(ctx, world, target)?;
+    remove_listener_parsed_in(ctx, &world, target, &typ, callback.as_ref(), capture)
 }
 
 pub(crate) fn remove_listener_parsed(
@@ -1557,8 +1559,8 @@ fn target_reference(
 ) -> Result<EventTargetRef> {
     let world = match target {
         EventTargetKey::Window => match window {
-            Some(world) => Rc::clone(world),
-            None => bindings::world(ctx)?,
+            Some(world) => frame_main_world(ctx, Rc::clone(world))?,
+            None => frame_main_world(ctx, bindings::world(ctx)?)?,
         },
         _ => target_world(ctx, target)?,
     };
@@ -2074,7 +2076,29 @@ fn target_world(ctx: &Ctx<'_>, target: EventTargetKey) -> Result<Rc<RefCell<Worl
             let state = bindings::attr_state(ctx, scope, id)?;
             bindings::world_for_node(ctx, state.document)
         }
-        EventTargetKey::Window | EventTargetKey::Standalone(_) => bindings::world(ctx),
+        EventTargetKey::Window => frame_main_world(ctx, bindings::world(ctx)?),
+        EventTargetKey::Standalone(_) => bindings::world(ctx),
+    }
+}
+
+// https://dom.spec.whatwg.org/#concept-event-target
+// https://html.spec.whatwg.org/multipage/window-object.html#window
+fn frame_main_world(ctx: &Ctx<'_>, world: Rc<RefCell<World>>) -> Result<Rc<RefCell<World>>> {
+    let frame = world.borrow().frame();
+    let main = bindings::realm_registry(ctx)?.borrow().frame_world(frame);
+    Ok(main.unwrap_or(world))
+}
+
+// https://dom.spec.whatwg.org/#concept-event-target
+// https://html.spec.whatwg.org/multipage/window-object.html#window
+fn listener_world(
+    ctx: &Ctx<'_>,
+    world: &Rc<RefCell<World>>,
+    target: EventTargetKey,
+) -> Result<Rc<RefCell<World>>> {
+    match target {
+        EventTargetKey::Window => frame_main_world(ctx, Rc::clone(world)),
+        _ => Ok(Rc::clone(world)),
     }
 }
 

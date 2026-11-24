@@ -925,18 +925,47 @@ pub struct ScreenshotClip {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum DomRequest {
     GetDocument,
-    QuerySelector { node: u64, selector: String },
-    QuerySelectorAll { node: u64, selector: String },
-    DescribeNode { node: u64 },
-    GetOuterHtml { node: u64 },
-    GetAttributes { node: u64 },
-    ResolveNode { node: u64 },
-    ResolveObject { object_id: String },
-    GetNodeForLocation { x: f64, y: f64 },
-    GetBoxModel { node: u64 },
-    GetContentQuads { node: u64 },
-    ScrollIntoViewIfNeeded { node: u64 },
-    GetComputedStyle { node: u64 },
+    QuerySelector {
+        node: u64,
+        selector: String,
+    },
+    QuerySelectorAll {
+        node: u64,
+        selector: String,
+    },
+    DescribeNode {
+        node: u64,
+    },
+    GetOuterHtml {
+        node: u64,
+    },
+    GetAttributes {
+        node: u64,
+    },
+    ResolveNode {
+        node: u64,
+        // https://chromedevtools.github.io/devtools-protocol/tot/DOM/#method-resolveNode
+        world: Option<String>,
+    },
+    ResolveObject {
+        object_id: String,
+    },
+    GetNodeForLocation {
+        x: f64,
+        y: f64,
+    },
+    GetBoxModel {
+        node: u64,
+    },
+    GetContentQuads {
+        node: u64,
+    },
+    ScrollIntoViewIfNeeded {
+        node: u64,
+    },
+    GetComputedStyle {
+        node: u64,
+    },
     GetStyleSheets,
     GetStorageKey,
     GetFullAxTree,

@@ -668,7 +668,7 @@ impl JsRealm {
                 // https://chromedevtools.github.io/devtools-protocol/tot/DOM/#method-resolveNode
                 let object_id = {
                     let remote = self.world.borrow_mut().remote_id(node);
-                    format!("dom-{remote}")
+                    self.world.borrow().scoped_handle(format!("dom-{remote}"))
                 };
                 let handles: Object = host.get("__tb_handles")?;
                 handles.set(object_id.as_str(), value)?;

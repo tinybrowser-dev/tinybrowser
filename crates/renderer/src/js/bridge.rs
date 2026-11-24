@@ -49,17 +49,10 @@ pub(crate) fn install(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
     table.set_prototype(None)?;
     bridge.set("__tb_handles", table)?;
     bridge.set("evaluatePage", Func::from(evaluate_page))?;
-    let isolated_prefix = world
-        .borrow()
-        .isolated_name
-        .as_ref()
-        .map(|name| format!("iw:{name}:"));
+    let isolated_world = Rc::clone(world);
     bridge.set(
         "__tb_mint",
-        Func::from(move || match &isolated_prefix {
-            Some(prefix) => format!("{prefix}{}", mint_handle()),
-            None => mint_handle(),
-        }),
+        Func::from(move || isolated_world.borrow().scoped_handle(mint_handle())),
     )?;
     let secure_context = world.borrow().is_secure_context();
     bridge.set("__tbSecureContext", secure_context)?;

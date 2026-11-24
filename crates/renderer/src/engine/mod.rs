@@ -3985,6 +3985,75 @@ mod messaging_tests {
         panic!("a timer scheduled in the isolated world must fire in that world");
     }
 
+    // https://dom.spec.whatwg.org/#concept-event-dispatch
+    #[test]
+    fn isolated_world_window_listeners_observe_page_events() {
+        let mut engine = engine();
+        engine
+            .mount_frame(
+                FrameId::MAIN,
+                &mount(
+                    "https://example.test/isolated-events",
+                    "<!doctype html><input id=checkbox type=checkbox>",
+                ),
+            )
+            .expect("mount");
+        let _ready = engine.drain_ready();
+        let installed = engine
+            .execute_remote_in(
+                FrameId::MAIN,
+                crate::ScriptSource::Isolated {
+                    world: "probe",
+                    source: r"
+                    (function () {
+                      window.__events = [];
+                      window.addEventListener('click', event => {
+                        window.__events.push(event.type);
+                        event.preventDefault();
+                      }, true);
+                      return true;
+                    })()
+                    ",
+                },
+                None,
+            )
+            .expect("isolated listener");
+        assert!(
+            matches!(installed, crate::RemoteValue::Bool(true)),
+            "the isolated listener must install: {installed:?}"
+        );
+        let clicked = engine
+            .eval_in(
+                FrameId::MAIN,
+                r"
+                (function () {
+                  const checkbox = document.querySelector('#checkbox');
+                  checkbox.click();
+                  return JSON.stringify({ checked: checkbox.checked });
+                })()
+                ",
+            )
+            .expect("main click");
+        assert_eq!(
+            clicked, r#"{"checked":false}"#,
+            "an isolated window listener must be able to cancel the page event"
+        );
+        let events = engine
+            .execute_remote_in(
+                FrameId::MAIN,
+                crate::ScriptSource::Isolated {
+                    world: "probe",
+                    source: "JSON.stringify(window.__events)",
+                },
+                None,
+            )
+            .expect("isolated event probe");
+        assert!(
+            matches!(events, crate::RemoteValue::String(ref value) if value == r#"["click"]"#),
+            "the isolated window listener must observe the page event: {events:?}"
+        );
+    }
+
     // https://webassembly.github.io/spec/js-api/#dom-memory-grow
     #[test]
     fn web_assembly_memory_grow_extends_a_shared_buffer_in_place() {

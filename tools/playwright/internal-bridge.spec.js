@@ -85,6 +85,68 @@ test("navigation replaces private realm state without publishing it", async ({ d
   }
 });
 
+test("isolated worlds share document state, focus and events with the page", async ({ daemon }) => {
+  const browser = await chromium.connectOverCDP(daemon.origin);
+  try {
+    const page = browser.contexts()[0].pages()[0];
+    await page.setContent(`
+      <input id="input" value="some value">
+      <input id="checkbox" type="checkbox">
+    `);
+    const session = await page.context().newCDPSession(page);
+    const { frameTree } = await session.send("Page.getFrameTree");
+    const { executionContextId } = await session.send("Page.createIsolatedWorld", {
+      frameId: frameTree.frame.id,
+      worldName: "probe",
+    });
+    const evaluateInWorld = async expression => {
+      const { result, exceptionDetails } = await session.send("Runtime.evaluate", {
+        contextId: executionContextId,
+        expression,
+        returnByValue: true,
+      });
+      expect(exceptionDetails).toBeUndefined();
+      return result.value;
+    };
+
+    await evaluateInWorld(`
+      window.__events = [];
+      window.addEventListener("click", event => {
+        window.__events.push(event.type);
+        event.preventDefault();
+      }, true);
+      document.querySelector("#input").select();
+      document.querySelector("#input").focus();
+    `);
+
+    const pageState = await page.evaluate(() => {
+      const input = document.querySelector("#input");
+      const checkbox = document.querySelector("#checkbox");
+      const focused = document.activeElement === input;
+      const selection = [input.selectionStart, input.selectionEnd];
+      checkbox.click();
+      return { focused, selection, checked: checkbox.checked };
+    });
+    expect(pageState).toEqual({ focused: true, selection: [0, 10], checked: false });
+    expect(JSON.parse(await evaluateInWorld("JSON.stringify(window.__events)"))).toEqual(["click"]);
+
+    const { root } = await session.send("DOM.getDocument", {});
+    const { nodeId } = await session.send("DOM.querySelector", { nodeId: root.nodeId, selector: "#input" });
+    const { object } = await session.send("DOM.resolveNode", { nodeId, executionContextId });
+    expect(object.objectId).toMatch(/^iw:probe:/);
+    const { result } = await session.send("Runtime.callFunctionOn", {
+      objectId: object.objectId,
+      functionDeclaration: "function () { this.select(); return this.selectionEnd; }",
+      returnByValue: true,
+    });
+    expect(result.value).toBe(10);
+    expect(await page.evaluate(() => document.querySelector("#input").selectionEnd)).toBe(10);
+    expect(await page.evaluate(() => window.__events)).toBeUndefined();
+  } finally {
+    await browser.close();
+  }
+});
+
 test("replaced event constructors cannot choose trusted delivery objects", async ({ daemon }) => {
   const browser = await chromium.connectOverCDP(daemon.origin);
   try {

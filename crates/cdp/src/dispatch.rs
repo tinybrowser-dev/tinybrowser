@@ -602,6 +602,7 @@ pub(crate) async fn run_script(
     method: ScriptMethod,
     params: &Value,
     tab: &TabHandle,
+    world: Option<&str>,
 ) -> Result<Value, DispatchError> {
     match method {
         ScriptMethod::GetFrameTree | ScriptMethod::GetResourceTree => frame_tree(tab).await,
@@ -628,7 +629,7 @@ pub(crate) async fn run_script(
         ScriptMethod::DomDescribeNode => dom_describe_node(tab, params).await,
         ScriptMethod::DomGetOuterHtml => dom_outer_html(tab, params).await,
         ScriptMethod::DomGetAttributes => dom_attributes(tab, params).await,
-        ScriptMethod::DomResolveNode => dom_resolve_node(tab, params).await,
+        ScriptMethod::DomResolveNode => dom_resolve_node(tab, params, world).await,
         ScriptMethod::DomGetNodeForLocation => dom_node_for_location(tab, params).await,
         ScriptMethod::DomGetBoxModel => dom_box_model(tab, params).await,
         ScriptMethod::DomGetContentQuads => dom_content_quads(tab, params).await,
@@ -1404,6 +1405,7 @@ pub(crate) async fn dom_attributes(
 pub(crate) async fn dom_resolve_node(
     tab: &TabHandle,
     params: &Value,
+    world: Option<&str>,
 ) -> Result<Value, DispatchError> {
     let target: crate::params::NodeTarget = crate::params::parse(params)?;
     let node = match target_node(tab, &target).await? {
@@ -1411,7 +1413,14 @@ pub(crate) async fn dom_resolve_node(
         TargetNode::Node(id) => id,
         TargetNode::Missing => return Ok(json!({"object": {"type": "undefined"}})),
     };
-    let reply = dom_request(tab, DomRequest::ResolveNode { node }).await?;
+    let reply = dom_request(
+        tab,
+        DomRequest::ResolveNode {
+            node,
+            world: world.map(str::to_owned),
+        },
+    )
+    .await?;
     let DomReply::Resolved { object } = reply else {
         return Err(DispatchError::BadHelperReply("DOM.resolveNode"));
     };

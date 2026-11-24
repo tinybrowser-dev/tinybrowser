@@ -1,6 +1,7 @@
 // https://chromedevtools.github.io/devtools-protocol/tot/DOM/
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use blitz_dom::NodeData;
 use markup5ever::interface::QuirksMode;
@@ -67,7 +68,7 @@ impl Document {
             }),
             DomRequest::GetOuterHtml { node } => self.dom_outer_html(*node),
             DomRequest::GetAttributes { node } => self.dom_attributes(*node),
-            DomRequest::ResolveNode { node } => self.dom_resolve(*node),
+            DomRequest::ResolveNode { node, world } => self.dom_resolve(*node, world.as_deref()),
             DomRequest::ResolveObject { object_id } => self.dom_resolve_object(object_id),
             DomRequest::GetNodeForLocation { x, y } => Ok(self.dom_node_for_location(*x, *y)),
             DomRequest::GetBoxModel { node } => Ok(self.dom_box_model(*node)),
@@ -301,12 +302,29 @@ impl Document {
         )
     }
 
-    fn dom_resolve(&self, remote: u64) -> Result<DomReply, TabError> {
+    // https://chromedevtools.github.io/devtools-protocol/tot/DOM/#method-resolveNode
+    fn dom_resolve(&mut self, remote: u64, world: Option<&str>) -> Result<DomReply, TabError> {
         let Some(node) = self.target_node(remote) else {
             return Ok(DomReply::Resolved { object: None });
         };
-        let Some(realm) = self.js.as_ref() else {
-            return Ok(DomReply::Resolved { object: None });
+        if let Some(name) = world {
+            self.ensure_isolated(name)?;
+            let main_world = Rc::clone(&self.world);
+            if let Some((isolated_world, _)) = self.isolated_js.get(name) {
+                isolated_world
+                    .borrow_mut()
+                    .sync_isolated_from(&main_world.borrow());
+            }
+        }
+        let realm = match world {
+            Some(name) => match self.isolated_js.get(name) {
+                Some((_, realm)) => realm,
+                None => return Ok(DomReply::Resolved { object: None }),
+            },
+            None => match self.js.as_ref() {
+                Some(realm) => realm,
+                None => return Ok(DomReply::Resolved { object: None }),
+            },
         };
         let object = realm.intern_node(node).map_err(|error| TabError::Dom {
             message: error.to_string(),
