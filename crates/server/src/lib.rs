@@ -123,6 +123,7 @@ async fn connection<S, H, F>(
     H: Fn(Request, S) -> F + Clone + Send + Sync + 'static,
     F: Future<Output = Response> + Send + 'static,
 {
+    let _ = stream.set_nodelay(true);
     let service = service_fn(move |request| {
         let state = state.clone();
         let handler = handler.clone();
