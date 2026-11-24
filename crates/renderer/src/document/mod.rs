@@ -495,6 +495,8 @@ pub(crate) struct Document {
     events: Vec<RendererEvent>,
     events_overflowed: bool,
     js: Option<crate::js::JsRealm>,
+    // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-createIsolatedWorld
+    isolated_js: HashMap<String, (Rc<RefCell<World>>, crate::js::JsRealm)>,
     js_timers: HashMap<PageTimerId, TimerId>,
     load_delay: LoadDelay,
     init_scripts_deferred: bool,
@@ -680,6 +682,7 @@ impl Document {
             events: Vec::new(),
             events_overflowed: false,
             js: None,
+            isolated_js: HashMap::new(),
             js_timers: HashMap::new(),
             load_delay: LoadDelay::default(),
             init_scripts_deferred: false,
@@ -1627,6 +1630,37 @@ impl Document {
         deadline: Option<WallClock>,
     ) -> Result<ScriptValue, TabError> {
         self.ensure_js()?;
+        if let crate::ScriptSource::Isolated {
+            world: name,
+            source,
+        } = source
+        {
+            if !self.isolated_js.contains_key(name) {
+                let isolated_world = Rc::new(RefCell::new(World::new_isolated(
+                    &self.world.borrow(),
+                    name.to_owned(),
+                )));
+                let realm = crate::js::JsRealm::new(
+                    &self.js_runtime,
+                    Rc::clone(&isolated_world),
+                    Arc::clone(&self.stop),
+                )
+                .map_err(TabError::from)?;
+                self.isolated_js
+                    .insert(name.to_owned(), (isolated_world, realm));
+            }
+            let Some((isolated_world, isolated_realm)) = self.isolated_js.get(name) else {
+                return Err(TabError::Script(ScriptFailure::HostMissing));
+            };
+            isolated_world
+                .borrow_mut()
+                .sync_isolated_from(&self.world.borrow());
+            let out = isolated_realm
+                .eval_value_deadline(crate::ScriptSource::Browser(source), deadline)
+                .map_err(TabError::from);
+            self.adopt_js_work();
+            return out;
+        }
         let Some(js) = self.js.as_ref() else {
             return Err(TabError::Script(ScriptFailure::HostMissing));
         };
@@ -1994,6 +2028,7 @@ impl Document {
         self.timers.retain(|_, timer| timer.js_id.is_none());
         self.js_timers.clear();
         self.js = None;
+        self.isolated_js.clear();
         // https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-set
         self.world.borrow_mut().await_proxy_sets_replay();
         self.world.borrow_mut().realm_context = None;
@@ -2011,6 +2046,7 @@ impl Document {
         }
         self.parser_blocked_script = None;
         self.deferred_modules.clear();
+        self.world.borrow_mut().import_map.clear();
     }
 
     pub(crate) fn apply_document_stream(&mut self, command: DocumentStreamCommand) {
@@ -2574,6 +2610,26 @@ impl Document {
                     // https://html.spec.whatwg.org/multipage/scripting.html#attr-script-defer
                     self.deferred_modules.push((id, source));
                 }
+                Some(crate::js::Script::ImportMap(crate::js::ScriptElementSource::Inline {
+                    source,
+                    ..
+                })) => {
+                    // https://html.spec.whatwg.org/multipage/scripting.html#prepare-the-script-element
+                    let violations = self.inline_script_violations(&source, id);
+                    if !violations.is_empty() {
+                        self.fire_csp_violations(id, &violations);
+                    }
+                    if crate::csp::blocks(&violations) {
+                        continue;
+                    }
+                    if let Ok(map) = crate::js::modules::ImportMap::parse(&source, &parse_base) {
+                        self.world.borrow_mut().import_map.merge(map);
+                    }
+                }
+                Some(crate::js::Script::ImportMap(crate::js::ScriptElementSource::Src(_))) => {
+                    // https://html.spec.whatwg.org/multipage/scripting.html#prepare-the-script-element
+                    self.tasks.push_back(Task::NodeError(id));
+                }
                 None => {}
             }
         }
@@ -2669,25 +2725,43 @@ impl Document {
         origin + sampled.elapsed().as_secs_f64() * 1000.0
     }
 
+    // https://fetch.spec.whatwg.org/#concept-tao-check
+    fn timing_allow_origin_passed(&self, outcome: &crate::protocol::DialOutcome) -> bool {
+        if !outcome.crossed_origin {
+            return true;
+        }
+        let origin = self.world.borrow().origin.ascii_serialization();
+        outcome.headers.iter().any(|(name, value)| {
+            name.eq_ignore_ascii_case("timing-allow-origin")
+                && value.split(',').any(|part| {
+                    let token = part.trim();
+                    token == "*" || (origin != "null" && token == origin)
+                })
+        })
+    }
+
     // https://w3c.github.io/resource-timing/#dfn-add-a-performanceresourcetiming-entry
     fn queue_resource_timing(
         &mut self,
-        name: String,
+        outcome: &crate::protocol::DialOutcome,
         initiator_type: &str,
-        start_time: f64,
-        end_time: f64,
-        response_status: u16,
+        timing: DialTiming,
         encoded_body_size: u64,
     ) {
+        let name = outcome.final_url.to_string();
+        let response_status = outcome.status;
+        let tao_passed = self.timing_allow_origin_passed(outcome);
         self.fire_js(|js| {
-            js.queue_resource_timing(
-                name,
+            js.queue_resource_timing(crate::js::ResourceTiming {
+                name: &name,
                 initiator_type,
-                start_time,
-                end_time,
+                start_time: timing.start,
+                end_time: timing.end,
                 response_status,
                 encoded_body_size,
-            )
+                decoded_body_size: encoded_body_size,
+                tao_passed,
+            })
         });
     }
 
@@ -2702,14 +2776,7 @@ impl Document {
             crate::protocol::ResponseBody::Undecodable
             | crate::protocol::ResponseBody::Streamed(_) => 0,
         };
-        self.queue_resource_timing(
-            outcome.final_url.to_string(),
-            "script",
-            timing.start,
-            timing.end,
-            outcome.status,
-            encoded,
-        );
+        self.queue_resource_timing(outcome, "script", timing, encoded);
     }
 
     // https://w3c.github.io/resource-timing/#dom-performanceresourcetiming-initiatortype
@@ -2942,11 +3009,9 @@ impl Document {
         // https://w3c.github.io/resource-timing/#resources-included-in-the-performanceresourcetiming-interface
         if !blocked {
             self.queue_resource_timing(
-                outcome.final_url.to_string(),
+                outcome,
                 Self::subresource_initiator(destination),
-                timing.start,
-                timing.end,
-                outcome.status,
+                timing,
                 body.map_or(0, |body| body.len() as u64),
             );
         }

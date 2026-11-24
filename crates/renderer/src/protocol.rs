@@ -97,6 +97,8 @@ impl WindowId {
 pub enum ScriptSource<T = String> {
     Page(T),
     Browser(T),
+    BrowserStrict(T),
+    Isolated { world: T, source: T },
 }
 
 impl ScriptSource {
@@ -105,6 +107,8 @@ impl ScriptSource {
         match self {
             Self::Page(source) => ScriptSource::Page(source),
             Self::Browser(source) => ScriptSource::Browser(source),
+            Self::BrowserStrict(source) => ScriptSource::BrowserStrict(source),
+            Self::Isolated { world, source } => ScriptSource::Isolated { world, source },
         }
     }
 }
@@ -115,6 +119,11 @@ impl ScriptSource<&str> {
         match self {
             Self::Page(source) => ScriptSource::Page(source.to_owned()),
             Self::Browser(source) => ScriptSource::Browser(source.to_owned()),
+            Self::BrowserStrict(source) => ScriptSource::BrowserStrict(source.to_owned()),
+            Self::Isolated { world, source } => ScriptSource::Isolated {
+                world: world.to_owned(),
+                source: source.to_owned(),
+            },
         }
     }
 }

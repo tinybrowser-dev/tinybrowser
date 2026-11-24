@@ -10,6 +10,7 @@ pub(crate) struct ResourceTiming<'a> {
     pub(crate) response_status: u16,
     pub(crate) encoded_body_size: u64,
     pub(crate) decoded_body_size: u64,
+    pub(crate) tao_passed: bool,
 }
 
 pub(crate) fn queue_resource_timing(ctx: &Ctx<'_>, entry: ResourceTiming<'_>) -> Result<()> {
@@ -18,15 +19,16 @@ pub(crate) fn queue_resource_timing(ctx: &Ctx<'_>, entry: ResourceTiming<'_>) ->
     else {
         return Ok(());
     };
-    function.call::<_, ()>((
-        entry.name,
-        entry.initiator_type,
-        entry.start_time,
-        entry.end_time,
-        entry.response_status,
-        entry.encoded_body_size,
-        entry.decoded_body_size,
-    ))
+    let mut args = rquickjs::function::Args::new(ctx.clone(), 8);
+    args.push_arg(entry.name)?;
+    args.push_arg(entry.initiator_type)?;
+    args.push_arg(entry.start_time)?;
+    args.push_arg(entry.end_time)?;
+    args.push_arg(entry.response_status)?;
+    args.push_arg(entry.encoded_body_size)?;
+    args.push_arg(entry.decoded_body_size)?;
+    args.push_arg(entry.tao_passed)?;
+    function.call_arg::<()>(args)
 }
 
 // https://w3c.github.io/navigation-timing/#marking-navigation-timing

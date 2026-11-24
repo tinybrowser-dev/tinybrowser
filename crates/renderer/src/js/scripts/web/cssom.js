@@ -667,6 +667,7 @@ let __tbCssomRuleAt;
     return new Proxy(style, {
       get(target, property, receiver) {
         if (typeof property !== 'string') return Reflect.get(target, property, receiver);
+        if (__tbCanonicalIndex(property)) return target.item(property >>> 0);
         if (property in target) {
           const value = Reflect.get(target, property, receiver);
           return typeof value === 'function' ? value.bind(target) : value;

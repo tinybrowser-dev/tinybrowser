@@ -154,8 +154,89 @@
     __tbWrapRectMethod(Element.prototype, 'getClientRects', true);
   }
   if (globalThis.Range) {
-    __tbWrapRectMethod(Range.prototype, 'getBoundingClientRect', false);
-    __tbWrapRectMethod(Range.prototype, 'getClientRects', true);
+    // https://drafts.csswg.org/cssom-view/#extensions-to-the-range-interface
+    if (typeof Range.prototype.getClientRects !== 'function') {
+      const __tbRangeRects = range => {
+        const start = range.startContainer;
+        const end = range.endContainer;
+        if (!start || !start.isConnected) return [];
+        const rects = [];
+        const pushElementRects = element => {
+          if (!element || element.nodeType !== 1) return;
+          for (const rect of __tbRectsOf(element.getClientRects())) {
+            rects.push(rect);
+          }
+        };
+        if (range.collapsed) {
+          const target = start.nodeType === 1 ? start : start.parentElement;
+          pushElementRects(target);
+          return rects;
+        }
+        const ancestor = range.commonAncestorContainer;
+        if (ancestor.nodeType === 3) {
+          pushElementRects(ancestor.parentElement);
+          return rects;
+        }
+        const selectedElements = new Set();
+        const walker = (ancestor.ownerDocument || ancestor).createTreeWalker(ancestor, 5);
+        let current = walker.currentNode;
+        while (current !== null) {
+          if (range.intersectsNode(current)) {
+            if (current.nodeType === 1) {
+              if (!selectedElements.has(current.parentElement)) {
+                const startCmp = range.comparePoint(current, 0);
+                const endCmp = range.comparePoint(current, current.childNodes.length);
+                if (startCmp === 0 && endCmp === 0) {
+                  selectedElements.add(current);
+                  pushElementRects(current);
+                }
+              }
+            } else if (current.nodeType === 3) {
+              const parent = current.parentElement;
+              if (parent && !selectedElements.has(parent)) {
+                selectedElements.add(parent);
+                pushElementRects(parent);
+              }
+            }
+          }
+          current = walker.nextNode();
+        }
+        if (rects.length === 0) {
+          pushElementRects(start.nodeType === 1 ? start : start.parentElement);
+          if (end !== start) {
+            pushElementRects(end.nodeType === 1 ? end : end.parentElement);
+          }
+        }
+        return rects;
+      };
+      Object.defineProperty(Range.prototype, 'getClientRects', {
+        value: function getClientRects() {
+          return new DOMRectList(__tbRangeRects(this));
+        },
+        configurable: true, enumerable: true, writable: true,
+      });
+      Object.defineProperty(Range.prototype, 'getBoundingClientRect', {
+        value: function getBoundingClientRect() {
+          const rects = __tbRangeRects(this);
+          if (rects.length === 0) return new __tbDOMRect(0, 0, 0, 0);
+          let left = Infinity;
+          let top = Infinity;
+          let right = -Infinity;
+          let bottom = -Infinity;
+          for (const rect of rects) {
+            if (rect.left < left) left = rect.left;
+            if (rect.top < top) top = rect.top;
+            if (rect.right > right) right = rect.right;
+            if (rect.bottom > bottom) bottom = rect.bottom;
+          }
+          return new __tbDOMRect(left, top, right - left, bottom - top);
+        },
+        configurable: true, enumerable: true, writable: true,
+      });
+    } else {
+      __tbWrapRectMethod(Range.prototype, 'getBoundingClientRect', false);
+      __tbWrapRectMethod(Range.prototype, 'getClientRects', true);
+    }
   }
 
   const __tbPixels = value => {

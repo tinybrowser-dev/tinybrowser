@@ -284,6 +284,7 @@ fn parse_string_document<'js>(
     } else {
         crate::xml::parse_document(&source, content_type, base, font_ctx)
     };
+    parsed.document.mark_all_scripts_started();
     parsed.url = Some(url.to_owned());
     wrap_new_document(ctx, parsed)
 }

@@ -184,7 +184,7 @@ fn set_component(owner: &Rc<RefCell<World>>, component: Component, value: Value<
     if matches!(component, Component::Href) {
         let url = parse_location(&ctx, &caller, &value)?;
         if only_fragment_changed(owner, &url) {
-            navigate_to_fragment(&ctx, &caller, owner, &url);
+            navigate_to_fragment(&ctx, &caller, owner, &url, false);
         } else {
             navigate_location(owner, url.as_str().to_owned(), Some(source));
         }
@@ -196,7 +196,7 @@ fn set_component(owner: &Rc<RefCell<World>>, component: Component, value: Value<
         .map_err(|()| super::throw_dom(&ctx, "SyntaxError", "invalid scheme"))?;
     if changed {
         if only_fragment_changed(owner, &url) {
-            navigate_to_fragment(&ctx, &caller, owner, &url);
+            navigate_to_fragment(&ctx, &caller, owner, &url, false);
         } else {
             navigate_location(owner, url.as_str().to_owned(), Some(source));
         }
@@ -218,11 +218,12 @@ fn navigate_to_fragment(
     caller: &Rc<RefCell<World>>,
     owner: &Rc<RefCell<World>>,
     url: &url::Url,
+    force_replace: bool,
 ) {
     let (old_url, handling) = {
         let mut world = owner.borrow_mut();
         let old_url = world.document_url.as_str().to_owned();
-        let handling = if world.document_url == *url {
+        let handling = if force_replace || world.document_url == *url {
             crate::protocol::HistoryHandling::Replace
         } else {
             crate::protocol::HistoryHandling::Push
@@ -294,6 +295,19 @@ pub(crate) fn install_location<'js>(
 }
 
 // https://html.spec.whatwg.org/multipage/nav-history-apis.html#the-location-interface
+fn require_same_origin_location(ctx: &Ctx<'_>, owner: &Rc<RefCell<World>>) -> Result<()> {
+    let caller = super::world(ctx)?;
+    if !Rc::ptr_eq(&caller, owner) && !owner.borrow().same_origin_domain_with(&caller.borrow()) {
+        return Err(super::throw_dom(
+            ctx,
+            "SecurityError",
+            "blocked cross-origin Location access",
+        ));
+    }
+    Ok(())
+}
+
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#the-location-interface
 pub(crate) fn build_location<'js>(
     ctx: &Ctx<'js>,
     world: &Rc<RefCell<World>>,
@@ -312,7 +326,10 @@ pub(crate) fn build_location<'js>(
     let location = Object::new(ctx.clone())?;
     for (name, component) in components {
         let owner = Rc::clone(world);
-        let getter = Accessor::new_get(move || component.read(&owner.borrow()));
+        let getter = Accessor::new_get(move |ctx: Ctx<'js>| -> Result<String> {
+            require_same_origin_location(&ctx, &owner)?;
+            Ok(component.read(&owner.borrow()))
+        });
         if matches!(component, Component::Origin) {
             location.prop(name, getter.enumerable())?;
             continue;
@@ -321,10 +338,80 @@ pub(crate) fn build_location<'js>(
         location.prop(
             name,
             getter
-                .set(move |value: Value<'js>| set_component(&owner, component, value))
+                .set(move |value: Value<'js>| {
+                    if !matches!(component, Component::Href) {
+                        require_same_origin_location(value.ctx(), &owner)?;
+                    }
+                    set_component(&owner, component, value)
+                })
                 .enumerable(),
         )?;
     }
+    // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-assign
+    let assign_owner = Rc::clone(world);
+    location.set(
+        "assign",
+        rquickjs::prelude::Func::from(move |ctx: Ctx<'js>, value: Value<'js>| -> Result<()> {
+            require_same_origin_location(&ctx, &assign_owner)?;
+            let value = super::webidl::webidl_to_string(&ctx, value)?;
+            if !assign_owner.borrow().has_browsing_context() {
+                return Ok(());
+            }
+            let caller = super::world(&ctx)?;
+            let source = caller.borrow().frame();
+            let url = parse_location(&ctx, &caller, &value)?;
+            if only_fragment_changed(&assign_owner, &url) {
+                navigate_to_fragment(&ctx, &caller, &assign_owner, &url, false);
+            } else {
+                navigate_location(&assign_owner, url.as_str().to_owned(), Some(source));
+            }
+            Ok(())
+        }),
+    )?;
+    // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-replace
+    let replace_owner = Rc::clone(world);
+    location.set(
+        "replace",
+        rquickjs::prelude::Func::from(move |ctx: Ctx<'js>, value: Value<'js>| -> Result<()> {
+            let value = super::webidl::webidl_to_string(&ctx, value)?;
+            if !replace_owner.borrow().has_browsing_context() {
+                return Ok(());
+            }
+            let caller = super::world(&ctx)?;
+            let source = caller.borrow().frame();
+            let url = parse_location(&ctx, &caller, &value)?;
+            if only_fragment_changed(&replace_owner, &url) {
+                navigate_to_fragment(&ctx, &caller, &replace_owner, &url, true);
+            } else {
+                navigate_location(&replace_owner, url.as_str().to_owned(), Some(source));
+            }
+            Ok(())
+        }),
+    )?;
+    // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-reload
+    let reload_owner = Rc::clone(world);
+    location.set(
+        "reload",
+        rquickjs::prelude::Func::from(move |ctx: Ctx<'js>| -> Result<()> {
+            require_same_origin_location(&ctx, &reload_owner)?;
+            if !reload_owner.borrow().has_browsing_context() {
+                return Ok(());
+            }
+            let caller = super::world(&ctx)?;
+            let source = caller.borrow().frame();
+            let current = reload_owner.borrow().document_url.as_str().to_owned();
+            navigate_location(&reload_owner, current, Some(source));
+            Ok(())
+        }),
+    )?;
+    let tostring_owner = Rc::clone(world);
+    location.set(
+        "toString",
+        rquickjs::prelude::Func::from(move |ctx: Ctx<'js>| -> Result<String> {
+            require_same_origin_location(&ctx, &tostring_owner)?;
+            Ok(Component::Href.read(&tostring_owner.borrow()))
+        }),
+    )?;
     Ok(location)
 }
 

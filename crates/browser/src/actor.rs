@@ -146,6 +146,10 @@ enum Command {
         identity: Option<Box<net::ValidIdentity>>,
         reply: ReplySender<()>,
     },
+    SetExtraHeaders {
+        headers: Vec<(String, String)>,
+        reply: ReplySender<()>,
+    },
     ViewportSize {
         reply: ReplySender<(u32, u32)>,
     },
@@ -381,6 +385,12 @@ impl TabHandle {
         .await
     }
 
+    // https://chromedevtools.github.io/devtools-protocol/tot/Network/#method-setExtraHTTPHeaders
+    pub async fn set_extra_headers(&self, headers: Vec<(String, String)>) -> Result<(), TabError> {
+        self.ask(|reply| Command::SetExtraHeaders { headers, reply })
+            .await
+    }
+
     pub async fn add_init_script(
         &self,
         source: String,
@@ -526,7 +536,14 @@ impl TabTask {
     ) -> Self {
         let (client, server) = exchange::local(COMMAND_CAPACITY);
         let handle = TabHandle { id, client };
-        let tab = Tab::new(id, network, renderers, server.notifier(), tabs, tab);
+        let tab = Tab::new(
+            id,
+            network.with_tab(id),
+            renderers,
+            server.notifier(),
+            tabs,
+            tab,
+        );
         let (deliveries, delivery_rx) = mpsc::channel(DELIVERY_CAPACITY);
         let join = tokio::spawn(coordinator_loop(server, tab, delivery_rx));
         Self {
@@ -1777,6 +1794,7 @@ impl Command {
             | Command::RemoveInitScript { reply, .. }
             | Command::SetViewport { reply, .. }
             | Command::SetIdentity { reply, .. }
+            | Command::SetExtraHeaders { reply, .. }
             | Command::AddBinding { reply, .. } => reply.is_closed(),
             Command::Execute { reply, .. } => reply.is_closed(),
             Command::AddInitScript { reply, .. } => reply.is_closed(),
@@ -1828,6 +1846,9 @@ impl Command {
             } => answer(reply, set_viewport(tab, frame, width, height).await),
             Command::SetIdentity { identity, reply } => {
                 answer(reply, set_identity(tab, identity.map(|value| *value)).await);
+            }
+            Command::SetExtraHeaders { headers, reply } => {
+                answer(reply, set_extra_headers(tab, &headers));
             }
             Command::ViewportSize { reply } => answer(reply, Ok(tab.viewport)),
             Command::ContentSize { frame, reply } => answer(
@@ -1886,6 +1907,14 @@ impl Command {
         }
         TabOutcome::Continue
     }
+}
+
+fn set_extra_headers(tab: &mut Tab, headers: &[(String, String)]) -> Result<(), TabError> {
+    tab.network
+        .set_extra_headers(tab.id, headers)
+        .map_err(|error| TabError::Dom {
+            message: error.to_string(),
+        })
 }
 
 async fn execute_script(

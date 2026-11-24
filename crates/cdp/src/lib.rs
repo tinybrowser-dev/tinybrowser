@@ -501,6 +501,7 @@ struct Conn {
     // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-setLifecycleEventsEnabled
     lifecycle_events: bool,
     isolated_worlds: HashMap<TabId, Vec<String>>,
+    isolated_contexts: HashMap<u64, (TabId, String)>,
     omit_background: HashMap<TabId, bool>,
     response_bodies: HashMap<String, Vec<u8>>,
     response_body_order: VecDeque<String>,
@@ -909,12 +910,17 @@ impl Conn {
         if let Some(isolated) = self.isolated_worlds.get(&tab_id) {
             worlds.extend(isolated.iter().cloned());
         }
+        self.isolated_contexts
+            .retain(|_, (owner, _)| *owner != tab_id);
         for world in worlds {
             let context_id = self.next_context;
             self.next_context = self.next_context.saturating_add(1);
             let default = world.is_empty();
             if default {
                 self.default_contexts.insert(tab_id, context_id);
+            } else {
+                self.isolated_contexts
+                    .insert(context_id, (tab_id, world.clone()));
             }
             let mut created = json!({
                 "method": "Runtime.executionContextCreated",
@@ -1221,13 +1227,7 @@ impl Conn {
                 self.set_default_background_color_override(params, tab)
             }
             PageHandler::NetworkGetResponseBody => self.get_response_body(params),
-            PageHandler::NetworkSetExtraHttpHeaders => {
-                let params: params::SetExtraHttpHeaders = params::parse(params)?;
-                if !params.headers.values().all(Value::is_string) {
-                    return Err(DispatchError::InvalidParams("headers".to_owned()));
-                }
-                Ok(json!({}))
-            }
+            PageHandler::NetworkSetExtraHttpHeaders => set_extra_http_headers(tab, params).await,
             PageHandler::CreateIsolatedWorld => self.create_isolated_world(params, tab, session),
             PageHandler::SetLifecycleEventsEnabled => {
                 let params: params::SetLifecycleEventsEnabled = params::parse(params)?;
@@ -1308,6 +1308,8 @@ impl Conn {
             if !worlds.contains(&name) {
                 worlds.push(name.clone());
             }
+            self.isolated_contexts
+                .insert(context_id, (tab.id(), name.clone()));
         }
         self.push_session_event(
             session,
@@ -1539,6 +1541,7 @@ impl Conn {
         self.loader_ids.remove(&id);
         self.current_loaders.remove(&id);
         self.isolated_worlds.remove(&id);
+        self.isolated_contexts.retain(|_, (owner, _)| *owner != id);
         self.omit_background.remove(&id);
         if self.tab.as_ref().is_some_and(|tab| tab.id() == id) {
             self.tab = None;
@@ -1662,30 +1665,19 @@ impl Conn {
         let return_by_value = options.return_by_value.unwrap_or(false);
         let await_promise = options.await_promise.unwrap_or(false);
         let object_group = options.object_group.as_deref().unwrap_or("");
+        let allow_unsafe_eval = options.allow_unsafe_eval_blocked_by_csp.unwrap_or(true);
+        let context_world = options
+            .context_id
+            .or(options.execution_context_id)
+            .and_then(|id| self.isolated_contexts.get(&id))
+            .map(|(_, name)| name.clone());
         let await_timeout = match options.timeout.filter(|millis| *millis > 0.0) {
             Some(millis) => Duration::try_from_secs_f64(millis / 1000.0)
                 .map_err(|_| DispatchError::InvalidParams("timeout".to_owned()))?,
             None => AWAIT_PROMISE_TIMEOUT,
         };
-        let source = match source {
-            RuntimeSource::Evaluate { expression } => {
-                format!("host.evaluatePage({})", json_string(&expression))
-            }
-            RuntimeSource::CallFunctionOn {
-                declaration,
-                object_id,
-                arguments,
-            } => {
-                let receiver = object_id.map_or_else(
-                    || "undefined".to_owned(),
-                    |id| format!("host.__tb_handles[{}]", json_string(&id)),
-                );
-                format!(
-                    "host.apply(host.evaluatePage({}), {receiver}, {arguments})",
-                    json_string(&format!("({declaration})"))
-                )
-            }
-        };
+        let isolated_world = context_world.or_else(|| runtime_source_world(&source));
+        let source = runtime_source_expression(source);
         if return_by_value || await_promise {
             let evaluation = self.next_evaluation;
             self.next_evaluation = self.next_evaluation.saturating_add(1);
@@ -1698,8 +1690,16 @@ impl Conn {
                     json_string(object_group)
                 )
             };
-            if let Err(reply) =
-                Self::schedule_runtime_slot(tab, frame, &source, &make, &eval_id).await
+            if let Err(reply) = Self::schedule_runtime_slot(
+                tab,
+                frame,
+                isolated_world.as_deref(),
+                allow_unsafe_eval,
+                &source,
+                &make,
+                &eval_id,
+            )
+            .await
             {
                 return Ok(DispatchResult::Immediate(reply));
             }
@@ -1743,14 +1743,39 @@ impl Conn {
             return Ok(DispatchResult::Immediate(result));
         }
         Ok(DispatchResult::Immediate(
-            self.runtime_handle(tab, frame, &source, object_group).await,
+            self.runtime_handle(
+                tab,
+                frame,
+                isolated_world.as_deref(),
+                allow_unsafe_eval,
+                &source,
+                object_group,
+            )
+            .await,
         ))
+    }
+
+    fn runtime_script_source<'a>(
+        isolated_world: Option<&'a str>,
+        allow_unsafe_eval: bool,
+        script: &'a str,
+    ) -> browser::ScriptSource<&'a str> {
+        match isolated_world {
+            Some(world) => browser::ScriptSource::Isolated {
+                world,
+                source: script,
+            },
+            None if !allow_unsafe_eval => browser::ScriptSource::BrowserStrict(script),
+            None => browser::ScriptSource::Browser(script),
+        }
     }
 
     async fn runtime_handle(
         &mut self,
         tab: &TabHandle,
         frame: FrameId,
+        isolated_world: Option<&str>,
+        allow_unsafe_eval: bool,
         source: &str,
         object_group: &str,
     ) -> Value {
@@ -1760,7 +1785,7 @@ impl Conn {
         let value = match tab
             .execute_script(ExecuteScriptOptions {
                 frame,
-                source: browser::ScriptSource::Browser(&script),
+                source: Self::runtime_script_source(isolated_world, allow_unsafe_eval, &script),
                 timeout: None,
             })
             .await
@@ -1779,6 +1804,8 @@ impl Conn {
     async fn schedule_runtime_slot(
         tab: &TabHandle,
         frame: FrameId,
+        isolated_world: Option<&str>,
+        allow_unsafe_eval: bool,
         source: &str,
         make: &str,
         id: &str,
@@ -1789,7 +1816,7 @@ impl Conn {
             .replace("__SOURCE__", source);
         tab.execute_script(ExecuteScriptOptions {
             frame,
-            source: browser::ScriptSource::Browser(&schedule),
+            source: Self::runtime_script_source(isolated_world, allow_unsafe_eval, &schedule),
             timeout: None,
         })
         .await
@@ -1942,6 +1969,53 @@ impl Conn {
     }
 }
 
+fn runtime_source_world(source: &RuntimeSource) -> Option<String> {
+    match source {
+        RuntimeSource::Evaluate { .. } => None,
+        RuntimeSource::CallFunctionOn { object_id, .. } => object_id
+            .as_deref()
+            .and_then(dispatch::isolated_world_of_handle)
+            .map(str::to_owned),
+    }
+}
+
+fn runtime_source_expression(source: RuntimeSource) -> String {
+    match source {
+        RuntimeSource::Evaluate { expression } => {
+            format!("host.evaluatePage({})", json_string(&expression))
+        }
+        RuntimeSource::CallFunctionOn {
+            declaration,
+            object_id,
+            arguments,
+        } => {
+            let receiver = object_id.map_or_else(
+                || "undefined".to_owned(),
+                |id| format!("host.__tb_handles[{}]", json_string(&id)),
+            );
+            format!(
+                "host.apply(host.evaluatePage({}), {receiver}, {arguments})",
+                json_string(&format!("({declaration})"))
+            )
+        }
+    }
+}
+
+async fn set_extra_http_headers(tab: &TabHandle, params: &Value) -> Result<Value, DispatchError> {
+    let params: params::SetExtraHttpHeaders = params::parse(params)?;
+    let mut headers = Vec::with_capacity(params.headers.len());
+    for (name, value) in params.headers {
+        let Some(text) = value.as_str() else {
+            return Err(DispatchError::InvalidParams("headers".to_owned()));
+        };
+        headers.push((name, text.to_owned()));
+    }
+    tab.set_extra_headers(headers)
+        .await
+        .map_err(|error| DispatchError::InvalidParams(error.to_string()))?;
+    Ok(json!({}))
+}
+
 async fn next_tab_event(receiver: &mut Option<mpsc::Receiver<TabEvent>>) -> Option<TabEvent> {
     match receiver {
         Some(receiver) => receiver.recv().await,
@@ -1975,6 +2049,7 @@ async fn run_socket(
         default_contexts: HashMap::new(),
         lifecycle_events: false,
         isolated_worlds: HashMap::new(),
+        isolated_contexts: HashMap::new(),
         omit_background: HashMap::new(),
         response_bodies: HashMap::new(),
         response_body_order: VecDeque::new(),
@@ -2118,6 +2193,7 @@ mod tests {
             default_contexts: HashMap::new(),
             lifecycle_events: false,
             isolated_worlds: HashMap::new(),
+            isolated_contexts: HashMap::new(),
             omit_background: HashMap::new(),
             response_bodies: HashMap::new(),
             response_body_order: VecDeque::new(),

@@ -95,7 +95,7 @@ pub(super) fn delete_named_property<'js>(
     object: &Value<'js>,
 ) -> Result<bool> {
     let Some(name) = atom_name(ctx, atom) else {
-        return Ok(false);
+        return Ok(true);
     };
     Ok(!named_key_visible(object, &name)? || !is_supported_name(ctx, document, &name)?)
 }

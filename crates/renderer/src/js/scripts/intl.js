@@ -50,10 +50,19 @@
 
   const numberSlots = host.slots();
   const dateTimeSlots = host.slots();
+  const segmenterSlots = host.slots();
+  const segmentsSlots = host.slots();
+  const segmentIterSlots = host.slots();
   const numberSlotsGet = numberSlots.get.bind(numberSlots);
   const numberSlotsSet = numberSlots.set.bind(numberSlots);
   const dateTimeSlotsGet = dateTimeSlots.get.bind(dateTimeSlots);
   const dateTimeSlotsSet = dateTimeSlots.set.bind(dateTimeSlots);
+  const segmenterSlotsGet = segmenterSlots.get.bind(segmenterSlots);
+  const segmenterSlotsSet = segmenterSlots.set.bind(segmenterSlots);
+  const segmentsSlotsGet = segmentsSlots.get.bind(segmentsSlots);
+  const segmentsSlotsSet = segmentsSlots.set.bind(segmentsSlots);
+  const segmentIterSlotsGet = segmentIterSlots.get.bind(segmentIterSlots);
+  const segmentIterSlotsSet = segmentIterSlots.set.bind(segmentIterSlots);
 
   // https://402.ecma-international.org/#sec-canonicalizelocalelist
   function localeList(locales) {
@@ -486,19 +495,98 @@
     return objectCreate(options === undefined ? null : optionsObject(options));
   }
 
+  const shortMonths = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const longMonths = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  const shortWeekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const longWeekdays = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const dateGetUTCDay = Date.prototype.getUTCDay;
+
+  function pad2(n) {
+    return n < 10 ? '0' + n : '' + n;
+  }
+
   function datePatternCode(components) {
     const hasYear = components.year !== undefined;
     const hasMonth = components.month !== undefined;
     const hasDay = components.day !== undefined;
     const hasWeekday = components.weekday !== undefined;
     if (components.era !== undefined) {
-      throw new RangeError('era formatting is not currently supported');
+      return -1;
     }
-    if (hasYear && hasMonth && hasDay && !hasWeekday && components.year === 'numeric' &&
-        components.month === 'numeric' &&
-        components.day === 'numeric') return 5;
     if (!hasYear && !hasMonth && !hasDay && !hasWeekday) return 0;
-    throw new RangeError('this date component combination is not currently supported');
+    if (hasYear && hasMonth && hasDay) {
+      if (hasWeekday) return 4;
+      if (components.month === 'long') return 3;
+      if (components.month === 'short' || components.month === 'narrow') return 2;
+      if (components.year === '2-digit') return 1;
+      return 5;
+    }
+    return -1;
+  }
+
+  function formatCustomDateTime(date, slots) {
+    const c = slots.components;
+    const year = call(dateGetUTCFullYear, date);
+    const month = call(dateGetUTCMonth, date);
+    const day = call(dateGetUTCDate, date);
+    const weekday = call(dateGetUTCDay, date);
+    const hour = call(dateGetUTCHours, date);
+    const minute = call(dateGetUTCMinutes, date);
+    const second = call(dateGetUTCSeconds, date);
+
+    const dateParts = [];
+    if (c.weekday !== undefined) {
+      const w = c.weekday === 'long' ? longWeekdays[weekday] : c.weekday === 'narrow' ? shortWeekdays[weekday][0] : shortWeekdays[weekday];
+      arrayPush(dateParts, w);
+    }
+    if (c.month !== undefined || c.day !== undefined) {
+      let md = '';
+      if (c.month !== undefined) {
+        if (c.month === 'long') md += longMonths[month];
+        else if (c.month === 'short') md += shortMonths[month];
+        else if (c.month === 'narrow') md += shortMonths[month][0];
+        else if (c.month === '2-digit') md += pad2(month + 1);
+        else md += '' + (month + 1);
+      }
+      if (c.day !== undefined) {
+        const dStr = c.day === '2-digit' ? pad2(day) : '' + day;
+        if (md) {
+          md += (c.month === 'numeric' || c.month === '2-digit') ? '/' + dStr : ' ' + dStr;
+        } else {
+          md = dStr;
+        }
+      }
+      arrayPush(dateParts, md);
+    }
+    if (c.year !== undefined) {
+      const yStr = c.year === '2-digit' ? pad2(mathAbs(year) % 100) : '' + year;
+      arrayPush(dateParts, yStr);
+    }
+    if (c.era !== undefined) {
+      const era = year <= 0 ? (c.era === 'long' ? 'Before Christ' : c.era === 'narrow' ? 'B' : 'BC') : (c.era === 'long' ? 'Anno Domini' : c.era === 'narrow' ? 'A' : 'AD');
+      arrayPush(dateParts, era);
+    }
+    let out = dateParts.join(', ');
+    if (c.hour !== undefined || c.minute !== undefined || c.second !== undefined) {
+      const timeParts = [];
+      let suffix = '';
+      if (c.hour !== undefined) {
+        let h = hour;
+        if (slots.hour12) {
+          suffix = h >= 12 ? ' PM' : ' AM';
+          h = h % 12 || 12;
+        }
+        arrayPush(timeParts, c.hour === '2-digit' ? pad2(h) : '' + h);
+      }
+      if (c.minute !== undefined) arrayPush(timeParts, c.minute === '2-digit' || c.hour !== undefined ? pad2(minute) : '' + minute);
+      if (c.second !== undefined) arrayPush(timeParts, c.second === '2-digit' || c.minute !== undefined ? pad2(second) : '' + second);
+      const timeStr = timeParts.join(':') + suffix;
+      out = out ? out + ', ' + timeStr : timeStr;
+    }
+    if (c.timeZoneName !== undefined) {
+      out = out ? out + ' ' + slots.timeZone : slots.timeZone;
+    }
+    return out;
   }
 
   // https://402.ecma-international.org/#sec-createdatetimeformat
@@ -597,24 +685,28 @@
         hasTimeComponents = true;
       }
     }
+    let customFormat = false;
     if (hasTimeComponents && (components.hour === undefined || components.minute === undefined)) {
-      throw new RangeError('time formatting currently requires hour and minute');
+      customFormat = true;
     }
     if (components.dayPeriod !== undefined || components.fractionalSecondDigits !== undefined ||
         components.timeZoneName !== undefined) {
-      throw new RangeError('this time component is not currently supported');
+      customFormat = true;
     }
     const dateCode = dateStyle === undefined
       ? datePatternCode(components)
       : styleCode[dateStyle];
+    if (dateCode < 0) {
+      customFormat = true;
+    }
     const timeCode = timeStyle === undefined
       ? hasTimeComponents ? (components.second === undefined ? 1 : 2) : 0
       : styleCode[timeStyle];
-    const usesHour = timeCode !== 0;
+    const usesHour = timeCode !== 0 || components.hour !== undefined;
     const hour12 = locale === 'en-US' || locale === 'ko-KR';
     dateTimeSlotsSet(instance, {
       locale, dateStyle, timeStyle, timeZone: 'UTC', components,
-      dateCode, timeCode, usesHour, hour12, boundFormat: null,
+      dateCode: dateCode < 0 ? 0 : dateCode, timeCode, customFormat, usesHour, hour12, boundFormat: null,
     });
   }
 
@@ -639,6 +731,9 @@
             value === undefined ? dateNow() : +value
           );
           if (!numberIsFinite(call(dateValueOf, date))) throw new RangeError('invalid time value');
+          if (slots.customFormat) {
+            return formatCustomDateTime(date, slots);
+          }
           return nativeFormatDateTime([
             slots.locale,
             call(dateGetUTCFullYear, date), call(dateGetUTCMonth, date) + 1,
@@ -697,10 +792,144 @@
   });
   Object.defineProperty(DateTimeFormat, 'prototype', { writable: false });
 
+  // https://tc39.es/ecma402/#segmenter-objects
+  const graphemePattern = /\r\n|\p{RI}\p{RI}|\p{Extended_Pictographic}(?:\p{Emoji_Modifier}|\uFE0F\u20E3?|[\u{E0020}-\u{E007E}]+\u{E007F})?(?:\u200D\p{Extended_Pictographic}(?:\p{Emoji_Modifier}|\uFE0F\u20E3?|[\u{E0020}-\u{E007E}]+\u{E007F})?)*|.\p{M}*|[\r\n]/gu;
+  const wordPattern = /[\p{L}\p{N}_]+(?:['’.\-][\p{L}\p{N}_]+)*|\s+|./gus;
+  const sentencePattern = /[^.!?]+(?:[.!?]+["')\]}\u201D\u2019]*\s*|$)/gus;
+  const wordLikePattern = /[\p{L}\p{N}]/u;
+
+  function computeSegments(input, granularity) {
+    const out = [];
+    if (input.length === 0) return out;
+    const re = granularity === 'word'
+      ? wordPattern
+      : granularity === 'sentence'
+        ? sentencePattern
+        : graphemePattern;
+    re.lastIndex = 0;
+    let match;
+    while ((match = re.exec(input)) !== null) {
+      const segment = match[0];
+      if (segment.length === 0) {
+        re.lastIndex += 1;
+        continue;
+      }
+      const entry = { segment, index: match.index, input };
+      if (granularity === 'word') {
+        entry.isWordLike = regexpTest(wordLikePattern, segment);
+      }
+      arrayPush(out, entry);
+    }
+    return out;
+  }
+
+  const iteratorPrototype = Object.getPrototypeOf(Object.getPrototypeOf([][Symbol.iterator]()));
+  const SegmentIteratorPrototype = objectCreate(iteratorPrototype);
+  Object.defineProperty(SegmentIteratorPrototype, Symbol.toStringTag, {
+    value: 'Segmenter String Iterator', configurable: true,
+  });
+  Object.defineProperty(SegmentIteratorPrototype, 'next', {
+    value: function next() {
+      const state = segmentIterSlotsGet(this);
+      if (state === undefined) throw new TypeError('incompatible Segmenter String Iterator receiver');
+      if (state.cursor >= state.list.length) {
+        return { value: undefined, done: true };
+      }
+      const value = state.list[state.cursor];
+      state.cursor += 1;
+      return { value, done: false };
+    },
+    writable: true,
+    configurable: true,
+  });
+
+  const SegmentsPrototype = {};
+  Object.defineProperties(SegmentsPrototype, {
+    containing: {
+      value: function containing(index) {
+        const state = segmentsSlotsGet(this);
+        if (state === undefined) throw new TypeError('incompatible Segments receiver');
+        const numeric = +index;
+        const n = Number.isNaN(numeric) || numeric === 0 ? 0 : numberIsFinite(numeric) ? (numeric < 0 ? Math.ceil(numeric) : mathFloor(numeric)) : numeric;
+        if (n < 0 || n >= state.input.length) return undefined;
+        const list = computeSegments(state.input, state.granularity);
+        for (let i = 0; i < list.length; i += 1) {
+          const item = list[i];
+          if (n >= item.index && n < item.index + item.segment.length) {
+            return item;
+          }
+        }
+        return undefined;
+      },
+      writable: true,
+      configurable: true,
+    },
+    [Symbol.iterator]: {
+      value: function iterator() {
+        const state = segmentsSlotsGet(this);
+        if (state === undefined) throw new TypeError('incompatible Segments receiver');
+        const iter = objectCreate(SegmentIteratorPrototype);
+        segmentIterSlotsSet(iter, {
+          list: computeSegments(state.input, state.granularity),
+          cursor: 0,
+        });
+        return iter;
+      },
+      writable: true,
+      configurable: true,
+    },
+  });
+
+  // https://tc39.es/ecma402/#sec-intl.segmenter
+  function Segmenter(locales, options) {
+    if (!new.target) throw new TypeError("Constructor Intl.Segmenter requires 'new'");
+    const locale = resolveLocale(locales);
+    options = optionsObject(options);
+    stringOption(options, 'localeMatcher', ['lookup', 'best fit'], 'best fit');
+    const granularity = stringOption(
+      options, 'granularity', ['grapheme', 'word', 'sentence'], 'grapheme'
+    );
+    segmenterSlotsSet(this, { locale, granularity });
+  }
+
+  Object.defineProperty(Segmenter, 'supportedLocalesOf', {
+    value: function supportedLocalesOf(locales, options) {
+      return supportedLocales(locales, options);
+    },
+    writable: true,
+    configurable: true,
+  });
+
+  Object.defineProperties(Segmenter.prototype, {
+    segment: {
+      value: function segment(string) {
+        const state = segmenterSlotsGet(this);
+        if (state === undefined) throw new TypeError('incompatible Intl.Segmenter receiver');
+        const input = stringConstructor(string);
+        const segments = objectCreate(SegmentsPrototype);
+        segmentsSlotsSet(segments, { input, granularity: state.granularity });
+        return segments;
+      },
+      writable: true,
+      configurable: true,
+    },
+    resolvedOptions: {
+      value: function resolvedOptions() {
+        const state = segmenterSlotsGet(this);
+        if (state === undefined) throw new TypeError('incompatible Intl.Segmenter receiver');
+        return { locale: state.locale, granularity: state.granularity };
+      },
+      writable: true,
+      configurable: true,
+    },
+    [Symbol.toStringTag]: { value: 'Intl.Segmenter', configurable: true },
+  });
+
   const IntlObject = {};
   Object.defineProperties(IntlObject, {
     NumberFormat: { value: NumberFormat, writable: true, configurable: true },
     DateTimeFormat: { value: DateTimeFormat, writable: true, configurable: true },
+    Segmenter: { value: Segmenter, writable: true, configurable: true },
     getCanonicalLocales: {
       // https://402.ecma-international.org/#sec-intl.getcanonicallocales
       value: function getCanonicalLocales(locales) {

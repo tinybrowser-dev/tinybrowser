@@ -238,18 +238,37 @@
     'virtualKeyboard', 'wakeLock', 'windowControlsOverlay', 'xr',
   ]);
 
+  // https://html.spec.whatwg.org/multipage/system-state.html#navigator-compatibility-mode
+  if (host.__tbIsWorker !== true && identity.geckoCompat === true) {
+    const navigatorBrand = host.slots('webidl.Navigator');
+    __tbDefineProperty(Navigator.prototype, 'oscpu', {
+      get() {
+        if (!navigatorBrand.has(this)) throw new TypeError('Illegal invocation');
+        return identity.navigatorPlatform;
+      },
+      enumerable: true,
+      configurable: true,
+    });
+    __tbDefineProperty(Navigator.prototype, 'taintEnabled', {
+      value: function taintEnabled() {
+        if (!navigatorBrand.has(this)) throw new TypeError('Illegal invocation');
+        return false;
+      },
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+  }
+
   // https://w3c.github.io/beacon/#sec-sendBeacon-method
   if (host.__tbIsWorker !== true) {
     const navigatorBrand = host.slots('webidl.Navigator');
     // https://w3c.github.io/beacon/#sec-sendBeacon-method
-    const beaconQuota = host.slots('tinybrowser.beacon.quota');
-    const quotaFor = navigator => {
-      let quota = beaconQuota.get(navigator);
-      if (quota === undefined) {
-        quota = { bytes: 0 };
-        beaconQuota.set(navigator, quota);
+    const quotaFor = () => {
+      if (host.__tbKeepaliveQuota === undefined) {
+        host.__tbKeepaliveQuota = { bytes: 0 };
       }
-      return quota;
+      return host.__tbKeepaliveQuota;
     };
     const sendBeacon = function sendBeacon(url, data) {
       if (arguments.length < 1) {

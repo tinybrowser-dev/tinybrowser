@@ -269,6 +269,28 @@ impl<'js> html_dialog_element_generated::HTMLDialogElement<'js> for JsNode {
 }
 
 impl<'js> html_script_element_generated::HTMLScriptElement<'js> for JsNode {
+    // https://html.spec.whatwg.org/multipage/scripting.html#dom-script-async
+    fn get_async(&self, ctx: &Ctx<'js>) -> Result<bool> {
+        let id = self.handle.get().0;
+        if content_attr(ctx, id, "async").is_some() {
+            return Ok(true);
+        }
+        Ok(world_for_node(ctx, id)?.borrow().script_force_async(id))
+    }
+
+    // https://html.spec.whatwg.org/multipage/scripting.html#dom-script-async
+    fn set_async(&self, ctx: &Ctx<'js>, value: bool) -> Result<()> {
+        let id = self.handle.get().0;
+        world_for_node(ctx, id)?
+            .borrow_mut()
+            .clear_script_force_async(id);
+        if value {
+            set_attribute_sync(ctx, id, "async", "")
+        } else {
+            host::reflect_set_bool(ctx, id, "async", false)
+        }
+    }
+
     // https://html.spec.whatwg.org/multipage/scripting.html#dom-script-crossorigin
     fn get_cross_origin(&self, ctx: &Ctx<'js>) -> Result<Option<rquickjs::String<'js>>> {
         reflect_cross_origin(ctx, self.handle.get().0)

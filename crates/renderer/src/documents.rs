@@ -353,6 +353,25 @@ impl BlitzDocument {
         self.side.started_scripts.insert(id)
     }
 
+    // https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-document-parsehtmlunsafe
+    pub(crate) fn mark_all_scripts_started(&mut self) {
+        let mut stack = vec![self.base.root_node().id];
+        let mut scripts = Vec::new();
+        while let Some(id) = stack.pop() {
+            let Some(node) = self.base.get_node(id) else {
+                continue;
+            };
+            if node
+                .element_data()
+                .is_some_and(|el| el.name.local == markup5ever::local_name!("script"))
+            {
+                scripts.push(id);
+            }
+            stack.extend(node.children.iter().copied());
+        }
+        self.side.started_scripts.extend(scripts);
+    }
+
     // https://html.spec.whatwg.org/multipage/scripting.html#script-processing-model:cloning-steps
     pub(crate) fn copy_script_started(
         &mut self,

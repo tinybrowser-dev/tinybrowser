@@ -866,9 +866,9 @@ impl<'js> child_node_generated::ChildNode<'js> for JsNode {
 
     // https://dom.spec.whatwg.org/#dom-childnode-remove
     fn remove(&self, ctx: Ctx<'js>) -> Result<()> {
-        let world = world(&ctx)?;
-        let world = world.borrow();
-        let Some(mut parsed) = world.document_mut(self.handle.get().0) else {
+        let world_rc = world(&ctx)?;
+        let world_ref = world_rc.borrow();
+        let Some(parsed) = world_ref.document_mut(self.handle.get().0) else {
             return Ok(());
         };
         if parsed.document.base.root_node().id == self.handle.get().0.node {
@@ -878,14 +878,32 @@ impl<'js> child_node_generated::ChildNode<'js> for JsNode {
                 "a document cannot be removed",
             ));
         }
+        drop(parsed);
+        drop(world_ref);
+        notify_node_iterator_pre_remove(&ctx, self.handle.get().0)?;
+        let world_ref = world_rc.borrow();
+        let Some(mut parsed) = world_ref.document_mut(self.handle.get().0) else {
+            return Ok(());
+        };
         let iframes = iframe_containers_in_subtrees(&parsed, &[self.handle.get().0]);
         unlink_journaled(&mut parsed, self.handle.get().0);
         drop(parsed);
-        world.destroy_child_navigables(&iframes);
-        drop(world);
+        world_ref.destroy_child_navigables(&iframes);
+        drop(world_ref);
         fixup_focus_after_removal(&ctx, self.handle.get().0)?;
         schedule_mutation_delivery(&ctx)
     }
+}
+
+// https://dom.spec.whatwg.org/#nodeiterator-pre-removing-steps
+fn notify_node_iterator_pre_remove(ctx: &Ctx<'_>, node: NodeId) -> Result<()> {
+    let bridge = crate::js::bridge::object(ctx)?;
+    let hook: Option<rquickjs::Function> = bridge.get("__tbNodeIteratorPreRemove")?;
+    if let Some(hook) = hook {
+        let wrapped = wrap_node(ctx, node)?;
+        let _: Value = hook.call((wrapped,))?;
+    }
+    Ok(())
 }
 
 impl<'js> non_document_type_child_node_generated::NonDocumentTypeChildNode<'js> for JsNode {
@@ -1650,9 +1668,9 @@ impl JsNode {
         let child = child
             .tree()
             .ok_or_else(|| throw_dom(&ctx, "NotFoundError", "attributes have no parent"))?;
-        let world = world(&ctx)?;
-        let world = world.borrow();
-        let Some(mut parsed) = world.document_mut(self.handle.get().0) else {
+        let world_rc = world(&ctx)?;
+        let world_ref = world_rc.borrow();
+        let Some(parsed) = world_ref.document_mut(self.handle.get().0) else {
             return Err(Exception::throw_type(&ctx, "no document"));
         };
         let parented = parsed
@@ -1669,11 +1687,18 @@ impl JsNode {
                 "child is not a child of this node",
             ));
         }
+        drop(parsed);
+        drop(world_ref);
+        notify_node_iterator_pre_remove(&ctx, child)?;
+        let world_ref = world_rc.borrow();
+        let Some(mut parsed) = world_ref.document_mut(self.handle.get().0) else {
+            return Err(Exception::throw_type(&ctx, "no document"));
+        };
         let iframes = iframe_containers_in_subtrees(&parsed, &[child]);
         unlink_journaled(&mut parsed, child);
         drop(parsed);
-        world.destroy_child_navigables(&iframes);
-        drop(world);
+        world_ref.destroy_child_navigables(&iframes);
+        drop(world_ref);
         fixup_focus_after_removal(&ctx, child)?;
         schedule_mutation_delivery(&ctx)?;
         wrap_node(&ctx, child)
@@ -1699,6 +1724,7 @@ impl JsNode {
             ));
         };
         let replacement = replace_target(&ctx, parent, node)?;
+        notify_node_iterator_pre_remove(&ctx, child)?;
         let moved = {
             let world = world(&ctx)?;
             let world = world.borrow();

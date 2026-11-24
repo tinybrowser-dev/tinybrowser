@@ -103,6 +103,15 @@ enumerated! {
     }
 }
 
+enumerated! {
+    // https://html.spec.whatwg.org/multipage/urls-and-fetching.html#fetch-priority-attributes
+    pub(crate) FetchPriority {
+        High => "high",
+        Low => "low",
+        Auto => "auto",
+    }
+}
+
 // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#attr-fs-method
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum FormMethod {

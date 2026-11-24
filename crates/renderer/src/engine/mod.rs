@@ -2953,7 +2953,9 @@ mod navigator_tests {
         assert_eq!(evaluate("navigator.languages.join(',')"), "fr-FR,fr");
         assert_eq!(evaluate("Object.isFrozen(navigator.languages)"), "true");
         assert_eq!(evaluate("navigator.vendor"), "");
-        assert_eq!(evaluate("navigator.productSub"), "20030107");
+        assert_eq!(evaluate("navigator.productSub"), "20100101");
+        assert_eq!(evaluate("navigator.oscpu"), "ProbeOS 1.0");
+        assert_eq!(evaluate("navigator.taintEnabled()"), "false");
     }
 }
 

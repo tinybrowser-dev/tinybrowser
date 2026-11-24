@@ -184,6 +184,7 @@ impl NetworkContext {
             keepalive: Arc::new(AtomicUsize::new(0)),
             streams: Arc::clone(&self.streams),
             next_stream: Arc::clone(&self.next_stream),
+            client: None,
         }
     }
 
@@ -227,11 +228,29 @@ pub(crate) struct TabNetworkHandle {
     keepalive: Arc<AtomicUsize>,
     streams: StreamMap,
     next_stream: Arc<AtomicU64>,
+    client: Option<u64>,
 }
 
 impl TabNetworkHandle {
+    #[must_use]
+    pub(crate) fn with_tab(mut self, tab: crate::TabId) -> Self {
+        self.client = Some(tab.get());
+        self
+    }
+
     pub(crate) fn set_identity(&self, tab: crate::TabId, identity: Option<net::ValidIdentity>) {
         self.dialer.agent().set_client_identity(tab.get(), identity);
+    }
+
+    // https://chromedevtools.github.io/devtools-protocol/tot/Network/#method-setExtraHTTPHeaders
+    pub(crate) fn set_extra_headers(
+        &self,
+        tab: crate::TabId,
+        headers: &[(String, String)],
+    ) -> Result<(), net::HeaderError> {
+        self.dialer
+            .agent()
+            .set_client_extra_headers(tab.get(), headers)
     }
 
     #[must_use]
@@ -269,6 +288,7 @@ impl TabNetworkHandle {
         let deadline = started + dial::PAGE_FETCH_TIMEOUT;
         let permits = Self::acquire(&self.permits.navigation, deadline).await?;
         let mut request = Request::new(Method::GET, url.clone());
+        request.client = self.client;
         dial::apply_navigation_headers(&mut request, url);
         request.initiator_kind = InitiatorKind::Navigation;
         // https://w3c.github.io/webappsec-fetch-metadata/#abstract-opdef-set-site
@@ -345,7 +365,14 @@ impl TabNetworkHandle {
         };
         let result = self
             .dialer
-            .dial(request, initiator, owner.get(), None, &admission, &sink)
+            .dial(
+                request,
+                initiator,
+                owner.get(),
+                self.client,
+                &admission,
+                &sink,
+            )
             .await;
         trace_dial_result(request, started, result.as_ref());
         result

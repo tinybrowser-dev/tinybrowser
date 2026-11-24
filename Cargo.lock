@@ -2773,6 +2773,7 @@ dependencies = [
  "rquickjs",
  "secure-context",
  "serde",
+ "serde_json",
  "sha2",
  "skrifa",
  "stylo",

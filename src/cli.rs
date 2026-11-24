@@ -70,19 +70,19 @@ pub(crate) enum TlsCaError {
     Parse(#[from] InvalidCa),
 }
 
-pub(crate) const HELP: &str = r#"Headless web browser daemon for AI agents (CDP + W3C WebDriver on one loopback port).
+pub(crate) const HELP: &str = r#"Headless web browser for AI agents (CDP + W3C WebDriver on one loopback port).
 
 Usage: tinybrowser [OPTIONS]
 
 Workflow:
-  1. Start the daemon as a background process:
-     - Profile-locked ephemeral port: `tinybrowser`
+  1. Start the server (runs in the foreground; append `&` or use a supervisor to background it):
+     - Profile-locked ephemeral port: `tinybrowser &`
        Acquires `$XDG_RUNTIME_DIR/tinybrowser/<profile>/lock`, binds `127.0.0.1:<port>`,
        and atomically writes `$XDG_RUNTIME_DIR/tinybrowser/<profile>/daemon.json`:
          {"pid":<u32>,"host":"127.0.0.1","port":<u16>}
        Done when `daemon.json` exists and `GET http://127.0.0.1:<port>/status` returns 200.
        A second start for the same locked profile exits 0 immediately.
-     - Explicit port: `tinybrowser --port <PORT>`
+     - Explicit port: `tinybrowser --port <PORT> &`
        Binds `127.0.0.1:<PORT>` directly (`--port 0` selects an ephemeral port).
        Done when `GET http://127.0.0.1:<PORT>/status` returns 200.
   2. Connect a client to `http://127.0.0.1:<port>`:
@@ -105,6 +105,9 @@ Endpoints (http://127.0.0.1:<port>):
 Request requirements:
   - `Host` header must name a loopback host (`127.0.0.1`, `localhost`, or `[::1]`).
   - Omit the `Origin` header (requests with `Origin` return `403 Forbidden`).
+  - Browser Fetch Metadata headers indicating a page request (`Sec-Fetch-Site` other than `none`,
+    `Sec-Fetch-Mode` other than `cors`, `Sec-Fetch-Dest` other than `empty`, or `Sec-Fetch-User`)
+    return `403 Forbidden`.
   - WebDriver `POST` requests with a `Content-Type` header must use `application/json`.
 
 Options:

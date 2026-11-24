@@ -288,6 +288,29 @@
   });
 
   const nativeCreateElement = Document.prototype.createElement;
+  // https://html.spec.whatwg.org/multipage/dom.html#htmlconstructor
+  host.__tbConstructCustomElement = function(newTarget) {
+    if (host.__tbHasCustomConstruction()) {
+      const value = host.__tb_construct('HTMLElement');
+      if (newTarget && newTarget.prototype) {
+        __tbSetPrototypeOf(value, newTarget.prototype);
+      }
+      return value;
+    }
+    const name = constructors.get(newTarget);
+    if (name === undefined) {
+      throw new TypeError('Illegal constructor');
+    }
+    ensureObserving();
+    const element = nativeApply(nativeCreateElement, document, [name]);
+    upgraded.add(element);
+    nativeApply(observe, observer, [element, observerOptions]);
+    const proto = newTarget.prototype;
+    if (proto !== null && (typeof proto === 'object' || typeof proto === 'function')) {
+      __tbSetPrototypeOf(element, proto);
+    }
+    return element;
+  };
   Document.prototype.createElement = function(name, options) {
     const element = nativeCreateElement.call(this, name, options);
     const definition = definitions.get(localNameOf(element));
@@ -433,5 +456,15 @@
     if (observing) return;
     observing = true;
     nativeApply(observe, observer, [document, observerOptions]);
+  }
+  const nativeAttachShadow = Element.prototype.attachShadow;
+  if (typeof nativeAttachShadow === 'function') {
+    Element.prototype.attachShadow = function attachShadow(init) {
+      const shadow = nativeApply(nativeAttachShadow, this, [init]);
+      if (shadow) {
+        nativeApply(observe, observer, [shadow, observerOptions]);
+      }
+      return shadow;
+    };
   }
 }

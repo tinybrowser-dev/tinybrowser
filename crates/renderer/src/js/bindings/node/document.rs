@@ -1620,7 +1620,15 @@ pub(in crate::js::bindings) fn install_custom_construction(ctx: &Ctx<'_>) -> Res
         "__tbDiscardCustomConstruction",
         rquickjs::prelude::Func::from(discard_custom_construction),
     )?;
+    globals.set(
+        "__tbHasCustomConstruction",
+        rquickjs::prelude::Func::from(has_custom_construction),
+    )?;
     Ok(())
+}
+
+fn has_custom_construction(ctx: Ctx<'_>) -> Result<bool> {
+    Ok(!world(&ctx)?.borrow().state.custom_construction.is_empty())
 }
 
 pub(super) fn push_custom_construction<'js>(ctx: Ctx<'js>, value: Value<'js>) -> Result<()> {
@@ -2134,7 +2142,7 @@ pub(crate) fn prepare_classic_script(ctx: &Ctx<'_>, id: NodeId) -> Result<()> {
                 Kind::External
             }
             // https://html.spec.whatwg.org/multipage/scripting.html#attr-script-type-module
-            Some(crate::js::Script::Module(_)) => Kind::Module,
+            Some(crate::js::Script::Module(_) | crate::js::Script::ImportMap(_)) => Kind::Module,
             _ => return Ok(()),
         }
     };

@@ -2253,6 +2253,10 @@ pub(crate) fn set_attribute_sync(
             .nonce_slots
             .insert(element, value.to_owned());
     }
+    // https://html.spec.whatwg.org/multipage/scripting.html#script-force-async
+    if local == "async" && namespace.is_empty() {
+        world_rc.borrow_mut().clear_script_force_async(element);
+    }
     touch_attr(ctx, element, &namespace, local, value)?;
     if namespace.is_empty() {
         after_attribute_change(ctx, element, local, old_value.as_deref())?;

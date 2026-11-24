@@ -124,12 +124,19 @@ impl Default for Identity {
             navigator_platform: "Linux x86_64".to_owned(),
             languages: DEFAULT_LANGUAGES.map(str::to_owned).to_vec(),
             vendor: String::new(),
-            product_sub: "20030107".to_owned(),
+            product_sub: "20100101".to_owned(),
         }
     }
 }
 
 impl Identity {
+    // https://html.spec.whatwg.org/multipage/system-state.html#navigator-compatibility-mode
+    #[must_use]
+    pub fn is_gecko_compatibility_mode(&self) -> bool {
+        let ua = self.user_agent.as_str();
+        !ua.contains("Chrome") && !ua.contains("WebKit")
+    }
+
     #[must_use]
     pub fn chrome() -> Self {
         let major = CHROME_FULL_VERSION
@@ -149,17 +156,27 @@ impl Identity {
             ],
             product: format!("Chrome/{CHROME_FULL_VERSION}"),
             vendor: "Google Inc.".to_owned(),
+            product_sub: "20030107".to_owned(),
             ..Self::default()
         }
     }
 
     #[must_use]
     pub fn custom(user_agent: UserAgent) -> Self {
+        let ua = user_agent.as_str();
+        let (vendor, product_sub) = if ua.contains("Chrome") {
+            ("Google Inc.", "20030107")
+        } else if ua.contains("WebKit") {
+            ("Apple Computer, Inc.", "20030107")
+        } else {
+            ("", "20100101")
+        };
         Self {
             user_agent,
             brands: Vec::new(),
             full_version_list: Vec::new(),
-            vendor: String::new(),
+            vendor: vendor.to_owned(),
+            product_sub: product_sub.to_owned(),
             ..Self::default()
         }
     }

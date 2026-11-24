@@ -37,11 +37,14 @@ HTMLIFrameElement loading Loading loading Eager Eager
 HTMLImageElement referrerPolicy net::ReferrerPolicy referrerpolicy - -
 HTMLImageElement decoding Decoding decoding Auto Auto
 HTMLImageElement loading Loading loading Eager Eager
+HTMLImageElement fetchPriority FetchPriority fetchpriority Auto Auto
 HTMLAnchorElement referrerPolicy net::ReferrerPolicy referrerpolicy - -
 HTMLAreaElement referrerPolicy net::ReferrerPolicy referrerpolicy - -
 HTMLLinkElement referrerPolicy net::ReferrerPolicy referrerpolicy - -
 HTMLLinkElement as LinkAs as - -
+HTMLLinkElement fetchPriority FetchPriority fetchpriority Auto Auto
 HTMLScriptElement referrerPolicy net::ReferrerPolicy referrerpolicy - -
+HTMLScriptElement fetchPriority FetchPriority fetchpriority Auto Auto
 HTMLTrackElement kind TrackKind kind Subtitles Metadata
 HTMLTableCellElement scope TableScope scope - -
 HTMLMediaElement preload Preload preload Auto Auto

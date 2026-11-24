@@ -1,5 +1,8 @@
 // https://fetch.spec.whatwg.org/#http-cors-protocol
 
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
+
 use enumerated::Enumerated;
 use http::header::{self, HeaderValue};
 
@@ -471,6 +474,139 @@ pub fn preflight_ok(
     wildcard || unsafe_names.iter().all(|name| listed(name))
 }
 
+// https://fetch.spec.whatwg.org/#concept-cache
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+struct PreflightKey {
+    origin: String,
+    url: String,
+    credentials: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+struct PreflightEntry {
+    methods: HashMap<String, Instant>,
+    headers: HashMap<String, Instant>,
+}
+
+// https://fetch.spec.whatwg.org/#concept-cache
+#[derive(Debug, Default)]
+pub struct PreflightCache {
+    entries: HashMap<PreflightKey, PreflightEntry>,
+}
+
+impl PreflightCache {
+    // https://fetch.spec.whatwg.org/#cors-preflight-fetch — default 5s max-age when header is absent/invalid, capped at 7200s (matching Chromium)
+    const DEFAULT_MAX_AGE_SECS: u64 = 5;
+    const MAX_AGE_CAP_SECS: u64 = 7200;
+    const MAX_ENTRIES: usize = 512;
+
+    #[must_use]
+    pub fn allows(
+        &mut self,
+        origin: &str,
+        url: &str,
+        credentials: bool,
+        method: &Method,
+        unsafe_names: &[String],
+        now: Instant,
+    ) -> bool {
+        let key = PreflightKey {
+            origin: origin.to_owned(),
+            url: url.to_owned(),
+            credentials,
+        };
+        let Some(entry) = self.entries.get_mut(&key) else {
+            return false;
+        };
+        entry.methods.retain(|_, expiry| *expiry > now);
+        entry.headers.retain(|_, expiry| *expiry > now);
+        let wildcard_ok = !credentials;
+        let method_ok = is_cors_safelisted_method(method)
+            || entry.methods.contains_key(method.as_str())
+            || (wildcard_ok && entry.methods.contains_key("*"));
+        if !method_ok {
+            return false;
+        }
+        let header_ok = |name: &str| {
+            if name == "authorization" {
+                return entry.headers.contains_key("authorization");
+            }
+            entry.headers.contains_key(name) || (wildcard_ok && entry.headers.contains_key("*"))
+        };
+        unsafe_names.iter().all(|name| header_ok(name))
+    }
+
+    // https://fetch.spec.whatwg.org/#cors-preflight-fetch
+    pub fn store(
+        &mut self,
+        origin: &str,
+        url: &str,
+        credentials: bool,
+        response_headers: &HeaderMap,
+        now: Instant,
+    ) {
+        let max_age = parse_max_age(response_headers).min(Self::MAX_AGE_CAP_SECS);
+        let key = PreflightKey {
+            origin: origin.to_owned(),
+            url: url.to_owned(),
+            credentials,
+        };
+        if max_age == 0 {
+            self.entries.remove(&key);
+            return;
+        }
+        let expiry = now + Duration::from_secs(max_age);
+        if self.entries.len() >= Self::MAX_ENTRIES && !self.entries.contains_key(&key) {
+            self.entries.retain(|_, entry| {
+                entry.methods.retain(|_, exp| *exp > now);
+                entry.headers.retain(|_, exp| *exp > now);
+                !entry.methods.is_empty() || !entry.headers.is_empty()
+            });
+            if self.entries.len() >= Self::MAX_ENTRIES
+                && let Some(evict) = self.entries.keys().next().cloned()
+            {
+                self.entries.remove(&evict);
+            }
+        }
+        let entry = self.entries.entry(key).or_default();
+        if let Some(methods) = list_methods(response_headers, "access-control-allow-methods") {
+            for method in methods {
+                entry.methods.insert(method.as_str().to_owned(), expiry);
+            }
+        }
+        if let Some(headers) = list_header_names(response_headers, "access-control-allow-headers") {
+            for header in headers {
+                entry.headers.insert(header.as_str().to_owned(), expiry);
+            }
+        }
+    }
+
+    // https://fetch.spec.whatwg.org/#concept-cache-clear
+    pub fn clear(&mut self, origin: &str, url: &str) {
+        for credentials in [false, true] {
+            self.entries.remove(&PreflightKey {
+                origin: origin.to_owned(),
+                url: url.to_owned(),
+                credentials,
+            });
+        }
+    }
+}
+
+// https://fetch.spec.whatwg.org/#cors-preflight-fetch
+fn parse_max_age(headers: &HeaderMap) -> u64 {
+    let values = list_values(headers, "access-control-max-age");
+    if values.len() != 1 {
+        return PreflightCache::DEFAULT_MAX_AGE_SECS;
+    }
+    let raw = values[0].trim();
+    if raw.is_empty() || !raw.bytes().all(|b| b.is_ascii_digit()) {
+        return PreflightCache::DEFAULT_MAX_AGE_SECS;
+    }
+    raw.parse::<u64>()
+        .unwrap_or(PreflightCache::MAX_AGE_CAP_SECS)
+}
+
 // https://fetch.spec.whatwg.org/#cors-preflight-fetch
 pub(crate) fn preflight_headers(
     method: &Method,
@@ -848,6 +984,72 @@ mod tests {
         assert!(
             !ExposedHeaders::new(&response, true).keeps("x-thing"),
             "a credentialed request treats `*` as a literal name"
+        );
+    }
+
+    #[test]
+    fn preflight_cache_reuses_valid_entries_and_respects_max_age_and_auth() {
+        let now = Instant::now();
+        let mut cache = PreflightCache::default();
+        let response = headers(&[
+            ("Access-Control-Allow-Origin", "*"),
+            ("Access-Control-Allow-Methods", "PUT, *"),
+            ("Access-Control-Allow-Headers", "X-Custom, *"),
+            ("Access-Control-Max-Age", "60"),
+        ]);
+        cache.store(
+            "https://a.test",
+            "https://b.test/api",
+            false,
+            &response,
+            now,
+        );
+        assert!(cache.allows(
+            "https://a.test",
+            "https://b.test/api",
+            false,
+            &Method::PUT,
+            &["x-custom".to_owned()],
+            now + Duration::from_secs(30),
+        ));
+        assert!(
+            !cache.allows(
+                "https://a.test",
+                "https://b.test/api",
+                false,
+                &Method::PUT,
+                &["authorization".to_owned()],
+                now + Duration::from_secs(30),
+            ),
+            "wildcard never caches authorization"
+        );
+        assert!(
+            !cache.allows(
+                "https://a.test",
+                "https://b.test/api",
+                false,
+                &Method::PUT,
+                &["x-custom".to_owned()],
+                now + Duration::from_secs(61),
+            ),
+            "expired entry misses"
+        );
+        let zero = headers(&[
+            ("Access-Control-Allow-Origin", "*"),
+            ("Access-Control-Allow-Methods", "PUT"),
+            ("Access-Control-Max-Age", "0"),
+        ]);
+        cache.store("https://a.test", "https://b.test/api", false, &zero, now);
+        assert!(
+            !cache.allows(
+                "https://a.test",
+                "https://b.test/api",
+                false,
+                &Method::PUT,
+                &[],
+                now,
+            ),
+            "max-age: 0 evicts the cache entry"
         );
     }
 }

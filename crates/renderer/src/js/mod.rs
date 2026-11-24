@@ -13,7 +13,7 @@ mod events;
 pub(crate) use events::handler_attribute_violations;
 pub(crate) mod fonts;
 mod intl;
-mod modules;
+pub(crate) mod modules;
 mod runtime;
 mod url_parts;
 pub(crate) mod world;
@@ -21,6 +21,7 @@ pub(crate) mod world;
 mod observers;
 mod reactions;
 
+pub(crate) use bindings::ResourceTiming;
 pub(crate) use bindings::selector_matching_elements;
 pub(crate) use bindings::{bounding_rect, element_at_point, element_client_rects};
 pub(crate) use bridge::js_number;
@@ -93,6 +94,8 @@ pub enum ScriptValue {
 pub(crate) enum Script {
     Classic(ScriptElementSource),
     Module(ScriptElementSource),
+    // https://html.spec.whatwg.org/multipage/webappapis.html#import-maps
+    ImportMap(ScriptElementSource),
 }
 
 #[derive(Clone)]
@@ -585,7 +588,8 @@ impl JsRealm {
             self.context.with(|ctx| {
                 let value: Value = match source {
                     crate::ScriptSource::Page(source) => eval_classic(&ctx, source)?,
-                    crate::ScriptSource::Browser(source) => {
+                    crate::ScriptSource::Browser(source)
+                    | crate::ScriptSource::Isolated { source, .. } => {
                         struct BrowserEvalGuard<'a>(&'a Rc<RefCell<World>>);
                         impl Drop for BrowserEvalGuard<'_> {
                             fn drop(&mut self) {
@@ -602,6 +606,15 @@ impl JsRealm {
                                 .set(world.browser_eval_depth.get().saturating_add(1));
                         }
                         let _guard = BrowserEvalGuard(&self.world);
+                        let evaluate: Function = ctx.eval(format!(
+                            "(function(host) {{ 'use strict'; return (\n{source}\n); }})"
+                        ))?;
+                        match evaluate.call((bridge::object(&ctx)?,)) {
+                            Ok(value) => value,
+                            Err(error) => return Err(caught_error(&ctx, error)),
+                        }
+                    }
+                    crate::ScriptSource::BrowserStrict(source) => {
                         let evaluate: Function = ctx.eval(format!(
                             "(function(host) {{ 'use strict'; return (\n{source}\n); }})"
                         ))?;
@@ -992,27 +1005,11 @@ impl JsRealm {
     // https://w3c.github.io/resource-timing/#dfn-add-a-performanceresourcetiming-entry
     pub(crate) fn queue_resource_timing(
         &self,
-        name: String,
-        initiator_type: &str,
-        start_time: f64,
-        end_time: f64,
-        response_status: u16,
-        encoded_body_size: u64,
+        entry: bindings::ResourceTiming<'_>,
     ) -> Result<(), JsError> {
         self.with_budget(None, MicrotaskCheckpoint::Perform, || {
             self.context.with(|ctx| {
-                bindings::queue_resource_timing(
-                    &ctx,
-                    bindings::ResourceTiming {
-                        name: &name,
-                        initiator_type,
-                        start_time,
-                        end_time,
-                        response_status,
-                        encoded_body_size,
-                        decoded_body_size: encoded_body_size,
-                    },
-                )?;
+                bindings::queue_resource_timing(&ctx, entry)?;
                 Ok(())
             })
         })
@@ -2408,6 +2405,8 @@ pub(crate) fn script_at(world: &World, id: crate::dom::tree::NodeId) -> Option<S
     };
     if type_string.eq_ignore_ascii_case("module") {
         Some(Script::Module(source))
+    } else if type_string.eq_ignore_ascii_case("importmap") {
+        Some(Script::ImportMap(source))
     } else if javascript_mime_essence(&type_string) {
         Some(Script::Classic(source))
     } else {

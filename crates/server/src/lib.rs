@@ -195,18 +195,34 @@ pub fn has_origin(request: &Request) -> bool {
     request.headers().contains_key(header::ORIGIN)
 }
 
-// https://w3c.github.io/webappsec-fetch-metadata/
+// https://w3c.github.io/webappsec-fetch-metadata/#sec-fetch-site-header
 #[must_use]
-pub fn has_browser_fetch_metadata(request: &Request) -> bool {
-    const HEADERS: [&str; 4] = [
-        "sec-fetch-site",
-        "sec-fetch-mode",
-        "sec-fetch-dest",
-        "sec-fetch-user",
-    ];
-    HEADERS
-        .iter()
-        .any(|name| request.headers().contains_key(*name))
+pub fn has_browser_fetch_metadata<B>(request: &hyper::Request<B>) -> bool {
+    let headers = request.headers();
+    if headers.contains_key("sec-fetch-user") {
+        return true;
+    }
+    if headers
+        .get("sec-fetch-site")
+        .is_some_and(|value| value.to_str().ok().map(str::trim) != Some("none"))
+    {
+        return true;
+    }
+    if headers.get("sec-fetch-mode").is_some_and(|value| {
+        !matches!(
+            value.to_str().ok().map(str::trim),
+            Some("cors" | "websocket")
+        )
+    }) {
+        return true;
+    }
+    if headers
+        .get("sec-fetch-dest")
+        .is_some_and(|value| value.to_str().ok().map(str::trim) != Some("empty"))
+    {
+        return true;
+    }
+    false
 }
 
 #[must_use]
@@ -296,8 +312,8 @@ mod tests {
     use tokio::time::{Duration, timeout};
 
     use super::{
-        BodyError, Shutdown, is_loopback_authority, json, method_not_allowed, read_body, serve,
-        text,
+        BodyError, Shutdown, has_browser_fetch_metadata, is_loopback_authority, json,
+        method_not_allowed, read_body, serve, text,
     };
 
     #[test]
@@ -460,5 +476,58 @@ mod tests {
             .expect("idle connection drains")
             .expect("server task");
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn browser_fetch_metadata_allows_node_clients_and_blocks_browser_csrf() {
+        let req = |headers: &[(&str, &str)]| {
+            let mut builder = hyper::Request::builder().uri("/status");
+            for (name, value) in headers {
+                builder = builder.header(*name, *value);
+            }
+            builder.body(Full::new(Bytes::new())).expect("request")
+        };
+        assert!(!has_browser_fetch_metadata(&req(&[])));
+        assert!(!has_browser_fetch_metadata(&req(&[(
+            "sec-fetch-mode",
+            "cors"
+        )])));
+        assert!(!has_browser_fetch_metadata(&req(&[(
+            "sec-fetch-mode",
+            "websocket"
+        )])));
+        assert!(!has_browser_fetch_metadata(&req(&[
+            ("sec-fetch-site", "none"),
+            ("sec-fetch-mode", "cors"),
+            ("sec-fetch-dest", "empty"),
+        ])));
+        assert!(has_browser_fetch_metadata(&req(&[(
+            "sec-fetch-site",
+            "cross-site"
+        )])));
+        assert!(has_browser_fetch_metadata(&req(&[(
+            "sec-fetch-site",
+            "same-origin"
+        )])));
+        assert!(has_browser_fetch_metadata(&req(&[(
+            "sec-fetch-site",
+            "same-site"
+        )])));
+        assert!(has_browser_fetch_metadata(&req(&[(
+            "sec-fetch-mode",
+            "no-cors"
+        )])));
+        assert!(has_browser_fetch_metadata(&req(&[(
+            "sec-fetch-mode",
+            "navigate"
+        )])));
+        assert!(has_browser_fetch_metadata(&req(&[(
+            "sec-fetch-dest",
+            "document"
+        )])));
+        assert!(has_browser_fetch_metadata(&req(&[(
+            "sec-fetch-user",
+            "?1"
+        )])));
     }
 }

@@ -282,6 +282,14 @@
     }
   }, ['deleteFromDocument', 'getComposedRanges', 'modify']);
 
+  // https://w3c.github.io/selection-api/#dom-selection-deletefromdocument
+  __tbDefineProperty(Selection.prototype, 'deleteFromDocument', {
+    value: function deleteFromDocument() {
+      if (range !== null) range.deleteContents();
+    },
+    writable: true, enumerable: true, configurable: true,
+  });
+
   // https://w3c.github.io/selection-api/#dom-selection-stringifier
   __tbDefineProperty(Selection.prototype, 'toString', {
     value: function toString() {

@@ -314,7 +314,9 @@
   });
 
   // https://w3c.github.io/resource-timing/#attribute-descriptions
-  const __tbResourceEntry = (name, initiatorType, startTime, endTime, responseStatus, encodedBodySize, decodedBodySize) => {
+  // https://fetch.spec.whatwg.org/#concept-tao-check
+  const __tbResourceEntry = (name, initiatorType, startTime, endTime, responseStatus, encodedBodySize, decodedBodySize, taoPassed) => {
+    const allowed = taoPassed !== false;
     return new PerformanceResourceTiming(__tbInternal, {
       id: 0,
       name,
@@ -334,20 +336,20 @@
       connectStart: 0,
       connectEnd: 0,
       secureConnectionStart: 0,
-      requestStart: startTime,
-      finalResponseHeadersStart: endTime,
+      requestStart: allowed ? startTime : 0,
+      finalResponseHeadersStart: allowed ? endTime : 0,
       firstInterimResponseStart: 0,
       // https://w3c.github.io/resource-timing/#dom-performanceresourcetiming-responsestart
-      responseStart: endTime,
+      responseStart: allowed ? endTime : 0,
       responseEnd: endTime,
       workerRouterEvaluationStart: 0,
       workerCacheLookupStart: 0,
       workerMatchedRouterSource: '',
       workerFinalRouterSource: '',
-      transferSize: encodedBodySize === 0 ? 0 : encodedBodySize + 300,
-      encodedBodySize,
-      decodedBodySize,
-      responseStatus,
+      transferSize: !allowed || encodedBodySize === 0 ? 0 : encodedBodySize + 300,
+      encodedBodySize: allowed ? encodedBodySize : 0,
+      decodedBodySize: allowed ? decodedBodySize : 0,
+      responseStatus: allowed ? responseStatus : 0,
       renderBlockingStatus: 'non-blocking',
       contentType: '',
       contentEncoding: '',
@@ -849,11 +851,11 @@
 
   // https://w3c.github.io/resource-timing/#dfn-add-a-performanceresourcetiming-entry
   host.__tbQueueResourceTiming = (
-    name, initiatorType, startTime, endTime, responseStatus, encodedBodySize, decodedBodySize,
+    name, initiatorType, startTime, endTime, responseStatus, encodedBodySize, decodedBodySize, taoPassed,
   ) => {
     const entry = __tbResourceEntry(
       name, initiatorType, startTime, endTime, responseStatus,
-      encodedBodySize, decodedBodySize,
+      encodedBodySize, decodedBodySize, taoPassed,
     );
     __tbQueueEntry(entry, false);
   };

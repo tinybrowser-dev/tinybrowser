@@ -187,7 +187,7 @@ impl JsNode {
             LegacyShape::Document => {
                 named::delete_named_property(ctx, self.handle.get().0, &atom, &object)
             }
-            LegacyShape::None => Ok(false),
+            LegacyShape::None => Ok(true),
         }
     }
 

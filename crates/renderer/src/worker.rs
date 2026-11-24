@@ -341,7 +341,8 @@ impl WorkerDirectory {
 
     // https://html.spec.whatwg.org/multipage/workers.html#dom-worker
     pub(crate) fn spawn_dedicated(self: &Arc<Self>, created: CreatedWorker) -> WorkerId {
-        const MAX_DEDICATED_WORKERS: usize = 16;
+        // https://html.spec.whatwg.org/multipage/workers.html#dom-worker — UA cap matching Firefox dom.workers.maxPerDomain
+        const MAX_DEDICATED_WORKERS: usize = 512;
         let id = created.id;
         let (commands, received) = std::sync::mpsc::channel();
         let state = WorkerThreadState {
@@ -368,6 +369,15 @@ impl WorkerDirectory {
             if workers.len() >= MAX_DEDICATED_WORKERS {
                 state.closed.store(true, Ordering::Release);
                 state.active.store(0, Ordering::Release);
+                self.runtime
+                    .worker_requests
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push(WorkerRequest::LoadFailed {
+                        worker: id,
+                        parent: created.parent,
+                    });
+                self.runtime.wake.notify_one();
                 return id;
             }
             workers.insert(id, handle);
@@ -380,6 +390,7 @@ impl WorkerDirectory {
             closed: Arc::clone(&state.closed),
             pending_fetches: Arc::clone(&state.pending_fetches),
         };
+        let parent = created.parent;
         let spawned = std::thread::Builder::new()
             .name(format!("tinybrowser-worker-{}", id.get()))
             .spawn(move || run_worker(&created, &directory, &received, &thread_state));
@@ -388,6 +399,12 @@ impl WorkerDirectory {
             let _ = error;
             state.closed.store(true, Ordering::Release);
             state.active.store(0, Ordering::Release);
+            self.runtime
+                .worker_requests
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(WorkerRequest::LoadFailed { worker: id, parent });
+            self.runtime.wake.notify_one();
         }
         id
     }

@@ -468,6 +468,32 @@ impl Document {
         if let Some(mut parsed) = self.world.borrow().document_mut(element) {
             parsed.document.mark_script_started(element.node);
         }
+        if let crate::js::Script::ImportMap(source) = script {
+            // https://html.spec.whatwg.org/multipage/scripting.html#prepare-the-script-element
+            match source {
+                crate::js::ScriptElementSource::Inline { source, .. } => {
+                    let violations = self.inline_script_violations(&source, element);
+                    if !violations.is_empty() {
+                        self.fire_csp_violations(element, &violations);
+                    }
+                    if !crate::csp::blocks(&violations) {
+                        let base = self
+                            .world
+                            .borrow()
+                            .base_url
+                            .clone()
+                            .unwrap_or_else(|| self.url.clone());
+                        if let Ok(map) = crate::js::modules::ImportMap::parse(&source, &base) {
+                            self.world.borrow_mut().import_map.merge(map);
+                        }
+                    }
+                }
+                crate::js::ScriptElementSource::Src(_) => {
+                    self.tasks.push_back(Task::NodeError(element));
+                }
+            }
+            return;
+        }
         if let crate::js::Script::Module(source) = script {
             // https://html.spec.whatwg.org/multipage/scripting.html#attr-script-type-module
             match self.run_module_body(element, source) {

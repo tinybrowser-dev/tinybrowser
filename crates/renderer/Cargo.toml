@@ -54,6 +54,8 @@ url = { version = "2", features = ["serde"] }
 rquickjs = { version = "0.14.0", default-features = false, features = ["std", "loader", "macro"] }
 # Value-only seam for script results crossing to a carrier.
 serde = { version = "1", features = ["derive"] }
+# Already in Cargo.lock and the shipping binary; used to parse `<script type="importmap">`.
+serde_json = "1"
 # Style / layout / paint.
 
 parley = { version = "0.13", default-features = false, features = ["libm"] }

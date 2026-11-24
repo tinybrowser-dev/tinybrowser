@@ -1074,7 +1074,25 @@ const __tbQueuePageRequest = (url, method, body, headers, cors, referrer, callba
     const name = outcome && outcome.url ? String(outcome.url) : String(url);
     const status = outcome && outcome.status ? outcome.status : 0;
     const bytes = outcome && outcome.body && outcome.body.bytes ? outcome.body.bytes.length : 0;
-    queue(name, queuedInitiator, started, performance.now(), status, bytes, bytes);
+    let tao = outcome && outcome.responseType === 'basic';
+    if (!tao && outcome && outcome.headers && globalThis.location && globalThis.location.origin) {
+      const origin = String(globalThis.location.origin);
+      for (let i = 0; i < outcome.headers.length; i++) {
+        const pair = outcome.headers[i];
+        if (String(pair[0]).toLowerCase() === 'timing-allow-origin') {
+          const parts = String(pair[1]).split(',');
+          for (let j = 0; j < parts.length; j++) {
+            const token = parts[j].trim();
+            if (token === '*' || (origin !== 'null' && token === origin)) {
+              tao = true;
+              break;
+            }
+          }
+        }
+        if (tao) break;
+      }
+    }
+    queue(name, queuedInitiator, started, performance.now(), status, bytes, bytes, tao);
   };
   host.__tb_fetchCbs[id] = function(outcome) {
     delete host.__tb_fetchCbs[id];
@@ -1208,6 +1226,24 @@ globalThis.fetch = function(input, init) {
       ));
       return;
     }
+    // https://fetch.spec.whatwg.org/#keepalive-flag
+    let keepaliveReserved = 0;
+    if (keepalive) {
+      if (host.__tbKeepaliveQuota === undefined) host.__tbKeepaliveQuota = { bytes: 0 };
+      const size = typeof data.bodySize === 'number' && data.bodySize > 0 ? data.bodySize : 0;
+      if (host.__tbKeepaliveQuota.bytes + size > 65536) {
+        finish(reject, new TypeError('Failed to fetch'));
+        return;
+      }
+      host.__tbKeepaliveQuota.bytes += size;
+      keepaliveReserved = size;
+    }
+    const releaseKeepalive = () => {
+      if (keepaliveReserved > 0 && host.__tbKeepaliveQuota !== undefined) {
+        host.__tbKeepaliveQuota.bytes -= Math.min(host.__tbKeepaliveQuota.bytes, keepaliveReserved);
+        keepaliveReserved = 0;
+      }
+    };
     // https://fetch.spec.whatwg.org/#concept-request-url
     const hash = url.indexOf('#');
     const networkUrl = hash === -1 ? url : url.slice(0, hash);
@@ -1222,6 +1258,7 @@ globalThis.fetch = function(input, init) {
       delivery: method !== 'HEAD' && data.integrity === '' ? 'stream' : 'buffer',
       referrerPolicy: data.referrerPolicy,
     }, referrer, outcome => {
+      releaseKeepalive();
       const status = outcome.status;
       const statusText = outcome.statusText;
       const body = outcome.body;

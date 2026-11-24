@@ -733,13 +733,20 @@ fn get_properties_script(params: &crate::params::GetProperties) -> String {
     RUNTIME_GET_PROPERTIES.replace("__ARGS__", &arguments.to_string())
 }
 
+pub(crate) fn isolated_world_of_handle(object_id: &str) -> Option<&str> {
+    let rest = object_id.strip_prefix("iw:")?;
+    let (world, _) = rest.rsplit_once(':')?;
+    (!world.is_empty()).then_some(world)
+}
+
 // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-getProperties
 async fn runtime_get_properties(tab: &TabHandle, params: &Value) -> Result<Value, DispatchError> {
     let params: crate::params::GetProperties = crate::params::parse(params)?;
     if params.object_id.is_empty() {
         return Err(DispatchError::InvalidParams("objectId".to_owned()));
     }
-    let reply = execute_json(tab, &get_properties_script(&params)).await?;
+    let script = get_properties_script(&params);
+    let reply = execute_json_in(tab, isolated_world_of_handle(&params.object_id), &script).await?;
     match reply.get("ok").and_then(Value::as_bool) {
         Some(true) => Ok(reply.get("value").cloned().unwrap_or(Value::Null)),
         Some(false) => Err(DispatchError::Failed(
@@ -764,9 +771,20 @@ pub(crate) async fn runtime_release_object(
         "__ARGS__",
         &json!({"objectId": params.object_id}).to_string(),
     );
-    tab.execute_browser_script(&script)
-        .await
-        .map_err(|error| DispatchError::Failed(error.to_string()))?;
+    let source = match isolated_world_of_handle(&params.object_id) {
+        Some(world) => browser::ScriptSource::Isolated {
+            world,
+            source: script.as_str(),
+        },
+        None => browser::ScriptSource::Browser(script.as_str()),
+    };
+    tab.execute_script(browser::ExecuteScriptOptions {
+        frame: FrameId::MAIN,
+        source,
+        timeout: None,
+    })
+    .await
+    .map_err(|error| DispatchError::Failed(error.to_string()))?;
     Ok(json!({}))
 }
 
@@ -785,9 +803,24 @@ pub(crate) async fn runtime_release_object_group(
     Ok(json!({}))
 }
 
-async fn execute_json(tab: &TabHandle, script: &str) -> Result<Value, DispatchError> {
+async fn execute_json_in(
+    tab: &TabHandle,
+    world: Option<&str>,
+    script: &str,
+) -> Result<Value, DispatchError> {
+    let source = match world {
+        Some(world) => browser::ScriptSource::Isolated {
+            world,
+            source: script,
+        },
+        None => browser::ScriptSource::Browser(script),
+    };
     let value = tab
-        .execute_browser_script(script)
+        .execute_script(browser::ExecuteScriptOptions {
+            frame: FrameId::MAIN,
+            source,
+            timeout: None,
+        })
         .await
         .map_err(|error| DispatchError::Failed(error.to_string()))?;
     let RemoteValue::String(text) = value else {

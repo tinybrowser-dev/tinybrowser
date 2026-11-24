@@ -6,6 +6,7 @@
 
   const __tbTraversalTreeWalker = host.slots('tinybrowser.traversal.treewalker');
   const __tbTraversalNodeIterator = host.slots('tinybrowser.traversal.nodeiterator');
+  const __tbLiveNodeIterators = new Set();
   // https://webidl.spec.whatwg.org/#interface-object
   const __tbTraversalConstruct = { __proto__: null };
 
@@ -252,7 +253,7 @@
   const __tbNodeIteratorConstructor = globalThis.NodeIterator = class NodeIterator {
     constructor(token, root, whatToShow, filter) {
       if (token !== __tbTraversalConstruct) throw new TypeError('Illegal constructor');
-      __tbTraversalNodeIterator.set(this, {
+      const state = {
         __proto__: null,
         root,
         whatToShow: __tbTraversalMask(whatToShow),
@@ -260,7 +261,12 @@
         reference: root,
         pointerBefore: true,
         active: false,
-      });
+      };
+      __tbTraversalNodeIterator.set(this, state);
+      __tbLiveNodeIterators.add(state);
+      if (host.__tbNodeIteratorPreRemove === undefined) {
+        host.__tbNodeIteratorPreRemove = __tbNodeIteratorPreRemove;
+      }
     }
     get root() {
       const state = __tbTraversalNodeIterator.get(this);
@@ -363,6 +369,39 @@
       throw new TypeError('The root argument is not a Node.');
     }
     return root;
+  };
+
+  // https://dom.spec.whatwg.org/#nodeiterator-pre-removing-steps
+  const __tbNodeIteratorPreRemove = function(toBeRemoved) {
+    if (__tbLiveNodeIterators.size === 0 || !toBeRemoved) return;
+    for (const state of __tbLiveNodeIterators) {
+      if (toBeRemoved.contains(state.root) || !toBeRemoved.contains(state.reference)) {
+        continue;
+      }
+      if (state.pointerBefore) {
+        let next = null;
+        let current = toBeRemoved;
+        while (current !== null && current !== state.root) {
+          if (current.nextSibling !== null) {
+            next = current.nextSibling;
+            break;
+          }
+          current = current.parentNode;
+        }
+        if (next !== null) {
+          state.reference = next;
+          continue;
+        }
+        state.pointerBefore = false;
+      }
+      if (toBeRemoved.previousSibling !== null) {
+        let last = toBeRemoved.previousSibling;
+        while (last.lastChild !== null) last = last.lastChild;
+        state.reference = last;
+      } else {
+        state.reference = toBeRemoved.parentNode;
+      }
+    }
   };
 
   Object.defineProperty(Document.prototype, 'createTreeWalker', {

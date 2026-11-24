@@ -169,6 +169,10 @@ pub(crate) struct RuntimeOptions {
     pub(crate) object_group: Option<String>,
     pub(crate) timeout: Option<f64>,
     pub(crate) frame_id: Option<String>,
+    pub(crate) context_id: Option<u64>,
+    pub(crate) execution_context_id: Option<u64>,
+    #[serde(rename = "allowUnsafeEvalBlockedByCSP")]
+    pub(crate) allow_unsafe_eval_blocked_by_csp: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]

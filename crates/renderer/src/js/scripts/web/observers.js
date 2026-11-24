@@ -260,9 +260,13 @@
       if ((time - registration.lastUpdateTime) < data.delay) continue;
       registration.lastUpdateTime = time;
       if (data.root !== null && !inContainingBlockChain(target, data.root)) continue;
+      const hasBox = typeof target.getClientRects === 'function'
+        ? target.getClientRects().length > 0
+        : true;
       const targetRect = borderBox(target);
       // https://w3c.github.io/IntersectionObserver/#update-intersection-observations-algo
-      const isIntersecting = targetRect.left <= rootBounds.right
+      const isIntersecting = hasBox
+        && targetRect.left <= rootBounds.right
         && targetRect.right >= rootBounds.left
         && targetRect.top <= rootBounds.bottom
         && targetRect.bottom >= rootBounds.top;

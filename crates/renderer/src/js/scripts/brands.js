@@ -4,6 +4,14 @@
   function define(name, parent, constructible) {
     const ctor = constructible
       ? function() {
+          if (name === 'HTMLElement') {
+            if (!new.target || new.target === ctor) {
+              return illegal();
+            }
+            if (typeof host.__tbConstructCustomElement === 'function') {
+              return host.__tbConstructCustomElement(new.target);
+            }
+          }
           const value = __tbApply(host.__tb_construct,
             globalThis,
             [name, ...arguments]

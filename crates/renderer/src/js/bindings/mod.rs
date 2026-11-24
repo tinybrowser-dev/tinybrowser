@@ -1092,6 +1092,7 @@ fn identity(ctx: Ctx<'_>) -> Result<Object<'_>> {
     object.set("languages", identity.languages.clone())?;
     object.set("vendor", identity.vendor.clone())?;
     object.set("productSub", identity.product_sub.clone())?;
+    object.set("geckoCompat", identity.is_gecko_compatibility_mode())?;
     object.set("brands", brand_array(&ctx, &identity.brands)?)?;
     object.set(
         "fullVersionList",
@@ -1351,6 +1352,13 @@ fn node_wrapper_prototype<'js>(
     brand: &str,
 ) -> Result<Option<Object<'js>>> {
     let world_rc = world(ctx)?;
+    if world_rc.borrow().isolated_name.is_some() {
+        return world_rc
+            .borrow()
+            .brand(brand)
+            .map(|proto| proto.restore(ctx))
+            .transpose();
+    }
     let owner = world_rc.borrow().owner_world(id);
     if let Some(owner) = owner.as_ref() {
         world_rc

@@ -514,3 +514,19 @@ globalThis.Document.parseHTMLUnsafe = function parseHTMLUnsafe(html) {
     enumerable: true, configurable: true,
   });
 }
+
+// https://html.spec.whatwg.org/multipage/scripting.html#dom-script-supports
+if (globalThis.HTMLScriptElement) {
+  Object.defineProperty(globalThis.HTMLScriptElement, 'supports', {
+    value: function supports(type) {
+      if (arguments.length < 1) {
+        throw new TypeError("Failed to execute 'supports' on 'HTMLScriptElement': 1 argument required, but only 0 present.");
+      }
+      const value = String(type);
+      return value === 'classic' || value === 'module' || value === 'importmap';
+    },
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+}

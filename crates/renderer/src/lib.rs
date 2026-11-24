@@ -44,14 +44,9 @@ impl Default for Fonts {
 }
 
 #[cfg(target_os = "linux")]
-fn apply_linux_generic_families(
-    font_ctx: &mut parley::FontContext,
-    aliases: &[fontconfig_parser::Alias],
-    first_family: Option<parley::fontique::FamilyId>,
-) {
+const LINUX_GENERIC_FAMILIES: [(&str, parley::fontique::GenericFamily, &[&str]); 9] = {
     use parley::fontique::GenericFamily;
-
-    let generic_specs: [(&str, GenericFamily, &[&str]); 6] = [
+    [
         (
             "sans-serif",
             GenericFamily::SansSerif,
@@ -92,9 +87,230 @@ fn apply_linux_generic_families(
             GenericFamily::Fantasy,
             &["DejaVu Serif", "Liberation Serif", "Noto Serif"],
         ),
-    ];
+        (
+            "emoji",
+            GenericFamily::Emoji,
+            &[
+                "Noto Color Emoji",
+                "Twemoji",
+                "EmojiOne Color",
+                "Noto Emoji",
+                "Symbola",
+                "DejaVu Sans",
+            ],
+        ),
+        (
+            "math",
+            GenericFamily::Math,
+            &[
+                "STIX Two Math",
+                "Latin Modern Math",
+                "Libertinus Math",
+                "Noto Sans Math",
+                "DejaVu Math TeX Gyre",
+                "Cambria Math",
+                "FreeSerif",
+                "DejaVu Sans",
+            ],
+        ),
+        (
+            "fangsong",
+            GenericFamily::FangSong,
+            &[
+                "Noto Serif CJK SC",
+                "Noto Sans CJK SC",
+                "WenQuanYi Zen Hei",
+                "AR PL UMing CN",
+            ],
+        ),
+    ]
+};
 
-    for (name, generic, fallbacks) in generic_specs {
+#[cfg(target_os = "linux")]
+const LINUX_SCRIPT_FALLBACKS: [([u8; 4], &[&str], &[&str]); 10] = [
+    (
+        *b"Arab",
+        &[
+            "Noto Sans Arabic",
+            "Noto Naskh Arabic",
+            "Amiri",
+            "DejaVu Sans",
+            "FreeSans",
+        ],
+        &["arabic", "naskh", "unifont"],
+    ),
+    (
+        *b"Hebr",
+        &[
+            "Noto Sans Hebrew",
+            "Noto Serif Hebrew",
+            "DejaVu Sans",
+            "FreeSans",
+        ],
+        &["hebrew", "unifont"],
+    ),
+    (
+        *b"Deva",
+        &[
+            "Noto Sans Devanagari",
+            "Noto Serif Devanagari",
+            "Lohit Devanagari",
+            "FreeSans",
+            "DejaVu Sans",
+        ],
+        &["devanagari", "unifont"],
+    ),
+    (
+        *b"Beng",
+        &[
+            "Noto Sans Bengali",
+            "Noto Serif Bengali",
+            "Lohit Bengali",
+            "FreeSans",
+        ],
+        &["bengali", "unifont"],
+    ),
+    (
+        *b"Thai",
+        &[
+            "Noto Sans Thai",
+            "Noto Serif Thai",
+            "Loma",
+            "Waree",
+            "Garuda",
+            "FreeSans",
+            "DejaVu Sans",
+        ],
+        &["thai", "unifont"],
+    ),
+    (
+        *b"Tibt",
+        &["Noto Serif Tibetan", "Noto Sans Tibetan", "Jomolhari"],
+        &["tibetan", "unifont"],
+    ),
+    (
+        *b"Ethi",
+        &["Noto Sans Ethiopic", "Abyssinica SIL", "FreeSerif"],
+        &["ethiopic", "unifont"],
+    ),
+    (
+        *b"Cyrl",
+        &["DejaVu Sans", "Liberation Sans", "Noto Sans", "FreeSans"],
+        &["unifont"],
+    ),
+    (
+        *b"Grek",
+        &["DejaVu Sans", "Liberation Sans", "Noto Sans", "FreeSans"],
+        &["unifont"],
+    ),
+    (
+        *b"Latn",
+        &["DejaVu Sans", "Liberation Sans", "Noto Sans", "FreeSans"],
+        &["unifont"],
+    ),
+];
+
+#[cfg(target_os = "linux")]
+const LINUX_CJK_SIMPLIFIED: (&[&str], &[&str]) = (
+    &[
+        "Noto Sans CJK SC",
+        "Noto Serif CJK SC",
+        "Source Han Sans SC",
+        "Source Han Serif SC",
+        "WenQuanYi Zen Hei",
+        "WenQuanYi Micro Hei",
+        "Droid Sans Fallback",
+        "Noto Sans CJK JP",
+        "Noto Sans CJK TC",
+        "Noto Sans CJK KR",
+    ],
+    &["cjk sc", "han sans sc", "wqy", "cjk", "unifont"],
+);
+
+#[cfg(target_os = "linux")]
+const LINUX_CJK_TRADITIONAL: (&[&str], &[&str]) = (
+    &[
+        "Noto Sans CJK TC",
+        "Noto Serif CJK TC",
+        "Source Han Sans TC",
+        "Noto Sans CJK HK",
+        "Noto Sans CJK SC",
+        "Droid Sans Fallback",
+    ],
+    &["cjk tc", "cjk hk", "cjk", "unifont"],
+);
+
+#[cfg(target_os = "linux")]
+const LINUX_CJK_HONG_KONG: (&[&str], &[&str]) = (
+    &[
+        "Noto Sans CJK HK",
+        "Noto Serif CJK HK",
+        "Noto Sans CJK TC",
+        "Noto Sans CJK SC",
+        "Droid Sans Fallback",
+    ],
+    &["cjk hk", "cjk tc", "cjk", "unifont"],
+);
+
+#[cfg(target_os = "linux")]
+const LINUX_CJK_JAPANESE: (&[&str], &[&str]) = (
+    &[
+        "Noto Sans CJK JP",
+        "Noto Serif CJK JP",
+        "Source Han Sans JP",
+        "IPAGothic",
+        "IPAexGothic",
+        "VL Gothic",
+        "TakaoPGothic",
+        "Noto Sans CJK SC",
+        "Droid Sans Fallback",
+    ],
+    &["cjk jp", "han sans jp", "ipa", "cjk", "unifont"],
+);
+
+#[cfg(target_os = "linux")]
+const LINUX_CJK_KOREAN: (&[&str], &[&str]) = (
+    &[
+        "Noto Sans CJK KR",
+        "Noto Serif CJK KR",
+        "Source Han Sans KR",
+        "NanumGothic",
+        "UnDotum",
+        "Baekmuk Gulim",
+        "Noto Sans CJK SC",
+        "Droid Sans Fallback",
+    ],
+    &["cjk kr", "han sans kr", "nanum", "hangul", "cjk", "unifont"],
+);
+
+#[cfg(target_os = "linux")]
+const LINUX_COMMON_FALLBACKS: (&[&str], &[&str]) = (
+    &[
+        "DejaVu Sans",
+        "Noto Sans",
+        "Noto Sans Symbols",
+        "Noto Sans Symbols 2",
+        "Noto Sans Math",
+        "STIX Two Math",
+        "Latin Modern Math",
+        "Libertinus Math",
+        "DejaVu Math TeX Gyre",
+        "Noto Color Emoji",
+        "Noto Emoji",
+        "Symbola",
+        "FreeSerif",
+        "FreeSans",
+    ],
+    &["symbol", "math", "emoji", "unifont"],
+);
+
+#[cfg(target_os = "linux")]
+fn apply_linux_generic_families(
+    font_ctx: &mut parley::FontContext,
+    aliases: &[fontconfig_parser::Alias],
+    first_family: Option<parley::fontique::FamilyId>,
+) {
+    for (name, generic, fallbacks) in LINUX_GENERIC_FAMILIES {
         let mut ids = Vec::new();
         for alias in aliases {
             if alias.alias.eq_ignore_ascii_case(name) {
@@ -129,6 +345,174 @@ fn apply_linux_generic_families(
                 .collection
                 .set_generic_families(generic, ids.into_iter());
         }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn collect_matching_families(
+    font_ctx: &mut parley::FontContext,
+    installed: &[(parley::fontique::FamilyId, String)],
+    exact: &[&str],
+    substrings: &[&str],
+) -> Vec<parley::fontique::FamilyId> {
+    let mut ids = Vec::new();
+    for name in exact {
+        if let Some(id) = font_ctx.collection.family_id(name)
+            && !ids.contains(&id)
+        {
+            ids.push(id);
+        }
+    }
+    for needle in substrings {
+        let needle_lower = needle.to_ascii_lowercase();
+        for (id, family) in installed {
+            if family.to_ascii_lowercase().contains(&needle_lower) && !ids.contains(id) {
+                ids.push(*id);
+            }
+        }
+    }
+    ids
+}
+
+#[cfg(target_os = "linux")]
+fn set_fallback_if_nonempty(
+    font_ctx: &mut parley::FontContext,
+    key: parley::fontique::FallbackKey,
+    ids: &[parley::fontique::FamilyId],
+) {
+    if !ids.is_empty() {
+        font_ctx.collection.set_fallbacks(key, ids.iter().copied());
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn apply_linux_cjk_fallbacks(
+    font_ctx: &mut parley::FontContext,
+    installed: &[(parley::fontique::FamilyId, String)],
+) {
+    use parley::fontique::{FallbackKey, Script};
+
+    let simplified = collect_matching_families(
+        font_ctx,
+        installed,
+        LINUX_CJK_SIMPLIFIED.0,
+        LINUX_CJK_SIMPLIFIED.1,
+    );
+    let traditional = collect_matching_families(
+        font_ctx,
+        installed,
+        LINUX_CJK_TRADITIONAL.0,
+        LINUX_CJK_TRADITIONAL.1,
+    );
+    let hong_kong = collect_matching_families(
+        font_ctx,
+        installed,
+        LINUX_CJK_HONG_KONG.0,
+        LINUX_CJK_HONG_KONG.1,
+    );
+    let japanese = collect_matching_families(
+        font_ctx,
+        installed,
+        LINUX_CJK_JAPANESE.0,
+        LINUX_CJK_JAPANESE.1,
+    );
+    let korean =
+        collect_matching_families(font_ctx, installed, LINUX_CJK_KOREAN.0, LINUX_CJK_KOREAN.1);
+
+    let hani = Script::from_bytes(*b"Hani");
+    for (key, ids) in [
+        (FallbackKey::new(hani, None), simplified.as_slice()),
+        (FallbackKey::from((hani, "zh-TW")), traditional.as_slice()),
+        (FallbackKey::from((hani, "zh-HK")), hong_kong.as_slice()),
+        (FallbackKey::from((hani, "zh-MO")), hong_kong.as_slice()),
+        (FallbackKey::from((hani, "zh-SG")), simplified.as_slice()),
+        (FallbackKey::from((hani, "ja")), japanese.as_slice()),
+        (FallbackKey::from((hani, "ko")), korean.as_slice()),
+        (
+            FallbackKey::new(Script::from_bytes(*b"Hira"), None),
+            japanese.as_slice(),
+        ),
+        (
+            FallbackKey::new(Script::from_bytes(*b"Kana"), None),
+            japanese.as_slice(),
+        ),
+        (
+            FallbackKey::new(Script::from_bytes(*b"Hang"), None),
+            korean.as_slice(),
+        ),
+    ] {
+        set_fallback_if_nonempty(font_ctx, key, ids);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn apply_linux_script_fallbacks(
+    font_ctx: &mut parley::FontContext,
+    aliases: &[fontconfig_parser::Alias],
+) {
+    use parley::fontique::{FallbackKey, Script};
+
+    let installed: Vec<(parley::fontique::FamilyId, String)> = font_ctx
+        .collection
+        .family_ids()
+        .collect::<Vec<_>>()
+        .into_iter()
+        .filter_map(|id| Some((id, font_ctx.collection.family_name(id)?.to_owned())))
+        .collect();
+
+    let mut alias_families = Vec::new();
+    for alias in aliases {
+        if alias.alias.eq_ignore_ascii_case("sans-serif")
+            || alias.alias.eq_ignore_ascii_case("serif")
+        {
+            for candidate in alias
+                .prefer
+                .iter()
+                .chain(alias.accept.iter())
+                .chain(alias.default.iter())
+            {
+                if let Some(id) = font_ctx.collection.family_id(candidate)
+                    && !alias_families.contains(&id)
+                {
+                    alias_families.push(id);
+                }
+            }
+        }
+    }
+
+    apply_linux_cjk_fallbacks(font_ctx, &installed);
+
+    for (tag, exact, substrings) in LINUX_SCRIPT_FALLBACKS {
+        let mut ids = collect_matching_families(font_ctx, &installed, exact, substrings);
+        for id in &alias_families {
+            if !ids.contains(id) {
+                ids.push(*id);
+            }
+        }
+        set_fallback_if_nonempty(
+            font_ctx,
+            FallbackKey::new(Script::from_bytes(tag), None),
+            &ids,
+        );
+    }
+
+    let mut common = collect_matching_families(
+        font_ctx,
+        &installed,
+        LINUX_COMMON_FALLBACKS.0,
+        LINUX_COMMON_FALLBACKS.1,
+    );
+    for id in &alias_families {
+        if !common.contains(id) {
+            common.push(*id);
+        }
+    }
+    for tag in [*b"Zyyy", *b"Zinh"] {
+        set_fallback_if_nonempty(
+            font_ctx,
+            FallbackKey::new(Script::from_bytes(tag), None),
+            &common,
+        );
     }
 }
 
@@ -172,6 +556,7 @@ fn load_linux_system_fonts() -> Fonts {
     font_ctx.collection.load_fonts_from_paths(&unique_dirs);
     let first_family = font_ctx.collection.family_ids().next();
     apply_linux_generic_families(&mut font_ctx, &config.aliases, first_family);
+    apply_linux_script_fallbacks(&mut font_ctx, &config.aliases);
     Fonts(font_ctx)
 }
 
@@ -630,5 +1015,34 @@ mod tests {
                 assert_eq!(sniff_quirks_mode(input), QuirksMode::NoQuirks);
             }
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_system_fonts_configure_script_fallbacks() {
+        let mut fonts = super::Fonts::default();
+        let has_hani = fonts
+            .0
+            .collection
+            .fallback_families(parley::fontique::FallbackKey::new(
+                parley::fontique::Script::from_bytes(*b"Hani"),
+                None,
+            ))
+            .next()
+            .is_some();
+        let has_common = fonts
+            .0
+            .collection
+            .fallback_families(parley::fontique::FallbackKey::new(
+                parley::fontique::Script::from_bytes(*b"Zyyy"),
+                None,
+            ))
+            .next()
+            .is_some();
+        assert!(has_hani, "Linux font loader must configure Hani fallbacks");
+        assert!(
+            has_common,
+            "Linux font loader must configure Common (Zyyy) fallbacks"
+        );
     }
 }

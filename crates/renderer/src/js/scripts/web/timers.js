@@ -76,18 +76,31 @@ globalThis.setInterval = function(handler, ms, ...args) {
 globalThis.clearInterval = globalThis.clearTimeout;
 // https://html.spec.whatwg.org/multipage/imagebitmap-and-animations.html#dom-animationframeprovider-requestanimationframe
 let pendingFrameCallbacks = 0;
+const activeFrameCallbacks = Object.create(null);
 globalThis.requestAnimationFrame = function(fn) {
   if (typeof fn !== 'function') {
     throw new TypeError('requestAnimationFrame requires a callback');
   }
   pendingFrameCallbacks += 1;
-  return __tbTimer(function() {
+  let handle = 0;
+  handle = __tbTimer(function() {
+    if (!activeFrameCallbacks[handle]) return;
+    delete activeFrameCallbacks[handle];
     pendingFrameCallbacks -= 1;
-    fn(Date.now());
+    // https://html.spec.whatwg.org/multipage/imagebitmap-and-animations.html#run-the-animation-frame-callbacks
+    const now = globalThis.performance ? globalThis.performance.now() : Date.now();
+    fn(now);
   }, 16, [], false) + 1;
+  activeFrameCallbacks[handle] = true;
+  return handle;
 };
 globalThis.cancelAnimationFrame = function(id) {
-  globalThis.clearTimeout(Number(id) - 1);
+  const handle = Number(id);
+  if (activeFrameCallbacks[handle]) {
+    delete activeFrameCallbacks[handle];
+    pendingFrameCallbacks -= 1;
+  }
+  globalThis.clearTimeout(handle - 1);
 };
 // https://html.spec.whatwg.org/multipage/imagebitmap-and-animations.html#run-the-animation-frame-callbacks
 host.__tbPendingFrameCallbacks = function() {

@@ -775,9 +775,6 @@ fn frame_blocked_by_headers(
                     continue;
                 }
                 let sources: Vec<&str> = tokens.collect();
-                if sources.is_empty() {
-                    continue;
-                }
                 has_frame_ancestors = true;
                 if ancestors.iter().any(|ancestor| {
                     !sources
@@ -1969,15 +1966,15 @@ mod tests {
             std::slice::from_ref(&evil),
         ));
 
-        let empty_fa_plus_xfo = vec![
+        let permissive_fa_overrides_xfo = vec![
             (
                 "content-security-policy".to_owned(),
-                "frame-ancestors".to_owned(),
+                "frame-ancestors 'self'".to_owned(),
             ),
             ("x-frame-options".to_owned(), "DENY".to_owned()),
         ];
-        assert!(super::frame_blocked_by_headers(
-            &empty_fa_plus_xfo,
+        assert!(!super::frame_blocked_by_headers(
+            &permissive_fa_overrides_xfo,
             &target,
             std::slice::from_ref(&same_origin),
         ));
@@ -2027,6 +2024,22 @@ mod tests {
             &schemeless,
             &http_target,
             &[http_partner, secure_partner],
+        ));
+    }
+
+    // https://w3c.github.io/webappsec-csp/#directive-frame-ancestors
+    #[test]
+    fn empty_frame_ancestors_blocks_embedding() {
+        let target = url::Url::parse("https://app.example.test/embed").expect("target");
+        let same_origin = target.origin();
+        let empty = vec![(
+            "content-security-policy".to_owned(),
+            "frame-ancestors".to_owned(),
+        )];
+        assert!(super::frame_blocked_by_headers(
+            &empty,
+            &target,
+            std::slice::from_ref(&same_origin),
         ));
     }
 

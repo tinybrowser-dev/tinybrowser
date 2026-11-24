@@ -1088,8 +1088,11 @@ pub(crate) struct World {
     pub(crate) compiling_handler: Cell<bool>,
     // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-evaluate
     pub(crate) browser_eval_depth: Cell<usize>,
+    // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-createIsolatedWorld
+    pub(crate) isolated_name: Option<String>,
+    isolated_wrappers: RefCell<HashMap<NodeId, Persistent<Value<'static>>>>,
     // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-evaluate — replies live outside the realm: a document.open() step replaces it mid-evaluation.
-    pub(crate) evaluation_replies: RefCell<HashMap<String, String>>,
+    pub(crate) evaluation_replies: Rc<RefCell<HashMap<String, String>>>,
     // https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#timer-initialisation-steps
     pub(crate) timer_string: Cell<bool>,
     owned: HashSet<u32>,
@@ -1116,6 +1119,8 @@ pub(crate) struct World {
     // https://privacycg.github.io/saa-non-cookie-storage/#shared-worker
     pub(crate) same_site_cookie_policy: net::SameSiteCookiePolicy,
     pub(crate) policy: PolicyContainer,
+    // https://html.spec.whatwg.org/multipage/webappapis.html#import-maps
+    pub(crate) import_map: crate::js::modules::ImportMap,
     // https://html.spec.whatwg.org/multipage/browsers.html#sandboxing-flag-set
     pub(crate) sandbox: SandboxFlags,
     pub(crate) history: crate::protocol::HistorySnapshot,
@@ -1290,6 +1295,8 @@ pub(crate) struct DocumentState {
     frame_navigations: Vec<FrameNavigation>,
     // https://html.spec.whatwg.org/multipage/scripting.html#parser-inserted
     pub(crate) parser_inserted: HashSet<NodeId>,
+    // https://html.spec.whatwg.org/multipage/scripting.html#script-force-async
+    pub(crate) script_force_async_cleared: HashSet<NodeId>,
     // https://encoding.spec.whatwg.org/#dom-textdecoder-decode
     pub(crate) decoders: HashMap<u64, DecoderSession>,
     // https://html.spec.whatwg.org/multipage/dom.html#dom-document-currentscript
@@ -1372,6 +1379,7 @@ impl DocumentState {
         self.document_named.clear();
         self.frame_navigations.clear();
         self.parser_inserted.clear();
+        self.script_force_async_cleared.clear();
         self.decoders.clear();
         self.current_script = None;
         self.module_fetch_root = None;
@@ -1494,7 +1502,9 @@ impl World {
             worker_close_requested: Rc::new(Cell::new(false)),
             compiling_handler: Cell::new(false),
             browser_eval_depth: Cell::new(0),
-            evaluation_replies: RefCell::new(HashMap::new()),
+            isolated_name: None,
+            isolated_wrappers: RefCell::new(HashMap::new()),
+            evaluation_replies: Rc::new(RefCell::new(HashMap::new())),
             bindings,
             timer_string: Cell::new(false),
             owned: HashSet::new(),
@@ -1514,6 +1524,7 @@ impl World {
                 secure_context,
                 ..PolicyContainer::default()
             },
+            import_map: crate::js::modules::ImportMap::default(),
             sandbox: SandboxFlags::default(),
             history: crate::protocol::HistorySnapshot::default(),
             outbox: Rc::new(RefCell::new(VecDeque::new())),
@@ -1545,6 +1556,87 @@ impl World {
             weak_references: None,
             deliver_mutations_fn: None,
         }
+    }
+
+    // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-createIsolatedWorld
+    pub(crate) fn new_isolated(main: &Self, name: String) -> Self {
+        let realm = main.runtime.registry.borrow_mut().allocate_realm();
+        Self {
+            runtime: main.runtime.clone(),
+            frame: main.frame,
+            kind: GlobalKind::Document,
+            own_window: main.own_window,
+            realm,
+            init_scripts: Rc::clone(&main.init_scripts),
+            bindings: Rc::clone(&main.bindings),
+            viewport_size: Cell::new(main.viewport_size.get()),
+            pending_frames: Vec::new(),
+            deferred_scripts: Vec::new(),
+            frame_host: None,
+            document: main.document,
+            realm_context: None,
+            worker_close_requested: Rc::new(Cell::new(false)),
+            compiling_handler: Cell::new(false),
+            browser_eval_depth: Cell::new(0),
+            isolated_name: Some(name),
+            isolated_wrappers: RefCell::new(HashMap::new()),
+            evaluation_replies: Rc::clone(&main.evaluation_replies),
+            timer_string: Cell::new(false),
+            owned: HashSet::new(),
+            document_url: main.document_url.clone(),
+            creation_url: main.creation_url.clone(),
+            inherited_cookie_url: main.inherited_cookie_url.clone(),
+            referrer_url: main.referrer_url.clone(),
+            document_referrer: main.document_referrer.clone(),
+            base_url: main.base_url.clone(),
+            origin: main.origin.clone(),
+            domain: Rc::clone(&main.domain),
+            top_level: main.top_level.clone(),
+            first_party: main.first_party,
+            parent_context: None,
+            same_site_cookie_policy: main.same_site_cookie_policy,
+            policy: main.policy.clone(),
+            import_map: main.import_map.clone(),
+            sandbox: main.sandbox,
+            history: main.history.clone(),
+            outbox: Rc::clone(&main.outbox),
+            input_files: HashMap::new(),
+            font_registrations: HashMap::new(),
+            next_font_registration: 1,
+            budget: Rc::clone(&main.budget),
+            parser_active: false,
+            events: EventTargetState::default(),
+            state: DocumentState::default(),
+            clicks_in_progress: HashSet::new(),
+            transient_activation: None,
+            sticky_activation: false,
+            proxy_replay: ProxyReplay::Done,
+            brands: HashMap::new(),
+            bridge: None,
+            location_object: None,
+            current_event: None,
+            event_clock: main.event_clock,
+            insertion_load_fired: HashSet::new(),
+            pristine_number: None,
+            pristine_boolean: None,
+            pristine_reflect_set: None,
+            pristine_queue_microtask: None,
+            pristine_eval_error: None,
+            pristine_blob: None,
+            pristine_set_timeout: None,
+            event_ctors: HashMap::new(),
+            weak_references: None,
+            deliver_mutations_fn: None,
+        }
+    }
+
+    pub(crate) fn sync_isolated_from(&mut self, main: &Self) {
+        self.document = main.document;
+        self.document_url.clone_from(&main.document_url);
+        self.base_url.clone_from(&main.base_url);
+        self.origin.clone_from(&main.origin);
+        self.viewport_size.set(main.viewport_size.get());
+        self.history.clone_from(&main.history);
     }
 
     // https://html.spec.whatwg.org/multipage/workers.html#dedicated-workers-and-the-dedicatedworkerglobalscope-interface
@@ -1710,10 +1802,17 @@ impl World {
     }
 
     pub(crate) fn shared_wrapper(&self, id: NodeId) -> Option<Persistent<Value<'static>>> {
+        if self.isolated_name.is_some() {
+            return self.isolated_wrappers.borrow().get(&id).cloned();
+        }
         self.runtime.registry.borrow().wrapper(id)
     }
 
     pub(crate) fn intern_shared_wrapper(&self, id: NodeId, value: Persistent<Value<'static>>) {
+        if self.isolated_name.is_some() {
+            self.isolated_wrappers.borrow_mut().insert(id, value);
+            return;
+        }
         self.runtime.registry.borrow_mut().intern_wrapper(id, value);
     }
 
@@ -2773,6 +2872,16 @@ impl World {
     // https://html.spec.whatwg.org/multipage/scripting.html#parser-inserted
     pub(crate) fn mark_parser_inserted(&mut self, id: NodeId) {
         self.state.parser_inserted.insert(id);
+        self.state.script_force_async_cleared.insert(id);
+    }
+
+    // https://html.spec.whatwg.org/multipage/scripting.html#script-force-async
+    pub(crate) fn clear_script_force_async(&mut self, id: NodeId) {
+        self.state.script_force_async_cleared.insert(id);
+    }
+
+    pub(crate) fn script_force_async(&self, id: NodeId) -> bool {
+        !self.state.script_force_async_cleared.contains(&id)
     }
 
     pub(crate) fn clear_parser_inserted(&mut self, id: NodeId) {

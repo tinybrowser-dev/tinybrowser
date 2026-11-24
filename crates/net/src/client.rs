@@ -18,7 +18,7 @@ use crate::transport::{CallBudget, HopBudget, Transport, WireBody, WireRequest, 
 use async_compression::tokio::bufread::{BrotliDecoder, DeflateDecoder, GzipDecoder, ZlibDecoder};
 use bytes::Bytes;
 use cookies::{CookieJar, CookieOp, RetrievalKind, SameSiteCookiePolicy};
-use http::header::{self, HeaderValue};
+use http::header::{self, HeaderName, HeaderValue};
 use http_body::Body as _;
 use percent_encoding::percent_decode_str;
 use tokio::io::{AsyncBufReadExt as _, AsyncRead, AsyncReadExt as _, BufReader, ReadBuf};
@@ -136,11 +136,15 @@ impl Default for AgentOptions {
     }
 }
 
+type ClientExtraHeaders = HashMap<u64, Vec<(HeaderName, HeaderValue)>>;
+
 #[derive(Clone)]
 pub struct Agent {
     transport: Arc<dyn Transport>,
     identity: crate::ValidIdentity,
     client_identities: Arc<Mutex<HashMap<u64, crate::ValidIdentity>>>,
+    client_extra_headers: Arc<Mutex<ClientExtraHeaders>>,
+    preflight_cache: Arc<Mutex<crate::cors::PreflightCache>>,
     max_redirects: u32,
     jar: Arc<Mutex<CookieJar>>,
     clock: Clock,
@@ -179,6 +183,8 @@ impl Agent {
             transport,
             identity,
             client_identities: Arc::new(Mutex::new(HashMap::new())),
+            client_extra_headers: Arc::new(Mutex::new(HashMap::new())),
+            preflight_cache: Arc::new(Mutex::new(crate::cors::PreflightCache::default())),
             max_redirects,
             jar: cookie_jar.unwrap_or_else(|| Arc::new(Mutex::new(CookieJar::default()))),
             clock,
@@ -195,6 +201,8 @@ impl Agent {
             transport,
             identity: options.identity,
             client_identities: Arc::new(Mutex::new(HashMap::new())),
+            client_extra_headers: Arc::new(Mutex::new(HashMap::new())),
+            preflight_cache: Arc::new(Mutex::new(crate::cors::PreflightCache::default())),
             max_redirects: options.max_redirects,
             jar: options
                 .cookie_jar
@@ -244,6 +252,44 @@ impl Agent {
             .get(&client)
             .cloned()
             .unwrap_or_else(|| self.identity.clone())
+    }
+
+    // https://chromedevtools.github.io/devtools-protocol/tot/Network/#method-setExtraHTTPHeaders
+    pub fn set_client_extra_headers(
+        &self,
+        client: u64,
+        headers: &[(String, String)],
+    ) -> Result<(), crate::HeaderError> {
+        let mut parsed = Vec::with_capacity(headers.len());
+        for (name, value) in headers {
+            let header_name = HeaderName::from_bytes(name.as_bytes())
+                .map_err(|_| crate::HeaderError::InvalidName(name.as_str().into()))?;
+            let header_value = HeaderValue::from_str(value)
+                .map_err(|_| crate::HeaderError::InvalidValue(value.as_str().into()))?;
+            parsed.push((header_name, header_value));
+        }
+        let mut map = self
+            .client_extra_headers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if parsed.is_empty() {
+            map.remove(&client);
+        } else {
+            map.insert(client, parsed);
+        }
+        Ok(())
+    }
+
+    fn extra_headers_for(&self, client: Option<u64>) -> Vec<(HeaderName, HeaderValue)> {
+        let Some(client) = client else {
+            return Vec::new();
+        };
+        self.client_extra_headers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&client)
+            .cloned()
+            .unwrap_or_default()
     }
 
     fn jar(&self) -> MutexGuard<'_, CookieJar> {
@@ -427,10 +473,26 @@ impl Agent {
         if !crate::cors::needs_preflight(method, &unsafe_names) {
             return Ok(());
         }
-        let mut preflight = crate::cors::preflight_headers(method, &unsafe_names, origin_header);
         let origin = origin_header
             .to_str()
             .map_err(|_| NetError::RejectedRequest)?;
+        let now = self.clock.monotonic();
+        let cached = self
+            .preflight_cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .allows(
+                origin,
+                wire.as_str(),
+                settings.credentials.includes(),
+                method,
+                &unsafe_names,
+                now,
+            );
+        if cached {
+            return Ok(());
+        }
+        let mut preflight = crate::cors::preflight_headers(method, &unsafe_names, origin_header);
         if let Some(referrer) = headers.value("referer") {
             // https://w3c.github.io/webappsec-referrer-policy/#determine-requests-referrer
             let referrer = referrer.to_str().map_err(|_| NetError::RejectedRequest)?;
@@ -472,6 +534,16 @@ impl Agent {
         ) {
             return Err(NetError::RejectedRequest);
         }
+        self.preflight_cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .store(
+                origin,
+                wire.as_str(),
+                settings.credentials.includes(),
+                &preflight_headers,
+                self.clock.monotonic(),
+            );
         Ok(())
     }
 
@@ -544,6 +616,10 @@ impl Agent {
             crossed_origin: false,
             referrer_policy: request.referrer_policy,
         };
+        // https://chromedevtools.github.io/devtools-protocol/tot/Network/#method-setExtraHTTPHeaders
+        for (name, value) in self.extra_headers_for(request.client) {
+            hop.headers.set(name, value);
+        }
         if hop.headers.value("accept").is_none() {
             hop.headers
                 .append(header::ACCEPT, HeaderValue::from_static("*/*"));
@@ -1996,5 +2072,75 @@ mod transport_port_tests {
         let seen = seen.lock().unwrap_or_else(PoisonError::into_inner);
         assert_eq!(seen[0].0, "OPTIONS", "the preflight goes first");
         assert_eq!(seen[1].0, "PUT", "then the actual request");
+    }
+
+    // https://fetch.spec.whatwg.org/#cors-preflight-cache
+    #[tokio::test]
+    async fn a_cached_cors_preflight_is_reused_on_the_second_request() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let agent = Agent::with_transport(
+            AgentOptions::default(),
+            Arc::new(ScriptedTransport {
+                script: Mutex::new(std::collections::VecDeque::from([
+                    (
+                        204,
+                        vec![
+                            ("access-control-allow-origin", "http://a.test"),
+                            ("access-control-allow-methods", "PUT"),
+                            ("access-control-allow-headers", "x-custom"),
+                            ("access-control-max-age", "60"),
+                        ],
+                    ),
+                    (200, vec![("access-control-allow-origin", "http://a.test")]),
+                    (200, vec![("access-control-allow-origin", "http://a.test")]),
+                ])),
+                seen: Arc::clone(&seen),
+            }),
+        );
+        for _ in 0..2 {
+            let mut request = cross_origin_request();
+            request.method = Method::PUT;
+            request
+                .headers
+                .insert("x-custom", "1")
+                .expect("a test header");
+            let response = agent.send(request).await.expect("request succeeds");
+            assert_eq!(response.status(), 200);
+        }
+        let seen = seen.lock().unwrap_or_else(PoisonError::into_inner);
+        let methods: Vec<&str> = seen.iter().map(|entry| entry.0.as_str()).collect();
+        assert_eq!(methods, vec!["OPTIONS", "PUT", "PUT"]);
+    }
+
+    // https://chromedevtools.github.io/devtools-protocol/tot/Network/#method-setExtraHTTPHeaders
+    #[tokio::test]
+    async fn client_extra_headers_are_sent_on_outbound_requests() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let agent = Agent::with_transport(
+            AgentOptions::default(),
+            Arc::new(FakeTransport {
+                allow_origin: None,
+                seen: Arc::clone(&seen),
+            }),
+        );
+        agent
+            .set_client_extra_headers(
+                42,
+                &[("X-Test-Header".to_owned(), "tinybrowser".to_owned())],
+            )
+            .expect("valid header");
+        let mut request = Request::new(
+            Method::GET,
+            Url::parse("http://a.test/headers").expect("url"),
+        );
+        request.client = Some(42);
+        let response = agent.send(request).await.expect("request succeeds");
+        assert_eq!(response.status(), 200);
+        let seen = seen.lock().unwrap_or_else(PoisonError::into_inner);
+        assert!(
+            seen.iter()
+                .any(|(name, value)| name == "x-test-header" && value == "tinybrowser"),
+            "expected x-test-header in {seen:?}"
+        );
     }
 }
