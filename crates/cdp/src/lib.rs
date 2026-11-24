@@ -32,9 +32,9 @@ use dispatch::{
     BrowserHandler, DispatchError, Handler, PageHandler, RUNTIME_CLEAR_HANDLES, RUNTIME_HANDLE,
     RUNTIME_READ, RUNTIME_SCHEDULE, Target, accept, add_binding, arguments_expression,
     attach_session, capture_screenshot, css_stylesheets, exception_reply, exception_text_reply,
-    json_io, json_string, open_url, open_url_with_referrer, requested_frame, route, run_script,
-    runtime_release_object, runtime_release_object_group, target_id, target_info,
-    wait_for_navigation, ws_io,
+    json_io, json_string, missing_handles_expression, open_url, open_url_with_referrer,
+    requested_frame, route, run_script, runtime_release_object, runtime_release_object_group,
+    target_id, target_info, wait_for_navigation, ws_io,
 };
 
 const DEFAULT_BROWSER_CONTEXT_ID: &str = "tinybrowser-default";
@@ -559,9 +559,7 @@ impl RuntimeEntry {
                     RuntimeSource::CallFunctionOn {
                         declaration: request.function_declaration,
                         object_id: request.object_id,
-                        arguments: arguments_expression(
-                            request.arguments.as_deref().unwrap_or(&[]),
-                        ),
+                        arguments: request.arguments.unwrap_or_default(),
                     },
                     request.options,
                 ))
@@ -577,8 +575,52 @@ enum RuntimeSource {
     CallFunctionOn {
         declaration: String,
         object_id: Option<String>,
-        arguments: String,
+        arguments: Vec<params::CallArgument>,
     },
+}
+
+// https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-callFunctionOn
+const MISSING_HANDLE: &str = "Could not find object with given id";
+
+struct RuntimeTarget<'a> {
+    tab: &'a TabHandle,
+    frame: FrameId,
+    isolated_world: Option<&'a str>,
+    allow_unsafe_eval: bool,
+}
+
+impl RuntimeTarget<'_> {
+    async fn execute(&self, script: &str) -> Result<RemoteValue, Value> {
+        self.tab
+            .execute_script(ExecuteScriptOptions {
+                frame: self.frame,
+                source: self.script_source(script),
+                timeout: None,
+            })
+            .await
+            .map_err(|error| exception_reply(&error))
+    }
+
+    fn script_source<'a>(&'a self, script: &'a str) -> browser::ScriptSource<&'a str> {
+        match self.isolated_world {
+            Some(world) => browser::ScriptSource::Isolated {
+                world,
+                source: script,
+            },
+            None if !self.allow_unsafe_eval => browser::ScriptSource::BrowserStrict(script),
+            None => browser::ScriptSource::Browser(script),
+        }
+    }
+}
+
+struct RuntimeScript {
+    source: String,
+    missing: String,
+}
+
+enum RuntimeSchedule {
+    Evaluation,
+    MissingHandle,
 }
 
 impl Conn {
@@ -1685,7 +1727,13 @@ impl Conn {
             None => AWAIT_PROMISE_TIMEOUT,
         };
         let isolated_world = context_world.or_else(|| runtime_source_world(&source));
-        let source = runtime_source_expression(source);
+        let script = runtime_source_expression(source);
+        let target = RuntimeTarget {
+            tab,
+            frame,
+            isolated_world: isolated_world.as_deref(),
+            allow_unsafe_eval,
+        };
         if return_by_value || await_promise {
             let evaluation = self.next_evaluation;
             self.next_evaluation = self.next_evaluation.saturating_add(1);
@@ -1698,18 +1746,12 @@ impl Conn {
                     json_string(object_group)
                 )
             };
-            if let Err(reply) = Self::schedule_runtime_slot(
-                tab,
-                frame,
-                isolated_world.as_deref(),
-                allow_unsafe_eval,
-                &source,
-                &make,
-                &eval_id,
-            )
-            .await
-            {
-                return Ok(DispatchResult::Immediate(reply));
+            match Self::schedule_runtime_slot(&target, &script, &make, &eval_id).await {
+                Ok(RuntimeSchedule::Evaluation) => {}
+                Ok(RuntimeSchedule::MissingHandle) => {
+                    return Err(DispatchError::Failed(MISSING_HANDLE.to_owned()));
+                }
+                Err(reply) => return Ok(DispatchResult::Immediate(reply)),
             }
             match Self::try_read_runtime_slot(tab, frame, &eval_id).await {
                 Ok(Some(parsed)) => {
@@ -1750,86 +1792,53 @@ impl Conn {
                 };
             return Ok(DispatchResult::Immediate(result));
         }
-        Ok(DispatchResult::Immediate(
-            self.runtime_handle(
-                tab,
-                frame,
-                isolated_world.as_deref(),
-                allow_unsafe_eval,
-                &source,
-                object_group,
-            )
-            .await,
-        ))
-    }
-
-    fn runtime_script_source<'a>(
-        isolated_world: Option<&'a str>,
-        allow_unsafe_eval: bool,
-        script: &'a str,
-    ) -> browser::ScriptSource<&'a str> {
-        match isolated_world {
-            Some(world) => browser::ScriptSource::Isolated {
-                world,
-                source: script,
-            },
-            None if !allow_unsafe_eval => browser::ScriptSource::BrowserStrict(script),
-            None => browser::ScriptSource::Browser(script),
-        }
+        Self::runtime_handle(&target, &script, object_group)
+            .await
+            .map(DispatchResult::Immediate)
     }
 
     async fn runtime_handle(
-        &mut self,
-        tab: &TabHandle,
-        frame: FrameId,
-        isolated_world: Option<&str>,
-        allow_unsafe_eval: bool,
-        source: &str,
+        target: &RuntimeTarget<'_>,
+        script: &RuntimeScript,
         object_group: &str,
-    ) -> Value {
-        let script = RUNTIME_HANDLE
+    ) -> Result<Value, DispatchError> {
+        let handle_script = RUNTIME_HANDLE
+            .replace("__MISSING__", &script.missing)
             .replace("__GROUP__", &json_string(object_group))
-            .replace("__SOURCE__", source);
-        let value = match tab
-            .execute_script(ExecuteScriptOptions {
-                frame,
-                source: Self::runtime_script_source(isolated_world, allow_unsafe_eval, &script),
-                timeout: None,
-            })
-            .await
-        {
+            .replace("__SOURCE__", &script.source);
+        let value = match target.execute(&handle_script).await {
             Ok(value) => value,
-            Err(error) => return exception_reply(&error),
+            Err(reply) => return Ok(reply),
         };
-        if let RemoteValue::String(text) = value
-            && let Ok(parsed) = serde_json::from_str::<Value>(&text)
-        {
-            return json!({"result": parsed});
+        let RemoteValue::String(text) = value else {
+            return Ok(exception_text_reply("unexpected script result"));
+        };
+        if text == "missing-handle" {
+            return Err(DispatchError::Failed(MISSING_HANDLE.to_owned()));
         }
-        exception_text_reply("unexpected script result")
+        match serde_json::from_str::<Value>(&text) {
+            Ok(parsed) => Ok(json!({"result": parsed})),
+            Err(_) => Ok(exception_text_reply("unexpected script result")),
+        }
     }
 
     async fn schedule_runtime_slot(
-        tab: &TabHandle,
-        frame: FrameId,
-        isolated_world: Option<&str>,
-        allow_unsafe_eval: bool,
-        source: &str,
+        target: &RuntimeTarget<'_>,
+        script: &RuntimeScript,
         make: &str,
         id: &str,
-    ) -> Result<(), Value> {
+    ) -> Result<RuntimeSchedule, Value> {
         let schedule = RUNTIME_SCHEDULE
+            .replace("__MISSING__", &script.missing)
             .replace("__ID__", id)
             .replace("__MAKE__", make)
-            .replace("__SOURCE__", source);
-        tab.execute_script(ExecuteScriptOptions {
-            frame,
-            source: Self::runtime_script_source(isolated_world, allow_unsafe_eval, &schedule),
-            timeout: None,
-        })
-        .await
-        .map(|_| ())
-        .map_err(|error| exception_reply(&error))
+            .replace("__SOURCE__", &script.source);
+        match target.execute(&schedule).await? {
+            RemoteValue::String(text) if text == "missing-handle" => {
+                Ok(RuntimeSchedule::MissingHandle)
+            }
+            _ => Ok(RuntimeSchedule::Evaluation),
+        }
     }
 
     async fn try_read_runtime_slot(
@@ -1987,24 +1996,30 @@ fn runtime_source_world(source: &RuntimeSource) -> Option<String> {
     }
 }
 
-fn runtime_source_expression(source: RuntimeSource) -> String {
+fn runtime_source_expression(source: RuntimeSource) -> RuntimeScript {
     match source {
-        RuntimeSource::Evaluate { expression } => {
-            format!("host.evaluatePage({})", json_string(&expression))
-        }
+        RuntimeSource::Evaluate { expression } => RuntimeScript {
+            source: format!("host.evaluatePage({})", json_string(&expression)),
+            missing: "false".to_owned(),
+        },
         RuntimeSource::CallFunctionOn {
             declaration,
             object_id,
             arguments,
         } => {
+            let missing = missing_handles_expression(object_id.as_deref(), &arguments);
             let receiver = object_id.map_or_else(
                 || "undefined".to_owned(),
                 |id| format!("host.__tb_handles[{}]", json_string(&id)),
             );
-            format!(
-                "host.apply(host.evaluatePage({}), {receiver}, {arguments})",
-                json_string(&format!("({declaration})"))
-            )
+            RuntimeScript {
+                source: format!(
+                    "host.apply(host.evaluatePage({}), {receiver}, {})",
+                    json_string(&format!("({declaration})")),
+                    arguments_expression(&arguments)
+                ),
+                missing,
+            }
         }
     }
 }
@@ -2209,6 +2224,21 @@ mod tests {
             next_context: 1000,
             next_evaluation: 1,
         }
+    }
+
+    #[test]
+    fn missing_handles_are_checked_before_evaluation() {
+        let arguments: Vec<params::CallArgument> = serde_json::from_value(json!([
+            {"objectId": "h2"},
+            {"value": 1},
+            {},
+        ]))
+        .expect("arguments");
+        assert_eq!(
+            missing_handles_expression(Some("h1"), &arguments),
+            r#"host.__tb_handles["h1"] === undefined || host.__tb_handles["h2"] === undefined"#
+        );
+        assert_eq!(missing_handles_expression(None, &[]), "false");
     }
 
     #[tokio::test]

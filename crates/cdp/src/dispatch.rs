@@ -1757,6 +1757,32 @@ pub(crate) fn arguments_expression(arguments: &[CallArgument]) -> String {
     format!("[{}]", parts.join(", "))
 }
 
+pub(crate) fn missing_handles_expression(
+    object_id: Option<&str>,
+    arguments: &[CallArgument],
+) -> String {
+    let mut checks = Vec::new();
+    let mut check = |id: &str| {
+        checks.push(format!(
+            "host.__tb_handles[{}] === undefined",
+            json_string(id)
+        ));
+    };
+    if let Some(id) = object_id {
+        check(id);
+    }
+    for argument in arguments {
+        if let CallArgument::Object { object_id } = argument {
+            check(object_id);
+        }
+    }
+    if checks.is_empty() {
+        "false".to_owned()
+    } else {
+        checks.join(" || ")
+    }
+}
+
 fn argument_expression(argument: &CallArgument) -> String {
     match argument {
         CallArgument::Object { object_id } => {
@@ -1801,6 +1827,7 @@ pub(crate) fn exception_text_reply(text: &str) -> Value {
 }
 
 pub(crate) const RUNTIME_SCHEDULE: &str = r#"(() => {
+  if (__MISSING__) return "missing-handle";
   const settle = (id, make) => {
     let text;
     try { text = host.stringify(make()); }
@@ -1815,10 +1842,11 @@ pub(crate) const RUNTIME_SCHEDULE: &str = r#"(() => {
   return "scheduled";
 })()"#;
 
-pub(crate) const RUNTIME_HANDLE: &str = r"(() => {
+pub(crate) const RUNTIME_HANDLE: &str = r#"(() => {
+  if (__MISSING__) return "missing-handle";
   const v = (__SOURCE__);
   return host.stringify(host.remoteObject(v, { __proto__: null, objectGroup: __GROUP__ }));
-})()";
+})()"#;
 
 // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-evaluate — replies live outside the realm: a document.open() step replaces it mid-evaluation.
 pub(crate) const RUNTIME_READ: &str = r"(() => {
