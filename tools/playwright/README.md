@@ -36,3 +36,9 @@ goldens. Regenerate inside `.playwright/` with
 
 then copy the changed `*-tinybrowser-page-linux.*` files back into
 `snapshots/`.
+
+A golden for a test listed as expected `FAIL` is the intended output (for a
+missing feature, copy the matching Chromium golden), not a dump of the current
+result. Playwright records a missing snapshot as passing under
+`updateSnapshots: "missing"`, so generating one from broken output would turn
+the known failure into a silent pass.

@@ -299,9 +299,21 @@
     "expected": "FAIL",
     "reason": "Test timeout of 3000ms exceeded."
   },
+  "page-screenshot.spec.ts::mask option › should work": {
+    "expected": "FAIL",
+    "reason": "Error: expect(Buffer).toMatchSnapshot(expected) failed (mask overlay needs shadow-scoped constructable stylesheets, see #299)"
+  },
   "page-screenshot.spec.ts::mask option › should work when subframe has stalled navigation": {
     "expected": "FAIL",
     "reason": "Error: page.route: Protocol error (Fetch.enable): 'Fetch.enable' wasn't found"
+  },
+  "page-screenshot.spec.ts::mask option › should work with elementhandle": {
+    "expected": "FAIL",
+    "reason": "Error: expect(Buffer).toMatchSnapshot(expected) failed (mask overlay needs shadow-scoped constructable stylesheets, see #299)"
+  },
+  "page-screenshot.spec.ts::mask option › should work with locator": {
+    "expected": "FAIL",
+    "reason": "Error: expect(Buffer).toMatchSnapshot(expected) failed (mask overlay needs shadow-scoped constructable stylesheets, see #299)"
   },
   "page-screenshot.spec.ts::page screenshot animations › should capture screenshots after layoutchanges in transitionend event": {
     "expected": "FAIL",
