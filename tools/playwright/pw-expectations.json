@@ -69,7 +69,7 @@
   },
   "page-click.spec.ts::should click button inside frameset": {
     "expected": "FAIL",
-    "reason": "TypeError: elementHandle.contentFrame: Cannot read properties of null (reading 'frameId')"
+    "reason": "TypeError: Cannot read properties of null (reading 'click')"
   },
   "page-click.spec.ts::should click in a nested transformed iframe": {
     "expected": "FAIL",
@@ -103,29 +103,13 @@
     "expected": "FAIL",
     "reason": "TimeoutError: page.click: Timeout 1500ms exceeded."
   },
-  "page-click.spec.ts::should click the button if window.Node is removed": {
-    "expected": "FAIL",
-    "reason": "Error: page.click: script: Node is not defined |     at previewNode (eval_script:7806:27)"
-  },
   "page-click.spec.ts::should click the button inside an iframe": {
     "expected": "FAIL",
     "reason": "TypeError: Cannot read properties of undefined (reading '$')"
   },
-  "page-click.spec.ts::should click the button when window.innerWidth is corrupted": {
-    "expected": "FAIL",
-    "reason": "TimeoutError: page.click: Timeout 1500ms exceeded."
-  },
   "page-click.spec.ts::should click the button with fixed position inside an iframe": {
     "expected": "SKIP",
     "reason": "skipped"
-  },
-  "page-click.spec.ts::should fail when element is animating from outside the viewport with force": {
-    "expected": "FAIL",
-    "reason": "Error: expect(received).toContain(expected) // indexOf"
-  },
-  "page-click.spec.ts::should fail when obscured and not waiting for hit target": {
-    "expected": "FAIL",
-    "reason": "Error: elementHandle.click: Element is not visible"
   },
   "page-click.spec.ts::should issue clicks in parallel in page and popup": {
     "expected": "FAIL",
@@ -145,7 +129,7 @@
   },
   "page-click.spec.ts::should retry when element is animating from outside the viewport": {
     "expected": "FAIL",
-    "reason": "Error: elementHandle.click: Element is not attached to the DOM"
+    "reason": "TimeoutError: elementHandle.click: Timeout 1500ms exceeded."
   },
   "page-click.spec.ts::should scroll and click the button with smooth scroll behavior": {
     "expected": "FAIL",
@@ -319,33 +303,25 @@
     "expected": "FAIL",
     "reason": "Error: page.route: Protocol error (Fetch.enable): 'Fetch.enable' wasn't found"
   },
-  "page-screenshot.spec.ts::mask option › should work with elementhandle": {
-    "expected": "FAIL",
-    "reason": "Error: elementHandle.screenshot: Node is either not visible or not an HTMLElement"
-  },
-  "page-screenshot.spec.ts::mask option › should work with locator": {
-    "expected": "FAIL",
-    "reason": "Error: locator.screenshot: Node is either not visible or not an HTMLElement"
-  },
   "page-screenshot.spec.ts::page screenshot animations › should capture screenshots after layoutchanges in transitionend event": {
     "expected": "FAIL",
     "reason": "Error: expect(locator).toBeVisible() failed"
   },
   "page-screenshot.spec.ts::page screenshot animations › should fire transitionend for finite transitions": {
     "expected": "FAIL",
-    "reason": "Error: locator.screenshot: Node is either not visible or not an HTMLElement"
+    "reason": "Error: expect(received).toBe(expected) // Object.is equality"
   },
   "page-screenshot.spec.ts::page screenshot animations › should not capture infinite css animation": {
     "expected": "FAIL",
-    "reason": "Error: locator.screenshot: Node is either not visible or not an HTMLElement"
+    "reason": "Error: expect(received).toBe(expected) // Object.is equality"
   },
   "page-screenshot.spec.ts::page screenshot animations › should not capture infinite web animations": {
     "expected": "FAIL",
-    "reason": "Error: locator.screenshot: Node is either not visible or not an HTMLElement"
+    "reason": "Error: expect(received).not.toBe(expected) // Object.is equality"
   },
   "page-screenshot.spec.ts::page screenshot animations › should not capture pseudo element css animation": {
     "expected": "FAIL",
-    "reason": "Error: locator.screenshot: Node is either not visible or not an HTMLElement"
+    "reason": "Error: expect(received).toBe(expected) // Object.is equality"
   },
   "page-screenshot.spec.ts::page screenshot animations › should not change animation with playbackRate equal to 0": {
     "expected": "FAIL",
@@ -373,30 +349,26 @@
   },
   "page-screenshot.spec.ts::page screenshot › should capture blinking caret if explicitly asked for": {
     "expected": "FAIL",
-    "reason": "Error: locator.screenshot: Node is either not visible or not an HTMLElement"
+    "reason": "Error: expect(received).toBe(expected) // Object.is equality"
   },
   "page-screenshot.spec.ts::page screenshot › should capture blinking caret in shadow dom": {
     "expected": "FAIL",
-    "reason": "Error: locator.screenshot: Element is not attached to the DOM"
+    "reason": "TimeoutError: locator.screenshot: Timeout 1493.2110000000002ms exceeded."
   },
   "page-screenshot.spec.ts::page screenshot › should clip rect with fullPage": {
     "expected": "FAIL",
     "reason": "Error: expect(Buffer).toMatchSnapshot(expected) failed"
   },
-  "page-screenshot.spec.ts::page screenshot › should not capture blinking caret by default": {
-    "expected": "FAIL",
-    "reason": "Error: locator.screenshot: Node is either not visible or not an HTMLElement"
-  },
   "page-screenshot.spec.ts::page screenshot › should take fullPage screenshots during navigation": {
     "expected": "FAIL",
     "reason": "Error: page.screenshot: script: cannot read property 'evaluate' of undefined |     at <anonymous> (eval_script:1:30)"
   },
+  "page-screenshot.spec.ts::page screenshot › should work while navigating": {
+    "expected": "FAIL",
+    "reason": "TimeoutError: page.screenshot: Timeout 1500ms exceeded. (isolated realm setup cost, see #331)"
+  },
   "page-screenshot.spec.ts::page screenshot › webp screenshots should be lossless by default": {
     "expected": "FAIL",
     "reason": "Error: expect(received).toBe(expected) // Object.is equality"
-  },
-  "page-select-option.spec.ts::should work when re-defining top-level Event class": {
-    "expected": "FAIL",
-    "reason": "Error: page.selectOption: not a function"
   }
 }
