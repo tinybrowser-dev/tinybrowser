@@ -1,5 +1,11 @@
 ---
-import { subtestPercent, type IndexEntry } from "@/lib/record"
+import {
+  counter,
+  formatCount,
+  formatShortDate,
+  subtestPercent,
+  type IndexEntry,
+} from "@/lib/record"
 
 interface Props {
   index: Array<IndexEntry>
@@ -7,11 +13,18 @@ interface Props {
 
 const { index } = Astro.props
 
-// Oldest to newest: the chart reads left to right in time.
 const points = [...index].reverse().flatMap((entry) => {
   const pct = subtestPercent(entry.totals)
   if (pct === null) return []
-  return [{ pct, date: entry.date, sha: entry.sha ?? "" }]
+  return [
+    {
+      pct,
+      pass: counter(entry.totals, "subtest_pass"),
+      total: counter(entry.totals, "subtests"),
+      date: entry.date,
+      sha: entry.sha ?? "",
+    },
+  ]
 })
 
 const width = 760
@@ -29,49 +42,153 @@ const x = (i: number) =>
   pad.left + (points.length <= 1 ? plotW / 2 : (i / (points.length - 1)) * plotW)
 const y = (pct: number) => pad.top + (1 - (pct - low) / span) * plotH
 
-const line = points.map((point, i) => `${x(i)},${y(point.pct)}`).join(" ")
+const chartPoints = points.map((point, i) => ({
+  cx: Number(x(i).toFixed(2)),
+  cy: Number(y(point.pct).toFixed(2)),
+  pct: point.pct.toFixed(1),
+  counts: `${formatCount(point.pass)} / ${formatCount(point.total)}`,
+  date: formatShortDate(point.date),
+  sha: point.sha.slice(0, 8),
+}))
+
+const line = chartPoints.map((point) => `${point.cx},${point.cy}`).join(" ")
 const grid = [low, low + span / 2, high]
-const first = points[0]?.date.slice(0, 10)
-const last = points[points.length - 1]?.date.slice(0, 10)
+const first = points[0] ? formatShortDate(points[0].date) : ""
+const last = points.length > 0 ? formatShortDate(points[points.length - 1].date) : ""
 ---
 
 <div>
   <div class="section-head">
-    <h2>Subtests passing over time</h2>
-    <span class="note">one point per code push</span>
+    <h2>History</h2>
   </div>
   {points.length < 2 ? (
     <p class="chart-empty">
       {points.length === 0
-        ? "History starts with the next WPT run."
-        : `One run recorded: ${points[0].pct.toFixed(1)}%. The chart draws a line from the second run on.`}
+        ? "No runs yet."
+        : `One run recorded (${points[0].pct.toFixed(1)}%). Chart appears after two runs.`}
     </p>
   ) : (
-    <svg
-      viewBox={`0 0 ${width} ${height}`}
-      class="chart"
-      role="img"
-      aria-label="Subtests passing over time"
+    <div
+      class="chart-wrap"
+      data-chart
+      data-width={width}
+      data-height={height}
+      data-points={JSON.stringify(chartPoints)}
     >
-      {grid.map((value) => <g>
-        <line x1={pad.left} x2={width - pad.right} y1={y(value)} y2={y(value)} class="grid" />
-        <text x={pad.left - 8} y={y(value) + 4} text-anchor="end" class="axis">
-          {value.toFixed(0)}%
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        class="chart"
+        role="img"
+        aria-label="Subtests passing over time"
+      >
+        {grid.map((value) => <g>
+          <line x1={pad.left} x2={width - pad.right} y1={y(value)} y2={y(value)} class="grid" />
+          <text x={pad.left - 8} y={y(value) + 4} text-anchor="end" class="axis">
+            {value.toFixed(0)}%
+          </text>
+        </g>)}
+        <line class="chart-crosshair" x1="0" x2="0" y1={pad.top} y2={height - pad.bottom} hidden />
+        <polyline points={line} class="line" />
+        {chartPoints.map((point) => (
+          <circle cx={point.cx} cy={point.cy} r="2.5" class="point" />
+        ))}
+        <circle class="point-active" cx="0" cy="0" r="4.5" hidden />
+        <text x={pad.left} y={height - 8} class="axis">
+          {first}
         </text>
-      </g>)}
-      <polyline points={line} class="line" />
-      {points.map((point, i) => <circle cx={x(i)} cy={y(point.pct)} r="3" class="point">
-        <title>
-          {point.date.slice(0, 16).replace("T", " ")} UTC, {point.pct.toFixed(1)}%,{" "}
-          {point.sha.slice(0, 8)}
-        </title>
-      </circle>)}
-      <text x={pad.left} y={height - 8} class="axis">
-        {first}
-      </text>
-      <text x={width - pad.right} y={height - 8} text-anchor="end" class="axis">
-        {last}
-      </text>
-    </svg>
+        <text x={width - pad.right} y={height - 8} text-anchor="end" class="axis">
+          {last}
+        </text>
+      </svg>
+      <div class="chart-tooltip" hidden>
+        <div class="chart-tooltip-pct"></div>
+        <div class="chart-tooltip-counts"></div>
+        <div class="chart-tooltip-meta"></div>
+      </div>
+    </div>
   )}
 </div>
+
+<script>
+  interface ChartPoint {
+    cx: number
+    cy: number
+    pct: string
+    counts: string
+    date: string
+    sha: string
+  }
+
+  for (const wrap of document.querySelectorAll<HTMLElement>("[data-chart]")) {
+    const svg = wrap.querySelector<SVGSVGElement>("svg")
+    const crosshair = wrap.querySelector<SVGLineElement>(".chart-crosshair")
+    const activeDot = wrap.querySelector<SVGCircleElement>(".point-active")
+    const tooltip = wrap.querySelector<HTMLElement>(".chart-tooltip")
+    const pctEl = wrap.querySelector<HTMLElement>(".chart-tooltip-pct")
+    const countsEl = wrap.querySelector<HTMLElement>(".chart-tooltip-counts")
+    const metaEl = wrap.querySelector<HTMLElement>(".chart-tooltip-meta")
+    const raw = wrap.dataset.points
+    const viewW = Number(wrap.dataset.width)
+    const viewH = Number(wrap.dataset.height)
+
+    if (!svg || !crosshair || !activeDot || !tooltip || !pctEl || !countsEl || !metaEl || !raw) {
+      continue
+    }
+
+    const points = JSON.parse(raw) as Array<ChartPoint>
+    if (points.length === 0 || !Number.isFinite(viewW) || !Number.isFinite(viewH)) continue
+
+    const showPoint = (point: ChartPoint) => {
+      crosshair.setAttribute("x1", String(point.cx))
+      crosshair.setAttribute("x2", String(point.cx))
+      crosshair.removeAttribute("hidden")
+
+      activeDot.setAttribute("cx", String(point.cx))
+      activeDot.setAttribute("cy", String(point.cy))
+      activeDot.removeAttribute("hidden")
+
+      pctEl.textContent = `${point.pct}%`
+      countsEl.textContent = point.counts
+      metaEl.textContent = point.sha ? `${point.date} · ${point.sha}` : point.date
+
+      const xRatio = point.cx / viewW
+      const yRatio = point.cy / viewH
+      tooltip.style.left = `${(xRatio * 100).toFixed(2)}%`
+      tooltip.style.top = `${(yRatio * 100).toFixed(2)}%`
+      tooltip.dataset.side = xRatio > 0.62 ? "left" : "right"
+      tooltip.hidden = false
+    }
+
+    const hide = () => {
+      crosshair.setAttribute("hidden", "")
+      activeDot.setAttribute("hidden", "")
+      tooltip.hidden = true
+    }
+
+    const findNearest = (clientX: number): ChartPoint => {
+      const rect = svg.getBoundingClientRect()
+      const svgX = ((clientX - rect.left) / rect.width) * viewW
+      let best = points[0]
+      let bestDist = Math.abs(best.cx - svgX)
+      for (let i = 1; i < points.length; i++) {
+        const dist = Math.abs(points[i].cx - svgX)
+        if (dist < bestDist) {
+          best = points[i]
+          bestDist = dist
+        }
+      }
+      return best
+    }
+
+    const onPointer = (event: PointerEvent) => {
+      showPoint(findNearest(event.clientX))
+    }
+
+    svg.addEventListener("pointermove", onPointer)
+    svg.addEventListener("pointerdown", onPointer)
+    svg.addEventListener("pointerleave", hide)
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") hide()
+    })
+  }
+</script>

@@ -24,7 +24,9 @@
     "@bytecodealliance/preview2-shim": "^0.31.1",
     "@fontsource-variable/jetbrains-mono": "^5.3.0",
     "@fontsource-variable/plus-jakarta-sans": "^5.3.0",
-    "astro": "^7.4.2"
+    "@solidjs/web": "^2.0.3",
+    "astro": "^7.4.2",
+    "solid-js": "^2.0.3"
   },
   "devDependencies": {
     "@alchemy.run/cloudflare": "2.0.0-beta.87",
@@ -32,6 +34,7 @@
     "@bytecodealliance/jco": "^1.16.0",
     "@effect/platform-bun": "4.1.4",
     "@effect/platform-node": "4.1.4",
+    "@solidjs/vite-plugin": "^3.0.1",
     "@types/node": "^26.6.6",
     "alchemy": "2.0.0-beta.87",
     "effect": "4.1.4",

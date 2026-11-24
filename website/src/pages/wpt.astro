@@ -6,8 +6,8 @@ import Base from "@/layouts/Base.astro"
 import {
   counter,
   formatCount,
-  formatDate,
   formatPercent,
+  formatShortDate,
   shortSha,
   subtestPercent,
   testPercent,
@@ -28,6 +28,9 @@ const delta = score !== null && previousScore !== null ? score - previousScore :
 const commitHref = latest?.product_revision
   ? `https://github.com/tinybrowser-dev/tinybrowser/commit/${latest.product_revision}`
   : null
+const wptCommitHref = latest?.wpt_revision
+  ? `https://github.com/web-platform-tests/wpt/commit/${latest.wpt_revision}`
+  : null
 
 // The denominator moves with the run: a file that fails before it reports any
 // subtests adds tests but no subtests, so the delta is raw passing count.
@@ -36,10 +39,10 @@ const passPrevious = index.length > 1 ? counter(index[1].totals, "subtest_pass")
 const passDelta = passNow !== null && passPrevious !== null ? passNow - passPrevious : null
 
 const raw = [
-  ["latest.json", "the newest full record"],
-  ["index.json", "one entry per run"],
-  ["regressions.json", "diff against the previous run"],
-  ["failures.jsonl.gz", "every failing test and subtest, gzipped JSON lines"],
+  ["latest.json", "latest run"],
+  ["index.json", "run history"],
+  ["regressions.json", "diff from previous run"],
+  ["failures.jsonl.gz", "failing tests, gzipped JSONL"],
 ]
 ---
 
@@ -48,33 +51,26 @@ const raw = [
   description="tinybrowser's Web Platform Tests score, history, and regressions."
 >
   <div class="page-head">
-    <div class="measure">
-      <h1 class="page-title">Web Platform Tests</h1>
-      <p class="lede">
-        How much of the pinned WPT corpus tinybrowser passes, by folder and by run. One point per
-        code push. The denominator is every subtest in the corpus, so a test that never reports, or
-        stops early, counts as not passing.
-      </p>
-    </div>
+    <h1 class="page-title">Web Platform Tests</h1>
     {latest && <p class="run-meta">
-      Latest run {formatDate(latest.time_end)} ·{" "}
+      {formatShortDate(latest.time_end)} ·{" "}
       {commitHref ? (
-        <a class="sha" href={commitHref} rel="noreferrer">
-          {shortSha(latest.product_revision)}
-        </a>
+        <a class="sha" href={commitHref} rel="noreferrer">{shortSha(latest.product_revision)}</a>
       ) : (
-        "—"
+        "-"
       )}{" "}
-      · WPT <span class="sha">{shortSha(latest.wpt_revision)}</span>
+      · WPT{" "}
+      {wptCommitHref ? (
+        <a class="sha" href={wptCommitHref} rel="noreferrer">{shortSha(latest.wpt_revision)}</a>
+      ) : (
+        <span class="sha">{shortSha(latest.wpt_revision)}</span>
+      )}
     </p>}
   </div>
 
   {latest === null ? (
     <div class="empty">
-      <p>
-        No run has been published yet. The first push to <code>main</code> that touches the engine
-        writes it.
-      </p>
+      <p>No WPT runs published yet.</p>
     </div>
   ) : (
     <>
@@ -102,7 +98,7 @@ const raw = [
         <div class="stat">
           <p class="stat-label">Not run</p>
           <p class="stat-value">{formatCount(counter(latest.totals, "subtest_unreported"))}</p>
-          <p class="stat-detail">subtests in the corpus the run never reported</p>
+          <p class="stat-detail">unreported subtests</p>
         </div>
         <div class="stat">
           <p class="stat-label">Unexpected failures</p>
@@ -129,10 +125,6 @@ const raw = [
 
       <div class="section">
         <h2>Raw data</h2>
-        <p class="lede">
-          These are the files the page reads. No API key is needed, and the shape is whatever this
-          page consumes.
-        </p>
         <ul class="raw-list">
           {raw.map(([name, description]) => <li>
             <a href={`/wpt/data/${name}`}>/wpt/data/{name}</a>

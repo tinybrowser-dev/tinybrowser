@@ -41,67 +41,27 @@ const agentPrompt = `Install tinybrowser (a ~17 MiB headless browser for AI agen
 
   <section class="hook-section">
     <p class="hook">
-      tinybrowser is an experimental headless browser for AI agents and automation, shipped as one
-      17 MiB Rust binary. It parses HTML, applies CSS, runs JavaScript, keeps cookies and storage,
-      and writes a PNG screenshot.
+      tinybrowser is an experimental headless browser for AI agents and automation in a single ~17
+      MiB Rust binary.
+      {wptSubtests !== null && wptFiles !== null ? (
+        <>
+          {" "}It passes {formatPercent(wptSubtests)} of{" "} <a href="/wpt">Web Platform Tests</a>
+          subtests ({formatPercent(wptFiles)} of files).
+        </>
+      ) : (
+        <> {" "}See the <a href="/wpt">Web Platform Tests</a> page for current coverage. </>
+      )}
     </p>
-    <p class="status">Experimental preview. Not production ready.</p>
-  </section>
-
-  <section class="section">
-    <h2>What it does</h2>
-    <dl class="features">
-      <dt>Web Platform Tests</dt>
-      <dd>
-        {wptSubtests !== null && wptFiles !== null ? (
-          <>
-            The pinned suite passes {formatPercent(wptSubtests)} of subtests and{" "}
-            {formatPercent(wptFiles)} of files. The <a href="/wpt">dashboard</a> has the full
-            breakdown.
-          </>
-        ) : (
-          <>The <a href="/wpt">dashboard</a> has the conformance record.</>
-        )}
-      </dd>
-
-      <dt>Automation</dt>
-      <dd>
-        One loopback port speaks Chrome DevTools Protocol and W3C WebDriver, so Playwright and
-        Selenium connect without a patch.
-      </dd>
-
-      <dt>Embedding</dt>
-      <dd>
-        The same engine compiles to a WASI Preview 2 component. The <a href="/demo">live demo</a>
-        runs it in your browser.
-      </dd>
-    </dl>
-  </section>
-
-  <section class="section">
-    <h2>What it doesn't do yet</h2>
-    <ul class="limits">
-      <li>No Service Workers, WebGL, WebAudio, or page-facing WebSockets.</li>
-      <li>
-        QuickJS interprets bytecode and has no JIT, so script-heavy pages run slower than they do in
-        V8.
-      </li>
-      <li>
-        Screenshots are one-shot PNGs. There is no GPU acceleration, no continuous paint loop, and
-        no video.
-      </li>
-      <li>There is no OS process sandbox or out-of-process iframe isolation yet.</li>
-      <li>TLS uses OpenSSL's fingerprint, not Chrome's JA3 or JA4.</li>
-    </ul>
-    <p class="limits-more">
-      Those are the headlines. See
-      <a
-        href="https://github.com/tinybrowser-dev/tinybrowser/blob/main/docs/upstream.md#engine-and-upstream-limitations"
-        >engine &amp; upstream limitations</a
-      >
-      and
-      <a href="https://github.com/tinybrowser-dev/tinybrowser/issues">open issues</a>
-      for the rest.
+    <p class="hook">
+      It serves Chrome DevTools Protocol and W3C WebDriver on one loopback port, so it works with
+      Playwright and Selenium. Because it is small and compiles to WebAssembly (WASI Preview 2), you
+      can also embed it in a browser, as in the <a href="/demo">live demo</a>.
+    </p>
+    <p class="hook-note">
+      Not 100% of web APIs are covered yet. Check the <a href="/wpt">WPT page</a> for full API
+      coverage. JavaScript runs on QuickJS without a JIT, so script-heavy pages are slower than in
+      V8. There is no OS process sandbox or out-of-process iframe isolation yet, and rendering is
+      limited to headless one-shot PNG screenshots without GPU acceleration.
     </p>
   </section>
 

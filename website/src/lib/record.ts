@@ -103,13 +103,19 @@ export function plural(count: number, singular: string, pluralForm = `${singular
   return `${formatCount(count)} ${count === 1 ? singular : pluralForm}`
 }
 
-export function formatDate(epoch: number | null): string {
-  if (epoch === null) return "—"
-  const date = new Date(epoch * 1000)
-  if (Number.isNaN(date.getTime())) return "—"
-  return date.toISOString().replace("T", " ").slice(0, 16) + " UTC"
+const shortDateFormatter = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  day: "numeric",
+  timeZone: "UTC",
+})
+
+export function formatShortDate(input: number | string | null): string {
+  if (input === null) return "-"
+  const date = typeof input === "number" ? new Date(input * 1000) : new Date(input)
+  if (Number.isNaN(date.getTime())) return "-"
+  return shortDateFormatter.format(date)
 }
 
 export function shortSha(sha: string | null): string {
-  return sha ? sha.slice(0, 8) : "—"
+  return sha ? sha.slice(0, 8) : "-"
 }

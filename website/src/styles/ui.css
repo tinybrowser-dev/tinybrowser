@@ -9,6 +9,12 @@
   gap: 0 var(--space-5);
 }
 
+@media (max-width: 36rem) {
+  .site-nav {
+    gap: 0 var(--space-3);
+  }
+}
+
 .site-nav a,
 .site-nav button {
   padding-block: var(--space-1);
@@ -33,11 +39,25 @@
 
 #theme-toggle {
   margin-inline-start: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-1);
   color: var(--fg-1);
+  text-decoration: none;
 }
 
 #theme-toggle:hover {
   color: var(--fg-0);
+}
+
+.theme-icon {
+  width: 1rem;
+  height: 1rem;
+}
+
+.theme-icon[hidden] {
+  display: none;
 }
 
 html:not([data-js]) #theme-toggle {
@@ -56,48 +76,16 @@ html:not([data-js]) #theme-toggle {
   margin-top: var(--space-6);
 }
 
+.hook-section p + p {
+  margin-top: var(--space-4);
+}
+
 .hook {
   color: var(--fg-0);
 }
 
-.status {
-  margin-top: var(--space-4);
+.hook-note {
   color: var(--fg-1);
-  font-size: var(--text-sm);
-}
-
-.features {
-  margin: 0;
-}
-
-.features dt {
-  color: var(--fg-0);
-  font-weight: 600;
-}
-
-.features dd {
-  margin: 0;
-  color: var(--fg-1);
-}
-
-.features dd + dt {
-  margin-top: var(--space-4);
-}
-
-.limits {
-  margin: 0;
-  padding-inline-start: 1.25em;
-  color: var(--fg-1);
-}
-
-.limits li + li {
-  margin-top: var(--space-2);
-}
-
-.limits-more {
-  margin-top: var(--space-4);
-  color: var(--fg-1);
-  font-size: var(--text-sm);
 }
 
 .install-list {
@@ -398,14 +386,29 @@ th h2 {
   background: var(--bg-2);
 }
 
+.chart-wrap {
+  position: relative;
+}
+
 .chart {
   width: 100%;
   height: auto;
+  touch-action: pan-y;
+}
+
+.chart [hidden] {
+  display: none;
 }
 
 .chart .grid {
   stroke: var(--fg-2);
   stroke-width: 1;
+}
+
+.chart .chart-crosshair {
+  stroke: var(--fg-1);
+  stroke-width: 1;
+  stroke-dasharray: 2 3;
 }
 
 .chart .axis {
@@ -421,6 +424,42 @@ th h2 {
 
 .chart .point {
   fill: var(--fg-0);
+}
+
+.chart .point-active {
+  fill: var(--bg-0);
+  stroke: var(--fg-0);
+  stroke-width: 2;
+}
+
+.chart-tooltip {
+  position: absolute;
+  z-index: 10;
+  pointer-events: none;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--fg-2);
+  background: var(--bg-1);
+  color: var(--fg-0);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.35;
+  white-space: nowrap;
+  transform: translate(12px, -50%);
+}
+
+.chart-tooltip[data-side="left"] {
+  transform: translate(calc(-100% - 12px), -50%);
+}
+
+.chart-tooltip-pct {
+  font-weight: 600;
+}
+
+.chart-tooltip-counts,
+.chart-tooltip-meta {
+  color: var(--fg-1);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
 }
 
 .chart-empty {
@@ -521,61 +560,105 @@ button:disabled {
   opacity: 0.55;
 }
 
-.lab-chrome {
-  display: grid;
-  gap: var(--space-3);
+.demo-window {
   margin-top: var(--space-5);
-  padding-block: var(--space-3);
-  border-top: 1px solid var(--fg-2);
-  border-bottom: 1px solid var(--fg-2);
+  border: 1px solid var(--fg-2);
+  background: var(--bg-0);
 }
 
-.lab-omnibox {
+.demo-omnibox {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--fg-2);
+  background: var(--bg-1);
 }
 
-.lab-nav-btns {
+.demo-nav-btns {
   display: flex;
   align-items: center;
   gap: var(--space-1);
 }
 
-.lab-nav-btns button,
-.lab-omnibox > button {
+.demo-nav-btns button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-1);
+  color: var(--fg-1);
+  text-decoration: none;
+}
+
+.demo-nav-btns button:hover:not(:disabled) {
+  color: var(--fg-0);
+}
+
+.demo-icon {
+  width: 1rem;
+  height: 1rem;
+}
+
+.demo-omnibox input {
+  flex: 1;
+  min-width: 10rem;
+  border: 1px solid var(--fg-2);
+  background: var(--bg-0);
+  color: var(--fg-0);
+  padding: var(--space-1) var(--space-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+.demo-action {
   padding: var(--space-1) var(--space-2);
   border: 1px solid var(--fg-2);
-  background: var(--bg-1);
+  background: var(--bg-0);
+  color: var(--fg-0);
   text-decoration: none;
   font-size: var(--text-sm);
   font-family: var(--font-mono);
 }
 
-.lab-nav-btns button:hover:not(:disabled),
-.lab-omnibox > button:hover:not(:disabled) {
+.demo-action:hover:not(:disabled):not([aria-pressed="true"]) {
   border-color: var(--fg-0);
   background: var(--bg-2);
 }
 
-.lab-badge {
-  padding: var(--space-1) var(--space-2);
-  border: 1px solid var(--fg-0);
-  background: var(--bg-2);
-  color: var(--fg-0);
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
+.demo-action[aria-pressed="true"] {
+  border-color: var(--fg-0);
+  background: var(--fg-0);
+  color: var(--bg-0);
   font-weight: 600;
-  white-space: nowrap;
 }
 
-.lab-bar {
+.demo-action[aria-pressed="true"]:hover:not(:disabled) {
+  opacity: 0.85;
+}
+
+.demo-bookmarks {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-3) var(--space-5);
+  gap: var(--space-1) var(--space-4);
+  padding: var(--space-1) var(--space-3);
+  border-bottom: 1px solid var(--fg-2);
+  background: var(--bg-0);
+}
+
+.demo-bookmarks button {
   font-size: var(--text-sm);
+  font-family: var(--font-mono);
+  color: var(--fg-1);
+  text-decoration: none;
+  padding-block: 2px;
+}
+
+.demo-bookmarks button:hover:not(:disabled) {
+  color: var(--fg-0);
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
 }
 
 .lab-group {
@@ -596,9 +679,9 @@ button:disabled {
   text-decoration: none;
 }
 
-.lab-group button:hover:not(:disabled),
+.lab-group button:hover:not(:disabled):not([aria-pressed="true"]),
 .lab-chips button:hover:not(:disabled),
-.lab-chaos button:hover:not(:disabled),
+.lab-chaos button:hover:not(:disabled):not([aria-pressed="true"]),
 .lab-storage-bar button:hover:not(:disabled) {
   border-color: var(--fg-0);
   background: var(--bg-1);
@@ -612,21 +695,9 @@ button:disabled {
   font-weight: 600;
 }
 
-.lab-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: var(--space-5);
-  margin-top: var(--space-5);
-  align-items: start;
-}
-
-.lab-stage-bar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2) var(--space-4);
-  margin-bottom: var(--space-2);
+.lab-group button[aria-pressed="true"]:hover:not(:disabled),
+.lab-chaos button[aria-pressed="true"]:hover:not(:disabled) {
+  opacity: 0.85;
 }
 
 .lab-vp-controls input[type="range"] {
@@ -637,12 +708,14 @@ button:disabled {
 .lab-stage {
   display: grid;
   grid-template-columns: 1fr;
-  gap: var(--space-3);
 }
 
 .lab-stage[data-mode="dual"],
 .lab-stage[data-mode="split"] {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
+  padding: var(--space-2);
+  background: var(--bg-1);
 }
 
 @media (max-width: 44rem) {
@@ -653,9 +726,17 @@ button:disabled {
 }
 
 .lab-viewport {
-  border: 1px solid var(--fg-2);
   background: var(--bg-1);
   overflow: hidden;
+}
+
+.lab-stage[data-mode="dual"] .lab-viewport,
+.lab-stage[data-mode="split"] .lab-viewport {
+  border: 1px solid var(--fg-2);
+}
+
+.lab-stage[data-mode="single"] .lab-vp-head {
+  display: none;
 }
 
 .lab-stage[data-mode="split"] .lab-viewport[data-active="true"] {
@@ -706,9 +787,61 @@ button:disabled {
 }
 
 .lab-inspector {
+  margin-top: var(--space-4);
   min-width: 0;
   border: 1px solid var(--fg-2);
   background: var(--bg-0);
+}
+
+.lab-inspector[hidden] {
+  display: none;
+}
+
+.lab-control-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+}
+
+.lab-row-label {
+  min-width: 6rem;
+  color: var(--fg-1);
+  font-size: var(--text-sm);
+}
+
+.lab-chaos-details {
+  border-top: 1px solid var(--fg-2);
+  padding-top: var(--space-2);
+}
+
+.lab-chaos-details summary {
+  cursor: pointer;
+  color: var(--fg-1);
+  font-size: var(--text-sm);
+}
+
+.lab-chaos-details[open] summary {
+  margin-bottom: var(--space-2);
+}
+
+.demo-how {
+  margin-top: var(--space-4);
+  color: var(--fg-1);
+  font-size: var(--text-sm);
+}
+
+.demo-how summary {
+  cursor: pointer;
+  color: var(--fg-1);
+}
+
+.demo-how summary:hover {
+  color: var(--fg-0);
+}
+
+.demo-how p {
+  margin-top: var(--space-2);
 }
 
 .lab-tabs {

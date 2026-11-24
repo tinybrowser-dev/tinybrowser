@@ -71,7 +71,39 @@ const pathname = Astro.url.pathname
         <a href="/demo" aria-current={pathname.startsWith("/demo") ? "page" : undefined}>Demo</a>
         <a href="/wpt" aria-current={pathname.startsWith("/wpt") ? "page" : undefined}>WPT</a>
         <a href="https://github.com/tinybrowser-dev/tinybrowser" rel="noreferrer">GitHub</a>
-        <button id="theme-toggle" type="button">theme</button>
+        <button id="theme-toggle" type="button" aria-label="Toggle theme">
+          <svg
+            class="theme-icon"
+            data-icon="sun"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="0.9"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+            hidden
+          >
+            <circle cx="12" cy="12" r="4.5"></circle>
+            <path
+              d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M18.7 5.3l-1.4 1.4M6.7 17.3l-1.4 1.4"
+            ></path>
+          </svg>
+          <svg
+            class="theme-icon"
+            data-icon="moon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="0.9"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+            hidden
+          >
+            <path d="M20.35 14.35A8.5 8.5 0 0 1 9.65 3.65a8.5 8.5 0 1 0 10.7 10.7Z"></path>
+          </svg>
+        </button>
       </nav>
     </header>
 
@@ -85,14 +117,24 @@ const pathname = Astro.url.pathname
       ;(() => {
         const root = document.documentElement
         const button = document.getElementById("theme-toggle")
+        const sun = button?.querySelector('[data-icon="sun"]')
+        const moon = button?.querySelector('[data-icon="moon"]')
         const query = window.matchMedia("(prefers-color-scheme: dark)")
         const current = () => root.dataset.theme ?? (query.matches ? "dark" : "light")
 
         const render = () => {
           if (!button) return
           const dark = current() === "dark"
-          button.textContent = dark ? "Light" : "Dark"
-          button.setAttribute("aria-label", dark ? "Switch to light theme" : "Switch to dark theme")
+          if (dark) {
+            sun?.removeAttribute("hidden")
+            moon?.setAttribute("hidden", "")
+          } else {
+            sun?.setAttribute("hidden", "")
+            moon?.removeAttribute("hidden")
+          }
+          const label = dark ? "Switch to light theme" : "Switch to dark theme"
+          button.setAttribute("aria-label", label)
+          button.setAttribute("title", label)
         }
 
         render()

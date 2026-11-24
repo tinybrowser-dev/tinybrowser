@@ -17,31 +17,25 @@ function fileCount(rows: Array<{ test: string }>): number {
 const regressed = regression ? fileCount(regression.regressions) : 0
 const fixed = regression ? fileCount(regression.fixes) : 0
 const timedOut = regression ? fileCount(regression.new_timeouts) : 0
-const comparable = regression !== null && regression.previous_sha !== null && regression.comparable
 ---
 
 <div>
   <div class="section-head">
-    <h2>What changed</h2>
-    {comparable && <span class="note">one run against the previous one</span>}
+    <h2>Changes since previous run</h2>
   </div>
   {regression === null ? (
-    <p class="diff-note">No diff published yet.</p>
+    <p class="diff-note">No diff yet.</p>
   ) : regression.previous_sha === null ? (
-    <p class="diff-note">
-      First published run: there is nothing to compare with yet. The next run gets a diff.
-    </p>
+    <p class="diff-note">First run. Diff appears after the next run.</p>
   ) : !regression.comparable ? (
-    <p class="diff-note">
-      The WPT revision changed, so this run is not comparable with the previous one.
-    </p>
+    <p class="diff-note">WPT revision changed. Run is not comparable with the previous one.</p>
   ) : (
     <div>
       {passDelta !== null && <p class="diff-lead">
         <span class="strong">
-          {(passDelta >= 0 ? "+" : "−") + Math.abs(passDelta).toLocaleString("en-US")}
+          {(passDelta >= 0 ? "+" : "-") + Math.abs(passDelta).toLocaleString("en-US")}
         </span
-        >{" "} subtests passing since the previous run
+        >{" "} subtests passing
       </p>}
       <p class="diff-counts">
         <span class={regressed ? "strong" : "muted"}>{plural(regressed, "file")} regressed</span>
@@ -49,8 +43,7 @@ const comparable = regression !== null && regression.previous_sha !== null && re
         <span class="muted">{plural(timedOut, "file")} newly timing out</span>
       </p>
       <p class="diff-note">
-        A test that flips with runner load appears here too.{" "}
-        <a href="/wpt/data/regressions.json">The raw diff</a> has every file and subtest.
+        <a href="/wpt/data/regressions.json">Raw diff</a>
       </p>
     </div>
   )}
