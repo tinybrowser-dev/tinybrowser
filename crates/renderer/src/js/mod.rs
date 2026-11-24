@@ -151,11 +151,23 @@ pub(crate) struct PageTimerId(i32);
 pub(crate) struct TimeoutRequest {
     pub delay: Duration,
     pub js_id: PageTimerId,
+    pub realm: u64,
+}
+
+pub(crate) struct ClearTimeoutRequest {
+    pub js_id: PageTimerId,
+    pub realm: u64,
+}
+
+pub(crate) struct AbortFetchRequest {
+    pub js_id: JsFetchId,
+    pub realm: u64,
 }
 
 pub(crate) struct JsFetchRequest {
     pub url: String,
     pub js_id: JsFetchId,
+    pub realm: u64,
     pub method: net::Method,
     pub body: Vec<u8>,
     pub content_type: Option<String>,
@@ -1531,6 +1543,7 @@ impl JsRealm {
     fn install_timer_host_functions(
         ctx: &Ctx<'_>,
         outbox: &crate::js::world::Outbox,
+        realm: u64,
     ) -> Result<(), JsError> {
         let schedule_outbox = Rc::clone(outbox);
         bridge::object(ctx)?.set(
@@ -1541,6 +1554,7 @@ impl JsRealm {
                     .push_back(RealmRequest::Timer(TimeoutRequest {
                         delay: Duration::from_millis(u64::from(millis(delay))),
                         js_id: PageTimerId(js_id),
+                        realm,
                     }));
             }),
         )?;
@@ -1551,7 +1565,10 @@ impl JsRealm {
             Func::from(move |js_id: i32| {
                 cancel_outbox
                     .borrow_mut()
-                    .push_back(RealmRequest::ClearTimer(PageTimerId(js_id)));
+                    .push_back(RealmRequest::ClearTimer(ClearTimeoutRequest {
+                        js_id: PageTimerId(js_id),
+                        realm,
+                    }));
             }),
         )?;
 
@@ -1633,7 +1650,8 @@ impl JsRealm {
         world: &Rc<RefCell<World>>,
     ) -> Result<(), JsError> {
         let outbox = Rc::clone(&self.world.borrow().outbox);
-        Self::install_timer_host_functions(ctx, &outbox)?;
+        let realm = self.world.borrow().realm_id();
+        Self::install_timer_host_functions(ctx, &outbox, realm)?;
         Self::install_evaluation_host_functions(ctx, world)?;
         Self::install_binding_globals(ctx, world)?;
         install_header_policy_host_functions(ctx)?;
@@ -1663,6 +1681,7 @@ impl JsRealm {
                         .push_back(RealmRequest::Fetch(Box::new(JsFetchRequest {
                             url,
                             js_id: JsFetchId(js_id),
+                            realm,
                             method,
                             body: body.to_vec(),
                             content_type,
@@ -1679,7 +1698,10 @@ impl JsRealm {
             Func::from(move |js_id: i32| {
                 cancel_fetch_outbox
                     .borrow_mut()
-                    .push_back(RealmRequest::AbortFetch(JsFetchId(js_id)));
+                    .push_back(RealmRequest::AbortFetch(AbortFetchRequest {
+                        js_id: JsFetchId(js_id),
+                        realm,
+                    }));
             }),
         )?;
         Ok(())

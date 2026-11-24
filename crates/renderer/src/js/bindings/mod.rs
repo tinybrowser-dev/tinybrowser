@@ -2090,21 +2090,18 @@ pub(super) fn live_collection<'js>(
     };
     match brand {
         None => match &query.kind {
-            CollectionKind::Static(handles) => static_node_list(ctx, scope, handles),
-            _ => Ok(Class::into_value(host::instance_for_node(
+            CollectionKind::Static(handles) => static_node_list(ctx, handles),
+            _ => Ok(Class::into_value(host::instance_in_world(
                 ctx,
-                scope,
                 JsNodeList { query },
             )?)),
         },
-        Some("HTMLCollection") => Ok(Class::into_value(host::instance_for_node(
+        Some("HTMLCollection") => Ok(Class::into_value(host::instance_in_world(
             ctx,
-            scope,
             JsHtmlCollection { query },
         )?)),
-        Some("HTMLOptionsCollection") => Ok(Class::into_value(host::instance_for_node(
+        Some("HTMLOptionsCollection") => Ok(Class::into_value(host::instance_in_world(
             ctx,
-            scope,
             JsOptionsCollection { query },
         )?)),
         Some(_) => Err(Exception::throw_type(
@@ -3398,9 +3395,12 @@ mod realm_tests {
             .borrow_mut()
             .outbox
             .borrow_mut()
-            .push_back(crate::js::RealmRequest::ClearTimer(crate::js::PageTimerId(
-                7,
-            )));
+            .push_back(crate::js::RealmRequest::ClearTimer(
+                crate::js::ClearTimeoutRequest {
+                    js_id: crate::js::PageTimerId(7),
+                    realm: 1,
+                },
+            ));
         world
             .borrow_mut()
             .queue_write("x".repeat(7 * 1024 * 1024))
@@ -3411,9 +3411,12 @@ mod realm_tests {
         ));
         assert!(matches!(
             world.borrow().pop_outbox(),
-            Some(crate::js::RealmRequest::ClearTimer(crate::js::PageTimerId(
-                7
-            )))
+            Some(crate::js::RealmRequest::ClearTimer(
+                crate::js::ClearTimeoutRequest {
+                    js_id: crate::js::PageTimerId(7),
+                    realm: 1,
+                }
+            ))
         ));
         assert!(
             world

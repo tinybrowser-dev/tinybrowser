@@ -3924,6 +3924,67 @@ mod messaging_tests {
         );
     }
 
+    // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-createIsolatedWorld
+    #[test]
+    fn isolated_world_queries_use_its_realm_and_its_timers_fire_there() {
+        let mut engine = engine();
+        engine
+            .mount_frame(
+                FrameId::MAIN,
+                &mount(
+                    "https://example.test/isolated-world",
+                    "<!doctype html><p>one</p><p>two</p>",
+                ),
+            )
+            .expect("mount");
+        let _ready = engine.drain_ready();
+        let query = engine
+            .execute_remote_in(
+                FrameId::MAIN,
+                crate::ScriptSource::Isolated {
+                    world: "probe",
+                    source: r"
+                    (function () {
+                      const list = document.querySelectorAll('p');
+                      setTimeout(() => { window.__isolatedTimer = true; }, 0);
+                      return JSON.stringify({
+                        ownPrototype: Object.getPrototypeOf(list) === NodeList.prototype,
+                        instance: list instanceof NodeList,
+                        length: list.length,
+                      });
+                    })()
+                    ",
+                },
+                None,
+            )
+            .expect("isolated query");
+        assert!(
+            matches!(
+                query,
+                crate::RemoteValue::String(ref value)
+                    if value == r#"{"ownPrototype":true,"instance":true,"length":2}"#
+            ),
+            "the isolated NodeList must use the isolated realm: {query:?}"
+        );
+        for _ in 0..20 {
+            let _ready = engine.drain_ready();
+            let fired = engine
+                .execute_remote_in(
+                    FrameId::MAIN,
+                    crate::ScriptSource::Isolated {
+                        world: "probe",
+                        source: "String(window.__isolatedTimer === true)",
+                    },
+                    None,
+                )
+                .expect("isolated timer probe");
+            if matches!(fired, crate::RemoteValue::String(ref value) if value == "true") {
+                return;
+            }
+        }
+        panic!("a timer scheduled in the isolated world must fire in that world");
+    }
+
     // https://webassembly.github.io/spec/js-api/#dom-memory-grow
     #[test]
     fn web_assembly_memory_grow_extends_a_shared_buffer_in_place() {

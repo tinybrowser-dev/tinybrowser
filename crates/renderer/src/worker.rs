@@ -1244,7 +1244,8 @@ impl Worker {
                         });
                 }
             }
-            RealmRequest::ClearTimer(js_id) => {
+            RealmRequest::ClearTimer(timeout) => {
+                let js_id = timeout.js_id;
                 if self.shared {
                     if let Some(id) = self.js_timers.remove(&js_id) {
                         self.timers.remove(&id);
@@ -1260,8 +1261,8 @@ impl Worker {
                 }
             }
             RealmRequest::Fetch(fetch) => self.start_fetch(*fetch),
-            RealmRequest::AbortFetch(js_id) => {
-                if let Some(cancel) = self.fetches.remove(&js_id) {
+            RealmRequest::AbortFetch(request) => {
+                if let Some(cancel) = self.fetches.remove(&request.js_id) {
                     cancel();
                 }
             }

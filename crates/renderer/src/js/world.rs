@@ -1219,9 +1219,9 @@ impl EventTargetState {
 
 pub(crate) enum RealmRequest {
     Timer(super::TimeoutRequest),
-    ClearTimer(super::PageTimerId),
+    ClearTimer(super::ClearTimeoutRequest),
     Fetch(Box<super::JsFetchRequest>),
-    AbortFetch(super::JsFetchId),
+    AbortFetch(super::AbortFetchRequest),
     Script(NodeId),
     HistoryPush {
         url: String,

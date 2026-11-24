@@ -2098,9 +2098,8 @@ impl JsNode {
         {
             return Ok(value);
         }
-        let list = host::instance_for_node(
+        let list = host::instance_in_world(
             ctx,
-            self.handle.get().0,
             JsTokenList {
                 element: self.handle.get(),
                 attribute,
@@ -2325,9 +2324,8 @@ impl JsNode {
         {
             return Ok(value);
         }
-        let class = host::instance_for_node(
+        let class = host::instance_in_world(
             ctx,
-            self.handle.get().0,
             JsNamedNodeMap {
                 element: self.handle.get(),
             },

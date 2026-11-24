@@ -123,7 +123,7 @@ impl Document {
             Timer {
                 when: Instant::now().checked_add(delay),
                 fired: false,
-                js_id: None,
+                realm_handle: None,
             },
         );
         id
@@ -219,10 +219,10 @@ impl Document {
                     self.fire_refresh(&target);
                 }
                 if let Some(timer) = self.timers.remove(&id)
-                    && let Some(js_id) = timer.js_id
+                    && let Some((realm, js_id)) = timer.realm_handle
                 {
-                    self.js_timers.remove(&js_id);
-                    self.fire_js(|js| js.fire_timer(js_id));
+                    self.js_timers.remove(&(realm, js_id));
+                    self.fire_realm(realm, |js| js.fire_timer(js_id));
                 }
                 self.adopt_js_work();
             }
@@ -333,12 +333,13 @@ impl Document {
             RealmRequest::Timer(timeout) => {
                 let page_id = self.schedule_timer(timeout.delay);
                 if let Some(timer) = self.timers.get_mut(&page_id) {
-                    timer.js_id = Some(timeout.js_id);
+                    timer.realm_handle = Some((timeout.realm, timeout.js_id));
                 }
-                self.js_timers.insert(timeout.js_id, page_id);
+                self.js_timers
+                    .insert((timeout.realm, timeout.js_id), page_id);
             }
-            RealmRequest::ClearTimer(js_id) => {
-                if let Some(page_id) = self.js_timers.remove(&js_id) {
+            RealmRequest::ClearTimer(timeout) => {
+                if let Some(page_id) = self.js_timers.remove(&(timeout.realm, timeout.js_id)) {
                     self.timers.remove(&page_id);
                 }
             }
@@ -347,7 +348,9 @@ impl Document {
                 self.fire_js(crate::js::JsRealm::process_cookie_changes);
             }
             RealmRequest::Fetch(fetch) => self.queue_js_fetch(*fetch),
-            RealmRequest::AbortFetch(js_id) => self.dials.cancel_fetch(js_id),
+            RealmRequest::AbortFetch(request) => {
+                self.dials.cancel_fetch(request.realm, request.js_id);
+            }
             RealmRequest::Script(element) => self.queue_dynamic_script(element),
             RealmRequest::DeclarativeRefresh(value) => {
                 self.start_declarative_refresh(&value);
@@ -627,19 +630,19 @@ impl Document {
         }
     }
 
-    fn fail_js_fetch(&mut self, js_id: JsFetchId) {
+    fn fail_js_fetch(&mut self, js_id: JsFetchId, realm: u64) {
         self.record_event(RendererEvent::FetchFailed);
-        self.settle_js_fetch(js_id, None);
+        self.settle_js_fetch(js_id, realm, None);
     }
 
     // https://w3c.github.io/webappsec-csp/#should-request-be-blocked-by-content-security-policy
     fn queue_js_fetch(&mut self, fetch: crate::js::JsFetchRequest) {
         if self.dials.pending_js_fetches() >= MAX_PENDING_JS_FETCHES {
-            self.fail_js_fetch(fetch.js_id);
+            self.fail_js_fetch(fetch.js_id, fetch.realm);
             return;
         }
         let Ok(url) = self.resolve_dial_url(&fetch.url) else {
-            self.fail_js_fetch(fetch.js_id);
+            self.fail_js_fetch(fetch.js_id, fetch.realm);
             return;
         };
         let violations = self.subresource_violations(&url, crate::csp::Destination::Connect);
@@ -649,11 +652,14 @@ impl Document {
             self.fire_csp_violations(target, &violations);
         }
         if crate::csp::blocks(&violations) {
-            self.fail_js_fetch(fetch.js_id);
+            self.fail_js_fetch(fetch.js_id, fetch.realm);
             return;
         }
         let mut dial = QueuedDial::new(
-            DialContext::JsFetch { id: fetch.js_id },
+            DialContext::JsFetch {
+                id: fetch.js_id,
+                realm: fetch.realm,
+            },
             crate::protocol::RequestPolicy::Fetch(fetch.options.cors),
             &url,
             &self.dial_initiator(),

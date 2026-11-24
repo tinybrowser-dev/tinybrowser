@@ -316,15 +316,23 @@ impl Document {
         })
     }
 
+    // https://chromedevtools.github.io/devtools-protocol/tot/DOM/#method-resolveNode
     fn dom_resolve_object(&self, object_id: &str) -> Result<DomReply, TabError> {
-        let Some(realm) = self.js.as_ref() else {
-            return Ok(DomReply::NodeId { node_id: 0 });
-        };
-        let node = realm
-            .node_for_handle(object_id)
-            .map_err(|error| TabError::Dom {
-                message: error.to_string(),
-            })?;
+        let mut node = None;
+        for realm in self
+            .js
+            .iter()
+            .chain(self.isolated_js.values().map(|(_, realm)| realm))
+        {
+            node = realm
+                .node_for_handle(object_id)
+                .map_err(|error| TabError::Dom {
+                    message: error.to_string(),
+                })?;
+            if node.is_some() {
+                break;
+            }
+        }
         Ok(DomReply::NodeId {
             node_id: node.map_or(0, |node| self.remote_id(node)),
         })

@@ -6,7 +6,7 @@ use rquickjs::{
     Class, Coerced, Ctx, Exception, FromJs, Function, Object, Persistent, Result, Value,
 };
 
-use super::{world, world_for_node};
+use super::world;
 use crate::dom::tree::NodeId;
 pub(crate) use crate::js::world::NodeReference;
 
@@ -376,17 +376,16 @@ pub(crate) fn instance_proto<'js, T: JsClass<'js>>(
     Class::instance_proto(value, prototype)
 }
 
-// https://dom.spec.whatwg.org/#concept-node
-pub(crate) fn instance_for_node<'js, T: JsClass<'js>>(
+// https://webidl.spec.whatwg.org/#dfn-platform-object
+pub(crate) fn instance_in_world<'js, T: JsClass<'js>>(
     ctx: &Ctx<'js>,
-    node: NodeId,
     value: T,
 ) -> Result<Class<'js, T>> {
-    let owner = world_for_node(ctx, node)?;
-    let prototype = owner
+    let realm = world(ctx)?;
+    let prototype = realm
         .borrow()
         .brand(T::NAME)
-        .ok_or_else(|| Exception::throw_internal(ctx, "node owner has no interface prototype"))?;
+        .ok_or_else(|| Exception::throw_internal(ctx, "realm has no interface prototype"))?;
     instance_proto(value, prototype.restore(ctx)?)
 }
 

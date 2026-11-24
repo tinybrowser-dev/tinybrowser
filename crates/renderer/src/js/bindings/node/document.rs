@@ -1501,9 +1501,8 @@ impl JsNode {
         {
             return Ok(value);
         }
-        let list = host::instance_for_node(
+        let list = host::instance_in_world(
             ctx,
-            self.handle.get().0,
             crate::js::bindings::JsTokenList {
                 element: self.handle.get(),
                 attribute: markup5ever::local_name!("sandbox"),

@@ -160,6 +160,8 @@ pub(crate) struct HistoryUpdate {
 pub(crate) enum DialContext {
     JsFetch {
         id: JsFetchId,
+        // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-createIsolatedWorld
+        realm: u64,
     },
     ClassicScript {
         element: crate::dom::tree::NodeId,
@@ -241,7 +243,8 @@ struct Timer {
     // https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#dom-settimeout
     when: Option<Instant>,
     fired: bool,
-    js_id: Option<PageTimerId>,
+    // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-createIsolatedWorld
+    realm_handle: Option<(u64, PageTimerId)>,
 }
 
 // https://html.spec.whatwg.org/multipage/iframe-embed-object.html#the-iframe-element:html-element-insertion-steps
@@ -497,7 +500,7 @@ pub(crate) struct Document {
     js: Option<crate::js::JsRealm>,
     // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-createIsolatedWorld
     isolated_js: HashMap<String, (Rc<RefCell<World>>, crate::js::JsRealm)>,
-    js_timers: HashMap<PageTimerId, TimerId>,
+    js_timers: HashMap<(u64, PageTimerId), TimerId>,
     load_delay: LoadDelay,
     init_scripts_deferred: bool,
     defer_js: bool,
@@ -1869,6 +1872,26 @@ impl Document {
         }
     }
 
+    // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-createIsolatedWorld
+    fn fire_realm(
+        &mut self,
+        realm: u64,
+        operation: impl FnOnce(&crate::js::JsRealm) -> Result<(), crate::js::JsError>,
+    ) {
+        let main_realm = self.world.borrow().realm_id();
+        let failed = if main_realm == realm {
+            self.js.as_ref().is_some_and(|js| operation(js).is_err())
+        } else {
+            self.isolated_js
+                .values()
+                .find(|(world, _)| world.borrow().realm_id() == realm)
+                .is_some_and(|(_, js)| operation(js).is_err())
+        };
+        if failed {
+            self.record_event(RendererEvent::ScriptFailed);
+        }
+    }
+
     pub(crate) fn ensure_js_ok(&mut self) -> bool {
         if self.ensure_js().is_err() {
             self.record_event(RendererEvent::ScriptFailed);
@@ -2025,7 +2048,7 @@ impl Document {
         self.csp.clear_pending_events();
         self.image_load_delays.clear();
         self.connected_images.clear();
-        self.timers.retain(|_, timer| timer.js_id.is_none());
+        self.timers.retain(|_, timer| timer.realm_handle.is_none());
         self.js_timers.clear();
         self.js = None;
         self.isolated_js.clear();
@@ -2826,6 +2849,7 @@ impl Document {
     fn finish_js_fetch_dial(
         &mut self,
         id: crate::js::JsFetchId,
+        realm: u64,
         redirected: bool,
         request_url: &Url,
         outcome: DialOutcome,
@@ -2846,9 +2870,9 @@ impl Document {
             if let crate::protocol::ResponseBody::Streamed(stream) = outcome.body {
                 self.services.cancel_stream(stream);
             }
-            self.settle_js_fetch(id, None);
+            self.settle_js_fetch(id, realm, None);
         } else {
-            self.settle_js_fetch(id, Some(outcome));
+            self.settle_js_fetch(id, realm, Some(outcome));
         }
     }
 
@@ -2867,8 +2891,8 @@ impl Document {
         // https://cookiestore.spec.whatwg.org/#process-cookie-changes
         let cookies_stored = outcome.cookies_stored;
         match context {
-            DialContext::JsFetch { id } => {
-                self.finish_js_fetch_dial(id, redirected, &req.url, outcome);
+            DialContext::JsFetch { id, realm } => {
+                self.finish_js_fetch_dial(id, realm, redirected, &req.url, outcome);
             }
             DialContext::ClassicScript { element } => {
                 self.record_event(RendererEvent::Fetch {
@@ -3069,8 +3093,8 @@ impl Document {
     pub(in crate::document) fn fail_dial(&mut self, fail: DialContext) {
         self.record_event(RendererEvent::FetchFailed);
         match fail {
-            DialContext::JsFetch { id } => {
-                self.settle_js_fetch(id, None);
+            DialContext::JsFetch { id, realm } => {
+                self.settle_js_fetch(id, realm, None);
             }
             DialContext::ClassicScript { element } => {
                 let unblocks_parser = self
@@ -3263,9 +3287,10 @@ impl Document {
     pub(in crate::document) fn settle_js_fetch(
         &mut self,
         id: JsFetchId,
+        realm: u64,
         outcome: Option<DialOutcome>,
     ) {
-        self.fire_js(|js| js.finish_js_fetch(id, outcome));
+        self.fire_realm(realm, |js| js.finish_js_fetch(id, outcome));
     }
 
     // https://html.spec.whatwg.org/multipage/parsing.html#the-end

@@ -1426,12 +1426,8 @@ fn append_collection_option(ctx: &Ctx<'_>, select: NodeId, option: NodeId) -> Re
 }
 
 // https://webidl.spec.whatwg.org/#legacy-platform-object-getownproperty
-pub(super) fn static_node_list<'js>(
-    ctx: &Ctx<'js>,
-    scope: NodeId,
-    handles: &[Handle],
-) -> Result<Value<'js>> {
-    let prototype = world_for_node(ctx, scope)?
+pub(super) fn static_node_list<'js>(ctx: &Ctx<'js>, handles: &[Handle]) -> Result<Value<'js>> {
+    let prototype = world(ctx)?
         .borrow()
         .brand("NodeList")
         .ok_or_else(|| Exception::throw_internal(ctx, "NodeList prototype missing"))?;
