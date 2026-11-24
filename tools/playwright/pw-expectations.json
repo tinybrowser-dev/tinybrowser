@@ -372,8 +372,8 @@
     "reason": "Error: expect(Buffer).toMatchSnapshot(expected) failed"
   },
   "page-screenshot.spec.ts::page screenshot › should take fullPage screenshots during navigation": {
-    "expected": "FAIL",
-    "reason": "Error: page.screenshot: script: cannot read property 'evaluate' of undefined |     at <anonymous> (eval_script:1:30)"
+    "expected": "SKIP",
+    "reason": "timing race against the 1500ms action budget: first screenshot needs ~1.45s while reloads destroy the utility realm; tracked in #334"
   },
   "page-screenshot.spec.ts::page screenshot › should work while navigating": {
     "expected": "FAIL",

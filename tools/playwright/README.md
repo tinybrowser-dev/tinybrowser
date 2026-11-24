@@ -26,6 +26,11 @@ Use `--spec <file>`, `--jobs <n>`, and `--timeout <ms>` to narrow a run.
 `--update-expectations` rewrites `pw-expectations.json` from the run: passing
 tests are removed, failing and skipped tests are recorded with their reason.
 
+A test recorded as `SKIP` is excluded from the run with `--grep-invert` and
+counted as expected-non-pass, never as a pass. Reserve it for a result that
+cannot be gated deterministically (for example a timing race), and name the
+issue that tracks the real fix in `reason`.
+
 ## Screenshot baselines
 
 `snapshots/` mirrors the `tests/` tree and is copied into `.playwright/tests/`

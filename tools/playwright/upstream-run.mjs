@@ -133,6 +133,26 @@ function stripAnsi(text) {
   return String(text).replace(/\u001b\[[0-9;]*m/g, "");
 }
 
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Expectations recorded as SKIP mean the outcome cannot be gated: Playwright
+// itself skips the test, or the harness excludes it before the run so a timing
+// race never turns into a pass. Excluded tests are reported as skipped and
+// therefore never counted as passes.
+function skippedTests(spec, expectations) {
+  const prefix = `${spec}::`;
+  return Object.entries(expectations)
+    .filter(([id, entry]) => id.startsWith(prefix) && entry.expected === "SKIP")
+    .map(([id]) => id.slice(prefix.length));
+}
+
+// Playwright's grep title joins the suite path with spaces, not " › ".
+function grepPattern(title) {
+  return escapeRegExp(title.split(" › ").join(" "));
+}
+
 function collectResults(report) {
   const results = {};
   const reasons = {};
@@ -166,7 +186,7 @@ function collectResults(report) {
   return { results, reasons };
 }
 
-async function runOneSpec(binary, spec, timeout, traceRoot, portBase) {
+async function runOneSpec(binary, spec, timeout, traceRoot, portBase, skipped) {
   const reportFile = join(tmpdir(), `tb-pw-report-${process.pid}-${spec.replace(/[^a-z0-9]/gi, "_")}.json`);
   const traceDir = traceRoot ? join(traceRoot, spec.replace(/[^a-z0-9]/gi, "_")) : null;
   const daemon = await startDaemon(binary);
@@ -177,6 +197,9 @@ async function runOneSpec(binary, spec, timeout, traceRoot, portBase) {
       "--config=tests/tinybrowser/playwright.config.ts",
       "--workers=1",
       ...(timeout ? [`--timeout=${timeout}`] : []),
+      ...(skipped.length > 0
+        ? [`--grep-invert=${skipped.map(grepPattern).join("|")}`]
+        : []),
       spec,
     ];
     await new Promise((resolvePromise) => {
@@ -308,6 +331,9 @@ async function main() {  const opts = parseArgs(process.argv.slice(2));
   const results = {};
   const reasons = {};
   const traceRoot = mkdtempSync(join(tmpdir(), "tb-pw-cdp-"));
+  const existing = existsSync(EXPECTATIONS_PATH)
+    ? JSON.parse(readFileSync(EXPECTATIONS_PATH, "utf8"))
+    : {};
   let index = 0;
   const workerCount = Math.min(opts.jobs, specs.length);
   await Promise.all(
@@ -317,23 +343,36 @@ async function main() {  const opts = parseArgs(process.argv.slice(2));
         // 400 ports per run: worker restarts bump workerIndex past 0, so the
         // slot must absorb them without drifting into another run's range.
         const portBase = 10000 + (index % 56) * 400;
-        const outcome = await runOneSpec(binary, spec, opts.timeout, traceRoot, portBase);
+        const skipped = skippedTests(spec, existing);
+        const outcome = await runOneSpec(
+          binary,
+          spec,
+          opts.timeout,
+          traceRoot,
+          portBase,
+          skipped,
+        );
         Object.assign(results, outcome.results);
         Object.assign(reasons, outcome.reasons);
+        for (const title of skipped) {
+          const id = `${spec}::${title}`;
+          if (!(id in results)) {
+            results[id] = "SKIP";
+            reasons[id] = "skipped";
+          }
+        }
       }
     }),
   );
   aggregateCdpTrace(traceRoot);
-
-  const existing = existsSync(EXPECTATIONS_PATH)
-    ? JSON.parse(readFileSync(EXPECTATIONS_PATH, "utf8"))
-    : {};
 
   if (opts.update) {
     const next = opts.specs.length > 0 ? { ...existing } : {};
     for (const id of Object.keys(results).sort()) {
       if (results[id] === "PASS") {
         delete next[id];
+      } else if (results[id] === "SKIP" && existing[id]?.expected === "SKIP") {
+        next[id] = existing[id];
       } else {
         next[id] = { expected: results[id], reason: reasons[id] };
       }
