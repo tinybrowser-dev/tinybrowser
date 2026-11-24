@@ -20,6 +20,8 @@ Maximize web spec conformance per byte.
 
 Never open a pull request to upstream for any reason. This is absolute: no upstream PR, no fork-to-upstream PR, no "small patch they would want". Fixes for `DioxusLabs/blitz`, `servo/html5ever`, `DelSkayn/rquickjs`, and `quickjs-ng/quickjs` stay commits on `tinybrowser-dev/*` forks and are recorded in `docs/upstream.md`.
 
+Only make fork changes small and self-contained enough that pulling from upstream stays easy. Large architectural changes to a fork stay upstream and are recorded under `## Engine and upstream limitations` in `docs/upstream.md`; tinybrowser-owned feature gaps are tracked as GitHub issues.
+
 ## Disk
 
 - Build outputs live in mbx's managed target directory: `target` is a symlink
@@ -57,7 +59,7 @@ Never open a pull request to upstream for any reason. This is absolute: no upstr
 - Data over code. Generated glue becomes tables plus shared funnels: monomorphize per IDL type, never per member.
 - Parity gates every refactor. WPT before/after must match exactly (same pass/unexp/timeout/crash counts), and any release-binary change gets a WPT smoke run via `--binary`.
 - Delete stale config when its reason expires. Workarounds are removed with the reason recorded in the commit, not left to rot.
-- Forks are for correctness, not micro-wins. A fork change needs a spec or crash reason recorded in `docs/upstream.md`; compile or size tricks stay upstream.
+- Forks are for small, self-contained correctness fixes that stay easy to pull from upstream — not micro-wins or large fork rewrites. A fork change needs a spec or crash reason recorded in `docs/upstream.md`; compile/size tricks and large fork changes stay upstream.
 
 ## Types and boundaries
 

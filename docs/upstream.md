@@ -1,10 +1,14 @@
 # Upstream bugs
 
-Policy: upstream bugs stay upstream. Our code stays simple; these fail closed as known-fails. On fork syncs, upstream wins conflicts: take upstream's shape and re-apply the fork patch on top of it, even where the fork had fixed the code the change rewrites — the fork carries fixes upstream has not taken yet, not a competing design.
+Policy: upstream bugs stay upstream. Our code stays simple; these fail closed as known-fails. Only make fork changes small and self-contained enough that pulling from upstream stays easy; large upstream/fork changes we cannot reasonably fix ourselves stay upstream and are listed under `## Engine and upstream limitations` below. Tinybrowser-owned feature gaps are tracked as GitHub issues. On fork syncs, upstream wins conflicts: take upstream's shape and re-apply the fork patch on top of it, even where the fork had fixed the code the change rewrites — the fork carries fixes upstream has not taken yet, not a competing design.
 
 ## Fork changes
 
 ### blitz (third_party/blitz, master)
+
+- e4bfee507 clear stale `layout_children` and `anonymous_blocks` when an element stops owning a layout box (`display: contents`, `display: none`, or a non-atomic `display: inline` inside an inline root). Previously, when an element transitioned from a block container to `display: contents` or non-atomic inline (e.g., as stylesheets loaded on `github.com`), its hoisted children had `layout_parent` repointed to the new container while the old element kept its stale `layout_children`, panicking `assert_layout_parents_consistent` in `resolve.rs:375` (<https://drafts.csswg.org/css-display-3/#valdef-display-contents>).
+
+- e11d85916 style shadow-host light DOM, fix `position: fixed` hit-testing while scrolled, and fix `<option>` label rendering. (1) `Traverser::next` in `stylo/dom.rs` yields `flat_children()` followed by the host's own light `children` so light-DOM children always get computed styles and never panic in `layout_style()`, while `selectors::Element::parent_element` stops at `ShadowRoot` and `TElement::inheritance_parent` returns `traversal_parent()` so shadow-scoped selector matching does not cross out of a shadow tree while inheritance still crosses from the host (<https://drafts.csswg.org/css-scoping-1/#flattening>); (2) `Node::hit_inner` and `hoisted_child_position` treat any box whose containing block is `Document` or `None` as the root element and skip the root bbox early-out so `position: fixed` boxes (including z-index hoisted ones) hit-test at viewport coordinates regardless of `viewport_scroll` (<https://drafts.csswg.org/css-position-3/#fixed-pos>); (3) `option_label` ignores empty `label=""` attributes, excludes `<script>` descendants, collapses ASCII whitespace, and renders listbox `<option>` rows via `option_shown_text` with `text-transform` applied (<https://html.spec.whatwg.org/multipage/form-elements.html#concept-option-label>).
 
 - keep animation sampling out of `has_changes`, so layout reads flush only real pending work. `resolve` used to set `has_changes` whenever `is_animating()`, which made every `getBoundingClientRect`/`getComputedStyle`/`checkVisibility` read re-run the full style and layout pipeline on an animated page (Drizzle's landing page: 1000 reads took 7.6 s). The frame loop owns animation sampling and calls `resolve` each frame, so `has_changes` now means pending mutation or resource work only; the new `BaseDocument::resolve_if_needed` flushes those messages for a read without advancing the animation clock (<https://drafts.csswg.org/cssom-view/#dom-element-getboundingclientrect>).
 
@@ -320,8 +324,7 @@ Known gaps this engine fails honestly (no fork patch yet):
   pattern) still gives the document a scrollable area. Blitz computes the
   viewport's scroll range from the root element alone, so programmatic document
   scrolling clamps to zero. The fix belongs in
-  `packages/blitz-dom/src/scrolling.rs` (`scroll_state`'s viewport branch); the
-  renderer records the gap in `docs/limitations.md`. A trial fix that added the
+  `packages/blitz-dom/src/scrolling.rs` (`scroll_state`'s viewport branch). A trial fix that added the
   body's scrollable area to the viewport range was correct for top-level pages
   but turned 16 vacuous subframe passes into timeouts, because it made smooth
   scrolls in frames actually animate, so it was reverted rather than landed
@@ -405,13 +408,13 @@ Known gaps this engine fails honestly (no fork patch yet):
 - `sideways-lr` float placement is wrong: floats on one line stack along the block axis instead of the inline axis. Probed against Chrome with `scrollIntoView-sideways-lr-writing-mode.html`'s markup, Blitz puts the row's second and third boxes at increasing physical x where Chrome keeps them at one x and stacks them in y, and moves the row's later boxes one block step right. The two `scrollIntoView-sideways-lr-*` files depend on that layout and stay red; `vertical-lr`/`vertical-rl`/`sideways-rl` place the same markup correctly. Open upstream in the float placement of `stylo_taffy`/Blitz layout.
 - `display: ruby-text` is a Gecko-only `DisplayInside` variant in the pinned Stylo (`#[cfg(feature = "gecko")]`), so a declaration is a parse error and the previous `display` stays in effect. `align-content-block-display-coverage.html` observes the previous display through `offsetTop` and fails its unsupported-value assertion. Open upstream; a Servo build has no ruby layout to expose.
 - For a static `body` offset parent, `Node::offset_top_left` skips the padding-edge subtraction, so the offset is relative to the initial containing block. CSSOM View's `offsetTop`/`offsetLeft` steps name the body's padding edge, so a body with a border would make tinybrowser report the border distance where the spec computes 0. Blink does the same (probed: `body { border: 5px }` gives a child `offsetTop` of 5), so the browser behavior is kept and the spec disagreement is recorded here.
-- `scroll-margin`/`scroll-padding` do not parse: both are `engine = "gecko"` longhands in the pinned Stylo (`longhands.toml`), so the Servo build omits them, as it omits `content-visibility`. `CSS.supports` is false for every longhand (probed), so the CSSOM View tests that assert a target's scroll-margin or a scroller's scroll-padding fail before any scrolling code runs. Making them available means generating the properties for the Servo engine, a style-crate change, not a fork patch; recorded in `docs/limitations.md`.
-- Table layout skips captions: `third_party/blitz/packages/blitz-dom/src/layout/table.rs` collects rows and cells and drops a node that looks like a caption ("Probably a table caption: ignore"), so the table box excludes the caption. CSSOM View's `offsetWidth`/`offsetHeight` on a table and `offsetTop` on a cell under a caption therefore disagree with a browser (`offsetTopLeft-table-caption.html`, `table-offset-props.html`). Open upstream, not worked around; recorded in `docs/limitations.md`.
+- `scroll-margin`/`scroll-padding` do not parse: both are `engine = "gecko"` longhands in the pinned Stylo (`longhands.toml`), so the Servo build omits them, as it omits `content-visibility`. `CSS.supports` is false for every longhand (probed), so the CSSOM View tests that assert a target's scroll-margin or a scroller's scroll-padding fail before any scrolling code runs. Making them available means generating the properties for the Servo engine, a style-crate change, not a fork patch.
+- Table layout skips captions: `third_party/blitz/packages/blitz-dom/src/layout/table.rs` collects rows and cells and drops a node that looks like a caption ("Probably a table caption: ignore"), so the table box excludes the caption. CSSOM View's `offsetWidth`/`offsetHeight` on a table and `offsetTop` on a cell under a caption therefore disagree with a browser (`offsetTopLeft-table-caption.html`, `table-offset-props.html`). Fixed in fork (`095b629bc`).
 - CSS `zoom` is parsed but not applied to layout. Offsets and sizes are unscaled, so every zoomed expectation fails (`offsetTop-offsetLeft-with-zoom.html`). Open upstream, not worked around.
 - Vertical `writing-mode` layout is off by default twice: the style crate gates the property behind the `layout.css.writing-mode.enabled` Servo pref, and `blitz-dom` gates its per-box writing-mode layout behind the `writing-mode` feature. tinybrowser turns both on (`init_stylo_prefs` in the fork sets the pref, `crates/renderer/Cargo.toml` enables the feature), so the property parses, computes, and drives layout. This is a build choice recorded here because the defaults hide it. What remains red in the vertical `scrollIntoView` tests is the separate gap: `scrollIntoView` ignores nested scroll containers.
 - `blitz-dom`'s inline layout records fragment boxes only for glyph runs and atomic inline boxes, so an empty non-atomic inline has none. `BaseDocument::offset_rect` returns `None` for it, and the renderer approximates the position from a sibling (`empty_inline_rect` in `js/bindings/node/offset.rs`). The sibling's border-box top is not the line-box top, so a baseline-aligned atomic inline in a taller line puts the guess off (`offsetTop-offsetLeft-nested-offsetParents.html`), and a line break between the sibling and the empty inline makes it wrong. A fragment box for an empty inline belongs upstream.
 - `Node::has_boxes` answers for the node alone (in the document, and not `display: none` or `display: contents`), so a descendant of `display: none` still reports a box. The renderer walks the ancestors itself (`has_associated_box` in `js/bindings/node/offset.rs`) for `checkVisibility`, `offsetParent`, and the offset metrics. Upstream-able: the predicate should answer for the element in its tree.
-- `Node::offset_top_left` stops at a positioned ancestor, `body`, `td`, or `th` (`is_offset_parent`), so it does not see a `transform`/`filter`/`contain` fixed-position containing block and does not treat `table` as a static offset parent. `BaseDocument::offset_rect` builds on it, so inside such an ancestor the rectangle is measured from a different box than the `offsetParent` the renderer reports. Open upstream, not worked around; `docs/limitations.md` records the consequence.
+- `Node::offset_top_left` stops at a positioned ancestor, `body`, `td`, or `th` (`is_offset_parent`), so it does not see a `transform`/`filter`/`contain` fixed-position containing block and does not treat `table` as a static offset parent. `BaseDocument::offset_rect` builds on it, so inside such an ancestor the rectangle is measured from a different box than the `offsetParent` the renderer reports. Open upstream, not worked around.
 - `blitz-html` sniffs XHTML by substring (`html_sink.rs:parse_into_mutator`: first line containing `XHTML`/`xhtml`, or an `xmlns` on the root) and parses the whole document as XML. Any `text/html` document whose first line mentions XHTML — e.g. an XHTML-transitional doctype — loses every node after the first well-formedness error. The HTML parser must never go XML from the doctype. Open, not fixed in fork, not worked around.
 - `blitz-dom` puts `AnonymousBlock` layout boxes in the same tree. Open upstream gap, handled on our side as transparent (snapshot/serialize children only, never brand as elements).
 - `blitz-dom` exposes only the viewport scroll offset, no per-element scroll-container offset API. Open, not fixed in fork.
@@ -464,7 +467,7 @@ Known gaps this engine fails honestly (no fork patch yet):
   unconditional "an ancestor has `content-visibility: hidden`" step or its
   `contentVisibilityAuto` option (five `css/cssom-view/checkVisibility.html`
   subtests stay red), and Blitz lays out and paints content the property would
-  skip. Open upstream, not worked around; recorded in `docs/limitations.md`.
+  skip. Open upstream, not worked around.
 - `blitz-dom` exposes the inline `style` declaration block (blitz@2ee9c1d3d):
   CSSOM serialization, declaration names in specified order, per-property
   value and priority, `cssText` replacement, and `setProperty` with an
@@ -518,3 +521,39 @@ Known gaps this engine fails honestly (no fork patch yet):
   the writer realm and replayed when the replacement document's realm starts —
   the same model already used for `WindowProxy` writes
   (<https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-set>).
+
+## Engine and upstream limitations
+
+Large architectural ceilings in upstream dependencies that cannot be solved with small, pullable fork patches live here. Tinybrowser-owned feature gaps are tracked in [GitHub issues](https://github.com/tinybrowser-dev/tinybrowser/issues).
+
+### JavaScript engine (`quickjs-ng` / `rquickjs`)
+- Bytecode interpreter with no JIT: script-heavy single-page apps run slower than in V8 or SpiderMonkey.
+- Strict-mode global assignment target resolution (`put_var`) resolves at store time rather than LHS evaluation time.
+- Cross-realm typed array creation (`Response` body methods returning `Uint8Array`/`ArrayBuffer` in the receiver's realm) lacks a safe `rquickjs` API.
+- `rquickjs` passes native callback arguments by value (`Ctx`, `Value`, `String`).
+
+### CSS cascade and selector engine (`stylo` Servo backend)
+- Gecko-only properties omitted in Servo builds: `content-visibility`, `scroll-margin-*`, `scroll-padding-*`, `display: ruby-text`, `page-break-*`, `orphans`, `widows`, `alignment-baseline`, `outline-color: invert`, `appearance: base-select`, `::picker(select)`, `::picker-icon`, `::checkmark`, and `:filtered`.
+- No full sibling-spanning invalidation maps for complex `:has(~ ...)` / `:has(+ ...)` / `:not()` / `:is()` selectors.
+- SVG paint servers (`fill: url(...)`) are not fetched (#308).
+- CSS Color 4 OKLCH local-MINDE gamut mapping and Oklab gradient interpolation (`color-mix()`, relative colors).
+
+### Layout, shaping, and painting (`blitz-dom` / `blitz-paint` / `taffy` / `parley` / `fontique` / `anyrender_tiny_skia` / `usvg`)
+- Headless one-shot PNG/RGBA rasterization only: no GPU acceleration, no continuous compositor/paint loop, and no audio/video media decoding.
+- Shadow DOM `<slot>` projection and shadow-scoped stylesheets (#299).
+- Non-atomic inline horizontal `margin`/`padding`/`border` spacing in Parley inline layout (#288).
+- `position: sticky` layout offset (reports static box position); `sideways-lr` float placement; `transform-style: preserve-3d` fixed containing block hoisting in `stylo_taffy`; empty non-atomic inline fragment boxes.
+- Selector state plumbing in `blitz-dom`: `:valid`/`:invalid` and `<label>`-forwarded `:active`; viewport overflow propagation from `<body>` when `<html>` is `overflow: visible`; per-element scroll-container offset API and `Content-Language` metadata setter.
+- `anyrender_tiny_skia` does not implement `backdrop-filter` or filter tainting; `tiny-skia` slightly under-covers arc pixels touching the bitmap edge.
+- `fontique` cannot alias an already-loaded system font family for `@font-face` `local()` and has no platform `ui-*` generic families.
+- `usvg` external SVG `<image>` EXIF orientation and density correction; SVG `<image>` decoded pixel data is not retained on `ElementData`.
+
+### HTML parser (`html5ever` / `blitz-html`)
+- `blitz-html` sniffs XHTML by substring on `text/html` doctypes and switches to XML parsing.
+- Misnested `<table><form>` controls do not inherit the parser's form element pointer.
+
+### Networking, TLS, and process isolation (`hyper` / `httparse` / OpenSSL)
+- `httparse` rejects HTTP/1 response header values containing control bytes other than TAB (`0x0B`, `0x0C`, `0x7F`).
+- `http::HeaderName` lowercases request header names on the wire.
+- TLS uses OpenSSL's fingerprint rather than Chrome JA3/JA4 impersonation.
+- No OS process sandbox or out-of-process iframe (OOPIF) isolation yet.

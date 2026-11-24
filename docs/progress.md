@@ -1,3 +1,9 @@
+> Historical journal. `docs/limitations.md` was deleted on 2026-11-24. Upstream
+> ceilings that cannot be fixed here live in
+> [`docs/upstream.md#engine-and-upstream-limitations`](upstream.md#engine-and-upstream-limitations);
+> tinybrowser-owned gaps are GitHub issues. Entries below that cite
+> `docs/limitations.md` name where the gap was recorded at the time.
+
 ## Binary size
 
 11.76 MiB native (`cargo build --release`), 11.97 MiB WASI Preview 2 component (`tinybrowser-wasm`); see `docs/size.md` for the full ledger.

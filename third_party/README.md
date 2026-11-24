@@ -38,6 +38,9 @@ which clones each submodule's object store again.
 - Update: pull upstream in the submodule, push the fork branch, bump
   the pointer here. Check pins with git submodule status. Fresh clones
   (canonical checkout): git submodule update --init --recursive.
+- Patch scope: only make fork changes small and self-contained enough that
+  pulling from upstream stays easy. Large architectural changes to forks stay
+  upstream and belong in docs/upstream.md.
 - Conflicts: upstream wins — take upstream's shape, re-apply our patch
   on top. The rule and its reason live in docs/upstream.md.
 

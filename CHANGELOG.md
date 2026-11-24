@@ -2,7 +2,9 @@
 
 All notable changes to `tinybrowser` are documented in this file.
 
-## [0.0.1] - Unreleased
+## [Unreleased]
+
+## [0.0.1] - 2026-11-22
 
 ### Added
 - Single-binary headless browser built on Blitz, Stylo, html5ever, Taffy, and QuickJS (`quickjs-ng` fork)

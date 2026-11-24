@@ -85,7 +85,7 @@ The `wasm32-wasip2` release tarball ships `tinybrowser.wasm` implementing [crate
 - Browser-owned HTTP/1.1 + HTTP/2 network stack (`crates/net`): CORS, ORB, 6265bis cookies + CHIPS, CSP, HTTP cache, `Sec-Fetch-*`
 - CDP (Playwright-compatible) and classic WebDriver
 
-**Not yet (see [docs/limitations.md](docs/limitations.md)):**
+**Not yet (see [docs/upstream.md](docs/upstream.md#engine-and-upstream-limitations) and [open issues](https://github.com/tinybrowser-dev/tinybrowser/issues)):**
 - No Service Workers, WebGL, WebAudio, or page-facing WebSockets
 - QuickJS is a bytecode interpreter with no JIT (JS-heavy apps run slower than V8)
 - No GPU acceleration or continuous paint loop (headless one-shot rendering only)
