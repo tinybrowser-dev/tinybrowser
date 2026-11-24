@@ -7,7 +7,7 @@
   --text-xl: clamp(1.425rem, 1.3989rem + 0.1304vw, 1.5rem);
   --text-2xl: clamp(1.6625rem, 1.6321rem + 0.1522vw, 1.75rem);
   --measure: 50ch;
-  --wrap: 68rem;
+  --wrap: 60ch;
 
   /* A 4px grid for boxes. Text rhythm stays in em. */
   --space-1: 0.25rem;

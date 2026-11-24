@@ -7,4 +7,9 @@ import { defineConfig } from "astro/config"
 export default defineConfig({
   site: "https://tinybrowser.ericc.ch/",
   compressHTML: true,
+  // Dev is reached from a phone through `tailscale serve`, which proxies to
+  // this port and forwards the tailnet hostname as the Host header.
+  server: {
+    allowedHosts: [".barbel-fish.ts.net"],
+  },
 })

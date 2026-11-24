@@ -5,32 +5,13 @@ export const prerender = true
 ---
 
 <Base
-  title="Lab · tinybrowser"
-  description="Interactive WebAssembly browser engine lab: cross-origin DevTools inspection, Set-of-Mark agent overlays, isolated cookie jars with HttpOnly inspection, event-loop stepping, and live network chaos."
+  title="Demo · tinybrowser"
+  description="tinybrowser compiled to WebAssembly, running in this tab. Load a URL and inspect the DOM, console, network, cookies, and event loop."
 >
   <div class="page-head">
-    <div class="measure">
-      <h1 class="page-title">Browser engine lab</h1>
-      <p class="lede">
-        Real Blitz, QuickJS, and Rust fetch core compiled to WebAssembly. Inspect cross-origin sites
-        that block iframes, split isolated cookie jars, pause the event loop, or inject network
-        faults below the fetch stack.
-      </p>
-    </div>
+    <h1 class="page-title">tinybrowser in this tab</h1>
     <p class="run-meta" id="demo-status">initializing…</p>
   </div>
-
-  <script is:inline type="importmap">
-    {
-      "imports": {
-        "@bytecodealliance/preview2-shim/cli": "/wasm/shims/cli.js",
-        "@bytecodealliance/preview2-shim/clocks": "/wasm/shims/clocks.js",
-        "@bytecodealliance/preview2-shim/filesystem": "/wasm/shims/filesystem.js",
-        "@bytecodealliance/preview2-shim/io": "/wasm/shims/io.js",
-        "@bytecodealliance/preview2-shim/random": "/wasm/shims/random.js"
-      }
-    }
-  </script>
 
   <section class="lab-chrome" aria-label="Navigation and mode controls">
     <div class="lab-omnibox">
@@ -157,8 +138,8 @@ export const prerender = true
       </div>
 
       <p class="demo-hint" id="demo-hint">
-        Click, scroll, or type inside the rendered frame — events go through tinybrowser's real
-        input pipeline.
+        Click, scroll, or type inside the frame. tinybrowser delivers those events to the page
+        itself.
       </p>
     </div>
 
@@ -244,6 +225,17 @@ export const prerender = true
       </div>
     </aside>
   </section>
+
+  <div class="demo-about measure">
+    <p>
+      Type a URL and it fetches the page, runs the scripts, and paints the result. There is no
+      Chromium to download and nothing to install.
+    </p>
+    <p>
+      The panel is a small set of developer tools. Inspect the DOM, read the console and network
+      log, check cookies and storage, or pause the event loop and step one tick at a time.
+    </p>
+  </div>
 
   <script src="../demo/app.ts"></script>
 </Base>

@@ -7,12 +7,12 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 0 var(--space-5);
-  font-size: var(--text-sm);
 }
 
 .site-nav a,
 .site-nav button {
   padding-block: var(--space-1);
+  font-size: var(--text-sm);
 }
 
 .site-nav .brand {
@@ -44,17 +44,60 @@ html:not([data-js]) #theme-toggle {
   display: none;
 }
 
-.home-col {
-  max-width: 60ch;
-  margin-inline: auto;
-}
-
 .home > * + * {
   margin-top: var(--space-4);
 }
 
 .home .links {
   margin-top: var(--space-5);
+}
+
+.hook-section {
+  margin-top: var(--space-6);
+}
+
+.hook {
+  color: var(--fg-0);
+}
+
+.status {
+  margin-top: var(--space-4);
+  color: var(--fg-1);
+  font-size: var(--text-sm);
+}
+
+.features {
+  margin: 0;
+}
+
+.features dt {
+  color: var(--fg-0);
+  font-weight: 600;
+}
+
+.features dd {
+  margin: 0;
+  color: var(--fg-1);
+}
+
+.features dd + dt {
+  margin-top: var(--space-4);
+}
+
+.limits {
+  margin: 0;
+  padding-inline-start: 1.25em;
+  color: var(--fg-1);
+}
+
+.limits li + li {
+  margin-top: var(--space-2);
+}
+
+.limits-more {
+  margin-top: var(--space-4);
+  color: var(--fg-1);
+  font-size: var(--text-sm);
 }
 
 .install-list {
@@ -163,6 +206,15 @@ html:not([data-js]) #theme-toggle {
 
 .run-meta .sha {
   font-family: var(--font-mono);
+}
+
+.demo-about {
+  margin-top: var(--space-6);
+  color: var(--fg-1);
+}
+
+.demo-about p + p {
+  margin-top: var(--space-3);
 }
 
 .stats {
@@ -562,16 +614,10 @@ button:disabled {
 
 .lab-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(0, 0.9fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-5);
   margin-top: var(--space-5);
   align-items: start;
-}
-
-@media (max-width: 60rem) {
-  .lab-grid {
-    grid-template-columns: 1fr;
-  }
 }
 
 .lab-stage-bar {
@@ -660,18 +706,22 @@ button:disabled {
 }
 
 .lab-inspector {
+  min-width: 0;
   border: 1px solid var(--fg-2);
   background: var(--bg-0);
 }
 
 .lab-tabs {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  overflow-x: auto;
   border-bottom: 1px solid var(--fg-2);
   background: var(--bg-1);
 }
 
 .lab-tabs button {
+  flex: none;
+  white-space: nowrap;
   padding: var(--space-2) var(--space-3);
   font-size: var(--text-sm);
   text-decoration: none;

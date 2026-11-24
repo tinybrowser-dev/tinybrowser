@@ -1,7 +1,13 @@
 ---
 import Base from "@/layouts/Base.astro"
+import { formatPercent, subtestPercent, testPercent } from "@/lib/record"
+import { loadWptSnapshot } from "@/lib/wpt-results"
 
 export const prerender = true
+
+const { latest } = loadWptSnapshot()
+const wptSubtests = latest ? subtestPercent(latest.totals) : null
+const wptFiles = latest ? testPercent(latest.totals) : null
 
 const unixCmd =
   "curl -fsSL https://raw.githubusercontent.com/tinybrowser-dev/tinybrowser/main/install.sh | sh"
@@ -26,18 +32,79 @@ const agentPrompt = `Install tinybrowser (a ~17 MiB headless browser for AI agen
   title="tinybrowser"
   description="A headless web browser for AI agents and automated tools in a single ~17 MiB Rust binary."
 >
-  <section class="home home-col">
+  <section class="home">
     <h1>tinybrowser</h1>
-    <p class="lede">
-      A headless web browser for AI agents and automated tools. It opens web pages, runs JavaScript,
-      fills forms, and takes screenshots in a single ~17 MiB binary.
-    </p>
     <p class="links">
       <a href="/demo">Try tinybrowser in your browser</a>
     </p>
   </section>
 
-  <section class="section home-col" id="install">
+  <section class="hook-section">
+    <p class="hook">
+      tinybrowser is an experimental headless browser for AI agents and automation, shipped as one
+      17 MiB Rust binary. It parses HTML, applies CSS, runs JavaScript, keeps cookies and storage,
+      and writes a PNG screenshot.
+    </p>
+    <p class="status">Experimental preview. Not production ready.</p>
+  </section>
+
+  <section class="section">
+    <h2>What it does</h2>
+    <dl class="features">
+      <dt>Web Platform Tests</dt>
+      <dd>
+        {wptSubtests !== null && wptFiles !== null ? (
+          <>
+            The pinned suite passes {formatPercent(wptSubtests)} of subtests and{" "}
+            {formatPercent(wptFiles)} of files. The <a href="/wpt">dashboard</a> has the full
+            breakdown.
+          </>
+        ) : (
+          <>The <a href="/wpt">dashboard</a> has the conformance record.</>
+        )}
+      </dd>
+
+      <dt>Automation</dt>
+      <dd>
+        One loopback port speaks Chrome DevTools Protocol and W3C WebDriver, so Playwright and
+        Selenium connect without a patch.
+      </dd>
+
+      <dt>Embedding</dt>
+      <dd>
+        The same engine compiles to a WASI Preview 2 component. The <a href="/demo">live demo</a>
+        runs it in your browser.
+      </dd>
+    </dl>
+  </section>
+
+  <section class="section">
+    <h2>What it doesn't do yet</h2>
+    <ul class="limits">
+      <li>No Service Workers, WebGL, WebAudio, or page-facing WebSockets.</li>
+      <li>
+        QuickJS interprets bytecode and has no JIT, so script-heavy pages run slower than they do in
+        V8.
+      </li>
+      <li>
+        Screenshots are one-shot PNGs. There is no GPU acceleration, no continuous paint loop, and
+        no video.
+      </li>
+      <li>There is no OS process sandbox or out-of-process iframe isolation yet.</li>
+      <li>TLS uses OpenSSL's fingerprint, not Chrome's JA3 or JA4.</li>
+    </ul>
+    <p class="limits-more">
+      Those are the headlines. See
+      <a href="https://github.com/tinybrowser-dev/tinybrowser/blob/main/docs/upstream.md#engine-and-upstream-limitations"
+        >engine &amp; upstream limitations</a
+      >
+      and
+      <a href="https://github.com/tinybrowser-dev/tinybrowser/issues">open issues</a>
+      for the rest.
+    </p>
+  </section>
+
+  <section class="section" id="install">
     <h2>Install</h2>
 
     <div class="install-list">
