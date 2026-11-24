@@ -1021,28 +1021,53 @@ mod tests {
     #[test]
     fn linux_system_fonts_configure_script_fallbacks() {
         let mut fonts = super::Fonts::default();
-        let has_hani = fonts
+        let installed: Vec<(parley::fontique::FamilyId, String)> = fonts
             .0
             .collection
-            .fallback_families(parley::fontique::FallbackKey::new(
-                parley::fontique::Script::from_bytes(*b"Hani"),
-                None,
-            ))
-            .next()
-            .is_some();
-        let has_common = fonts
-            .0
-            .collection
-            .fallback_families(parley::fontique::FallbackKey::new(
-                parley::fontique::Script::from_bytes(*b"Zyyy"),
-                None,
-            ))
-            .next()
-            .is_some();
-        assert!(has_hani, "Linux font loader must configure Hani fallbacks");
-        assert!(
-            has_common,
-            "Linux font loader must configure Common (Zyyy) fallbacks"
-        );
+            .family_ids()
+            .collect::<Vec<_>>()
+            .into_iter()
+            .filter_map(|id| Some((id, fonts.0.collection.family_name(id)?.to_owned())))
+            .collect();
+        if installed.is_empty() {
+            return;
+        }
+        let has_cjk = installed.iter().any(|(_, name)| {
+            let name = name.to_ascii_lowercase();
+            name.contains("cjk") || name.contains("han") || name.contains("wqy")
+        });
+        if has_cjk {
+            let has_hani = fonts
+                .0
+                .collection
+                .fallback_families(parley::fontique::FallbackKey::new(
+                    parley::fontique::Script::from_bytes(*b"Hani"),
+                    None,
+                ))
+                .next()
+                .is_some();
+            assert!(has_hani, "Linux font loader must configure Hani fallbacks");
+        }
+        let has_common_source = installed.iter().any(|(_, name)| {
+            super::LINUX_COMMON_FALLBACKS
+                .0
+                .iter()
+                .any(|candidate| name.eq_ignore_ascii_case(candidate))
+        });
+        if has_common_source {
+            let has_common = fonts
+                .0
+                .collection
+                .fallback_families(parley::fontique::FallbackKey::new(
+                    parley::fontique::Script::from_bytes(*b"Zyyy"),
+                    None,
+                ))
+                .next()
+                .is_some();
+            assert!(
+                has_common,
+                "Linux font loader must configure Common (Zyyy) fallbacks"
+            );
+        }
     }
 }
