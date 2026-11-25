@@ -1694,11 +1694,12 @@ struct SpawnedRenderer {
     reader: Box<dyn AsyncRead + Send + Unpin>,
     writer: Box<dyn AsyncWrite + Send + Unpin>,
     #[cfg(windows)]
-    job: crate::child::sandbox::ProcessJob,
+    job: Option<crate::child::sandbox::ProcessJob>,
 }
 
 #[cfg(unix)]
-fn spawn_transport(command: &mut Command) -> io::Result<SpawnedRenderer> {
+fn spawn_transport(sandbox: crate::child::RendererSandbox) -> io::Result<SpawnedRenderer> {
+    let mut command = renderer_command(sandbox)?;
     let (host, child_end) = std::os::unix::net::UnixStream::pair()?;
     command
         .stdin(Stdio::from(std::os::fd::OwnedFd::from(child_end)))
@@ -1717,20 +1718,24 @@ fn spawn_transport(command: &mut Command) -> io::Result<SpawnedRenderer> {
 }
 
 #[cfg(not(unix))]
-fn spawn_transport(command: &mut Command) -> io::Result<SpawnedRenderer> {
+fn spawn_transport(sandbox: crate::child::RendererSandbox) -> io::Result<SpawnedRenderer> {
+    let mut command = renderer_command(sandbox)?;
     command.stdin(Stdio::piped()).stdout(Stdio::piped());
     let mut child = command.spawn()?;
     #[cfg(windows)]
-    let job = match child
-        .raw_handle()
-        .ok_or_else(|| io::Error::other("renderer process handle missing"))
-        .and_then(crate::child::sandbox::ProcessJob::assign)
-    {
-        Ok(job) => job,
-        Err(error) => {
-            let _ = child.start_kill();
-            return Err(error);
-        }
+    let job = match sandbox {
+        crate::child::RendererSandbox::Enabled => match child
+            .raw_handle()
+            .ok_or_else(|| io::Error::other("renderer process handle missing"))
+            .and_then(crate::child::sandbox::ProcessJob::assign)
+        {
+            Ok(job) => Some(job),
+            Err(error) => {
+                let _ = child.start_kill();
+                return Err(error);
+            }
+        },
+        crate::child::RendererSandbox::Disabled => None,
     };
     let Some(stdin) = child.stdin.take() else {
         let _ = child.start_kill();
@@ -1796,12 +1801,19 @@ pub(crate) struct RendererServices {
     pub(crate) browser: crate::browser::BrowserHandle,
     pub(crate) registry: Arc<AssignmentRegistry>,
     pub(crate) tabs: TabRegistry,
+    pub(crate) sandbox: crate::child::RendererSandbox,
 }
 
-fn renderer_command() -> io::Result<Command> {
+fn renderer_command(sandbox: crate::child::RendererSandbox) -> io::Result<Command> {
     let mut command = Command::new(std::env::current_exe()?);
+    command.arg("--renderer");
+    match sandbox {
+        crate::child::RendererSandbox::Enabled => {}
+        crate::child::RendererSandbox::Disabled => {
+            command.arg("--no-sandbox");
+        }
+    }
     command
-        .arg("--renderer")
         .env_clear()
         .env("TINYBROWSER_LOG", logging::level().as_str())
         .stderr(Stdio::piped());
@@ -1836,15 +1848,15 @@ pub(crate) async fn spawn_process(
         browser,
         registry,
         tabs,
+        sandbox,
     } = services;
-    let mut command = renderer_command()?;
     let SpawnedRenderer {
         mut child,
         reader,
         writer,
         #[cfg(windows)]
         job,
-    } = spawn_transport(&mut command)?;
+    } = spawn_transport(sandbox)?;
     let Some(stderr) = child.stderr.take() else {
         let _ = child.start_kill();
         return Err(io::Error::other("renderer stderr missing"));
@@ -1869,7 +1881,7 @@ pub(crate) async fn spawn_process(
     let alive = Arc::new(AtomicBool::new(true));
     let (ready_tx, ready_rx) = oneshot::channel();
     let failure = LinkFailure {
-        router: router.clone(),
+        router,
         alive: Arc::clone(&alive),
         kill: kill.clone(),
         renderer: id,
@@ -1931,7 +1943,7 @@ pub(crate) async fn spawn_process(
 async fn child_task(
     mut child: Child,
     mut kill: watch::Receiver<bool>,
-    #[cfg(windows)] _job: crate::child::sandbox::ProcessJob,
+    #[cfg(windows)] _job: Option<crate::child::sandbox::ProcessJob>,
 ) {
     if *kill.borrow() {
         let _ = child.start_kill();

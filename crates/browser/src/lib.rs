@@ -23,6 +23,7 @@ pub use actor::{
 pub use browser::{
     Browser, BrowserError, BrowserHandle, BrowserLifecycleEvent, BrowserOpenError, BrowserOptions,
 };
+pub use child::RendererSandbox;
 pub use context::{DEFAULT_USER_CONTEXT, UserContextId};
 pub use frames::FrameInfo;
 pub use history::{EntryId, HistoryEntry, HistorySnapshot};

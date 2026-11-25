@@ -13,6 +13,7 @@ use url::Url;
 
 use self::task::BrowserTask;
 use crate::actor::{NavigationInitiator, TabHandle, TabId};
+use crate::child::RendererSandbox;
 use crate::context::{BrowserContext, UserContextId};
 use crate::exchange;
 use crate::intercept::NetworkBroker;
@@ -41,6 +42,7 @@ pub struct BrowserOptions {
     pub data_home: Option<PathBuf>,
     pub profile: Profile,
     pub network: net::AgentOptions,
+    pub sandbox: RendererSandbox,
 }
 
 pub struct Browser {
@@ -494,6 +496,7 @@ impl Browser {
             lifecycle,
             network_broker,
             prompt_broker,
+            options.sandbox,
         );
         runtime.spawn(task.run());
         Ok(Self { handle })

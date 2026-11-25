@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use tokio::sync::{broadcast, mpsc};
 
 use crate::actor::{NewTab, RemoteWindowMessage, TabHandle, TabId, TabTask};
+use crate::child::RendererSandbox;
 use crate::context::{BrowserContext, UserContextId};
 use crate::exchange::ServerInput;
 use crate::frames::FrameInfo;
@@ -511,6 +512,7 @@ impl BrowserTask {
         lifecycle: broadcast::Sender<BrowserLifecycleEvent>,
         network_broker: Arc<NetworkBroker>,
         prompt_broker: Arc<PromptBroker>,
+        sandbox: RendererSandbox,
     ) -> Self {
         let tabs = TabRegistry::new();
         let identity = browser.identity().clone();
@@ -519,6 +521,7 @@ impl BrowserTask {
             browser,
             tabs.clone(),
             identity,
+            sandbox,
         ));
         Self {
             server,

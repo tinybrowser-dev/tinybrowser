@@ -551,6 +551,7 @@ Large architectural ceilings in upstream dependencies that cannot be solved with
 - `anyrender_tiny_skia` does not implement `backdrop-filter` or filter tainting; `tiny-skia` slightly under-covers arc pixels touching the bitmap edge.
 - `fontique` cannot alias an already-loaded system font family for `@font-face` `local()` and has no platform `ui-*` generic families.
 - `usvg` external SVG `<image>` EXIF orientation and density correction; SVG `<image>` decoded pixel data is not retained on `ElementData`.
+- `parley` / `icu_segmenter` writes `ICU4X data error: No segmentation model for complex script: Chinese/Japanese` to stderr during layout without CJK dictionary/LSTM segmentation data.
 
 ### HTML parser (`html5ever` / `blitz-html`)
 - `blitz-html` sniffs XHTML by substring on `text/html` doctypes and switches to XML parsing.
@@ -560,4 +561,4 @@ Large architectural ceilings in upstream dependencies that cannot be solved with
 - `httparse` rejects HTTP/1 response header values containing control bytes other than TAB (`0x0B`, `0x0C`, `0x7F`).
 - `http::HeaderName` lowercases request header names on the wire.
 - TLS uses OpenSSL's fingerprint rather than Chrome JA3/JA4 impersonation.
-- No OS process sandbox or out-of-process iframe (OOPIF) isolation yet.
+- No out-of-process iframe (OOPIF) isolation yet.

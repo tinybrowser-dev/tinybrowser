@@ -42,8 +42,9 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> ExitCode {
+    let sandbox = cli.sandbox;
     match cli.mode {
-        Mode::Renderer => match browser::child::serve() {
+        Mode::Renderer => match browser::child::serve(sandbox) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 logging::error!(target: "renderer", "{error}");
@@ -56,7 +57,7 @@ fn run(cli: Cli) -> ExitCode {
             network,
         } => run_browser_process("daemon", async move {
             let home = default_data_home()?;
-            daemon::run(&profile, &home, port, *network).await
+            daemon::run(&profile, &home, port, *network, sandbox).await
         }),
     }
 }

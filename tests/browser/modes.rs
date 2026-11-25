@@ -80,6 +80,7 @@ fn help_documents_workflow_endpoints_and_flags() {
         );
         assert!(out.contains("--port <PORT>"), "{out}");
         assert!(out.contains("--profile <NAME>"), "{out}");
+        assert!(out.contains("--no-sandbox"), "{out}");
         assert!(out.contains("--renderer"), "{out}");
         assert!(out.contains("daemon.json"), "{out}");
     }
@@ -114,6 +115,7 @@ fn repeated_single_value_flags_are_rejected() {
         &["--log-level=info", "--log-level=debug"],
         &["--profile=a", "--profile=b"],
         &["--port=1", "--port=2"],
+        &["--no-sandbox", "--no-sandbox"],
         &["--renderer", "--renderer"],
     ] {
         let output = run(&fixture, args);
@@ -219,6 +221,37 @@ fn log_file_flag_names_the_log_file() {
     );
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let logged = std::fs::read_to_string(&path).expect("log file created");
+    assert!(logged.contains("INFO renderer ready"), "{logged}");
+}
+
+#[test]
+fn no_sandbox_rejects_inline_value() {
+    let fixture = Fixture::new("tinybrowser-no-sandbox-value");
+    let output = run(&fixture, &["--no-sandbox=true"]);
+    assert_eq!(output.status.code(), Some(2));
+    let err = String::from_utf8_lossy(&output.stderr);
+    assert!(err.contains("unexpected value for '--no-sandbox'"), "{err}");
+}
+
+#[test]
+fn no_sandbox_disables_renderer_sandbox_and_logs_warning() {
+    let fixture = Fixture::new("tinybrowser-no-sandbox-renderer");
+    let path = fixture.data().join("no-sandbox.log");
+    let output = run(
+        &fixture,
+        &[
+            "--log-file",
+            path.to_str().expect("utf-8 path"),
+            "--no-sandbox",
+            "--renderer",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let logged = std::fs::read_to_string(&path).expect("log file created");
+    assert!(
+        logged.contains("WARN renderer::sandbox renderer OS sandbox disabled via --no-sandbox"),
+        "{logged}"
+    );
     assert!(logged.contains("INFO renderer ready"), "{logged}");
 }
 

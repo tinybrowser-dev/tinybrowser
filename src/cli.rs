@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use browser::{
     AgentOptions, InvalidCa, InvalidIdentity, InvalidProxy, InvalidResolveRule, Profile,
-    ProfileError, Proxy, TrustedCa, ValidIdentity,
+    ProfileError, Proxy, RendererSandbox, TrustedCa, ValidIdentity,
 };
 use logging::Level;
 
@@ -13,6 +13,7 @@ pub(crate) struct Cli {
     pub(crate) log_level: Option<Level>,
     pub(crate) log_file: Option<PathBuf>,
     pub(crate) verbose: bool,
+    pub(crate) sandbox: RendererSandbox,
     pub(crate) mode: Mode,
 }
 
@@ -131,6 +132,10 @@ Options:
           Write logs to `<PATH>` instead of `$XDG_DATA_HOME/tinybrowser/logs/<profile>.log`
       --verbose
           Shorthand for `--log-level=debug`
+      --no-sandbox
+          Disable the renderer OS process sandbox (Landlock/seccomp, Seatbelt, Job Object).
+          Dangerous: use only inside an already-isolated container or sandbox where the host
+          kernel does not permit the renderer sandbox.
       --renderer
           Internal: run a child renderer worker over inherited file descriptor 0.
           Spawned automatically by the daemon; cannot be combined with daemon options.
@@ -161,6 +166,7 @@ struct Scanner<I: Iterator<Item = OsString>> {
     log_level: Option<Level>,
     log_file: Option<PathBuf>,
     verbose: bool,
+    no_sandbox: bool,
     mode: Option<Partial>,
 }
 
@@ -186,6 +192,7 @@ impl<I: Iterator<Item = OsString>> Scanner<I> {
             log_level: None,
             log_file: None,
             verbose: false,
+            no_sandbox: false,
             mode: None,
         }
     }
@@ -255,6 +262,18 @@ impl<I: Iterator<Item = OsString>> Scanner<I> {
                     });
                 }
                 self.verbose = true;
+                Ok(None)
+            }
+            "no-sandbox" => {
+                if inline.is_some() {
+                    return Err(CliError::UnexpectedValue { flag: "no-sandbox" });
+                }
+                if self.no_sandbox {
+                    return Err(CliError::Repeated {
+                        spelling: "--no-sandbox",
+                    });
+                }
+                self.no_sandbox = true;
                 Ok(None)
             }
             "renderer" => {
@@ -428,10 +447,16 @@ impl<I: Iterator<Item = OsString>> Scanner<I> {
                 network: Box::default(),
             },
         };
+        let sandbox = if self.no_sandbox {
+            RendererSandbox::Disabled
+        } else {
+            RendererSandbox::Enabled
+        };
         Ok(Outcome::Run(Box::new(Cli {
             log_level: self.log_level,
             log_file: self.log_file,
             verbose: self.verbose,
+            sandbox,
             mode,
         })))
     }
