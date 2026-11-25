@@ -33,8 +33,15 @@ enum HandshakeRejection {
 pub fn is_upgrade_request(request: &Request) -> bool {
     request
         .headers()
-        .get(header::UPGRADE)
-        .is_some_and(|value| value.as_bytes().eq_ignore_ascii_case(b"websocket"))
+        .get_all(header::UPGRADE)
+        .iter()
+        .any(|value| {
+            value.to_str().is_ok_and(|value| {
+                value
+                    .split(',')
+                    .any(|token| token.trim().eq_ignore_ascii_case("websocket"))
+            })
+        })
 }
 
 pub fn upgrade<F, Fut>(request: Request, handler: F) -> Response
@@ -68,10 +75,14 @@ fn upgrade_key(request: &Request) -> Result<String, HandshakeRejection> {
         return Err(HandshakeRejection::Method);
     }
     let headers = request.headers();
-    let has_upgrade = headers
-        .get(header::UPGRADE)
-        .is_some_and(|value| value.as_bytes().eq_ignore_ascii_case(b"websocket"));
-    let has_connection = headers.get(header::CONNECTION).is_some_and(|value| {
+    let has_upgrade = headers.get_all(header::UPGRADE).iter().any(|value| {
+        value.to_str().is_ok_and(|value| {
+            value
+                .split(',')
+                .any(|token| token.trim().eq_ignore_ascii_case("websocket"))
+        })
+    });
+    let has_connection = headers.get_all(header::CONNECTION).iter().any(|value| {
         value.to_str().is_ok_and(|value| {
             value
                 .split(',')
@@ -97,7 +108,11 @@ fn upgrade_key(request: &Request) -> Result<String, HandshakeRejection> {
 fn rejection_response(rejection: HandshakeRejection) -> Response {
     match rejection {
         HandshakeRejection::HttpVersion => {
-            text(StatusCode::UPGRADE_REQUIRED, "upgrade requires HTTP/1.1")
+            let mut response = text(StatusCode::UPGRADE_REQUIRED, "upgrade requires HTTP/1.1");
+            response
+                .headers_mut()
+                .insert(header::UPGRADE, HeaderValue::from_static("websocket"));
+            response
         }
         HandshakeRejection::Method => text(
             StatusCode::METHOD_NOT_ALLOWED,

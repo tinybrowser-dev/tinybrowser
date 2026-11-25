@@ -701,6 +701,18 @@ impl RealmRegistry {
                 *node = to;
             }
         }
+        for selection in self.document_selections.values_mut() {
+            if let Some((node, _)) = &mut selection.start
+                && *node == from
+            {
+                *node = to;
+            }
+            if let Some((node, _)) = &mut selection.end
+                && *node == from
+            {
+                *node = to;
+            }
+        }
     }
 
     pub(crate) fn stamp_creation_realm(&mut self, id: NodeId, world: &Rc<RefCell<World>>) {
@@ -760,6 +772,9 @@ impl RealmRegistry {
         self.canvases.clear();
         self.canvas_nodes.clear();
         self.bitmaps.clear();
+        self.selections.clear();
+        self.document_selections.clear();
+        self.active_elements.clear();
     }
 
     fn budget(&self) -> Rc<RefCell<ResourceBudget>> {

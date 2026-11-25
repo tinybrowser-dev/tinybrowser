@@ -5,8 +5,9 @@
 #   harness   — testharness, crashtest, and reftest files mounted in the real
 #               engine, with a wptserve sidecar for `.py` handler routes. No
 #               WebDriver, wptserve request path, or renderer child per test.
-#   webdriver — the files `run in-process` cannot run: testdriver tests and the
-#               non-worker generated wrappers, driven through the browser.
+#   webdriver — the files `run in-process` cannot run: testdriver tests,
+#               `wdspec` (WebDriver Classic & BiDi), and the non-worker
+#               generated wrappers, driven through the browser.
 #               Worker variants (`--exclude=worker`) stay excluded by default
 #               until the harness runs them without exceeding the chunk budget.
 #

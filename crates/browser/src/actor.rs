@@ -92,6 +92,7 @@ pub enum TabEvent {
     // https://chromedevtools.github.io/devtools-protocol/tot/Page/#event-frameNavigated
     FrameNavigated {
         frame: FrameId,
+        parent: FrameId,
         url: String,
     },
     // https://chromedevtools.github.io/devtools-protocol/tot/Page/#event-frameDetached
@@ -1608,8 +1609,13 @@ impl Tab {
                 .set_child_frame_url(self.id, frame, url_str.clone());
             self.history.commit_url(frame, url);
             self.sync_histories().await;
+            let parent = self
+                .tabs
+                .frame_parent(self.id, frame)
+                .unwrap_or(FrameId::MAIN);
             self.record_event(TabEvent::FrameNavigated {
                 frame,
+                parent,
                 url: url_str,
             })
             .await;

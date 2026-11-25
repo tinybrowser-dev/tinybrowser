@@ -4119,10 +4119,12 @@ common-domain subset is 19/515 (3.7%).
 The gap is concentrated in a few methods. The most-called missing ones are
 `Debugger.enable` (58 tests), `Audits.enable` (50), `CSS.getMatchedStylesForNode`
 (47), `Tracing.start` (32), `Animation.enable` (22),
-`Browser.grantPermissions` (20), `Target.setDiscoverTargets` (14),
-`CSS.getInlineStylesForNode` (12), and `Emulation.setPressureSourceOverrideEnabled`
-(9). They are the next CDP work; the Playwright gate is unaffected until one
-of them enters a common automation path.
+`Browser.grantPermissions` (20), `CSS.getInlineStylesForNode` (12), and
+`Emulation.setPressureSourceOverrideEnabled` (9). (`Target.setDiscoverTargets`
+previously appeared in 14 failures because it was routed on `TargetClass::Browser`
+only; it now accepts both browser and page targets.) They are the next CDP work;
+the Playwright gate is unaffected until one of them enters a common automation
+path.
 
 The corpus stays out of CI: it needs fixtures that only exist in a Chromium
 checkout, and a full run takes minutes. The push gate exercises the common

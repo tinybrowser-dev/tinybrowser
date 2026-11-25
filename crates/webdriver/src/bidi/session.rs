@@ -53,6 +53,7 @@ pub(crate) async fn new(state: &Arc<BidiState>, params: &Value) -> BidiResult {
 
 // https://w3c.github.io/webdriver-bidi/#command-session-end
 pub(crate) async fn end(state: &Arc<BidiState>) -> BidiResult {
+    state.clear_intercepts();
     let sid = state.session_id.lock().await.take();
     if let Some(sid) = sid {
         let tabs: Vec<TabId> = {

@@ -278,8 +278,8 @@ async fn execute_and_collect(
         .await
         .map_err(|err| BidiError::unknown_error(err.to_string()))?;
 
-    let raw = if let RemoteValue::String(s) = initial {
-        s
+    let raw_result = if let RemoteValue::String(s) = initial {
+        Ok(s)
     } else {
         let done_expr = format!(
             "Boolean(host.__tbBidiSlots && host.__tbBidiSlots[{slot_id}] && host.__tbBidiSlots[{slot_id}].done)"
@@ -298,39 +298,51 @@ async fn execute_and_collect(
                 timeout: Duration::from_secs(30),
             })
             .await
-            .map_err(|err| BidiError::unknown_error(err.to_string()))?;
-        if !settled {
-            return Err(BidiError::unknown_error("script promise timed out"));
-        }
-        let read_expr = format!("host.__tbBidiSlots[{slot_id}].result");
-        let read_source = match sandbox {
-            Some(world) => browser::ScriptSource::Isolated {
-                world,
-                source: read_expr.as_str(),
-            },
-            None => browser::ScriptSource::Browser(read_expr.as_str()),
-        };
-        match tab
-            .execute_script(browser::ExecuteScriptOptions {
-                frame,
-                source: read_source,
-                timeout: Some(Duration::from_secs(10)),
-            })
-            .await
-            .map_err(|err| BidiError::unknown_error(err.to_string()))?
-        {
-            RemoteValue::String(s) => s,
-            _ => return Err(BidiError::unknown_error("missing script result")),
+            .map_err(|err| BidiError::unknown_error(err.to_string()));
+        match settled {
+            Ok(true) => {
+                let read_expr = format!("host.__tbBidiSlots[{slot_id}].result");
+                let read_source = match sandbox {
+                    Some(world) => browser::ScriptSource::Isolated {
+                        world,
+                        source: read_expr.as_str(),
+                    },
+                    None => browser::ScriptSource::Browser(read_expr.as_str()),
+                };
+                match tab
+                    .execute_script(browser::ExecuteScriptOptions {
+                        frame,
+                        source: read_source,
+                        timeout: Some(Duration::from_secs(10)),
+                    })
+                    .await
+                    .map_err(|err| BidiError::unknown_error(err.to_string()))
+                {
+                    Ok(RemoteValue::String(s)) => Ok(s),
+                    Ok(_) => Err(BidiError::unknown_error("missing script result")),
+                    Err(err) => Err(err),
+                }
+            }
+            Ok(false) => Err(BidiError::unknown_error("script promise timed out")),
+            Err(err) => Err(err),
         }
     };
     let cleanup = format!("host.__tbBidiSlots && delete host.__tbBidiSlots[{slot_id}]");
+    let cleanup_source = match sandbox {
+        Some(world) => browser::ScriptSource::Isolated {
+            world,
+            source: cleanup.as_str(),
+        },
+        None => browser::ScriptSource::Browser(cleanup.as_str()),
+    };
     let _ = tab
         .execute_script(browser::ExecuteScriptOptions {
             frame,
-            source: browser::ScriptSource::Browser(&cleanup),
+            source: cleanup_source,
             timeout: Some(Duration::from_secs(5)),
         })
         .await;
+    let raw = raw_result?;
 
     let parsed: Value =
         serde_json::from_str(&raw).map_err(|err| BidiError::unknown_error(err.to_string()))?;
@@ -451,7 +463,7 @@ pub(crate) async fn add_preload_script(state: &Arc<BidiState>, params: &Value) -
     let user_contexts = parse_preload_user_contexts(state, map).await?;
 
     let script_id = random_id().unwrap_or_else(|_| "preload-1".to_owned());
-    let wrapped = format!("(({fn_decl})())");
+    let wrapped = format!("(({fn_decl}\n)())");
     let mut tab_script_ids = Vec::new();
     let target_tabs = state.browser.tabs().await.unwrap_or_default();
     for tab_id in target_tabs {

@@ -222,7 +222,10 @@ pub(crate) async fn set_cookie(state: &Arc<BidiState>, params: &Value) -> BidiRe
             let secs = v.as_u64().ok_or_else(|| {
                 BidiError::invalid_argument("expiry must be a non-negative integer")
             })?;
-            Some(UNIX_EPOCH + Duration::from_secs(secs))
+            let time = UNIX_EPOCH
+                .checked_add(Duration::from_secs(secs))
+                .ok_or_else(|| BidiError::invalid_argument("expiry out of range"))?;
+            Some(time)
         }
     };
     let stored = state

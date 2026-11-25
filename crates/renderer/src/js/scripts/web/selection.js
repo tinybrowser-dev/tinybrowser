@@ -132,9 +132,13 @@
     version = state[0];
     const [, startNode, startOffset, endNode, endOffset, code] = state;
     direction = directionFrom(code);
-    range = startNode === null || endNode === null
-      ? null
-      : newRange(point(startNode, startOffset), point(endNode, endOffset));
+    if (startNode === null || endNode === null || !sameNode(startNode.getRootNode(), endNode.getRootNode())) {
+      range = null;
+      return;
+    }
+    const clampedStart = Math.min(startOffset, lengthOf(startNode));
+    const clampedEnd = Math.min(endOffset, lengthOf(endNode));
+    range = newRange(point(startNode, clampedStart), point(endNode, clampedEnd));
   };
 
   const commit = (nextRange, nextDirection) => {
@@ -266,11 +270,12 @@
       }
       sync();
       checkNode(node);
-      if (offset > lengthOf(node)) {
+      const index = offset >>> 0;
+      if (index > lengthOf(node)) {
         throw new DOMException('offset is past the node length', 'IndexSizeError');
       }
       if (!inDocumentTree(node)) return;
-      commit(newRange(point(node, offset), point(node, offset)), direction);
+      commit(newRange(point(node, index), point(node, index)), direction);
     }
     setPosition(node, offset) {
       this.collapse(node, offset);
@@ -311,12 +316,14 @@
     // https://w3c.github.io/selection-api/#dom-selection-setbaseandextent
     setBaseAndExtent(anchorNode, anchorOffset, focusNode, focusOffset) {
       sync();
-      if (anchorOffset > lengthOf(anchorNode) || focusOffset > lengthOf(focusNode)) {
+      const anchorIndex = anchorOffset >>> 0;
+      const focusIndex = focusOffset >>> 0;
+      if (anchorIndex > lengthOf(anchorNode) || focusIndex > lengthOf(focusNode)) {
         throw new DOMException('offset is past the node length', 'IndexSizeError');
       }
       if (!inDocumentTree(anchorNode) || !inDocumentTree(focusNode)) return;
       const boundaries = setBoundaries(
-        point(anchorNode, anchorOffset), point(focusNode, focusOffset));
+        point(anchorNode, anchorIndex), point(focusNode, focusIndex));
       commit(boundaries.range, boundaries.direction);
     }
     // https://w3c.github.io/selection-api/#dom-selection-selectallchildren

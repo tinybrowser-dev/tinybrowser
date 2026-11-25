@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use browser::RemoteValue;
 use serde_json::{Map, Value, json};
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::bidi::BidiState;
 use crate::bidi::browsing_context::resolve_context;
@@ -173,7 +174,7 @@ fn validate_source_items(
             }
             ("key", "keyDown" | "keyUp") => {
                 let val = require_str(item_obj, "value")?;
-                if val.chars().count() != 1 {
+                if val.graphemes(true).count() != 1 {
                     return Err(BidiError::invalid_argument(
                         "key action value must be a single character",
                     ));

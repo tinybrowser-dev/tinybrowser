@@ -182,13 +182,11 @@ impl PromptBroker {
         let Some(pending) = pending else {
             return false;
         };
-        let outcome = if accept {
-            let text = user_text
-                .clone()
-                .or_else(|| pending.info.default_value.clone());
-            PromptOutcome::Accepted { text }
+        let (outcome, closed_text) = if accept {
+            let text = user_text.or_else(|| pending.info.default_value.clone());
+            (PromptOutcome::Accepted { text: text.clone() }, text)
         } else {
-            PromptOutcome::Dismissed
+            (PromptOutcome::Dismissed, None)
         };
         let _ = pending.responder.send(outcome);
         let _ = self.events.send(PromptEvent::Closed {
@@ -196,7 +194,7 @@ impl PromptBroker {
             frame: pending.info.frame,
             kind: pending.info.kind,
             accepted: accept,
-            user_text: if accept { user_text } else { None },
+            user_text: closed_text,
         });
         true
     }

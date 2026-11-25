@@ -119,12 +119,12 @@ impl UrlPattern {
                     }
                 }
                 if let Some(path_pattern) = pathname {
-                    let normalized = if path_pattern.starts_with('/') {
-                        path_pattern.as_str()
+                    let matched = if path_pattern.starts_with('/') {
+                        url.path() == path_pattern
                     } else {
-                        return url.path().trim_start_matches('/') == path_pattern;
+                        url.path().trim_start_matches('/') == path_pattern
                     };
-                    if url.path() != normalized {
+                    if !matched {
                         return false;
                     }
                 }
@@ -155,8 +155,11 @@ fn url_matches_string_pattern(pattern: &str, url: &Url) -> bool {
 
 #[must_use]
 pub fn wildcard_matches(pattern: &str, text: &str) -> bool {
-    if pattern.is_empty() || pattern == "*" {
+    if pattern == "*" {
         return true;
+    }
+    if pattern.is_empty() {
+        return text.is_empty();
     }
     let p: Vec<char> = pattern.chars().collect();
     let t: Vec<char> = text.chars().collect();
@@ -325,7 +328,24 @@ pub(crate) enum ResponseAction {
 struct PendingIntercept {
     tab: Option<TabId>,
     phase: InterceptPhase,
+    intercepts: Vec<InterceptId>,
     responder: oneshot::Sender<InterceptDecision>,
+}
+
+struct PendingGuard<'a> {
+    broker: &'a NetworkBroker,
+    request_id: NetworkRequestId,
+}
+
+impl Drop for PendingGuard<'_> {
+    fn drop(&mut self) {
+        self.broker
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .pending
+            .remove(&self.request_id);
+    }
 }
 
 #[derive(Default)]
@@ -401,10 +421,41 @@ impl NetworkBroker {
     }
 
     pub fn remove_intercept(&self, id: InterceptId) -> bool {
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        let before = state.intercepts.len();
-        state.intercepts.retain(|rule| rule.id != id);
-        state.intercepts.len() < before
+        let (removed, unblocked) = {
+            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            let before = state.intercepts.len();
+            state.intercepts.retain(|rule| rule.id != id);
+            let removed = state.intercepts.len() < before;
+            let mut unblocked = Vec::new();
+            let mut kept = HashMap::new();
+            for (req_id, mut pending) in state.pending.drain() {
+                pending.intercepts.retain(|item| *item != id);
+                if pending.intercepts.is_empty() {
+                    unblocked.push(pending);
+                } else {
+                    kept.insert(req_id, pending);
+                }
+            }
+            state.pending = kept;
+            (removed, unblocked)
+        };
+        for pending in unblocked {
+            let decision = match pending.phase {
+                InterceptPhase::BeforeRequestSent => InterceptDecision::ContinueRequest {
+                    url: None,
+                    method: None,
+                    headers: None,
+                    body: None,
+                },
+                InterceptPhase::ResponseStarted => InterceptDecision::ContinueResponse {
+                    status: None,
+                    reason_phrase: None,
+                    headers: None,
+                },
+            };
+            let _ = pending.responder.send(decision);
+        }
+        removed
     }
 
     pub fn set_blocked_urls(&self, tab: TabId, patterns: Vec<String>) {
@@ -537,6 +588,7 @@ impl NetworkBroker {
                     PendingIntercept {
                         tab,
                         phase: InterceptPhase::BeforeRequestSent,
+                        intercepts: matching.clone(),
                         responder: tx,
                     },
                 );
@@ -545,6 +597,10 @@ impl NetworkBroker {
             (matching, rx)
         };
         let is_blocked = !matching.is_empty();
+        let _guard = rx.as_ref().map(|_| PendingGuard {
+            broker: self,
+            request_id,
+        });
         let _ = self.events.send(NetworkEvent::BeforeRequestSent {
             request_id,
             tab,
@@ -623,6 +679,7 @@ impl NetworkBroker {
                     PendingIntercept {
                         tab,
                         phase: InterceptPhase::ResponseStarted,
+                        intercepts: matching.clone(),
                         responder: tx,
                     },
                 );
@@ -631,6 +688,10 @@ impl NetworkBroker {
             (matching, rx)
         };
         let is_blocked = !matching.is_empty();
+        let _guard = rx.as_ref().map(|_| PendingGuard {
+            broker: self,
+            request_id,
+        });
         let _ = self.events.send(NetworkEvent::ResponseStarted {
             request_id,
             tab,

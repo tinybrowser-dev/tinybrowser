@@ -116,6 +116,15 @@ pub(crate) struct FetchContinueRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct FetchContinueResponse {
+    pub(crate) request_id: String,
+    pub(crate) response_code: Option<u16>,
+    pub(crate) response_phrase: Option<String>,
+    pub(crate) response_headers: Option<Vec<FetchHeaderEntry>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct FetchFulfillRequest {
     pub(crate) request_id: String,
     pub(crate) response_code: u16,

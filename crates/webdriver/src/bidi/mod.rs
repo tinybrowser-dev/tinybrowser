@@ -294,6 +294,7 @@ pub(crate) struct BidiState {
     pub(crate) script_disabled: Mutex<HashMap<TabId, bool>>,
     pub(crate) log_buffer: Arc<Mutex<VecDeque<BufferedLogEntry>>>,
     pub(crate) data_collectors: Arc<Mutex<HashMap<String, DataCollector>>>,
+    pub(crate) intercepts: std::sync::Mutex<Vec<browser::InterceptId>>,
 }
 
 impl BidiState {
@@ -447,6 +448,7 @@ pub(crate) async fn serve_websocket(
         script_disabled: Mutex::new(HashMap::new()),
         log_buffer: Arc::new(Mutex::new(VecDeque::new())),
         data_collectors: Arc::new(Mutex::new(HashMap::new())),
+        intercepts: std::sync::Mutex::new(Vec::new()),
     });
     state.attach_all_existing_tabs().await;
 
@@ -506,9 +508,25 @@ pub(crate) async fn serve_websocket(
     network_task.abort();
     prompt_task.abort();
     writer.abort();
+    state.clear_intercepts();
     let attached = std::mem::take(&mut *state.attached_tabs.lock().await);
     for (_, handle) in attached {
         handle.abort();
+    }
+}
+
+impl BidiState {
+    pub(crate) fn clear_intercepts(&self) {
+        let ids: Vec<browser::InterceptId> = self
+            .intercepts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .drain(..)
+            .collect();
+        let broker = self.browser.network_broker();
+        for id in ids {
+            broker.remove_intercept(id);
+        }
     }
 }
 
@@ -879,7 +897,7 @@ async fn forward_tab_event(
             )
             .await;
         }
-        TabEvent::FrameNavigated { frame, url } => {
+        TabEvent::FrameNavigated { frame, url, .. } => {
             let ctx = format_context_id(tab_id, frame);
             emit_nav_event(
                 state,

@@ -99,13 +99,20 @@ pub(crate) async fn create(state: &Arc<BidiState>, params: &Value) -> BidiResult
 }
 
 async fn apply_session_preload_scripts(state: &Arc<BidiState>, tab: &TabHandle) {
+    let sid = state.session_id.lock().await.clone();
     let entries = {
-        let sid = state.session_id.lock().await.clone();
         let guard = state.sessions.lock().await;
-        sid.and_then(|id| guard.open.get(&id))
-            .map_or_default(|s| s.preload_scripts.values().cloned().collect::<Vec<_>>())
+        sid.as_deref()
+            .and_then(|id| guard.open.get(id))
+            .map_or_default(|s| {
+                s.preload_scripts
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect::<Vec<_>>()
+            })
     };
-    for entry in entries {
+    let mut added = Vec::new();
+    for (script_id, entry) in entries {
         if let Some(ref contexts) = entry.contexts
             && !contexts.contains(&tab.id())
         {
@@ -116,8 +123,22 @@ async fn apply_session_preload_scripts(state: &Arc<BidiState>, tab: &TabHandle) 
         {
             continue;
         }
-        let code = format!("(({})())", entry.function_declaration);
-        let _ = tab.add_init_script(code, false).await;
+        let code = format!("(({}\n)())", entry.function_declaration);
+        if let Ok(init_id) = tab.add_init_script(code, false).await {
+            added.push((script_id, init_id));
+        }
+    }
+    if !added.is_empty()
+        && let Some(sid) = sid
+    {
+        let mut guard = state.sessions.lock().await;
+        if let Some(session) = guard.open.get_mut(&sid) {
+            for (script_id, init_id) in added {
+                if let Some(entry) = session.preload_scripts.get_mut(&script_id) {
+                    entry.tab_script_ids.push((tab.id(), init_id));
+                }
+            }
+        }
     }
 }
 

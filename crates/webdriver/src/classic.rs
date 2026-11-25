@@ -2601,6 +2601,31 @@ async fn get_named_cookie(sessions: &Mutex<Sessions>, session: &str, name: &str)
     }
 }
 
+fn has_cookie_ctl_or_semicolon(value: &str) -> bool {
+    value.bytes().any(|b| b == b';' || b <= 0x1f || b == 0x7f)
+}
+
+fn validate_cookie_chars(cookie: &Value) -> Result<(), (u16, Value)> {
+    let unable = |message| error(500, "unable to set cookie", message);
+    if let Some(name) = cookie.get("name").and_then(Value::as_str)
+        && (has_cookie_ctl_or_semicolon(name) || name.contains('='))
+    {
+        return Err(unable("cookie name contains invalid characters"));
+    }
+    for (field, label) in [
+        ("value", "cookie value contains invalid characters"),
+        ("path", "cookie path contains invalid characters"),
+        ("domain", "cookie domain contains invalid characters"),
+    ] {
+        if let Some(val) = cookie.get(field).and_then(Value::as_str)
+            && has_cookie_ctl_or_semicolon(val)
+        {
+            return Err(unable(label));
+        }
+    }
+    Ok(())
+}
+
 // https://w3c.github.io/webdriver/#dfn-adding-a-cookie
 fn set_cookie_line(cookie: &Value) -> Result<String, (u16, Value)> {
     let invalid = |message| error(400, "invalid argument", message);
@@ -2706,6 +2731,9 @@ async fn add_cookie(sessions: &Mutex<Sessions>, session: &str, body: &str) -> (u
                 "cookie domain does not match the current document",
             );
         }
+    }
+    if let Err(reply) = validate_cookie_chars(cookie) {
+        return reply;
     }
     match snapshot
         .browser
@@ -3057,6 +3085,11 @@ async fn close_window(sessions: &Mutex<Sessions>, session: &str) -> (u16, Value)
         }
         (guard.browser.clone(), tab_id, remaining)
     };
+    if remaining.is_empty() {
+        browser.prompt_broker().set_default_behavior(None);
+        browser.prompt_broker().set_hold_for_classic(false);
+        let _ = browser.clear_cookies().await;
+    }
     let _result = browser.close_tab(tab_id).await;
     ok(json!(remaining))
 }

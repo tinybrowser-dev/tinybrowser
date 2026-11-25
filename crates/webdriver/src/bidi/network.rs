@@ -84,6 +84,11 @@ pub(crate) async fn add_intercept(state: &Arc<BidiState>, params: &Value) -> Bid
         .browser
         .network_broker()
         .add_intercept(phases, contexts, patterns);
+    state
+        .intercepts
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(id);
     Ok(json!({ "intercept": id.to_string() }))
 }
 
@@ -122,6 +127,11 @@ pub(crate) fn remove_intercept(state: &Arc<BidiState>, params: &Value) -> BidiRe
             "unknown intercept: {raw}"
         )));
     }
+    state
+        .intercepts
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .retain(|existing| *existing != id);
     Ok(json!({}))
 }
 

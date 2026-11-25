@@ -73,6 +73,7 @@ pub(crate) enum PageHandler {
     NavigateToHistoryEntry,
     SetDocumentContent,
     HandleJavaScriptDialog,
+    StopLoading,
     CaptureScreenshot,
     SetDefaultBackgroundColorOverride,
     NetworkEnable,
@@ -88,6 +89,7 @@ pub(crate) enum PageHandler {
     FetchEnable,
     FetchDisable,
     FetchContinueRequest,
+    FetchContinueResponse,
     FetchFulfillRequest,
     FetchFailRequest,
     CreateIsolatedWorld,
@@ -212,7 +214,7 @@ const ROUTES: &[Route] = &[
     },
     Route {
         method: "Target.setDiscoverTargets",
-        target: TargetClass::Browser,
+        target: TargetClass::Both,
         handler: Handler::Browser(BrowserHandler::SetDiscoverTargets),
     },
     Route {
@@ -222,17 +224,17 @@ const ROUTES: &[Route] = &[
     },
     Route {
         method: "Target.getTargets",
-        target: TargetClass::Browser,
+        target: TargetClass::Both,
         handler: Handler::Browser(BrowserHandler::GetTargets),
     },
     Route {
         method: "Target.createTarget",
-        target: TargetClass::Browser,
+        target: TargetClass::Both,
         handler: Handler::Browser(BrowserHandler::CreateTarget),
     },
     Route {
         method: "Target.closeTarget",
-        target: TargetClass::Browser,
+        target: TargetClass::Both,
         handler: Handler::Browser(BrowserHandler::CloseTarget),
     },
     Route {
@@ -252,7 +254,7 @@ const ROUTES: &[Route] = &[
     },
     Route {
         method: "Target.attachToTarget",
-        target: TargetClass::Browser,
+        target: TargetClass::Both,
         handler: Handler::Browser(BrowserHandler::AttachToTarget),
     },
     Route {
@@ -262,7 +264,7 @@ const ROUTES: &[Route] = &[
     },
     Route {
         method: "Target.detachFromTarget",
-        target: TargetClass::Browser,
+        target: TargetClass::Both,
         handler: Handler::Browser(BrowserHandler::DetachFromTarget),
     },
     Route {
@@ -308,7 +310,7 @@ const ROUTES: &[Route] = &[
     Route {
         method: "Page.stopLoading",
         target: TargetClass::Page,
-        handler: Handler::Accept(Accepted::DomainWithoutEvents),
+        handler: Handler::Page(PageHandler::StopLoading),
     },
     Route {
         method: "Page.captureScreenshot",
@@ -458,6 +460,11 @@ const ROUTES: &[Route] = &[
         method: "Fetch.continueRequest",
         target: TargetClass::Page,
         handler: Handler::Page(PageHandler::FetchContinueRequest),
+    },
+    Route {
+        method: "Fetch.continueResponse",
+        target: TargetClass::Page,
+        handler: Handler::Page(PageHandler::FetchContinueResponse),
     },
     Route {
         method: "Fetch.fulfillRequest",
@@ -1867,6 +1874,32 @@ async fn resolve_target_object_id(
     object.map(|obj| obj.object_id).ok_or_else(missing_node)
 }
 
+async fn run_dom_mutation(
+    tab: &TabHandle,
+    target: &crate::params::NodeTarget,
+    action: &str,
+) -> Result<Value, DispatchError> {
+    let owned = target.object.is_none();
+    let object_id = resolve_target_object_id(tab, target).await?;
+    let cleanup = if owned {
+        format!("delete host.__tb_handles[{}];", json_string(&object_id))
+    } else {
+        String::new()
+    };
+    let script = format!(
+        "(() => {{ const el = host.__tb_handles[{}]; try {{ {action} }} finally {{ {cleanup} }} }})()",
+        json_string(&object_id),
+    );
+    let reply = tab
+        .execute_browser_script(&script)
+        .await
+        .map_err(|error| DispatchError::Failed(error.to_string()))?;
+    if !matches!(reply, RemoteValue::Bool(true)) {
+        return Err(missing_node());
+    }
+    Ok(json!({}))
+}
+
 // https://chromedevtools.github.io/devtools-protocol/tot/DOM/#method-focus
 async fn dom_focus(tab: &TabHandle, params: &Value) -> Result<Value, DispatchError> {
     let target: crate::params::NodeTarget = crate::params::parse(params)?;
@@ -1875,15 +1908,12 @@ async fn dom_focus(tab: &TabHandle, params: &Value) -> Result<Value, DispatchErr
             "nodeId, backendNodeId, or objectId".to_owned(),
         ));
     }
-    let object_id = resolve_target_object_id(tab, &target).await?;
-    let script = format!(
-        "(() => {{ const el = host.__tb_handles[{}]; if (!el || typeof el.focus !== 'function') return false; el.focus(); return true; }})()",
-        json_string(&object_id)
-    );
-    tab.execute_browser_script(&script)
-        .await
-        .map_err(|error| DispatchError::Failed(error.to_string()))?;
-    Ok(json!({}))
+    run_dom_mutation(
+        tab,
+        &target,
+        "if (!el || typeof el.focus !== 'function') return false; el.focus(); return true;",
+    )
+    .await
 }
 
 // https://chromedevtools.github.io/devtools-protocol/tot/DOM/#method-setAttributeValue
@@ -1894,17 +1924,12 @@ async fn dom_set_attribute_value(tab: &TabHandle, params: &Value) -> Result<Valu
         backend: None,
         object: None,
     };
-    let object_id = resolve_target_object_id(tab, &target).await?;
-    let script = format!(
-        "(() => {{ const el = host.__tb_handles[{}]; if (!el || typeof el.setAttribute !== 'function') return false; el.setAttribute({}, {}); return true; }})()",
-        json_string(&object_id),
+    let action = format!(
+        "if (!el || typeof el.setAttribute !== 'function') return false; el.setAttribute({}, {}); return true;",
         json_string(&params.name),
         json_string(&params.value),
     );
-    tab.execute_browser_script(&script)
-        .await
-        .map_err(|error| DispatchError::Failed(error.to_string()))?;
-    Ok(json!({}))
+    run_dom_mutation(tab, &target, &action).await
 }
 
 // https://chromedevtools.github.io/devtools-protocol/tot/DOM/#method-removeAttribute
@@ -1915,16 +1940,11 @@ async fn dom_remove_attribute(tab: &TabHandle, params: &Value) -> Result<Value, 
         backend: None,
         object: None,
     };
-    let object_id = resolve_target_object_id(tab, &target).await?;
-    let script = format!(
-        "(() => {{ const el = host.__tb_handles[{}]; if (!el || typeof el.removeAttribute !== 'function') return false; el.removeAttribute({}); return true; }})()",
-        json_string(&object_id),
+    let action = format!(
+        "if (!el || typeof el.removeAttribute !== 'function') return false; el.removeAttribute({}); return true;",
         json_string(&params.name),
     );
-    tab.execute_browser_script(&script)
-        .await
-        .map_err(|error| DispatchError::Failed(error.to_string()))?;
-    Ok(json!({}))
+    run_dom_mutation(tab, &target, &action).await
 }
 
 // https://chromedevtools.github.io/devtools-protocol/tot/DOM/#method-removeNode
@@ -1935,15 +1955,12 @@ async fn dom_remove_node(tab: &TabHandle, params: &Value) -> Result<Value, Dispa
         backend: None,
         object: None,
     };
-    let object_id = resolve_target_object_id(tab, &target).await?;
-    let script = format!(
-        "(() => {{ const el = host.__tb_handles[{}]; if (!el || !el.parentNode) return false; el.parentNode.removeChild(el); return true; }})()",
-        json_string(&object_id),
-    );
-    tab.execute_browser_script(&script)
-        .await
-        .map_err(|error| DispatchError::Failed(error.to_string()))?;
-    Ok(json!({}))
+    run_dom_mutation(
+        tab,
+        &target,
+        "if (!el || !el.parentNode) return false; el.parentNode.removeChild(el); return true;",
+    )
+    .await
 }
 
 // https://chromedevtools.github.io/devtools-protocol/tot/DOM/#method-setFileInputFiles

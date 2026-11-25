@@ -318,9 +318,13 @@ struct Conn {
     auto_attach_session: Option<String>,
     auto_attached_tabs: HashSet<TabId>,
     discover_targets: bool,
+    discover_targets_session: Option<String>,
     network_enabled: HashSet<TabId>,
+    blocked_url_tabs: HashSet<TabId>,
     prompt_tabs: HashSet<TabId>,
     fetch_intercepts: HashMap<TabId, Vec<InterceptId>>,
+    network_rx: Option<tokio::sync::broadcast::Receiver<NetworkEvent>>,
+    prompt_rx: Option<tokio::sync::broadcast::Receiver<PromptEvent>>,
     compiled_scripts: HashMap<String, String>,
     next_script: u64,
     events: Vec<Value>,
@@ -538,8 +542,8 @@ impl Conn {
             TabEvent::FrameAttached { frame, parent, .. } => {
                 push_frame_attached(&mut messages, tab_id, frame, parent, sess);
             }
-            TabEvent::FrameNavigated { frame, url } => {
-                push_frame_navigated(&mut messages, tab_id, frame, &url, sess);
+            TabEvent::FrameNavigated { frame, parent, url } => {
+                push_frame_navigated(&mut messages, tab_id, frame, parent, &url, sess);
             }
             TabEvent::FrameDetached { frame } => {
                 push_frame_detached(&mut messages, tab_id, frame, sess);
@@ -992,6 +996,11 @@ impl Conn {
     ) -> Result<Value, DispatchError> {
         let params: params::SetDiscoverTargets = params::parse(params)?;
         self.discover_targets = params.discover;
+        self.discover_targets_session = if params.discover {
+            session.map(str::to_owned)
+        } else {
+            None
+        };
         if params.discover {
             for id in self.browser.tabs().await.unwrap_or_default() {
                 let context_id = self.context_of(id).await;
@@ -1283,28 +1292,19 @@ impl Conn {
             | PageHandler::RuntimeCallFunctionOn
             | PageHandler::RuntimeRunScript
             | PageHandler::Navigate => Err(DispatchError::MethodNotFound),
-            PageHandler::Enable => {
-                self.subscribe_tab(tab, session)?;
-                self.prompt_tabs.insert(tab.id());
-                self.browser.prompt_broker().set_tab_behavior(
-                    tab.id(),
-                    Some(PromptBehaviorMap::uniform(PromptBehavior::Ignore)),
-                );
-                Ok(json!({}))
-            }
-            PageHandler::Disable => {
-                self.unsubscribe_tab(tab.id(), session);
-                self.prompt_tabs.remove(&tab.id());
-                self.browser
-                    .prompt_broker()
-                    .set_tab_behavior(tab.id(), None);
-                Ok(json!({}))
-            }
+            PageHandler::Enable => self.page_enable(tab, session),
+            PageHandler::Disable => Ok(self.page_disable(tab, session)),
             PageHandler::NavigateToHistoryEntry => {
                 self.navigate_to_history_entry(params, tab).await
             }
             PageHandler::SetDocumentContent => set_document_content(tab, params).await,
             PageHandler::HandleJavaScriptDialog => self.handle_javascript_dialog(tab, params),
+            PageHandler::StopLoading => {
+                tab.stop_loading()
+                    .await
+                    .map_err(|err| DispatchError::Failed(err.to_string()))?;
+                Ok(json!({}))
+            }
             PageHandler::CaptureScreenshot => {
                 let omit = self
                     .omit_background
@@ -1318,10 +1318,14 @@ impl Conn {
             }
             PageHandler::NetworkEnable => {
                 self.network_enabled.insert(tab.id());
+                if self.network_rx.is_none() {
+                    self.network_rx = Some(self.browser.network_broker().subscribe());
+                }
                 Ok(json!({}))
             }
             PageHandler::NetworkDisable => {
                 self.network_enabled.remove(&tab.id());
+                self.maybe_drop_network_rx();
                 Ok(json!({}))
             }
             PageHandler::NetworkGetResponseBody => self.get_response_body(params),
@@ -1335,19 +1339,14 @@ impl Conn {
                 delete_cdp_cookies(&self.browser, tab.user_context(), &params).await?;
                 Ok(json!({}))
             }
-            PageHandler::NetworkSetBlockedUrls => {
-                let params: params::SetBlockedUrls = params::parse(params)?;
-                self.browser
-                    .network_broker()
-                    .set_blocked_urls(tab.id(), params.urls);
-                Ok(json!({}))
-            }
+            PageHandler::NetworkSetBlockedUrls => self.network_set_blocked_urls(tab, params),
             PageHandler::FetchEnable => self.fetch_enable(tab, params),
             PageHandler::FetchDisable => {
                 self.clear_fetch_intercepts(tab.id());
                 Ok(json!({}))
             }
             PageHandler::FetchContinueRequest => self.fetch_continue_request(params),
+            PageHandler::FetchContinueResponse => self.fetch_continue_response(params),
             PageHandler::FetchFulfillRequest => self.fetch_fulfill_request(params),
             PageHandler::FetchFailRequest => self.fetch_fail_request(params),
             PageHandler::RuntimeCompileScript => self.runtime_compile_script(tab, params).await,
@@ -1376,6 +1375,50 @@ impl Conn {
                 run_script(method, params, tab, world.as_deref()).await
             }
         }
+    }
+
+    fn page_enable(
+        &mut self,
+        tab: &TabHandle,
+        session: Option<&str>,
+    ) -> Result<Value, DispatchError> {
+        self.subscribe_tab(tab, session)?;
+        self.prompt_tabs.insert(tab.id());
+        if self.prompt_rx.is_none() {
+            self.prompt_rx = Some(self.browser.prompt_broker().subscribe());
+        }
+        self.browser.prompt_broker().set_tab_behavior(
+            tab.id(),
+            Some(PromptBehaviorMap::uniform(PromptBehavior::Ignore)),
+        );
+        Ok(json!({}))
+    }
+
+    fn page_disable(&mut self, tab: &TabHandle, session: Option<&str>) -> Value {
+        self.unsubscribe_tab(tab.id(), session);
+        self.prompt_tabs.remove(&tab.id());
+        self.browser.prompt_broker().dismiss_tab(tab.id());
+        if self.prompt_tabs.is_empty() {
+            self.prompt_rx = None;
+        }
+        json!({})
+    }
+
+    fn network_set_blocked_urls(
+        &mut self,
+        tab: &TabHandle,
+        params: &Value,
+    ) -> Result<Value, DispatchError> {
+        let params: params::SetBlockedUrls = params::parse(params)?;
+        if params.urls.is_empty() {
+            self.blocked_url_tabs.remove(&tab.id());
+        } else {
+            self.blocked_url_tabs.insert(tab.id());
+        }
+        self.browser
+            .network_broker()
+            .set_blocked_urls(tab.id(), params.urls);
+        Ok(json!({}))
     }
 
     fn handle_javascript_dialog(
@@ -1784,12 +1827,21 @@ impl Conn {
         self.unsubscribe_tab_id(id);
         self.auto_attached_tabs.remove(&id);
         self.network_enabled.remove(&id);
+        if self.blocked_url_tabs.remove(&id) {
+            self.browser
+                .network_broker()
+                .set_blocked_urls(id, Vec::new());
+        }
         if self.prompt_tabs.remove(&id) {
-            self.browser.prompt_broker().set_tab_behavior(id, None);
+            self.browser.prompt_broker().dismiss_tab(id);
+            if self.prompt_tabs.is_empty() {
+                self.prompt_rx = None;
+            }
         }
         self.clear_fetch_intercepts(id);
         self.loader_ids.remove(&id);
         self.current_loaders.remove(&id);
+        self.default_contexts.remove(&id);
         self.isolated_worlds.remove(&id);
         self.isolated_contexts.retain(|_, (owner, _)| *owner != id);
         self.omit_background.remove(&id);
@@ -1910,6 +1962,12 @@ impl Conn {
         ))
     }
 
+    fn maybe_drop_network_rx(&mut self) {
+        if self.network_enabled.is_empty() && self.fetch_intercepts.is_empty() {
+            self.network_rx = None;
+        }
+    }
+
     fn clear_fetch_intercepts(&mut self, tab_id: TabId) {
         if let Some(ids) = self.fetch_intercepts.remove(&tab_id) {
             let broker = self.browser.network_broker();
@@ -1917,6 +1975,7 @@ impl Conn {
                 broker.remove_intercept(id);
             }
         }
+        self.maybe_drop_network_rx();
     }
 
     fn clear_all_fetch_intercepts(&mut self) {
@@ -1924,17 +1983,27 @@ impl Conn {
         for tab_id in all {
             self.clear_fetch_intercepts(tab_id);
         }
+        let blocked: Vec<TabId> = self.blocked_url_tabs.drain().collect();
+        let net_broker = self.browser.network_broker();
+        for tab_id in blocked {
+            net_broker.set_blocked_urls(tab_id, Vec::new());
+        }
         let prompt_tabs: Vec<TabId> = self.prompt_tabs.drain().collect();
         let prompt_broker = self.browser.prompt_broker();
         for tab_id in prompt_tabs {
-            prompt_broker.set_tab_behavior(tab_id, None);
+            prompt_broker.dismiss_tab(tab_id);
         }
+        self.network_rx = None;
+        self.prompt_rx = None;
     }
 
     // https://chromedevtools.github.io/devtools-protocol/tot/Fetch/#method-enable
     fn fetch_enable(&mut self, tab: &TabHandle, params: &Value) -> Result<Value, DispatchError> {
         let params: params::FetchEnable = params::parse(params)?;
         self.clear_fetch_intercepts(tab.id());
+        if self.network_rx.is_none() {
+            self.network_rx = Some(self.browser.network_broker().subscribe());
+        }
         let patterns = params.patterns.unwrap_or_default();
         let broker = self.browser.network_broker();
         let mut ids = Vec::new();
@@ -1993,6 +2062,27 @@ impl Conn {
                     method: params.method,
                     headers,
                     body,
+                },
+            )
+            .map_err(|_| DispatchError::Failed("Invalid InterceptionId.".to_owned()))?;
+        Ok(json!({}))
+    }
+
+    // https://chromedevtools.github.io/devtools-protocol/tot/Fetch/#method-continueResponse
+    fn fetch_continue_response(&self, params: &Value) -> Result<Value, DispatchError> {
+        let params: params::FetchContinueResponse = params::parse(params)?;
+        let req_id = Self::parse_fetch_request_id(&params.request_id)?;
+        let headers = params
+            .response_headers
+            .map(|list| list.into_iter().map(|h| (h.name, h.value)).collect());
+        self.browser
+            .network_broker()
+            .resolve_intercept(
+                req_id,
+                InterceptDecision::ContinueResponse {
+                    status: params.response_code,
+                    reason_phrase: params.response_phrase,
+                    headers,
                 },
             )
             .map_err(|_| DispatchError::Failed("Invalid InterceptionId.".to_owned()))?;
@@ -2097,7 +2187,7 @@ impl Conn {
                         &mut messages,
                         "Target.targetCreated",
                         &json!({ "targetInfo": info }),
-                        self.auto_attach_session.as_deref(),
+                        self.discover_targets_session.as_deref(),
                     );
                 }
                 if self.auto_attach
@@ -2147,7 +2237,7 @@ impl Conn {
                         &mut messages,
                         "Target.targetDestroyed",
                         &json!({ "targetId": tab.to_string() }),
-                        self.auto_attach_session.as_deref(),
+                        self.discover_targets_session.as_deref(),
                     );
                 }
                 self.cleanup_tab_state(tab);
@@ -2823,6 +2913,7 @@ fn push_frame_navigated(
     messages: &mut Vec<Value>,
     tab_id: TabId,
     frame: FrameId,
+    parent: FrameId,
     url: &str,
     sess: Option<&str>,
 ) {
@@ -2832,7 +2923,7 @@ fn push_frame_navigated(
         &json!({
             "frame": {
                 "id": cdp_frame_id(tab_id, frame),
-                "parentId": tab_id.to_string(),
+                "parentId": cdp_frame_id(tab_id, parent),
                 "loaderId": "",
                 "url": url,
                 "securityOrigin": url_security_origin(url),
@@ -2904,9 +2995,13 @@ fn new_conn(
         auto_attach_session: None,
         auto_attached_tabs: HashSet::new(),
         discover_targets: false,
+        discover_targets_session: None,
         network_enabled: HashSet::new(),
+        blocked_url_tabs: HashSet::new(),
         prompt_tabs: HashSet::new(),
         fetch_intercepts: HashMap::new(),
+        network_rx: None,
+        prompt_rx: None,
         compiled_scripts: HashMap::new(),
         next_script: 1,
         events: Vec::new(),
@@ -2925,18 +3020,25 @@ fn new_conn(
     }
 }
 
+async fn recv_optional<T: Clone>(
+    rx: &mut Option<tokio::sync::broadcast::Receiver<T>>,
+) -> Result<T, tokio::sync::broadcast::error::RecvError> {
+    match rx {
+        Some(rx) => rx.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
 async fn run_socket(mut socket: WebSocket, state: AppState, tab: Option<TabHandle>) {
     let (deferred_tx, mut deferred_rx) = mpsc::unbounded_channel();
     let mut lifecycle_rx = state.browser.subscribe();
-    let mut network_rx = state.browser.network_broker().subscribe();
-    let mut prompt_rx = state.browser.prompt_broker().subscribe();
     let mut conn = new_conn(state, tab, deferred_tx);
     loop {
         let wake = tokio::select! {
             event = conn.tab_events_rx.recv() => SocketWake::Event(event),
             lifecycle = lifecycle_rx.recv() => SocketWake::Lifecycle(lifecycle),
-            net = network_rx.recv() => SocketWake::Network(net),
-            prompt = prompt_rx.recv() => SocketWake::Prompt(prompt),
+            net = recv_optional(&mut conn.network_rx) => SocketWake::Network(net),
+            prompt = recv_optional(&mut conn.prompt_rx) => SocketWake::Prompt(prompt),
             reply = deferred_rx.recv() => SocketWake::Deferred(reply),
             incoming = socket.next() => SocketWake::Incoming(incoming),
         };
@@ -3089,9 +3191,13 @@ mod tests {
             auto_attach_session: None,
             auto_attached_tabs: HashSet::new(),
             discover_targets: false,
+            discover_targets_session: None,
             network_enabled: HashSet::new(),
+            blocked_url_tabs: HashSet::new(),
             prompt_tabs: HashSet::new(),
             fetch_intercepts: HashMap::new(),
+            network_rx: None,
+            prompt_rx: None,
             compiled_scripts: HashMap::new(),
             next_script: 1,
             events: Vec::new(),
