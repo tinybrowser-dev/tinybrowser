@@ -33,11 +33,8 @@ detect_target() {
     Darwin:arm64 | Darwin:aarch64)
       printf 'aarch64-apple-darwin'
       ;;
-    Darwin:x86_64)
-      printf 'x86_64-apple-darwin'
-      ;;
     *)
-      fail "no prebuilt binary for ${os}/${arch} yet (supported: Linux x86_64, macOS arm64/x86_64, Android/Termux aarch64). Build from source: https://github.com/${REPO}#building-from-source"
+      fail "no prebuilt binary for ${os}/${arch} yet (supported: Linux x86_64, macOS arm64, Android/Termux aarch64). Build from source: https://github.com/${REPO}#building-from-source"
       ;;
   esac
 }

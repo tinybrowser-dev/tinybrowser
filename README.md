@@ -29,7 +29,6 @@ Or download an archive directly from [GitHub Releases](https://github.com/tinybr
 | --- | --- | --- |
 | `x86_64-unknown-linux-musl` | Shipped | Fully static binary (musl + vendored OpenSSL, pure-Rust font discovery). Zero runtime shared library dependencies; works on Alpine and any Linux x64 distro. |
 | `aarch64-apple-darwin` | Shipped | Apple Silicon macOS (11.0+). Uses system Security.framework. |
-| `x86_64-apple-darwin` | Shipped | Intel macOS (11.0+). Uses system Security.framework. |
 | `x86_64-pc-windows-msvc` | Shipped | Windows x64 (`.zip`). Uses system Schannel. |
 | `aarch64-linux-android` | Shipped | Android / Termux arm64 (API 24+, bionic). Vendored OpenSSL, no extra runtime packages required. |
 | `wasm32-wasip2` | Shipped | Embeddable page engine component (`tinybrowser.wasm`, host supplies one-hop HTTP). |

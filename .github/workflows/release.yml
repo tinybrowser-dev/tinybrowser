@@ -196,65 +196,6 @@ jobs:
           path: dist/${{ steps.package.outputs.name }}.tar.gz
           retention-days: 7
 
-  macos-x86_64:
-    name: macos-x86_64
-    needs: verify
-    runs-on: macos-15
-    timeout-minutes: 120
-    env:
-      MACOSX_DEPLOYMENT_TARGET: "11.0"
-    steps:
-      - uses: actions/checkout@v7
-      - name: Toolchain
-        run: |
-          rustup toolchain install --profile minimal --component rust-src
-          rustup target add x86_64-apple-darwin
-          cargo --version
-      - name: Submodules (build inputs only, shallow)
-        run: |
-          git submodule update --init --depth 1 --jobs 4 \
-            third_party/blitz third_party/rquickjs third_party/html5ever
-          git -C third_party/rquickjs submodule update --init --depth 1 sys/quickjs
-      - name: Cargo cache
-        uses: actions/cache@v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-${{ runner.os }}-x86_64-${{ hashFiles('Cargo.lock') }}
-          restore-keys: cargo-${{ runner.os }}-x86_64-
-      - name: sccache
-        uses: mozilla-actions/sccache-action@v0.0.11
-        with:
-          version: "v0.18.0"
-      - name: Build
-        env:
-          SCCACHE_GHA_ENABLED: "true"
-          RUSTC_WRAPPER: "sccache"
-        run: |
-          cargo build --release --locked -p tinybrowser --target x86_64-apple-darwin
-          ls -lh target/x86_64-apple-darwin/release/tinybrowser
-          file target/x86_64-apple-darwin/release/tinybrowser
-      - name: Package
-        id: package
-        run: |
-          set -euo pipefail
-          version="${{ needs.verify.outputs.version }}"
-          target=x86_64-apple-darwin
-          name="tinybrowser-$version-$target"
-          mkdir -p "dist/$name"
-          cp "target/$target/release/tinybrowser" "dist/$name/"
-          cp LICENSE NOTICE CREDITS.md "dist/$name/"
-          tar -C dist -czf "dist/$name.tar.gz" "$name"
-          echo "name=$name" >> "$GITHUB_OUTPUT"
-          ls -lh "dist/$name.tar.gz"
-      - name: Upload the release assets
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ steps.package.outputs.name }}
-          path: dist/${{ steps.package.outputs.name }}.tar.gz
-          retention-days: 7
-
   windows-x86_64:
     name: windows-x86_64
     needs: verify
@@ -484,7 +425,7 @@ jobs:
 
   publish:
     name: publish
-    needs: [verify, linux-x86_64, macos-aarch64, macos-x86_64, windows-x86_64, android-aarch64, wasm32-wasip2, smoke]
+    needs: [verify, linux-x86_64, macos-aarch64, windows-x86_64, android-aarch64, wasm32-wasip2, smoke]
     if: github.ref_type == 'tag'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
