@@ -62,7 +62,7 @@ on:
       test-types:
         description: Space-separated wptrunner test types; stays last (nargs).
         type: string
-        default: "testharness crashtest reftest"
+        default: "testharness crashtest reftest wdspec"
       exclude:
         description: Space-separated upstream --exclude values.
         type: string
@@ -89,7 +89,7 @@ env:
   # Dispatch inputs are empty on pushes, so every use goes through these.
   WPT_HARNESS_CHUNKS: ${{ inputs.harness-chunks || '14' }}
   WPT_WEBDRIVER_CHUNKS: ${{ inputs.webdriver-chunks || '6' }}
-  WPT_TEST_TYPES: ${{ inputs.test-types || 'testharness crashtest reftest' }}
+  WPT_TEST_TYPES: ${{ inputs.test-types || 'testharness crashtest reftest wdspec' }}
   WPT_EXCLUDE: ${{ inputs.exclude || 'worker' }}
 
 jobs:

@@ -303,6 +303,13 @@ pub enum BrowsingContextCall {
         window: WindowId,
         message: PostedMessage,
     },
+    // https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#simple-dialogs
+    UserPrompt {
+        frame: FrameId,
+        kind: renderer::PromptKind,
+        message: String,
+        default_value: Option<String>,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -325,6 +332,7 @@ pub enum ServiceReply {
     StorageKeys(Vec<String>),
     StorageChanged(Result<Option<StorageChange>, StorageError>),
     Window(Option<WindowId>),
+    Prompt(renderer::PromptOutcome),
     Unit,
 }
 
@@ -371,6 +379,9 @@ impl ServiceReply {
                 | BrowsingContextCall::NavigateNamed { .. }
                 | BrowsingContextCall::Opener,
             ) => ServiceReply::Window(None),
+            ServiceCall::BrowsingContext(BrowsingContextCall::UserPrompt { .. }) => {
+                ServiceReply::Prompt(renderer::PromptOutcome::Dismissed)
+            }
         }
     }
 }

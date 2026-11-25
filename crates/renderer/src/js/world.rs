@@ -1158,6 +1158,7 @@ pub(crate) struct World {
     pub(crate) outbox: Outbox,
     // https://html.spec.whatwg.org/multipage/input.html#dom-input-files
     input_files: HashMap<NodeId, Vec<Persistent<Value<'static>>>>,
+    input_file_list: HashMap<NodeId, Persistent<Value<'static>>>,
     pub(crate) font_registrations: HashMap<u32, FontRegistration>,
     pub(crate) next_font_registration: u32,
     budget: Rc<RefCell<ResourceBudget>>,
@@ -1298,6 +1299,13 @@ pub(crate) enum RealmRequest {
     Console {
         level: crate::protocol::ConsoleLevel,
         args: String,
+    },
+    // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#event-exceptionThrown
+    ExceptionThrown {
+        text: String,
+        filename: String,
+        line: u32,
+        column: u32,
     },
     // https://html.spec.whatwg.org/multipage/webappapis.html#notify-about-rejected-promises
     RejectionTasks,
@@ -1555,6 +1563,7 @@ impl World {
             history: crate::protocol::HistorySnapshot::default(),
             outbox: Rc::new(RefCell::new(VecDeque::new())),
             input_files: HashMap::new(),
+            input_file_list: HashMap::new(),
             font_registrations: HashMap::new(),
             next_font_registration: 1,
             budget: runtime.registry.borrow().budget(),
@@ -1627,6 +1636,7 @@ impl World {
             history: main.history.clone(),
             outbox: Rc::clone(&main.outbox),
             input_files: HashMap::new(),
+            input_file_list: HashMap::new(),
             font_registrations: HashMap::new(),
             next_font_registration: 1,
             budget: Rc::clone(&main.budget),
@@ -2934,6 +2944,14 @@ impl World {
         self.input_files.get(&id).map(Vec::as_slice)
     }
 
+    pub(crate) fn set_input_file_list(&mut self, id: NodeId, list: Persistent<Value<'static>>) {
+        self.input_file_list.insert(id, list);
+    }
+
+    pub(crate) fn input_file_list(&self, id: NodeId) -> Option<&Persistent<Value<'static>>> {
+        self.input_file_list.get(&id)
+    }
+
     pub(crate) fn control(&mut self, id: NodeId) -> &mut ControlState {
         self.state.controls.entry(id).or_default()
     }
@@ -3186,6 +3204,7 @@ impl World {
         self.current_event = None;
         // https://w3c.github.io/FileAPI/#file
         self.input_files.clear();
+        self.input_file_list.clear();
     }
 
     pub(crate) fn release_host_primitives(&mut self) {

@@ -256,11 +256,11 @@
     get: function() {
       // https://html.spec.whatwg.org/multipage/input.html#dom-input-files
       if (this.type !== 'file') return null;
-      let list = inputFilesSymbol.get(this);
-      if (list === undefined) {
-        list = host.__tbCreateFileList([]);
-        inputFilesSymbol.set(this, list);
-      }
+      const cached = host.__tbInputFileList(this);
+      if (cached !== null) return cached;
+      const list = host.__tbCreateFileList(host.__tbInputFileObjects(this));
+      // https://html.spec.whatwg.org/multipage/input.html#dom-input-files
+      host.__tbSetInputFiles(this, list);
       return list;
     },
     set: function(value) {
@@ -270,7 +270,6 @@
         throw new TypeError('files must be a FileList');
       }
       // https://html.spec.whatwg.org/multipage/input.html#dom-input-files
-      inputFilesSymbol.set(this, value);
       host.__tbSetInputFiles(this, value);
     },
     enumerable: true,

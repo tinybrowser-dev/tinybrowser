@@ -921,7 +921,23 @@ pub(crate) fn install_webdriver_bridge(ctx: &Ctx<'_>) -> Result<()> {
         rquickjs::prelude::Func::from(consume_user_activation),
     )?;
     globals.set("__tbSetActive", rquickjs::prelude::Func::from(set_active))?;
+    globals.set(
+        "__tbWebDriverSetActiveElement",
+        rquickjs::prelude::Func::from(webdriver_set_active_element),
+    )?;
     globals.set("__tbFocusNext", rquickjs::prelude::Func::from(focus_next))?;
+    Ok(())
+}
+
+// https://w3c.github.io/webdriver/#element-send-keys
+fn webdriver_set_active_element<'js>(ctx: Ctx<'js>, element: Value<'js>) -> Result<()> {
+    let Some(node) = host_node_id(&ctx, &element) else {
+        return Ok(());
+    };
+    let world = world_for_node(&ctx, node)?;
+    world
+        .borrow_mut()
+        .set_active_element(node.document_id(), Some(node));
     Ok(())
 }
 

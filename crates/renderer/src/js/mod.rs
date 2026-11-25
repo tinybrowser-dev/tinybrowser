@@ -1588,6 +1588,24 @@ impl JsRealm {
             ),
         )?;
 
+        // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#event-exceptionThrown
+        let exception_outbox = Rc::clone(outbox);
+        bridge::object(ctx)?.set(
+            "__tbExceptionThrown",
+            Func::from(
+                move |text: String, filename: String, line: u32, column: u32| {
+                    exception_outbox
+                        .borrow_mut()
+                        .push_back(RealmRequest::ExceptionThrown {
+                            text,
+                            filename,
+                            line,
+                            column,
+                        });
+                },
+            ),
+        )?;
+
         Ok(())
     }
 
@@ -2118,6 +2136,36 @@ fn install_window_host_functions(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> R
         }),
     )?;
 
+    // https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#simple-dialogs
+    let prompt_world = world.clone();
+    bridge::object(ctx)?.set(
+        "__tbUserPrompt",
+        Func::from(
+            move |ctx: Ctx<'_>,
+                  kind: String,
+                  message: String,
+                  default_value: Option<String>|
+                  -> rquickjs::Result<PromptJsAnswer> {
+                let kind = crate::protocol::PromptKind::parse_js(&kind)
+                    .ok_or_else(|| Exception::throw_type(&ctx, "unknown prompt kind"))?;
+                let (frame, blocked, services) = {
+                    let world = prompt_world.borrow();
+                    (
+                        world.frame(),
+                        world.sandbox.contains(crate::protocol::SandboxFlag::Modals),
+                        world.runtime.services.clone(),
+                    )
+                };
+                let outcome = if blocked {
+                    crate::protocol::PromptOutcome::Dismissed
+                } else {
+                    services.user_prompt(frame, kind, &message, default_value.as_deref())
+                };
+                Ok(PromptJsAnswer { kind, outcome })
+            },
+        ),
+    )?;
+
     install_auxiliary_host_functions(ctx, world)?;
     Ok(())
 }
@@ -2176,6 +2224,35 @@ fn install_window_messaging_functions(
         }),
     )?;
     Ok(())
+}
+
+// https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#simple-dialogs
+struct PromptJsAnswer {
+    kind: crate::protocol::PromptKind,
+    outcome: crate::protocol::PromptOutcome,
+}
+
+impl<'js> rquickjs::IntoJs<'js> for PromptJsAnswer {
+    fn into_js(self, ctx: &Ctx<'js>) -> rquickjs::Result<Value<'js>> {
+        match (self.kind, self.outcome) {
+            (crate::protocol::PromptKind::Alert, _) => Ok(Value::new_undefined(ctx.clone())),
+            (
+                crate::protocol::PromptKind::Confirm,
+                crate::protocol::PromptOutcome::Accepted { .. },
+            ) => Ok(Value::new_bool(ctx.clone(), true)),
+            (crate::protocol::PromptKind::Confirm, crate::protocol::PromptOutcome::Dismissed) => {
+                Ok(Value::new_bool(ctx.clone(), false))
+            }
+            (
+                crate::protocol::PromptKind::Prompt,
+                crate::protocol::PromptOutcome::Accepted { text },
+            ) => rquickjs::String::from_str(ctx.clone(), &text.unwrap_or_default())
+                .map(rquickjs::String::into_value),
+            (crate::protocol::PromptKind::Prompt, crate::protocol::PromptOutcome::Dismissed) => {
+                Ok(Value::new_null(ctx.clone()))
+            }
+        }
+    }
 }
 
 // https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps
@@ -2947,6 +3024,42 @@ fn install_binding_global(
     Ok(())
 }
 
+// https://w3c.github.io/webdriver/#dfn-clone-an-object
+// https://webidl.spec.whatwg.org/#dfn-indexed-property-getter
+fn indexed_length(object: &Object<'_>) -> Result<Option<u32>, JsError> {
+    let Some(length) = object.get::<_, Option<f64>>("length")? else {
+        return Ok(None);
+    };
+    if !(length.is_finite() && length >= 0.0 && length.fract() == 0.0 && length <= 1_000_000.0) {
+        return Ok(None);
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "checked finite, non-negative, integral, and bounded above"
+    )]
+    let length = length as u32;
+    let constructor = object
+        .get::<_, Option<Object>>("constructor")?
+        .and_then(|constructor| constructor.get::<_, Option<String>>("name").ok().flatten());
+    match constructor.as_deref() {
+        // https://262.ecma-international.org/#sec-arguments-exotic-objects
+        Some("Object") => {
+            if !object.contains_key("callee")? {
+                return Ok(None);
+            }
+        }
+        Some("Array") | None => return Ok(None),
+        Some(_) => {}
+    }
+    for index in 0..length {
+        if object.get::<_, Value>(index)?.is_undefined() {
+            return Ok(None);
+        }
+    }
+    Ok(Some(length))
+}
+
 fn decode_value<'js>(ctx: &rquickjs::Ctx<'js>, value: Value<'js>) -> Result<ScriptValue, JsError> {
     decode_value_inner(ctx, value, 0)
 }
@@ -2989,6 +3102,14 @@ fn decode_value_inner<'js>(
         return Ok(ScriptValue::Null);
     }
     if let Some(object) = value.as_object() {
+        if let Some(length) = indexed_length(object)? {
+            let mut items = Vec::with_capacity(length as usize);
+            for index in 0..length {
+                let item: Value = object.get(index)?;
+                items.push(decode_value_inner(ctx, item, depth.saturating_add(1))?);
+            }
+            return Ok(ScriptValue::List(items));
+        }
         let mut map = Vec::new();
         for key in object.keys::<String>() {
             let key = key?;

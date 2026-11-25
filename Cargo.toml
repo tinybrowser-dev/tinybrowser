@@ -108,6 +108,9 @@ tokio = { version = "1.53", default-features = false, features = ["rt-multi-thre
 net = { workspace = true, features = ["native"] }
 # The TLS tests serve a real certificate, so `--tls-ca` has something to trust.
 native-tls = "0.2"
+# The BiDi smoke test speaks the same websocket protocol clients use.
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+tokio-tungstenite = "0.30"
 
 # ─── Lints ────────────────────────────────────────────────────────────────────
 # Strict (not strict-strict): `all` is error, `pedantic`/`cargo` are warnings.

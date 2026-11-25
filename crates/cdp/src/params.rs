@@ -18,6 +18,185 @@ pub(crate) struct SetAutoAttach {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct SetDiscoverTargets {
+    pub(crate) discover: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SetDocumentContent {
+    pub(crate) frame_id: String,
+    pub(crate) html: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct HandleJavaScriptDialog {
+    pub(crate) accept: bool,
+    pub(crate) prompt_text: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct GetCookies {
+    pub(crate) urls: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CookieParam {
+    pub(crate) name: String,
+    pub(crate) value: String,
+    pub(crate) url: Option<String>,
+    pub(crate) domain: Option<String>,
+    pub(crate) path: Option<String>,
+    pub(crate) secure: Option<bool>,
+    pub(crate) http_only: Option<bool>,
+    pub(crate) same_site: Option<String>,
+    pub(crate) expires: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SetCookies {
+    pub(crate) cookies: Vec<CookieParam>,
+    pub(crate) browser_context_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DeleteCookies {
+    pub(crate) name: String,
+    pub(crate) url: Option<String>,
+    pub(crate) domain: Option<String>,
+    pub(crate) path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct StorageBrowserContext {
+    pub(crate) browser_context_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SetBlockedUrls {
+    pub(crate) urls: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FetchRequestPattern {
+    pub(crate) url_pattern: Option<String>,
+    pub(crate) request_stage: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FetchEnable {
+    pub(crate) patterns: Option<Vec<FetchRequestPattern>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FetchHeaderEntry {
+    pub(crate) name: String,
+    pub(crate) value: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FetchContinueRequest {
+    pub(crate) request_id: String,
+    pub(crate) url: Option<String>,
+    pub(crate) method: Option<String>,
+    pub(crate) post_data: Option<String>,
+    pub(crate) headers: Option<Vec<FetchHeaderEntry>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FetchFulfillRequest {
+    pub(crate) request_id: String,
+    pub(crate) response_code: u16,
+    pub(crate) response_headers: Option<Vec<FetchHeaderEntry>>,
+    pub(crate) body: Option<String>,
+    pub(crate) response_phrase: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FetchFailRequest {
+    pub(crate) request_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CompileScript {
+    pub(crate) expression: String,
+    pub(crate) persist_script: Option<bool>,
+    pub(crate) execution_context_id: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RunScript {
+    pub(crate) script_id: String,
+    #[serde(flatten)]
+    pub(crate) options: RuntimeOptions,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DomSetAttributeValue {
+    pub(crate) node_id: u64,
+    pub(crate) name: String,
+    pub(crate) value: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DomRemoveAttribute {
+    pub(crate) node_id: u64,
+    pub(crate) name: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DomRemoveNode {
+    pub(crate) node_id: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DomSetFileInputFiles {
+    pub(crate) files: Vec<String>,
+    #[serde(flatten)]
+    pub(crate) target: NodeTarget,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SetTimezoneOverride {
+    pub(crate) timezone_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SetLocaleOverride {
+    pub(crate) locale: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SetGeolocationOverride {
+    pub(crate) latitude: Option<f64>,
+    pub(crate) longitude: Option<f64>,
+    pub(crate) accuracy: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct AttachToTarget {
     pub(crate) target_id: String,
     pub(crate) flatten: Option<bool>,

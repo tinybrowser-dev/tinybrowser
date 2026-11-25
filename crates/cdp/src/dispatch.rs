@@ -1,12 +1,13 @@
 use std::io;
-use std::time::Duration;
+use std::path::Path;
+use std::time::{Duration, UNIX_EPOCH};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use browser::{
-    AxNode, AxPropertyValue, BrowserHandle, DEFAULT_VIEWPORT, DomNode, DomReply, DomRequest,
-    FrameId, RemoteValue, ScreenshotFormat, ScreenshotRequest, TabError, TabEvent, TabHandle,
-    TabId,
+    AxNode, AxPropertyValue, BrowserHandle, CookieFilter, CookieRecord, CookieSameSite,
+    DEFAULT_VIEWPORT, DirectCookie, DomNode, DomReply, DomRequest, FrameId, FrameInfo, RemoteValue,
+    ScreenshotFormat, ScreenshotRequest, TabError, TabEvent, TabHandle, TabId, UserContextId,
 };
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
@@ -57,6 +58,9 @@ pub(crate) enum Handler {
     ClearBrowserCache,
     SetCacheDisabled,
     GetTargetInfo,
+    StorageGetCookies,
+    StorageSetCookies,
+    StorageClearCookies,
     Page(PageHandler),
     Browser(BrowserHandler),
 }
@@ -67,14 +71,31 @@ pub(crate) enum PageHandler {
     Disable,
     Navigate,
     NavigateToHistoryEntry,
+    SetDocumentContent,
+    HandleJavaScriptDialog,
     CaptureScreenshot,
     SetDefaultBackgroundColorOverride,
+    NetworkEnable,
+    NetworkDisable,
     NetworkGetResponseBody,
     NetworkSetExtraHttpHeaders,
+    NetworkGetCookies,
+    NetworkGetAllCookies,
+    NetworkSetCookie,
+    NetworkSetCookies,
+    NetworkDeleteCookies,
+    NetworkSetBlockedUrls,
+    FetchEnable,
+    FetchDisable,
+    FetchContinueRequest,
+    FetchFulfillRequest,
+    FetchFailRequest,
     CreateIsolatedWorld,
     SetLifecycleEventsEnabled,
     RuntimeEvaluate,
     RuntimeCallFunctionOn,
+    RuntimeCompileScript,
+    RuntimeRunScript,
     RuntimeEnable,
     RuntimeDisable,
     RuntimeAddBinding,
@@ -91,6 +112,7 @@ pub(crate) enum BrowserHandler {
     GetVersion,
     Close,
     SetAutoAttach,
+    SetDiscoverTargets,
     GetTargets,
     CreateTarget,
     CloseTarget,
@@ -115,6 +137,10 @@ pub(crate) enum ScriptMethod {
     SetDeviceMetricsOverride,
     ClearDeviceMetricsOverride,
     SetUserAgentOverride,
+    SetTimezoneOverride,
+    SetLocaleOverride,
+    SetGeolocationOverride,
+    ClearGeolocationOverride,
     GetStorageKey,
     DomGetDocument,
     DomQuerySelector,
@@ -127,6 +153,11 @@ pub(crate) enum ScriptMethod {
     DomGetBoxModel,
     DomGetContentQuads,
     DomScrollIntoViewIfNeeded,
+    DomFocus,
+    DomSetAttributeValue,
+    DomRemoveAttribute,
+    DomRemoveNode,
+    DomSetFileInputFiles,
     InputMouseEvent,
     InputKeyEvent,
     InputInsertText,
@@ -178,6 +209,11 @@ const ROUTES: &[Route] = &[
         method: "Target.setAutoAttach",
         target: TargetClass::Page,
         handler: Handler::Accept(Accepted::PageHasNoChildTargets),
+    },
+    Route {
+        method: "Target.setDiscoverTargets",
+        target: TargetClass::Browser,
+        handler: Handler::Browser(BrowserHandler::SetDiscoverTargets),
     },
     Route {
         method: "Target.getTargetInfo",
@@ -253,6 +289,26 @@ const ROUTES: &[Route] = &[
         method: "Page.navigateToHistoryEntry",
         target: TargetClass::Page,
         handler: Handler::Page(PageHandler::NavigateToHistoryEntry),
+    },
+    Route {
+        method: "Page.setDocumentContent",
+        target: TargetClass::Page,
+        handler: Handler::Page(PageHandler::SetDocumentContent),
+    },
+    Route {
+        method: "Page.handleJavaScriptDialog",
+        target: TargetClass::Page,
+        handler: Handler::Page(PageHandler::HandleJavaScriptDialog),
+    },
+    Route {
+        method: "Page.bringToFront",
+        target: TargetClass::Page,
+        handler: Handler::Accept(Accepted::FocusIsNotEngineState),
+    },
+    Route {
+        method: "Page.stopLoading",
+        target: TargetClass::Page,
+        handler: Handler::Accept(Accepted::DomainWithoutEvents),
     },
     Route {
         method: "Page.captureScreenshot",
@@ -334,6 +390,16 @@ const ROUTES: &[Route] = &[
         handler: Handler::Page(PageHandler::RuntimeCallFunctionOn),
     },
     Route {
+        method: "Runtime.compileScript",
+        target: TargetClass::Page,
+        handler: Handler::Page(PageHandler::RuntimeCompileScript),
+    },
+    Route {
+        method: "Runtime.runScript",
+        target: TargetClass::Page,
+        handler: Handler::Page(PageHandler::RuntimeRunScript),
+    },
+    Route {
         method: "Emulation.setDefaultBackgroundColorOverride",
         target: TargetClass::Page,
         handler: Handler::Page(PageHandler::SetDefaultBackgroundColorOverride),
@@ -347,6 +413,61 @@ const ROUTES: &[Route] = &[
         method: "Network.setExtraHTTPHeaders",
         target: TargetClass::Page,
         handler: Handler::Page(PageHandler::NetworkSetExtraHttpHeaders),
+    },
+    Route {
+        method: "Network.getCookies",
+        target: TargetClass::Page,
+        handler: Handler::Page(PageHandler::NetworkGetCookies),
+    },
+    Route {
+        method: "Network.getAllCookies",
+        target: TargetClass::Page,
+        handler: Handler::Page(PageHandler::NetworkGetAllCookies),
+    },
+    Route {
+        method: "Network.setCookie",
+        target: TargetClass::Page,
+        handler: Handler::Page(PageHandler::NetworkSetCookie),
+    },
+    Route {
+        method: "Network.setCookies",
+        target: TargetClass::Page,
+        handler: Handler::Page(PageHandler::NetworkSetCookies),
+    },
+    Route {
+        method: "Network.deleteCookies",
+        target: TargetClass::Page,
+        handler: Handler::Page(PageHandler::NetworkDeleteCookies),
+    },
+    Route {
+        method: "Network.setBlockedURLs",
+        target: TargetClass::Page,
+        handler: Handler::Page(PageHandler::NetworkSetBlockedUrls),
+    },
+    Route {
+        method: "Fetch.enable",
+        target: TargetClass::Page,
+        handler: Handler::Page(PageHandler::FetchEnable),
+    },
+    Route {
+        method: "Fetch.disable",
+        target: TargetClass::Page,
+        handler: Handler::Page(PageHandler::FetchDisable),
+    },
+    Route {
+        method: "Fetch.continueRequest",
+        target: TargetClass::Page,
+        handler: Handler::Page(PageHandler::FetchContinueRequest),
+    },
+    Route {
+        method: "Fetch.fulfillRequest",
+        target: TargetClass::Page,
+        handler: Handler::Page(PageHandler::FetchFulfillRequest),
+    },
+    Route {
+        method: "Fetch.failRequest",
+        target: TargetClass::Page,
+        handler: Handler::Page(PageHandler::FetchFailRequest),
     },
     Route {
         method: "Runtime.getProperties",
@@ -372,6 +493,16 @@ const ROUTES: &[Route] = &[
         method: "Runtime.runIfWaitingForDebugger",
         target: TargetClass::Page,
         handler: Handler::Accept(Accepted::WaitingForDebugger),
+    },
+    Route {
+        method: "DOM.enable",
+        target: TargetClass::Page,
+        handler: Handler::Accept(Accepted::DomainWithoutEvents),
+    },
+    Route {
+        method: "DOM.disable",
+        target: TargetClass::Page,
+        handler: Handler::Accept(Accepted::DomainWithoutEvents),
     },
     Route {
         method: "DOM.getDocument",
@@ -427,6 +558,36 @@ const ROUTES: &[Route] = &[
         method: "DOM.scrollIntoViewIfNeeded",
         target: TargetClass::Page,
         handler: Handler::Page(PageHandler::Script(ScriptMethod::DomScrollIntoViewIfNeeded)),
+    },
+    Route {
+        method: "DOM.focus",
+        target: TargetClass::Page,
+        handler: Handler::Page(PageHandler::Script(ScriptMethod::DomFocus)),
+    },
+    Route {
+        method: "DOM.setAttributeValue",
+        target: TargetClass::Page,
+        handler: Handler::Page(PageHandler::Script(ScriptMethod::DomSetAttributeValue)),
+    },
+    Route {
+        method: "DOM.removeAttribute",
+        target: TargetClass::Page,
+        handler: Handler::Page(PageHandler::Script(ScriptMethod::DomRemoveAttribute)),
+    },
+    Route {
+        method: "DOM.removeNode",
+        target: TargetClass::Page,
+        handler: Handler::Page(PageHandler::Script(ScriptMethod::DomRemoveNode)),
+    },
+    Route {
+        method: "DOM.requestChildNodes",
+        target: TargetClass::Page,
+        handler: Handler::Accept(Accepted::DomainWithoutEvents),
+    },
+    Route {
+        method: "DOM.setFileInputFiles",
+        target: TargetClass::Page,
+        handler: Handler::Page(PageHandler::Script(ScriptMethod::DomSetFileInputFiles)),
     },
     Route {
         method: "Input.dispatchMouseEvent",
@@ -505,13 +666,48 @@ const ROUTES: &[Route] = &[
         handler: Handler::Page(PageHandler::Script(ScriptMethod::GetStorageKey)),
     },
     Route {
+        method: "Storage.getCookies",
+        target: TargetClass::Both,
+        handler: Handler::StorageGetCookies,
+    },
+    Route {
+        method: "Storage.setCookies",
+        target: TargetClass::Both,
+        handler: Handler::StorageSetCookies,
+    },
+    Route {
+        method: "Storage.clearCookies",
+        target: TargetClass::Both,
+        handler: Handler::StorageClearCookies,
+    },
+    Route {
         method: "Log.enable",
         target: TargetClass::Both,
         handler: Handler::Accept(Accepted::DomainWithoutEvents),
     },
     Route {
-        method: "Network.enable",
+        method: "Log.disable",
         target: TargetClass::Both,
+        handler: Handler::Accept(Accepted::DomainWithoutEvents),
+    },
+    Route {
+        method: "Network.enable",
+        target: TargetClass::Page,
+        handler: Handler::Page(PageHandler::NetworkEnable),
+    },
+    Route {
+        method: "Network.enable",
+        target: TargetClass::Browser,
+        handler: Handler::Accept(Accepted::DomainWithoutEvents),
+    },
+    Route {
+        method: "Network.disable",
+        target: TargetClass::Page,
+        handler: Handler::Page(PageHandler::NetworkDisable),
+    },
+    Route {
+        method: "Network.disable",
+        target: TargetClass::Browser,
         handler: Handler::Accept(Accepted::DomainWithoutEvents),
     },
     Route {
@@ -555,6 +751,26 @@ const ROUTES: &[Route] = &[
         handler: Handler::Page(PageHandler::Script(
             ScriptMethod::ClearDeviceMetricsOverride,
         )),
+    },
+    Route {
+        method: "Emulation.setTimezoneOverride",
+        target: TargetClass::Page,
+        handler: Handler::Page(PageHandler::Script(ScriptMethod::SetTimezoneOverride)),
+    },
+    Route {
+        method: "Emulation.setLocaleOverride",
+        target: TargetClass::Page,
+        handler: Handler::Page(PageHandler::Script(ScriptMethod::SetLocaleOverride)),
+    },
+    Route {
+        method: "Emulation.setGeolocationOverride",
+        target: TargetClass::Page,
+        handler: Handler::Page(PageHandler::Script(ScriptMethod::SetGeolocationOverride)),
+    },
+    Route {
+        method: "Emulation.clearGeolocationOverride",
+        target: TargetClass::Page,
+        handler: Handler::Page(PageHandler::Script(ScriptMethod::ClearGeolocationOverride)),
     },
     Route {
         method: "Overlay.enable",
@@ -605,7 +821,8 @@ pub(crate) async fn run_script(
     world: Option<&str>,
 ) -> Result<Value, DispatchError> {
     match method {
-        ScriptMethod::GetFrameTree | ScriptMethod::GetResourceTree => frame_tree(tab).await,
+        ScriptMethod::GetFrameTree => frame_tree(tab, false).await,
+        ScriptMethod::GetResourceTree => frame_tree(tab, true).await,
         ScriptMethod::GetLayoutMetrics => layout_metrics(tab).await,
         ScriptMethod::Reload => {
             let url = tab
@@ -622,6 +839,10 @@ pub(crate) async fn run_script(
         ScriptMethod::SetDeviceMetricsOverride => set_device_metrics(params, tab).await,
         ScriptMethod::ClearDeviceMetricsOverride => clear_device_metrics(tab).await,
         ScriptMethod::SetUserAgentOverride => set_user_agent_override(params, tab).await,
+        ScriptMethod::SetTimezoneOverride => set_timezone_override(params),
+        ScriptMethod::SetLocaleOverride => set_locale_override(params),
+        ScriptMethod::SetGeolocationOverride => set_geolocation_override(params),
+        ScriptMethod::ClearGeolocationOverride => Ok(json!({})),
         ScriptMethod::GetStorageKey => storage_key(tab).await,
         ScriptMethod::DomGetDocument => dom_get_document(tab).await,
         ScriptMethod::DomQuerySelector => dom_query_selector(tab, params).await,
@@ -636,6 +857,11 @@ pub(crate) async fn run_script(
         ScriptMethod::DomScrollIntoViewIfNeeded => {
             dom_scroll_into_view_if_needed(tab, params).await
         }
+        ScriptMethod::DomFocus => dom_focus(tab, params).await,
+        ScriptMethod::DomSetAttributeValue => dom_set_attribute_value(tab, params).await,
+        ScriptMethod::DomRemoveAttribute => dom_remove_attribute(tab, params).await,
+        ScriptMethod::DomRemoveNode => dom_remove_node(tab, params).await,
+        ScriptMethod::DomSetFileInputFiles => dom_set_file_input_files(tab, params).await,
         ScriptMethod::InputMouseEvent => input_mouse_event(tab, params).await,
         ScriptMethod::InputKeyEvent => input_key_event(tab, params).await,
         ScriptMethod::InputInsertText => input_insert_text(tab, params).await,
@@ -648,17 +874,85 @@ pub(crate) async fn run_script(
     }
 }
 
-async fn frame_tree(tab: &TabHandle) -> Result<Value, DispatchError> {
+pub(crate) fn cdp_frame_id(tab: TabId, frame: FrameId) -> String {
+    if frame == FrameId::MAIN {
+        tab.to_string()
+    } else {
+        format!("{tab}.{}", frame.get())
+    }
+}
+
+pub(crate) fn url_security_origin(url: &str) -> String {
+    let Ok(url) = url::Url::parse(url) else {
+        return "null".to_owned();
+    };
+    net::origin_url(&url.origin()).map_or_else(
+        || "null".to_owned(),
+        |origin| origin[..url::Position::BeforePath].to_owned(),
+    )
+}
+
+fn build_frame_tree_node(
+    tab: TabId,
+    frame: &FrameInfo,
+    all: &[FrameInfo],
+    with_resources: bool,
+) -> Value {
+    let mut frame_obj = serde_json::Map::new();
+    frame_obj.insert("id".into(), json!(cdp_frame_id(tab, frame.id)));
+    if let Some(parent) = frame.parent {
+        frame_obj.insert("parentId".into(), json!(cdp_frame_id(tab, parent)));
+    }
+    frame_obj.insert("loaderId".into(), json!(""));
+    frame_obj.insert("url".into(), json!(frame.url));
+    frame_obj.insert(
+        "securityOrigin".into(),
+        json!(url_security_origin(&frame.url)),
+    );
+    frame_obj.insert("mimeType".into(), json!("text/html"));
+    let children: Vec<Value> = all
+        .iter()
+        .filter(|child| child.parent == Some(frame.id))
+        .map(|child| build_frame_tree_node(tab, child, all, with_resources))
+        .collect();
+    let mut node = serde_json::Map::new();
+    node.insert("frame".into(), Value::Object(frame_obj));
+    if !children.is_empty() {
+        node.insert("childFrames".into(), Value::Array(children));
+    }
+    if with_resources {
+        node.insert("resources".into(), json!([]));
+    }
+    Value::Object(node)
+}
+
+async fn frame_tree(tab: &TabHandle, with_resources: bool) -> Result<Value, DispatchError> {
+    let frames = tab
+        .frames()
+        .await
+        .map_err(|error| DispatchError::Failed(error.to_string()))?;
+    if let Some(main) = frames.iter().find(|f| f.id == FrameId::MAIN) {
+        return Ok(json!({
+            "frameTree": build_frame_tree_node(tab.id(), main, &frames, with_resources)
+        }));
+    }
     let url = tab
         .document_url()
         .await
         .map_err(|error| DispatchError::Failed(error.to_string()))?;
-    Ok(json!({"frameTree": {"frame": {
-        "id": tab.id().to_string(),
-        "loaderId": "",
-        "url": url,
-        "mimeType": "text/html",
-    }}}))
+    let mut node = json!({
+        "frame": {
+            "id": tab.id().to_string(),
+            "loaderId": "",
+            "url": url,
+            "securityOrigin": url_security_origin(&url),
+            "mimeType": "text/html",
+        }
+    });
+    if with_resources && let Some(obj) = node.as_object_mut() {
+        obj.insert("resources".into(), json!([]));
+    }
+    Ok(json!({"frameTree": node}))
 }
 
 async fn layout_metrics(tab: &TabHandle) -> Result<Value, DispatchError> {
@@ -991,6 +1285,41 @@ async fn set_user_agent_override(params: &Value, tab: &TabHandle) -> Result<Valu
     tab.set_identity(override_identity)
         .await
         .map_err(|error| DispatchError::Failed(error.to_string()))?;
+    Ok(json!({}))
+}
+
+// https://chromedevtools.github.io/devtools-protocol/tot/Emulation/#method-setTimezoneOverride
+fn set_timezone_override(params: &Value) -> Result<Value, DispatchError> {
+    let params: crate::params::SetTimezoneOverride = crate::params::parse(params)?;
+    let _ = params.timezone_id;
+    Ok(json!({}))
+}
+
+// https://chromedevtools.github.io/devtools-protocol/tot/Emulation/#method-setLocaleOverride
+fn set_locale_override(params: &Value) -> Result<Value, DispatchError> {
+    let params: crate::params::SetLocaleOverride = crate::params::parse(params)?;
+    let _ = params.locale;
+    Ok(json!({}))
+}
+
+// https://chromedevtools.github.io/devtools-protocol/tot/Emulation/#method-setGeolocationOverride
+fn set_geolocation_override(params: &Value) -> Result<Value, DispatchError> {
+    let params: crate::params::SetGeolocationOverride = crate::params::parse(params)?;
+    if let Some(lat) = params.latitude
+        && !(-90.0..=90.0).contains(&lat)
+    {
+        return Err(DispatchError::InvalidParams("latitude".to_owned()));
+    }
+    if let Some(lon) = params.longitude
+        && !(-180.0..=180.0).contains(&lon)
+    {
+        return Err(DispatchError::InvalidParams("longitude".to_owned()));
+    }
+    if let Some(acc) = params.accuracy
+        && acc < 0.0
+    {
+        return Err(DispatchError::InvalidParams("accuracy".to_owned()));
+    }
     Ok(json!({}))
 }
 
@@ -1520,6 +1849,283 @@ pub(crate) async fn dom_scroll_into_view_if_needed(
     Ok(json!({}))
 }
 
+async fn resolve_target_object_id(
+    tab: &TabHandle,
+    target: &crate::params::NodeTarget,
+) -> Result<String, DispatchError> {
+    if let Some(object_id) = &target.object {
+        return Ok(object_id.clone());
+    }
+    let node = match target_node(tab, target).await? {
+        TargetNode::Node(id) => id,
+        TargetNode::Default | TargetNode::Missing => return Err(missing_node()),
+    };
+    let reply = dom_request(tab, DomRequest::ResolveNode { node, world: None }).await?;
+    let DomReply::Resolved { object } = reply else {
+        return Err(DispatchError::BadHelperReply("DOM.resolveNode"));
+    };
+    object.map(|obj| obj.object_id).ok_or_else(missing_node)
+}
+
+// https://chromedevtools.github.io/devtools-protocol/tot/DOM/#method-focus
+async fn dom_focus(tab: &TabHandle, params: &Value) -> Result<Value, DispatchError> {
+    let target: crate::params::NodeTarget = crate::params::parse(params)?;
+    if !has_node_identifier(&target) {
+        return Err(DispatchError::InvalidParams(
+            "nodeId, backendNodeId, or objectId".to_owned(),
+        ));
+    }
+    let object_id = resolve_target_object_id(tab, &target).await?;
+    let script = format!(
+        "(() => {{ const el = host.__tb_handles[{}]; if (!el || typeof el.focus !== 'function') return false; el.focus(); return true; }})()",
+        json_string(&object_id)
+    );
+    tab.execute_browser_script(&script)
+        .await
+        .map_err(|error| DispatchError::Failed(error.to_string()))?;
+    Ok(json!({}))
+}
+
+// https://chromedevtools.github.io/devtools-protocol/tot/DOM/#method-setAttributeValue
+async fn dom_set_attribute_value(tab: &TabHandle, params: &Value) -> Result<Value, DispatchError> {
+    let params: crate::params::DomSetAttributeValue = crate::params::parse(params)?;
+    let target = crate::params::NodeTarget {
+        node: Some(params.node_id),
+        backend: None,
+        object: None,
+    };
+    let object_id = resolve_target_object_id(tab, &target).await?;
+    let script = format!(
+        "(() => {{ const el = host.__tb_handles[{}]; if (!el || typeof el.setAttribute !== 'function') return false; el.setAttribute({}, {}); return true; }})()",
+        json_string(&object_id),
+        json_string(&params.name),
+        json_string(&params.value),
+    );
+    tab.execute_browser_script(&script)
+        .await
+        .map_err(|error| DispatchError::Failed(error.to_string()))?;
+    Ok(json!({}))
+}
+
+// https://chromedevtools.github.io/devtools-protocol/tot/DOM/#method-removeAttribute
+async fn dom_remove_attribute(tab: &TabHandle, params: &Value) -> Result<Value, DispatchError> {
+    let params: crate::params::DomRemoveAttribute = crate::params::parse(params)?;
+    let target = crate::params::NodeTarget {
+        node: Some(params.node_id),
+        backend: None,
+        object: None,
+    };
+    let object_id = resolve_target_object_id(tab, &target).await?;
+    let script = format!(
+        "(() => {{ const el = host.__tb_handles[{}]; if (!el || typeof el.removeAttribute !== 'function') return false; el.removeAttribute({}); return true; }})()",
+        json_string(&object_id),
+        json_string(&params.name),
+    );
+    tab.execute_browser_script(&script)
+        .await
+        .map_err(|error| DispatchError::Failed(error.to_string()))?;
+    Ok(json!({}))
+}
+
+// https://chromedevtools.github.io/devtools-protocol/tot/DOM/#method-removeNode
+async fn dom_remove_node(tab: &TabHandle, params: &Value) -> Result<Value, DispatchError> {
+    let params: crate::params::DomRemoveNode = crate::params::parse(params)?;
+    let target = crate::params::NodeTarget {
+        node: Some(params.node_id),
+        backend: None,
+        object: None,
+    };
+    let object_id = resolve_target_object_id(tab, &target).await?;
+    let script = format!(
+        "(() => {{ const el = host.__tb_handles[{}]; if (!el || !el.parentNode) return false; el.parentNode.removeChild(el); return true; }})()",
+        json_string(&object_id),
+    );
+    tab.execute_browser_script(&script)
+        .await
+        .map_err(|error| DispatchError::Failed(error.to_string()))?;
+    Ok(json!({}))
+}
+
+// https://chromedevtools.github.io/devtools-protocol/tot/DOM/#method-setFileInputFiles
+async fn dom_set_file_input_files(tab: &TabHandle, params: &Value) -> Result<Value, DispatchError> {
+    let params: crate::params::DomSetFileInputFiles = crate::params::parse(params)?;
+    if !has_node_identifier(&params.target) {
+        return Err(DispatchError::InvalidParams(
+            "nodeId, backendNodeId, or objectId".to_owned(),
+        ));
+    }
+    let object_id = resolve_target_object_id(tab, &params.target).await?;
+    let names: Vec<String> = params
+        .files
+        .iter()
+        .map(|raw| {
+            Path::new(raw)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or(raw)
+                .to_owned()
+        })
+        .collect();
+    let script = format!(
+        "(() => {{\n\
+           const el = host.__tb_handles[{}];\n\
+           if (!el || el.nodeType !== 1) return false;\n\
+           const names = {};\n\
+           const list = names.map(name => typeof File === 'function' ? new File([], name) : {{ name, size: 0, type: '' }});\n\
+           list.item = i => (i >= 0 && i < list.length ? list[i] : null);\n\
+           try {{\n\
+             if (typeof DataTransfer === 'function') {{\n\
+               const dt = new DataTransfer();\n\
+               for (const f of list) dt.items.add(f);\n\
+               el.files = dt.files;\n\
+             }} else {{\n\
+               Object.defineProperty(el, 'files', {{ value: list, configurable: true }});\n\
+             }}\n\
+           }} catch (_) {{\n\
+             Object.defineProperty(el, 'files', {{ value: list, configurable: true }});\n\
+           }}\n\
+           el.dispatchEvent(new Event('input', {{ bubbles: true }}));\n\
+           el.dispatchEvent(new Event('change', {{ bubbles: true }}));\n\
+           return true;\n\
+         }})()",
+        json_string(&object_id),
+        json!(names),
+    );
+    tab.execute_browser_script(&script)
+        .await
+        .map_err(|error| DispatchError::Failed(error.to_string()))?;
+    Ok(json!({}))
+}
+
+// https://chromedevtools.github.io/devtools-protocol/tot/Network/#type-Cookie
+pub(crate) fn cdp_cookie_json(record: &CookieRecord) -> Value {
+    let expires = record.expiry.map_or(-1.0, |exp| {
+        exp.duration_since(UNIX_EPOCH)
+            .map_or(0.0, |d| d.as_secs_f64())
+    });
+    let same_site = match record.same_site {
+        CookieSameSite::Strict => "Strict",
+        CookieSameSite::Lax => "Lax",
+        CookieSameSite::None | CookieSameSite::Default => "None",
+    };
+    json!({
+        "name": record.name,
+        "value": record.value,
+        "domain": record.domain,
+        "path": record.path,
+        "expires": expires,
+        "size": record.name.len() + record.value.len(),
+        "httpOnly": record.http_only,
+        "secure": record.secure,
+        "session": record.expiry.is_none(),
+        "sameSite": same_site,
+        "priority": "Medium",
+        "sameParty": false,
+        "sourceScheme": if record.secure { "Secure" } else { "NonSecure" },
+        "sourcePort": if record.secure { 443 } else { 80 },
+    })
+}
+
+pub(crate) fn cookie_param_to_direct(
+    param: &crate::params::CookieParam,
+    fallback_url: Option<&str>,
+) -> Result<DirectCookie, DispatchError> {
+    let parsed_url = param
+        .url
+        .as_deref()
+        .or(fallback_url)
+        .and_then(|u| url::Url::parse(u).ok());
+    let (domain, host_only) = if let Some(ref d) = param.domain {
+        let stripped = d.strip_prefix('.').unwrap_or(d);
+        (stripped.to_ascii_lowercase(), !d.starts_with('.'))
+    } else if let Some(host) = parsed_url.as_ref().and_then(url::Url::host_str) {
+        (host.to_ascii_lowercase(), true)
+    } else {
+        return Err(DispatchError::InvalidParams(
+            "cookie requires domain or url".to_owned(),
+        ));
+    };
+    let path = param
+        .path
+        .clone()
+        .or_else(|| parsed_url.as_ref().map(|u| u.path().to_owned()))
+        .unwrap_or_else(|| "/".to_owned());
+    let secure = param
+        .secure
+        .unwrap_or_else(|| parsed_url.as_ref().is_some_and(|u| u.scheme() == "https"));
+    let http_only = param.http_only.unwrap_or(false);
+    let same_site = match param.same_site.as_deref() {
+        Some("Strict") => CookieSameSite::Strict,
+        Some("Lax") => CookieSameSite::Lax,
+        Some("None") => CookieSameSite::None,
+        _ => CookieSameSite::Default,
+    };
+    let expiry = param.expires.and_then(|ts| {
+        if ts < 0.0 || !ts.is_finite() {
+            None
+        } else {
+            Duration::try_from_secs_f64(ts)
+                .ok()
+                .and_then(|d| UNIX_EPOCH.checked_add(d))
+        }
+    });
+    Ok(DirectCookie {
+        name: param.name.clone(),
+        value: param.value.clone(),
+        domain,
+        host_only,
+        path,
+        secure,
+        http_only,
+        same_site,
+        expiry,
+        partition_key: None,
+    })
+}
+
+pub(crate) async fn set_cdp_cookies(
+    browser: &BrowserHandle,
+    user_context: &UserContextId,
+    cookies: &[crate::params::CookieParam],
+    fallback_url: Option<&str>,
+) -> Result<bool, DispatchError> {
+    let mut all_ok = true;
+    for param in cookies {
+        let direct = cookie_param_to_direct(param, fallback_url)?;
+        let stored = browser
+            .set_direct_cookie_in(user_context, direct)
+            .await
+            .map_err(|error| DispatchError::Failed(error.to_string()))?;
+        all_ok &= stored;
+    }
+    Ok(all_ok)
+}
+
+pub(crate) async fn delete_cdp_cookies(
+    browser: &BrowserHandle,
+    user_context: &UserContextId,
+    params: &crate::params::DeleteCookies,
+) -> Result<(), DispatchError> {
+    let parsed_url = params.url.as_deref().and_then(|u| url::Url::parse(u).ok());
+    let domain = params.domain.clone().or_else(|| {
+        parsed_url
+            .as_ref()
+            .and_then(url::Url::host_str)
+            .map(str::to_ascii_lowercase)
+    });
+    let filter = CookieFilter {
+        name: Some(params.name.clone()),
+        domain,
+        path: params.path.clone(),
+        ..CookieFilter::default()
+    };
+    browser
+        .delete_cookies_in(user_context, filter)
+        .await
+        .map_err(|error| DispatchError::Failed(error.to_string()))?;
+    Ok(())
+}
+
 pub(crate) async fn css_stylesheets(tab: &TabHandle) -> Result<Vec<Value>, DispatchError> {
     let reply = dom_request(tab, DomRequest::GetStyleSheets).await?;
     let DomReply::StyleSheets { sheets } = reply else {
@@ -1944,26 +2550,33 @@ pub(crate) async fn target_info(
     id: TabId,
     browser_context_id: &str,
 ) -> Value {
-    let (url, title) = match browser.tab(id).await {
+    let (url, title, opener) = match browser.tab(id).await {
         Ok(tab) => {
             let url = tab
                 .document_url()
                 .await
                 .unwrap_or_else(|_| "about:blank".into());
             let title = tab.document_title().await.unwrap_or_default();
-            (url, title)
+            let opener = tab.opener().await.ok().flatten();
+            (url, title, opener)
         }
-        Err(_) => ("about:blank".into(), String::new()),
+        Err(_) => ("about:blank".into(), String::new(), None),
     };
-    json!({
+    let mut info = json!({
         "targetId": id.to_string(),
         "type": "page",
         "title": title,
         "url": url,
         "attached": false,
-        "canAccessOpener": false,
+        "canAccessOpener": opener.is_some(),
         "browserContextId": browser_context_id,
-    })
+    });
+    if let Some(op) = opener
+        && let Some(obj) = info.as_object_mut()
+    {
+        obj.insert("openerId".into(), json!(op.to_string()));
+    }
+    info
 }
 
 pub(crate) fn target_id(raw: &str) -> Result<TabId, DispatchError> {

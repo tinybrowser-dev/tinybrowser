@@ -743,7 +743,8 @@ fn to_event(event: RendererEvent) -> Option<Event> {
             | BrowserEvent::FrameRemoved
             | BrowserEvent::RealmReplaced
             | BrowserEvent::Binding { .. }
-            | BrowserEvent::Console { .. } => None,
+            | BrowserEvent::Console { .. }
+            | BrowserEvent::ExceptionThrown { .. } => None,
         },
         RendererEvent::Timer(id) => Some(Event::Timer(id.get())),
         RendererEvent::Fetch { status } => Some(Event::Fetch(status)),

@@ -37,6 +37,14 @@ pub(super) fn install(_ctx: &Ctx<'_>, globals: &Object<'_>) -> Result<()> {
         rquickjs::prelude::Func::from(set_input_files),
     )?;
     globals.set(
+        "__tbInputFileList",
+        rquickjs::prelude::Func::from(input_file_list),
+    )?;
+    globals.set(
+        "__tbInputFileObjects",
+        rquickjs::prelude::Func::from(input_file_objects),
+    )?;
+    globals.set(
         "__tbEncodeFormBytes",
         rquickjs::prelude::Func::from(encode_form_bytes_js),
     )?;
@@ -509,6 +517,41 @@ fn push_file_entries<'js>(
     Ok(())
 }
 
+// https://html.spec.whatwg.org/multipage/input.html#dom-input-files
+fn input_file_list<'js>(ctx: Ctx<'js>, element: Value<'js>) -> Result<Value<'js>> {
+    let Some(node) = host_node_id(&ctx, &element) else {
+        return Ok(Value::new_null(ctx));
+    };
+    let saved = world(&ctx)?
+        .borrow()
+        .input_file_list(node)
+        .cloned()
+        .and_then(|saved| saved.restore(&ctx).ok());
+    Ok(saved.unwrap_or_else(|| Value::new_null(ctx)))
+}
+
+// https://html.spec.whatwg.org/multipage/input.html#dom-input-files
+fn input_file_objects<'js>(ctx: Ctx<'js>, element: Value<'js>) -> Result<Array<'js>> {
+    let array = Array::new(ctx.clone())?;
+    let Some(node) = host_node_id(&ctx, &element) else {
+        return Ok(array);
+    };
+    let files: Vec<Value<'js>> = {
+        let world = world(&ctx)?;
+        let world = world.borrow();
+        world.input_files(node).map_or_default(|saved| {
+            saved
+                .iter()
+                .filter_map(|saved| saved.clone().restore(&ctx).ok())
+                .collect()
+        })
+    };
+    for (index, file) in files.into_iter().enumerate() {
+        array.set(index, file)?;
+    }
+    Ok(array)
+}
+
 pub(super) fn set_input_files<'js>(
     ctx: Ctx<'js>,
     element: Value<'js>,
@@ -538,7 +581,9 @@ pub(super) fn set_input_files<'js>(
             }
         }
     }
-    world_rc.borrow_mut().set_input_files(node, stored);
+    let mut world = world_rc.borrow_mut();
+    world.set_input_files(node, stored);
+    world.set_input_file_list(node, Persistent::save(&ctx, files.clone()));
     Ok(())
 }
 

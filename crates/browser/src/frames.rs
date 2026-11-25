@@ -8,6 +8,14 @@ use url::Url;
 
 use crate::site::Site;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FrameInfo {
+    pub id: FrameId,
+    pub parent: Option<FrameId>,
+    pub url: String,
+    pub name: Option<String>,
+}
+
 #[derive(Clone, Debug)]
 struct FrameEntry {
     parent: FrameId,
@@ -15,6 +23,8 @@ struct FrameEntry {
     active: SandboxFlags,
     origin: Option<url::Origin>,
     site: Option<Site>,
+    url: String,
+    order: u64,
 }
 
 #[derive(Default)]
@@ -22,12 +32,71 @@ pub(crate) struct FrameTree {
     popup_sandbox: SandboxFlags,
     main_csp: SandboxFlags,
     main_origin: Option<url::Origin>,
+    main_url: String,
+    next_order: u64,
     children: HashMap<FrameId, FrameEntry>,
 }
 
 impl FrameTree {
     pub(crate) fn set_main_origin(&mut self, origin: url::Origin) {
         self.main_origin = Some(origin);
+    }
+
+    pub(crate) fn set_main_url(&mut self, url: String) {
+        self.main_url = url;
+    }
+
+    pub(crate) fn set_child_url(&mut self, frame: FrameId, url: String) {
+        if let Some(entry) = self.children.get_mut(&frame) {
+            entry.url = url;
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn parent_of(&self, frame: FrameId) -> Option<FrameId> {
+        self.children.get(&frame).map(|entry| entry.parent)
+    }
+
+    #[must_use]
+    pub(crate) fn frame_url(&self, frame: FrameId) -> Option<String> {
+        if frame == FrameId::MAIN {
+            return Some(if self.main_url.is_empty() {
+                "about:blank".to_owned()
+            } else {
+                self.main_url.clone()
+            });
+        }
+        self.children.get(&frame).map(|entry| entry.url.clone())
+    }
+
+    #[must_use]
+    pub(crate) fn snapshot(&self, main_name: Option<String>) -> Vec<FrameInfo> {
+        let mut out = Vec::with_capacity(self.children.len() + 1);
+        out.push(FrameInfo {
+            id: FrameId::MAIN,
+            parent: None,
+            url: if self.main_url.is_empty() {
+                "about:blank".to_owned()
+            } else {
+                self.main_url.clone()
+            },
+            name: main_name,
+        });
+        let mut ordered: Vec<(FrameId, &FrameEntry)> = self
+            .children
+            .iter()
+            .map(|(&id, entry)| (id, entry))
+            .collect();
+        ordered.sort_by_key(|(_, entry)| entry.order);
+        for (id, entry) in ordered {
+            out.push(FrameInfo {
+                id,
+                parent: Some(entry.parent),
+                url: entry.url.clone(),
+                name: None,
+            });
+        }
+        out
     }
 
     pub(crate) fn ancestor_origins(&self, frame: FrameId) -> Vec<url::Origin> {
@@ -92,6 +161,8 @@ impl FrameTree {
             FrameKind::Child => parent_active.union(reported),
             FrameKind::Auxiliary => parent_active.auxiliary_flags(),
         };
+        let order = self.next_order;
+        self.next_order = self.next_order.saturating_add(1);
         self.children.insert(
             frame,
             FrameEntry {
@@ -100,6 +171,8 @@ impl FrameTree {
                 active: creation,
                 origin: None,
                 site: None,
+                url: "about:blank".to_owned(),
+                order,
             },
         );
         true
@@ -118,6 +191,7 @@ impl FrameTree {
         }
         if let Some(entry) = self.children.get_mut(&frame) {
             entry.active = entry.creation.union(csp);
+            entry.url = url.to_string();
             if entry.active.origin_is_opaque() {
                 entry.origin = Some(url::Origin::new_opaque());
                 entry.site = None;

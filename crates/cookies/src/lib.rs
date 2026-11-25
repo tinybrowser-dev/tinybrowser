@@ -233,6 +233,96 @@ impl CookieJar {
         self.cookies.iter().map(StoredCookie::record).collect()
     }
 
+    // https://w3c.github.io/webdriver-bidi/#command-storage-getCookies
+    pub fn matching_records(
+        &mut self,
+        filter: &CookieFilter,
+        now: SystemTime,
+    ) -> Vec<CookieRecord> {
+        self.evict_expired(now);
+        self.cookies
+            .iter()
+            .filter(|cookie| filter.matches(cookie))
+            .map(StoredCookie::record)
+            .collect()
+    }
+
+    // https://w3c.github.io/webdriver-bidi/#command-storage-setCookie
+    pub fn set_direct(&mut self, cookie: DirectCookie, now: SystemTime) -> bool {
+        self.evict_expired(now);
+        let domain = if let Ok(ip) = cookie.domain.parse::<std::net::IpAddr>() {
+            ip.to_string()
+        } else {
+            let raw = cookie.domain.strip_prefix('.').unwrap_or(&cookie.domain);
+            let Some(canonical) = canonicalize_domain_attr(raw) else {
+                return false;
+            };
+            canonical
+        };
+        if cookie.name.len() + cookie.value.len() > 4096
+            || has_ctl_excluding_htab(&cookie.name)
+            || has_ctl_excluding_htab(&cookie.value)
+            || cookie.name.contains([';', '='])
+            || cookie.value.contains(';')
+        {
+            return false;
+        }
+        let path = if cookie.path.starts_with('/') {
+            cookie.path
+        } else {
+            "/".to_owned()
+        };
+        let host_only = cookie.host_only || is_ip(&domain) || is_public_suffix(&domain);
+        let same_site = SameSite::from(cookie.same_site);
+        let stored = StoredCookie {
+            name: cookie.name,
+            value: cookie.value,
+            expiry: cookie.expiry.map(|exp| exp.min(now + MAX_LIFETIME)),
+            domain,
+            path,
+            created: now,
+            last_access: now,
+            host_only,
+            secure: cookie.secure,
+            http_only: cookie.http_only,
+            same_site,
+            partition_key: cookie.partition_key,
+        };
+        self.cookies
+            .retain(|old| !same_cookie_identity(old, &stored));
+        if stored.expiry.is_none_or(|exp| exp > now) {
+            self.cookies.push(stored);
+            self.evict_excess();
+        }
+        true
+    }
+
+    // https://w3c.github.io/webdriver-bidi/#command-storage-deleteCookies
+    pub fn delete_matching(&mut self, filter: &CookieFilter, now: SystemTime) -> usize {
+        self.evict_expired(now);
+        let before = self.cookies.len();
+        self.cookies.retain(|cookie| !filter.matches(cookie));
+        before.saturating_sub(self.cookies.len())
+    }
+
+    // https://w3c.github.io/webdriver/#delete-cookie
+    // https://w3c.github.io/webdriver/#delete-all-cookies
+    pub fn delete_for_url(&mut self, op: CookieOp<'_>, name: Option<&str>) -> usize {
+        self.evict_expired(op.now);
+        let Some(host) = canonicalize_host(op.url) else {
+            return 0;
+        };
+        let path = op.url.path();
+        let trustworthy = secure_context::is_potentially_trustworthy(op.url);
+        let before = self.cookies.len();
+        self.cookies.retain(|cookie| {
+            let matches_url = cookie.matches(&host, path, &op, trustworthy);
+            let matches_name = name.is_none_or(|target| cookie.name == target);
+            !(matches_url && matches_name)
+        });
+        before.saturating_sub(self.cookies.len())
+    }
+
     #[must_use]
     pub fn snapshot(&self) -> Vec<CookieRecord> {
         self.cookies
@@ -330,6 +420,106 @@ impl CookieJar {
             same_site,
             partition_key: record.partition_key,
         })
+    }
+}
+
+// https://w3c.github.io/webdriver-bidi/#type-storage-PartialCookie
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirectCookie {
+    pub name: String,
+    pub value: String,
+    pub domain: String,
+    pub path: String,
+    pub host_only: bool,
+    pub secure: bool,
+    pub http_only: bool,
+    pub same_site: CookieSameSite,
+    pub expiry: Option<SystemTime>,
+    pub partition_key: Option<String>,
+}
+
+// https://w3c.github.io/webdriver-bidi/#type-storage-CookieFilter
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CookieFilter {
+    pub name: Option<String>,
+    pub value: Option<String>,
+    pub domain: Option<String>,
+    pub path: Option<String>,
+    pub size: Option<usize>,
+    pub http_only: Option<bool>,
+    pub secure: Option<bool>,
+    pub same_site: Option<CookieSameSite>,
+    pub expiry: Option<u64>,
+    pub partition_key: Option<Option<String>>,
+}
+
+impl CookieFilter {
+    fn matches(&self, cookie: &StoredCookie) -> bool {
+        if let Some(name) = &self.name
+            && &cookie.name != name
+        {
+            return false;
+        }
+        if let Some(value) = &self.value
+            && &cookie.value != value
+        {
+            return false;
+        }
+        if let Some(domain) = &self.domain {
+            let trimmed = domain.strip_prefix('.').unwrap_or(domain);
+            if !cookie.domain.eq_ignore_ascii_case(trimmed) {
+                return false;
+            }
+        }
+        if let Some(path) = &self.path
+            && &cookie.path != path
+        {
+            return false;
+        }
+        if let Some(size) = self.size
+            && cookie.name.len() + cookie.value.len() != size
+        {
+            return false;
+        }
+        if let Some(http_only) = self.http_only
+            && cookie.http_only != http_only
+        {
+            return false;
+        }
+        if let Some(secure) = self.secure
+            && cookie.secure != secure
+        {
+            return false;
+        }
+        if let Some(same_site) = self.same_site {
+            let cookie_ss = CookieSameSite::from(cookie.same_site);
+            let normalized = match cookie_ss {
+                CookieSameSite::Default => CookieSameSite::None,
+                other => other,
+            };
+            let target = match same_site {
+                CookieSameSite::Default => CookieSameSite::None,
+                other => other,
+            };
+            if normalized != target {
+                return false;
+            }
+        }
+        if let Some(expiry) = self.expiry {
+            let actual = cookie
+                .expiry
+                .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+                .map(|dur| dur.as_secs());
+            if actual != Some(expiry) {
+                return false;
+            }
+        }
+        if let Some(partition_key) = &self.partition_key
+            && &cookie.partition_key != partition_key
+        {
+            return false;
+        }
+        true
     }
 }
 

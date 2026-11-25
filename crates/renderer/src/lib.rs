@@ -604,9 +604,9 @@ pub use protocol::{
     DomNode, DomRemoteNode, DomReply, DomRequest, DomStyleSheet, FrameId, FrameKind,
     HistoryHandling, HistorySnapshot, HttpHead, MAX_RESPONSE_BODY_BYTES, MessagingHost, Mount,
     NameChange, NavigationSource, NetworkHost, OpenerPolicy, PolicyContainer, PostedMessage,
-    ReferrerRequest, RendererEvent, RequestCache, RequestPolicy, ResourceLimit, ResponseBody,
-    ResponseHead, ResponseSource, STORAGE_QUOTA_BYTES, SandboxFlags, ScreenshotClip,
-    ScreenshotFormat, ScreenshotRequest, ScriptCookie, ScriptFailure, ScriptSource,
+    PromptKind, PromptOutcome, ReferrerRequest, RendererEvent, RequestCache, RequestPolicy,
+    ResourceLimit, ResponseBody, ResponseHead, ResponseSource, STORAGE_QUOTA_BYTES, SandboxFlags,
+    ScreenshotClip, ScreenshotFormat, ScreenshotRequest, ScriptCookie, ScriptFailure, ScriptSource,
     SerializedOrigin, StorageChange, StorageError, StorageHost, StorageKey, StorageKind, StreamId,
     TabError, TabState, TargetName, TargetOrigin, TimerId, WindowId,
 };

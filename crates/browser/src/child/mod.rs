@@ -540,6 +540,26 @@ impl BrowsingContextHost for HostServices {
             BrowsingContextCall::WindowMessage { window, message },
         ));
     }
+
+    fn user_prompt(
+        &self,
+        frame: FrameId,
+        kind: renderer::PromptKind,
+        message: &str,
+        default_value: Option<&str>,
+    ) -> renderer::PromptOutcome {
+        match self.call(ServiceCall::BrowsingContext(
+            BrowsingContextCall::UserPrompt {
+                frame,
+                kind,
+                message: message.to_owned(),
+                default_value: default_value.map(str::to_owned),
+            },
+        )) {
+            Some(ServiceReply::Prompt(outcome)) => outcome,
+            _ => renderer::PromptOutcome::Dismissed,
+        }
+    }
 }
 
 impl MessagingHost for HostServices {

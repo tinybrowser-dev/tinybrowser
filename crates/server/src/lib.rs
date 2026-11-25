@@ -1,3 +1,5 @@
+pub mod ws;
+
 use std::convert::Infallible;
 use std::error::Error;
 use std::future::Future;

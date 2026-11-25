@@ -1788,15 +1788,15 @@ impl Engine {
         else {
             return;
         };
-        let descendants: Vec<crate::dom::tree::NodeId> = self
-            .runtime
-            .shared
-            .borrow()
-            .tree
-            .children(child)
-            .iter()
-            .filter_map(|&nested| self.runtime.shared.borrow().tree.container(nested))
-            .collect();
+        let descendants: Vec<crate::dom::tree::NodeId> = {
+            let shared = self.runtime.shared.borrow();
+            shared
+                .tree
+                .children(child)
+                .iter()
+                .filter_map(|&nested| shared.tree.container(nested))
+                .collect()
+        };
         for nested in descendants {
             self.remove_subtree(nested);
         }
@@ -1825,15 +1825,15 @@ impl Engine {
     }
 
     fn remove_descendants(&mut self, parent: FrameId) {
-        let containers: Vec<crate::dom::tree::NodeId> = self
-            .runtime
-            .shared
-            .borrow()
-            .tree
-            .children(parent)
-            .iter()
-            .filter_map(|&child| self.runtime.shared.borrow().tree.container(child))
-            .collect();
+        let containers: Vec<crate::dom::tree::NodeId> = {
+            let shared = self.runtime.shared.borrow();
+            shared
+                .tree
+                .children(parent)
+                .iter()
+                .filter_map(|&child| shared.tree.container(child))
+                .collect()
+        };
         for container in containers {
             self.remove_subtree(container);
         }

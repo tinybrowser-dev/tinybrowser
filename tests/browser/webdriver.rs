@@ -959,6 +959,109 @@ fn unknown_element_click_and_perform_actions_validation() {
     assert_eq!(released["value"], Value::Null);
 }
 
+type BidiSocket =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+async fn bidi_call(
+    socket: &mut BidiSocket,
+    next_id: &mut u64,
+    method: &str,
+    params: Value,
+) -> Value {
+    use futures_util::{SinkExt as _, StreamExt as _};
+
+    let id = *next_id;
+    *next_id += 1;
+    let payload = json!({"id": id, "method": method, "params": params}).to_string();
+    socket
+        .send(tokio_tungstenite::tungstenite::Message::text(payload))
+        .await
+        .expect("send");
+    loop {
+        let message = socket.next().await.expect("reply").expect("frame");
+        if let tokio_tungstenite::tungstenite::Message::Text(text) = message {
+            let reply: Value = serde_json::from_str(&text).expect("bidi reply json");
+            if reply["id"] == json!(id) {
+                return reply;
+            }
+        }
+    }
+}
+
+#[test]
+fn bidi_session_roundtrip() {
+    let (addr, _fixture) = start(Vec::new());
+    let created = request(
+        &addr,
+        "POST",
+        "/session",
+        Some(r#"{"capabilities":{"alwaysMatch":{"webSocketUrl":true}}}"#),
+    );
+    let id = created["value"]["sessionId"]
+        .as_str()
+        .expect("session id")
+        .to_owned();
+    let url = created["value"]["capabilities"]["webSocketUrl"]
+        .as_str()
+        .expect("webSocketUrl capability")
+        .to_owned();
+    assert!(url.ends_with(&id), "{url} must name the session");
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    runtime.block_on(async {
+        let (mut socket, _response) = tokio_tungstenite::connect_async(&url)
+            .await
+            .expect("bidi websocket");
+        let mut next_id = 1_u64;
+        let status = bidi_call(&mut socket, &mut next_id, "session.status", json!({})).await;
+        assert_eq!(status["result"]["ready"], json!(false), "{status}");
+        assert_eq!(status["result"]["message"], json!("session already started"));
+
+        let tree = bidi_call(&mut socket, &mut next_id, "browsingContext.getTree", json!({})).await;
+        let contexts = tree["result"]["contexts"]
+            .as_array()
+            .expect("context list");
+        assert!(!contexts.is_empty(), "{tree}");
+        let context = contexts[0]["context"]
+            .as_str()
+            .expect("context id")
+            .to_owned();
+
+        let navigated = bidi_call(
+            &mut socket,
+            &mut next_id,
+            "browsingContext.navigate",
+            json!({"context": context, "url": "data:text/html,<title>bidi</title>", "wait": "complete"}),
+        )
+        .await;
+        assert_eq!(
+            navigated["result"]["url"],
+            json!("data:text/html,<title>bidi</title>")
+        );
+
+        let evaluated = bidi_call(
+            &mut socket,
+            &mut next_id,
+            "script.evaluate",
+            json!({
+                "expression": "document.title",
+                "target": {"context": context},
+                "awaitPromise": false,
+                "resultOwnership": "none",
+            }),
+        )
+        .await;
+        assert_eq!(
+            evaluated["result"]["result"]["value"],
+            json!("bidi"),
+            "{evaluated}"
+        );
+    });
+}
+
 #[test]
 fn take_screenshot_returns_png_bytes() {
     let (addr, _fixture) = start(Vec::new());
@@ -967,13 +1070,44 @@ fn take_screenshot_returns_png_bytes() {
         .as_str()
         .expect("session id")
         .to_owned();
-    let shot = send(&addr, "POST", &format!("/session/{id}/screenshot"), None);
-    assert_eq!(shot.status, 200);
-    assert_eq!(shot.content_type.as_deref(), Some("image/png"));
-    assert_eq!(&shot.body[..8], b"\x89PNG\r\n\x1a\n", "not a PNG");
-    let width = u32::from_be_bytes(shot.body[16..20].try_into().expect("width"));
-    let height = u32::from_be_bytes(shot.body[20..24].try_into().expect("height"));
+    let response = send(&addr, "GET", &format!("/session/{id}/screenshot"), None);
+    assert_eq!(response.status, 200, "take screenshot status");
+    assert_eq!(
+        response.content_type.as_deref(),
+        Some("application/json; charset=utf-8"),
+        "take screenshot must return JSON"
+    );
+    let shot: Value = serde_json::from_slice(&response.body).expect("json body");
+    let encoded = shot["value"].as_str().expect("base64 screenshot string");
+    let png = base64_decode(encoded);
+    assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n", "not a PNG");
+    let width = u32::from_be_bytes(png[16..20].try_into().expect("width"));
+    let height = u32::from_be_bytes(png[20..24].try_into().expect("height"));
     assert_eq!((width, height), (800, 600), "unexpected viewport capture");
+}
+
+fn base64_decode(input: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(input.len() * 3 / 4);
+    let mut buf = 0u32;
+    let mut bits = 0u8;
+    for byte in input.bytes() {
+        let val = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            b'=' | b'\n' | b'\r' | b' ' => continue,
+            other => panic!("invalid base64 byte: {other}"),
+        };
+        buf = (buf << 6) | u32::from(val);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push(((buf >> bits) & 0xff) as u8);
+        }
+    }
+    out
 }
 
 #[test]

@@ -2,7 +2,7 @@
 # embedded JavaScript syntax check, the realm-free layer check, the
 # parsed-type guards, rustdoc, the Python stack, and the workspace tests.
 #
-# Runs on every push and pull request so a rule can only regress in a red run.
+# Runs on every push to main so a rule can only regress in a red run.
 # The WPT suite is the scheduled workflow; this one never runs the browser
 # against the web platform.
 #
@@ -16,7 +16,6 @@ name: Check
 on:
   push:
     branches: [main]
-  pull_request:
   workflow_dispatch:
 
 permissions:

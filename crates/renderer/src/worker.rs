@@ -1290,7 +1290,8 @@ impl Worker {
             | RealmRequest::HtmlWrite(_)
             | RealmRequest::DocumentStream(_)
             | RealmRequest::Binding { .. }
-            | RealmRequest::Console { .. } => {}
+            | RealmRequest::Console { .. }
+            | RealmRequest::ExceptionThrown { .. } => {}
         }
     }
 

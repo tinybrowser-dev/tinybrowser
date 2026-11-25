@@ -146,8 +146,11 @@
     };
     if (reporting) {
       // https://html.spec.whatwg.org/multipage/webappapis.html#report-an-exception
+      const { filename, lineno, colno } = details();
+      if (typeof host.__tbExceptionThrown === 'function') {
+        host.__tbExceptionThrown(info.message, filename, lineno >>> 0, colno >>> 0);
+      }
       if (typeof host.__tbWorkerUnhandled === 'function') {
-        const { filename, lineno, colno } = details();
         host.__tbWorkerUnhandled(info.message, filename, lineno, colno);
       }
       return false;
@@ -165,6 +168,9 @@
         cancelable: true,
       });
       host.__tbDispatchTrusted(event);
+      if (!event.defaultPrevented && typeof host.__tbExceptionThrown === 'function') {
+        host.__tbExceptionThrown(info.message, filename, event.lineno >>> 0, event.colno >>> 0);
+      }
       // https://html.spec.whatwg.org/multipage/workers.html#runtime-script-errors-in-workers
       if (!event.defaultPrevented && typeof host.__tbWorkerUnhandled === 'function') {
         host.__tbWorkerUnhandled(info.message, filename, event.lineno, event.colno);
@@ -189,6 +195,9 @@
       cancelable: true,
     });
     host.__tbDispatchTrusted(event);
+    if (!event.defaultPrevented && typeof host.__tbExceptionThrown === 'function') {
+      host.__tbExceptionThrown(message, filename, lineno >>> 0, colno >>> 0);
+    }
     if (!event.defaultPrevented && typeof host.__tbWorkerUnhandled === 'function') {
       host.__tbWorkerUnhandled(message, filename, lineno, colno);
     }

@@ -8,16 +8,33 @@ use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use tokio::sync::broadcast;
 use url::Url;
 
 use self::task::BrowserTask;
 use crate::actor::{NavigationInitiator, TabHandle, TabId};
-use crate::context::BrowserContext;
+use crate::context::{BrowserContext, UserContextId};
 use crate::exchange;
+use crate::intercept::NetworkBroker;
 use crate::profile::Profile;
 use crate::profile::default_data_home;
+use crate::prompt::PromptBroker;
 
 const BROWSER_COMMAND_CAPACITY: usize = 256;
+const LIFECYCLE_EVENT_CAPACITY: usize = 256;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BrowserLifecycleEvent {
+    TabCreated {
+        tab: TabId,
+        user_context: UserContextId,
+        opener: Option<TabId>,
+    },
+    TabClosed {
+        tab: TabId,
+        user_context: UserContextId,
+    },
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct BrowserOptions {
@@ -35,6 +52,9 @@ pub struct BrowserHandle {
     client: BrowserClient,
     // https://wicg.github.io/ua-client-hints/#http-ua-hints
     identity: Arc<net::ValidIdentity>,
+    lifecycle: broadcast::Sender<BrowserLifecycleEvent>,
+    network_broker: Arc<NetworkBroker>,
+    prompt_broker: Arc<PromptBroker>,
 }
 
 pub(crate) struct OpenWindowOptions {
@@ -51,16 +71,64 @@ pub(crate) struct OpenWindowOptions {
 }
 
 pub(super) enum Command {
-    CreateTab,
+    CreateTab {
+        user_context: UserContextId,
+    },
     Tabs,
-    Tab { id: TabId },
-    CloseTab { id: TabId },
+    TabsIn {
+        user_context: UserContextId,
+    },
+    Tab {
+        id: TabId,
+    },
+    CloseTab {
+        id: TabId,
+    },
+    CreateUserContext,
+    RemoveUserContext {
+        id: UserContextId,
+    },
+    UserContexts,
     Close,
-    CookieRecords { url: Url },
-    ClearCookies,
-    ClearCache,
-    SetCacheDisabled { disabled: bool },
-    AddCookie { cookie: String, url: Url },
+    CookieRecords {
+        user_context: UserContextId,
+        url: Url,
+    },
+    AllCookieRecords {
+        user_context: UserContextId,
+    },
+    MatchingCookieRecords {
+        user_context: UserContextId,
+        filter: net::CookieFilter,
+    },
+    ClearCookies {
+        user_context: UserContextId,
+    },
+    ClearCache {
+        user_context: UserContextId,
+    },
+    SetCacheDisabled {
+        user_context: UserContextId,
+        disabled: bool,
+    },
+    AddCookie {
+        user_context: UserContextId,
+        cookie: String,
+        url: Url,
+    },
+    SetDirectCookie {
+        user_context: UserContextId,
+        cookie: Box<net::DirectCookie>,
+    },
+    DeleteCookies {
+        user_context: UserContextId,
+        filter: net::CookieFilter,
+    },
+    DeleteCookiesForUrl {
+        user_context: UserContextId,
+        url: Url,
+        name: Option<String>,
+    },
     OpenWindow(OpenWindowOptions),
 }
 
@@ -69,12 +137,16 @@ pub(super) enum Reply {
     Tabs(Vec<TabId>),
     Tab(Result<TabHandle, BrowserError>),
     CloseTab(Result<(), BrowserError>),
+    CreateUserContext(UserContextId),
+    RemoveUserContext(Result<(), BrowserError>),
+    UserContexts(Vec<UserContextId>),
     Close(io::Result<()>),
     CookieRecords(Vec<net::CookieRecord>),
     ClearCookies,
     ClearCache,
     SetCacheDisabled,
     AddCookie(bool),
+    DeletedCount(usize),
     OpenWindow(Result<TabId, BrowserError>),
 }
 
@@ -94,12 +166,33 @@ impl Browser {
             Some(data_home) => data_home,
             None => default_data_home().map_err(BrowserOpenError::Profile)?,
         };
-        let context = BrowserContext::open(&data_home, &options.profile, options.network)
-            .map_err(BrowserOpenError::Profile)?;
+        let network_broker = Arc::new(NetworkBroker::new());
+        let prompt_broker = Arc::new(PromptBroker::new());
+        let context = BrowserContext::open(
+            &data_home,
+            &options.profile,
+            options.network,
+            Arc::clone(&network_broker),
+        )
+        .map_err(BrowserOpenError::Profile)?;
         let identity = Arc::new(context.identity());
         let (client, server) = exchange::local(BROWSER_COMMAND_CAPACITY);
-        let handle = BrowserHandle { client, identity };
-        let task = BrowserTask::new(server, context, handle.clone());
+        let (lifecycle, _) = broadcast::channel(LIFECYCLE_EVENT_CAPACITY);
+        let handle = BrowserHandle {
+            client,
+            identity,
+            lifecycle: lifecycle.clone(),
+            network_broker: Arc::clone(&network_broker),
+            prompt_broker: Arc::clone(&prompt_broker),
+        };
+        let task = BrowserTask::new(
+            server,
+            context,
+            handle.clone(),
+            lifecycle,
+            network_broker,
+            prompt_broker,
+        );
         runtime.spawn(task.run());
         Ok(Self { handle })
     }
@@ -127,8 +220,30 @@ impl BrowserHandle {
         &self.identity
     }
 
+    #[must_use]
+    pub fn subscribe(&self) -> broadcast::Receiver<BrowserLifecycleEvent> {
+        self.lifecycle.subscribe()
+    }
+
+    #[must_use]
+    pub fn network_broker(&self) -> &Arc<NetworkBroker> {
+        &self.network_broker
+    }
+
+    #[must_use]
+    pub fn prompt_broker(&self) -> &Arc<PromptBroker> {
+        &self.prompt_broker
+    }
+
     pub async fn create_tab(&self) -> Result<TabHandle, BrowserError> {
-        match self.call(Command::CreateTab).await? {
+        self.create_tab_in(UserContextId::default_context()).await
+    }
+
+    pub async fn create_tab_in(
+        &self,
+        user_context: UserContextId,
+    ) -> Result<TabHandle, BrowserError> {
+        match self.call(Command::CreateTab { user_context }).await? {
             Reply::CreateTab(result) => result,
             _ => Err(BrowserError::Protocol),
         }
@@ -136,6 +251,18 @@ impl BrowserHandle {
 
     pub async fn tabs(&self) -> Result<Vec<TabId>, BrowserError> {
         match self.call(Command::Tabs).await? {
+            Reply::Tabs(tabs) => Ok(tabs),
+            _ => Err(BrowserError::Protocol),
+        }
+    }
+
+    pub async fn tabs_in(&self, user_context: &UserContextId) -> Result<Vec<TabId>, BrowserError> {
+        match self
+            .call(Command::TabsIn {
+                user_context: user_context.clone(),
+            })
+            .await?
+        {
             Reply::Tabs(tabs) => Ok(tabs),
             _ => Err(BrowserError::Protocol),
         }
@@ -155,14 +282,82 @@ impl BrowserHandle {
         }
     }
 
+    pub async fn create_user_context(&self) -> Result<UserContextId, BrowserError> {
+        match self.call(Command::CreateUserContext).await? {
+            Reply::CreateUserContext(id) => Ok(id),
+            _ => Err(BrowserError::Protocol),
+        }
+    }
+
+    pub async fn remove_user_context(&self, id: &UserContextId) -> Result<(), BrowserError> {
+        match self
+            .call(Command::RemoveUserContext { id: id.clone() })
+            .await?
+        {
+            Reply::RemoveUserContext(result) => result,
+            _ => Err(BrowserError::Protocol),
+        }
+    }
+
+    pub async fn user_contexts(&self) -> Result<Vec<UserContextId>, BrowserError> {
+        match self.call(Command::UserContexts).await? {
+            Reply::UserContexts(contexts) => Ok(contexts),
+            _ => Err(BrowserError::Protocol),
+        }
+    }
+
     #[must_use]
     pub fn is_closed(&self) -> bool {
         self.client.is_closed()
     }
 
     pub async fn cookie_records(&self, url: &Url) -> Result<Vec<net::CookieRecord>, BrowserError> {
+        self.cookie_records_in(&UserContextId::default_context(), url)
+            .await
+    }
+
+    pub async fn cookie_records_in(
+        &self,
+        user_context: &UserContextId,
+        url: &Url,
+    ) -> Result<Vec<net::CookieRecord>, BrowserError> {
         match self
-            .call(Command::CookieRecords { url: url.clone() })
+            .call(Command::CookieRecords {
+                user_context: user_context.clone(),
+                url: url.clone(),
+            })
+            .await?
+        {
+            Reply::CookieRecords(records) => Ok(records),
+            _ => Err(BrowserError::Protocol),
+        }
+    }
+
+    pub async fn all_cookie_records_in(
+        &self,
+        user_context: &UserContextId,
+    ) -> Result<Vec<net::CookieRecord>, BrowserError> {
+        match self
+            .call(Command::AllCookieRecords {
+                user_context: user_context.clone(),
+            })
+            .await?
+        {
+            Reply::CookieRecords(records) => Ok(records),
+            _ => Err(BrowserError::Protocol),
+        }
+    }
+
+    pub async fn matching_cookie_records_in(
+        &self,
+        user_context: &UserContextId,
+        filter: net::CookieFilter,
+    ) -> Result<Vec<net::CookieRecord>, BrowserError> {
+        match self
+            .call(Command::MatchingCookieRecords {
+                user_context: user_context.clone(),
+                filter,
+            })
             .await?
         {
             Reply::CookieRecords(records) => Ok(records),
@@ -171,35 +366,133 @@ impl BrowserHandle {
     }
 
     pub async fn clear_cookies(&self) -> Result<(), BrowserError> {
-        match self.call(Command::ClearCookies).await? {
+        self.clear_cookies_in(&UserContextId::default_context())
+            .await
+    }
+
+    pub async fn clear_cookies_in(&self, user_context: &UserContextId) -> Result<(), BrowserError> {
+        match self
+            .call(Command::ClearCookies {
+                user_context: user_context.clone(),
+            })
+            .await?
+        {
             Reply::ClearCookies => Ok(()),
             _ => Err(BrowserError::Protocol),
         }
     }
 
     pub async fn clear_cache(&self) -> Result<(), BrowserError> {
-        match self.call(Command::ClearCache).await? {
+        self.clear_cache_in(&UserContextId::default_context()).await
+    }
+
+    pub async fn clear_cache_in(&self, user_context: &UserContextId) -> Result<(), BrowserError> {
+        match self
+            .call(Command::ClearCache {
+                user_context: user_context.clone(),
+            })
+            .await?
+        {
             Reply::ClearCache => Ok(()),
             _ => Err(BrowserError::Protocol),
         }
     }
 
     pub async fn set_cache_disabled(&self, disabled: bool) -> Result<(), BrowserError> {
-        match self.call(Command::SetCacheDisabled { disabled }).await? {
+        self.set_cache_disabled_in(&UserContextId::default_context(), disabled)
+            .await
+    }
+
+    pub async fn set_cache_disabled_in(
+        &self,
+        user_context: &UserContextId,
+        disabled: bool,
+    ) -> Result<(), BrowserError> {
+        match self
+            .call(Command::SetCacheDisabled {
+                user_context: user_context.clone(),
+                disabled,
+            })
+            .await?
+        {
             Reply::SetCacheDisabled => Ok(()),
             _ => Err(BrowserError::Protocol),
         }
     }
 
     pub async fn add_cookie(&self, cookie: &str, url: &Url) -> Result<bool, BrowserError> {
+        self.add_cookie_in(&UserContextId::default_context(), cookie, url)
+            .await
+    }
+
+    pub async fn add_cookie_in(
+        &self,
+        user_context: &UserContextId,
+        cookie: &str,
+        url: &Url,
+    ) -> Result<bool, BrowserError> {
         match self
             .call(Command::AddCookie {
+                user_context: user_context.clone(),
                 cookie: cookie.to_owned(),
                 url: url.clone(),
             })
             .await?
         {
             Reply::AddCookie(stored) => Ok(stored),
+            _ => Err(BrowserError::Protocol),
+        }
+    }
+
+    pub async fn set_direct_cookie_in(
+        &self,
+        user_context: &UserContextId,
+        cookie: net::DirectCookie,
+    ) -> Result<bool, BrowserError> {
+        match self
+            .call(Command::SetDirectCookie {
+                user_context: user_context.clone(),
+                cookie: Box::new(cookie),
+            })
+            .await?
+        {
+            Reply::AddCookie(stored) => Ok(stored),
+            _ => Err(BrowserError::Protocol),
+        }
+    }
+
+    pub async fn delete_cookies_in(
+        &self,
+        user_context: &UserContextId,
+        filter: net::CookieFilter,
+    ) -> Result<usize, BrowserError> {
+        match self
+            .call(Command::DeleteCookies {
+                user_context: user_context.clone(),
+                filter,
+            })
+            .await?
+        {
+            Reply::DeletedCount(count) => Ok(count),
+            _ => Err(BrowserError::Protocol),
+        }
+    }
+
+    pub async fn delete_cookies_for_url_in(
+        &self,
+        user_context: &UserContextId,
+        url: &Url,
+        name: Option<&str>,
+    ) -> Result<usize, BrowserError> {
+        match self
+            .call(Command::DeleteCookiesForUrl {
+                user_context: user_context.clone(),
+                url: url.clone(),
+                name: name.map(str::to_owned),
+            })
+            .await?
+        {
+            Reply::DeletedCount(count) => Ok(count),
             _ => Err(BrowserError::Protocol),
         }
     }
@@ -278,6 +571,7 @@ impl From<BrowserOpenError> for io::Error {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BrowserError {
     UnknownTab,
+    UnknownUserContext,
     TabIdExhausted,
     TooManyTabs,
     Stopped,
@@ -288,6 +582,7 @@ impl fmt::Display for BrowserError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnknownTab => formatter.write_str("unknown tab"),
+            Self::UnknownUserContext => formatter.write_str("unknown user context"),
             Self::TabIdExhausted => formatter.write_str("tab identity space exhausted"),
             Self::TooManyTabs => formatter.write_str("script-created tab limit reached"),
             Self::Stopped => formatter.write_str("browser stopped"),

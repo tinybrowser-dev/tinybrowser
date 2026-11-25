@@ -1,15 +1,19 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 
 use crate::actor::{NewTab, RemoteWindowMessage, TabHandle, TabId, TabTask};
-use crate::context::BrowserContext;
+use crate::context::{BrowserContext, UserContextId};
 use crate::exchange::ServerInput;
+use crate::frames::FrameInfo;
+use crate::intercept::NetworkBroker;
 use crate::manager::RendererProcessManager;
+use crate::prompt::PromptBroker;
 
 use super::{
-    BrowserError, BrowserHandle, BrowserServer, Command, Notice, OpenWindowOptions, Reply,
+    BrowserError, BrowserHandle, BrowserLifecycleEvent, BrowserServer, Command, Notice,
+    OpenWindowOptions, Reply,
 };
 
 // https://html.spec.whatwg.org/multipage/browsing-the-web.html#resetBCName
@@ -31,6 +35,7 @@ impl TabNames {
 #[derive(Default)]
 struct TabRecord {
     task: Option<TabTask>,
+    user_context: UserContextId,
     opener: Option<TabId>,
     opener_frame: Option<renderer::FrameId>,
     names: TabNames,
@@ -235,6 +240,60 @@ impl TabRegistry {
             .set_main_origin(origin);
     }
 
+    pub(crate) fn set_main_url(&self, tab: TabId, url: String) {
+        self.lock().entry(tab).or_default().frames.set_main_url(url);
+    }
+
+    pub(crate) fn set_child_frame_url(&self, tab: TabId, frame: renderer::FrameId, url: String) {
+        if let Some(record) = self.lock().get_mut(&tab) {
+            record.frames.set_child_url(frame, url);
+        }
+    }
+
+    pub(crate) fn frame_parent(
+        &self,
+        tab: TabId,
+        frame: renderer::FrameId,
+    ) -> Option<renderer::FrameId> {
+        self.lock()
+            .get(&tab)
+            .and_then(|record| record.frames.parent_of(frame))
+    }
+
+    pub(crate) fn frame_url(&self, tab: TabId, frame: renderer::FrameId) -> Option<String> {
+        self.lock()
+            .get(&tab)
+            .and_then(|record| record.frames.frame_url(frame))
+    }
+
+    pub(crate) fn frame_snapshot(&self, tab: TabId) -> Vec<FrameInfo> {
+        self.lock().get(&tab).map_or_else(Vec::new, |record| {
+            record
+                .frames
+                .snapshot(record.names.live.as_ref().map(|n| n.as_str().to_owned()))
+        })
+    }
+
+    pub(crate) fn user_context(&self, tab: TabId) -> UserContextId {
+        self.lock()
+            .get(&tab)
+            .map_or_else(UserContextId::default_context, |record| {
+                record.user_context.clone()
+            })
+    }
+
+    fn set_user_context(&self, tab: TabId, user_context: UserContextId) {
+        self.lock().entry(tab).or_default().user_context = user_context;
+    }
+
+    fn ids_in(&self, user_context: &UserContextId) -> Vec<TabId> {
+        self.lock()
+            .iter()
+            .filter(|(_, record)| record.is_live() && &record.user_context == user_context)
+            .map(|(id, _)| *id)
+            .collect()
+    }
+
     pub(crate) fn ancestor_origins(
         &self,
         tab: TabId,
@@ -435,6 +494,9 @@ pub(crate) struct BrowserTask {
     context: BrowserContext,
     renderers: Arc<RendererProcessManager>,
     tabs: TabRegistry,
+    lifecycle: broadcast::Sender<BrowserLifecycleEvent>,
+    network_broker: Arc<NetworkBroker>,
+    prompt_broker: Arc<PromptBroker>,
     next_tab: Option<u64>,
 }
 
@@ -448,11 +510,13 @@ impl BrowserTask {
         server: BrowserServer,
         context: BrowserContext,
         browser: BrowserHandle,
+        lifecycle: broadcast::Sender<BrowserLifecycleEvent>,
+        network_broker: Arc<NetworkBroker>,
+        prompt_broker: Arc<PromptBroker>,
     ) -> Self {
         let tabs = TabRegistry::new();
         let identity = browser.identity().clone();
         let renderers = Arc::new(RendererProcessManager::new(
-            context.partition_services(),
             context.session_storage(),
             browser,
             tabs.clone(),
@@ -463,6 +527,9 @@ impl BrowserTask {
             context,
             renderers,
             tabs,
+            lifecycle,
+            network_broker,
+            prompt_broker,
             next_tab: Some(1),
         }
     }
@@ -495,28 +562,67 @@ impl BrowserTask {
 
     async fn dispatch(&mut self, command: Command) -> DispatchOutcome {
         let reply = match command {
-            Command::CreateTab => Reply::CreateTab(self.create_tab(NewTab::browser_created())),
+            Command::CreateTab { user_context } => {
+                Reply::CreateTab(self.create_tab(NewTab::browser_created(user_context)))
+            }
             Command::Tabs => Reply::Tabs(self.tabs.ids()),
+            Command::TabsIn { user_context } => Reply::Tabs(self.tabs.ids_in(&user_context)),
             Command::Tab { id } => Reply::Tab(self.tabs.tab(id).ok_or(BrowserError::UnknownTab)),
             Command::CloseTab { id } => Reply::CloseTab(self.close_tab(id)),
-            Command::CookieRecords { url } => {
-                Reply::CookieRecords(self.context.cookie_records(&url))
+            Command::CreateUserContext => {
+                Reply::CreateUserContext(self.context.create_user_context())
             }
-            Command::ClearCookies => {
-                self.context.clear_cookies();
+            Command::RemoveUserContext { id } => {
+                Reply::RemoveUserContext(self.remove_user_context(&id))
+            }
+            Command::UserContexts => Reply::UserContexts(self.context.user_contexts()),
+            Command::CookieRecords { user_context, url } => {
+                Reply::CookieRecords(self.context.cookie_records(&user_context, &url))
+            }
+            Command::AllCookieRecords { user_context } => {
+                Reply::CookieRecords(self.context.all_cookie_records(&user_context))
+            }
+            Command::MatchingCookieRecords {
+                user_context,
+                filter,
+            } => Reply::CookieRecords(self.context.matching_cookie_records(&user_context, &filter)),
+            Command::ClearCookies { user_context } => {
+                self.context.clear_cookies(&user_context);
                 Reply::ClearCookies
             }
-            Command::ClearCache => {
-                self.context.clear_cache();
+            Command::ClearCache { user_context } => {
+                self.context.clear_cache(&user_context);
                 Reply::ClearCache
             }
-            Command::SetCacheDisabled { disabled } => {
-                self.context.set_cache_disabled(disabled);
+            Command::SetCacheDisabled {
+                user_context,
+                disabled,
+            } => {
+                self.context.set_cache_disabled(&user_context, disabled);
                 Reply::SetCacheDisabled
             }
-            Command::AddCookie { cookie, url } => {
-                Reply::AddCookie(self.context.add_cookie(&cookie, &url))
-            }
+            Command::AddCookie {
+                user_context,
+                cookie,
+                url,
+            } => Reply::AddCookie(self.context.add_cookie(&user_context, &cookie, &url)),
+            Command::SetDirectCookie {
+                user_context,
+                cookie,
+            } => Reply::AddCookie(self.context.set_direct_cookie(&user_context, &cookie)),
+            Command::DeleteCookies {
+                user_context,
+                filter,
+            } => Reply::DeletedCount(self.context.delete_cookies(&user_context, &filter)),
+            Command::DeleteCookiesForUrl {
+                user_context,
+                url,
+                name,
+            } => Reply::DeletedCount(self.context.delete_cookies_for_url(
+                &user_context,
+                &url,
+                name.as_deref(),
+            )),
             Command::OpenWindow(request) => Reply::OpenWindow(self.open_window(request)),
             Command::Close => {
                 let result = self.shutdown().await;
@@ -527,10 +633,21 @@ impl BrowserTask {
     }
 
     fn create_tab(&mut self, tab: NewTab) -> Result<TabHandle, BrowserError> {
+        let user_context = tab.user_context.clone();
+        let network = self
+            .context
+            .tab_network(&user_context)
+            .ok_or(BrowserError::UnknownUserContext)?;
+        let partition = self
+            .context
+            .partition_services(&user_context)
+            .ok_or(BrowserError::UnknownUserContext)?;
         let raw = self.next_tab.ok_or(BrowserError::TabIdExhausted)?;
         self.next_tab = raw.checked_add(1);
         let id = TabId::new(raw);
+        let opener = tab.opener;
         self.context.create_tab(id);
+        self.tabs.set_user_context(id, user_context.clone());
         self.tabs.insert_name(id, tab.name.as_ref());
         self.tabs.set_sandbox(id, tab.popup_sandbox);
         if let (Some(opener), Some(frame)) = (tab.opener, tab.opener_frame) {
@@ -538,23 +655,50 @@ impl BrowserTask {
         }
         let task = TabTask::spawn(
             id,
-            self.context.tab_network(),
+            network,
+            partition,
             Arc::clone(&self.renderers),
             self.tabs.clone(),
             tab,
         );
         let handle = task.handle.clone();
         self.tabs.insert(id, task);
+        let _ = self.lifecycle.send(BrowserLifecycleEvent::TabCreated {
+            tab: id,
+            user_context,
+            opener,
+        });
         Ok(handle)
     }
 
     fn close_tab(&mut self, id: TabId) -> Result<(), BrowserError> {
+        let user_context = self.tabs.user_context(id);
         let Some(mut task) = self.tabs.remove(id) else {
             return Err(BrowserError::UnknownTab);
         };
+        self.prompt_broker.dismiss_tab(id);
+        self.network_broker.clear_tab(id);
         tokio::spawn(async move { task.shutdown().await });
         self.context.close_tab(id);
+        let _ = self.lifecycle.send(BrowserLifecycleEvent::TabClosed {
+            tab: id,
+            user_context,
+        });
         Ok(())
+    }
+
+    fn remove_user_context(&mut self, id: &UserContextId) -> Result<(), BrowserError> {
+        if id.is_default() || !self.context.has_user_context(id) {
+            return Err(BrowserError::UnknownUserContext);
+        }
+        for tab_id in self.tabs.ids_in(id) {
+            let _ = self.close_tab(tab_id);
+        }
+        if self.context.remove_user_context(id) {
+            Ok(())
+        } else {
+            Err(BrowserError::UnknownUserContext)
+        }
     }
 
     fn open_window(&mut self, request: OpenWindowOptions) -> Result<TabId, BrowserError> {
@@ -570,9 +714,13 @@ impl BrowserTask {
             initiator,
             popup_sandbox,
         } = request;
+        let user_context = source.map_or_else(UserContextId::default_context, |tab| {
+            self.tabs.user_context(tab)
+        });
         // https://html.spec.whatwg.org/multipage/browsing-the-web.html#resetBCName
         let opener_tab = source.filter(|_| opener == renderer::OpenerPolicy::Keep);
         let handle = self.create_tab(NewTab {
+            user_context,
             name: target.new_context_name().cloned(),
             opener: opener_tab,
             opener_frame: opener_tab.map(|_| source_frame),

@@ -73,9 +73,21 @@
   replaceable('event', () => host.__tbCurrentEvent());
 
   // https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#dom-alert
-  method('alert', function alert() {});
-  method('confirm', function confirm() { return false; });
-  method('prompt', function prompt() { return null; });
+  method('alert', function alert() {
+    const message = arguments.length === 0 ? '' : String(arguments[0]);
+    host.__tbUserPrompt('alert', message, null);
+  });
+  // https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#dom-confirm
+  method('confirm', function confirm() {
+    const message = arguments.length === 0 || arguments[0] === undefined ? '' : String(arguments[0]);
+    return Boolean(host.__tbUserPrompt('confirm', message, null));
+  });
+  // https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#dom-prompt
+  method('prompt', function prompt() {
+    const message = arguments.length === 0 || arguments[0] === undefined ? '' : String(arguments[0]);
+    const defaultValue = arguments.length < 2 || arguments[1] === undefined ? '' : String(arguments[1]);
+    return host.__tbUserPrompt('prompt', message, defaultValue);
+  });
   method('print', function print() {});
   // https://drafts.csswg.org/cssom-view/#dom-window-moveby
   for (const name of ['moveBy', 'moveTo', 'resizeBy', 'resizeTo']) {

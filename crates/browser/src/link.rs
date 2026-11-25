@@ -10,7 +10,7 @@ use crate::actor::TabId;
 use crate::assignment::{Assignment, AssignmentRegistry};
 use crate::broadcast::{BroadcastMessage, ContextEvent, StorageBroadcast};
 use crate::browser::TabRegistry;
-use crate::context::PartitionServices;
+use crate::context::{PartitionServices, UserContextId};
 use crate::exchange::{self, Frame, RequestId, ServerInput};
 use crate::manager::RendererId;
 use crate::site::Site;
@@ -53,13 +53,19 @@ type BrowserServiceResponder = exchange::Responder<RendererCall, ServiceReply, H
 type RendererRouter = exchange::Router<BrowserCall, RendererReply, RendererNotice>;
 type ResponseUpload = exchange::Upload<RendererCall, ServiceReply, HostNotice, RendererReply>;
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct RendererLock {
+    pub(crate) user_context: UserContextId,
+    pub(crate) site: Site,
+}
+
 pub(crate) struct RendererHandle {
     pub(crate) id: RendererId,
     client: RendererClient,
     pub(crate) alive: Arc<AtomicBool>,
     kill: watch::Sender<bool>,
     tasks: Mutex<Vec<JoinHandle<()>>>,
-    pub(crate) site: Arc<Mutex<Option<Site>>>,
+    pub(crate) lock: Arc<Mutex<Option<RendererLock>>>,
     pub(crate) assignments: AtomicUsize,
     _slot: tokio::sync::OwnedSemaphorePermit,
 }
@@ -119,18 +125,37 @@ impl ResponseWriter {
 }
 
 impl RendererHandle {
-    pub(crate) fn bind(&self, site: &Site) -> io::Result<()> {
-        let mut lock = self.site.lock().unwrap_or_else(PoisonError::into_inner);
-        match &*lock {
-            Some(existing) if existing != site => {
-                Err(io::Error::other("renderer has a different site lock"))
+    pub(crate) fn bind(
+        &self,
+        target: &RendererLock,
+        partition: &PartitionServices,
+        registry: &Arc<AssignmentRegistry>,
+        tabs: &TabRegistry,
+    ) -> io::Result<()> {
+        let bound_fresh = {
+            let mut lock = self.lock.lock().unwrap_or_else(PoisonError::into_inner);
+            match &*lock {
+                Some(existing) if existing != target => {
+                    return Err(io::Error::other("renderer has a different site lock"));
+                }
+                Some(_) => false,
+                None => {
+                    *lock = Some(target.clone());
+                    true
+                }
             }
-            Some(_) => Ok(()),
-            None => {
-                *lock = Some(site.clone());
-                Ok(())
-            }
+        };
+        if bound_fresh {
+            subscribe_renderer_events(
+                partition,
+                &self.client,
+                &self.kill,
+                self.id,
+                Arc::clone(registry),
+                tabs.clone(),
+            );
         }
+        Ok(())
     }
 
     pub(crate) async fn assign_notify(&self, assignment: RendererAssignmentId) -> io::Result<()> {
@@ -331,7 +356,6 @@ struct ServiceContext {
     renderer: RendererId,
     registry: Arc<AssignmentRegistry>,
     tabs: TabRegistry,
-    partition: PartitionServices,
     sessions: Arc<SessionStorage>,
     kill: watch::Sender<bool>,
     browser: crate::browser::BrowserHandle,
@@ -695,7 +719,7 @@ async fn route_service_call(
                 .tabs
                 .storage_key(assignment.tab, &assignment.site, &origin)
                 .ok_or(RendererViolation)?;
-            context
+            assignment
                 .partition
                 .events
                 .broadcast(&ContextEvent::Broadcast(BroadcastMessage {
@@ -1060,20 +1084,7 @@ async fn route_window_call(
             .await?;
         }
         BrowsingContextCall::NavigateTopLevel { url, source } => {
-            if let Some(url) = navigable_popup_url(url) {
-                let initiator = window_initiator(
-                    &context.tabs,
-                    assignment,
-                    source,
-                    renderer::OpenerPolicy::Keep,
-                )?;
-                if let Ok(handle) = context.browser.tab(assignment.tab).await {
-                    tokio::spawn(async move {
-                        let _result = handle.goto_from(url.as_str(), initiator).await;
-                    });
-                }
-            }
-            send_reply(&context.responder, id, ServiceReply::Unit).await?;
+            route_navigate_top_level(context, assignment, id, url, source).await?;
         }
         BrowsingContextCall::FrameCreated {
             frame,
@@ -1120,8 +1131,74 @@ async fn route_window_call(
             }
             send_reply(&context.responder, id, ServiceReply::Unit).await?;
         }
+        BrowsingContextCall::UserPrompt {
+            frame,
+            kind,
+            message,
+            default_value,
+        } => {
+            spawn_user_prompt(
+                context,
+                assignment.tab,
+                id,
+                frame,
+                kind,
+                message,
+                default_value,
+            );
+        }
     }
     Ok(())
+}
+
+async fn route_navigate_top_level(
+    context: &ServiceContext,
+    assignment: &Assignment,
+    id: RequestId,
+    url: Url,
+    source: renderer::NavigationSource,
+) -> Result<(), RendererViolation> {
+    if let Some(url) = navigable_popup_url(url) {
+        let initiator = window_initiator(
+            &context.tabs,
+            assignment,
+            source,
+            renderer::OpenerPolicy::Keep,
+        )?;
+        if let Ok(handle) = context.browser.tab(assignment.tab).await {
+            tokio::spawn(async move {
+                let _result = handle.goto_from(url.as_str(), initiator).await;
+            });
+        }
+    }
+    send_reply(&context.responder, id, ServiceReply::Unit).await
+}
+
+fn spawn_user_prompt(
+    context: &ServiceContext,
+    tab: TabId,
+    id: RequestId,
+    frame: FrameId,
+    kind: renderer::PromptKind,
+    message: String,
+    default_value: Option<String>,
+) {
+    // https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#simple-dialogs
+    let broker = Arc::clone(context.browser.prompt_broker());
+    let responder = context.responder.clone();
+    let kill = context.kill.clone();
+    tokio::spawn(async move {
+        let outcome = broker
+            .open_prompt(tab, frame, kind, message, default_value)
+            .await;
+        if responder
+            .reply(id, ServiceReply::Prompt(outcome))
+            .await
+            .is_err()
+        {
+            let _ = kill.send(true);
+        }
+    });
 }
 
 async fn route_frame_created(
@@ -1267,7 +1344,7 @@ impl StorageRouter<'_> {
             .site
             .authorize_url(url)
             .map_or_default(|url| {
-                self.context
+                self.authority
                     .partition
                     .cookies
                     .cookies_for(&url, partition_key)
@@ -1283,7 +1360,7 @@ impl StorageRouter<'_> {
     async fn cookie_set(&self, value: &str, url: &str) -> Result<(), RendererViolation> {
         let partition_key = self.authority.site.as_partition_key();
         if let Some(url) = self.authority.site.authorize_url(url) {
-            self.context
+            self.authority
                 .partition
                 .cookies
                 .set_cookie(value, &url, partition_key);
@@ -1298,7 +1375,7 @@ impl StorageRouter<'_> {
             .site
             .authorize_url(url)
             .map_or_default(|url| {
-                self.context
+                self.authority
                     .partition
                     .cookies
                     .cookie_store_records(&url, partition_key)
@@ -1318,7 +1395,7 @@ impl StorageRouter<'_> {
     ) -> Result<(), RendererViolation> {
         let partition_key = self.authority.site.as_partition_key();
         if let Some(url) = self.authority.site.authorize_url(url) {
-            self.context
+            self.authority
                 .partition
                 .cookies
                 .cookie_store_store(write, &url, partition_key);
@@ -1340,9 +1417,9 @@ impl StorageRouter<'_> {
         key: &str,
     ) -> Result<(), RendererViolation> {
         let value = match kind {
-            StorageKind::Local => self.context.partition.local_storage.get(origin, key),
+            StorageKind::Local => self.authority.partition.local_storage.get(origin, key),
             StorageKind::Session => self.context.sessions.get(self.authority.tab, origin, key),
-            StorageKind::IndexedDb => self.context.partition.indexed_db.get(origin, key),
+            StorageKind::IndexedDb => self.authority.partition.indexed_db.get(origin, key),
         };
         send_reply(
             &self.context.responder,
@@ -1354,9 +1431,9 @@ impl StorageRouter<'_> {
 
     async fn keys(&self, kind: StorageKind, origin: &StorageKey) -> Result<(), RendererViolation> {
         let keys = match kind {
-            StorageKind::Local => self.context.partition.local_storage.keys(origin),
+            StorageKind::Local => self.authority.partition.local_storage.keys(origin),
             StorageKind::Session => self.context.sessions.keys(self.authority.tab, origin),
-            StorageKind::IndexedDb => self.context.partition.indexed_db.keys(origin),
+            StorageKind::IndexedDb => self.authority.partition.indexed_db.keys(origin),
         };
         send_reply(
             &self.context.responder,
@@ -1384,13 +1461,17 @@ impl StorageRouter<'_> {
             .await;
         }
         let change = match kind {
-            StorageKind::Local => self.context.partition.local_storage.set(origin, key, value),
+            StorageKind::Local => self
+                .authority
+                .partition
+                .local_storage
+                .set(origin, key, value),
             StorageKind::Session => {
                 self.context
                     .sessions
                     .set(self.authority.tab, origin, key, value)
             }
-            StorageKind::IndexedDb => self.context.partition.indexed_db.set(origin, key, value),
+            StorageKind::IndexedDb => self.authority.partition.indexed_db.set(origin, key, value),
         };
         self.publish(
             source,
@@ -1424,12 +1505,12 @@ impl StorageRouter<'_> {
             .await;
         }
         let change = match kind {
-            StorageKind::Local => self.context.partition.local_storage.remove(origin, key),
+            StorageKind::Local => self.authority.partition.local_storage.remove(origin, key),
             StorageKind::Session => self
                 .context
                 .sessions
                 .remove(self.authority.tab, origin, key),
-            StorageKind::IndexedDb => self.context.partition.indexed_db.remove(origin, key),
+            StorageKind::IndexedDb => self.authority.partition.indexed_db.remove(origin, key),
         };
         self.publish(source, kind, origin, url, change.as_ref());
         send_reply(
@@ -1456,9 +1537,9 @@ impl StorageRouter<'_> {
             .await;
         }
         let change = match kind {
-            StorageKind::Local => self.context.partition.local_storage.clear(origin),
+            StorageKind::Local => self.authority.partition.local_storage.clear(origin),
             StorageKind::Session => self.context.sessions.clear(self.authority.tab, origin),
-            StorageKind::IndexedDb => self.context.partition.indexed_db.clear(origin),
+            StorageKind::IndexedDb => self.authority.partition.indexed_db.clear(origin),
         };
         self.publish(source, kind, origin, url, change.as_ref());
         send_reply(
@@ -1486,7 +1567,7 @@ impl StorageRouter<'_> {
         };
         if kind == StorageKind::Local {
             broadcast_local_storage_event(
-                self.context,
+                &self.authority.partition,
                 self.assignment,
                 source,
                 origin,
@@ -1515,15 +1596,14 @@ async fn route_storage_call(
 }
 
 fn broadcast_local_storage_event(
-    context: &ServiceContext,
+    partition: &PartitionServices,
     assignment: RendererAssignmentId,
     source: FrameId,
     origin: &StorageKey,
     url: &str,
     change: &StorageChange,
 ) {
-    context
-        .partition
+    partition
         .events
         .broadcast(&ContextEvent::Storage(StorageBroadcast {
             origin: origin.clone(),
@@ -1707,7 +1787,6 @@ fn subscribe_renderer_events(
 
 pub(crate) struct RendererServices {
     pub(crate) identity: net::ValidIdentity,
-    pub(crate) partition: PartitionServices,
     pub(crate) sessions: Arc<SessionStorage>,
     pub(crate) browser: crate::browser::BrowserHandle,
     pub(crate) registry: Arc<AssignmentRegistry>,
@@ -1742,13 +1821,12 @@ fn renderer_command() -> io::Result<Command> {
 
 pub(crate) async fn spawn_process(
     id: RendererId,
-    site: Option<Site>,
+    bound: Option<(RendererLock, PartitionServices)>,
     services: RendererServices,
     slot: tokio::sync::OwnedSemaphorePermit,
 ) -> io::Result<RendererHandle> {
     let RendererServices {
         identity,
-        partition,
         sessions,
         browser,
         registry,
@@ -1769,14 +1847,20 @@ pub(crate) async fn spawn_process(
     let (tx, rx) = exchange::pair(COMMAND_CAPACITY, COMMAND_CAPACITY);
     let (client, server, router) = exchange::endpoint(tx, COMMAND_CAPACITY);
     let (kill, kill_rx) = watch::channel(false);
-    subscribe_renderer_events(
-        &partition,
-        &client,
-        &kill,
-        id,
-        Arc::clone(&registry),
-        tabs.clone(),
-    );
+    let lock = match bound {
+        Some((lock, partition)) => {
+            subscribe_renderer_events(
+                &partition,
+                &client,
+                &kill,
+                id,
+                Arc::clone(&registry),
+                tabs.clone(),
+            );
+            Some(lock)
+        }
+        None => None,
+    };
     let alive = Arc::new(AtomicBool::new(true));
     let (ready_tx, ready_rx) = oneshot::channel();
     let failure = LinkFailure {
@@ -1787,13 +1871,12 @@ pub(crate) async fn spawn_process(
         registry: Arc::clone(&registry),
     };
     let writer_task = tokio::spawn(writer_task(rx, writer, failure.clone(), kill_rx.clone()));
-    let site = Arc::new(Mutex::new(site));
+    let lock = Arc::new(Mutex::new(lock));
     let service_context = ServiceContext {
         responder: server.responder(),
         renderer: id,
         registry,
         tabs,
-        partition,
         sessions,
         kill: kill.clone(),
         browser,
@@ -1825,7 +1908,7 @@ pub(crate) async fn spawn_process(
     }
     logging::debug!(
         target: "browser::link",
-        "renderer {id:?} ready for site lock {site:?}"
+        "renderer {id:?} ready for site lock {lock:?}"
     );
     let tasks = vec![writer_task, reader_task, service_task, stderr_task];
     Ok(RendererHandle {
@@ -1834,7 +1917,7 @@ pub(crate) async fn spawn_process(
         alive,
         kill,
         tasks: Mutex::new(tasks),
-        site,
+        lock,
         assignments: AtomicUsize::new(0),
         _slot: slot,
     })

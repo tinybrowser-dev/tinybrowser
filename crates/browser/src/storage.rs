@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use net::{
-    Clock, CookieJar, CookieOp, CookieRecord, InitiatorKind, RetrievalKind, SameSiteCookiePolicy,
-    ScriptCookieWrite,
+    Clock, CookieFilter, CookieJar, CookieOp, CookieRecord, DirectCookie, InitiatorKind,
+    RetrievalKind, SameSiteCookiePolicy, ScriptCookieWrite,
 };
 use renderer::{ScriptCookie, StorageChange, StorageError, StorageKey};
 use url::Url;
@@ -113,6 +113,32 @@ impl CookieStore {
             cookie,
             self.fetch_op(url, &origin, RetrievalKind::Http, None),
         )
+    }
+
+    pub(crate) fn all_records(&self) -> Vec<CookieRecord> {
+        let now = self.clock.now();
+        self.lock().all_records(now)
+    }
+
+    pub(crate) fn matching_records(&self, filter: &CookieFilter) -> Vec<CookieRecord> {
+        let now = self.clock.now();
+        self.lock().matching_records(filter, now)
+    }
+
+    pub(crate) fn set_direct(&self, cookie: DirectCookie) -> bool {
+        let now = self.clock.now();
+        self.lock().set_direct(cookie, now)
+    }
+
+    pub(crate) fn delete_matching(&self, filter: &CookieFilter) -> usize {
+        let now = self.clock.now();
+        self.lock().delete_matching(filter, now)
+    }
+
+    pub(crate) fn delete_for_url(&self, url: &Url, name: Option<&str>) -> usize {
+        let origin = url.origin();
+        self.lock()
+            .delete_for_url(self.fetch_op(url, &origin, RetrievalKind::Http, None), name)
     }
 
     pub(crate) fn clear(&self) {

@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex, PoisonError, Weak};
 use tokio::sync::mpsc;
 
 use crate::actor::TabId;
+use crate::context::PartitionServices;
 use crate::link::{RendererHandle, ResponseWriter};
 use crate::network::TabNetworkHandle;
 use crate::site::Site;
@@ -26,6 +27,7 @@ pub(crate) struct Assignment {
     pub(crate) tab: TabId,
     pub(crate) site: Site,
     pub(crate) network: TabNetworkHandle,
+    pub(crate) partition: PartitionServices,
     subscribers: Mutex<Vec<mpsc::Sender<RendererWake>>>,
 }
 
@@ -149,6 +151,7 @@ impl AssignmentRegistry {
         tab: TabId,
         site: Site,
         network: TabNetworkHandle,
+        partition: PartitionServices,
     ) -> Arc<Assignment> {
         let id = RendererAssignmentId::new(self.next.fetch_add(1, Ordering::Relaxed));
         let assignment = Arc::new(Assignment {
@@ -158,6 +161,7 @@ impl AssignmentRegistry {
             tab,
             site,
             network,
+            partition,
             subscribers: Mutex::new(Vec::new()),
         });
         self.live

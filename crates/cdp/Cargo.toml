@@ -11,17 +11,13 @@ workspace = true
 [dependencies]
 base64 = "0.23"
 browser = { workspace = true }
-bytes = "1"
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 http = "1"
-http-body-util = "0.1"
-hyper = { version = "1", features = ["http1", "http2", "server"] }
-hyper-util = { version = "0.1", features = ["tokio"] }
+net = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 server = { workspace = true }
-sha1 = "0.11"
 tokio = { version = "1.53", default-features = false, features = ["rt", "net", "sync", "time", "macros"] }
-tokio-tungstenite = { version = "0.30", default-features = false }
-# Sync client (Client) plus server message types; async server I/O is tokio-tungstenite.
+# Sync client (Client) plus server message types; async server I/O is in server::ws.
 tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+url = "2"

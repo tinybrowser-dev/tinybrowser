@@ -1161,9 +1161,12 @@ pub(super) fn webdriver_element(ctx: Ctx<'_>, remote_id: f64) -> Result<Value<'_
     let valid = world.borrow().document(node).is_some_and(|parsed| {
         let base = &parsed.document.base;
         crate::dom::tree::is_connected(base, node.node)
-            && base
-                .get_node(node.node)
-                .is_some_and(|node| node.data.downcast_element().is_some())
+            && base.get_node(node.node).is_some_and(|node| {
+                matches!(
+                    node.data,
+                    NodeData::Element(_) | NodeData::ShadowRoot { .. }
+                )
+            })
     });
     if !valid {
         return Ok(Value::new_null(ctx));

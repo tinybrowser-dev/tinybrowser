@@ -88,7 +88,7 @@ async fn serve(listener: &TcpListener, browser: &BrowserHandle) -> io::Result<()
     let shutdown = Shutdown::new();
     let router = CombinedRouter {
         cdp: cdp::Router::new(browser.clone(), bound, shutdown.clone()),
-        webdriver: webdriver::Router::new(browser.clone()),
+        webdriver: webdriver::Router::with_endpoint(browser.clone(), bound, shutdown.clone()),
     };
     server::serve(listener, shutdown, router, serve_request).await
 }

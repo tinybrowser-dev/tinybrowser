@@ -179,6 +179,19 @@ impl<'js> document_generated::Document<'js> for JsNode {
         Ok(self.has_focus(&ctx))
     }
 
+    // https://html.spec.whatwg.org/multipage/interaction.html#dom-document-hidden
+    fn get_hidden(&self, _ctx: &Ctx<'js>) -> Result<bool> {
+        Ok(false)
+    }
+
+    // https://html.spec.whatwg.org/multipage/interaction.html#dom-document-visibilitystate
+    fn get_visibility_state(
+        &self,
+        _ctx: &Ctx<'js>,
+    ) -> Result<document_generated::DocumentVisibilityState> {
+        Ok(document_generated::DocumentVisibilityState::Visible)
+    }
+
     // https://dom.spec.whatwg.org/#dom-document-activeelement
     fn get_active_element(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
         self.active_element(ctx)

@@ -202,12 +202,22 @@ its files fail visibly.
 
 Enabled: testharness (multi-window, same-site frames), crashtest,
 reftest (screenshot compare, 800x600), test262 (generated wrappers),
+wdspec (WebDriver Classic and BiDi over `run webdriver`),
 HTTPS (--ssl-type=openssl; WSS unrun), testdriver (click/keys/cookies/
-rect). wdspec/aamtest are red foundations (pytest not vendored).
+rect). aamtest is a red foundation.
 
-Blocked on engine, not harness: Perform Actions (~660 files), user
-activation bless (~340), Permissions/BiDi/Web Bluetooth (~350).
-print-reftest is unregistered.
+Blocked on engine, not harness: XPath (no `document.evaluate`), PDF
+printing (no backend), per-tab focus/visibility, the BiDi emulation
+overrides, user activation bless (~340), and Web Bluetooth (~350).
+print-reftest is unregistered. Classic and BiDi conformance numbers and the
+expectation policy are in `docs/progress.md` (2026-11-25).
 
-Conventions: metadata in tools/wpt/metadata; expected FAIL only when
-understood. Cargo tests cover internals only.
+Conventions: metadata in tools/wpt/metadata. An expected FAIL is allowed
+only for an understood gap, names the reason, and is deleted as soon as the
+test passes; an entry that suppresses a test the engine can pass is a bug,
+not a baseline. wdspec has no metadata entries today, so every classic and
+BiDi failure is counted in the score instead of hidden. The Playwright gate
+(`tools/playwright/pw-expectations.json`) is strict in the other direction:
+`upstream-run.mjs` exits non-zero on a regression or on an unexpected pass,
+so an entry that is no longer needed fails the gate instead of staying.
+Cargo tests cover internals only.

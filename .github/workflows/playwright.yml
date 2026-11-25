@@ -16,18 +16,6 @@ on:
       - "third_party/**"
       - "tools/playwright/**"
       - ".github/workflows/playwright.yml"
-  pull_request:
-    paths:
-      - "crates/**"
-      - "src/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "build.rs"
-      - ".cargo/**"
-      - "rust-toolchain.toml"
-      - "third_party/**"
-      - "tools/playwright/**"
-      - ".github/workflows/playwright.yml"
   workflow_dispatch:
 
 permissions:

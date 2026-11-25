@@ -284,6 +284,14 @@ pub enum BrowserEvent {
         level: ConsoleLevel,
         args: String,
     },
+    // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#event-exceptionThrown
+    // https://w3c.github.io/webdriver-bidi/#type-log-JavascriptLogEntry
+    ExceptionThrown {
+        text: String,
+        filename: String,
+        line: u32,
+        column: u32,
+    },
 }
 
 // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#type-ConsoleApiType
@@ -295,6 +303,7 @@ pub enum ConsoleLevel {
     Info,
     Warning,
     Error,
+    Assert,
     Trace,
     Dir,
     Table,
@@ -313,6 +322,7 @@ impl ConsoleLevel {
             Self::Info => "info",
             Self::Warning => "warning",
             Self::Error => "error",
+            Self::Assert => "assert",
             Self::Trace => "trace",
             Self::Dir => "dir",
             Self::Table => "table",
@@ -330,6 +340,7 @@ impl ConsoleLevel {
             "info" => Some(Self::Info),
             "warning" => Some(Self::Warning),
             "error" => Some(Self::Error),
+            "assert" => Some(Self::Assert),
             "trace" => Some(Self::Trace),
             "dir" => Some(Self::Dir),
             "table" => Some(Self::Table),
@@ -1627,7 +1638,53 @@ pub struct NavigationSource {
     pub secure_context: bool,
 }
 
+// https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#simple-dialogs
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PromptKind {
+    Alert,
+    Confirm,
+    Prompt,
+}
+
+impl PromptKind {
+    #[must_use]
+    pub fn parse_js(name: &str) -> Option<Self> {
+        match name {
+            "alert" => Some(Self::Alert),
+            "confirm" => Some(Self::Confirm),
+            "prompt" => Some(Self::Prompt),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Alert => "alert",
+            Self::Confirm => "confirm",
+            Self::Prompt => "prompt",
+        }
+    }
+}
+
+// https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#simple-dialogs
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PromptOutcome {
+    Accepted { text: Option<String> },
+    Dismissed,
+}
+
 pub trait BrowsingContextHost: Send + Sync + 'static {
+    // https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#simple-dialogs
+    fn user_prompt(
+        &self,
+        _frame: FrameId,
+        _kind: PromptKind,
+        _message: &str,
+        _default_value: Option<&str>,
+    ) -> PromptOutcome {
+        PromptOutcome::Dismissed
+    }
     // https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps
     // https://html.spec.whatwg.org/multipage/browsers.html#popup-sandboxing-flag-set
     // https://w3c.github.io/webappsec-referrer-policy/#determine-requests-referrer

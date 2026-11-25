@@ -123,9 +123,10 @@ if (typeof globalThis.console === 'undefined') {
     groupEnd: call('endGroup'),
     assert: (condition, ...parts) => {
       if (condition) return;
-      host.__tbConsoleCall('error', host.apply(host.stringify, null, [
-        ['Assertion failed:', ...parts.map((part) => host.remoteObject(part))],
-      ]));
+      const args = parts.length === 0
+        ? [host.remoteObject('Assertion failed')]
+        : parts.map((part) => host.remoteObject(part));
+      host.__tbConsoleCall('assert', host.apply(host.stringify, null, [args]));
     },
     time: noop, timeEnd: noop, count: noop,
   };

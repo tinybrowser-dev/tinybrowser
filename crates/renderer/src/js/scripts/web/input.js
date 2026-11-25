@@ -11,12 +11,21 @@
     return pointerStates.get(id);
   };
   const at = (x, y) => {
-    const found = document.elementFromPoint ? document.elementFromPoint(x, y) : null;
+    let found = document.elementFromPoint ? document.elementFromPoint(x, y) : null;
+    while (found && found.shadowRoot
+        && typeof found.shadowRoot.elementFromPoint === 'function') {
+      const inner = found.shadowRoot.elementFromPoint(x, y);
+      if (!inner || inner === found) break;
+      found = inner;
+    }
     return found || document.documentElement || document.body;
   };
   const centerOf = origin => {
-    if (!origin || typeof origin !== 'object' || typeof origin.__tbRemote !== 'number') return null;
-    const element = host.__tb_webdriver_element(origin.__tbRemote);
+    if (!origin || typeof origin !== 'object') return null;
+    let element = origin;
+    if (typeof origin.__tbRemote === 'number') {
+      element = host.__tb_webdriver_element(origin.__tbRemote);
+    }
     if (!element || typeof element.getBoundingClientRect !== 'function') return null;
     const rect = element.getBoundingClientRect();
     return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
@@ -127,35 +136,71 @@
       state.buttons = 0;
     } else throw new TypeError('unknown pointer action type: ' + item.type);
   };
+  // https://w3c.github.io/webdriver/#keyboard-actions
   const specialKeys = {
-    '\uE000': ['Unidentified', ''], '\uE003': ['Backspace', 'Backspace'], '\uE004': ['Tab', 'Tab'],
-    '\uE006': ['Enter', 'Enter'], '\uE007': ['Enter', 'Enter'],
-    '\uE008': ['Shift', 'ShiftLeft'], '\uE009': ['Control', 'ControlLeft'],
-    '\uE00A': ['Alt', 'AltLeft'], '\uE00C': ['Escape', 'Escape'],
-    '\uE00D': [' ', 'Space'], '\uE00E': ['PageUp', 'PageUp'], '\uE00F': ['PageDown', 'PageDown'],
-    '\uE010': ['End', 'End'], '\uE011': ['Home', 'Home'],
-    '\uE012': ['ArrowLeft', 'ArrowLeft'], '\uE013': ['ArrowUp', 'ArrowUp'],
-    '\uE014': ['ArrowRight', 'ArrowRight'], '\uE015': ['ArrowDown', 'ArrowDown'],
-    '\uE017': ['Delete', 'Delete'], '\uE03D': ['Meta', 'MetaLeft'],
+    '\uE000': ['Unidentified', '', 0], '\uE001': ['Cancel', '', 0],
+    '\uE002': ['Help', 'Help', 0], '\uE003': ['Backspace', 'Backspace', 0],
+    '\uE004': ['Tab', 'Tab', 0], '\uE005': ['Clear', '', 0],
+    '\uE006': ['Enter', 'Enter', 0], '\uE007': ['Enter', 'NumpadEnter', 3],
+    '\uE008': ['Shift', 'ShiftLeft', 1], '\uE009': ['Control', 'ControlLeft', 1],
+    '\uE00A': ['Alt', 'AltLeft', 1], '\uE00B': ['Pause', 'Pause', 0],
+    '\uE00C': ['Escape', 'Escape', 0], '\uE00D': [' ', 'Space', 0],
+    '\uE00E': ['PageUp', 'PageUp', 0], '\uE00F': ['PageDown', 'PageDown', 0],
+    '\uE010': ['End', 'End', 0], '\uE011': ['Home', 'Home', 0],
+    '\uE012': ['ArrowLeft', 'ArrowLeft', 0], '\uE013': ['ArrowUp', 'ArrowUp', 0],
+    '\uE014': ['ArrowRight', 'ArrowRight', 0], '\uE015': ['ArrowDown', 'ArrowDown', 0],
+    '\uE016': ['Insert', 'Insert', 0], '\uE017': ['Delete', 'Delete', 0],
+    '\uE018': [';', 'Semicolon', 0], '\uE019': ['=', 'Equal', 0],
+    '\uE01A': ['0', 'Numpad0', 3], '\uE01B': ['1', 'Numpad1', 3],
+    '\uE01C': ['2', 'Numpad2', 3], '\uE01D': ['3', 'Numpad3', 3],
+    '\uE01E': ['4', 'Numpad4', 3], '\uE01F': ['5', 'Numpad5', 3],
+    '\uE020': ['6', 'Numpad6', 3], '\uE021': ['7', 'Numpad7', 3],
+    '\uE022': ['8', 'Numpad8', 3], '\uE023': ['9', 'Numpad9', 3],
+    '\uE024': ['*', 'NumpadMultiply', 3], '\uE025': ['+', 'NumpadAdd', 3],
+    '\uE026': [',', 'NumpadComma', 3], '\uE027': ['-', 'NumpadSubtract', 3],
+    '\uE028': ['.', 'NumpadDecimal', 3], '\uE029': ['/', 'NumpadDivide', 3],
+    '\uE031': ['F1', 'F1', 0], '\uE032': ['F2', 'F2', 0], '\uE033': ['F3', 'F3', 0],
+    '\uE034': ['F4', 'F4', 0], '\uE035': ['F5', 'F5', 0], '\uE036': ['F6', 'F6', 0],
+    '\uE037': ['F7', 'F7', 0], '\uE038': ['F8', 'F8', 0], '\uE039': ['F9', 'F9', 0],
+    '\uE03A': ['F10', 'F10', 0], '\uE03B': ['F11', 'F11', 0], '\uE03C': ['F12', 'F12', 0],
+    '\uE03D': ['Meta', 'MetaLeft', 1], '\uE040': ['ZenkakuHankaku', '', 0],
+    '\uE050': ['Shift', 'ShiftRight', 2], '\uE051': ['Control', 'ControlRight', 2],
+    '\uE052': ['Alt', 'AltRight', 2], '\uE053': ['Meta', 'MetaRight', 2],
+    '\uE054': ['PageUp', 'Numpad9', 3], '\uE055': ['PageDown', 'Numpad3', 3],
+    '\uE056': ['End', 'Numpad1', 3], '\uE057': ['Home', 'Numpad7', 3],
+    '\uE058': ['ArrowLeft', 'Numpad4', 3], '\uE059': ['ArrowUp', 'Numpad8', 3],
+    '\uE05A': ['ArrowRight', 'Numpad6', 3], '\uE05B': ['ArrowDown', 'Numpad2', 3],
+    '\uE05C': ['Insert', 'Numpad0', 3], '\uE05D': ['Delete', 'NumpadDecimal', 3],
+  };
+  const punctCodes = {
+    '`': 'Backquote', '~': 'Backquote', '!': 'Digit1', '@': 'Digit2', '#': 'Digit3',
+    '$': 'Digit4', '%': 'Digit5', '^': 'Digit6', '&': 'Digit7', '*': 'Digit8',
+    '(': 'Digit9', ')': 'Digit0', '-': 'Minus', '_': 'Minus', '=': 'Equal', '+': 'Equal',
+    '[': 'BracketLeft', '{': 'BracketLeft', ']': 'BracketRight', '}': 'BracketRight',
+    '\\': 'Backslash', '|': 'Backslash', ';': 'Semicolon', ':': 'Semicolon',
+    '\'': 'Quote', '"': 'Quote', ',': 'Comma', '<': 'Comma', '.': 'Period', '>': 'Period',
+    '/': 'Slash', '?': 'Slash', ' ': 'Space', '\n': 'Enter',
   };
   const keyOf = value => {
-    if (specialKeys[value]) return { key: specialKeys[value][0], code: specialKeys[value][1] };
+    if (specialKeys[value]) {
+      return { key: specialKeys[value][0], code: specialKeys[value][1], location: specialKeys[value][2] };
+    }
     if (value.length === 1) {
       const code = value >= 'a' && value <= 'z' ? 'Key' + value.toUpperCase()
         : value >= 'A' && value <= 'Z' ? 'Key' + value
         : value >= '0' && value <= '9' ? 'Digit' + value
-        : '';
-      return { key: value, code: code };
+        : (punctCodes[value] || '');
+      return { key: value === '\n' ? 'Enter' : value, code: code, location: 0 };
     }
-    return { key: value, code: value };
+    return { key: value, code: '', location: 0 };
   };
   // https://html.spec.whatwg.org/multipage/input.html#common-input-element-attributes
   const EDITABLE_TYPES = new Set([
     'text', 'search', 'tel', 'url', 'email', 'password',
     'date', 'month', 'week', 'time', 'datetime-local', 'number',
   ]);
-  const textControl = () => {
-    const element = document.activeElement;
+  const textControl = (doc = document) => {
+    const element = activeDocument(doc).activeElement;
     if (!element) return null;
     const editable = element.tagName === 'TEXTAREA'
       || (element.tagName === 'INPUT' && EDITABLE_TYPES.has(element.type));
@@ -239,12 +284,24 @@
     setCaret(element, start + text.length);
     fireInput(element, inputType, data);
   };
-  const contentEditableHost = () => {
-    const element = document.activeElement;
+  const contentEditableHost = (doc = document) => {
+    const element = activeDocument(doc).activeElement;
     if (!element || !element.isContentEditable) return null;
     return element;
   };
+  const placeContentEditableCaret = (element, atStart) => {
+    const owner = element.ownerDocument || document;
+    const view = owner.defaultView;
+    const selection = view && typeof view.getSelection === 'function' ? view.getSelection() : null;
+    if (!selection) return;
+    const range = owner.createRange();
+    range.selectNodeContents(element);
+    range.collapse(atStart);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  };
   const replaceContentEditable = (element, text, inputType, data) => {
+    const owner = element.ownerDocument || document;
     const before = new InputEvent('beforeinput', {
       bubbles: true, cancelable: true, composed: true, inputType: inputType, data: data,
     });
@@ -254,14 +311,14 @@
       let last = null;
       for (let i = 0; i < parts.length; i++) {
         if (i > 0) {
-          const br = document.createElement('br');
+          const br = owner.createElement('br');
           range.insertNode(br);
           range.setStartAfter(br);
           range.collapse(true);
           last = br;
         }
         if (parts[i]) {
-          const textNode = document.createTextNode(parts[i]);
+          const textNode = owner.createTextNode(parts[i]);
           range.insertNode(textNode);
           range.setStartAfter(textNode);
           range.collapse(true);
@@ -270,7 +327,8 @@
       }
       return last;
     };
-    const sel = typeof globalThis.getSelection === 'function' ? globalThis.getSelection() : null;
+    const view = owner.defaultView;
+    const sel = view && typeof view.getSelection === 'function' ? view.getSelection() : null;
     if (sel && sel.rangeCount > 0) {
       const range = sel.getRangeAt(0);
       if (element.contains(range.commonAncestorContainer)) {
@@ -288,28 +346,27 @@
         return;
       }
     }
-    element.textContent = '';
     if (text) {
-      const range = document.createRange();
+      const range = owner.createRange();
       range.selectNodeContents(element);
       range.collapse(false);
       insertFragment(range, text);
     }
     fireInput(element, inputType, data);
   };
-  const insertText = text => {
-    const element = textControl();
+  const insertText = (text, doc = document) => {
+    const element = textControl(doc);
     if (element) {
       const start = caretStart(element);
       const end = Math.max(start, caretEnd(element));
       replaceRange(element, text, start, end, 'insertText', text);
       return;
     }
-    const editable = contentEditableHost();
+    const editable = contentEditableHost(doc);
     if (editable) replaceContentEditable(editable, text, 'insertText', text);
   };
-  const deleteText = backwards => {
-    const element = textControl();
+  const deleteText = (backwards, doc = document) => {
+    const element = textControl(doc);
     if (element) {
       const length = editText(element).length;
       const start = caretStart(element);
@@ -325,13 +382,13 @@
       }
       return;
     }
-    const editable = contentEditableHost();
+    const editable = contentEditableHost(doc);
     if (editable) {
       replaceContentEditable(editable, '', backwards ? 'deleteContentBackward' : 'deleteContentForward', null);
     }
   };
-  const moveCaret = to => {
-    const element = textControl();
+  const moveCaret = (to, doc = document) => {
+    const element = textControl(doc);
     if (!element) return;
     const length = editText(element).length;
     const start = caretStart(element);
@@ -357,58 +414,80 @@
     next.click();
     return true;
   };
-  const keyItem = (item, down) => {
+  const keyItem = (item, down, target) => {
     const value = item.value === undefined ? '' : String(item.value);
     const info = keyOf(value);
-    const node = document.activeElement || document.body || document.documentElement;
+    const doc = target && target.doc ? target.doc : document;
+    const node = target && target.node ? target.node
+      : (activeDocument(doc).activeElement
+         || activeDocument(doc).body || activeDocument(doc).documentElement);
     const mods = modifierInit(item.modifiers || 0);
+    const keyEvent = type => new KeyboardEvent(type, Object.assign({
+      bubbles: true, cancelable: true, key: info.key, code: info.code, location: info.location,
+    }, modifierInit(item.modifiers || 0)));
     if (down) {
-      if (value === '\uE008') shiftDown = true;
-      else if (value === '\uE009') ctrlDown = true;
-      else if (value === '\uE00A') altDown = true;
-      else if (value === '\uE03D') metaDown = true;
-      const accepted = fire(node, new KeyboardEvent('keydown', Object.assign({
-        bubbles: true, cancelable: true, key: info.key, code: info.code,
-      }, modifierInit(item.modifiers || 0))));
-      if (accepted) {
-        if (value === '\uE00D') {
-          const focused = document.activeElement;
-          if (focused && focused.localName === 'input'
-              && (focused.type === 'checkbox' || focused.type === 'radio')
-              && !focused.disabled) {
-            setActive(focused);
-          }
-          insertText(' ');
-        } else if (value === '\uE004') {
-          clearActive();
-          host.__tbFocusNext(shiftDown);
-        } else if (value === '\uE015') {
-          radioArrow(1);
-        } else if (value === '\uE013') {
-          radioArrow(-1);
-        } else if (value === '\uE003') deleteText(true);
-        else if (value === '\uE017') deleteText(false);
-        else if (value === '\uE011') moveCaret('home');
-        else if (value === '\uE010') moveCaret('end');
-        else if (value === '\uE012') moveCaret('left');
-        else if (value === '\uE014') moveCaret('right');
-        else if (value.length === 1 && value.charCodeAt(0) < 0xE000
-            && !mods.ctrlKey && !mods.altKey && !mods.metaKey) insertText(value);
+      if (value === '\uE008' || value === '\uE050') shiftDown = true;
+      else if (value === '\uE009' || value === '\uE051') ctrlDown = true;
+      else if (value === '\uE00A' || value === '\uE052') altDown = true;
+      else if (value === '\uE03D' || value === '\uE053') metaDown = true;
+      if (!fire(node, keyEvent('keydown'))) return;
+      if (value === '\uE00D') {
+        const focused = activeDocument(doc).activeElement;
+        if (focused && focused.localName === 'input'
+            && (focused.type === 'checkbox' || focused.type === 'radio')
+            && !focused.disabled) {
+          setActive(focused);
+        }
+      } else if (value === '\uE004') {
+        clearActive();
+        host.__tbFocusNext(shiftDown);
+        return;
+      } else if (value === '\uE015') {
+        radioArrow(1);
+        return;
+      } else if (value === '\uE013') {
+        radioArrow(-1);
+        return;
+      } else if (value === '\uE003') {
+        deleteText(true, doc);
+        return;
+      } else if (value === '\uE017' || value === '\uE05D') {
+        deleteText(false, doc);
+        return;
+      } else if (value === '\uE011' || value === '\uE057') {
+        moveCaret('home', doc);
+        return;
+      } else if (value === '\uE010' || value === '\uE056') {
+        moveCaret('end', doc);
+        return;
+      } else if (value === '\uE012' || value === '\uE058') {
+        moveCaret('left', doc);
+        return;
+      } else if (value === '\uE014' || value === '\uE05A') {
+        moveCaret('right', doc);
+        return;
       }
-      if ((value.length === 1 && value.charCodeAt(0) < 0xE000)
-          || value === '\uE006' || value === '\uE007') {
-        fire(node, new KeyboardEvent('keypress', Object.assign({
-          bubbles: true, cancelable: true, key: info.key, code: info.code,
-        }, modifierInit(item.modifiers || 0))));
+      const text = value === '\uE00D' ? ' '
+        : (value === '\uE006' || value === '\uE007') ? '\n'
+        : specialKeys[value] ? null : value;
+      if (text === null) return;
+      if (!fire(node, keyEvent('keypress'))) return;
+      if (mods.ctrlKey || mods.altKey || mods.metaKey) return;
+      if (text === '\n') {
+        const element = textControl(doc);
+        if (element && element.tagName === 'TEXTAREA') insertText('\n', doc);
+        else if (!element && contentEditableHost(doc)) insertText('\n', doc);
+      } else {
+        insertText(text, doc);
       }
     } else {
       if (value === '\uE00D') clearActive();
-      if (value === '\uE008') shiftDown = false;
-      else if (value === '\uE009') ctrlDown = false;
-      else if (value === '\uE00A') altDown = false;
-      else if (value === '\uE03D') metaDown = false;
+      if (value === '\uE008' || value === '\uE050') shiftDown = false;
+      else if (value === '\uE009' || value === '\uE051') ctrlDown = false;
+      else if (value === '\uE00A' || value === '\uE052') altDown = false;
+      else if (value === '\uE03D' || value === '\uE053') metaDown = false;
       fire(node, new KeyboardEvent('keyup', Object.assign({
-        bubbles: true, cancelable: true, key: info.key, code: info.code,
+        bubbles: true, cancelable: true, key: info.key, code: info.code, location: info.location,
       }, mods)));
     }
   };
@@ -437,6 +516,106 @@
     }
     if (typeof globalThis.scrollBy === 'function') globalThis.scrollBy(dx, dy);
   };
+  // https://w3c.github.io/webdriver/#element-click
+  host.__tbWebDriverElementClick = function(element) {
+    if (!element || typeof element.getBoundingClientRect !== 'function') return 'stale';
+    if (typeof element.checkVisibility === 'function' && !element.checkVisibility()) {
+      return 'not_interactable';
+    }
+    const style = typeof getComputedStyle === 'function' ? getComputedStyle(element) : null;
+    if (style && style.pointerEvents === 'none') return 'not_interactable';
+    const viewport = () => ({
+      width: globalThis.innerWidth || 800,
+      height: globalThis.innerHeight || 600,
+    });
+    let size = viewport();
+    let rect = element.getBoundingClientRect();
+    if (!(rect.width > 0) || !(rect.height > 0)) return 'not_interactable';
+    const visible = () => rect.right > 0 && rect.bottom > 0
+      && rect.left < size.width && rect.top < size.height;
+    if (!visible() && typeof element.scrollIntoView === 'function') {
+      element.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+      size = viewport();
+      rect = element.getBoundingClientRect();
+    }
+    if (!visible()) return 'not_interactable';
+    const left = Math.max(0, rect.left);
+    const top = Math.max(0, rect.top);
+    const right = Math.min(size.width, rect.right);
+    const bottom = Math.min(size.height, rect.bottom);
+    if (!(right > left) || !(bottom > top)) return 'not_interactable';
+    const x = (left + right) / 2;
+    const y = (top + bottom) / 2;
+    const owner = element.ownerDocument || document;
+    let hit = typeof owner.elementFromPoint === 'function' ? owner.elementFromPoint(x, y) : null;
+    while (hit && hit.shadowRoot && typeof hit.shadowRoot.elementFromPoint === 'function') {
+      const inner = hit.shadowRoot.elementFromPoint(x, y);
+      if (!inner || inner === hit) break;
+      hit = inner;
+    }
+    if (!hit) return 'not_interactable';
+    const shadowIncludingContains = (root, target) => {
+      for (let node = target; node;) {
+        if (node === root) return true;
+        node = node.nodeType === 11 && node.host ? node.host : node.parentNode;
+      }
+      return false;
+    };
+    if (!shadowIncludingContains(element, hit)) {
+      if (shadowIncludingContains(hit, element)) return 'not_interactable';
+      return 'intercepted';
+    }
+    const state = pointerState('__tb_element_click', 'mouse');
+    pointerItem(state, { type: 'pointerMove', x: x, y: y });
+    pointerItem(state, { type: 'pointerDown', button: 0, clickCount: 1 });
+    pointerItem(state, { type: 'pointerUp', button: 0, clickCount: 1 });
+    return 'ok';
+  };
+  Object.defineProperty(host, '__tbWebDriverElementClick', {
+    writable: false, configurable: false, enumerable: false,
+  });
+  const activeDocument = (doc = document) => {
+    const element = doc.activeElement;
+    if (element && (element.localName === 'iframe' || element.localName === 'frame')
+        && element.contentDocument) {
+      return element.contentDocument;
+    }
+    return doc;
+  };
+  // https://w3c.github.io/webdriver/#element-send-keys
+  host.__tbWebDriverUpload = function(element, files, append, strict) {
+    if (!element || element.tagName !== 'INPUT' || element.type !== 'file') return 'stale';
+    if (strict) {
+      if (typeof element.checkVisibility === 'function' && !element.checkVisibility()) {
+        return 'not_interactable';
+      }
+      try { element.focus(); } catch (error) {}
+      if (document.activeElement !== element) return 'not_interactable';
+    }
+    const decode = text => {
+      const binary = globalThis.atob(text);
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+      return bytes;
+    };
+    const selected = [];
+    if (append) {
+      const current = element.files;
+      for (let index = 0; index < current.length; index++) selected.push(current[index]);
+    }
+    for (const file of files) {
+      selected.push(new File([decode(file.data)], file.name, {
+        type: file.type, lastModified: file.lastModified,
+      }));
+    }
+    element.files = host.__tbCreateFileList(selected);
+    fire(element, new Event('input', { bubbles: true }));
+    fire(element, new Event('change', { bubbles: true }));
+    return 'ok';
+  };
+  Object.defineProperty(host, '__tbWebDriverUpload', {
+    writable: false, configurable: false, enumerable: false,
+  });
   // https://w3c.github.io/webdriver/#element-send-keys
   const hookChangeOnBlur = element => {
     if (changeState.has(element)) return;
@@ -448,29 +627,68 @@
     }]);
   };
   host.__tbWebDriverSendKeys = function(element, text) {
-    if (!element || typeof element.focus !== 'function') return false;
-    try { element.focus(); } catch (error) {}
-    hookChangeOnBlur(element);
-    changeState.get(element).baseline = element.value;
-    for (const character of String(text)) {
-      const code = character.charCodeAt(0);
-      if (character.length === 1 && code >= 0xE000 && code <= 0xE05D) {
-        if (character === '\uE003') deleteText(true);
-        else if (character === '\uE017') deleteText(false);
-        else if (character === '\uE011') moveCaret('home');
-        else if (character === '\uE010') moveCaret('end');
-        else if (character === '\uE012') moveCaret('left');
-        else if (character === '\uE014') moveCaret('right');
-        else if (character === '\uE00D') insertText(' ');
-        else if (character === '\uE004') {
-          clearActive();
-          host.__tbFocusNext(false);
-        }
-      } else {
-        insertText(character);
+    if (!element || typeof element.focus !== 'function') return 'not_interactable';
+    const doc = element.ownerDocument || document;
+    const style = typeof getComputedStyle === 'function' ? getComputedStyle(element) : null;
+    if (style && (style.visibility === 'hidden' || style.visibility === 'collapse')) {
+      return 'not_interactable';
+    }
+    if (typeof element.checkVisibility === 'function' && !element.checkVisibility()) {
+      return 'not_interactable';
+    }
+    const rect = element.getBoundingClientRect();
+    if (!(rect.width > 0) || !(rect.height > 0)) return 'not_interactable';
+    const view = doc.defaultView || globalThis;
+    if (rect.bottom <= 0 || rect.right <= 0
+        || rect.top >= (view.innerHeight || 0) || rect.left >= (view.innerWidth || 0)) {
+      if (typeof element.scrollIntoView === 'function') {
+        element.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
       }
     }
-    return true;
+    const localName = element.localName;
+    let eventDoc = doc;
+    let node = element;
+    if (localName === 'iframe' || localName === 'frame') {
+      host.__tbWebDriverSetActiveElement(element);
+      eventDoc = element.contentDocument || doc;
+      node = eventDoc.activeElement || eventDoc.body || eventDoc.documentElement;
+    } else if (element === doc.body || element === doc.documentElement) {
+      host.__tbWebDriverSetActiveElement(element);
+    } else {
+      const alreadyFocused = doc.activeElement === element;
+      if (!alreadyFocused) {
+        try { element.focus(); } catch (error) {}
+        if (doc.activeElement !== element) return 'not_interactable';
+        const editable = (element.tagName === 'INPUT' || element.tagName === 'TEXTAREA')
+          ? !element.readOnly && !element.disabled
+          : element.isContentEditable;
+        if (editable) {
+          if (element.tagName === 'INPUT' || element.tagName === 'TEXTAREA') {
+            try { element.setSelectionRange(element.value.length, element.value.length); } catch (error) {}
+          } else {
+            placeContentEditableCaret(element, false);
+          }
+        }
+      }
+      if (element.isContentEditable) {
+        const docView = doc.defaultView;
+        const selection = docView && typeof docView.getSelection === 'function' ? docView.getSelection() : null;
+        const range = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+        const inside = range
+          && element.contains(range.commonAncestorContainer);
+        if (!inside) placeContentEditableCaret(element, true);
+      }
+    }
+    if (element.tagName === 'INPUT' || element.tagName === 'TEXTAREA') {
+      hookChangeOnBlur(element);
+      changeState.get(element).baseline = element.value;
+    }
+    const target = { node: node, doc: eventDoc };
+    for (const character of String(text)) {
+      keyItem({ type: 'keyDown', value: character }, true, target);
+      keyItem({ type: 'keyUp', value: character }, false, target);
+    }
+    return 'ok';
   };
   Object.defineProperty(host, '__tbWebDriverSendKeys', {
     writable: false, configurable: false, enumerable: false,

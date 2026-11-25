@@ -4047,3 +4047,52 @@ header and store, credentials gate, and hand-built outcome are deleted.
 - `demo/wasm` runs it inside Chrome: a 302 followed by the core, a cookie set
   by a subresource and sent back on a later fetch, and the script's effect
   visible in the engine's DOM.
+
+## WebDriver conformance, 2026-11-25
+
+Classic WebDriver and WebDriver BiDi are one implementation again: `session`
+owns the session store, `classic.rs` the HTTP dispatch, and `bidi/` one module
+per spec domain, with the renderer's `input.js` pipeline shared by classic
+actions, BiDi `input.performActions`, and both element commands. CDP uses the
+same `server::ws` upgrade path instead of its own websocket stack. `wdspec`
+joined the push gate's `WPT_TEST_TYPES`, so the suite is measured on every
+push rather than in a separate nightly.
+
+Measured on `target/wpt/tinybrowser`, 4 processes:
+
+| lane | subtests | pass | fail | pass rate |
+| --- | ---: | ---: | ---: | ---: |
+| classic | 3,592 | 3,093 | 499 | 86.1% |
+| BiDi | 5,141 | 3,535 | 1,606 | 68.8% |
+
+The common-automation subset is what the 80% target names: classic without
+the non-standard `external` extension APIs and without `print` (no PDF
+backend) is 3,086/3,387 (91.1%); BiDi `script`, `input`, `storage`, `browser`,
+`session`, `network`, and the `browsingContext` navigate/create/screenshot/
+viewport/locate commands are 3,007/3,454 (87.1%). Per module: classic element
+send keys 88/89, clicks 81/93, element finding 95%, cookies 100%, navigation
+94-97%; BiDi script 88%, input 87%, storage 96%, browser 94%, session 90%,
+network 76%.
+
+The fixes that moved these numbers were structural, not per-test: input
+actions now validate the full spec grammar (the `invalid.py` family), element
+send keys dispatches keydown/keypress/input/keyup through the shared key
+pipeline instead of writing text directly, click uses the in-view center and
+pierces shadow roots, and `input.files` is per-node DOM state instead of a
+`WeakMap` keyed by a wrapper that garbage collection can drop. Shadow-root
+references also stopped being rejected by the element resolver, which took
+both `*_from_shadow_root` families to 18/18.
+
+Remaining gaps are engine work, not harness work: XPath (`document.evaluate`
+does not exist) holds `browsingContext.locateNodes` at 46/78; `Page.printToPDF`
+and BiDi `browsingContext.print` have no backend (0/191); per-tab
+focus/visibility does not exist in the renderer, so BiDi background-tab tests
+see `document.hasFocus()` true everywhere; and BiDi `emulation` (38%) has
+locale/timezone/media/DPR/touch/viewport-meta overrides with no engine state
+to change. Classic `external` covers WebAuthn/permissions/GPC, which are not
+WebDriver APIs.
+
+Expectation files: wdspec has no metadata entries, so these failures are
+counted rather than suppressed. Playwright's `pw-expectations.json` remains
+the only expectation file, and its runner exits non-zero on an unexpected
+pass, so an entry that stops being needed fails the gate instead of growing.

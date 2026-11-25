@@ -1,45 +1,57 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use browser::{
-    BrowserHandle, ConsoleLevel, ExecuteScriptOptions, FrameId, RemoteValue, RunUntilJsTrueOptions,
-    TabEvent, TabHandle, TabId,
+    BrowserHandle, BrowserLifecycleEvent, ConsoleLevel, ExecuteScriptOptions, FrameId,
+    InterceptDecision, InterceptId, InterceptPhase, NetworkEvent, NetworkRequestId, PromptBehavior,
+    PromptBehaviorMap, PromptEvent, RemoteValue, RunUntilJsTrueOptions, TabEvent, TabHandle, TabId,
+    UrlPattern, UserContextId,
 };
-use bytes::Bytes;
 use futures_util::{SinkExt as _, StreamExt as _};
-use http::{HeaderValue, Method, StatusCode, header};
-use http_body_util::Full;
-use hyper::upgrade::Upgraded;
-use hyper_util::rt::TokioIo;
+use http::{Method, StatusCode};
 use serde_json::{Value, json};
+use server::ws::{WebSocket, WsError, WsMessage};
 use server::{Request, Response, Shutdown};
-use sha1::{Digest as _, Sha1};
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
-use tokio_tungstenite::WebSocketStream;
-use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tungstenite::client::IntoClientRequest;
-use tungstenite::protocol::{Message, Role, WebSocket as ClientSocket};
+use tungstenite::protocol::{Message, WebSocket as ClientSocket};
 
 mod dispatch;
 mod params;
 use dispatch::{
     BrowserHandler, DispatchError, Handler, PageHandler, RUNTIME_CLEAR_HANDLES, RUNTIME_HANDLE,
     RUNTIME_READ, RUNTIME_SCHEDULE, Target, accept, add_binding, arguments_expression,
-    attach_session, capture_screenshot, css_stylesheets, exception_reply, exception_text_reply,
-    json_io, json_string, missing_handles_expression, open_url, open_url_with_referrer,
-    requested_frame, route, run_script, runtime_release_object, runtime_release_object_group,
-    target_id, target_info, wait_for_navigation, ws_io,
+    attach_session, capture_screenshot, cdp_cookie_json, cdp_frame_id, css_stylesheets,
+    delete_cdp_cookies, exception_reply, exception_text_reply, json_io, json_string,
+    missing_handles_expression, open_url, open_url_with_referrer, requested_frame, route,
+    run_script, runtime_release_object, runtime_release_object_group, set_cdp_cookies, target_id,
+    target_info, url_security_origin, wait_for_navigation, ws_io,
 };
 
 const DEFAULT_BROWSER_CONTEXT_ID: &str = "tinybrowser-default";
 // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-evaluate
 const AWAIT_PROMISE_TIMEOUT: Duration = Duration::from_secs(30);
+
+fn cdp_context_id(uc: &UserContextId) -> String {
+    if uc.is_default() {
+        DEFAULT_BROWSER_CONTEXT_ID.to_owned()
+    } else {
+        uc.as_str().to_owned()
+    }
+}
+
+fn user_context_from_cdp(id: &str) -> UserContextId {
+    if id == DEFAULT_BROWSER_CONTEXT_ID {
+        UserContextId::default_context()
+    } else {
+        UserContextId::new(id)
+    }
+}
 
 #[derive(Clone)]
 pub struct Router {
@@ -54,7 +66,6 @@ impl Router {
                 browser,
                 bound,
                 stop: shutdown,
-                contexts: Arc::new(Mutex::new(BrowserContexts::default())),
             },
         }
     }
@@ -119,208 +130,22 @@ fn route_path(path: &str) -> &str {
 
 // https://www.rfc-editor.org/rfc/rfc6455#section-4.2.1
 async fn upgrade_route(request: Request, state: AppState, raw: Option<String>) -> Response {
-    let key = match upgrade_key(&request) {
-        Ok(key) => key,
-        Err(rejection) => return rejection_response(rejection),
-    };
-    if let Some(raw) = raw {
+    let tab = if let Some(raw) = raw {
         let Ok(id) = raw.parse::<u64>() else {
             return status_response(StatusCode::BAD_REQUEST, "invalid page target");
         };
         let Ok(tab) = state.browser.tab(TabId::new(id)).await else {
             return status_response(StatusCode::NOT_FOUND, "unknown page target");
         };
-        return serve_upgraded(request, &key, state, Some(tab));
-    }
-    serve_upgraded(request, &key, state, None)
-}
-
-#[derive(Clone, Copy)]
-enum HandshakeRejection {
-    HttpVersion,
-    Method,
-    NotWebsocket,
-    MissingKey,
-    VersionUnsupported,
-}
-
-fn upgrade_key(request: &Request) -> Result<String, HandshakeRejection> {
-    if request.version() != http::Version::HTTP_11 {
-        return Err(HandshakeRejection::HttpVersion);
-    }
-    if request.method() != Method::GET {
-        return Err(HandshakeRejection::Method);
-    }
-    let headers = request.headers();
-    let upgrade = headers
-        .get(header::UPGRADE)
-        .is_some_and(|value| value.as_bytes().eq_ignore_ascii_case(b"websocket"));
-    let connection = headers.get(header::CONNECTION).is_some_and(|value| {
-        value.to_str().is_ok_and(|text| {
-            text.split(',')
-                .any(|token| token.trim().eq_ignore_ascii_case("upgrade"))
-        })
-    });
-    if !upgrade || !connection {
-        return Err(HandshakeRejection::NotWebsocket);
-    }
-    let version_ok = headers
-        .get(header::SEC_WEBSOCKET_VERSION)
-        .is_some_and(|value| value.as_bytes() == b"13");
-    if !version_ok {
-        return Err(HandshakeRejection::VersionUnsupported);
-    }
-    headers
-        .get(header::SEC_WEBSOCKET_KEY)
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_owned)
-        .ok_or(HandshakeRejection::MissingKey)
-}
-
-fn rejection_response(rejection: HandshakeRejection) -> Response {
-    match rejection {
-        HandshakeRejection::HttpVersion => {
-            status_response(StatusCode::UPGRADE_REQUIRED, "upgrade requires HTTP/1.1")
-        }
-        HandshakeRejection::Method => status_response(
-            StatusCode::METHOD_NOT_ALLOWED,
-            "websocket upgrade requires GET",
-        ),
-        HandshakeRejection::NotWebsocket => {
-            status_response(StatusCode::BAD_REQUEST, "not a websocket request")
-        }
-        HandshakeRejection::MissingKey => {
-            status_response(StatusCode::BAD_REQUEST, "missing websocket key")
-        }
-        HandshakeRejection::VersionUnsupported => {
-            let mut response = status_response(
-                StatusCode::UPGRADE_REQUIRED,
-                "unsupported websocket version",
-            );
-            response.headers_mut().insert(
-                header::SEC_WEBSOCKET_VERSION,
-                HeaderValue::from_static("13"),
-            );
-            response
-                .headers_mut()
-                .insert(header::CONNECTION, HeaderValue::from_static("close"));
-            response
-        }
-    }
-}
-
-fn serve_upgraded(
-    request: Request,
-    key: &str,
-    state: AppState,
-    tab: Option<TabHandle>,
-) -> Response {
-    let accept = accept_key(key);
-    let upgraded = hyper::upgrade::on(request);
-    tokio::spawn(async move {
-        let Ok(io) = upgraded.await else { return };
-        let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
-            .max_message_size(Some(8 * 1024 * 1024))
-            .max_frame_size(Some(1024 * 1024));
-        let socket =
-            WebSocketStream::from_raw_socket(TokioIo::new(io), Role::Server, Some(config)).await;
-        run_socket(socket, state, tab).await;
-    });
-    switching_protocols(&accept)
-}
-
-fn switching_protocols(accept: &str) -> Response {
-    let mut response = Response::new(Full::new(Bytes::new()));
-    *response.status_mut() = StatusCode::SWITCHING_PROTOCOLS;
-    response
-        .headers_mut()
-        .insert(header::UPGRADE, HeaderValue::from_static("websocket"));
-    response
-        .headers_mut()
-        .insert(header::CONNECTION, HeaderValue::from_static("Upgrade"));
-    match HeaderValue::from_str(accept) {
-        Ok(value) => {
-            response
-                .headers_mut()
-                .insert(header::SEC_WEBSOCKET_ACCEPT, value);
-        }
-        Err(_) => {
-            *response.status_mut() = StatusCode::BAD_REQUEST;
-        }
-    }
-    response
-}
-
-const WS_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-
-fn accept_key(key: &str) -> String {
-    let mut hasher = Sha1::new();
-    hasher.update(key.as_bytes());
-    hasher.update(WS_GUID.as_bytes());
-    BASE64_STANDARD.encode(hasher.finalize())
+        Some(tab)
+    } else {
+        None
+    };
+    server::ws::upgrade(request, move |socket| run_socket(socket, state, tab))
 }
 
 fn status_response(status: StatusCode, message: &'static str) -> Response {
     server::text(status, message)
-}
-
-#[derive(Default)]
-struct BrowserContexts {
-    next: u64,
-    created: HashSet<String>,
-    tabs: HashMap<TabId, String>,
-}
-
-impl BrowserContexts {
-    fn create(&mut self) -> String {
-        self.next = self.next.saturating_add(1);
-        let id = format!("ctx-{}", self.next);
-        self.created.insert(id.clone());
-        id
-    }
-
-    fn contains(&self, id: &str) -> bool {
-        id == DEFAULT_BROWSER_CONTEXT_ID || self.created.contains(id)
-    }
-
-    fn list(&self) -> Vec<String> {
-        let mut ids: Vec<String> = self.created.iter().cloned().collect();
-        ids.sort();
-        ids
-    }
-
-    fn assign_tab(&mut self, tab: TabId, context_id: &str) {
-        if context_id != DEFAULT_BROWSER_CONTEXT_ID {
-            self.tabs.insert(tab, context_id.to_owned());
-        }
-    }
-
-    fn remove_tab(&mut self, tab: TabId) {
-        self.tabs.remove(&tab);
-    }
-
-    fn context_of(&self, tab: TabId) -> String {
-        self.tabs
-            .get(&tab)
-            .cloned()
-            .unwrap_or_else(|| DEFAULT_BROWSER_CONTEXT_ID.to_owned())
-    }
-
-    fn dispose(&mut self, context_id: &str) -> Option<Vec<TabId>> {
-        if !self.created.remove(context_id) {
-            return None;
-        }
-        let tabs: Vec<TabId> = self
-            .tabs
-            .iter()
-            .filter(|(_, assigned)| assigned.as_str() == context_id)
-            .map(|(tab, _)| *tab)
-            .collect();
-        for tab in &tabs {
-            self.tabs.remove(tab);
-        }
-        Some(tabs)
-    }
 }
 
 #[derive(Clone)]
@@ -328,7 +153,6 @@ struct AppState {
     browser: BrowserHandle,
     bound: SocketAddr,
     stop: Shutdown,
-    contexts: Arc<Mutex<BrowserContexts>>,
 }
 
 fn version_json(state: &AppState) -> Value {
@@ -481,7 +305,6 @@ fn connect_ws(addr: SocketAddr, path: &str) -> io::Result<Client> {
 
 struct Conn {
     browser: BrowserHandle,
-    contexts: Arc<Mutex<BrowserContexts>>,
     sessions: HashMap<String, Target>,
     next_session: u64,
     tab: Option<TabHandle>,
@@ -492,6 +315,14 @@ struct Conn {
     deferred_tx: Option<mpsc::UnboundedSender<Value>>,
     clock_origin: Instant,
     auto_attach: bool,
+    auto_attach_session: Option<String>,
+    auto_attached_tabs: HashSet<TabId>,
+    discover_targets: bool,
+    network_enabled: HashSet<TabId>,
+    prompt_tabs: HashSet<TabId>,
+    fetch_intercepts: HashMap<TabId, Vec<InterceptId>>,
+    compiled_scripts: HashMap<String, String>,
+    next_script: u64,
     events: Vec<Value>,
     loader_ids: HashMap<TabId, String>,
     // https://chromedevtools.github.io/devtools-protocol/tot/Page/#event-lifecycleEvent
@@ -650,30 +481,28 @@ impl Conn {
                 );
             }
             TabEvent::Load => {
-                self.push_lifecycle_event(&mut messages, tab_id, "load", timestamp, sess);
-                push_event(
+                self.push_lifecycle_pair(
                     &mut messages,
+                    tab_id,
+                    "load",
                     "Page.loadEventFired",
-                    &json!({"timestamp": timestamp}),
+                    timestamp,
                     sess,
                 );
             }
             TabEvent::DomContentLoaded => {
-                self.push_lifecycle_event(
+                self.push_lifecycle_pair(
                     &mut messages,
                     tab_id,
                     "DOMContentLoaded",
+                    "Page.domContentEventFired",
                     timestamp,
                     sess,
                 );
-                push_event(
-                    &mut messages,
-                    "Page.domContentEventFired",
-                    &json!({"timestamp": timestamp}),
-                    sess,
-                );
             }
-            TabEvent::NavigationFailed(_) => {}
+            TabEvent::NavigationFailed(_)
+            | TabEvent::FrameDomContentLoaded { .. }
+            | TabEvent::FrameLoad { .. } => {}
             TabEvent::NavigationRequested { url } => {
                 self.push_navigation_requested(&mut messages, tab_id, &url, timestamp, sess);
             }
@@ -696,28 +525,106 @@ impl Conn {
             TabEvent::RealmReplaced => {
                 // https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#document-open-steps
                 let frame_id = tab_id.to_string();
-                self.push_execution_contexts(&mut messages, tab_id, &frame_id, sess);
+                let url = tab.document_url().await.unwrap_or_default();
+                self.push_execution_contexts(&mut messages, tab_id, &frame_id, &url, sess);
             }
             TabEvent::Binding { name, payload } => {
-                // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#event-bindingCalled
-                let context = self
-                    .default_contexts
-                    .get(&tab_id)
-                    .copied()
-                    .unwrap_or_default();
-                push_event(
-                    &mut messages,
-                    "Runtime.bindingCalled",
-                    &json!({"name": name, "payload": payload, "executionContextId": context}),
-                    sess,
-                );
+                self.push_binding_called(&mut messages, tab_id, &name, &payload, sess);
             }
             TabEvent::Console { level, args } => {
                 // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#event-consoleAPICalled
                 self.push_console_called(&mut messages, tab_id, level, &args, timestamp, sess);
             }
+            TabEvent::FrameAttached { frame, parent, .. } => {
+                push_frame_attached(&mut messages, tab_id, frame, parent, sess);
+            }
+            TabEvent::FrameNavigated { frame, url } => {
+                push_frame_navigated(&mut messages, tab_id, frame, &url, sess);
+            }
+            TabEvent::FrameDetached { frame } => {
+                push_frame_detached(&mut messages, tab_id, frame, sess);
+            }
+            event @ TabEvent::ExceptionThrown { .. } => {
+                self.push_exception_event(&mut messages, tab_id, &event, timestamp, sess);
+            }
         }
         messages
+    }
+
+    fn push_lifecycle_pair(
+        &self,
+        messages: &mut Vec<Value>,
+        tab_id: TabId,
+        lifecycle_name: &str,
+        page_event: &str,
+        timestamp: f64,
+        sess: Option<&str>,
+    ) {
+        self.push_lifecycle_event(messages, tab_id, lifecycle_name, timestamp, sess);
+        push_event(messages, page_event, &json!({"timestamp": timestamp}), sess);
+    }
+
+    // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#event-bindingCalled
+    fn push_binding_called(
+        &self,
+        messages: &mut Vec<Value>,
+        tab_id: TabId,
+        name: &str,
+        payload: &str,
+        sess: Option<&str>,
+    ) {
+        let context = self
+            .default_contexts
+            .get(&tab_id)
+            .copied()
+            .unwrap_or_default();
+        push_event(
+            messages,
+            "Runtime.bindingCalled",
+            &json!({"name": name, "payload": payload, "executionContextId": context}),
+            sess,
+        );
+    }
+
+    fn push_exception_event(
+        &self,
+        messages: &mut Vec<Value>,
+        tab_id: TabId,
+        event: &TabEvent,
+        timestamp: f64,
+        sess: Option<&str>,
+    ) {
+        let TabEvent::ExceptionThrown {
+            text,
+            filename,
+            line,
+            column,
+            ..
+        } = event
+        else {
+            return;
+        };
+        let context = self
+            .default_contexts
+            .get(&tab_id)
+            .copied()
+            .unwrap_or_default();
+        push_event(
+            messages,
+            "Runtime.exceptionThrown",
+            &json!({
+                "timestamp": timestamp,
+                "exceptionDetails": {
+                    "exceptionId": 1,
+                    "text": text,
+                    "lineNumber": line,
+                    "columnNumber": column,
+                    "url": filename,
+                    "executionContextId": context,
+                },
+            }),
+            sess,
+        );
     }
 
     // https://chromedevtools.github.io/devtools-protocol/tot/Page/#event-lifecycleEvent
@@ -925,12 +832,13 @@ impl Conn {
                 "id": frame_id,
                 "loaderId": loader_id,
                 "url": url,
+                "securityOrigin": url_security_origin(&url),
                 "mimeType": "text/html",
             }},
         });
         attach_session(&mut navigated, session);
         messages.push(navigated);
-        self.push_execution_contexts(messages, tab_id, &frame_id, session);
+        self.push_execution_contexts(messages, tab_id, &frame_id, &url, session);
         let _ = tab.execute_browser_script(RUNTIME_CLEAR_HANDLES).await;
     }
 
@@ -940,8 +848,10 @@ impl Conn {
         messages: &mut Vec<Value>,
         tab_id: TabId,
         frame_id: &str,
+        url: &str,
         session: Option<&str>,
     ) {
+        let origin = url_security_origin(url);
         let mut cleared = json!({
             "method": "Runtime.executionContextsCleared",
             "params": {},
@@ -968,7 +878,7 @@ impl Conn {
                 "method": "Runtime.executionContextCreated",
                 "params": {"context": {
                     "id": context_id,
-                    "origin": "://",
+                    "origin": origin,
                     "name": world,
                     "uniqueId": format!("ctx-{context_id}"),
                     "auxData": {
@@ -983,11 +893,46 @@ impl Conn {
         }
     }
 
-    fn context_of(&self, id: TabId) -> String {
-        self.contexts
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .context_of(id)
+    async fn context_of(&self, id: TabId) -> String {
+        match self.browser.tab(id).await {
+            Ok(tab) => cdp_context_id(tab.user_context()),
+            Err(_) => DEFAULT_BROWSER_CONTEXT_ID.to_owned(),
+        }
+    }
+
+    async fn resolve_user_context(
+        &self,
+        raw: Option<&str>,
+        fallback: &UserContextId,
+    ) -> Result<UserContextId, DispatchError> {
+        let Some(id) = raw else {
+            return Ok(fallback.clone());
+        };
+        let uc = user_context_from_cdp(id);
+        let known = self
+            .browser
+            .user_contexts()
+            .await
+            .map_err(|err| DispatchError::Failed(err.to_string()))?;
+        if !known.contains(&uc) {
+            return Err(DispatchError::InvalidParams("browserContextId".to_owned()));
+        }
+        Ok(uc)
+    }
+
+    fn sessions_for_tab(&self, tab_id: TabId) -> Vec<Option<String>> {
+        let mut out: Vec<Option<String>> = self
+            .sessions
+            .iter()
+            .filter_map(|(sid, target)| match target {
+                Target::Page(tab) if tab.id() == tab_id => Some(Some(sid.clone())),
+                _ => None,
+            })
+            .collect();
+        if self.tab.as_ref().is_some_and(|t| t.id() == tab_id) {
+            out.push(None);
+        }
+        out
     }
 
     // https://chromedevtools.github.io/devtools-protocol/tot/Target/#method-getTargetInfo
@@ -999,7 +944,7 @@ impl Conn {
                     .parse::<u64>()
                     .map(TabId::new)
                     .map_err(|_| DispatchError::InvalidParams("targetId".to_owned()))?;
-                let context_id = self.context_of(id);
+                let context_id = self.context_of(id).await;
                 Ok(json!({"targetInfo": target_info(&self.browser, id, &context_id).await}))
             }
             None => Ok(json!({
@@ -1023,12 +968,39 @@ impl Conn {
         let params: params::SetAutoAttach = params::parse(params)?;
         let auto_attach = params.auto_attach;
         self.auto_attach = auto_attach;
+        self.auto_attach_session = session.map(str::to_owned);
         if auto_attach {
             for id in self.browser.tabs().await.unwrap_or_default() {
+                if self.auto_attached_tabs.contains(&id) {
+                    continue;
+                }
                 if let Ok(tab) = self.browser.tab(id).await {
                     let session_id = self.mint(Target::Page(tab.clone()));
+                    self.auto_attached_tabs.insert(id);
                     self.push_attached(session, &session_id, &tab).await;
                 }
+            }
+        }
+        Ok(json!({}))
+    }
+
+    // https://chromedevtools.github.io/devtools-protocol/tot/Target/#method-setDiscoverTargets
+    async fn set_discover_targets(
+        &mut self,
+        params: &Value,
+        session: Option<&str>,
+    ) -> Result<Value, DispatchError> {
+        let params: params::SetDiscoverTargets = params::parse(params)?;
+        self.discover_targets = params.discover;
+        if params.discover {
+            for id in self.browser.tabs().await.unwrap_or_default() {
+                let context_id = self.context_of(id).await;
+                let info = target_info(&self.browser, id, &context_id).await;
+                self.push_session_event(
+                    session,
+                    "Target.targetCreated",
+                    &json!({ "targetInfo": info }),
+                );
             }
         }
         Ok(json!({}))
@@ -1042,7 +1014,7 @@ impl Conn {
     }
 
     async fn push_attached(&mut self, session: Option<&str>, session_id: &str, tab: &TabHandle) {
-        let context_id = self.context_of(tab.id());
+        let context_id = cdp_context_id(tab.user_context());
         let mut info = target_info(&self.browser, tab.id(), &context_id).await;
         if let Some(object) = info.as_object_mut() {
             object.insert("attached".into(), json!(true));
@@ -1156,18 +1128,19 @@ impl Conn {
         request_id: &Value,
         session: Option<&str>,
     ) -> Result<DispatchResult, DispatchError> {
+        let target_uc = target_user_context(target);
         match handler {
             Handler::Accept(reason) => accept(reason, params).map(DispatchResult::Immediate),
             Handler::ClearBrowserCookies => {
                 self.browser
-                    .clear_cookies()
+                    .clear_cookies_in(&target_uc)
                     .await
                     .map_err(|error| DispatchError::Failed(error.to_string()))?;
                 Ok(DispatchResult::Immediate(json!({})))
             }
             Handler::ClearBrowserCache => {
                 self.browser
-                    .clear_cache()
+                    .clear_cache_in(&target_uc)
                     .await
                     .map_err(|error| DispatchError::Failed(error.to_string()))?;
                 Ok(DispatchResult::Immediate(json!({})))
@@ -1175,14 +1148,20 @@ impl Conn {
             Handler::SetCacheDisabled => {
                 let params: params::SetCacheDisabled = params::parse(params)?;
                 self.browser
-                    .set_cache_disabled(params.cache_disabled)
+                    .set_cache_disabled_in(&target_uc, params.cache_disabled)
                     .await
                     .map_err(|error| DispatchError::Failed(error.to_string()))?;
                 Ok(DispatchResult::Immediate(json!({})))
             }
+            Handler::StorageGetCookies
+            | Handler::StorageSetCookies
+            | Handler::StorageClearCookies => self
+                .dispatch_storage_cookies(handler, params, &target_uc)
+                .await
+                .map(DispatchResult::Immediate),
             Handler::GetTargetInfo => match target {
                 Target::Page(tab) => {
-                    let context_id = self.context_of(tab.id());
+                    let context_id = cdp_context_id(tab.user_context());
                     let mut info = target_info(&self.browser, tab.id(), &context_id).await;
                     if let Some(object) = info.as_object_mut() {
                         object.insert("attached".into(), json!(true));
@@ -1208,6 +1187,49 @@ impl Conn {
         }
     }
 
+    async fn dispatch_storage_cookies(
+        &self,
+        handler: Handler,
+        params: &Value,
+        fallback: &UserContextId,
+    ) -> Result<Value, DispatchError> {
+        match handler {
+            Handler::StorageGetCookies => {
+                let params: params::StorageBrowserContext = params::parse(params)?;
+                let uc = self
+                    .resolve_user_context(params.browser_context_id.as_deref(), fallback)
+                    .await?;
+                let records = self
+                    .browser
+                    .all_cookie_records_in(&uc)
+                    .await
+                    .map_err(|error| DispatchError::Failed(error.to_string()))?;
+                let cookies: Vec<Value> = records.iter().map(cdp_cookie_json).collect();
+                Ok(json!({ "cookies": cookies }))
+            }
+            Handler::StorageSetCookies => {
+                let params: params::SetCookies = params::parse(params)?;
+                let uc = self
+                    .resolve_user_context(params.browser_context_id.as_deref(), fallback)
+                    .await?;
+                set_cdp_cookies(&self.browser, &uc, &params.cookies, None).await?;
+                Ok(json!({}))
+            }
+            Handler::StorageClearCookies => {
+                let params: params::StorageBrowserContext = params::parse(params)?;
+                let uc = self
+                    .resolve_user_context(params.browser_context_id.as_deref(), fallback)
+                    .await?;
+                self.browser
+                    .clear_cookies_in(&uc)
+                    .await
+                    .map_err(|error| DispatchError::Failed(error.to_string()))?;
+                Ok(json!({}))
+            }
+            _ => Err(DispatchError::MethodNotFound),
+        }
+    }
+
     async fn dispatch_page(
         &mut self,
         handler: PageHandler,
@@ -1227,6 +1249,20 @@ impl Conn {
                 self.dispatch_runtime(source, options, tab, request_id, session)
                     .await
             }
+            PageHandler::RuntimeRunScript => {
+                let req: params::RunScript = params::parse(params)?;
+                let Some(expression) = self.compiled_scripts.get(&req.script_id).cloned() else {
+                    return Err(DispatchError::Failed("unknown scriptId".to_owned()));
+                };
+                self.dispatch_runtime(
+                    RuntimeSource::Evaluate { expression },
+                    req.options,
+                    tab,
+                    request_id,
+                    session,
+                )
+                .await
+            }
             PageHandler::Navigate => self.navigate_tab(params, tab, request_id, session).await,
             other => self
                 .dispatch_page_sync(other, params, tab, session)
@@ -1245,18 +1281,30 @@ impl Conn {
         match handler {
             PageHandler::RuntimeEvaluate
             | PageHandler::RuntimeCallFunctionOn
+            | PageHandler::RuntimeRunScript
             | PageHandler::Navigate => Err(DispatchError::MethodNotFound),
             PageHandler::Enable => {
                 self.subscribe_tab(tab, session)?;
+                self.prompt_tabs.insert(tab.id());
+                self.browser.prompt_broker().set_tab_behavior(
+                    tab.id(),
+                    Some(PromptBehaviorMap::uniform(PromptBehavior::Ignore)),
+                );
                 Ok(json!({}))
             }
             PageHandler::Disable => {
                 self.unsubscribe_tab(tab.id(), session);
+                self.prompt_tabs.remove(&tab.id());
+                self.browser
+                    .prompt_broker()
+                    .set_tab_behavior(tab.id(), None);
                 Ok(json!({}))
             }
             PageHandler::NavigateToHistoryEntry => {
                 self.navigate_to_history_entry(params, tab).await
             }
+            PageHandler::SetDocumentContent => set_document_content(tab, params).await,
+            PageHandler::HandleJavaScriptDialog => self.handle_javascript_dialog(tab, params),
             PageHandler::CaptureScreenshot => {
                 let omit = self
                     .omit_background
@@ -1268,68 +1316,56 @@ impl Conn {
             PageHandler::SetDefaultBackgroundColorOverride => {
                 self.set_default_background_color_override(params, tab)
             }
+            PageHandler::NetworkEnable => {
+                self.network_enabled.insert(tab.id());
+                Ok(json!({}))
+            }
+            PageHandler::NetworkDisable => {
+                self.network_enabled.remove(&tab.id());
+                Ok(json!({}))
+            }
             PageHandler::NetworkGetResponseBody => self.get_response_body(params),
             PageHandler::NetworkSetExtraHttpHeaders => set_extra_http_headers(tab, params).await,
+            PageHandler::NetworkGetCookies => self.network_get_cookies(tab, params).await,
+            PageHandler::NetworkGetAllCookies => self.network_get_all_cookies(tab).await,
+            PageHandler::NetworkSetCookie => self.network_set_cookie(tab, params).await,
+            PageHandler::NetworkSetCookies => self.network_set_cookies(tab, params).await,
+            PageHandler::NetworkDeleteCookies => {
+                let params: params::DeleteCookies = params::parse(params)?;
+                delete_cdp_cookies(&self.browser, tab.user_context(), &params).await?;
+                Ok(json!({}))
+            }
+            PageHandler::NetworkSetBlockedUrls => {
+                let params: params::SetBlockedUrls = params::parse(params)?;
+                self.browser
+                    .network_broker()
+                    .set_blocked_urls(tab.id(), params.urls);
+                Ok(json!({}))
+            }
+            PageHandler::FetchEnable => self.fetch_enable(tab, params),
+            PageHandler::FetchDisable => {
+                self.clear_fetch_intercepts(tab.id());
+                Ok(json!({}))
+            }
+            PageHandler::FetchContinueRequest => self.fetch_continue_request(params),
+            PageHandler::FetchFulfillRequest => self.fetch_fulfill_request(params),
+            PageHandler::FetchFailRequest => self.fetch_fail_request(params),
+            PageHandler::RuntimeCompileScript => self.runtime_compile_script(tab, params).await,
             PageHandler::CreateIsolatedWorld => self.create_isolated_world(params, tab, session),
             PageHandler::SetLifecycleEventsEnabled => {
                 let params: params::SetLifecycleEventsEnabled = params::parse(params)?;
                 self.lifecycle_events = params.enabled;
                 Ok(json!({}))
             }
-            PageHandler::RuntimeEnable => {
-                self.default_contexts.insert(tab.id(), tab.id().get());
-                self.push_session_event(
-                    session,
-                    "Runtime.executionContextCreated",
-                    &json!({"context": {
-                        "id": tab.id().get(),
-                        "origin": "://",
-                        "name": "",
-                        "uniqueId": format!("ctx-{}", tab.id()),
-                        "auxData": {
-                            "isDefault": true,
-                            "type": "default",
-                            "frameId": tab.id().to_string(),
-                        },
-                    }}),
-                );
-                Ok(json!({}))
-            }
+            PageHandler::RuntimeEnable => self.runtime_enable(tab, session).await,
             PageHandler::RuntimeDisable | PageHandler::CssDisable => Ok(json!({})),
             PageHandler::RuntimeAddBinding => add_binding(params, tab).await,
             PageHandler::RuntimeReleaseObject => runtime_release_object(tab, params).await,
             PageHandler::RuntimeReleaseObjectGroup => {
                 runtime_release_object_group(tab, params).await
             }
-            PageHandler::CssEnable => {
-                for mut header in css_stylesheets(tab).await? {
-                    if let Some(object) = header.as_object_mut() {
-                        object.insert("frameId".into(), json!(tab.id().to_string()));
-                    }
-                    self.push_session_event(
-                        session,
-                        "CSS.styleSheetAdded",
-                        &json!({"header": header}),
-                    );
-                }
-                Ok(json!({}))
-            }
-            PageHandler::TracingEnd => {
-                self.push_session_event(
-                    session,
-                    "Tracing.dataCollected",
-                    &json!({"value": [{
-                        "name": "process_name", "ph": "M",
-                        "args": {"name": "tinybrowser"},
-                    }]}),
-                );
-                self.push_session_event(
-                    session,
-                    "Tracing.tracingComplete",
-                    &json!({"dataLossOccurred": false}),
-                );
-                Ok(json!({}))
-            }
+            PageHandler::CssEnable => self.css_enable(tab, session).await,
+            PageHandler::TracingEnd => Ok(self.tracing_end(session)),
             PageHandler::Script(method) => {
                 let world = params
                     .get("executionContextId")
@@ -1340,6 +1376,154 @@ impl Conn {
                 run_script(method, params, tab, world.as_deref()).await
             }
         }
+    }
+
+    fn handle_javascript_dialog(
+        &self,
+        tab: &TabHandle,
+        params: &Value,
+    ) -> Result<Value, DispatchError> {
+        let params: params::HandleJavaScriptDialog = params::parse(params)?;
+        if !self
+            .browser
+            .prompt_broker()
+            .handle_prompt(tab.id(), params.accept, params.prompt_text)
+        {
+            return Err(DispatchError::Failed("No dialog is showing".to_owned()));
+        }
+        Ok(json!({}))
+    }
+
+    async fn network_get_cookies(
+        &self,
+        tab: &TabHandle,
+        params: &Value,
+    ) -> Result<Value, DispatchError> {
+        let params: params::GetCookies = params::parse(params)?;
+        let urls: Vec<String> = match params.urls {
+            Some(list) => list,
+            None => vec![tab.document_url().await.unwrap_or_default()],
+        };
+        let mut seen = HashSet::new();
+        let mut cookies = Vec::new();
+        for raw in urls {
+            let Ok(parsed) = url::Url::parse(&raw) else {
+                continue;
+            };
+            if let Ok(records) = self
+                .browser
+                .cookie_records_in(tab.user_context(), &parsed)
+                .await
+            {
+                for rec in records {
+                    let key = (rec.name.clone(), rec.domain.clone(), rec.path.clone());
+                    if seen.insert(key) {
+                        cookies.push(cdp_cookie_json(&rec));
+                    }
+                }
+            }
+        }
+        Ok(json!({ "cookies": cookies }))
+    }
+
+    async fn network_get_all_cookies(&self, tab: &TabHandle) -> Result<Value, DispatchError> {
+        let records = self
+            .browser
+            .all_cookie_records_in(tab.user_context())
+            .await
+            .map_err(|err| DispatchError::Failed(err.to_string()))?;
+        let cookies: Vec<Value> = records.iter().map(cdp_cookie_json).collect();
+        Ok(json!({ "cookies": cookies }))
+    }
+
+    async fn network_set_cookie(
+        &self,
+        tab: &TabHandle,
+        params: &Value,
+    ) -> Result<Value, DispatchError> {
+        let param: params::CookieParam = params::parse(params)?;
+        let current_url = tab.document_url().await.ok();
+        let success = set_cdp_cookies(
+            &self.browser,
+            tab.user_context(),
+            &[param],
+            current_url.as_deref(),
+        )
+        .await?;
+        Ok(json!({ "success": success }))
+    }
+
+    async fn network_set_cookies(
+        &self,
+        tab: &TabHandle,
+        params: &Value,
+    ) -> Result<Value, DispatchError> {
+        let params: params::SetCookies = params::parse(params)?;
+        let current_url = tab.document_url().await.ok();
+        set_cdp_cookies(
+            &self.browser,
+            tab.user_context(),
+            &params.cookies,
+            current_url.as_deref(),
+        )
+        .await?;
+        Ok(json!({}))
+    }
+
+    async fn runtime_enable(
+        &mut self,
+        tab: &TabHandle,
+        session: Option<&str>,
+    ) -> Result<Value, DispatchError> {
+        self.default_contexts.insert(tab.id(), tab.id().get());
+        let url = tab.document_url().await.unwrap_or_default();
+        self.push_session_event(
+            session,
+            "Runtime.executionContextCreated",
+            &json!({"context": {
+                "id": tab.id().get(),
+                "origin": url_security_origin(&url),
+                "name": "",
+                "uniqueId": format!("ctx-{}", tab.id()),
+                "auxData": {
+                    "isDefault": true,
+                    "type": "default",
+                    "frameId": tab.id().to_string(),
+                },
+            }}),
+        );
+        Ok(json!({}))
+    }
+
+    async fn css_enable(
+        &mut self,
+        tab: &TabHandle,
+        session: Option<&str>,
+    ) -> Result<Value, DispatchError> {
+        for mut header in css_stylesheets(tab).await? {
+            if let Some(object) = header.as_object_mut() {
+                object.insert("frameId".into(), json!(tab.id().to_string()));
+            }
+            self.push_session_event(session, "CSS.styleSheetAdded", &json!({"header": header}));
+        }
+        Ok(json!({}))
+    }
+
+    fn tracing_end(&mut self, session: Option<&str>) -> Value {
+        self.push_session_event(
+            session,
+            "Tracing.dataCollected",
+            &json!({"value": [{
+                "name": "process_name", "ph": "M",
+                "args": {"name": "tinybrowser"},
+            }]}),
+        );
+        self.push_session_event(
+            session,
+            "Tracing.tracingComplete",
+            &json!({"dataLossOccurred": false}),
+        );
+        json!({})
     }
 
     fn create_isolated_world(
@@ -1416,17 +1600,18 @@ impl Conn {
                 Ok(json!({}))
             }
             BrowserHandler::SetAutoAttach => self.set_auto_attach(params, session).await,
+            BrowserHandler::SetDiscoverTargets => self.set_discover_targets(params, session).await,
             BrowserHandler::GetTargets => self.target_list().await,
             BrowserHandler::CreateTarget => self.create_target(params, session).await,
             BrowserHandler::CloseTarget => self.close_target(params, session).await,
             // https://chromedevtools.github.io/devtools-protocol/tot/Target/#method-createBrowserContext
             BrowserHandler::CreateBrowserContext => {
-                let id = self
-                    .contexts
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .create();
-                Ok(json!({ "browserContextId": id }))
+                let uc = self
+                    .browser
+                    .create_user_context()
+                    .await
+                    .map_err(|err| DispatchError::Failed(err.to_string()))?;
+                Ok(json!({ "browserContextId": uc.as_str() }))
             }
             // https://chromedevtools.github.io/devtools-protocol/tot/Target/#method-disposeBrowserContext
             BrowserHandler::DisposeBrowserContext => {
@@ -1434,11 +1619,16 @@ impl Conn {
             }
             // https://chromedevtools.github.io/devtools-protocol/tot/Target/#method-getBrowserContexts
             BrowserHandler::GetBrowserContexts => {
-                let ids = self
-                    .contexts
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .list();
+                let mut ids: Vec<String> = self
+                    .browser
+                    .user_contexts()
+                    .await
+                    .map_err(|err| DispatchError::Failed(err.to_string()))?
+                    .into_iter()
+                    .filter(|uc| !uc.is_default())
+                    .map(|uc| uc.as_str().to_owned())
+                    .collect();
+                ids.sort();
                 Ok(json!({ "browserContextIds": ids }))
             }
             BrowserHandler::AttachToTarget => {
@@ -1476,19 +1666,16 @@ impl Conn {
         session: Option<&str>,
     ) -> Result<Value, DispatchError> {
         let params: params::CreateTarget = params::parse(params)?;
-        if let Some(context_id) = params.browser_context_id.as_deref()
-            && !self
-                .contexts
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .contains(context_id)
-        {
-            return Err(DispatchError::InvalidParams("browserContextId".to_owned()));
-        }
+        let uc = self
+            .resolve_user_context(
+                params.browser_context_id.as_deref(),
+                &UserContextId::default_context(),
+            )
+            .await?;
         let url = params.url.as_str();
         let tab = self
             .browser
-            .create_tab()
+            .create_tab_in(uc)
             .await
             .map_err(|err| DispatchError::Failed(err.to_string()))?;
         let open_result = if url.is_empty() || url == "about:blank" {
@@ -1502,14 +1689,9 @@ impl Conn {
             let _result = self.browser.close_tab(tab.id()).await;
             return Err(error);
         }
-        if let Some(context_id) = params.browser_context_id.as_deref() {
-            self.contexts
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .assign_tab(tab.id(), context_id);
-        }
         if self.auto_attach {
             let session_id = self.mint(Target::Page(tab.clone()));
+            self.auto_attached_tabs.insert(tab.id());
             self.push_attached(session, &session_id, &tab).await;
         }
         Ok(json!({ "targetId": tab.id().to_string() }))
@@ -1521,20 +1703,31 @@ impl Conn {
         session: Option<&str>,
     ) -> Result<Value, DispatchError> {
         let params: params::DisposeBrowserContext = params::parse(params)?;
-        let Some(tabs) = self
-            .contexts
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .dispose(&params.browser_context_id)
-        else {
+        let uc = user_context_from_cdp(&params.browser_context_id);
+        if uc.is_default() {
+            return Err(DispatchError::Failed(
+                "cannot dispose default browser context".to_owned(),
+            ));
+        }
+        let known = self
+            .browser
+            .user_contexts()
+            .await
+            .map_err(|err| DispatchError::Failed(err.to_string()))?;
+        if !known.contains(&uc) {
             return Err(DispatchError::Failed(format!(
                 "unknown browser context: {}",
                 params.browser_context_id
             )));
-        };
+        }
+        let tabs = self.browser.tabs_in(&uc).await.unwrap_or_default();
         for id in tabs {
             let _ = self.close_tab_id(id, session).await;
         }
+        self.browser
+            .remove_user_context(&uc)
+            .await
+            .map_err(|err| DispatchError::Failed(err.to_string()))?;
         Ok(json!({}))
     }
 
@@ -1579,15 +1772,22 @@ impl Conn {
             .close_tab(id)
             .await
             .map_err(|err| DispatchError::Failed(err.to_string()))?;
-        self.contexts
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove_tab(id);
+        self.cleanup_tab_state(id);
+        Ok(())
+    }
+
+    fn cleanup_tab_state(&mut self, id: TabId) {
         self.sessions.retain(|_, session| match session {
             Target::Page(tab) => tab.id() != id,
             Target::Browser => true,
         });
         self.unsubscribe_tab_id(id);
+        self.auto_attached_tabs.remove(&id);
+        self.network_enabled.remove(&id);
+        if self.prompt_tabs.remove(&id) {
+            self.browser.prompt_broker().set_tab_behavior(id, None);
+        }
+        self.clear_fetch_intercepts(id);
         self.loader_ids.remove(&id);
         self.current_loaders.remove(&id);
         self.isolated_worlds.remove(&id);
@@ -1596,7 +1796,6 @@ impl Conn {
         if self.tab.as_ref().is_some_and(|tab| tab.id() == id) {
             self.tab = None;
         }
-        Ok(())
     }
 
     async fn target_list(&self) -> Result<Value, DispatchError> {
@@ -1607,7 +1806,7 @@ impl Conn {
             .await
             .map_err(|error| DispatchError::Failed(error.to_string()))?
         {
-            let context_id = self.context_of(id);
+            let context_id = self.context_of(id).await;
             target_infos.push(target_info(&self.browser, id, &context_id).await);
         }
         Ok(json!({ "targetInfos": target_infos }))
@@ -1684,17 +1883,566 @@ impl Conn {
     }
 
     fn get_response_body(&self, params: &Value) -> Result<Value, DispatchError> {
-        use base64::Engine as _;
         let params: params::GetResponseBody = params::parse(params)?;
-        let Some(bytes) = self.response_bodies.get(&params.request_id) else {
-            return Err(DispatchError::Failed(
-                "No resource with given identifier found".into(),
-            ));
+        if let Some(bytes) = self.response_bodies.get(&params.request_id) {
+            return Ok(json!({
+                "body": BASE64_STANDARD.encode(bytes),
+                "base64Encoded": true,
+            }));
+        }
+        let raw_num = params
+            .request_id
+            .strip_prefix("net-")
+            .unwrap_or(&params.request_id);
+        if let Ok(num) = raw_num.parse::<u64>()
+            && let Some(bytes) = self
+                .browser
+                .network_broker()
+                .response_body(NetworkRequestId::new(num))
+        {
+            return Ok(json!({
+                "body": BASE64_STANDARD.encode(&bytes),
+                "base64Encoded": true,
+            }));
+        }
+        Err(DispatchError::Failed(
+            "No resource with given identifier found".into(),
+        ))
+    }
+
+    fn clear_fetch_intercepts(&mut self, tab_id: TabId) {
+        if let Some(ids) = self.fetch_intercepts.remove(&tab_id) {
+            let broker = self.browser.network_broker();
+            for id in ids {
+                broker.remove_intercept(id);
+            }
+        }
+    }
+
+    fn clear_all_fetch_intercepts(&mut self) {
+        let all: Vec<TabId> = self.fetch_intercepts.keys().copied().collect();
+        for tab_id in all {
+            self.clear_fetch_intercepts(tab_id);
+        }
+        let prompt_tabs: Vec<TabId> = self.prompt_tabs.drain().collect();
+        let prompt_broker = self.browser.prompt_broker();
+        for tab_id in prompt_tabs {
+            prompt_broker.set_tab_behavior(tab_id, None);
+        }
+    }
+
+    // https://chromedevtools.github.io/devtools-protocol/tot/Fetch/#method-enable
+    fn fetch_enable(&mut self, tab: &TabHandle, params: &Value) -> Result<Value, DispatchError> {
+        let params: params::FetchEnable = params::parse(params)?;
+        self.clear_fetch_intercepts(tab.id());
+        let patterns = params.patterns.unwrap_or_default();
+        let broker = self.browser.network_broker();
+        let mut ids = Vec::new();
+        if patterns.is_empty() {
+            let id = broker.add_intercept(
+                vec![InterceptPhase::BeforeRequestSent],
+                Some(vec![tab.id()]),
+                vec![UrlPattern::Wildcard("*".to_owned())],
+            );
+            ids.push(id);
+        } else {
+            for pat in patterns {
+                let phase = match pat.request_stage.as_deref() {
+                    Some("Response") => InterceptPhase::ResponseStarted,
+                    _ => InterceptPhase::BeforeRequestSent,
+                };
+                let url_pat =
+                    UrlPattern::Wildcard(pat.url_pattern.unwrap_or_else(|| "*".to_owned()));
+                let id = broker.add_intercept(vec![phase], Some(vec![tab.id()]), vec![url_pat]);
+                ids.push(id);
+            }
+        }
+        self.fetch_intercepts.insert(tab.id(), ids);
+        Ok(json!({}))
+    }
+
+    fn parse_fetch_request_id(raw: &str) -> Result<NetworkRequestId, DispatchError> {
+        let stripped = raw.strip_prefix("net-").unwrap_or(raw);
+        let num = stripped
+            .parse::<u64>()
+            .map_err(|_| DispatchError::InvalidParams("requestId".to_owned()))?;
+        Ok(NetworkRequestId::new(num))
+    }
+
+    // https://chromedevtools.github.io/devtools-protocol/tot/Fetch/#method-continueRequest
+    fn fetch_continue_request(&self, params: &Value) -> Result<Value, DispatchError> {
+        let params: params::FetchContinueRequest = params::parse(params)?;
+        let req_id = Self::parse_fetch_request_id(&params.request_id)?;
+        let headers = params
+            .headers
+            .map(|list| list.into_iter().map(|h| (h.name, h.value)).collect());
+        let body = params
+            .post_data
+            .map(|b64| {
+                BASE64_STANDARD
+                    .decode(b64)
+                    .map_err(|_| DispatchError::InvalidParams("postData".to_owned()))
+            })
+            .transpose()?;
+        self.browser
+            .network_broker()
+            .resolve_intercept(
+                req_id,
+                InterceptDecision::ContinueRequest {
+                    url: params.url,
+                    method: params.method,
+                    headers,
+                    body,
+                },
+            )
+            .map_err(|_| DispatchError::Failed("Invalid InterceptionId.".to_owned()))?;
+        Ok(json!({}))
+    }
+
+    // https://chromedevtools.github.io/devtools-protocol/tot/Fetch/#method-fulfillRequest
+    fn fetch_fulfill_request(&self, params: &Value) -> Result<Value, DispatchError> {
+        let params: params::FetchFulfillRequest = params::parse(params)?;
+        let req_id = Self::parse_fetch_request_id(&params.request_id)?;
+        let headers = params
+            .response_headers
+            .unwrap_or_default()
+            .into_iter()
+            .map(|h| (h.name, h.value))
+            .collect();
+        let body = match params.body {
+            Some(b64) => BASE64_STANDARD
+                .decode(b64)
+                .map_err(|_| DispatchError::InvalidParams("body".to_owned()))?,
+            None => Vec::new(),
         };
-        Ok(json!({
-            "body": base64::engine::general_purpose::STANDARD.encode(bytes),
-            "base64Encoded": true,
-        }))
+        let reason_phrase = params.response_phrase.unwrap_or_else(|| "OK".to_owned());
+        self.browser
+            .network_broker()
+            .resolve_intercept(
+                req_id,
+                InterceptDecision::ProvideResponse {
+                    status: params.response_code,
+                    reason_phrase,
+                    headers,
+                    body,
+                },
+            )
+            .map_err(|_| DispatchError::Failed("Invalid InterceptionId.".to_owned()))?;
+        Ok(json!({}))
+    }
+
+    // https://chromedevtools.github.io/devtools-protocol/tot/Fetch/#method-failRequest
+    fn fetch_fail_request(&self, params: &Value) -> Result<Value, DispatchError> {
+        let params: params::FetchFailRequest = params::parse(params)?;
+        let req_id = Self::parse_fetch_request_id(&params.request_id)?;
+        self.browser
+            .network_broker()
+            .resolve_intercept(req_id, InterceptDecision::FailRequest)
+            .map_err(|_| DispatchError::Failed("Invalid InterceptionId.".to_owned()))?;
+        Ok(json!({}))
+    }
+
+    // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-compileScript
+    async fn runtime_compile_script(
+        &mut self,
+        tab: &TabHandle,
+        params: &Value,
+    ) -> Result<Value, DispatchError> {
+        let params: params::CompileScript = params::parse(params)?;
+        let _ = params.execution_context_id;
+        let check = format!(
+            "(() => {{ try {{ new Function({}); return ''; }} catch (e) {{ return String(e && e.message ? e.message : e); }} }})()",
+            json_string(&params.expression)
+        );
+        match tab.execute_browser_script(&check).await {
+            Ok(RemoteValue::String(err)) if !err.is_empty() => Ok(json!({
+                "exceptionDetails": {
+                    "exceptionId": 1,
+                    "text": err,
+                    "lineNumber": 0,
+                    "columnNumber": 0,
+                }
+            })),
+            Ok(_) => {
+                if params.persist_script.unwrap_or(false) {
+                    self.next_script = self.next_script.saturating_add(1);
+                    let id = format!("script-{}", self.next_script);
+                    self.compiled_scripts.insert(id.clone(), params.expression);
+                    Ok(json!({ "scriptId": id }))
+                } else {
+                    Ok(json!({}))
+                }
+            }
+            Err(err) => Ok(json!({
+                "exceptionDetails": {
+                    "exceptionId": 1,
+                    "text": err.to_string(),
+                    "lineNumber": 0,
+                    "columnNumber": 0,
+                }
+            })),
+        }
+    }
+
+    async fn handle_lifecycle_event(&mut self, event: BrowserLifecycleEvent) -> Vec<Value> {
+        let mut messages = Vec::new();
+        match event {
+            BrowserLifecycleEvent::TabCreated {
+                tab, user_context, ..
+            } => {
+                let context_id = cdp_context_id(&user_context);
+                if self.discover_targets {
+                    let info = target_info(&self.browser, tab, &context_id).await;
+                    push_event(
+                        &mut messages,
+                        "Target.targetCreated",
+                        &json!({ "targetInfo": info }),
+                        self.auto_attach_session.as_deref(),
+                    );
+                }
+                if self.auto_attach
+                    && !self.auto_attached_tabs.contains(&tab)
+                    && let Ok(handle) = self.browser.tab(tab).await
+                {
+                    let session_id = self.mint(Target::Page(handle.clone()));
+                    self.auto_attached_tabs.insert(tab);
+                    let mut info = target_info(&self.browser, tab, &context_id).await;
+                    if let Some(obj) = info.as_object_mut() {
+                        obj.insert("attached".into(), json!(true));
+                    }
+                    push_event(
+                        &mut messages,
+                        "Target.attachedToTarget",
+                        &json!({
+                            "sessionId": session_id,
+                            "targetInfo": info,
+                            "waitingForDebugger": false,
+                        }),
+                        self.auto_attach_session.as_deref(),
+                    );
+                }
+            }
+            BrowserLifecycleEvent::TabClosed { tab, .. } => {
+                if self.auto_attach {
+                    let detached: Vec<String> = self
+                        .sessions
+                        .iter()
+                        .filter(|(_, target)| matches!(target, Target::Page(t) if t.id() == tab))
+                        .map(|(sid, _)| sid.clone())
+                        .collect();
+                    for session_id in detached {
+                        push_event(
+                            &mut messages,
+                            "Target.detachedFromTarget",
+                            &json!({
+                                "sessionId": session_id,
+                                "targetId": tab.to_string(),
+                            }),
+                            self.auto_attach_session.as_deref(),
+                        );
+                    }
+                }
+                if self.discover_targets {
+                    push_event(
+                        &mut messages,
+                        "Target.targetDestroyed",
+                        &json!({ "targetId": tab.to_string() }),
+                        self.auto_attach_session.as_deref(),
+                    );
+                }
+                self.cleanup_tab_state(tab);
+            }
+        }
+        messages
+    }
+
+    fn handle_network_event(&self, event: NetworkEvent) -> Vec<Value> {
+        let mut messages = Vec::new();
+        let timestamp = self.clock_origin.elapsed().as_secs_f64();
+        match event {
+            NetworkEvent::BeforeRequestSent { .. } => {
+                self.push_before_request_sent(&mut messages, event, timestamp);
+            }
+            NetworkEvent::ResponseStarted { .. } => {
+                self.push_response_started(&mut messages, event);
+            }
+            NetworkEvent::ResponseCompleted { .. } => {
+                self.push_response_completed(&mut messages, event, timestamp);
+            }
+            NetworkEvent::FetchError {
+                request_id,
+                tab,
+                is_navigation,
+                error_text,
+                ..
+            } => {
+                if let Some(tab_id) = tab
+                    && !is_navigation
+                    && self.network_enabled.contains(&tab_id)
+                {
+                    let failed = json!({
+                        "requestId": format!("net-{request_id}"),
+                        "timestamp": timestamp,
+                        "type": "Other",
+                        "errorText": error_text,
+                    });
+                    for sess in self.sessions_for_tab(tab_id) {
+                        push_event(
+                            &mut messages,
+                            "Network.loadingFailed",
+                            &failed,
+                            sess.as_deref(),
+                        );
+                    }
+                }
+            }
+        }
+        messages
+    }
+
+    fn push_before_request_sent(
+        &self,
+        messages: &mut Vec<Value>,
+        event: NetworkEvent,
+        timestamp: f64,
+    ) {
+        let NetworkEvent::BeforeRequestSent {
+            request_id,
+            tab: Some(tab_id),
+            frame,
+            is_navigation,
+            url,
+            method,
+            headers,
+            resource_type,
+            is_blocked,
+            intercepts,
+            ..
+        } = event
+        else {
+            return;
+        };
+        let net_id = format!("net-{request_id}");
+        let frame_id = cdp_frame_id(tab_id, frame);
+        let header_map: serde_json::Map<String, Value> = headers
+            .into_iter()
+            .map(|(k, v)| (k, Value::String(v)))
+            .collect();
+        let owned_fetch = is_blocked
+            && self
+                .fetch_intercepts
+                .get(&tab_id)
+                .is_some_and(|mine| intercepts.iter().any(|id| mine.contains(id)));
+        let sessions = self.sessions_for_tab(tab_id);
+        if owned_fetch {
+            let params = json!({
+                "requestId": net_id,
+                "request": {
+                    "url": url,
+                    "method": method,
+                    "headers": Value::Object(header_map.clone()),
+                },
+                "frameId": frame_id,
+                "resourceType": resource_type,
+            });
+            for sess in &sessions {
+                push_event(messages, "Fetch.requestPaused", &params, sess.as_deref());
+            }
+        }
+        if !is_navigation && self.network_enabled.contains(&tab_id) {
+            let params = json!({
+                "requestId": net_id,
+                "loaderId": self.current_loader(tab_id),
+                "documentURL": url,
+                "request": {
+                    "url": url,
+                    "method": method,
+                    "headers": Value::Object(header_map),
+                },
+                "timestamp": timestamp,
+                "type": resource_type,
+                "frameId": frame_id,
+                "initiator": {"type": "other"},
+            });
+            for sess in &sessions {
+                push_event(
+                    messages,
+                    "Network.requestWillBeSent",
+                    &params,
+                    sess.as_deref(),
+                );
+            }
+        }
+    }
+
+    fn push_response_started(&self, messages: &mut Vec<Value>, event: NetworkEvent) {
+        let NetworkEvent::ResponseStarted {
+            request_id,
+            tab: Some(tab_id),
+            frame,
+            url,
+            status,
+            status_text,
+            headers,
+            is_blocked,
+            intercepts,
+            ..
+        } = event
+        else {
+            return;
+        };
+        let owned_fetch = is_blocked
+            && self
+                .fetch_intercepts
+                .get(&tab_id)
+                .is_some_and(|mine| intercepts.iter().any(|id| mine.contains(id)));
+        if !owned_fetch {
+            return;
+        }
+        let resp_headers: Vec<Value> = headers
+            .into_iter()
+            .map(|(name, value)| json!({"name": name, "value": value}))
+            .collect();
+        let params = json!({
+            "requestId": format!("net-{request_id}"),
+            "request": {
+                "url": url,
+                "method": "GET",
+                "headers": {},
+            },
+            "frameId": cdp_frame_id(tab_id, frame),
+            "resourceType": "Other",
+            "responseStatusCode": status,
+            "responseStatusText": status_text,
+            "responseHeaders": resp_headers,
+        });
+        for sess in self.sessions_for_tab(tab_id) {
+            push_event(messages, "Fetch.requestPaused", &params, sess.as_deref());
+        }
+    }
+
+    fn push_response_completed(
+        &self,
+        messages: &mut Vec<Value>,
+        event: NetworkEvent,
+        timestamp: f64,
+    ) {
+        let NetworkEvent::ResponseCompleted {
+            request_id,
+            tab: Some(tab_id),
+            frame,
+            is_navigation,
+            url,
+            status,
+            status_text,
+            headers,
+            mime_type,
+            from_cache,
+            encoded_data_length,
+            ..
+        } = event
+        else {
+            return;
+        };
+        if is_navigation || !self.network_enabled.contains(&tab_id) {
+            return;
+        }
+        let net_id = format!("net-{request_id}");
+        let header_map: serde_json::Map<String, Value> = headers
+            .into_iter()
+            .map(|(k, v)| (k, Value::String(v)))
+            .collect();
+        let received = json!({
+            "requestId": net_id,
+            "loaderId": self.current_loader(tab_id),
+            "frameId": cdp_frame_id(tab_id, frame),
+            "timestamp": timestamp,
+            "type": "Other",
+            "response": {
+                "url": url,
+                "status": status,
+                "statusText": status_text,
+                "headers": Value::Object(header_map),
+                "mimeType": mime_type,
+                "connectionReused": false,
+                "connectionId": 0,
+                "fromDiskCache": from_cache,
+                "fromPrefetchCache": false,
+                "encodedDataLength": encoded_data_length,
+            },
+        });
+        let finished = json!({
+            "requestId": net_id,
+            "timestamp": timestamp,
+            "encodedDataLength": encoded_data_length,
+        });
+        for sess in self.sessions_for_tab(tab_id) {
+            push_event(
+                messages,
+                "Network.responseReceived",
+                &received,
+                sess.as_deref(),
+            );
+            push_event(
+                messages,
+                "Network.loadingFinished",
+                &finished,
+                sess.as_deref(),
+            );
+        }
+    }
+
+    async fn handle_prompt_event(&self, event: PromptEvent) -> Vec<Value> {
+        let mut messages = Vec::new();
+        match event {
+            PromptEvent::Opened { info, .. } => {
+                if !self.prompt_tabs.contains(&info.tab) {
+                    return messages;
+                }
+                let url = match self.browser.tab(info.tab).await {
+                    Ok(tab) => tab.document_url().await.unwrap_or_default(),
+                    Err(_) => String::new(),
+                };
+                let params = json!({
+                    "url": url,
+                    "message": info.message,
+                    "type": info.kind.as_str(),
+                    "hasBrowserHandler": true,
+                    "defaultPrompt": info.default_value.unwrap_or_default(),
+                });
+                for sess in self.sessions_for_tab(info.tab) {
+                    push_event(
+                        &mut messages,
+                        "Page.javascriptDialogOpening",
+                        &params,
+                        sess.as_deref(),
+                    );
+                }
+            }
+            PromptEvent::Closed {
+                tab,
+                accepted,
+                user_text,
+                ..
+            } => {
+                if !self.prompt_tabs.contains(&tab) {
+                    return messages;
+                }
+                let params = json!({
+                    "result": accepted,
+                    "userInput": user_text.unwrap_or_default(),
+                });
+                for sess in self.sessions_for_tab(tab) {
+                    push_event(
+                        &mut messages,
+                        "Page.javascriptDialogClosed",
+                        &params,
+                        sess.as_deref(),
+                    );
+                }
+            }
+        }
+        messages
     }
 
     fn push_session_event(&mut self, session: Option<&str>, method: &str, params: &Value) {
@@ -2046,16 +2794,103 @@ async fn next_tab_event(receiver: &mut Option<mpsc::Receiver<TabEvent>>) -> Opti
     }
 }
 
-async fn run_socket(
-    mut socket: WebSocketStream<TokioIo<Upgraded>>,
+fn target_user_context(target: &Target) -> UserContextId {
+    match target {
+        Target::Page(tab) => tab.user_context().clone(),
+        Target::Browser => UserContextId::default_context(),
+    }
+}
+
+fn push_frame_attached(
+    messages: &mut Vec<Value>,
+    tab_id: TabId,
+    frame: FrameId,
+    parent: FrameId,
+    sess: Option<&str>,
+) {
+    push_event(
+        messages,
+        "Page.frameAttached",
+        &json!({
+            "frameId": cdp_frame_id(tab_id, frame),
+            "parentFrameId": cdp_frame_id(tab_id, parent),
+        }),
+        sess,
+    );
+}
+
+fn push_frame_navigated(
+    messages: &mut Vec<Value>,
+    tab_id: TabId,
+    frame: FrameId,
+    url: &str,
+    sess: Option<&str>,
+) {
+    push_event(
+        messages,
+        "Page.frameNavigated",
+        &json!({
+            "frame": {
+                "id": cdp_frame_id(tab_id, frame),
+                "parentId": tab_id.to_string(),
+                "loaderId": "",
+                "url": url,
+                "securityOrigin": url_security_origin(url),
+                "mimeType": "text/html",
+            }
+        }),
+        sess,
+    );
+}
+
+fn push_frame_detached(
+    messages: &mut Vec<Value>,
+    tab_id: TabId,
+    frame: FrameId,
+    sess: Option<&str>,
+) {
+    push_event(
+        messages,
+        "Page.frameDetached",
+        &json!({
+            "frameId": cdp_frame_id(tab_id, frame),
+            "reason": "remove",
+        }),
+        sess,
+    );
+}
+
+async fn set_document_content(tab: &TabHandle, params: &Value) -> Result<Value, DispatchError> {
+    let params: params::SetDocumentContent = params::parse(params)?;
+    let frame = requested_frame(tab, Some(params.frame_id.as_str()))?;
+    if frame == FrameId::MAIN {
+        tab.load_html(&params.html)
+            .await
+            .map_err(|err| DispatchError::Failed(err.to_string()))?;
+    } else {
+        let script = format!(
+            "(() => {{ document.open(); document.write({}); document.close(); }})()",
+            json_string(&params.html)
+        );
+        tab.execute_script(ExecuteScriptOptions {
+            frame,
+            source: browser::ScriptSource::Browser(&script),
+            timeout: None,
+        })
+        .await
+        .map_err(|err| DispatchError::Failed(err.to_string()))?;
+    }
+    Ok(json!({}))
+}
+
+fn new_conn(
     state: AppState,
     tab: Option<TabHandle>,
-) {
+    deferred_tx: mpsc::UnboundedSender<Value>,
+) -> Conn {
     let (tab_events_tx, tab_events_rx) = mpsc::channel(256);
-    let (deferred_tx, mut deferred_rx) = mpsc::unbounded_channel();
-    let mut conn = Conn {
+    Conn {
         browser: state.browser,
-        contexts: state.contexts,
         sessions: HashMap::new(),
         next_session: 1,
         tab,
@@ -2066,6 +2901,14 @@ async fn run_socket(
         deferred_tx: Some(deferred_tx),
         clock_origin: Instant::now(),
         auto_attach: false,
+        auto_attach_session: None,
+        auto_attached_tabs: HashSet::new(),
+        discover_targets: false,
+        network_enabled: HashSet::new(),
+        prompt_tabs: HashSet::new(),
+        fetch_intercepts: HashMap::new(),
+        compiled_scripts: HashMap::new(),
+        next_script: 1,
         events: Vec::new(),
         loader_ids: HashMap::new(),
         current_loaders: HashMap::new(),
@@ -2079,16 +2922,45 @@ async fn run_socket(
         next_loader: 1,
         next_context: 1000,
         next_evaluation: 1,
-    };
+    }
+}
+
+async fn run_socket(mut socket: WebSocket, state: AppState, tab: Option<TabHandle>) {
+    let (deferred_tx, mut deferred_rx) = mpsc::unbounded_channel();
+    let mut lifecycle_rx = state.browser.subscribe();
+    let mut network_rx = state.browser.network_broker().subscribe();
+    let mut prompt_rx = state.browser.prompt_broker().subscribe();
+    let mut conn = new_conn(state, tab, deferred_tx);
     loop {
         let wake = tokio::select! {
             event = conn.tab_events_rx.recv() => SocketWake::Event(event),
+            lifecycle = lifecycle_rx.recv() => SocketWake::Lifecycle(lifecycle),
+            net = network_rx.recv() => SocketWake::Network(net),
+            prompt = prompt_rx.recv() => SocketWake::Prompt(prompt),
             reply = deferred_rx.recv() => SocketWake::Deferred(reply),
             incoming = socket.next() => SocketWake::Incoming(incoming),
         };
         match wake {
             SocketWake::Event(Some(event)) => {
                 let messages = conn.event_messages(event).await;
+                if send_messages(&mut socket, messages).await.is_err() {
+                    break;
+                }
+            }
+            SocketWake::Lifecycle(Ok(event)) => {
+                let messages = conn.handle_lifecycle_event(event).await;
+                if send_messages(&mut socket, messages).await.is_err() {
+                    break;
+                }
+            }
+            SocketWake::Network(Ok(event)) => {
+                let messages = conn.handle_network_event(event);
+                if send_messages(&mut socket, messages).await.is_err() {
+                    break;
+                }
+            }
+            SocketWake::Prompt(Ok(event)) => {
+                let messages = conn.handle_prompt_event(event).await;
                 if send_messages(&mut socket, messages).await.is_err() {
                     break;
                 }
@@ -2126,9 +2998,14 @@ async fn run_socket(
             SocketWake::Incoming(Some(Ok(WsMessage::Ping(payload)))) => {
                 let _result = socket.send(WsMessage::Pong(payload)).await;
             }
-            SocketWake::Deferred(None) | SocketWake::Incoming(Some(Ok(_))) => {}
+            SocketWake::Lifecycle(Err(_))
+            | SocketWake::Network(Err(_))
+            | SocketWake::Prompt(Err(_))
+            | SocketWake::Deferred(None)
+            | SocketWake::Incoming(Some(Ok(_))) => {}
         }
     }
+    conn.clear_all_fetch_intercepts();
     conn.stop_subscriptions();
     let _result = socket.send(WsMessage::Close(None)).await;
 }
@@ -2143,8 +3020,11 @@ struct NavigationResponse {
 
 enum SocketWake {
     Event(Option<ConnEvent>),
+    Lifecycle(Result<BrowserLifecycleEvent, broadcast::error::RecvError>),
+    Network(Result<NetworkEvent, broadcast::error::RecvError>),
+    Prompt(Result<PromptEvent, broadcast::error::RecvError>),
     Deferred(Option<Value>),
-    Incoming(Option<Result<WsMessage, tungstenite::Error>>),
+    Incoming(Option<Result<WsMessage, WsError>>),
 }
 
 fn push_event(messages: &mut Vec<Value>, method: &str, params: &Value, session: Option<&str>) {
@@ -2161,10 +3041,7 @@ fn format_runtime_result(parsed: &Value, return_by_value: bool) -> Value {
     }
 }
 
-async fn send_messages(
-    socket: &mut WebSocketStream<TokioIo<Upgraded>>,
-    messages: Vec<Value>,
-) -> Result<(), tungstenite::Error> {
+async fn send_messages(socket: &mut WebSocket, messages: Vec<Value>) -> Result<(), WsError> {
     for message in messages {
         socket.send(WsMessage::text(message.to_string())).await?;
     }
@@ -2199,7 +3076,6 @@ mod tests {
         let (tab_events_tx, tab_events_rx) = mpsc::channel(8);
         Conn {
             browser: browser.handle().clone(),
-            contexts: Arc::new(Mutex::new(BrowserContexts::default())),
             sessions: HashMap::new(),
             next_session: 1,
             tab: None,
@@ -2210,6 +3086,14 @@ mod tests {
             deferred_tx: None,
             clock_origin: Instant::now(),
             auto_attach: false,
+            auto_attach_session: None,
+            auto_attached_tabs: HashSet::new(),
+            discover_targets: false,
+            network_enabled: HashSet::new(),
+            prompt_tabs: HashSet::new(),
+            fetch_intercepts: HashMap::new(),
+            compiled_scripts: HashMap::new(),
+            next_script: 1,
             events: Vec::new(),
             loader_ids: HashMap::new(),
             current_loaders: HashMap::new(),

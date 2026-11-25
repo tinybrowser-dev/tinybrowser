@@ -9,8 +9,8 @@ use tokio::sync::{Semaphore, mpsc};
 use crate::actor::TabId;
 use crate::assignment::{Assignment, AssignmentRegistry};
 use crate::browser::TabRegistry;
-use crate::context::PartitionServices;
-use crate::link::{RendererHandle, RendererServices, spawn_process};
+use crate::context::{PartitionServices, UserContextId};
+use crate::link::{RendererHandle, RendererLock, RendererServices, spawn_process};
 use crate::network::TabNetworkHandle;
 use crate::site::Site;
 use crate::storage::SessionStorage;
@@ -24,7 +24,6 @@ pub(crate) struct RendererProcessManager {
 
 struct ManagerInner {
     identity: net::ValidIdentity,
-    partition: PartitionServices,
     sessions: Arc<SessionStorage>,
     browser: crate::browser::BrowserHandle,
     tabs: TabRegistry,
@@ -37,13 +36,12 @@ struct ManagerInner {
 #[derive(Default)]
 struct ManagerState {
     spare: Option<Arc<RendererHandle>>,
-    sites: HashMap<Site, Vec<Weak<RendererHandle>>>,
+    sites: HashMap<RendererLock, Vec<Weak<RendererHandle>>>,
     spawning_spare: bool,
 }
 
 impl RendererProcessManager {
     pub(crate) fn new(
-        partition: PartitionServices,
         sessions: Arc<SessionStorage>,
         browser: crate::browser::BrowserHandle,
         tabs: TabRegistry,
@@ -52,7 +50,6 @@ impl RendererProcessManager {
         let (releases, release_rx) = mpsc::unbounded_channel();
         let inner = Arc::new(ManagerInner {
             identity,
-            partition,
             sessions,
             browser,
             tabs,
@@ -69,13 +66,21 @@ impl RendererProcessManager {
     pub(crate) async fn acquire(
         &self,
         tab: TabId,
+        user_context: UserContextId,
         site: Site,
         network: TabNetworkHandle,
+        partition: PartitionServices,
     ) -> io::Result<Arc<Assignment>> {
         let mut last_error = None;
         for _ in 0..2 {
             let (process, assignment) = self
-                .acquire_reserved(tab, site.clone(), network.clone())
+                .acquire_reserved(
+                    tab,
+                    user_context.clone(),
+                    site.clone(),
+                    network.clone(),
+                    partition.clone(),
+                )
                 .await?;
             match process.assign_notify(assignment.id()).await {
                 Ok(()) => {
@@ -95,21 +100,29 @@ impl RendererProcessManager {
     async fn acquire_reserved(
         &self,
         tab: TabId,
+        user_context: UserContextId,
         site: Site,
         network: TabNetworkHandle,
+        partition: PartitionServices,
     ) -> io::Result<(Arc<RendererHandle>, Arc<Assignment>)> {
+        let lock = RendererLock {
+            user_context: user_context.clone(),
+            site: site.clone(),
+        };
         let mut state = self.inner.state.lock().await;
         let spare = state
             .spare
             .take()
             .filter(|spare| spare.alive.load(Ordering::Relaxed));
         let process = if let Some(spare) = spare {
-            spare.bind(&site)?;
+            spare.bind(&lock, &partition, &self.inner.registry, &self.inner.tabs)?;
             spare
-        } else if let Some(process) = spawn_slot(&self.inner, Some(site.clone())).await? {
+        } else if let Some(process) =
+            spawn_slot(&self.inner, Some((lock.clone(), partition.clone()))).await?
+        {
             process
         } else {
-            let candidates = state.sites.entry(site.clone()).or_default();
+            let candidates = state.sites.entry(lock.clone()).or_default();
             candidates.retain(|candidate| {
                 candidate
                     .upgrade()
@@ -120,7 +133,7 @@ impl RendererProcessManager {
                 .find_map(Weak::upgrade)
                 .ok_or_else(|| io::Error::other("renderer process budget exhausted"))?
         };
-        let processes = state.sites.entry(site.clone()).or_default();
+        let processes = state.sites.entry(lock).or_default();
         if !processes.iter().any(|candidate| {
             candidate
                 .upgrade()
@@ -128,10 +141,10 @@ impl RendererProcessManager {
         }) {
             processes.push(Arc::downgrade(&process));
         }
-        let assignment = self
-            .inner
-            .registry
-            .reserve(Arc::clone(&process), tab, site, network);
+        let assignment =
+            self.inner
+                .registry
+                .reserve(Arc::clone(&process), tab, site, network, partition);
         Ok((process, assignment))
     }
 }
@@ -144,8 +157,8 @@ async fn release_loop(
         let Some(inner) = inner.upgrade() else {
             return;
         };
-        let site = process
-            .site
+        let lock = process
+            .lock
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
@@ -153,8 +166,8 @@ async fn release_loop(
         {
             let mut state = inner.state.lock().await;
             if process.assignments.load(Ordering::Relaxed) == 0 {
-                if let Some(site) = &site
-                    && let Some(processes) = state.sites.get_mut(site)
+                if let Some(lock) = &lock
+                    && let Some(processes) = state.sites.get_mut(lock)
                 {
                     processes.retain(|candidate| {
                         candidate
@@ -162,7 +175,7 @@ async fn release_loop(
                             .is_some_and(|candidate| !Arc::ptr_eq(&candidate, &process))
                     });
                     if processes.is_empty() {
-                        state.sites.remove(site);
+                        state.sites.remove(lock);
                     }
                 }
                 shutdown = true;
@@ -201,7 +214,7 @@ fn fill_spare(inner: &Arc<ManagerInner>) {
 
 async fn spawn_slot(
     inner: &Arc<ManagerInner>,
-    site: Option<Site>,
+    bound: Option<(RendererLock, PartitionServices)>,
 ) -> io::Result<Option<Arc<RendererHandle>>> {
     let Ok(slot) = Arc::clone(&inner.slots).try_acquire_owned() else {
         return Ok(None);
@@ -210,10 +223,9 @@ async fn spawn_slot(
     Ok(Some(Arc::new(
         spawn_process(
             id,
-            site,
+            bound,
             RendererServices {
                 identity: inner.identity.clone(),
-                partition: inner.partition.clone(),
                 sessions: Arc::clone(&inner.sessions),
                 browser: inner.browser.clone(),
                 registry: Arc::clone(&inner.registry),

@@ -15,10 +15,6 @@
     "expected": "FAIL",
     "reason": "Error: expect(locator).toHaveText(expected) failed"
   },
-  "locator-query.spec.ts::should enforce same frame for has/leftOf/rightOf/above/below/near": {
-    "expected": "FAIL",
-    "reason": "Error: expect(received).toContain(expected) // indexOf"
-  },
   "locator-query.spec.ts::should keep the capture when removing a common frame prefix": {
     "expected": "FAIL",
     "reason": "Error: expect(locator).toHaveAttribute(expected) failed"
@@ -42,10 +38,6 @@
   "page-basic.spec.ts::page.frame should respect name": {
     "expected": "FAIL",
     "reason": "Error: expect(received).toBeTruthy()"
-  },
-  "page-basic.spec.ts::page.frame should respect url": {
-    "expected": "FAIL",
-    "reason": "TypeError: Cannot read properties of null (reading 'url')"
   },
   "page-basic.spec.ts::page.url should include hashes": {
     "expected": "FAIL",
@@ -175,10 +167,6 @@
     "expected": "FAIL",
     "reason": "Error: expect(received).toContain(expected) // indexOf"
   },
-  "page-evaluate.spec.ts::should throw when frame is detached": {
-    "expected": "FAIL",
-    "reason": "TypeError: Cannot read properties of undefined (reading 'evaluate')"
-  },
   "page-evaluate.spec.ts::should transfer 100Mb of data from page to node.js": {
     "expected": "FAIL",
     "reason": "Error: page.evaluate: script: Job raised an exception"
@@ -235,10 +223,6 @@
     "expected": "FAIL",
     "reason": "Test timeout of 3000ms exceeded."
   },
-  "page-goto.spec.ts::should wait for load when iframe attaches and detaches": {
-    "expected": "FAIL",
-    "reason": "TimeoutError: page.waitForEvent: Timeout 1500ms exceeded while waiting for event \"framedetached\""
-  },
   "page-goto.spec.ts::should work with Cross-Origin-Opener-Policy after redirect": {
     "expected": "FAIL",
     "reason": "Error: expect(received).toEqual(expected) // deep equality"
@@ -280,10 +264,6 @@
     "reason": "Test timeout of 3000ms exceeded."
   },
   "page-history.spec.ts::page.reload during renderer-initiated navigation": {
-    "expected": "FAIL",
-    "reason": "Test timeout of 3000ms exceeded."
-  },
-  "page-history.spec.ts::regression test for issue 20791": {
     "expected": "FAIL",
     "reason": "Test timeout of 3000ms exceeded."
   },

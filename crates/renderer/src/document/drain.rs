@@ -359,19 +359,7 @@ impl Document {
                 url,
                 state,
                 handling,
-            } => {
-                self.apply_document_url_same_origin(&url);
-                self.history_updates.push(crate::document::HistoryUpdate {
-                    url: url.clone(),
-                    state: state.clone(),
-                    handling,
-                });
-                self.record_event(RendererEvent::Browser(BrowserEvent::HistoryUpdated {
-                    url,
-                    state,
-                    handling,
-                }));
-            }
+            } => self.apply_history_push(url, state, handling),
             RealmRequest::FragmentNavigation {
                 old_url,
                 url,
@@ -415,6 +403,20 @@ impl Document {
                     args,
                 }));
             }
+            RealmRequest::ExceptionThrown {
+                text,
+                filename,
+                line,
+                column,
+            } => {
+                // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#event-exceptionThrown
+                self.record_event(RendererEvent::Browser(BrowserEvent::ExceptionThrown {
+                    text,
+                    filename,
+                    line,
+                    column,
+                }));
+            }
             RealmRequest::DocumentStream(command) => {
                 let closed = matches!(command, crate::js::DocumentStreamCommand::Close);
                 self.apply_document_stream(command);
@@ -422,6 +424,25 @@ impl Document {
             }
             RealmRequest::RejectionTasks => self.tasks.push_back(Task::RejectionTasks),
         }
+    }
+
+    fn apply_history_push(
+        &mut self,
+        url: String,
+        state: String,
+        handling: crate::protocol::HistoryHandling,
+    ) {
+        self.apply_document_url_same_origin(&url);
+        self.history_updates.push(crate::document::HistoryUpdate {
+            url: url.clone(),
+            state: state.clone(),
+            handling,
+        });
+        self.record_event(RendererEvent::Browser(BrowserEvent::HistoryUpdated {
+            url,
+            state,
+            handling,
+        }));
     }
 
     fn apply_fragment_navigation(
