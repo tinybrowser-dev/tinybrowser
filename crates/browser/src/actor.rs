@@ -98,6 +98,8 @@ pub enum TabEvent {
     // https://chromedevtools.github.io/devtools-protocol/tot/Page/#event-frameDetached
     FrameDetached {
         frame: FrameId,
+        parent: FrameId,
+        url: String,
     },
     // https://w3c.github.io/webdriver-bidi/#event-browsingContext-domContentLoaded
     FrameDomContentLoaded {
@@ -213,6 +215,13 @@ enum Command {
         timeout: Duration,
         reply: ReplySender<bool>,
     },
+    Inspect(InspectionCommand),
+    Shutdown {
+        reply: ReplySender<()>,
+    },
+}
+
+enum InspectionCommand {
     DocumentUrl {
         frame: FrameId,
         reply: ReplySender<String>,
@@ -234,7 +243,7 @@ enum Command {
         reply: ReplySender<Option<TabId>>,
     },
     WindowName {
-        reply: ReplySender<Option<String>>,
+        reply: ReplySender<Option<renderer::ContextName>>,
     },
     History {
         reply: ReplySender<HistorySnapshot>,
@@ -245,9 +254,6 @@ enum Command {
     },
     LastNavigationFailed {
         reply: ReplySender<bool>,
-    },
-    Shutdown {
-        reply: ReplySender<()>,
     },
 }
 
@@ -534,7 +540,7 @@ impl TabHandle {
     }
 
     pub async fn document_url_in(&self, frame: FrameId) -> Result<String, TabError> {
-        self.ask(|reply| Command::DocumentUrl { frame, reply })
+        self.ask(|reply| Command::Inspect(InspectionCommand::DocumentUrl { frame, reply }))
             .await
     }
 
@@ -543,46 +549,56 @@ impl TabHandle {
     }
 
     pub async fn document_title_in(&self, frame: FrameId) -> Result<String, TabError> {
-        self.ask(|reply| Command::DocumentTitle { frame, reply })
+        self.ask(|reply| Command::Inspect(InspectionCommand::DocumentTitle { frame, reply }))
             .await
     }
 
     pub async fn frames(&self) -> Result<Vec<FrameInfo>, TabError> {
-        self.ask(|reply| Command::Frames { reply }).await
+        self.ask(|reply| Command::Inspect(InspectionCommand::Frames { reply }))
+            .await
     }
 
     pub async fn reload(&self) -> Result<(), TabError> {
-        self.ask(|reply| Command::Reload { reply }).await
+        self.ask(|reply| Command::Inspect(InspectionCommand::Reload { reply }))
+            .await
     }
 
     pub async fn stop_loading(&self) -> Result<(), TabError> {
-        self.ask(|reply| Command::StopLoading { reply }).await
+        self.ask(|reply| Command::Inspect(InspectionCommand::StopLoading { reply }))
+            .await
     }
 
     pub async fn opener(&self) -> Result<Option<TabId>, TabError> {
-        self.ask(|reply| Command::Opener { reply }).await
+        self.ask(|reply| Command::Inspect(InspectionCommand::Opener { reply }))
+            .await
     }
 
-    pub async fn window_name(&self) -> Result<Option<String>, TabError> {
-        self.ask(|reply| Command::WindowName { reply }).await
+    pub async fn window_name(&self) -> Result<Option<renderer::ContextName>, TabError> {
+        self.ask(|reply| Command::Inspect(InspectionCommand::WindowName { reply }))
+            .await
     }
 
     pub async fn history(&self) -> Result<HistorySnapshot, TabError> {
-        self.ask(|reply| Command::History { reply }).await
+        self.ask(|reply| Command::Inspect(InspectionCommand::History { reply }))
+            .await
     }
 
     pub async fn traverse_history(&self, delta: i32) -> Result<(), TabError> {
-        self.ask(|reply| Command::TraverseHistory {
-            step: HistoryStep::Delta(delta),
-            reply,
+        self.ask(|reply| {
+            Command::Inspect(InspectionCommand::TraverseHistory {
+                step: HistoryStep::Delta(delta),
+                reply,
+            })
         })
         .await
     }
 
     pub async fn traverse_to_entry(&self, entry: EntryId) -> Result<(), TabError> {
-        self.ask(|reply| Command::TraverseHistory {
-            step: HistoryStep::Entry(entry),
-            reply,
+        self.ask(|reply| {
+            Command::Inspect(InspectionCommand::TraverseHistory {
+                step: HistoryStep::Entry(entry),
+                reply,
+            })
         })
         .await
     }
@@ -599,7 +615,7 @@ impl TabHandle {
     }
 
     pub async fn last_navigation_failed(&self) -> Result<bool, TabError> {
-        self.ask(|reply| Command::LastNavigationFailed { reply })
+        self.ask(|reply| Command::Inspect(InspectionCommand::LastNavigationFailed { reply }))
             .await
     }
 
@@ -633,6 +649,7 @@ impl TabTask {
         tab: NewTab,
     ) -> Self {
         let (client, server) = exchange::local(COMMAND_CAPACITY);
+        let subscribers = client.subscriber_probe();
         let handle = TabHandle {
             id,
             user_context: tab.user_context.clone(),
@@ -643,7 +660,10 @@ impl TabTask {
             network.with_tab(id),
             partition,
             renderers,
-            server.notifier(),
+            TabEvents {
+                notifier: server.notifier(),
+                subscribers,
+            },
             tabs,
             tab,
         );
@@ -745,6 +765,11 @@ impl NewTab {
     }
 }
 
+struct TabEvents {
+    notifier: TabNotifier,
+    subscribers: exchange::SubscriberProbe<TabEvent>,
+}
+
 struct Tab {
     id: TabId,
     user_context: UserContextId,
@@ -780,6 +805,7 @@ struct Tab {
     dial_cancel: Option<watch::Sender<bool>>,
     dial_guard: Option<JoinHandle<()>>,
     events: TabNotifier,
+    subscribers: exchange::SubscriberProbe<TabEvent>,
 }
 
 impl Tab {
@@ -788,7 +814,7 @@ impl Tab {
         network: TabNetworkHandle,
         partition: PartitionServices,
         renderers: Arc<RendererProcessManager>,
-        events: TabNotifier,
+        events: TabEvents,
         tabs: TabRegistry,
         tab: NewTab,
     ) -> Self {
@@ -829,7 +855,8 @@ impl Tab {
             dial_rx,
             dial_cancel: None,
             dial_guard: None,
-            events,
+            events: events.notifier,
+            subscribers: events.subscribers,
         }
     }
 
@@ -980,6 +1007,8 @@ impl Tab {
                 let renderer = self.renderer.as_ref().ok_or(TabError::ActorStopped)?;
                 let stream = renderer.start_response(FrameId::MAIN, &mount).await?;
                 let mut received = 0usize;
+                let capture_body =
+                    self.network.broker().is_active() || self.subscribers.has_subscribers();
                 let mut captured = Vec::new();
                 loop {
                     match body.read_chunk().await {
@@ -992,7 +1021,9 @@ impl Tab {
                                     "navigation body exceeds {MAX_RESPONSE_BODY_BYTES} bytes ({received} received)"
                                 )));
                             }
-                            captured.extend_from_slice(&chunk);
+                            if capture_body {
+                                captured.extend_from_slice(&chunk);
+                            }
                             for piece in chunk.chunks(crate::wire::channel::MAX_BODY_CHUNK_BYTES) {
                                 if let Err(error) = stream.write(piece.to_vec()).await {
                                     drop(stream);
@@ -1034,13 +1065,10 @@ impl Tab {
         if self.renderer.is_none() {
             self.mount_virtual().await?;
         }
-        match self
+        let reply = self
             .renderer_request(RendererCommand::WindowMessage(message))
-            .await?
-        {
-            Reply::Unit(result) => result,
-            _ => Err(TabError::ActorStopped),
-        }
+            .await?;
+        reply_unit(reply)
     }
 
     async fn renderer_request(&mut self, command: RendererCommand) -> Result<Reply, TabError> {
@@ -1337,22 +1365,20 @@ impl Tab {
         let status = outcome.status;
         // https://html.spec.whatwg.org/multipage/browsing-the-web.html#process-a-navigate-response
         if status == 204 || status == 205 {
-            if let Some(request_id) = outcome.request_id
+            if let Some(ref req_meta) = outcome.request_meta
                 && matches!(outcome.body, NavBody::Stream(_))
             {
-                self.network.broker().response_completed(
-                    request_id,
-                    Some(self.id),
-                    FrameId::MAIN,
-                    true,
-                    &outcome.final_url,
+                let resp_meta = crate::intercept::ResponseMeta {
+                    url: outcome.final_url.clone(),
                     status,
-                    &outcome.status_text,
-                    outcome.headers.clone(),
-                    "",
-                    false,
-                    0,
-                );
+                    status_text: outcome.status_text.clone(),
+                    headers: outcome.headers.clone(),
+                    mime_type: String::new(),
+                    from_cache: false,
+                };
+                self.network
+                    .broker()
+                    .response_completed(req_meta, &resp_meta, 0);
             }
             self.traversal = None;
             self.navigation_failed = true;
@@ -1364,33 +1390,26 @@ impl Tab {
         let final_url = outcome.final_url.clone();
         let url = final_url.to_string();
         let headers = outcome.headers.clone();
-        let request_id = outcome.request_id;
+        let request_meta = outcome.request_meta.clone();
         let streamed = matches!(outcome.body, NavBody::Stream(_));
         if let Some(body) = self.commit_navigation(outcome).await {
-            if let Some(id) = request_id
+            if let Some(ref req_meta) = request_meta
                 && streamed
             {
-                let mime =
-                    net::combined_header_in(&headers, "content-type").map_or_default(|raw| {
-                        raw.split(';')
-                            .next()
-                            .map_or("", str::trim)
-                            .to_ascii_lowercase()
-                    });
-                self.network.broker().record_body(id, &body);
-                self.network.broker().response_completed(
-                    id,
-                    Some(self.id),
-                    FrameId::MAIN,
-                    true,
-                    &final_url,
+                let resp_meta = crate::intercept::ResponseMeta {
+                    url: final_url.clone(),
                     status,
-                    &status_text,
-                    headers.clone(),
-                    &mime,
-                    false,
-                    body.len(),
-                );
+                    status_text: status_text.clone(),
+                    headers: headers.clone(),
+                    mime_type: crate::network::mime_from_headers(&headers),
+                    from_cache: false,
+                };
+                self.network
+                    .broker()
+                    .record_body(req_meta.request_id, req_meta.tab, &body);
+                self.network
+                    .broker()
+                    .response_completed(req_meta, &resp_meta, body.len());
             }
             // https://chromedevtools.github.io/devtools-protocol/tot/Network/#event-responseReceived
             self.record_event(TabEvent::NavigationResponded {
@@ -1403,17 +1422,12 @@ impl Tab {
             .await;
             self.record_event(TabEvent::Navigated).await;
         } else {
-            if let Some(id) = request_id
+            if let Some(ref req_meta) = request_meta
                 && streamed
             {
-                self.network.broker().fetch_error(
-                    id,
-                    Some(self.id),
-                    FrameId::MAIN,
-                    true,
-                    &final_url,
-                    "net::ERR_FAILED",
-                );
+                self.network
+                    .broker()
+                    .fetch_error(req_meta, &final_url, "net::ERR_FAILED");
             }
             self.record_event(TabEvent::NavigationFailed(NavigationFailure::Failed))
                 .await;
@@ -1539,9 +1553,18 @@ impl Tab {
             }
             BrowserEvent::FrameAdded { url } => self.handle_frame_added(frame, url).await,
             BrowserEvent::FrameRemoved => {
+                let parent = self
+                    .tabs
+                    .frame_parent(self.id, frame)
+                    .unwrap_or(FrameId::MAIN);
+                let url = self
+                    .tabs
+                    .frame_url(self.id, frame)
+                    .unwrap_or_else(|| "about:blank".to_owned());
                 self.history.remove_frame(frame);
                 self.sync_histories().await;
-                self.record_event(TabEvent::FrameDetached { frame }).await;
+                self.record_event(TabEvent::FrameDetached { frame, parent, url })
+                    .await;
             }
             BrowserEvent::HistoryUpdated {
                 url,
@@ -2059,9 +2082,6 @@ impl Command {
             Command::Shutdown { .. } => false,
             Command::LoadHtml { reply, .. }
             | Command::Goto { reply, .. }
-            | Command::Reload { reply }
-            | Command::StopLoading { reply }
-            | Command::TraverseHistory { reply, .. }
             | Command::RemoveInitScript { reply, .. }
             | Command::SetViewport { reply, .. }
             | Command::SetIdentity { reply, .. }
@@ -2076,14 +2096,7 @@ impl Command {
             Command::RunUntilLoadTimeout { reply, .. } | Command::RunUntilJsTrue { reply, .. } => {
                 reply.is_closed()
             }
-            Command::DocumentUrl { reply, .. } | Command::DocumentTitle { reply, .. } => {
-                reply.is_closed()
-            }
-            Command::Frames { reply } => reply.is_closed(),
-            Command::Opener { reply } => reply.is_closed(),
-            Command::WindowName { reply } => reply.is_closed(),
-            Command::History { reply } => reply.is_closed(),
-            Command::LastNavigationFailed { reply } => reply.is_closed(),
+            Command::Inspect(inspect) => inspect.abandoned(),
         }
     }
 
@@ -2158,16 +2171,7 @@ impl Command {
                     return TabOutcome::Retained;
                 }
             }
-            Command::DocumentUrl { .. }
-            | Command::DocumentTitle { .. }
-            | Command::Frames { .. }
-            | Command::Reload { .. }
-            | Command::StopLoading { .. }
-            | Command::Opener { .. }
-            | Command::WindowName { .. }
-            | Command::History { .. }
-            | Command::TraverseHistory { .. }
-            | Command::LastNavigationFailed { .. } => self.serve_inspection(tab).await,
+            Command::Inspect(inspect) => inspect.serve(tab).await,
             Command::Shutdown { reply } => {
                 tab.stop_renderer();
                 let _result = reply.send(Ok(()));
@@ -2176,10 +2180,28 @@ impl Command {
         }
         TabOutcome::Continue
     }
+}
 
-    async fn serve_inspection(self, tab: &mut Tab) {
+impl InspectionCommand {
+    fn abandoned(&self) -> bool {
         match self {
-            Command::DocumentUrl { frame, reply } => {
+            Self::Reload { reply }
+            | Self::StopLoading { reply }
+            | Self::TraverseHistory { reply, .. } => reply.is_closed(),
+            Self::DocumentUrl { reply, .. } | Self::DocumentTitle { reply, .. } => {
+                reply.is_closed()
+            }
+            Self::Frames { reply } => reply.is_closed(),
+            Self::Opener { reply } => reply.is_closed(),
+            Self::WindowName { reply } => reply.is_closed(),
+            Self::History { reply } => reply.is_closed(),
+            Self::LastNavigationFailed { reply } => reply.is_closed(),
+        }
+    }
+
+    async fn serve(self, tab: &mut Tab) {
+        match self {
+            Self::DocumentUrl { frame, reply } => {
                 let result = if frame == FrameId::MAIN {
                     Ok(tab.document_url.to_string())
                 } else {
@@ -2189,40 +2211,38 @@ impl Command {
                 };
                 let _result = reply.send(result);
             }
-            Command::DocumentTitle { frame, reply } => {
+            Self::DocumentTitle { frame, reply } => {
                 let title = tab.document_title_in(frame).await;
                 let _result = reply.send(Ok(title));
             }
-            Command::Frames { reply } => {
+            Self::Frames { reply } => {
                 let _result = reply.send(Ok(tab.tabs.frame_snapshot(tab.id)));
             }
-            Command::Reload { reply } => {
+            Self::Reload { reply } => {
                 let url = tab.document_url.to_string();
                 let _result = reply.send(tab.goto(&url, None));
             }
-            Command::StopLoading { reply } => {
+            Self::StopLoading { reply } => {
                 tab.cancel_dial();
                 tab.nav = None;
                 let _result = reply.send(Ok(()));
             }
-            Command::Opener { reply } => {
+            Self::Opener { reply } => {
                 let _result = reply.send(Ok(tab.tabs.opener(tab.id)));
             }
-            Command::WindowName { reply } => {
-                let name = tab.tabs.name(tab.id).map(|name| name.as_str().to_owned());
-                let _result = reply.send(Ok(name));
+            Self::WindowName { reply } => {
+                let _result = reply.send(Ok(tab.tabs.name(tab.id)));
             }
-            Command::History { reply } => {
+            Self::History { reply } => {
                 let _result = reply.send(Ok(tab.history.snapshot()));
             }
-            Command::TraverseHistory { step, reply } => {
+            Self::TraverseHistory { step, reply } => {
                 let result = tab.traverse(step, FrameId::MAIN).await;
                 let _result = reply.send(result);
             }
-            Command::LastNavigationFailed { reply } => {
+            Self::LastNavigationFailed { reply } => {
                 let _result = reply.send(Ok(tab.navigation_failed));
             }
-            _ => {}
         }
     }
 }
@@ -2547,28 +2567,44 @@ fn answer<T>(reply: ReplySender<T>, result: Result<T, TabError>) {
 fn reply_unit(reply: Reply) -> Result<(), TabError> {
     match reply {
         Reply::Unit(result) => result,
-        _ => Err(TabError::ActorStopped),
+        Reply::Value(_)
+        | Reply::Screenshot { .. }
+        | Reply::ContentSize(_)
+        | Reply::DocumentState(_)
+        | Reply::Dom(_) => Err(TabError::ActorStopped),
     }
 }
 
 fn reply_value(reply: Reply) -> Result<RemoteValue, TabError> {
     match reply {
         Reply::Value(result) => result,
-        _ => Err(TabError::ActorStopped),
+        Reply::Unit(_)
+        | Reply::Screenshot { .. }
+        | Reply::ContentSize(_)
+        | Reply::DocumentState(_)
+        | Reply::Dom(_) => Err(TabError::ActorStopped),
     }
 }
 
 fn reply_content_size(reply: Reply) -> Result<(f32, f32), TabError> {
     match reply {
         Reply::ContentSize(result) => result,
-        _ => Err(TabError::ActorStopped),
+        Reply::Unit(_)
+        | Reply::Value(_)
+        | Reply::Screenshot { .. }
+        | Reply::DocumentState(_)
+        | Reply::Dom(_) => Err(TabError::ActorStopped),
     }
 }
 
 fn reply_dom(reply: Reply) -> Result<renderer::DomReply, TabError> {
     match reply {
         Reply::Dom(result) => result.map(|reply| *reply),
-        _ => Err(TabError::ActorStopped),
+        Reply::Unit(_)
+        | Reply::Value(_)
+        | Reply::Screenshot { .. }
+        | Reply::ContentSize(_)
+        | Reply::DocumentState(_) => Err(TabError::ActorStopped),
     }
 }
 

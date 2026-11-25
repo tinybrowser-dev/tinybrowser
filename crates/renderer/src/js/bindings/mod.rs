@@ -1262,6 +1262,7 @@ pub(super) fn retarget_wrapper(ctx: &Ctx<'_>, from: NodeId, to: NodeId) -> Resul
         .registry()
         .borrow_mut()
         .rekey_wrapper(from, to);
+    world_rc.borrow_mut().rekey_input_files(from, to);
     let Some(saved) = world(ctx)?.borrow().shared_wrapper(to) else {
         return Ok(());
     };

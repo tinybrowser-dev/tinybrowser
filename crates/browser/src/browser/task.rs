@@ -268,9 +268,7 @@ impl TabRegistry {
 
     pub(crate) fn frame_snapshot(&self, tab: TabId) -> Vec<FrameInfo> {
         self.lock().get(&tab).map_or_else(Vec::new, |record| {
-            record
-                .frames
-                .snapshot(record.names.live.as_ref().map(|n| n.as_str().to_owned()))
+            record.frames.snapshot(record.names.live.clone())
         })
     }
 

@@ -18,9 +18,17 @@ use crate::storage::{CookieStore, SessionStorage, StorageAreas};
 // https://w3c.github.io/webdriver-bidi/#type-browser-UserContext
 pub const DEFAULT_USER_CONTEXT: &str = "default";
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(transparent)]
 pub struct UserContextId(String);
+
+impl<'de> Deserialize<'de> for UserContextId {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(deserializer)?;
+        Self::parse(raw)
+            .ok_or_else(|| serde::de::Error::custom("user context id must not be empty"))
+    }
+}
 
 impl UserContextId {
     #[must_use]
@@ -29,8 +37,13 @@ impl UserContextId {
     }
 
     #[must_use]
-    pub fn new(id: impl Into<String>) -> Self {
-        Self(id.into())
+    pub fn parse(id: impl Into<String>) -> Option<Self> {
+        let raw = id.into();
+        if raw.is_empty() {
+            None
+        } else {
+            Some(Self(raw))
+        }
     }
 
     #[must_use]
@@ -126,7 +139,7 @@ impl BrowserContext {
     pub(crate) fn create_user_context(&mut self) -> UserContextId {
         let raw = self.next_user_context;
         self.next_user_context = self.next_user_context.saturating_add(1);
-        let id = UserContextId::new(format!("user-context-{raw}"));
+        let id = UserContextId(format!("user-context-{raw}"));
         let cookies = Arc::new(CookieStore::new(self.base_network.clock.clone()));
         let mut options = self.base_network.clone();
         options.cookie_jar = Some(cookies.jar());

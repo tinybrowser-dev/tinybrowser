@@ -568,10 +568,6 @@ async fn race_dial(
     }
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "dispatch table with one arm per service call; splitting it is a refactor, not a lint fix"
-)]
 async fn route_service_call(
     context: &ServiceContext,
     id: RequestId,
@@ -589,103 +585,8 @@ async fn route_service_call(
         return Err(RendererViolation);
     };
     match call {
-        ServiceCall::Network(NetworkCall::Dial(mut request)) => {
-            // https://fetch.spec.whatwg.org/#concept-request-origin
-            let initiator = match context.tabs.authorize_origin(
-                assignment.tab,
-                &assignment.site,
-                &request.initiator,
-            ) {
-                Some(initiator) => initiator,
-                None if request.initiator.is_opaque() => url::Origin::new_opaque(),
-                None => return Err(RendererViolation),
-            };
-            request.partition_key = assignment.site.as_partition_key().map(str::to_owned);
-            let worker_network = assignment.network.clone();
-            let responder = context.responder.clone();
-            let worker_kill = context.kill.clone();
-            let kill = context.kill.subscribe();
-            let (cancel_tx, cancel_rx) = watch::channel(false);
-            context
-                .dials
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .insert(
-                    id,
-                    ActiveDial {
-                        assignment: assignment_id,
-                        cancel: cancel_tx,
-                    },
-                );
-            let dials = context.dials.clone();
-            let registry = context.registry.clone();
-            let tabs = context.tabs.clone();
-            let tab_id = assignment.tab;
-            tokio::spawn(async move {
-                let mut outcome = race_dial(
-                    &worker_network,
-                    &request,
-                    &initiator,
-                    assignment_id,
-                    kill.clone(),
-                    cancel_rx.clone(),
-                )
-                .await;
-                // https://www.rfc-editor.org/rfc/rfc9110#section-15.5.20
-                if request.method.is_idempotent()
-                    && matches!(&outcome, Ok(head) if head.status == 421)
-                {
-                    if let Ok(head) = &outcome
-                        && let renderer::ResponseBody::Streamed(stream) = &head.body
-                    {
-                        worker_network.cancel_stream(assignment_id, *stream);
-                    }
-                    outcome = race_dial(
-                        &worker_network,
-                        &request,
-                        &initiator,
-                        assignment_id,
-                        kill.clone(),
-                        cancel_rx.clone(),
-                    )
-                    .await;
-                }
-                if let Ok(head) = &outcome
-                    && let renderer::ResponseBody::Streamed(stream) = &head.body
-                    && registry.resolve(assignment_id).is_none()
-                {
-                    worker_network.cancel_stream(assignment_id, *stream);
-                }
-                // https://w3c.github.io/webappsec-csp/#sandbox
-                // https://html.spec.whatwg.org/multipage/browsing-the-web.html#check-a-navigation-response's-adherence-to-x-frame-options
-                if request.policy == renderer::RequestPolicy::FrameLoad
-                    && let Some(frame) = request.frame
-                    && frame != FrameId::MAIN
-                    && let Ok(head) = &outcome
-                {
-                    let ancestors = tabs.ancestor_origins(tab_id, frame);
-                    if frame_blocked_by_headers(&head.headers, &head.final_url, &ancestors) {
-                        if let renderer::ResponseBody::Streamed(stream) = &head.body {
-                            worker_network.cancel_stream(assignment_id, *stream);
-                        }
-                        outcome = Err(renderer::DialFailure::Cancelled);
-                    } else {
-                        let csp = renderer::SandboxFlags::from_csp_headers(&head.headers);
-                        tabs.commit_child_frame(tab_id, frame, &head.final_url, csp);
-                    }
-                }
-                dials
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .remove(&id);
-                if responder
-                    .reply(id, ServiceReply::Dial(Box::new(outcome)))
-                    .await
-                    .is_err()
-                {
-                    let _result = worker_kill.send(true);
-                }
-            });
+        ServiceCall::Network(NetworkCall::Dial(request)) => {
+            return route_dial_call(context, id, assignment_id, &assignment, request);
         }
         ServiceCall::Network(NetworkCall::DialRead { id: stream }) => {
             let result = assignment.network.read_stream(assignment_id, stream).await;
@@ -737,6 +638,110 @@ async fn route_service_call(
             return route_window_call(context, &assignment, id, call).await;
         }
     }
+    Ok(())
+}
+
+fn route_dial_call(
+    context: &ServiceContext,
+    id: RequestId,
+    assignment_id: RendererAssignmentId,
+    assignment: &Assignment,
+    mut request: Box<renderer::DialRequest>,
+) -> Result<(), RendererViolation> {
+    // https://fetch.spec.whatwg.org/#concept-request-origin
+    let initiator =
+        match context
+            .tabs
+            .authorize_origin(assignment.tab, &assignment.site, &request.initiator)
+        {
+            Some(initiator) => initiator,
+            None if request.initiator.is_opaque() => url::Origin::new_opaque(),
+            None => return Err(RendererViolation),
+        };
+    request.partition_key = assignment.site.as_partition_key().map(str::to_owned);
+    let worker_network = assignment.network.clone();
+    let responder = context.responder.clone();
+    let worker_kill = context.kill.clone();
+    let kill = context.kill.subscribe();
+    let (cancel_tx, cancel_rx) = watch::channel(false);
+    context
+        .dials
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(
+            id,
+            ActiveDial {
+                assignment: assignment_id,
+                cancel: cancel_tx,
+            },
+        );
+    let dials = context.dials.clone();
+    let registry = context.registry.clone();
+    let tabs = context.tabs.clone();
+    let tab_id = assignment.tab;
+    tokio::spawn(async move {
+        let mut outcome = race_dial(
+            &worker_network,
+            &request,
+            &initiator,
+            assignment_id,
+            kill.clone(),
+            cancel_rx.clone(),
+        )
+        .await;
+        // https://www.rfc-editor.org/rfc/rfc9110#section-15.5.20
+        if request.method.is_idempotent() && matches!(&outcome, Ok(head) if head.status == 421) {
+            if let Ok(head) = &outcome
+                && let renderer::ResponseBody::Streamed(stream) = &head.body
+            {
+                worker_network.cancel_stream(assignment_id, *stream);
+            }
+            outcome = race_dial(
+                &worker_network,
+                &request,
+                &initiator,
+                assignment_id,
+                kill.clone(),
+                cancel_rx.clone(),
+            )
+            .await;
+        }
+        if let Ok(head) = &outcome
+            && let renderer::ResponseBody::Streamed(stream) = &head.body
+            && registry.resolve(assignment_id).is_none()
+        {
+            worker_network.cancel_stream(assignment_id, *stream);
+        }
+        // https://w3c.github.io/webappsec-csp/#sandbox
+        // https://html.spec.whatwg.org/multipage/browsing-the-web.html#check-a-navigation-response's-adherence-to-x-frame-options
+        if request.policy == renderer::RequestPolicy::FrameLoad
+            && let Some(frame) = request.frame
+            && frame != FrameId::MAIN
+            && let Ok(head) = &outcome
+        {
+            let ancestors = tabs.ancestor_origins(tab_id, frame);
+            if frame_blocked_by_headers(&head.headers, &head.final_url, &ancestors) {
+                if let renderer::ResponseBody::Streamed(stream) = &head.body {
+                    worker_network.cancel_stream(assignment_id, *stream);
+                }
+                outcome = Err(renderer::DialFailure::Cancelled);
+            } else {
+                let csp = renderer::SandboxFlags::from_csp_headers(&head.headers);
+                tabs.commit_child_frame(tab_id, frame, &head.final_url, csp);
+            }
+        }
+        dials
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&id);
+        if responder
+            .reply(id, ServiceReply::Dial(Box::new(outcome)))
+            .await
+            .is_err()
+        {
+            let _result = worker_kill.send(true);
+        }
+    });
     Ok(())
 }
 

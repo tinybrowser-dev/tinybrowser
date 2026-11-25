@@ -18,6 +18,7 @@ use crate::bidi::protocol::{
 struct ResolvedPartition {
     user_context: UserContextId,
     source_origin: Option<String>,
+    scope_by_origin: bool,
 }
 
 impl ResolvedPartition {
@@ -29,6 +30,14 @@ impl ResolvedPartition {
         }
         Value::Object(map)
     }
+
+    fn cookie_partition_key(&self) -> Option<String> {
+        if self.scope_by_origin {
+            self.source_origin.clone()
+        } else {
+            None
+        }
+    }
 }
 
 async fn resolve_partition(
@@ -39,6 +48,7 @@ async fn resolve_partition(
         return Ok(ResolvedPartition {
             user_context: UserContextId::default_context(),
             source_origin: None,
+            scope_by_origin: false,
         });
     };
     let obj = require_object(val, "partition")?;
@@ -54,12 +64,15 @@ async fn resolve_partition(
             Ok(ResolvedPartition {
                 user_context: tab.user_context().clone(),
                 source_origin,
+                scope_by_origin: false,
             })
         }
         "storageKey" => {
             let user_context = match optional_str(obj, "userContext")? {
                 Some(raw) => {
-                    let uc = UserContextId::new(raw);
+                    let Some(uc) = UserContextId::parse(raw) else {
+                        return Err(BidiError::no_such_user_context(raw));
+                    };
                     let known = state.browser.user_contexts().await.unwrap_or_default();
                     if !known.contains(&uc) {
                         return Err(BidiError::no_such_user_context(raw));
@@ -71,6 +84,7 @@ async fn resolve_partition(
             let source_origin = optional_str(obj, "sourceOrigin")?.map(str::to_owned);
             Ok(ResolvedPartition {
                 user_context,
+                scope_by_origin: source_origin.is_some(),
                 source_origin,
             })
         }
@@ -165,7 +179,8 @@ fn bidi_cookie_json(record: &CookieRecord) -> Value {
     let same_site = match record.same_site {
         CookieSameSite::Strict => "strict",
         CookieSameSite::Lax => "lax",
-        CookieSameSite::None | CookieSameSite::Default => "none",
+        CookieSameSite::None => "none",
+        CookieSameSite::Default => "default",
     };
     map.insert("sameSite".into(), json!(same_site));
     if let Some(expiry) = record.expiry
@@ -176,11 +191,38 @@ fn bidi_cookie_json(record: &CookieRecord) -> Value {
     Value::Object(map)
 }
 
+fn parse_expiry_secs(v: &Value) -> Result<u64, BidiError> {
+    if let Some(secs) = v.as_u64() {
+        return Ok(secs);
+    }
+    if let Some(float) = v.as_f64() {
+        #[expect(
+            clippy::cast_precision_loss,
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "MAX_SAFE_INT (2^53 - 1) is exactly representable in f64"
+        )]
+        if float.is_finite()
+            && float >= 0.0
+            && float.fract() == 0.0
+            && float <= crate::session::MAX_SAFE_INT as f64
+        {
+            return Ok(float as u64);
+        }
+    }
+    Err(BidiError::invalid_argument(
+        "expiry must be a non-negative integer",
+    ))
+}
+
 // https://w3c.github.io/webdriver-bidi/#command-storage-getCookies
 pub(crate) async fn get_cookies(state: &Arc<BidiState>, params: &Value) -> BidiResult {
     let map = require_object(params, "params")?;
     let partition = resolve_partition(state, map.get("partition")).await?;
-    let filter = parse_cookie_filter(map.get("filter"))?;
+    let mut filter = parse_cookie_filter(map.get("filter"))?;
+    if let Some(key) = partition.cookie_partition_key() {
+        filter.partition_key = Some(Some(key));
+    }
     let records = state
         .browser
         .matching_cookie_records_in(&partition.user_context, filter)
@@ -213,15 +255,13 @@ pub(crate) async fn set_cookie(state: &Arc<BidiState>, params: &Value) -> BidiRe
     let http_only = optional_bool(obj, "httpOnly")?.unwrap_or(false);
     let secure = optional_bool(obj, "secure")?.unwrap_or(false);
     let same_site = match optional_str(obj, "sameSite")? {
-        None => CookieSameSite::None,
+        None => CookieSameSite::Default,
         Some(raw) => parse_same_site(raw)?,
     };
     let expiry = match obj.get("expiry") {
         None => None,
         Some(v) => {
-            let secs = v.as_u64().ok_or_else(|| {
-                BidiError::invalid_argument("expiry must be a non-negative integer")
-            })?;
+            let secs = parse_expiry_secs(v)?;
             let time = UNIX_EPOCH
                 .checked_add(Duration::from_secs(secs))
                 .ok_or_else(|| BidiError::invalid_argument("expiry out of range"))?;
@@ -242,7 +282,7 @@ pub(crate) async fn set_cookie(state: &Arc<BidiState>, params: &Value) -> BidiRe
                 http_only,
                 same_site,
                 expiry,
-                partition_key: None,
+                partition_key: partition.cookie_partition_key(),
             },
         )
         .await
@@ -257,7 +297,10 @@ pub(crate) async fn set_cookie(state: &Arc<BidiState>, params: &Value) -> BidiRe
 pub(crate) async fn delete_cookies(state: &Arc<BidiState>, params: &Value) -> BidiResult {
     let map = require_object(params, "params")?;
     let partition = resolve_partition(state, map.get("partition")).await?;
-    let filter = parse_cookie_filter(map.get("filter"))?;
+    let mut filter = parse_cookie_filter(map.get("filter"))?;
+    if let Some(key) = partition.cookie_partition_key() {
+        filter.partition_key = Some(Some(key));
+    }
     let _ = state
         .browser
         .delete_cookies_in(&partition.user_context, filter)

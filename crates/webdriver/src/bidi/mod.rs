@@ -21,7 +21,7 @@ use futures_util::{SinkExt as _, StreamExt as _};
 use serde_json::{Value, json};
 use server::ws::{WebSocket, WsMessage};
 use tokio::sync::{Mutex, mpsc};
-use tokio::task::JoinHandle;
+use tokio::task::{JoinHandle, JoinSet};
 
 use crate::bidi::protocol::{BidiError, BidiResult, error_response, event_message, ok_response};
 use crate::session::{Sessions, format_context_id};
@@ -270,9 +270,16 @@ pub(crate) fn is_known_event_or_module(name: &str) -> bool {
     )
 }
 
+pub(crate) enum CollectorScope {
+    Global,
+    Contexts(HashSet<TabId>),
+    UserContexts(HashSet<UserContextId>),
+}
+
 pub(crate) struct DataCollector {
     pub(crate) data_types: Vec<String>,
     pub(crate) max_encoded_data_size: u64,
+    pub(crate) scope: CollectorScope,
     pub(crate) disowned: HashSet<(String, NetworkRequestId)>,
 }
 
@@ -281,6 +288,8 @@ pub(crate) struct BufferedLogEntry {
     pub(crate) user_context: UserContextId,
     pub(crate) params: Value,
 }
+
+pub(crate) type SandboxMap = HashMap<(TabId, FrameId), HashSet<String>>;
 
 pub(crate) struct BidiState {
     pub(crate) sessions: Arc<Mutex<Sessions>>,
@@ -291,7 +300,8 @@ pub(crate) struct BidiState {
     pub(crate) attached_tabs: Arc<Mutex<HashMap<TabId, JoinHandle<()>>>>,
     pub(crate) attaching_tabs: Arc<Mutex<HashSet<TabId>>>,
     pub(crate) tab_user_contexts: Arc<Mutex<HashMap<TabId, UserContextId>>>,
-    pub(crate) script_disabled: Mutex<HashMap<TabId, bool>>,
+    pub(crate) active_navigations: Arc<Mutex<HashMap<(TabId, FrameId), String>>>,
+    pub(crate) sandboxes: Arc<Mutex<SandboxMap>>,
     pub(crate) log_buffer: Arc<Mutex<VecDeque<BufferedLogEntry>>>,
     pub(crate) data_collectors: Arc<Mutex<HashMap<String, DataCollector>>>,
     pub(crate) intercepts: std::sync::Mutex<Vec<browser::InterceptId>>,
@@ -434,7 +444,11 @@ pub(crate) async fn serve_websocket(
     sessions: Arc<Mutex<Sessions>>,
     initial_session: Option<String>,
 ) {
-    let browser = sessions.lock().await.browser.clone();
+    let is_standalone = initial_session.is_none();
+    let (browser, shutdown) = {
+        let guard = sessions.lock().await;
+        (guard.browser.clone(), guard.shutdown.clone())
+    };
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Value>();
     let state = Arc::new(BidiState {
         sessions,
@@ -445,7 +459,8 @@ pub(crate) async fn serve_websocket(
         attached_tabs: Arc::new(Mutex::new(HashMap::new())),
         attaching_tabs: Arc::new(Mutex::new(HashSet::new())),
         tab_user_contexts: Arc::new(Mutex::new(HashMap::new())),
-        script_disabled: Mutex::new(HashMap::new()),
+        active_navigations: Arc::new(Mutex::new(HashMap::new())),
+        sandboxes: Arc::new(Mutex::new(HashMap::new())),
         log_buffer: Arc::new(Mutex::new(VecDeque::new())),
         data_collectors: Arc::new(Mutex::new(HashMap::new())),
         intercepts: std::sync::Mutex::new(Vec::new()),
@@ -483,8 +498,14 @@ pub(crate) async fn serve_websocket(
         }
     });
 
-    while let Some(incoming) = stream.next().await {
-        let Ok(message) = incoming else {
+    let mut command_tasks = JoinSet::new();
+    loop {
+        while command_tasks.try_join_next().is_some() {}
+        let incoming = tokio::select! {
+            () = shutdown.wait() => break,
+            next = stream.next() => next,
+        };
+        let Some(Ok(message)) = incoming else {
             break;
         };
         let text = match message {
@@ -498,12 +519,13 @@ pub(crate) async fn serve_websocket(
             }
         };
         let state_clone = Arc::clone(&state);
-        tokio::spawn(async move {
+        command_tasks.spawn(async move {
             let reply = handle_message(&state_clone, &text).await;
             let _ = state_clone.out_tx.send(reply);
         });
     }
 
+    command_tasks.abort_all();
     lifecycle_task.abort();
     network_task.abort();
     prompt_task.abort();
@@ -512,6 +534,9 @@ pub(crate) async fn serve_websocket(
     let attached = std::mem::take(&mut *state.attached_tabs.lock().await);
     for (_, handle) in attached {
         handle.abort();
+    }
+    if is_standalone {
+        let _ = session::end(&state).await;
     }
 }
 
@@ -662,23 +687,34 @@ async fn dispatch_command(state: &Arc<BidiState>, method: &str, params: &Value) 
     }
 }
 
-async fn emit_nav_event(
-    state: &Arc<BidiState>,
-    method: &str,
+struct NavEvent<'a> {
+    method: &'a str,
     tab_id: TabId,
-    context: &str,
-    url: &str,
+    frame: FrameId,
+    url: &'a str,
     timestamp: u64,
-) {
+    clear_nav: bool,
+}
+
+async fn emit_nav_event(state: &Arc<BidiState>, ev: NavEvent<'_>) {
+    let context = format_context_id(ev.tab_id, ev.frame);
+    let navigation = {
+        let mut navs = state.active_navigations.lock().await;
+        if ev.clear_nav {
+            navs.remove(&(ev.tab_id, ev.frame))
+        } else {
+            navs.get(&(ev.tab_id, ev.frame)).cloned()
+        }
+    };
     state
         .emit(
-            method,
-            Some(tab_id),
+            ev.method,
+            Some(ev.tab_id),
             json!({
                 "context": context,
-                "navigation": null,
-                "timestamp": timestamp,
-                "url": url,
+                "navigation": navigation,
+                "timestamp": ev.timestamp,
+                "url": ev.url,
             }),
         )
         .await;
@@ -763,32 +799,34 @@ async fn forward_channel_binding(
     }
 }
 
-async fn emit_frame_lifecycle(
-    state: &Arc<BidiState>,
-    method: &str,
+struct FrameLifecycle<'a> {
+    method: &'a str,
     tab_id: TabId,
     frame: FrameId,
-    parent: Option<FrameId>,
-    url: &str,
-    user_context: &str,
-) {
-    let main_ctx = format_context_id(tab_id, FrameId::MAIN);
-    let parent_ctx = parent.map_or_else(|| main_ctx.clone(), |p| format_context_id(tab_id, p));
-    let children = if parent.is_some() {
-        Value::Null
-    } else {
+    parent: FrameId,
+    url: &'a str,
+    user_context: &'a str,
+    is_destroyed: bool,
+}
+
+async fn emit_frame_lifecycle(state: &Arc<BidiState>, info: FrameLifecycle<'_>) {
+    let main_ctx = format_context_id(info.tab_id, FrameId::MAIN);
+    let parent_ctx = format_context_id(info.tab_id, info.parent);
+    let children = if info.is_destroyed {
         json!([])
+    } else {
+        Value::Null
     };
-    let info = json!({
-        "context": format_context_id(tab_id, frame),
-        "url": url,
+    let payload = json!({
+        "context": format_context_id(info.tab_id, info.frame),
+        "url": info.url,
         "children": children,
         "parent": parent_ctx,
-        "userContext": user_context,
+        "userContext": info.user_context,
         "originalOpener": null,
         "clientWindow": main_ctx,
     });
-    state.emit(method, Some(tab_id), info).await;
+    state.emit(info.method, Some(info.tab_id), payload).await;
 }
 
 async fn forward_exception_event(
@@ -838,6 +876,79 @@ async fn forward_exception_event(
         .await;
 }
 
+async fn forward_nav_tab_event(
+    state: &Arc<BidiState>,
+    tab_id: TabId,
+    tab: &browser::TabHandle,
+    event: TabEvent,
+    ts: u64,
+) {
+    let (method, frame, url, clear_nav) = match event {
+        TabEvent::NavigationRequested { url } => (
+            "browsingContext.navigationStarted",
+            FrameId::MAIN,
+            url,
+            false,
+        ),
+        TabEvent::Navigated => (
+            "browsingContext.navigationCommitted",
+            FrameId::MAIN,
+            tab.document_url().await.unwrap_or_default(),
+            false,
+        ),
+        TabEvent::SameDocumentNavigation => (
+            "browsingContext.fragmentNavigated",
+            FrameId::MAIN,
+            tab.document_url().await.unwrap_or_default(),
+            true,
+        ),
+        TabEvent::DomContentLoaded => (
+            "browsingContext.domContentLoaded",
+            FrameId::MAIN,
+            tab.document_url().await.unwrap_or_default(),
+            false,
+        ),
+        TabEvent::Load => (
+            "browsingContext.load",
+            FrameId::MAIN,
+            tab.document_url().await.unwrap_or_default(),
+            true,
+        ),
+        TabEvent::NavigationFailed(_) => (
+            "browsingContext.navigationFailed",
+            FrameId::MAIN,
+            tab.document_url().await.unwrap_or_default(),
+            true,
+        ),
+        TabEvent::FrameNavigated { frame, url, .. } => {
+            ("browsingContext.navigationCommitted", frame, url, false)
+        }
+        TabEvent::FrameDomContentLoaded { frame, url } => {
+            ("browsingContext.domContentLoaded", frame, url, false)
+        }
+        TabEvent::FrameLoad { frame, url } => ("browsingContext.load", frame, url, true),
+        TabEvent::FrameAttached { .. }
+        | TabEvent::FrameDetached { .. }
+        | TabEvent::Console { .. }
+        | TabEvent::ExceptionThrown { .. }
+        | TabEvent::Binding { .. }
+        | TabEvent::NavigationResponded { .. }
+        | TabEvent::RealmReplaced => return,
+    };
+    emit_nav_event(
+        state,
+        NavEvent {
+            method,
+            tab_id,
+            frame,
+            url: &url,
+            timestamp: ts,
+            clear_nav,
+        },
+    )
+    .await;
+}
+
 async fn forward_tab_event(
     state: &Arc<BidiState>,
     tab_id: TabId,
@@ -847,83 +958,47 @@ async fn forward_tab_event(
     let ts = now_millis();
     let main_ctx = format_context_id(tab_id, FrameId::MAIN);
     match event {
-        TabEvent::NavigationRequested { url } => {
-            emit_nav_event(
-                state,
-                "browsingContext.navigationStarted",
-                tab_id,
-                &main_ctx,
-                &url,
-                ts,
-            )
-            .await;
-        }
-        TabEvent::Navigated
+        event @ (TabEvent::NavigationRequested { .. }
+        | TabEvent::Navigated
         | TabEvent::SameDocumentNavigation
         | TabEvent::DomContentLoaded
         | TabEvent::Load
-        | TabEvent::NavigationFailed(_) => {
-            let method = match event {
-                TabEvent::Navigated => "browsingContext.navigationCommitted",
-                TabEvent::SameDocumentNavigation => "browsingContext.fragmentNavigated",
-                TabEvent::DomContentLoaded => "browsingContext.domContentLoaded",
-                TabEvent::Load => "browsingContext.load",
-                _ => "browsingContext.navigationFailed",
-            };
-            let url = tab.document_url().await.unwrap_or_default();
-            emit_nav_event(state, method, tab_id, &main_ctx, &url, ts).await;
+        | TabEvent::NavigationFailed(_)
+        | TabEvent::FrameNavigated { .. }
+        | TabEvent::FrameDomContentLoaded { .. }
+        | TabEvent::FrameLoad { .. }) => {
+            forward_nav_tab_event(state, tab_id, tab, event, ts).await;
         }
         TabEvent::FrameAttached { frame, parent, url } => {
             emit_frame_lifecycle(
                 state,
-                "browsingContext.contextCreated",
-                tab_id,
-                frame,
-                Some(parent),
-                &url,
-                tab.user_context().as_str(),
+                FrameLifecycle {
+                    method: "browsingContext.contextCreated",
+                    tab_id,
+                    frame,
+                    parent,
+                    url: &url,
+                    user_context: tab.user_context().as_str(),
+                    is_destroyed: false,
+                },
             )
             .await;
         }
-        TabEvent::FrameDetached { frame } => {
+        TabEvent::FrameDetached { frame, parent, url } => {
+            state.sandboxes.lock().await.remove(&(tab_id, frame));
             emit_frame_lifecycle(
                 state,
-                "browsingContext.contextDestroyed",
-                tab_id,
-                frame,
-                None,
-                "about:blank",
-                tab.user_context().as_str(),
+                FrameLifecycle {
+                    method: "browsingContext.contextDestroyed",
+                    tab_id,
+                    frame,
+                    parent,
+                    url: &url,
+                    user_context: tab.user_context().as_str(),
+                    is_destroyed: true,
+                },
             )
             .await;
-        }
-        TabEvent::FrameNavigated { frame, url, .. } => {
-            let ctx = format_context_id(tab_id, frame);
-            emit_nav_event(
-                state,
-                "browsingContext.navigationCommitted",
-                tab_id,
-                &ctx,
-                &url,
-                ts,
-            )
-            .await;
-        }
-        TabEvent::FrameDomContentLoaded { frame, url } => {
-            let ctx = format_context_id(tab_id, frame);
-            emit_nav_event(
-                state,
-                "browsingContext.domContentLoaded",
-                tab_id,
-                &ctx,
-                &url,
-                ts,
-            )
-            .await;
-        }
-        TabEvent::FrameLoad { frame, url } => {
-            let ctx = format_context_id(tab_id, frame);
-            emit_nav_event(state, "browsingContext.load", tab_id, &ctx, &url, ts).await;
         }
         TabEvent::Console { level, args } => {
             forward_console_event(state, tab_id, tab, &main_ctx, level, &args, ts).await;
@@ -1051,6 +1126,8 @@ async fn forward_network_event(state: &Arc<BidiState>, event: NetworkEvent) {
             frame,
             is_navigation,
             url,
+            method,
+            request_headers,
             status,
             status_text,
             headers,
@@ -1059,13 +1136,14 @@ async fn forward_network_event(state: &Arc<BidiState>, event: NetworkEvent) {
             timestamp_ms,
             is_blocked,
             intercepts,
+            ..
         } => {
             let mut params = json!({
                 "context": tab.map(|t| format_context_id(t, frame)),
                 "isBlocked": is_blocked,
                 "navigation": nav_value(is_navigation, request_id),
                 "redirectCount": 0,
-                "request": bidi_request_data(request_id, &url, "GET", &[], is_navigation, timestamp_ms),
+                "request": bidi_request_data(request_id, &url, &method, &request_headers, is_navigation, timestamp_ms),
                 "response": bidi_response_data(&url, status, &status_text, from_cache, &headers, &mime_type, 0),
                 "timestamp": timestamp_ms,
             });
@@ -1078,6 +1156,8 @@ async fn forward_network_event(state: &Arc<BidiState>, event: NetworkEvent) {
             frame,
             is_navigation,
             url,
+            method,
+            request_headers,
             status,
             status_text,
             headers,
@@ -1085,13 +1165,14 @@ async fn forward_network_event(state: &Arc<BidiState>, event: NetworkEvent) {
             from_cache,
             encoded_data_length,
             timestamp_ms,
+            ..
         } => {
             let params = json!({
                 "context": tab.map(|t| format_context_id(t, frame)),
                 "isBlocked": false,
                 "navigation": nav_value(is_navigation, request_id),
                 "redirectCount": 0,
-                "request": bidi_request_data(request_id, &url, "GET", &[], is_navigation, timestamp_ms),
+                "request": bidi_request_data(request_id, &url, &method, &request_headers, is_navigation, timestamp_ms),
                 "response": bidi_response_data(&url, status, &status_text, from_cache, &headers, &mime_type, encoded_data_length),
                 "timestamp": timestamp_ms,
             });
@@ -1103,15 +1184,18 @@ async fn forward_network_event(state: &Arc<BidiState>, event: NetworkEvent) {
             frame,
             is_navigation,
             url,
+            method,
+            request_headers,
             error_text,
             timestamp_ms,
+            ..
         } => {
             let params = json!({
                 "context": tab.map(|t| format_context_id(t, frame)),
                 "isBlocked": false,
                 "navigation": nav_value(is_navigation, request_id),
                 "redirectCount": 0,
-                "request": bidi_request_data(request_id, &url, "GET", &[], is_navigation, timestamp_ms),
+                "request": bidi_request_data(request_id, &url, &method, &request_headers, is_navigation, timestamp_ms),
                 "timestamp": timestamp_ms,
                 "errorText": error_text,
             });

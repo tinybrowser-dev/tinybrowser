@@ -14,7 +14,9 @@ use tokio::sync::mpsc::UnboundedSender;
 use url::Url;
 
 use crate::actor::{NavigationInitiator, TabId};
-use crate::intercept::{BeforeRequestAction, NetworkBroker, NetworkRequestId, ResponseAction};
+use crate::intercept::{
+    BeforeRequestAction, NetworkBroker, RequestMeta, ResponseAction, ResponseMeta,
+};
 use crate::wire::RendererAssignmentId;
 
 // https://fetch.spec.whatwg.org/#keepalive-flag
@@ -157,7 +159,7 @@ pub(crate) struct NavOutcome {
     pub status_text: String,
     pub final_url: Url,
     pub headers: Vec<(String, String)>,
-    pub request_id: Option<NetworkRequestId>,
+    pub request_meta: Option<RequestMeta>,
     _permit: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 
@@ -310,24 +312,28 @@ impl TabNetworkHandle {
         let deadline = started + dial::PAGE_FETCH_TIMEOUT;
         let permits = Self::acquire(&self.permits.navigation, deadline).await?;
         let tab = self.tab_id();
-        let request_id = self
-            .broker
-            .is_active()
-            .then(|| self.broker.next_request_id());
+        let mut request_meta = self.broker.is_active().then(|| RequestMeta {
+            request_id: self.broker.next_request_id(),
+            tab,
+            frame: renderer::FrameId::MAIN,
+            is_navigation: true,
+            url: url.clone(),
+            method: Method::GET.as_str().to_owned(),
+            headers: Vec::new(),
+            resource_type: "Document".to_owned(),
+        });
         if self.broker.is_blocked_url(tab, url.as_str()) {
-            if let Some(id) = request_id {
-                self.broker.fetch_error(
-                    id,
-                    tab,
-                    renderer::FrameId::MAIN,
-                    true,
-                    url,
-                    "net::ERR_BLOCKED_BY_CLIENT",
-                );
+            if let Some(ref meta) = request_meta {
+                self.broker.emit_before_request_unblocked(meta);
+                self.broker
+                    .fetch_error(meta, url, "net::ERR_BLOCKED_BY_CLIENT");
             }
             return Err(DialFailure::Cancelled);
         }
-        let prepared = match self.intercept_before_nav(request_id, tab, url).await? {
+        let prepared = match self
+            .intercept_before_nav(request_meta.as_mut(), url)
+            .await?
+        {
             NavIntercept::Synthetic(outcome) => return Ok(*outcome),
             NavIntercept::Request(prepared) => prepared,
         };
@@ -342,15 +348,9 @@ impl TabNetworkHandle {
                     started.elapsed()
                 );
                 let failure = dial_failure(&error);
-                if let Some(id) = request_id {
-                    self.broker.fetch_error(
-                        id,
-                        tab,
-                        renderer::FrameId::MAIN,
-                        true,
-                        &target_url,
-                        &format!("{failure:?}"),
-                    );
+                if let Some(ref meta) = request_meta {
+                    self.broker
+                        .fetch_error(meta, &target_url, &format!("{failure:?}"));
                 }
                 return Err(failure);
             }
@@ -362,14 +362,13 @@ impl TabNetworkHandle {
             crate::actor::log_url(response.final_url()),
             started.elapsed()
         );
-        self.finish_nav_response(response, request_id, tab, permits)
+        self.finish_nav_response(response, request_meta, permits)
             .await
     }
 
     async fn intercept_before_nav(
         &self,
-        request_id: Option<NetworkRequestId>,
-        tab: Option<TabId>,
+        request_meta: Option<&mut RequestMeta>,
         url: &Url,
     ) -> Result<NavIntercept, DialFailure> {
         let mut prepared = PreparedNavRequest {
@@ -378,23 +377,10 @@ impl TabNetworkHandle {
             headers: None,
             body: None,
         };
-        let Some(id) = request_id else {
+        let Some(meta) = request_meta else {
             return Ok(NavIntercept::Request(prepared));
         };
-        match self
-            .broker
-            .before_request_sent(
-                id,
-                tab,
-                renderer::FrameId::MAIN,
-                true,
-                &prepared.url,
-                prepared.method.as_str(),
-                Vec::new(),
-                "Document",
-            )
-            .await
-        {
+        match self.broker.before_request_sent(meta).await {
             BeforeRequestAction::Proceed => Ok(NavIntercept::Request(prepared)),
             BeforeRequestAction::Continue {
                 url: next_url,
@@ -405,12 +391,17 @@ impl TabNetworkHandle {
                 if let Some(spec) = next_url
                     && let Ok(parsed) = Url::parse(&spec)
                 {
-                    prepared.url = parsed;
+                    prepared.url = parsed.clone();
+                    meta.url = parsed;
                 }
                 if let Some(name) = next_method
                     && let Ok(parsed) = Method::parse(&name)
                 {
+                    parsed.as_str().clone_into(&mut meta.method);
                     prepared.method = parsed;
+                }
+                if let Some(ref hdrs) = headers {
+                    meta.headers.clone_from(hdrs);
                 }
                 prepared.headers = headers;
                 prepared.body = body;
@@ -423,24 +414,20 @@ impl TabNetworkHandle {
                 body,
             } => Ok(NavIntercept::Synthetic(Box::new(
                 self.synthetic_nav_outcome(
-                    id,
-                    tab,
-                    prepared.url,
-                    status,
-                    reason_phrase,
-                    headers,
-                    body,
+                    meta.clone(),
+                    SyntheticResponse {
+                        url: prepared.url,
+                        status,
+                        reason_phrase,
+                        headers,
+                        body,
+                        emit_started: true,
+                    },
                 ),
             ))),
             BeforeRequestAction::Fail => {
-                self.broker.fetch_error(
-                    id,
-                    tab,
-                    renderer::FrameId::MAIN,
-                    true,
-                    &prepared.url,
-                    "net::ERR_FAILED",
-                );
+                self.broker
+                    .fetch_error(meta, &prepared.url, "net::ERR_FAILED");
                 Err(DialFailure::Connect)
             }
         }
@@ -490,8 +477,7 @@ impl TabNetworkHandle {
     async fn finish_nav_response(
         &self,
         response: net::Response,
-        request_id: Option<NetworkRequestId>,
-        tab: Option<TabId>,
+        request_meta: Option<RequestMeta>,
         permits: tokio::sync::OwnedSemaphorePermit,
     ) -> Result<NavOutcome, DialFailure> {
         let mut status = response.status();
@@ -502,23 +488,16 @@ impl TabNetworkHandle {
         let mut headers = net_head.headers().to_vec();
         let mut head = net_head.into_document_head();
         let mime_type = mime_from_headers(&headers);
-        if let Some(id) = request_id {
-            match self
-                .broker
-                .response_started(
-                    id,
-                    tab,
-                    renderer::FrameId::MAIN,
-                    true,
-                    &final_url,
-                    status,
-                    &status_text,
-                    headers.clone(),
-                    &mime_type,
-                    false,
-                )
-                .await
-            {
+        if let Some(ref meta) = request_meta {
+            let resp_meta = ResponseMeta {
+                url: final_url.clone(),
+                status,
+                status_text: status_text.clone(),
+                headers: headers.clone(),
+                mime_type,
+                from_cache: false,
+            };
+            match self.broker.response_started(meta, &resp_meta).await {
                 ResponseAction::Proceed => {}
                 ResponseAction::Modify {
                     status: new_status,
@@ -544,24 +523,19 @@ impl TabNetworkHandle {
                     body,
                 } => {
                     return Ok(self.synthetic_nav_outcome(
-                        id,
-                        tab,
-                        final_url,
-                        status,
-                        reason_phrase,
-                        headers,
-                        body,
+                        meta.clone(),
+                        SyntheticResponse {
+                            url: final_url,
+                            status,
+                            reason_phrase,
+                            headers,
+                            body,
+                            emit_started: false,
+                        },
                     ));
                 }
                 ResponseAction::Fail => {
-                    self.broker.fetch_error(
-                        id,
-                        tab,
-                        renderer::FrameId::MAIN,
-                        true,
-                        &final_url,
-                        "net::ERR_FAILED",
-                    );
+                    self.broker.fetch_error(meta, &final_url, "net::ERR_FAILED");
                     return Err(DialFailure::Connect);
                 }
             }
@@ -574,50 +548,39 @@ impl TabNetworkHandle {
             status_text,
             final_url,
             headers,
-            request_id,
+            request_meta,
             _permit: Some(permits),
         })
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "constructs synthetic navigation outcome from intercepted response parts"
-    )]
-    fn synthetic_nav_outcome(
-        &self,
-        request_id: NetworkRequestId,
-        tab: Option<TabId>,
-        url: Url,
-        status: u16,
-        reason_phrase: String,
-        headers: Vec<(String, String)>,
-        body: Vec<u8>,
-    ) -> NavOutcome {
-        let ct = net::combined_header_in(&headers, "content-type");
-        let mime = mime_from_headers(&headers);
-        let head = renderer::ResponseHead::http(status, url.clone(), ct, &headers);
-        self.broker.record_body(request_id, &body);
-        self.broker.response_completed(
-            request_id,
-            tab,
-            renderer::FrameId::MAIN,
-            true,
-            &url,
-            status,
-            &reason_phrase,
-            headers.clone(),
-            &mime,
-            false,
-            body.len(),
-        );
+    fn synthetic_nav_outcome(&self, meta: RequestMeta, resp: SyntheticResponse) -> NavOutcome {
+        let ct = net::combined_header_in(&resp.headers, "content-type");
+        let mime = mime_from_headers(&resp.headers);
+        let head = renderer::ResponseHead::http(resp.status, resp.url.clone(), ct, &resp.headers);
+        let resp_meta = ResponseMeta {
+            url: resp.url.clone(),
+            status: resp.status,
+            status_text: resp.reason_phrase.clone(),
+            headers: resp.headers.clone(),
+            mime_type: mime,
+            from_cache: false,
+        };
+        if resp.emit_started {
+            self.broker
+                .emit_response_started_unblocked(&meta, &resp_meta);
+        }
+        self.broker
+            .record_body(meta.request_id, meta.tab, &resp.body);
+        self.broker
+            .response_completed(&meta, &resp_meta, resp.body.len());
         NavOutcome {
             head,
-            body: NavBody::Bytes(body),
-            status,
-            status_text: reason_phrase,
-            final_url: url,
-            headers,
-            request_id: Some(request_id),
+            body: NavBody::Bytes(resp.body),
+            status: resp.status,
+            status_text: resp.reason_phrase,
+            final_url: resp.url,
+            headers: resp.headers,
+            request_meta: Some(meta),
             _permit: None,
         }
     }
@@ -639,25 +602,26 @@ impl TabNetworkHandle {
         let tab = self.tab_id();
         let frame = request.frame.unwrap_or(renderer::FrameId::MAIN);
         let is_navigation = request.policy == renderer::RequestPolicy::FrameLoad;
-        let request_id = self
-            .broker
-            .is_active()
-            .then(|| self.broker.next_request_id());
+        let mut request_meta = self.broker.is_active().then(|| RequestMeta {
+            request_id: self.broker.next_request_id(),
+            tab,
+            frame,
+            is_navigation,
+            url: request.url.clone(),
+            method: request.method.as_str().to_owned(),
+            headers: request.headers.clone(),
+            resource_type: resource_type_for(request.policy.kind()).to_owned(),
+        });
         if self.broker.is_blocked_url(tab, request.url.as_str()) {
-            if let Some(id) = request_id {
-                self.broker.fetch_error(
-                    id,
-                    tab,
-                    frame,
-                    is_navigation,
-                    &request.url,
-                    "net::ERR_BLOCKED_BY_CLIENT",
-                );
+            if let Some(ref meta) = request_meta {
+                self.broker.emit_before_request_unblocked(meta);
+                self.broker
+                    .fetch_error(meta, &request.url, "net::ERR_BLOCKED_BY_CLIENT");
             }
             return Err(DialFailure::Cancelled);
         }
         let modified_request = match self
-            .intercept_before_dial(request_id, tab, frame, is_navigation, request)
+            .intercept_before_dial(request_meta.as_mut(), request)
             .await?
         {
             DialIntercept::Synthetic(outcome) => return Ok(outcome),
@@ -685,19 +649,13 @@ impl TabNetworkHandle {
             .await;
         let result = match result {
             Ok(outcome) => {
-                self.intercept_dial_response(request_id, tab, frame, is_navigation, owner, outcome)
+                self.intercept_dial_response(request_meta.as_ref(), owner, outcome)
                     .await
             }
             Err(failure) => {
-                if let Some(id) = request_id {
-                    self.broker.fetch_error(
-                        id,
-                        tab,
-                        frame,
-                        is_navigation,
-                        &effective.url,
-                        &format!("{failure:?}"),
-                    );
+                if let Some(ref meta) = request_meta {
+                    self.broker
+                        .fetch_error(meta, &effective.url, &format!("{failure:?}"));
                 }
                 Err(failure)
             }
@@ -708,29 +666,13 @@ impl TabNetworkHandle {
 
     async fn intercept_before_dial(
         &self,
-        request_id: Option<NetworkRequestId>,
-        tab: Option<TabId>,
-        frame: renderer::FrameId,
-        is_navigation: bool,
+        request_meta: Option<&mut RequestMeta>,
         request: &DialRequest,
     ) -> Result<DialIntercept, DialFailure> {
-        let Some(id) = request_id else {
+        let Some(meta) = request_meta else {
             return Ok(DialIntercept::Continue(None));
         };
-        match self
-            .broker
-            .before_request_sent(
-                id,
-                tab,
-                frame,
-                is_navigation,
-                &request.url,
-                request.method.as_str(),
-                request.headers.clone(),
-                resource_type_for(request.policy.kind()),
-            )
-            .await
-        {
+        match self.broker.before_request_sent(meta).await {
             BeforeRequestAction::Proceed => Ok(DialIntercept::Continue(None)),
             BeforeRequestAction::Continue {
                 url,
@@ -742,14 +684,17 @@ impl TabNetworkHandle {
                 if let Some(spec) = url
                     && let Ok(parsed) = Url::parse(&spec)
                 {
+                    meta.url = parsed.clone();
                     next.url = parsed;
                 }
                 if let Some(name) = method
                     && let Ok(parsed) = Method::parse(&name)
                 {
+                    parsed.as_str().clone_into(&mut meta.method);
                     next.method = parsed;
                 }
                 if let Some(hdrs) = headers {
+                    meta.headers.clone_from(&hdrs);
                     next.headers = hdrs;
                 }
                 if let Some(bytes) = body {
@@ -763,25 +708,19 @@ impl TabNetworkHandle {
                 headers,
                 body,
             } => Ok(DialIntercept::Synthetic(self.synthetic_dial_outcome(
-                id,
-                tab,
-                frame,
-                is_navigation,
-                request.url.clone(),
-                status,
-                reason_phrase,
-                headers,
-                body,
+                meta,
+                SyntheticResponse {
+                    url: request.url.clone(),
+                    status,
+                    reason_phrase,
+                    headers,
+                    body,
+                    emit_started: true,
+                },
             ))),
             BeforeRequestAction::Fail => {
-                self.broker.fetch_error(
-                    id,
-                    tab,
-                    frame,
-                    is_navigation,
-                    &request.url,
-                    "net::ERR_FAILED",
-                );
+                self.broker
+                    .fetch_error(meta, &request.url, "net::ERR_FAILED");
                 Err(DialFailure::Connect)
             }
         }
@@ -789,35 +728,25 @@ impl TabNetworkHandle {
 
     async fn intercept_dial_response(
         &self,
-        request_id: Option<NetworkRequestId>,
-        tab: Option<TabId>,
-        frame: renderer::FrameId,
-        is_navigation: bool,
+        request_meta: Option<&RequestMeta>,
         owner: RendererAssignmentId,
         mut outcome: DialOutcome,
     ) -> Result<DialOutcome, DialFailure> {
-        let Some(id) = request_id else {
+        let Some(meta) = request_meta else {
             return Ok(outcome);
         };
         let mime = mime_from_headers(&outcome.headers);
-        match self
-            .broker
-            .response_started(
-                id,
-                tab,
-                frame,
-                is_navigation,
-                &outcome.final_url,
-                outcome.status,
-                &outcome.status_text,
-                outcome.headers.clone(),
-                &mime,
-                false,
-            )
-            .await
-        {
+        let resp_meta = ResponseMeta {
+            url: outcome.final_url.clone(),
+            status: outcome.status,
+            status_text: outcome.status_text.clone(),
+            headers: outcome.headers.clone(),
+            mime_type: mime,
+            from_cache: false,
+        };
+        match self.broker.response_started(meta, &resp_meta).await {
             ResponseAction::Proceed => {
-                self.record_dial_completed(id, tab, frame, is_navigation, &outcome, &mime);
+                self.record_dial_completed(meta, &outcome, &resp_meta);
                 Ok(outcome)
             }
             ResponseAction::Modify {
@@ -835,8 +764,15 @@ impl TabNetworkHandle {
                     outcome.content_type = net::combined_header_in(&hdrs, "content-type");
                     outcome.headers = hdrs;
                 }
-                let next_mime = mime_from_headers(&outcome.headers);
-                self.record_dial_completed(id, tab, frame, is_navigation, &outcome, &next_mime);
+                let updated = ResponseMeta {
+                    url: outcome.final_url.clone(),
+                    status: outcome.status,
+                    status_text: outcome.status_text.clone(),
+                    headers: outcome.headers.clone(),
+                    mime_type: mime_from_headers(&outcome.headers),
+                    from_cache: false,
+                };
+                self.record_dial_completed(meta, &outcome, &updated);
                 Ok(outcome)
             }
             ResponseAction::ProvideResponse {
@@ -849,29 +785,23 @@ impl TabNetworkHandle {
                     self.cancel_stream(owner, stream);
                 }
                 Ok(self.synthetic_dial_outcome(
-                    id,
-                    tab,
-                    frame,
-                    is_navigation,
-                    outcome.final_url,
-                    status,
-                    reason_phrase,
-                    headers,
-                    body,
+                    meta,
+                    SyntheticResponse {
+                        url: outcome.final_url,
+                        status,
+                        reason_phrase,
+                        headers,
+                        body,
+                        emit_started: false,
+                    },
                 ))
             }
             ResponseAction::Fail => {
                 if let ResponseBody::Streamed(stream) = outcome.body {
                     self.cancel_stream(owner, stream);
                 }
-                self.broker.fetch_error(
-                    id,
-                    tab,
-                    frame,
-                    is_navigation,
-                    &outcome.final_url,
-                    "net::ERR_FAILED",
-                );
+                self.broker
+                    .fetch_error(meta, &outcome.final_url, "net::ERR_FAILED");
                 Err(DialFailure::Connect)
             }
         }
@@ -879,74 +809,46 @@ impl TabNetworkHandle {
 
     fn record_dial_completed(
         &self,
-        id: NetworkRequestId,
-        tab: Option<TabId>,
-        frame: renderer::FrameId,
-        is_navigation: bool,
+        meta: &RequestMeta,
         outcome: &DialOutcome,
-        mime: &str,
+        resp: &ResponseMeta,
     ) {
         let body_len = match &outcome.body {
             ResponseBody::Bytes(bytes) => {
-                self.broker.record_body(id, bytes);
+                self.broker.record_body(meta.request_id, meta.tab, bytes);
                 bytes.len()
             }
             ResponseBody::Undecodable | ResponseBody::Streamed(_) => 0,
         };
-        self.broker.response_completed(
-            id,
-            tab,
-            frame,
-            is_navigation,
-            &outcome.final_url,
-            outcome.status,
-            &outcome.status_text,
-            outcome.headers.clone(),
-            mime,
-            false,
-            body_len,
-        );
+        self.broker.response_completed(meta, resp, body_len);
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "constructs synthetic subresource outcome from intercepted response parts"
-    )]
-    fn synthetic_dial_outcome(
-        &self,
-        request_id: NetworkRequestId,
-        tab: Option<TabId>,
-        frame: renderer::FrameId,
-        is_navigation: bool,
-        final_url: Url,
-        status: u16,
-        reason_phrase: String,
-        headers: Vec<(String, String)>,
-        body: Vec<u8>,
-    ) -> DialOutcome {
-        let content_type = net::combined_header_in(&headers, "content-type");
-        let mime = mime_from_headers(&headers);
-        self.broker.record_body(request_id, &body);
-        self.broker.response_completed(
-            request_id,
-            tab,
-            frame,
-            is_navigation,
-            &final_url,
-            status,
-            &reason_phrase,
-            headers.clone(),
-            &mime,
-            false,
-            body.len(),
-        );
+    fn synthetic_dial_outcome(&self, meta: &RequestMeta, resp: SyntheticResponse) -> DialOutcome {
+        let content_type = net::combined_header_in(&resp.headers, "content-type");
+        let mime = mime_from_headers(&resp.headers);
+        let resp_meta = ResponseMeta {
+            url: resp.url.clone(),
+            status: resp.status,
+            status_text: resp.reason_phrase.clone(),
+            headers: resp.headers.clone(),
+            mime_type: mime,
+            from_cache: false,
+        };
+        if resp.emit_started {
+            self.broker
+                .emit_response_started_unblocked(meta, &resp_meta);
+        }
+        self.broker
+            .record_body(meta.request_id, meta.tab, &resp.body);
+        self.broker
+            .response_completed(meta, &resp_meta, resp.body.len());
         DialOutcome {
-            status,
-            status_text: reason_phrase,
-            final_url,
+            status: resp.status,
+            status_text: resp.reason_phrase,
+            final_url: resp.url,
             content_type,
-            headers,
-            body: ResponseBody::Bytes(body),
+            headers: resp.headers,
+            body: ResponseBody::Bytes(resp.body),
             response_type: net::cors::ResponseType::Basic,
             crossed_origin: false,
             redirect_count: 0,
@@ -1209,7 +1111,17 @@ enum DialIntercept {
     Synthetic(DialOutcome),
 }
 
-fn mime_from_headers(headers: &[(String, String)]) -> String {
+struct SyntheticResponse {
+    url: Url,
+    status: u16,
+    reason_phrase: String,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+    emit_started: bool,
+}
+
+#[must_use]
+pub fn mime_from_headers(headers: &[(String, String)]) -> String {
     net::combined_header_in(headers, "content-type").map_or_default(|raw| {
         raw.split(';')
             .next()

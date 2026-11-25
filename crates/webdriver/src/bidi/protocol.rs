@@ -166,7 +166,6 @@ const __tbBidi = (() => {
       sharedNodes: new WeakMap(),
       sharedById: Object.create(null),
       nextShared: 1,
-      realmId: 'realm-' + Math.random().toString(36).slice(2, 10),
     };
   }
   const st = host.__tbBidiState;
@@ -402,7 +401,7 @@ const __tbBidi = (() => {
     return out;
   }
 
-  function deserialize(local, contextId) {
+  function deserialize(local, contextId, realmId) {
     if (local === null || typeof local !== 'object') {
       throw new Error('__tb_bidi_invalid:local value must be an object');
     }
@@ -442,17 +441,17 @@ const __tbBidi = (() => {
         return new RegExp(local.value.pattern, local.value.flags || '');
       case 'array':
         if (!Array.isArray(local.value)) throw new Error('__tb_bidi_invalid:array');
-        return local.value.map(item => deserialize(item, contextId));
+        return local.value.map(item => deserialize(item, contextId, realmId));
       case 'set':
         if (!Array.isArray(local.value)) throw new Error('__tb_bidi_invalid:set');
-        return new Set(local.value.map(item => deserialize(item, contextId)));
+        return new Set(local.value.map(item => deserialize(item, contextId, realmId)));
       case 'map': {
         if (!Array.isArray(local.value)) throw new Error('__tb_bidi_invalid:map');
         const m = new Map();
         for (const pair of local.value) {
           if (!Array.isArray(pair) || pair.length !== 2) throw new Error('__tb_bidi_invalid:map entry');
-          const k = typeof pair[0] === 'string' ? pair[0] : deserialize(pair[0], contextId);
-          m.set(k, deserialize(pair[1], contextId));
+          const k = typeof pair[0] === 'string' ? pair[0] : deserialize(pair[0], contextId, realmId);
+          m.set(k, deserialize(pair[1], contextId, realmId));
         }
         return m;
       }
@@ -461,8 +460,8 @@ const __tbBidi = (() => {
         const o = {};
         for (const pair of local.value) {
           if (!Array.isArray(pair) || pair.length !== 2) throw new Error('__tb_bidi_invalid:object entry');
-          const k = typeof pair[0] === 'string' ? pair[0] : deserialize(pair[0], contextId);
-          o[k] = deserialize(pair[1], contextId);
+          const k = typeof pair[0] === 'string' ? pair[0] : deserialize(pair[0], contextId, realmId);
+          o[k] = deserialize(pair[1], contextId, realmId);
         }
         return o;
       }
@@ -474,11 +473,12 @@ const __tbBidi = (() => {
         const maxObjDepth = opts.maxObjectDepth === undefined ? null : opts.maxObjectDepth;
         const maxDomDepth = opts.maxDomDepth === undefined ? 0 : opts.maxDomDepth;
         const own = cfg.ownership || 'none';
+        const effectiveRealm = realmId || ('realm-' + contextId);
         return function(data) {
           const payload = JSON.stringify({
             channel: channelName,
             data: serialize(data, maxObjDepth, maxDomDepth, contextId, own),
-            realm: st.realmId,
+            realm: effectiveRealm,
             context: contextId,
           });
           if (typeof globalThis.__tbBidiChannelEmit === 'function') {

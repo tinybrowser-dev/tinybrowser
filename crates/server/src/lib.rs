@@ -46,6 +46,14 @@ impl Shutdown {
         *self.rx.borrow()
     }
 
+    pub async fn wait(&self) {
+        let mut rx = self.subscribe();
+        if *rx.borrow() {
+            return;
+        }
+        let _ = rx.changed().await;
+    }
+
     fn subscribe(&self) -> watch::Receiver<bool> {
         self.tx.subscribe()
     }

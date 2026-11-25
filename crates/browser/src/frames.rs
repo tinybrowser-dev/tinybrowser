@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use renderer::{FrameId, FrameKind, SandboxFlags, SerializedOrigin};
+use renderer::{ContextName, FrameId, FrameKind, SandboxFlags, SerializedOrigin};
 use url::Url;
 
 use crate::site::Site;
@@ -13,7 +13,7 @@ pub struct FrameInfo {
     pub id: FrameId,
     pub parent: Option<FrameId>,
     pub url: String,
-    pub name: Option<String>,
+    pub name: Option<ContextName>,
 }
 
 #[derive(Clone, Debug)]
@@ -24,6 +24,7 @@ struct FrameEntry {
     origin: Option<url::Origin>,
     site: Option<Site>,
     url: String,
+    name: Option<ContextName>,
     order: u64,
 }
 
@@ -70,7 +71,7 @@ impl FrameTree {
     }
 
     #[must_use]
-    pub(crate) fn snapshot(&self, main_name: Option<String>) -> Vec<FrameInfo> {
+    pub(crate) fn snapshot(&self, main_name: Option<ContextName>) -> Vec<FrameInfo> {
         let mut out = Vec::with_capacity(self.children.len() + 1);
         out.push(FrameInfo {
             id: FrameId::MAIN,
@@ -93,7 +94,7 @@ impl FrameTree {
                 id,
                 parent: Some(entry.parent),
                 url: entry.url.clone(),
-                name: None,
+                name: entry.name.clone(),
             });
         }
         out
@@ -172,6 +173,7 @@ impl FrameTree {
                 origin: None,
                 site: None,
                 url: "about:blank".to_owned(),
+                name: None,
                 order,
             },
         );

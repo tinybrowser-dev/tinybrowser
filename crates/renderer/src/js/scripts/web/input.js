@@ -3,9 +3,13 @@
   const { Event, MouseEvent, PointerEvent, KeyboardEvent, InputEvent, WheelEvent } = globalThis;
   const addEventListener = Node.prototype.addEventListener;
   const changeState = host.slots('input change state');
+  const uploadPaths = host.slots('input upload paths');
   const pointerStates = new __tbPrivateMap();
+  const pointerIds = [];
+  const pressedKeys = [];
   const pointerState = (id, pointerType) => {
     if (!pointerStates.has(id)) {
+      pointerIds.push(id);
       pointerStates.set(id, { x: 0, y: 0, buttons: 0, target: null, pointerType: pointerType || 'mouse' });
     }
     return pointerStates.get(id);
@@ -422,10 +426,14 @@
       : (activeDocument(doc).activeElement
          || activeDocument(doc).body || activeDocument(doc).documentElement);
     const mods = modifierInit(item.modifiers || 0);
+    const resolveKey = () => (shiftDown && info.key.length === 1 && info.key >= 'a' && info.key <= 'z')
+      ? info.key.toUpperCase()
+      : info.key;
     const keyEvent = type => new KeyboardEvent(type, Object.assign({
-      bubbles: true, cancelable: true, key: info.key, code: info.code, location: info.location,
+      bubbles: true, cancelable: true, key: resolveKey(), code: info.code, location: info.location,
     }, modifierInit(item.modifiers || 0)));
     if (down) {
+      if (!pressedKeys.includes(value)) pressedKeys.push(value);
       if (value === '\uE008' || value === '\uE050') shiftDown = true;
       else if (value === '\uE009' || value === '\uE051') ctrlDown = true;
       else if (value === '\uE00A' || value === '\uE052') altDown = true;
@@ -469,7 +477,7 @@
       }
       const text = value === '\uE00D' ? ' '
         : (value === '\uE006' || value === '\uE007') ? '\n'
-        : specialKeys[value] ? null : value;
+        : specialKeys[value] ? null : resolveKey();
       if (text === null) return;
       if (!fire(node, keyEvent('keypress'))) return;
       if (mods.ctrlKey || mods.altKey || mods.metaKey) return;
@@ -481,13 +489,15 @@
         insertText(text, doc);
       }
     } else {
+      const keyIdx = pressedKeys.indexOf(value);
+      if (keyIdx !== -1) pressedKeys.splice(keyIdx, 1);
       if (value === '\uE00D') clearActive();
       if (value === '\uE008' || value === '\uE050') shiftDown = false;
       else if (value === '\uE009' || value === '\uE051') ctrlDown = false;
       else if (value === '\uE00A' || value === '\uE052') altDown = false;
       else if (value === '\uE03D' || value === '\uE053') metaDown = false;
       fire(node, new KeyboardEvent('keyup', Object.assign({
-        bubbles: true, cancelable: true, key: info.key, code: info.code, location: info.location,
+        bubbles: true, cancelable: true, key: resolveKey(), code: info.code, location: info.location,
       }, mods)));
     }
   };
@@ -598,19 +608,30 @@
       for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
       return bytes;
     };
+    const prevPaths = uploadPaths.get(element) || [];
     const selected = [];
+    const nextPaths = [];
     if (append) {
       const current = element.files;
       for (let index = 0; index < current.length; index++) selected.push(current[index]);
+      for (let index = 0; index < prevPaths.length; index++) nextPaths.push(prevPaths[index]);
     }
     for (const file of files) {
       selected.push(new File([decode(file.data)], file.name, {
         type: file.type, lastModified: file.lastModified,
       }));
+      nextPaths.push(file.path !== undefined ? file.path : file.name);
     }
+    const sameSelection = nextPaths.length === prevPaths.length
+      && nextPaths.every((p, idx) => p === prevPaths[idx]);
     element.files = host.__tbCreateFileList(selected);
-    fire(element, new Event('input', { bubbles: true }));
-    fire(element, new Event('change', { bubbles: true }));
+    uploadPaths.set(element, nextPaths);
+    if (sameSelection) {
+      fire(element, new Event('cancel', { bubbles: true }));
+    } else {
+      fire(element, new Event('input', { bubbles: true }));
+      fire(element, new Event('change', { bubbles: true }));
+    }
     return 'ok';
   };
   Object.defineProperty(host, '__tbWebDriverUpload', {
@@ -720,6 +741,41 @@
     return true;
   };
   Object.defineProperty(host, '__tbWebDriverActions', {
+    writable: false, configurable: false, enumerable: false,
+  });
+  host.__tbWebDriverPointerPos = function(id) {
+    const state = pointerStates.get(id);
+    return state ? [state.x, state.y] : [0, 0];
+  };
+  Object.defineProperty(host, '__tbWebDriverPointerPos', {
+    writable: false, configurable: false, enumerable: false,
+  });
+  // https://w3c.github.io/webdriver/#release-actions
+  host.__tbWebDriverReleaseActions = function() {
+    while (pressedKeys.length > 0) {
+      const value = pressedKeys.pop();
+      keyItem({ type: 'keyUp', value }, false);
+    }
+    shiftDown = false;
+    ctrlDown = false;
+    altDown = false;
+    metaDown = false;
+    while (pointerIds.length > 0) {
+      const id = pointerIds.pop();
+      const state = pointerStates.get(id);
+      if (state) {
+        for (let button = 0; button < 5; button++) {
+          if (state.buttons & (1 << button)) {
+            pointerItem(state, { type: 'pointerUp', button });
+          }
+        }
+        pointerStates.delete(id);
+      }
+    }
+    clearActive();
+    return true;
+  };
+  Object.defineProperty(host, '__tbWebDriverReleaseActions', {
     writable: false, configurable: false, enumerable: false,
   });
 })();

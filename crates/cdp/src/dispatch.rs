@@ -1965,53 +1965,61 @@ async fn dom_remove_node(tab: &TabHandle, params: &Value) -> Result<Value, Dispa
 
 // https://chromedevtools.github.io/devtools-protocol/tot/DOM/#method-setFileInputFiles
 async fn dom_set_file_input_files(tab: &TabHandle, params: &Value) -> Result<Value, DispatchError> {
+    const MAX_UPLOAD_BYTES: u64 = 64 * 1024 * 1024;
     let params: crate::params::DomSetFileInputFiles = crate::params::parse(params)?;
     if !has_node_identifier(&params.target) {
         return Err(DispatchError::InvalidParams(
             "nodeId, backendNodeId, or objectId".to_owned(),
         ));
     }
-    let object_id = resolve_target_object_id(tab, &params.target).await?;
-    let names: Vec<String> = params
-        .files
-        .iter()
-        .map(|raw| {
-            Path::new(raw)
+    let raw_paths = params.files;
+    let files = tokio::task::spawn_blocking(move || -> Result<Vec<Value>, String> {
+        use std::io::Read as _;
+        let mut out = Vec::with_capacity(raw_paths.len());
+        for raw in raw_paths {
+            let metadata = std::fs::metadata(&raw).map_err(|_| format!("file not found: {raw}"))?;
+            if !metadata.is_file() {
+                return Err(format!("path is not a file: {raw}"));
+            }
+            let file =
+                std::fs::File::open(&raw).map_err(|_| format!("file cannot be read: {raw}"))?;
+            let mut bytes = Vec::new();
+            file.take(MAX_UPLOAD_BYTES + 1)
+                .read_to_end(&mut bytes)
+                .map_err(|_| format!("file cannot be read: {raw}"))?;
+            if bytes.len() as u64 > MAX_UPLOAD_BYTES {
+                return Err(format!("file exceeds maximum upload size: {raw}"));
+            }
+            let name = Path::new(&raw)
                 .file_name()
                 .and_then(|s| s.to_str())
-                .unwrap_or(raw)
-                .to_owned()
-        })
-        .collect();
-    let script = format!(
-        "(() => {{\n\
-           const el = host.__tb_handles[{}];\n\
-           if (!el || el.nodeType !== 1) return false;\n\
-           const names = {};\n\
-           const list = names.map(name => typeof File === 'function' ? new File([], name) : {{ name, size: 0, type: '' }});\n\
-           list.item = i => (i >= 0 && i < list.length ? list[i] : null);\n\
-           try {{\n\
-             if (typeof DataTransfer === 'function') {{\n\
-               const dt = new DataTransfer();\n\
-               for (const f of list) dt.items.add(f);\n\
-               el.files = dt.files;\n\
-             }} else {{\n\
-               Object.defineProperty(el, 'files', {{ value: list, configurable: true }});\n\
-             }}\n\
-           }} catch (_) {{\n\
-             Object.defineProperty(el, 'files', {{ value: list, configurable: true }});\n\
-           }}\n\
-           el.dispatchEvent(new Event('input', {{ bubbles: true }}));\n\
-           el.dispatchEvent(new Event('change', {{ bubbles: true }}));\n\
-           return true;\n\
-         }})()",
-        json_string(&object_id),
-        json!(names),
+                .unwrap_or(&raw)
+                .to_owned();
+            let last_modified = metadata
+                .modified()
+                .ok()
+                .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+                .map_or(0, |duration| {
+                    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+                });
+            out.push(json!({
+                "name": name,
+                "data": BASE64_STANDARD.encode(&bytes),
+                "type": "",
+                "lastModified": last_modified,
+            }));
+        }
+        Ok(out)
+    })
+    .await
+    .map_err(|error| DispatchError::Failed(format!("upload reader failed: {error}")))?
+    .map_err(DispatchError::InvalidParams)?;
+    let files_json = serde_json::to_string(&Value::Array(files)).unwrap_or_else(|_| "[]".into());
+    let action = format!(
+        "if (!el || el.nodeType !== 1 || el.tagName !== 'INPUT' || el.type !== 'file') return false; \
+         return host.__tbWebDriverUpload(el, {files_json}, false, false) === 'ok';"
     );
-    tab.execute_browser_script(&script)
-        .await
-        .map_err(|error| DispatchError::Failed(error.to_string()))?;
-    Ok(json!({}))
+    run_dom_mutation(tab, &params.target, &action).await
 }
 
 // https://chromedevtools.github.io/devtools-protocol/tot/Network/#type-Cookie
@@ -2072,10 +2080,11 @@ pub(crate) fn cookie_param_to_direct(
         .unwrap_or_else(|| parsed_url.as_ref().is_some_and(|u| u.scheme() == "https"));
     let http_only = param.http_only.unwrap_or(false);
     let same_site = match param.same_site.as_deref() {
+        None => CookieSameSite::Default,
         Some("Strict") => CookieSameSite::Strict,
         Some("Lax") => CookieSameSite::Lax,
         Some("None") => CookieSameSite::None,
-        _ => CookieSameSite::Default,
+        Some(_) => return Err(DispatchError::InvalidParams("sameSite".to_owned())),
     };
     let expiry = param.expires.and_then(|ts| {
         if ts < 0.0 || !ts.is_finite() {

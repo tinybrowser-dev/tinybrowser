@@ -203,6 +203,29 @@ async fn dispatch_elements(
         ("GET", ["session", session, "element", element, "screenshot"]) => {
             take_element_screenshot(sessions, session, element).await
         }
+        (
+            _,
+            ["session", _, "element" | "elements"]
+            | ["session", _, "element", "active"]
+            | [
+                "session",
+                _,
+                "element",
+                _,
+                "element" | "elements" | "shadow" | "selected" | "text" | "name" | "rect"
+                | "enabled" | "computedrole" | "computedlabel" | "click" | "clear" | "value"
+                | "screenshot",
+            ]
+            | [
+                "session",
+                _,
+                "element",
+                _,
+                "attribute" | "property" | "css",
+                _,
+            ]
+            | ["session", _, "shadow", _, "element" | "elements"],
+        ) => method_not_allowed(),
         _ => return None,
     };
     Some(reply)
@@ -253,6 +276,17 @@ async fn dispatch_misc(
             })
             .await
         }
+        (
+            _,
+            ["session", _, "execute", "sync" | "async"]
+            | [
+                "session",
+                _,
+                "cookie" | "actions" | "screenshot" | "permissions",
+            ]
+            | ["session", _, "cookie", _]
+            | ["session", _, "alert", "dismiss" | "accept" | "text"],
+        ) => method_not_allowed(),
         _ => return None,
     };
     Some(reply)
@@ -285,11 +319,7 @@ async fn create_session(sessions: &Mutex<Sessions>, body: &str) -> (u16, Value) 
             return error(500, "session not created", &msg);
         }
     };
-    let mut guard = sessions.lock().await;
-    if !guard.open.is_empty() {
-        return error(500, "session not created", "already have a session");
-    }
-    match guard.create(matched).await {
+    match crate::session::create_session(sessions, matched).await {
         Ok((id, capabilities)) => ok(json!({"sessionId": id, "capabilities": capabilities})),
         Err(err) => error(500, "session not created", &err),
     }
@@ -1008,7 +1038,17 @@ fn script_error(err: &TabError) -> (u16, Value) {
         TabError::Script(ScriptFailure::Interrupted) => {
             error(500, "script timeout", "script timeout")
         }
-        _ => error(500, "javascript error", &err.to_string()),
+        TabError::Script(
+            ScriptFailure::Engine { .. } | ScriptFailure::BadTimerId | ScriptFailure::HostMissing,
+        )
+        | TabError::InvalidUrl { .. }
+        | TabError::UnknownFrame { .. }
+        | TabError::UnknownHistoryEntry { .. }
+        | TabError::ActorStopped
+        | TabError::RendererUnavailable { .. }
+        | TabError::ResourceLimit { .. }
+        | TabError::Render { .. }
+        | TabError::Dom { .. } => error(500, "javascript error", &err.to_string()),
     }
 }
 
@@ -1093,7 +1133,10 @@ fn wd_script_setup(slot_id: u64, handle_json: &Value) -> String {
              if (el === null) {{ slot.stale = true; slot.done = true; throw new Error('stale'); }}\n\
              return el;\n\
            }}\n\
-           if (typeof v.__tbWdWindow === 'string') return globalThis;\n\
+           if (typeof v.__tbWdWindow === 'string') {{\n\
+             if (v.__tbWdWindow === {handle_json}) return globalThis;\n\
+             throw new Error('cross-window reference is not accessible');\n\
+           }}\n\
            if (Array.isArray(v)) return v.map(revive);\n\
            const out = {{}};\n\
            for (const k of Object.keys(v)) out[k] = revive(v[k]);\n\
@@ -1449,7 +1492,7 @@ async fn find_matches_with_implicit(
         Some(el) => Some(resolve_element_remote(snapshot, el)?),
         None => None,
     };
-    let deadline = Instant::now() + snapshot.implicit_timeout.unwrap_or(Duration::from_secs(30));
+    let deadline = Instant::now() + snapshot.implicit_timeout.unwrap_or(Duration::ZERO);
     loop {
         let matches = find_matches_once(snapshot, using, selector, root_remote, is_shadow).await?;
         if !matches.is_empty() || Instant::now() >= deadline {
@@ -2012,7 +2055,16 @@ async fn element_send_keys(
          if(el===null)return 'stale';return host.__tbWebDriverSendKeys(el, {});}})()",
         json!(text)
     );
-    match exec_in_frame(&snapshot, &script).await {
+    let mut prompt_rx = snapshot.browser.prompt_broker().subscribe();
+    let tab_id = snapshot.tab.id();
+    let result = tokio::select! {
+        res = exec_in_frame(&snapshot, &script) => Some(res),
+        () = wait_for_prompt_opened(&mut prompt_rx, tab_id) => None,
+    };
+    let Some(result) = result else {
+        return ok(Value::Null);
+    };
+    match result {
         Ok(RemoteValue::String(s)) if s == "ok" => ok(Value::Null),
         Ok(RemoteValue::String(s)) if s == "not_interactable" => error(
             400,
@@ -2034,7 +2086,7 @@ async fn send_file_keys(
     if text.is_empty() {
         return error(400, "invalid argument", "file paths are empty");
     }
-    let paths: Vec<&str> = text.split('\n').collect();
+    let paths: Vec<String> = text.split('\n').map(str::to_owned).collect();
     if !multiple && paths.len() > 1 {
         return error(
             400,
@@ -2042,34 +2094,10 @@ async fn send_file_keys(
             "multiple files for a single-file input",
         );
     }
-    let mut files = Vec::with_capacity(paths.len());
-    for path in paths {
-        let Ok(metadata) = std::fs::metadata(path) else {
-            return error(400, "invalid argument", "file path does not exist");
-        };
-        if !metadata.is_file() {
-            return error(400, "invalid argument", "file path is not a file");
-        }
-        let Ok(bytes) = std::fs::read(path) else {
-            return error(400, "invalid argument", "file path cannot be read");
-        };
-        let name = std::path::Path::new(path).file_name().map_or_else(
-            || path.to_owned(),
-            |name| name.to_string_lossy().into_owned(),
-        );
-        files.push(json!({
-            "name": name,
-            "data": BASE64.encode(bytes),
-            "type": "",
-            "lastModified": metadata
-                .modified()
-                .ok()
-                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-                .map_or(0, |duration| {
-                    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-                }),
-        }));
-    }
+    let files = match crate::session::read_upload_files(paths).await {
+        Ok(files) => files,
+        Err(message) => return error(400, "invalid argument", &message),
+    };
     let script = format!(
         "(function(){{const el=host.__tb_webdriver_element({remote});\
          if(el===null)return 'stale';\
@@ -2220,7 +2248,7 @@ fn validate_pointer_action(action: &str, item: &Map<String, Value>) -> Result<()
             for name in ["x", "y"] {
                 if !item
                     .get(name)
-                    .is_some_and(|value| action_integer(value, -ACTION_MAX_SAFE, ACTION_MAX_SAFE))
+                    .is_some_and(|value| action_safe_integer(value, false))
                 {
                     return Err(format!("pointerMove {name} must be an integer"));
                 }
@@ -2242,7 +2270,7 @@ fn validate_wheel_action(action: &str, item: &Map<String, Value>) -> Result<(), 
     for name in ["x", "y", "deltaX", "deltaY"] {
         if !item
             .get(name)
-            .is_some_and(|value| action_integer(value, -ACTION_MAX_SAFE, ACTION_MAX_SAFE))
+            .is_some_and(|value| action_safe_integer(value, false))
         {
             return Err(format!("scroll {name} must be an integer"));
         }
@@ -2253,12 +2281,9 @@ fn validate_wheel_action(action: &str, item: &Map<String, Value>) -> Result<(), 
 
 // https://w3c.github.io/webdriver/#dfn-actions
 fn pointer_common_properties(item: &Map<String, Value>) -> Result<(), String> {
-    for (name, min, max) in [
-        ("width", 0.0, ACTION_MAX_SAFE),
-        ("height", 0.0, ACTION_MAX_SAFE),
-    ] {
+    for name in ["width", "height"] {
         if let Some(value) = item.get(name)
-            && !action_integer(value, min, max)
+            && !action_safe_integer(value, true)
         {
             return Err(format!("{name} must be a non-negative integer"));
         }
@@ -2290,7 +2315,22 @@ fn pointer_common_properties(item: &Map<String, Value>) -> Result<(), String> {
     Ok(())
 }
 
-const ACTION_MAX_SAFE: f64 = 9_007_199_254_740_991.0;
+fn action_safe_integer(value: &Value, non_negative: bool) -> bool {
+    if let Some(n) = value.as_i64() {
+        return crate::session::is_safe_i64(n) && (!non_negative || n >= 0);
+    }
+    if let Some(n) = value.as_u64() {
+        return n <= crate::session::MAX_SAFE_INT;
+    }
+    value.as_f64().is_some_and(|n| {
+        n.is_finite()
+            && n.fract() == 0.0
+            && (!non_negative || n >= 0.0)
+            && format!("{n:.0}")
+                .parse::<i64>()
+                .is_ok_and(crate::session::is_safe_i64)
+    })
+}
 
 fn action_integer(value: &Value, min: f64, max: f64) -> bool {
     value.as_f64().is_some_and(|number| {
@@ -2304,7 +2344,7 @@ fn action_number(value: &Value) -> bool {
 
 fn action_duration(item: &Map<String, Value>) -> Result<(), String> {
     if let Some(value) = item.get("duration")
-        && !action_integer(value, 0.0, ACTION_MAX_SAFE)
+        && !action_safe_integer(value, true)
     {
         return Err("duration must be a non-negative integer".into());
     }
@@ -2374,7 +2414,8 @@ async fn perform_actions(sessions: &Mutex<Sessions>, session: &str, body: &str) 
            for (const source of actions) {{\n\
              if (!source || !Array.isArray(source.actions)) continue;\n\
              if (source.type === 'pointer') {{\n\
-               let px = 0, py = 0;\n\
+               const startPos = host.__tbWebDriverPointerPos(source.id);\n\
+               let px = startPos[0], py = startPos[1];\n\
                for (const item of source.actions) {{\n\
                  if (!item || item.type !== 'pointerMove') continue;\n\
                  let tx, ty;\n\
@@ -2426,9 +2467,13 @@ async fn perform_actions(sessions: &Mutex<Sessions>, session: &str, body: &str) 
 
 // https://w3c.github.io/webdriver/#release-actions
 async fn release_actions(sessions: &Mutex<Sessions>, session: &str) -> (u16, Value) {
-    match snapshot_checking_alert(sessions, session).await {
+    let snapshot = match snapshot_checking_alert(sessions, session).await {
+        Ok(snapshot) => snapshot,
+        Err(reply) => return reply,
+    };
+    match exec_in_frame(&snapshot, "host.__tbWebDriverReleaseActions()").await {
         Ok(_) => ok(Value::Null),
-        Err(reply) => reply,
+        Err(err) => script_error(&err),
     }
 }
 
@@ -2791,12 +2836,12 @@ async fn delete_cookies(sessions: &Mutex<Sessions>, session: &str) -> (u16, Valu
 }
 
 fn rect_number(value: f64) -> Value {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "rect values are validated into the i32 range before storage"
-    )]
-    if value.fract() == 0.0 {
-        json!(value as i64)
+    if value.is_finite()
+        && value.fract() == 0.0
+        && (-2_147_483_648.0..=2_147_483_647.0).contains(&value)
+        && let Ok(int) = format!("{value:.0}").parse::<i64>()
+    {
+        json!(int)
     } else {
         json!(value)
     }
@@ -3021,19 +3066,26 @@ async fn new_window(sessions: &Mutex<Sessions>, session: &str, body: &str) -> (u
     if let Err(reply) = snapshot_top_level_checking_alert(sessions, session).await {
         return reply;
     }
-    let mut guard = sessions.lock().await;
-    guard.sync_windows(session).await;
-    if !guard.open.contains_key(session) {
-        return error(404, "invalid session id", session);
-    }
-    guard.next_window = guard.next_window.saturating_add(1);
-    let order = guard.next_window;
-    let tab = match guard.blank_window(UserContextId::default_context()).await {
+    let browser = {
+        let mut guard = sessions.lock().await;
+        guard.sync_windows(session).await;
+        if !guard.open.contains_key(session) {
+            return error(404, "invalid session id", session);
+        }
+        guard.browser.clone()
+    };
+    let tab = match crate::session::blank_window(&browser, UserContextId::default_context()).await {
         Ok(tab) => tab,
         Err(err) => return error(500, "unknown error", &err),
     };
     let handle = tab_handle_id(tab.id());
+    let mut guard = sessions.lock().await;
+    guard.next_window = guard.next_window.saturating_add(1);
+    let order = guard.next_window;
     let Some(found) = guard.open.get_mut(session) else {
+        let tab_id = tab.id();
+        drop(guard);
+        let _ = browser.close_tab(tab_id).await;
         return error(404, "invalid session id", session);
     };
     found.windows.insert(handle.clone(), Window { tab, order });

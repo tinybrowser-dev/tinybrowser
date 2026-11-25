@@ -9,13 +9,14 @@ use browser::{
     FrameId, InterceptDecision, InterceptId, InterceptPhase, InterceptResolveError,
     NetworkRequestId, TabHandle, TabId, UrlPattern, UserContextId,
 };
+use http::header::{HeaderName, HeaderValue};
 use serde_json::{Value, json};
 
 use crate::bidi::browsing_context::resolve_context;
 use crate::bidi::protocol::{
     BidiError, BidiResult, optional_bool, optional_str, require_object, require_str,
 };
-use crate::bidi::{BidiState, DataCollector};
+use crate::bidi::{BidiState, CollectorScope, DataCollector};
 use crate::session::{parse_context_id, random_id};
 
 // https://w3c.github.io/webdriver-bidi/#command-network-addIntercept
@@ -362,32 +363,20 @@ pub(crate) async fn set_cache_behavior(state: &Arc<BidiState>, params: &Value) -
 
 // https://fetch.spec.whatwg.org/#header-name
 fn is_valid_header_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.bytes().all(|b| {
-            matches!(
-                b,
-                b'!' | b'#' | b'$' | b'%' | b'&' | b'\'' | b'*' | b'+' | b'-' | b'.'
-                    | b'^' | b'_' | b'`' | b'|' | b'~'
-                    | b'0'..=b'9' | b'A'..=b'Z' | b'a'..=b'z'
-            )
-        })
+    HeaderName::from_bytes(name.as_bytes()).is_ok()
 }
 
 // https://fetch.spec.whatwg.org/#header-value
 fn is_valid_header_value(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    if bytes.first().is_some_and(|b| matches!(b, b' ' | b'\t'))
-        || bytes.last().is_some_and(|b| matches!(b, b' ' | b'\t'))
-    {
-        return false;
-    }
-    !bytes.iter().any(|b| matches!(b, 0 | b'\r' | b'\n'))
+    !value.starts_with([' ', '\t'])
+        && !value.ends_with([' ', '\t'])
+        && HeaderValue::from_str(value).is_ok()
 }
 
-async fn resolve_optional_scope_tabs(
+async fn resolve_optional_scope(
     state: &Arc<BidiState>,
     map: &serde_json::Map<String, Value>,
-) -> Result<Vec<TabHandle>, BidiError> {
+) -> Result<(CollectorScope, Vec<TabHandle>), BidiError> {
     let has_ctx = map.contains_key("contexts");
     let has_uc = map.contains_key("userContexts");
     if has_ctx && has_uc {
@@ -403,6 +392,7 @@ async fn resolve_optional_scope_tabs(
         if arr.is_empty() {
             return Err(BidiError::invalid_argument("contexts must not be empty"));
         }
+        let mut ids = HashSet::with_capacity(arr.len());
         for item in arr {
             let Some(raw) = item.as_str() else {
                 return Err(BidiError::invalid_argument("context must be a string"));
@@ -413,8 +403,10 @@ async fn resolve_optional_scope_tabs(
                     "context must be a top-level browsing context",
                 ));
             }
+            ids.insert(tab.id());
             tabs.push(tab);
         }
+        Ok((CollectorScope::Contexts(ids), tabs))
     } else if let Some(val) = map.get("userContexts") {
         let Some(arr) = val.as_array() else {
             return Err(BidiError::invalid_argument("userContexts must be an array"));
@@ -425,11 +417,14 @@ async fn resolve_optional_scope_tabs(
             ));
         }
         let known = state.browser.user_contexts().await.unwrap_or_default();
+        let mut ucs = HashSet::with_capacity(arr.len());
         for item in arr {
             let Some(raw) = item.as_str() else {
                 return Err(BidiError::invalid_argument("userContext must be a string"));
             };
-            let uc = UserContextId::new(raw);
+            let Some(uc) = UserContextId::parse(raw) else {
+                return Err(BidiError::no_such_user_context(raw));
+            };
             if !known.contains(&uc) {
                 return Err(BidiError::no_such_user_context(raw));
             }
@@ -440,15 +435,19 @@ async fn resolve_optional_scope_tabs(
                     }
                 }
             }
+            ucs.insert(uc);
         }
-    } else if let Ok(ids) = state.browser.tabs().await {
-        for id in ids {
-            if let Ok(tab) = state.browser.tab(id).await {
-                tabs.push(tab);
+        Ok((CollectorScope::UserContexts(ucs), tabs))
+    } else {
+        if let Ok(ids) = state.browser.tabs().await {
+            for id in ids {
+                if let Ok(tab) = state.browser.tab(id).await {
+                    tabs.push(tab);
+                }
             }
         }
+        Ok((CollectorScope::Global, tabs))
     }
-    Ok(tabs)
 }
 
 // https://w3c.github.io/webdriver-bidi/#command-network-setExtraHeaders
@@ -470,9 +469,11 @@ pub(crate) async fn set_extra_headers(state: &Arc<BidiState>, params: &Value) ->
             )));
         }
     }
-    let tabs = resolve_optional_scope_tabs(state, map).await?;
+    let (_scope, tabs) = resolve_optional_scope(state, map).await?;
     for tab in tabs {
-        let _ = tab.set_extra_headers(headers.clone()).await;
+        tab.set_extra_headers(headers.clone())
+            .await
+            .map_err(|err| BidiError::invalid_argument(err.to_string()))?;
     }
     Ok(json!({}))
 }
@@ -517,17 +518,42 @@ pub(crate) async fn add_data_collector(state: &Arc<BidiState>, params: &Value) -
             "invalid collectorType: {ct}"
         )));
     }
-    let _tabs = resolve_optional_scope_tabs(state, map).await?;
+    let (scope, _tabs) = resolve_optional_scope(state, map).await?;
     let id = random_id().unwrap_or_else(|_| "collector-1".to_owned());
     state.data_collectors.lock().await.insert(
         id.clone(),
         DataCollector {
             data_types,
             max_encoded_data_size: max_size,
+            scope,
             disowned: HashSet::new(),
         },
     );
     Ok(json!({ "collector": id }))
+}
+
+async fn collector_matches_tab(
+    state: &Arc<BidiState>,
+    collector: &DataCollector,
+    tab: Option<TabId>,
+) -> bool {
+    match &collector.scope {
+        CollectorScope::Global => true,
+        CollectorScope::Contexts(set) => tab.is_some_and(|t| set.contains(&t)),
+        CollectorScope::UserContexts(set) => {
+            let Some(tab_id) = tab else {
+                return false;
+            };
+            if let Some(uc) = state.tab_user_contexts.lock().await.get(&tab_id) {
+                return set.contains(uc);
+            }
+            state
+                .browser
+                .tab(tab_id)
+                .await
+                .is_ok_and(|handle| set.contains(handle.user_context()))
+        }
+    }
 }
 
 // https://w3c.github.io/webdriver-bidi/#command-network-removeDataCollector
@@ -567,6 +593,12 @@ pub(crate) async fn disown_data(state: &Arc<BidiState>, params: &Value) -> BidiR
             format!("unknown collector: {collector_id}"),
         ));
     };
+    if data_type == "request" {
+        return Err(BidiError::new(
+            "no such network data",
+            "request body collection is unavailable",
+        ));
+    }
     let Ok(req_num) = req_raw.parse::<u64>() else {
         return Err(BidiError::new(
             "no such network data",
@@ -587,12 +619,22 @@ pub(crate) async fn disown_data(state: &Arc<BidiState>, params: &Value) -> BidiR
             "data already disowned",
         ));
     }
-    let Some(bytes) = state.browser.network_broker().response_body(request_id) else {
+    let Some((body_tab, bytes)) = state
+        .browser
+        .network_broker()
+        .response_body_with_tab(request_id)
+    else {
         return Err(BidiError::new(
             "no such network data",
             "network data unavailable",
         ));
     };
+    if !collector_matches_tab(state, collector, body_tab).await {
+        return Err(BidiError::new(
+            "no such network data",
+            "request is outside collector scope",
+        ));
+    }
     if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > collector.max_encoded_data_size {
         return Err(BidiError::new(
             "no such network data",
@@ -601,6 +643,61 @@ pub(crate) async fn disown_data(state: &Arc<BidiState>, params: &Value) -> BidiR
     }
     collector.disowned.insert(key);
     Ok(json!({}))
+}
+
+fn encode_network_bytes(bytes: &[u8]) -> Value {
+    match std::str::from_utf8(bytes) {
+        Ok(text) => json!({ "bytes": { "type": "string", "value": text } }),
+        Err(_) => json!({ "bytes": { "type": "base64", "value": BASE64.encode(bytes) } }),
+    }
+}
+
+async fn get_data_for_collector(
+    state: &Arc<BidiState>,
+    collector: &mut DataCollector,
+    data_type: &str,
+    request_id: NetworkRequestId,
+    disown: bool,
+) -> BidiResult {
+    if data_type == "request" {
+        return Err(BidiError::new(
+            "no such network data",
+            "request body collection is unavailable",
+        ));
+    }
+    let key = (data_type.to_owned(), request_id);
+    if !collector.data_types.iter().any(|t| t == data_type) || collector.disowned.contains(&key) {
+        return Err(BidiError::new(
+            "no such network data",
+            "network data unavailable for collector",
+        ));
+    }
+    let Some((body_tab, bytes)) = state
+        .browser
+        .network_broker()
+        .response_body_with_tab(request_id)
+    else {
+        return Err(BidiError::new(
+            "no such network data",
+            "response body unavailable",
+        ));
+    };
+    if !collector_matches_tab(state, collector, body_tab).await {
+        return Err(BidiError::new(
+            "no such network data",
+            "request is outside collector scope",
+        ));
+    }
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > collector.max_encoded_data_size {
+        return Err(BidiError::new(
+            "no such network data",
+            "data exceeded collector limit",
+        ));
+    }
+    if disown {
+        collector.disowned.insert(key);
+    }
+    Ok(encode_network_bytes(&bytes))
 }
 
 // https://w3c.github.io/webdriver-bidi/#command-network-getData
@@ -635,45 +732,43 @@ pub(crate) async fn get_data(state: &Arc<BidiState>, params: &Value) -> BidiResu
                 format!("unknown collector: {cid}"),
             ));
         };
-        let key = (data_type.to_owned(), request_id);
-        if !collector.data_types.iter().any(|t| t == data_type) || collector.disowned.contains(&key)
-        {
-            return Err(BidiError::new(
-                "no such network data",
-                "network data unavailable for collector",
-            ));
-        }
-        let Some(bytes) = state.browser.network_broker().response_body(request_id) else {
-            return Err(BidiError::new(
-                "no such network data",
-                "response body unavailable",
-            ));
-        };
-        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > collector.max_encoded_data_size {
-            return Err(BidiError::new(
-                "no such network data",
-                "data exceeded collector limit",
-            ));
-        }
-        if disown {
-            collector.disowned.insert(key);
-        }
-        let val = match String::from_utf8(bytes.clone()) {
-            Ok(text) => json!({ "type": "string", "value": text }),
-            Err(_) => json!({ "type": "base64", "value": BASE64.encode(&bytes) }),
-        };
-        return Ok(json!({ "bytes": val }));
+        return get_data_for_collector(state, collector, data_type, request_id, disown).await;
     }
-    drop(collectors);
-    let Some(bytes) = state.browser.network_broker().response_body(request_id) else {
+    if data_type == "request" {
+        return Err(BidiError::new(
+            "no such network data",
+            "request body collection is unavailable",
+        ));
+    }
+    let Some((body_tab, bytes)) = state
+        .browser
+        .network_broker()
+        .response_body_with_tab(request_id)
+    else {
         return Err(BidiError::new(
             "no such network data",
             "response body unavailable",
         ));
     };
-    let val = match String::from_utf8(bytes.clone()) {
-        Ok(text) => json!({ "type": "string", "value": text }),
-        Err(_) => json!({ "type": "base64", "value": BASE64.encode(&bytes) }),
-    };
-    Ok(json!({ "bytes": val }))
+    let key = (data_type.to_owned(), request_id);
+    let body_len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+    let mut allowed = false;
+    for collector in collectors.values() {
+        if collector.data_types.iter().any(|t| t == data_type)
+            && !collector.disowned.contains(&key)
+            && body_len <= collector.max_encoded_data_size
+            && collector_matches_tab(state, collector, body_tab).await
+        {
+            allowed = true;
+            break;
+        }
+    }
+    if !allowed {
+        return Err(BidiError::new(
+            "no such network data",
+            "no active collector holds data for request",
+        ));
+    }
+    drop(collectors);
+    Ok(encode_network_bytes(&bytes))
 }

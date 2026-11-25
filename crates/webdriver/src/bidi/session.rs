@@ -33,16 +33,9 @@ pub(crate) async fn new(state: &Arc<BidiState>, params: &Value) -> BidiResult {
             return Err(BidiError::session_not_created(msg));
         }
     };
-    let (id, capabilities) = {
-        let mut guard = state.sessions.lock().await;
-        if !guard.open.is_empty() {
-            return Err(BidiError::session_not_created("already have a session"));
-        }
-        guard
-            .create(matched)
-            .await
-            .map_err(BidiError::session_not_created)?
-    };
+    let (id, capabilities) = crate::session::create_session(&state.sessions, matched)
+        .await
+        .map_err(BidiError::session_not_created)?;
     *state.session_id.lock().await = Some(id.clone());
     state.attach_all_existing_tabs().await;
     Ok(json!({
@@ -244,7 +237,11 @@ async fn parse_optional_user_contexts(
                 "userContext id must be a string",
             ));
         };
-        let uc = UserContextId::new(raw);
+        let Some(uc) = UserContextId::parse(raw) else {
+            return Err(BidiError::no_such_user_context(format!(
+                "unknown user context: {raw}"
+            )));
+        };
         if !known.contains(&uc) {
             return Err(BidiError::no_such_user_context(format!(
                 "unknown user context: {raw}"

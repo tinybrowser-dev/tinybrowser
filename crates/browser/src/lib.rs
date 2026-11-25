@@ -35,13 +35,14 @@ pub use net::{
     InvalidCa, InvalidIdentity, InvalidProxy, InvalidResolveRule, Proxy, ResolveRule, TrustedCa,
     UserAgent, ValidIdentity,
 };
+pub use network::mime_from_headers;
 pub use profile::{Profile, ProfileError, ProfileName, default_data_home};
 pub use prompt::{ActivePromptInfo, PromptBehavior, PromptBehaviorMap, PromptBroker, PromptEvent};
 pub use renderer::{
-    AxNode, AxProperty, AxPropertyValue, ConsoleLevel, DEFAULT_VIEWPORT, DomBoxModel, DomNode,
-    DomRemoteNode, DomReply, DomRequest, DomStyleSheet, FrameId, PromptKind, PromptOutcome,
-    RemoteValue, ResourceLimit, ScreenshotClip, ScreenshotFormat, ScreenshotRequest, ScriptFailure,
-    ScriptSource, TabError,
+    AxNode, AxProperty, AxPropertyValue, ConsoleLevel, ContextName, DEFAULT_VIEWPORT, DomBoxModel,
+    DomNode, DomRemoteNode, DomReply, DomRequest, DomStyleSheet, FrameId, PromptKind,
+    PromptOutcome, RemoteValue, ResourceLimit, ScreenshotClip, ScreenshotFormat, ScreenshotRequest,
+    ScriptFailure, ScriptSource, TabError,
 };
 
 pub use dial::SEC_CH_PREFERS_COLOR_SCHEME;

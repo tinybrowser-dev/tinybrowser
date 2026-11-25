@@ -2,9 +2,13 @@
 // https://w3c.github.io/webdriver-bidi/#module-session
 
 use std::collections::HashMap;
+use std::io::Read as _;
 use std::net::SocketAddr;
-use std::time::Duration;
+use std::path::Path;
+use std::time::{Duration, UNIX_EPOCH};
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use browser::{
     BrowserHandle, FrameId, PromptBehavior, PromptBehaviorMap, TabHandle, TabId, UserContextId,
 };
@@ -14,6 +18,53 @@ use server::Shutdown;
 pub(crate) const DEFAULT_SCRIPT_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) const DEFAULT_PAGE_LOAD_TIMEOUT: Duration = Duration::from_secs(300);
 pub(crate) const MAX_SAFE_INT: u64 = 9_007_199_254_740_991;
+pub(crate) const MAX_UPLOAD_FILE_BYTES: u64 = 64 * 1024 * 1024;
+
+pub(crate) fn is_safe_i64(n: i64) -> bool {
+    n.unsigned_abs() <= MAX_SAFE_INT
+}
+
+pub(crate) async fn read_upload_files(paths: Vec<String>) -> Result<Vec<Value>, String> {
+    tokio::task::spawn_blocking(move || {
+        let mut files = Vec::with_capacity(paths.len());
+        for path in paths {
+            let metadata =
+                std::fs::metadata(&path).map_err(|_| "file path does not exist".to_owned())?;
+            if !metadata.is_file() {
+                return Err("file path is not a file".to_owned());
+            }
+            let file =
+                std::fs::File::open(&path).map_err(|_| "file path cannot be read".to_owned())?;
+            let mut bytes = Vec::new();
+            file.take(MAX_UPLOAD_FILE_BYTES + 1)
+                .read_to_end(&mut bytes)
+                .map_err(|_| "file path cannot be read".to_owned())?;
+            if bytes.len() as u64 > MAX_UPLOAD_FILE_BYTES {
+                return Err("file exceeds maximum upload size".to_owned());
+            }
+            let name = Path::new(&path)
+                .file_name()
+                .map_or_else(|| path.clone(), |name| name.to_string_lossy().into_owned());
+            let last_modified = metadata
+                .modified()
+                .ok()
+                .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+                .map_or(0, |duration| {
+                    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+                });
+            files.push(json!({
+                "name": name,
+                "path": path,
+                "data": BASE64_STANDARD.encode(&bytes),
+                "type": "",
+                "lastModified": last_modified,
+            }));
+        }
+        Ok(files)
+    })
+    .await
+    .map_err(|err| format!("upload reader failed: {err}"))?
+}
 
 // https://w3c.github.io/webdriver/#dfn-page-load-strategy
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -657,6 +708,7 @@ pub(crate) struct Sessions {
     pub(crate) shutdown: Shutdown,
     pub(crate) next_window: u64,
     pub(crate) next_slot: u64,
+    pub(crate) creating: bool,
     pub(crate) open: HashMap<String, Session>,
 }
 
@@ -673,6 +725,7 @@ impl Sessions {
             shutdown,
             next_window: 0,
             next_slot: 0,
+            creating: false,
             open: HashMap::new(),
         }
     }
@@ -728,87 +781,6 @@ impl Sessions {
         }
     }
 
-    pub(crate) async fn blank_window(
-        &self,
-        user_context: UserContextId,
-    ) -> Result<TabHandle, String> {
-        let tab = self
-            .browser
-            .create_tab_in(user_context)
-            .await
-            .map_err(|err| err.to_string())?;
-        if let Err(error) = tab.load_html("<!doctype html><title></title>").await {
-            let _result = self.browser.close_tab(tab.id()).await;
-            return Err(error.to_string());
-        }
-        Ok(tab)
-    }
-
-    pub(crate) async fn create(
-        &mut self,
-        caps: MatchedCapabilities,
-    ) -> Result<(String, Value), String> {
-        let id = random_id()?;
-        let mut windows = HashMap::new();
-        let mut current = None;
-        if let Ok(ids) = self.browser.tabs().await {
-            for tab_id in ids {
-                if let Ok(tab) = self.browser.tab(tab_id).await {
-                    self.next_window = self.next_window.saturating_add(1);
-                    let handle = tab_handle_id(tab_id);
-                    if current.is_none() {
-                        current = Some(handle.clone());
-                    }
-                    windows.insert(
-                        handle,
-                        Window {
-                            tab,
-                            order: self.next_window,
-                        },
-                    );
-                }
-            }
-        }
-        let current = if let Some(handle) = current {
-            handle
-        } else {
-            self.next_window = self.next_window.saturating_add(1);
-            let tab = self.blank_window(UserContextId::default_context()).await?;
-            let handle = tab_handle_id(tab.id());
-            windows.insert(
-                handle.clone(),
-                Window {
-                    tab,
-                    order: self.next_window,
-                },
-            );
-            handle
-        };
-        let caps_json = caps.to_json(&id, self.bound);
-        let broker = self.browser.prompt_broker();
-        broker.set_default_behavior(Some(caps.prompt_behavior));
-        broker.set_hold_for_classic(!caps.web_socket_url);
-        self.open.insert(
-            id.clone(),
-            Session {
-                current,
-                current_frame: FrameId::MAIN,
-                windows,
-                implicit_timeout: caps.implicit_timeout,
-                script_timeout: caps.script_timeout,
-                page_load_timeout: caps.page_load_timeout,
-                page_load_strategy: caps.page_load_strategy,
-                prompt_behavior: caps.prompt_behavior,
-                prompt_text: None,
-                window_rect: [0.0, 0.0, 800.0, 600.0],
-                permissions: HashMap::new(),
-                preload_scripts: HashMap::new(),
-                strict_file_interactability: caps.strict_file_interactability,
-            },
-        );
-        Ok((id, caps_json))
-    }
-
     pub(crate) fn ordered_handles(&self, session: &str) -> Option<Vec<String>> {
         let found = self.open.get(session)?;
         let mut entries: Vec<(&String, u64)> = found
@@ -819,6 +791,97 @@ impl Sessions {
         entries.sort_by_key(|(_, order)| *order);
         Some(entries.into_iter().map(|(h, _)| h.clone()).collect())
     }
+}
+
+pub(crate) async fn blank_window(
+    browser: &BrowserHandle,
+    user_context: UserContextId,
+) -> Result<TabHandle, String> {
+    let tab = browser
+        .create_tab_in(user_context)
+        .await
+        .map_err(|err| err.to_string())?;
+    if let Err(error) = tab.load_html("<!doctype html><title></title>").await {
+        let _result = browser.close_tab(tab.id()).await;
+        return Err(error.to_string());
+    }
+    Ok(tab)
+}
+
+pub(crate) async fn create_session(
+    sessions: &tokio::sync::Mutex<Sessions>,
+    caps: MatchedCapabilities,
+) -> Result<(String, Value), String> {
+    let (browser, bound) = {
+        let mut guard = sessions.lock().await;
+        if !guard.open.is_empty() || guard.creating {
+            return Err("already have a session".into());
+        }
+        guard.creating = true;
+        (guard.browser.clone(), guard.bound)
+    };
+    let result = build_session_tabs(&browser).await;
+    let mut guard = sessions.lock().await;
+    guard.creating = false;
+    let tabs = result?;
+    let id = random_id()?;
+    let mut windows = HashMap::new();
+    let mut current = None;
+    for tab in tabs {
+        guard.next_window = guard.next_window.saturating_add(1);
+        let handle = tab_handle_id(tab.id());
+        if current.is_none() {
+            current = Some(handle.clone());
+        }
+        windows.insert(
+            handle,
+            Window {
+                tab,
+                order: guard.next_window,
+            },
+        );
+    }
+    let Some(current) = current else {
+        return Err("failed to create initial window".into());
+    };
+    let caps_json = caps.to_json(&id, bound);
+    let broker = browser.prompt_broker();
+    broker.set_default_behavior(Some(caps.prompt_behavior));
+    broker.set_hold_for_classic(!caps.web_socket_url);
+    guard.open.insert(
+        id.clone(),
+        Session {
+            current,
+            current_frame: FrameId::MAIN,
+            windows,
+            implicit_timeout: caps.implicit_timeout,
+            script_timeout: caps.script_timeout,
+            page_load_timeout: caps.page_load_timeout,
+            page_load_strategy: caps.page_load_strategy,
+            prompt_behavior: caps.prompt_behavior,
+            prompt_text: None,
+            window_rect: [0.0, 0.0, 800.0, 600.0],
+            permissions: HashMap::new(),
+            preload_scripts: HashMap::new(),
+            strict_file_interactability: caps.strict_file_interactability,
+        },
+    );
+    Ok((id, caps_json))
+}
+
+async fn build_session_tabs(browser: &BrowserHandle) -> Result<Vec<TabHandle>, String> {
+    let mut tabs = Vec::new();
+    if let Ok(ids) = browser.tabs().await {
+        for tab_id in ids {
+            if let Ok(tab) = browser.tab(tab_id).await {
+                tabs.push(tab);
+            }
+        }
+    }
+    if tabs.is_empty() {
+        tabs.push(blank_window(browser, UserContextId::default_context()).await?);
+    }
+    Ok(tabs)
 }
 
 #[must_use]

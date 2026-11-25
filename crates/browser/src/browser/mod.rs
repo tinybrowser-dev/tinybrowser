@@ -150,6 +150,308 @@ pub(super) enum Reply {
     OpenWindow(Result<TabId, BrowserError>),
 }
 
+impl Reply {
+    fn into_create_tab(self) -> Result<TabHandle, BrowserError> {
+        match self {
+            Self::CreateTab(result) => result,
+            Self::Tabs(_)
+            | Self::Tab(_)
+            | Self::CloseTab(_)
+            | Self::CreateUserContext(_)
+            | Self::RemoveUserContext(_)
+            | Self::UserContexts(_)
+            | Self::Close(_)
+            | Self::CookieRecords(_)
+            | Self::ClearCookies
+            | Self::ClearCache
+            | Self::SetCacheDisabled
+            | Self::AddCookie(_)
+            | Self::DeletedCount(_)
+            | Self::OpenWindow(_) => Err(BrowserError::Protocol),
+        }
+    }
+
+    fn into_tabs(self) -> Result<Vec<TabId>, BrowserError> {
+        match self {
+            Self::Tabs(tabs) => Ok(tabs),
+            Self::CreateTab(_)
+            | Self::Tab(_)
+            | Self::CloseTab(_)
+            | Self::CreateUserContext(_)
+            | Self::RemoveUserContext(_)
+            | Self::UserContexts(_)
+            | Self::Close(_)
+            | Self::CookieRecords(_)
+            | Self::ClearCookies
+            | Self::ClearCache
+            | Self::SetCacheDisabled
+            | Self::AddCookie(_)
+            | Self::DeletedCount(_)
+            | Self::OpenWindow(_) => Err(BrowserError::Protocol),
+        }
+    }
+
+    fn into_tab(self) -> Result<TabHandle, BrowserError> {
+        match self {
+            Self::Tab(result) => result,
+            Self::CreateTab(_)
+            | Self::Tabs(_)
+            | Self::CloseTab(_)
+            | Self::CreateUserContext(_)
+            | Self::RemoveUserContext(_)
+            | Self::UserContexts(_)
+            | Self::Close(_)
+            | Self::CookieRecords(_)
+            | Self::ClearCookies
+            | Self::ClearCache
+            | Self::SetCacheDisabled
+            | Self::AddCookie(_)
+            | Self::DeletedCount(_)
+            | Self::OpenWindow(_) => Err(BrowserError::Protocol),
+        }
+    }
+
+    fn into_close_tab(self) -> Result<(), BrowserError> {
+        match self {
+            Self::CloseTab(result) => result,
+            Self::CreateTab(_)
+            | Self::Tabs(_)
+            | Self::Tab(_)
+            | Self::CreateUserContext(_)
+            | Self::RemoveUserContext(_)
+            | Self::UserContexts(_)
+            | Self::Close(_)
+            | Self::CookieRecords(_)
+            | Self::ClearCookies
+            | Self::ClearCache
+            | Self::SetCacheDisabled
+            | Self::AddCookie(_)
+            | Self::DeletedCount(_)
+            | Self::OpenWindow(_) => Err(BrowserError::Protocol),
+        }
+    }
+
+    fn into_create_user_context(self) -> Result<UserContextId, BrowserError> {
+        match self {
+            Self::CreateUserContext(id) => Ok(id),
+            Self::CreateTab(_)
+            | Self::Tabs(_)
+            | Self::Tab(_)
+            | Self::CloseTab(_)
+            | Self::RemoveUserContext(_)
+            | Self::UserContexts(_)
+            | Self::Close(_)
+            | Self::CookieRecords(_)
+            | Self::ClearCookies
+            | Self::ClearCache
+            | Self::SetCacheDisabled
+            | Self::AddCookie(_)
+            | Self::DeletedCount(_)
+            | Self::OpenWindow(_) => Err(BrowserError::Protocol),
+        }
+    }
+
+    fn into_remove_user_context(self) -> Result<(), BrowserError> {
+        match self {
+            Self::RemoveUserContext(result) => result,
+            Self::CreateTab(_)
+            | Self::Tabs(_)
+            | Self::Tab(_)
+            | Self::CloseTab(_)
+            | Self::CreateUserContext(_)
+            | Self::UserContexts(_)
+            | Self::Close(_)
+            | Self::CookieRecords(_)
+            | Self::ClearCookies
+            | Self::ClearCache
+            | Self::SetCacheDisabled
+            | Self::AddCookie(_)
+            | Self::DeletedCount(_)
+            | Self::OpenWindow(_) => Err(BrowserError::Protocol),
+        }
+    }
+
+    fn into_user_contexts(self) -> Result<Vec<UserContextId>, BrowserError> {
+        match self {
+            Self::UserContexts(contexts) => Ok(contexts),
+            Self::CreateTab(_)
+            | Self::Tabs(_)
+            | Self::Tab(_)
+            | Self::CloseTab(_)
+            | Self::CreateUserContext(_)
+            | Self::RemoveUserContext(_)
+            | Self::Close(_)
+            | Self::CookieRecords(_)
+            | Self::ClearCookies
+            | Self::ClearCache
+            | Self::SetCacheDisabled
+            | Self::AddCookie(_)
+            | Self::DeletedCount(_)
+            | Self::OpenWindow(_) => Err(BrowserError::Protocol),
+        }
+    }
+
+    fn into_cookie_records(self) -> Result<Vec<net::CookieRecord>, BrowserError> {
+        match self {
+            Self::CookieRecords(records) => Ok(records),
+            Self::CreateTab(_)
+            | Self::Tabs(_)
+            | Self::Tab(_)
+            | Self::CloseTab(_)
+            | Self::CreateUserContext(_)
+            | Self::RemoveUserContext(_)
+            | Self::UserContexts(_)
+            | Self::Close(_)
+            | Self::ClearCookies
+            | Self::ClearCache
+            | Self::SetCacheDisabled
+            | Self::AddCookie(_)
+            | Self::DeletedCount(_)
+            | Self::OpenWindow(_) => Err(BrowserError::Protocol),
+        }
+    }
+
+    fn into_clear_cookies(self) -> Result<(), BrowserError> {
+        match self {
+            Self::ClearCookies => Ok(()),
+            Self::CreateTab(_)
+            | Self::Tabs(_)
+            | Self::Tab(_)
+            | Self::CloseTab(_)
+            | Self::CreateUserContext(_)
+            | Self::RemoveUserContext(_)
+            | Self::UserContexts(_)
+            | Self::Close(_)
+            | Self::CookieRecords(_)
+            | Self::ClearCache
+            | Self::SetCacheDisabled
+            | Self::AddCookie(_)
+            | Self::DeletedCount(_)
+            | Self::OpenWindow(_) => Err(BrowserError::Protocol),
+        }
+    }
+
+    fn into_clear_cache(self) -> Result<(), BrowserError> {
+        match self {
+            Self::ClearCache => Ok(()),
+            Self::CreateTab(_)
+            | Self::Tabs(_)
+            | Self::Tab(_)
+            | Self::CloseTab(_)
+            | Self::CreateUserContext(_)
+            | Self::RemoveUserContext(_)
+            | Self::UserContexts(_)
+            | Self::Close(_)
+            | Self::CookieRecords(_)
+            | Self::ClearCookies
+            | Self::SetCacheDisabled
+            | Self::AddCookie(_)
+            | Self::DeletedCount(_)
+            | Self::OpenWindow(_) => Err(BrowserError::Protocol),
+        }
+    }
+
+    fn into_set_cache_disabled(self) -> Result<(), BrowserError> {
+        match self {
+            Self::SetCacheDisabled => Ok(()),
+            Self::CreateTab(_)
+            | Self::Tabs(_)
+            | Self::Tab(_)
+            | Self::CloseTab(_)
+            | Self::CreateUserContext(_)
+            | Self::RemoveUserContext(_)
+            | Self::UserContexts(_)
+            | Self::Close(_)
+            | Self::CookieRecords(_)
+            | Self::ClearCookies
+            | Self::ClearCache
+            | Self::AddCookie(_)
+            | Self::DeletedCount(_)
+            | Self::OpenWindow(_) => Err(BrowserError::Protocol),
+        }
+    }
+
+    fn into_add_cookie(self) -> Result<bool, BrowserError> {
+        match self {
+            Self::AddCookie(stored) => Ok(stored),
+            Self::CreateTab(_)
+            | Self::Tabs(_)
+            | Self::Tab(_)
+            | Self::CloseTab(_)
+            | Self::CreateUserContext(_)
+            | Self::RemoveUserContext(_)
+            | Self::UserContexts(_)
+            | Self::Close(_)
+            | Self::CookieRecords(_)
+            | Self::ClearCookies
+            | Self::ClearCache
+            | Self::SetCacheDisabled
+            | Self::DeletedCount(_)
+            | Self::OpenWindow(_) => Err(BrowserError::Protocol),
+        }
+    }
+
+    fn into_deleted_count(self) -> Result<usize, BrowserError> {
+        match self {
+            Self::DeletedCount(count) => Ok(count),
+            Self::CreateTab(_)
+            | Self::Tabs(_)
+            | Self::Tab(_)
+            | Self::CloseTab(_)
+            | Self::CreateUserContext(_)
+            | Self::RemoveUserContext(_)
+            | Self::UserContexts(_)
+            | Self::Close(_)
+            | Self::CookieRecords(_)
+            | Self::ClearCookies
+            | Self::ClearCache
+            | Self::SetCacheDisabled
+            | Self::AddCookie(_)
+            | Self::OpenWindow(_) => Err(BrowserError::Protocol),
+        }
+    }
+
+    fn into_open_window(self) -> Result<TabId, BrowserError> {
+        match self {
+            Self::OpenWindow(result) => result,
+            Self::CreateTab(_)
+            | Self::Tabs(_)
+            | Self::Tab(_)
+            | Self::CloseTab(_)
+            | Self::CreateUserContext(_)
+            | Self::RemoveUserContext(_)
+            | Self::UserContexts(_)
+            | Self::Close(_)
+            | Self::CookieRecords(_)
+            | Self::ClearCookies
+            | Self::ClearCache
+            | Self::SetCacheDisabled
+            | Self::AddCookie(_)
+            | Self::DeletedCount(_) => Err(BrowserError::Protocol),
+        }
+    }
+
+    fn into_close(self) -> Result<io::Result<()>, io::Error> {
+        match self {
+            Self::Close(result) => Ok(result),
+            Self::CreateTab(_)
+            | Self::Tabs(_)
+            | Self::Tab(_)
+            | Self::CloseTab(_)
+            | Self::CreateUserContext(_)
+            | Self::RemoveUserContext(_)
+            | Self::UserContexts(_)
+            | Self::CookieRecords(_)
+            | Self::ClearCookies
+            | Self::ClearCache
+            | Self::SetCacheDisabled
+            | Self::AddCookie(_)
+            | Self::DeletedCount(_)
+            | Self::OpenWindow(_) => Err(io::Error::other("browser protocol mismatch")),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(super) enum Notice {
     Close,
@@ -243,67 +545,45 @@ impl BrowserHandle {
         &self,
         user_context: UserContextId,
     ) -> Result<TabHandle, BrowserError> {
-        match self.call(Command::CreateTab { user_context }).await? {
-            Reply::CreateTab(result) => result,
-            _ => Err(BrowserError::Protocol),
-        }
+        self.call(Command::CreateTab { user_context })
+            .await?
+            .into_create_tab()
     }
 
     pub async fn tabs(&self) -> Result<Vec<TabId>, BrowserError> {
-        match self.call(Command::Tabs).await? {
-            Reply::Tabs(tabs) => Ok(tabs),
-            _ => Err(BrowserError::Protocol),
-        }
+        self.call(Command::Tabs).await?.into_tabs()
     }
 
     pub async fn tabs_in(&self, user_context: &UserContextId) -> Result<Vec<TabId>, BrowserError> {
-        match self
-            .call(Command::TabsIn {
-                user_context: user_context.clone(),
-            })
-            .await?
-        {
-            Reply::Tabs(tabs) => Ok(tabs),
-            _ => Err(BrowserError::Protocol),
-        }
+        self.call(Command::TabsIn {
+            user_context: user_context.clone(),
+        })
+        .await?
+        .into_tabs()
     }
 
     pub async fn tab(&self, id: TabId) -> Result<TabHandle, BrowserError> {
-        match self.call(Command::Tab { id }).await? {
-            Reply::Tab(result) => result,
-            _ => Err(BrowserError::Protocol),
-        }
+        self.call(Command::Tab { id }).await?.into_tab()
     }
 
     pub async fn close_tab(&self, id: TabId) -> Result<(), BrowserError> {
-        match self.call(Command::CloseTab { id }).await? {
-            Reply::CloseTab(result) => result,
-            _ => Err(BrowserError::Protocol),
-        }
+        self.call(Command::CloseTab { id }).await?.into_close_tab()
     }
 
     pub async fn create_user_context(&self) -> Result<UserContextId, BrowserError> {
-        match self.call(Command::CreateUserContext).await? {
-            Reply::CreateUserContext(id) => Ok(id),
-            _ => Err(BrowserError::Protocol),
-        }
+        self.call(Command::CreateUserContext)
+            .await?
+            .into_create_user_context()
     }
 
     pub async fn remove_user_context(&self, id: &UserContextId) -> Result<(), BrowserError> {
-        match self
-            .call(Command::RemoveUserContext { id: id.clone() })
+        self.call(Command::RemoveUserContext { id: id.clone() })
             .await?
-        {
-            Reply::RemoveUserContext(result) => result,
-            _ => Err(BrowserError::Protocol),
-        }
+            .into_remove_user_context()
     }
 
     pub async fn user_contexts(&self) -> Result<Vec<UserContextId>, BrowserError> {
-        match self.call(Command::UserContexts).await? {
-            Reply::UserContexts(contexts) => Ok(contexts),
-            _ => Err(BrowserError::Protocol),
-        }
+        self.call(Command::UserContexts).await?.into_user_contexts()
     }
 
     #[must_use]
@@ -321,31 +601,23 @@ impl BrowserHandle {
         user_context: &UserContextId,
         url: &Url,
     ) -> Result<Vec<net::CookieRecord>, BrowserError> {
-        match self
-            .call(Command::CookieRecords {
-                user_context: user_context.clone(),
-                url: url.clone(),
-            })
-            .await?
-        {
-            Reply::CookieRecords(records) => Ok(records),
-            _ => Err(BrowserError::Protocol),
-        }
+        self.call(Command::CookieRecords {
+            user_context: user_context.clone(),
+            url: url.clone(),
+        })
+        .await?
+        .into_cookie_records()
     }
 
     pub async fn all_cookie_records_in(
         &self,
         user_context: &UserContextId,
     ) -> Result<Vec<net::CookieRecord>, BrowserError> {
-        match self
-            .call(Command::AllCookieRecords {
-                user_context: user_context.clone(),
-            })
-            .await?
-        {
-            Reply::CookieRecords(records) => Ok(records),
-            _ => Err(BrowserError::Protocol),
-        }
+        self.call(Command::AllCookieRecords {
+            user_context: user_context.clone(),
+        })
+        .await?
+        .into_cookie_records()
     }
 
     pub async fn matching_cookie_records_in(
@@ -353,16 +625,12 @@ impl BrowserHandle {
         user_context: &UserContextId,
         filter: net::CookieFilter,
     ) -> Result<Vec<net::CookieRecord>, BrowserError> {
-        match self
-            .call(Command::MatchingCookieRecords {
-                user_context: user_context.clone(),
-                filter,
-            })
-            .await?
-        {
-            Reply::CookieRecords(records) => Ok(records),
-            _ => Err(BrowserError::Protocol),
-        }
+        self.call(Command::MatchingCookieRecords {
+            user_context: user_context.clone(),
+            filter,
+        })
+        .await?
+        .into_cookie_records()
     }
 
     pub async fn clear_cookies(&self) -> Result<(), BrowserError> {
@@ -371,15 +639,11 @@ impl BrowserHandle {
     }
 
     pub async fn clear_cookies_in(&self, user_context: &UserContextId) -> Result<(), BrowserError> {
-        match self
-            .call(Command::ClearCookies {
-                user_context: user_context.clone(),
-            })
-            .await?
-        {
-            Reply::ClearCookies => Ok(()),
-            _ => Err(BrowserError::Protocol),
-        }
+        self.call(Command::ClearCookies {
+            user_context: user_context.clone(),
+        })
+        .await?
+        .into_clear_cookies()
     }
 
     pub async fn clear_cache(&self) -> Result<(), BrowserError> {
@@ -387,15 +651,11 @@ impl BrowserHandle {
     }
 
     pub async fn clear_cache_in(&self, user_context: &UserContextId) -> Result<(), BrowserError> {
-        match self
-            .call(Command::ClearCache {
-                user_context: user_context.clone(),
-            })
-            .await?
-        {
-            Reply::ClearCache => Ok(()),
-            _ => Err(BrowserError::Protocol),
-        }
+        self.call(Command::ClearCache {
+            user_context: user_context.clone(),
+        })
+        .await?
+        .into_clear_cache()
     }
 
     pub async fn set_cache_disabled(&self, disabled: bool) -> Result<(), BrowserError> {
@@ -408,16 +668,12 @@ impl BrowserHandle {
         user_context: &UserContextId,
         disabled: bool,
     ) -> Result<(), BrowserError> {
-        match self
-            .call(Command::SetCacheDisabled {
-                user_context: user_context.clone(),
-                disabled,
-            })
-            .await?
-        {
-            Reply::SetCacheDisabled => Ok(()),
-            _ => Err(BrowserError::Protocol),
-        }
+        self.call(Command::SetCacheDisabled {
+            user_context: user_context.clone(),
+            disabled,
+        })
+        .await?
+        .into_set_cache_disabled()
     }
 
     pub async fn add_cookie(&self, cookie: &str, url: &Url) -> Result<bool, BrowserError> {
@@ -431,17 +687,13 @@ impl BrowserHandle {
         cookie: &str,
         url: &Url,
     ) -> Result<bool, BrowserError> {
-        match self
-            .call(Command::AddCookie {
-                user_context: user_context.clone(),
-                cookie: cookie.to_owned(),
-                url: url.clone(),
-            })
-            .await?
-        {
-            Reply::AddCookie(stored) => Ok(stored),
-            _ => Err(BrowserError::Protocol),
-        }
+        self.call(Command::AddCookie {
+            user_context: user_context.clone(),
+            cookie: cookie.to_owned(),
+            url: url.clone(),
+        })
+        .await?
+        .into_add_cookie()
     }
 
     pub async fn set_direct_cookie_in(
@@ -449,16 +701,12 @@ impl BrowserHandle {
         user_context: &UserContextId,
         cookie: net::DirectCookie,
     ) -> Result<bool, BrowserError> {
-        match self
-            .call(Command::SetDirectCookie {
-                user_context: user_context.clone(),
-                cookie: Box::new(cookie),
-            })
-            .await?
-        {
-            Reply::AddCookie(stored) => Ok(stored),
-            _ => Err(BrowserError::Protocol),
-        }
+        self.call(Command::SetDirectCookie {
+            user_context: user_context.clone(),
+            cookie: Box::new(cookie),
+        })
+        .await?
+        .into_add_cookie()
     }
 
     pub async fn delete_cookies_in(
@@ -466,16 +714,12 @@ impl BrowserHandle {
         user_context: &UserContextId,
         filter: net::CookieFilter,
     ) -> Result<usize, BrowserError> {
-        match self
-            .call(Command::DeleteCookies {
-                user_context: user_context.clone(),
-                filter,
-            })
-            .await?
-        {
-            Reply::DeletedCount(count) => Ok(count),
-            _ => Err(BrowserError::Protocol),
-        }
+        self.call(Command::DeleteCookies {
+            user_context: user_context.clone(),
+            filter,
+        })
+        .await?
+        .into_deleted_count()
     }
 
     pub async fn delete_cookies_for_url_in(
@@ -484,37 +728,32 @@ impl BrowserHandle {
         url: &Url,
         name: Option<&str>,
     ) -> Result<usize, BrowserError> {
-        match self
-            .call(Command::DeleteCookiesForUrl {
-                user_context: user_context.clone(),
-                url: url.clone(),
-                name: name.map(str::to_owned),
-            })
-            .await?
-        {
-            Reply::DeletedCount(count) => Ok(count),
-            _ => Err(BrowserError::Protocol),
-        }
+        self.call(Command::DeleteCookiesForUrl {
+            user_context: user_context.clone(),
+            url: url.clone(),
+            name: name.map(str::to_owned),
+        })
+        .await?
+        .into_deleted_count()
     }
 
     pub(crate) async fn open_window(
         &self,
         request: OpenWindowOptions,
     ) -> Result<TabId, BrowserError> {
-        match self.call(Command::OpenWindow(request)).await? {
-            Reply::OpenWindow(result) => result,
-            _ => Err(BrowserError::Protocol),
-        }
+        self.call(Command::OpenWindow(request))
+            .await?
+            .into_open_window()
     }
 
     pub async fn close(&self) -> io::Result<()> {
-        match self.call(Command::Close).await.map_err(|_| stopped())? {
-            Reply::Close(result) => {
-                self.client.wait_closed().await;
-                result
-            }
-            _ => Err(io::Error::other("browser protocol mismatch")),
-        }
+        let result = self
+            .call(Command::Close)
+            .await
+            .map_err(|_| stopped())?
+            .into_close()?;
+        self.client.wait_closed().await;
+        result
     }
 
     async fn call(&self, command: Command) -> Result<Reply, BrowserError> {

@@ -59,7 +59,9 @@ async fn resolve_target_tabs(
             let Some(raw) = item.as_str() else {
                 return Err(BidiError::invalid_argument("userContext must be a string"));
             };
-            let uc = UserContextId::new(raw);
+            let Some(uc) = UserContextId::parse(raw) else {
+                return Err(BidiError::no_such_user_context(raw));
+            };
             if !known.contains(&uc) {
                 return Err(BidiError::no_such_user_context(raw));
             }
@@ -108,18 +110,13 @@ pub(crate) async fn set_user_agent_override(state: &Arc<BidiState>, params: &Val
 // https://w3c.github.io/webdriver-bidi/#command-emulation-setScriptingEnabled
 pub(crate) async fn set_scripting_enabled(state: &Arc<BidiState>, params: &Value) -> BidiResult {
     let map = require_object(params, "params")?;
-    let enabled = match map.get("enabled") {
-        Some(Value::Bool(false)) => false,
-        Some(Value::Null) => true,
+    match map.get("enabled") {
+        Some(Value::Bool(false) | Value::Null) => {}
         _ => {
             return Err(BidiError::invalid_argument("enabled must be false or null"));
         }
-    };
-    let tabs = resolve_target_tabs(state, map).await?;
-    let mut disabled_map = state.script_disabled.lock().await;
-    for tab in tabs {
-        disabled_map.insert(tab.id(), !enabled);
     }
+    let _tabs = resolve_target_tabs(state, map).await?;
     Ok(json!({}))
 }
 
@@ -293,7 +290,9 @@ pub(crate) async fn set_permission(state: &Arc<BidiState>, params: &Value) -> Bi
         let Some(raw) = uc_val.as_str() else {
             return Err(BidiError::invalid_argument("userContext must be a string"));
         };
-        let uc = UserContextId::new(raw);
+        let Some(uc) = UserContextId::parse(raw) else {
+            return Err(BidiError::no_such_user_context(raw));
+        };
         let known = state.browser.user_contexts().await.unwrap_or_default();
         if !known.contains(&uc) {
             return Err(BidiError::no_such_user_context(raw));

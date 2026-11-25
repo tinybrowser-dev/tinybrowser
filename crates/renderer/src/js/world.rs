@@ -1847,6 +1847,9 @@ impl World {
         if let Some(old) = self.document.take() {
             self.owned.remove(&old);
             self.unload_object_urls_for_document(old);
+            self.input_files.retain(|node, _| node.document_id() != old);
+            self.input_file_list
+                .retain(|node, _| node.document_id() != old);
             self.state.forget_document(old);
             self.runtime.documents.borrow_mut().remove(old);
             self.runtime.registry.borrow_mut().forget_document(old);
@@ -1857,6 +1860,9 @@ impl World {
         let ids: Vec<u32> = self.owned.drain().collect();
         for id in ids {
             self.unload_object_urls_for_document(id);
+            self.input_files.retain(|node, _| node.document_id() != id);
+            self.input_file_list
+                .retain(|node, _| node.document_id() != id);
             self.runtime.documents.borrow_mut().remove(id);
             self.runtime.registry.borrow_mut().forget_document(id);
             self.state.forget_document(id);
@@ -2990,6 +2996,15 @@ impl World {
 
     pub(crate) fn input_files(&self, id: NodeId) -> Option<&[Persistent<Value<'static>>]> {
         self.input_files.get(&id).map(Vec::as_slice)
+    }
+
+    pub(crate) fn rekey_input_files(&mut self, from: NodeId, to: NodeId) {
+        if let Some(files) = self.input_files.remove(&from) {
+            self.input_files.insert(to, files);
+        }
+        if let Some(list) = self.input_file_list.remove(&from) {
+            self.input_file_list.insert(to, list);
+        }
     }
 
     pub(crate) fn set_input_file_list(&mut self, id: NodeId, list: Persistent<Value<'static>>) {

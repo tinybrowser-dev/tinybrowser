@@ -25,7 +25,7 @@ enum HandshakeRejection {
     HttpVersion,
     Method,
     NotWebsocket,
-    MissingKey,
+    InvalidKey,
     VersionUnsupported,
 }
 
@@ -98,11 +98,20 @@ fn upgrade_key(request: &Request) -> Result<String, HandshakeRejection> {
     if !version_ok {
         return Err(HandshakeRejection::VersionUnsupported);
     }
-    headers
+    let Some(key) = headers
         .get(header::SEC_WEBSOCKET_KEY)
         .and_then(|value| value.to_str().ok())
-        .map(str::to_owned)
-        .ok_or(HandshakeRejection::MissingKey)
+        .map(str::trim)
+    else {
+        return Err(HandshakeRejection::InvalidKey);
+    };
+    let Ok(decoded) = BASE64_STANDARD.decode(key) else {
+        return Err(HandshakeRejection::InvalidKey);
+    };
+    if decoded.len() != 16 {
+        return Err(HandshakeRejection::InvalidKey);
+    }
+    Ok(key.to_owned())
 }
 
 fn rejection_response(rejection: HandshakeRejection) -> Response {
@@ -121,7 +130,7 @@ fn rejection_response(rejection: HandshakeRejection) -> Response {
         HandshakeRejection::NotWebsocket => {
             text(StatusCode::BAD_REQUEST, "not a websocket request")
         }
-        HandshakeRejection::MissingKey => text(StatusCode::BAD_REQUEST, "missing websocket key"),
+        HandshakeRejection::InvalidKey => text(StatusCode::BAD_REQUEST, "invalid websocket key"),
         HandshakeRejection::VersionUnsupported => {
             let mut response = text(
                 StatusCode::UPGRADE_REQUIRED,

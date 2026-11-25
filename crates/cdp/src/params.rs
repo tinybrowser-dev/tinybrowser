@@ -143,6 +143,8 @@ pub(crate) struct FetchFailRequest {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CompileScript {
     pub(crate) expression: String,
+    #[serde(rename = "sourceURL")]
+    pub(crate) source_url: Option<String>,
     pub(crate) persist_script: Option<bool>,
     pub(crate) execution_context_id: Option<u64>,
 }

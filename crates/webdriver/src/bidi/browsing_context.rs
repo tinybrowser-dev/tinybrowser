@@ -50,10 +50,24 @@ pub(crate) async fn create(state: &Arc<BidiState>, params: &Value) -> BidiResult
         return Err(BidiError::invalid_argument(format!("invalid type: {kind}")));
     }
     let _background = optional_bool(map, "background")?;
-    let reference_context = optional_str(map, "referenceContext")?;
+    let ref_tab = if let Some(ref_ctx) = optional_str(map, "referenceContext")? {
+        let (tab, frame) = resolve_context(state, ref_ctx).await?;
+        if frame != FrameId::MAIN {
+            return Err(BidiError::invalid_argument(
+                "referenceContext must be a top-level browsing context",
+            ));
+        }
+        Some(tab)
+    } else {
+        None
+    };
     let user_context = match optional_str(map, "userContext")? {
         Some(raw) => {
-            let uc = UserContextId::new(raw);
+            let Some(uc) = UserContextId::parse(raw) else {
+                return Err(BidiError::no_such_user_context(format!(
+                    "unknown user context: {raw}"
+                )));
+            };
             let known = state.browser.user_contexts().await.unwrap_or_default();
             if !known.contains(&uc) {
                 return Err(BidiError::no_such_user_context(format!(
@@ -62,28 +76,10 @@ pub(crate) async fn create(state: &Arc<BidiState>, params: &Value) -> BidiResult
             }
             uc
         }
-        None => {
-            if let Some(ref_ctx) = reference_context {
-                let (tab, frame) = resolve_context(state, ref_ctx).await?;
-                if frame != FrameId::MAIN {
-                    return Err(BidiError::invalid_argument(
-                        "referenceContext must be a top-level browsing context",
-                    ));
-                }
-                tab.user_context().clone()
-            } else {
-                UserContextId::default_context()
-            }
-        }
+        None => ref_tab.map_or_else(UserContextId::default_context, |tab| {
+            tab.user_context().clone()
+        }),
     };
-    if let Some(ref_ctx) = reference_context {
-        let (_tab, frame) = resolve_context(state, ref_ctx).await?;
-        if frame != FrameId::MAIN {
-            return Err(BidiError::invalid_argument(
-                "referenceContext must be a top-level browsing context",
-            ));
-        }
-    }
     let tab = state
         .browser
         .create_tab_in(user_context.clone())
@@ -286,6 +282,11 @@ pub(crate) async fn navigate(state: &Arc<BidiState>, params: &Value) -> BidiResu
         .or_else(|_| url::Url::parse(&base_str).and_then(|base| base.join(url_spec)))
         .map_err(|_| BidiError::invalid_argument(format!("invalid url: {url_spec}")))?;
     let nav_id = random_id().unwrap_or_else(|_| "nav-1".to_owned());
+    state
+        .active_navigations
+        .lock()
+        .await
+        .insert((tab.id(), frame), nav_id.clone());
     let events = tab.subscribe().ok();
 
     if frame == FrameId::MAIN {
@@ -343,7 +344,8 @@ async fn wait_readiness(
                             return Err(BidiError::unknown_error("navigation failed"));
                         }
                         Ok(Some(_)) => {}
-                        Ok(None) | Err(_) => return Ok(()),
+                        Ok(None) => return Ok(()),
+                        Err(_) => return Err(BidiError::unknown_error("navigation timed out")),
                     }
                 }
             }
@@ -363,9 +365,14 @@ async fn wait_readiness(
                 }
             } else if let Some(rx) = events.as_mut() {
                 let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-                while let Ok(Some(ev)) = tokio::time::timeout_at(deadline, rx.recv()).await {
-                    if matches!(ev, TabEvent::FrameLoad { frame: f, .. } if f == frame) {
-                        break;
+                loop {
+                    match tokio::time::timeout_at(deadline, rx.recv()).await {
+                        Ok(Some(TabEvent::FrameLoad { frame: f, .. })) if f == frame => {
+                            return Ok(());
+                        }
+                        Ok(Some(_)) => {}
+                        Ok(None) => return Ok(()),
+                        Err(_) => return Err(BidiError::unknown_error("navigation timed out")),
                     }
                 }
             }
@@ -388,6 +395,11 @@ pub(crate) async fn reload(state: &Arc<BidiState>, params: &Value) -> BidiResult
     }
     let (tab, frame) = resolve_context(state, ctx).await?;
     let nav_id = random_id().unwrap_or_else(|_| "nav-1".to_owned());
+    state
+        .active_navigations
+        .lock()
+        .await
+        .insert((tab.id(), frame), nav_id.clone());
     let events = tab.subscribe().ok();
     if frame == FrameId::MAIN {
         tab.reload()
@@ -460,26 +472,10 @@ pub(crate) async fn activate(state: &Arc<BidiState>, params: &Value) -> BidiResu
 }
 
 // https://w3c.github.io/webdriver-bidi/#command-browsingContext-setViewport
-pub(crate) async fn set_viewport(state: &Arc<BidiState>, params: &Value) -> BidiResult {
-    let map = require_object(params, "params")?;
-    let ctx = optional_str(map, "context")?;
-    let user_contexts = map.get("userContexts");
-    if ctx.is_some() && user_contexts.is_some() {
-        return Err(BidiError::invalid_argument(
-            "cannot specify both context and userContexts",
-        ));
-    }
-    if let Some(dpr) = map.get("devicePixelRatio")
-        && !dpr.is_null()
-        && dpr.as_f64().is_none_or(|v| !v.is_finite() || v <= 0.0)
-    {
-        return Err(BidiError::invalid_argument(
-            "devicePixelRatio must be a positive number or null",
-        ));
-    }
-    let viewport = match map.get("viewport") {
-        None => None,
-        Some(Value::Null) => Some(browser::DEFAULT_VIEWPORT),
+fn parse_viewport_param(map: &Map<String, Value>) -> Result<Option<(u32, u32)>, BidiError> {
+    match map.get("viewport") {
+        None => Ok(None),
+        Some(Value::Null) => Ok(Some(browser::DEFAULT_VIEWPORT)),
         Some(Value::Object(vp)) => {
             let Some(w) = vp.get("width").and_then(Value::as_u64) else {
                 return Err(BidiError::invalid_argument(
@@ -499,14 +495,32 @@ pub(crate) async fn set_viewport(state: &Arc<BidiState>, params: &Value) -> Bidi
                 .ok()
                 .filter(|v| *v > 0)
                 .ok_or_else(|| BidiError::invalid_argument("viewport.height out of range"))?;
-            Some((w, h))
+            Ok(Some((w, h)))
         }
-        Some(_) => {
-            return Err(BidiError::invalid_argument(
-                "viewport must be an object or null",
-            ));
-        }
-    };
+        Some(_) => Err(BidiError::invalid_argument(
+            "viewport must be an object or null",
+        )),
+    }
+}
+
+pub(crate) async fn set_viewport(state: &Arc<BidiState>, params: &Value) -> BidiResult {
+    let map = require_object(params, "params")?;
+    let ctx = optional_str(map, "context")?;
+    let user_contexts = map.get("userContexts");
+    if ctx.is_some() && user_contexts.is_some() {
+        return Err(BidiError::invalid_argument(
+            "cannot specify both context and userContexts",
+        ));
+    }
+    if let Some(dpr) = map.get("devicePixelRatio")
+        && !dpr.is_null()
+        && dpr.as_f64().is_none_or(|v| !v.is_finite() || v <= 0.0)
+    {
+        return Err(BidiError::invalid_argument(
+            "devicePixelRatio must be a positive number or null",
+        ));
+    }
+    let viewport = parse_viewport_param(map)?;
     if let Some(ctx) = ctx {
         let (tab, frame) = resolve_context(state, ctx).await?;
         if frame != FrameId::MAIN {
@@ -533,7 +547,11 @@ pub(crate) async fn set_viewport(state: &Arc<BidiState>, params: &Value) -> Bidi
             let Some(raw) = item.as_str() else {
                 return Err(BidiError::invalid_argument("userContext must be a string"));
             };
-            let uc = UserContextId::new(raw);
+            let Some(uc) = UserContextId::parse(raw) else {
+                return Err(BidiError::no_such_user_context(format!(
+                    "unknown user context: {raw}"
+                )));
+            };
             if !known.contains(&uc) {
                 return Err(BidiError::no_such_user_context(raw));
             }

@@ -14,15 +14,26 @@ use crate::bidi::protocol::{
 use crate::bidi::{BIDI_CHANNEL_BINDING, BidiState};
 use crate::session::{PreloadScriptEntry, format_context_id, random_id};
 
+fn format_realm_id(ctx_id: &str, sandbox: Option<&str>) -> String {
+    match sandbox {
+        Some(sb) if !sb.is_empty() => format!("realm-{ctx_id}/{sb}"),
+        _ => format!("realm-{ctx_id}"),
+    }
+}
+
 async fn resolve_target(
     state: &Arc<BidiState>,
     target: &Value,
 ) -> Result<(TabHandle, FrameId, String, Option<String>), BidiError> {
     let obj = require_object(target, "target")?;
     if let Some(realm) = optional_str(obj, "realm")? {
-        if let Some(ctx) = realm.strip_prefix("realm-") {
+        if let Some(rest) = realm.strip_prefix("realm-") {
+            let (ctx, sandbox) = match rest.split_once('/') {
+                Some((ctx, sb)) if !sb.is_empty() => (ctx, Some(sb.to_owned())),
+                _ => (rest, None),
+            };
             let (tab, frame) = resolve_context(state, ctx).await?;
-            return Ok((tab, frame, ctx.to_owned(), None));
+            return Ok((tab, frame, ctx.to_owned(), sandbox));
         }
         return Err(BidiError::new(
             "no such frame",
@@ -109,7 +120,16 @@ pub(crate) async fn evaluate(state: &Arc<BidiState>, params: &Value) -> BidiResu
         let mut guard = state.sessions.lock().await;
         guard.next_call_slot()
     };
-    let realm_id = format!("realm-{ctx_id}");
+    if let Some(ref sb) = sandbox {
+        state
+            .sandboxes
+            .lock()
+            .await
+            .entry((tab.id(), frame))
+            .or_default()
+            .insert(sb.clone());
+    }
+    let realm_id = format_realm_id(&ctx_id, sandbox.as_deref());
     let run_script = format!(
         "(() => {{ {BIDI_RUNTIME_JS}\n\
          if (!host.__tbBidiSlots) host.__tbBidiSlots = Object.create(null);\n\
@@ -187,7 +207,16 @@ pub(crate) async fn call_function(state: &Arc<BidiState>, params: &Value) -> Bid
         let mut guard = state.sessions.lock().await;
         guard.next_call_slot()
     };
-    let realm_id = format!("realm-{ctx_id}");
+    if let Some(ref sb) = sandbox {
+        state
+            .sandboxes
+            .lock()
+            .await
+            .entry((tab.id(), frame))
+            .or_default()
+            .insert(sb.clone());
+    }
+    let realm_id = format_realm_id(&ctx_id, sandbox.as_deref());
     let wrapped_fn = format!("({fn_decl})");
     let run_script = format!(
         "(() => {{ {BIDI_RUNTIME_JS}\n\
@@ -221,8 +250,8 @@ pub(crate) async fn call_function(state: &Arc<BidiState>, params: &Value) -> Bid
          }}\n\
          let decodedArgs, decodedThis;\n\
          try {{\n\
-           decodedArgs = rawArgs.map(a => __tbBidi.deserialize(a, contextId));\n\
-           decodedThis = rawThis === null ? undefined : __tbBidi.deserialize(rawThis, contextId);\n\
+           decodedArgs = rawArgs.map(a => __tbBidi.deserialize(a, contextId, realmId));\n\
+           decodedThis = rawThis === null ? undefined : __tbBidi.deserialize(rawThis, contextId, realmId);\n\
          }} catch (err) {{\n\
            slot.result = JSON.stringify({{ __tbBidiError: String(err && err.message ? err.message : err) }});\n\
            slot.done = true;\n\
@@ -434,7 +463,9 @@ async fn parse_preload_user_contexts(
                 let Some(raw) = item.as_str() else {
                     return Err(BidiError::invalid_argument("userContext must be a string"));
                 };
-                let uc = UserContextId::new(raw);
+                let Some(uc) = UserContextId::parse(raw) else {
+                    return Err(BidiError::no_such_user_context(raw));
+                };
                 if !known.contains(&uc) {
                     return Err(BidiError::no_such_user_context(raw));
                 }
@@ -590,17 +621,29 @@ pub(crate) async fn get_realms(state: &Arc<BidiState>, params: &Value) -> BidiRe
         return Ok(json!({ "realms": [] }));
     }
     let mut realms = Vec::new();
+    let sandboxes = state.sandboxes.lock().await;
     if let Some(ctx) = filter_ctx {
         let (tab, frame) = resolve_context(state, ctx).await?;
         let url = tab.document_url_in(frame).await.unwrap_or_default();
         let origin = url::Url::parse(&url)
             .map_or_else(|_| "null".to_owned(), |u| u.origin().ascii_serialization());
         realms.push(json!({
-            "realm": format!("realm-{ctx}"),
+            "realm": format_realm_id(ctx, None),
             "origin": origin,
             "type": "window",
             "context": ctx,
         }));
+        if let Some(set) = sandboxes.get(&(tab.id(), frame)) {
+            for sb in set {
+                realms.push(json!({
+                    "realm": format_realm_id(ctx, Some(sb)),
+                    "origin": origin,
+                    "type": "window",
+                    "context": ctx,
+                    "sandbox": sb,
+                }));
+            }
+        }
     } else if let Ok(ids) = state.browser.tabs().await {
         for id in ids {
             if let Ok(tab) = state.browser.tab(id).await
@@ -611,14 +654,26 @@ pub(crate) async fn get_realms(state: &Arc<BidiState>, params: &Value) -> BidiRe
                     let origin = url::Url::parse(&frame.url)
                         .map_or_else(|_| "null".to_owned(), |u| u.origin().ascii_serialization());
                     realms.push(json!({
-                        "realm": format!("realm-{ctx}"),
+                        "realm": format_realm_id(&ctx, None),
                         "origin": origin,
                         "type": "window",
                         "context": ctx,
                     }));
+                    if let Some(set) = sandboxes.get(&(id, frame.id)) {
+                        for sb in set {
+                            realms.push(json!({
+                                "realm": format_realm_id(&ctx, Some(sb)),
+                                "origin": origin,
+                                "type": "window",
+                                "context": ctx,
+                                "sandbox": sb,
+                            }));
+                        }
+                    }
                 }
             }
         }
     }
+    drop(sandboxes);
     Ok(json!({ "realms": realms }))
 }

@@ -1,7 +1,6 @@
 // https://w3c.github.io/webdriver-bidi/#module-input
 
 use std::f64::consts::{FRAC_PI_2, TAU};
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -238,7 +237,8 @@ pub(crate) async fn perform_actions(state: &Arc<BidiState>, params: &Value) -> B
          const vh = globalThis.innerHeight || 600;\n\
          for (const source of actions) {{\n\
            if (!Array.isArray(source.actions)) continue;\n\
-           let px = 0, py = 0;\n\
+           const startPos = source.type === 'pointer' ? host.__tbWebDriverPointerPos(source.id) : [0, 0];\n\
+           let px = startPos[0], py = startPos[1];\n\
            for (const item of source.actions) {{\n\
              if (!item) continue;\n\
              if (item.origin && typeof item.origin.__tbBidiSharedId === 'string') {{\n\
@@ -289,7 +289,14 @@ pub(crate) async fn perform_actions(state: &Arc<BidiState>, params: &Value) -> B
 pub(crate) async fn release_actions(state: &Arc<BidiState>, params: &Value) -> BidiResult {
     let map = require_object(params, "params")?;
     let ctx = require_str(map, "context")?;
-    let (_tab, _frame) = resolve_context(state, ctx).await?;
+    let (tab, frame) = resolve_context(state, ctx).await?;
+    let _ = tab
+        .execute_script(browser::ExecuteScriptOptions {
+            frame,
+            source: browser::ScriptSource::Browser("host.__tbWebDriverReleaseActions()"),
+            timeout: Some(Duration::from_secs(10)),
+        })
+        .await;
     Ok(json!({}))
 }
 
@@ -305,21 +312,21 @@ pub(crate) async fn set_files(state: &Arc<BidiState>, params: &Value) -> BidiRes
     let Some(files) = map.get("files").and_then(Value::as_array) else {
         return Err(BidiError::invalid_argument("files must be an array"));
     };
-    let mut file_names = Vec::with_capacity(files.len());
+    let mut paths = Vec::with_capacity(files.len());
     for f in files {
         let Some(raw) = f.as_str() else {
             return Err(BidiError::invalid_argument(
                 "files must be an array of strings",
             ));
         };
-        let name = Path::new(raw)
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or(raw)
-            .to_owned();
-        file_names.push(name);
+        paths.push(raw.to_owned());
     }
     let (tab, frame) = resolve_context(state, ctx).await?;
+    let uploaded = crate::session::read_upload_files(paths)
+        .await
+        .map_err(|msg| BidiError::new("unable to set file input", msg))?;
+    let uploaded_json =
+        serde_json::to_string(&Value::Array(uploaded)).unwrap_or_else(|_| "[]".to_owned());
     let script = format!(
         "(() => {{ {BIDI_RUNTIME_JS}\n\
          const el = __tbBidi.st.sharedById[{}];\n\
@@ -327,27 +334,11 @@ pub(crate) async fn set_files(state: &Arc<BidiState>, params: &Value) -> BidiRes
          if (el.nodeType !== 1) return 'no_such_element';\n\
          if (!el.tagName || el.tagName.toUpperCase() !== 'INPUT' || el.type !== 'file') return 'unable';\n\
          if (el.disabled) return 'unable';\n\
-         const names = {};\n\
-         if (names.length > 1 && !el.multiple) return 'unable';\n\
-         const list = names.map(name => typeof File === 'function' ? new File([], name) : {{ name, size: 0, type: '' }});\n\
-         list.item = i => (i >= 0 && i < list.length ? list[i] : null);\n\
-         try {{\n\
-           if (typeof DataTransfer === 'function') {{\n\
-             const dt = new DataTransfer();\n\
-             for (const f of list) dt.items.add(f);\n\
-             el.files = dt.files;\n\
-           }} else {{\n\
-             Object.defineProperty(el, 'files', {{ value: list, configurable: true }});\n\
-           }}\n\
-         }} catch (_) {{\n\
-           Object.defineProperty(el, 'files', {{ value: list, configurable: true }});\n\
-         }}\n\
-         el.dispatchEvent(new Event('input', {{ bubbles: true }}));\n\
-         el.dispatchEvent(new Event('change', {{ bubbles: true }}));\n\
-         return 'ok';\n\
+         const files = {uploaded_json};\n\
+         if (files.length > 1 && !el.multiple) return 'unable';\n\
+         return host.__tbWebDriverUpload(el, files, false, false) === 'ok' ? 'ok' : 'unable';\n\
          }})()",
         json!(shared_id),
-        json!(file_names)
     );
     match tab
         .execute_script(browser::ExecuteScriptOptions {

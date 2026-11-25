@@ -216,6 +216,28 @@ impl InterceptRule {
 }
 
 #[derive(Clone, Debug)]
+pub(crate) struct RequestMeta {
+    pub(crate) request_id: NetworkRequestId,
+    pub(crate) tab: Option<TabId>,
+    pub(crate) frame: FrameId,
+    pub(crate) is_navigation: bool,
+    pub(crate) url: Url,
+    pub(crate) method: String,
+    pub(crate) headers: Vec<(String, String)>,
+    pub(crate) resource_type: String,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ResponseMeta {
+    pub(crate) url: Url,
+    pub(crate) status: u16,
+    pub(crate) status_text: String,
+    pub(crate) headers: Vec<(String, String)>,
+    pub(crate) mime_type: String,
+    pub(crate) from_cache: bool,
+}
+
+#[derive(Clone, Debug)]
 pub enum NetworkEvent {
     BeforeRequestSent {
         request_id: NetworkRequestId,
@@ -236,6 +258,9 @@ pub enum NetworkEvent {
         frame: FrameId,
         is_navigation: bool,
         url: String,
+        method: String,
+        request_headers: Vec<(String, String)>,
+        resource_type: String,
         status: u16,
         status_text: String,
         headers: Vec<(String, String)>,
@@ -251,6 +276,9 @@ pub enum NetworkEvent {
         frame: FrameId,
         is_navigation: bool,
         url: String,
+        method: String,
+        request_headers: Vec<(String, String)>,
+        resource_type: String,
         status: u16,
         status_text: String,
         headers: Vec<(String, String)>,
@@ -265,6 +293,9 @@ pub enum NetworkEvent {
         frame: FrameId,
         is_navigation: bool,
         url: String,
+        method: String,
+        request_headers: Vec<(String, String)>,
+        resource_type: String,
         error_text: String,
         timestamp_ms: u64,
     },
@@ -348,12 +379,18 @@ impl Drop for PendingGuard<'_> {
     }
 }
 
+struct CachedBody {
+    request_id: NetworkRequestId,
+    tab: Option<TabId>,
+    bytes: Vec<u8>,
+}
+
 #[derive(Default)]
 struct BrokerState {
     intercepts: Vec<InterceptRule>,
     pending: HashMap<NetworkRequestId, PendingIntercept>,
     blocked_urls: HashMap<TabId, Vec<String>>,
-    bodies: VecDeque<(NetworkRequestId, Vec<u8>)>,
+    bodies: VecDeque<CachedBody>,
 }
 
 pub struct NetworkBroker {
@@ -516,15 +553,24 @@ impl NetworkBroker {
 
     #[must_use]
     pub fn response_body(&self, request_id: NetworkRequestId) -> Option<Vec<u8>> {
+        self.response_body_with_tab(request_id)
+            .map(|(_, bytes)| bytes)
+    }
+
+    #[must_use]
+    pub fn response_body_with_tab(
+        &self,
+        request_id: NetworkRequestId,
+    ) -> Option<(Option<TabId>, Vec<u8>)> {
         let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         state
             .bodies
             .iter()
-            .find(|(id, _)| *id == request_id)
-            .map(|(_, bytes)| bytes.clone())
+            .find(|entry| entry.request_id == request_id)
+            .map(|entry| (entry.tab, entry.bytes.clone()))
     }
 
-    pub fn record_body(&self, request_id: NetworkRequestId, body: &[u8]) {
+    pub fn record_body(&self, request_id: NetworkRequestId, tab: Option<TabId>, body: &[u8]) {
         if self.events.receiver_count() == 0 || body.len() > MAX_CACHED_BODY_BYTES {
             return;
         }
@@ -532,7 +578,11 @@ impl NetworkBroker {
         if state.bodies.len() >= MAX_CACHED_BODIES {
             state.bodies.pop_front();
         }
-        state.bodies.push_back((request_id, body.to_vec()));
+        state.bodies.push_back(CachedBody {
+            request_id,
+            tab,
+            bytes: body.to_vec(),
+        });
     }
 
     pub fn clear_tab(&self, tab: TabId) {
@@ -556,27 +606,29 @@ impl NetworkBroker {
         }
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "network lifecycle hook carries the structured request metadata"
-    )]
-    pub(crate) async fn before_request_sent(
-        &self,
-        request_id: NetworkRequestId,
-        tab: Option<TabId>,
-        frame: FrameId,
-        is_navigation: bool,
-        url: &Url,
-        method: &str,
-        headers: Vec<(String, String)>,
-        resource_type: &str,
-    ) -> BeforeRequestAction {
+    pub(crate) fn emit_before_request_unblocked(&self, meta: &RequestMeta) {
+        let _ = self.events.send(NetworkEvent::BeforeRequestSent {
+            request_id: meta.request_id,
+            tab: meta.tab,
+            frame: meta.frame,
+            is_navigation: meta.is_navigation,
+            url: meta.url.to_string(),
+            method: meta.method.clone(),
+            headers: meta.headers.clone(),
+            resource_type: meta.resource_type.clone(),
+            timestamp_ms: now_millis(),
+            is_blocked: false,
+            intercepts: Vec::new(),
+        });
+    }
+
+    pub(crate) async fn before_request_sent(&self, meta: &RequestMeta) -> BeforeRequestAction {
         let (matching, rx) = {
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
             let matching: Vec<InterceptId> = state
                 .intercepts
                 .iter()
-                .filter(|rule| rule.matches(InterceptPhase::BeforeRequestSent, tab, url))
+                .filter(|rule| rule.matches(InterceptPhase::BeforeRequestSent, meta.tab, &meta.url))
                 .map(|rule| rule.id)
                 .collect();
             let rx = if matching.is_empty() {
@@ -584,9 +636,9 @@ impl NetworkBroker {
             } else {
                 let (tx, rx) = oneshot::channel();
                 state.pending.insert(
-                    request_id,
+                    meta.request_id,
                     PendingIntercept {
-                        tab,
+                        tab: meta.tab,
                         phase: InterceptPhase::BeforeRequestSent,
                         intercepts: matching.clone(),
                         responder: tx,
@@ -599,17 +651,17 @@ impl NetworkBroker {
         let is_blocked = !matching.is_empty();
         let _guard = rx.as_ref().map(|_| PendingGuard {
             broker: self,
-            request_id,
+            request_id: meta.request_id,
         });
         let _ = self.events.send(NetworkEvent::BeforeRequestSent {
-            request_id,
-            tab,
-            frame,
-            is_navigation,
-            url: url.to_string(),
-            method: method.to_owned(),
-            headers,
-            resource_type: resource_type.to_owned(),
+            request_id: meta.request_id,
+            tab: meta.tab,
+            frame: meta.frame,
+            is_navigation: meta.is_navigation,
+            url: meta.url.to_string(),
+            method: meta.method.clone(),
+            headers: meta.headers.clone(),
+            resource_type: meta.resource_type.clone(),
             timestamp_ms: now_millis(),
             is_blocked,
             intercepts: matching,
@@ -645,29 +697,38 @@ impl NetworkBroker {
         }
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "network lifecycle hook carries the structured response metadata"
-    )]
+    pub(crate) fn emit_response_started_unblocked(&self, req: &RequestMeta, resp: &ResponseMeta) {
+        let _ = self.events.send(NetworkEvent::ResponseStarted {
+            request_id: req.request_id,
+            tab: req.tab,
+            frame: req.frame,
+            is_navigation: req.is_navigation,
+            url: resp.url.to_string(),
+            method: req.method.clone(),
+            request_headers: req.headers.clone(),
+            resource_type: req.resource_type.clone(),
+            status: resp.status,
+            status_text: resp.status_text.clone(),
+            headers: resp.headers.clone(),
+            mime_type: resp.mime_type.clone(),
+            from_cache: resp.from_cache,
+            timestamp_ms: now_millis(),
+            is_blocked: false,
+            intercepts: Vec::new(),
+        });
+    }
+
     pub(crate) async fn response_started(
         &self,
-        request_id: NetworkRequestId,
-        tab: Option<TabId>,
-        frame: FrameId,
-        is_navigation: bool,
-        url: &Url,
-        status: u16,
-        status_text: &str,
-        headers: Vec<(String, String)>,
-        mime_type: &str,
-        from_cache: bool,
+        req: &RequestMeta,
+        resp: &ResponseMeta,
     ) -> ResponseAction {
         let (matching, rx) = {
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
             let matching: Vec<InterceptId> = state
                 .intercepts
                 .iter()
-                .filter(|rule| rule.matches(InterceptPhase::ResponseStarted, tab, url))
+                .filter(|rule| rule.matches(InterceptPhase::ResponseStarted, req.tab, &resp.url))
                 .map(|rule| rule.id)
                 .collect();
             let rx = if matching.is_empty() {
@@ -675,9 +736,9 @@ impl NetworkBroker {
             } else {
                 let (tx, rx) = oneshot::channel();
                 state.pending.insert(
-                    request_id,
+                    req.request_id,
                     PendingIntercept {
-                        tab,
+                        tab: req.tab,
                         phase: InterceptPhase::ResponseStarted,
                         intercepts: matching.clone(),
                         responder: tx,
@@ -690,19 +751,22 @@ impl NetworkBroker {
         let is_blocked = !matching.is_empty();
         let _guard = rx.as_ref().map(|_| PendingGuard {
             broker: self,
-            request_id,
+            request_id: req.request_id,
         });
         let _ = self.events.send(NetworkEvent::ResponseStarted {
-            request_id,
-            tab,
-            frame,
-            is_navigation,
-            url: url.to_string(),
-            status,
-            status_text: status_text.to_owned(),
-            headers,
-            mime_type: mime_type.to_owned(),
-            from_cache,
+            request_id: req.request_id,
+            tab: req.tab,
+            frame: req.frame,
+            is_navigation: req.is_navigation,
+            url: resp.url.to_string(),
+            method: req.method.clone(),
+            request_headers: req.headers.clone(),
+            resource_type: req.resource_type.clone(),
+            status: resp.status,
+            status_text: resp.status_text.clone(),
+            headers: resp.headers.clone(),
+            mime_type: resp.mime_type.clone(),
+            from_cache: resp.from_cache,
             timestamp_ms: now_millis(),
             is_blocked,
             intercepts: matching,
@@ -736,55 +800,41 @@ impl NetworkBroker {
         }
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "network lifecycle hook carries the structured response completion metadata"
-    )]
     pub(crate) fn response_completed(
         &self,
-        request_id: NetworkRequestId,
-        tab: Option<TabId>,
-        frame: FrameId,
-        is_navigation: bool,
-        url: &Url,
-        status: u16,
-        status_text: &str,
-        headers: Vec<(String, String)>,
-        mime_type: &str,
-        from_cache: bool,
+        req: &RequestMeta,
+        resp: &ResponseMeta,
         encoded_data_length: usize,
     ) {
         let _ = self.events.send(NetworkEvent::ResponseCompleted {
-            request_id,
-            tab,
-            frame,
-            is_navigation,
-            url: url.to_string(),
-            status,
-            status_text: status_text.to_owned(),
-            headers,
-            mime_type: mime_type.to_owned(),
-            from_cache,
+            request_id: req.request_id,
+            tab: req.tab,
+            frame: req.frame,
+            is_navigation: req.is_navigation,
+            url: resp.url.to_string(),
+            method: req.method.clone(),
+            request_headers: req.headers.clone(),
+            resource_type: req.resource_type.clone(),
+            status: resp.status,
+            status_text: resp.status_text.clone(),
+            headers: resp.headers.clone(),
+            mime_type: resp.mime_type.clone(),
+            from_cache: resp.from_cache,
             encoded_data_length,
             timestamp_ms: now_millis(),
         });
     }
 
-    pub(crate) fn fetch_error(
-        &self,
-        request_id: NetworkRequestId,
-        tab: Option<TabId>,
-        frame: FrameId,
-        is_navigation: bool,
-        url: &Url,
-        error_text: &str,
-    ) {
+    pub(crate) fn fetch_error(&self, req: &RequestMeta, url: &Url, error_text: &str) {
         let _ = self.events.send(NetworkEvent::FetchError {
-            request_id,
-            tab,
-            frame,
-            is_navigation,
+            request_id: req.request_id,
+            tab: req.tab,
+            frame: req.frame,
+            is_navigation: req.is_navigation,
             url: url.to_string(),
+            method: req.method.clone(),
+            request_headers: req.headers.clone(),
+            resource_type: req.resource_type.clone(),
             error_text: error_text.to_owned(),
             timestamp_ms: now_millis(),
         });

@@ -498,6 +498,13 @@ where
         Ok(rx)
     }
 
+    #[must_use]
+    pub(crate) fn subscriber_probe(&self) -> SubscriberProbe<IN> {
+        SubscriberProbe {
+            subscribers: Arc::clone(&self.subscribers),
+        }
+    }
+
     async fn start_call<T>(
         &self,
         body: OC,
@@ -693,6 +700,21 @@ impl<OC, OR, ON, IC, IN> Server<OC, OR, ON, IC, IN> {
         Responder {
             tx: self.tx.clone(),
         }
+    }
+}
+
+pub(crate) struct SubscriberProbe<IN> {
+    subscribers: Subscribers<IN>,
+}
+
+impl<IN> SubscriberProbe<IN> {
+    #[must_use]
+    pub(crate) fn has_subscribers(&self) -> bool {
+        self.subscribers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .any(|subscriber| !subscriber.is_closed())
     }
 }
 

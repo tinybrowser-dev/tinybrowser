@@ -259,7 +259,8 @@ impl CookieJar {
             };
             canonical
         };
-        if cookie.name.len() + cookie.value.len() > 4096
+        if (cookie.name.is_empty() && cookie.value.is_empty())
+            || cookie.name.len() + cookie.value.len() > 4096
             || has_ctl_excluding_htab(&cookie.name)
             || has_ctl_excluding_htab(&cookie.value)
             || cookie.name.contains([';', '='])
@@ -272,8 +273,33 @@ impl CookieJar {
         } else {
             "/".to_owned()
         };
+        if path.len() > 1024 || has_ctl_excluding_htab(&path) || path.contains(';') {
+            return false;
+        }
         let host_only = cookie.host_only || is_ip(&domain) || is_public_suffix(&domain);
         let same_site = SameSite::from(cookie.same_site);
+        if same_site == SameSite::None && !cookie.secure {
+            return false;
+        }
+        if cookie.partition_key.is_some() && !cookie.secure {
+            return false;
+        }
+        if cookie
+            .partition_key
+            .as_ref()
+            .is_some_and(|key| key.is_empty() || key.len() > 1024)
+        {
+            return false;
+        }
+        if !cookie_prefixes_ok(
+            &cookie.name,
+            &cookie.value,
+            cookie.secure,
+            host_only,
+            Some(&path),
+        ) {
+            return false;
+        }
         let stored = StoredCookie {
             name: cookie.name,
             value: cookie.value,
@@ -491,19 +517,10 @@ impl CookieFilter {
         {
             return false;
         }
-        if let Some(same_site) = self.same_site {
-            let cookie_ss = CookieSameSite::from(cookie.same_site);
-            let normalized = match cookie_ss {
-                CookieSameSite::Default => CookieSameSite::None,
-                other => other,
-            };
-            let target = match same_site {
-                CookieSameSite::Default => CookieSameSite::None,
-                other => other,
-            };
-            if normalized != target {
-                return false;
-            }
+        if let Some(same_site) = self.same_site
+            && CookieSameSite::from(cookie.same_site) != same_site
+        {
+            return false;
         }
         if let Some(expiry) = self.expiry {
             let actual = cookie

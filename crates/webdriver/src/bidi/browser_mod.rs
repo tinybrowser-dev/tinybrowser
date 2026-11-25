@@ -8,11 +8,9 @@ use serde_json::{Value, json};
 use crate::bidi::BidiState;
 use crate::bidi::protocol::{BidiError, BidiResult, optional_bool, require_object, require_str};
 use crate::session::{
-    CapabilityError, format_context_id, parse_bidi_prompt_handler, parse_context_id,
+    CapabilityError, format_context_id, is_safe_i64, parse_bidi_prompt_handler, parse_context_id,
     validate_proxy_object,
 };
-
-const MAX_SAFE_INT: i64 = 9_007_199_254_740_991;
 
 // https://w3c.github.io/webdriver-bidi/#command-browser-close
 pub(crate) async fn close(state: &Arc<BidiState>) -> BidiResult {
@@ -65,7 +63,11 @@ pub(crate) async fn get_user_contexts(state: &Arc<BidiState>) -> BidiResult {
 pub(crate) async fn remove_user_context(state: &Arc<BidiState>, params: &Value) -> BidiResult {
     let map = require_object(params, "params")?;
     let raw = require_str(map, "userContext")?;
-    let id = UserContextId::new(raw);
+    let Some(id) = UserContextId::parse(raw) else {
+        return Err(BidiError::no_such_user_context(format!(
+            "unknown user context: {raw}"
+        )));
+    };
     if id.is_default() {
         return Err(BidiError::invalid_argument(
             "cannot remove default user context",
@@ -113,7 +115,7 @@ pub(crate) async fn get_client_windows(state: &Arc<BidiState>) -> BidiResult {
     Ok(json!({ "clientWindows": windows }))
 }
 
-fn parse_js_int(val: &Value, field: &str, min: i64) -> Result<i64, BidiError> {
+fn parse_js_int(val: &Value, field: &str, non_negative: bool) -> Result<i64, BidiError> {
     let n = if let Some(v) = val.as_i64() {
         v
     } else if let Some(v) = val.as_u64() {
@@ -124,7 +126,7 @@ fn parse_js_int(val: &Value, field: &str, min: i64) -> Result<i64, BidiError> {
             "{field} must be an integer"
         )));
     };
-    if n < min || n > MAX_SAFE_INT {
+    if !is_safe_i64(n) || (non_negative && n < 0) {
         return Err(BidiError::invalid_argument(format!("{field} out of range")));
     }
     Ok(n)
@@ -145,19 +147,19 @@ pub(crate) async fn set_client_window_state(state: &Arc<BidiState>, params: &Val
     }
     let width = match map.get("width") {
         None => None,
-        Some(v) => Some(parse_js_int(v, "width", 0)?),
+        Some(v) => Some(parse_js_int(v, "width", true)?),
     };
     let height = match map.get("height") {
         None => None,
-        Some(v) => Some(parse_js_int(v, "height", 0)?),
+        Some(v) => Some(parse_js_int(v, "height", true)?),
     };
     let x = match map.get("x") {
         None => 0,
-        Some(v) => parse_js_int(v, "x", -MAX_SAFE_INT)?,
+        Some(v) => parse_js_int(v, "x", false)?,
     };
     let y = match map.get("y") {
         None => 0,
-        Some(v) => parse_js_int(v, "y", -MAX_SAFE_INT)?,
+        Some(v) => parse_js_int(v, "y", false)?,
     };
     let Some((tab_id, FrameId::MAIN)) = parse_context_id(window_id) else {
         return Err(BidiError::unknown_error(format!(
@@ -238,7 +240,11 @@ pub(crate) async fn set_download_behavior(state: &Arc<BidiState>, params: &Value
             let Some(raw) = item.as_str() else {
                 return Err(BidiError::invalid_argument("userContext must be a string"));
             };
-            let uc = UserContextId::new(raw);
+            let Some(uc) = UserContextId::parse(raw) else {
+                return Err(BidiError::no_such_user_context(format!(
+                    "unknown user context: {raw}"
+                )));
+            };
             if !known.contains(&uc) {
                 return Err(BidiError::no_such_user_context(format!(
                     "unknown user context: {raw}"

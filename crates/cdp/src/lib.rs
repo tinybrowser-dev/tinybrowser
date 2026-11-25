@@ -45,11 +45,11 @@ fn cdp_context_id(uc: &UserContextId) -> String {
     }
 }
 
-fn user_context_from_cdp(id: &str) -> UserContextId {
+fn user_context_from_cdp(id: &str) -> Option<UserContextId> {
     if id == DEFAULT_BROWSER_CONTEXT_ID {
-        UserContextId::default_context()
+        Some(UserContextId::default_context())
     } else {
-        UserContextId::new(id)
+        UserContextId::parse(id)
     }
 }
 
@@ -325,8 +325,10 @@ struct Conn {
     fetch_intercepts: HashMap<TabId, Vec<InterceptId>>,
     network_rx: Option<tokio::sync::broadcast::Receiver<NetworkEvent>>,
     prompt_rx: Option<tokio::sync::broadcast::Receiver<PromptEvent>>,
-    compiled_scripts: HashMap<String, String>,
+    compiled_scripts: HashMap<String, (TabId, String)>,
+    compiled_script_order: VecDeque<String>,
     next_script: u64,
+    next_exception_id: u64,
     events: Vec<Value>,
     loader_ids: HashMap<TabId, String>,
     // https://chromedevtools.github.io/devtools-protocol/tot/Page/#event-lifecycleEvent
@@ -338,7 +340,7 @@ struct Conn {
     isolated_worlds: HashMap<TabId, Vec<String>>,
     isolated_contexts: HashMap<u64, (TabId, String)>,
     omit_background: HashMap<TabId, bool>,
-    response_bodies: HashMap<String, Vec<u8>>,
+    response_bodies: HashMap<String, (TabId, Vec<u8>)>,
     response_body_order: VecDeque<String>,
     next_loader: u64,
     next_context: u64,
@@ -545,7 +547,7 @@ impl Conn {
             TabEvent::FrameNavigated { frame, parent, url } => {
                 push_frame_navigated(&mut messages, tab_id, frame, parent, &url, sess);
             }
-            TabEvent::FrameDetached { frame } => {
+            TabEvent::FrameDetached { frame, .. } => {
                 push_frame_detached(&mut messages, tab_id, frame, sess);
             }
             event @ TabEvent::ExceptionThrown { .. } => {
@@ -590,8 +592,14 @@ impl Conn {
         );
     }
 
+    fn next_exception_id(&mut self) -> u64 {
+        let id = self.next_exception_id;
+        self.next_exception_id = self.next_exception_id.saturating_add(1);
+        id
+    }
+
     fn push_exception_event(
-        &self,
+        &mut self,
         messages: &mut Vec<Value>,
         tab_id: TabId,
         event: &TabEvent,
@@ -613,13 +621,14 @@ impl Conn {
             .get(&tab_id)
             .copied()
             .unwrap_or_default();
+        let exception_id = self.next_exception_id();
         push_event(
             messages,
             "Runtime.exceptionThrown",
             &json!({
                 "timestamp": timestamp,
                 "exceptionDetails": {
-                    "exceptionId": 1,
+                    "exceptionId": exception_id,
                     "text": text,
                     "lineNumber": line,
                     "columnNumber": column,
@@ -705,7 +714,9 @@ impl Conn {
         let Some(request_id) = self.loader_ids.get(&tab).cloned() else {
             return;
         };
-        if response.body.len() <= 4 * 1024 * 1024 {
+        let encoded_len = response.body.len();
+        let mime_type = browser::mime_from_headers(&response.headers);
+        if encoded_len <= 4 * 1024 * 1024 {
             while self.response_body_order.len() >= 32 {
                 if let Some(oldest) = self.response_body_order.pop_front() {
                     self.response_bodies.remove(&oldest);
@@ -715,7 +726,7 @@ impl Conn {
                 self.response_body_order.push_back(request_id.clone());
             }
             self.response_bodies
-                .insert(request_id.clone(), response.body);
+                .insert(request_id.clone(), (tab, response.body));
         }
         let mut header_map = serde_json::Map::new();
         for (name, value) in response.headers {
@@ -733,12 +744,12 @@ impl Conn {
                     "status": response.status,
                     "statusText": response.status_text,
                     "headers": headers,
-                    "mimeType": "",
+                    "mimeType": mime_type,
                     "connectionReused": false,
                     "connectionId": 0,
                     "fromDiskCache": false,
                     "fromPrefetchCache": false,
-                    "encodedDataLength": 0,
+                    "encodedDataLength": encoded_len,
                     "timing": {
                         "requestTime": timestamp,
                         "proxyStart": -1,
@@ -769,7 +780,7 @@ impl Conn {
             "params": {
                 "requestId": request_id,
                 "timestamp": timestamp,
-                "encodedDataLength": 0,
+                "encodedDataLength": encoded_len,
             },
         });
         attach_session(&mut finished, session);
@@ -912,7 +923,9 @@ impl Conn {
         let Some(id) = raw else {
             return Ok(fallback.clone());
         };
-        let uc = user_context_from_cdp(id);
+        let Some(uc) = user_context_from_cdp(id) else {
+            return Err(DispatchError::InvalidParams("browserContextId".to_owned()));
+        };
         let known = self
             .browser
             .user_contexts()
@@ -1162,10 +1175,16 @@ impl Conn {
                     .map_err(|error| DispatchError::Failed(error.to_string()))?;
                 Ok(DispatchResult::Immediate(json!({})))
             }
-            Handler::StorageGetCookies
-            | Handler::StorageSetCookies
-            | Handler::StorageClearCookies => self
-                .dispatch_storage_cookies(handler, params, &target_uc)
+            Handler::StorageGetCookies => self
+                .dispatch_storage_cookies(StorageCookieOp::Get, params, &target_uc)
+                .await
+                .map(DispatchResult::Immediate),
+            Handler::StorageSetCookies => self
+                .dispatch_storage_cookies(StorageCookieOp::Set, params, &target_uc)
+                .await
+                .map(DispatchResult::Immediate),
+            Handler::StorageClearCookies => self
+                .dispatch_storage_cookies(StorageCookieOp::Clear, params, &target_uc)
                 .await
                 .map(DispatchResult::Immediate),
             Handler::GetTargetInfo => match target {
@@ -1198,12 +1217,12 @@ impl Conn {
 
     async fn dispatch_storage_cookies(
         &self,
-        handler: Handler,
+        op: StorageCookieOp,
         params: &Value,
         fallback: &UserContextId,
     ) -> Result<Value, DispatchError> {
-        match handler {
-            Handler::StorageGetCookies => {
+        match op {
+            StorageCookieOp::Get => {
                 let params: params::StorageBrowserContext = params::parse(params)?;
                 let uc = self
                     .resolve_user_context(params.browser_context_id.as_deref(), fallback)
@@ -1216,7 +1235,7 @@ impl Conn {
                 let cookies: Vec<Value> = records.iter().map(cdp_cookie_json).collect();
                 Ok(json!({ "cookies": cookies }))
             }
-            Handler::StorageSetCookies => {
+            StorageCookieOp::Set => {
                 let params: params::SetCookies = params::parse(params)?;
                 let uc = self
                     .resolve_user_context(params.browser_context_id.as_deref(), fallback)
@@ -1224,7 +1243,7 @@ impl Conn {
                 set_cdp_cookies(&self.browser, &uc, &params.cookies, None).await?;
                 Ok(json!({}))
             }
-            Handler::StorageClearCookies => {
+            StorageCookieOp::Clear => {
                 let params: params::StorageBrowserContext = params::parse(params)?;
                 let uc = self
                     .resolve_user_context(params.browser_context_id.as_deref(), fallback)
@@ -1235,7 +1254,6 @@ impl Conn {
                     .map_err(|error| DispatchError::Failed(error.to_string()))?;
                 Ok(json!({}))
             }
-            _ => Err(DispatchError::MethodNotFound),
         }
     }
 
@@ -1260,9 +1278,13 @@ impl Conn {
             }
             PageHandler::RuntimeRunScript => {
                 let req: params::RunScript = params::parse(params)?;
-                let Some(expression) = self.compiled_scripts.get(&req.script_id).cloned() else {
+                let Some((owner, expression)) = self.compiled_scripts.get(&req.script_id) else {
                     return Err(DispatchError::Failed("unknown scriptId".to_owned()));
                 };
+                if *owner != tab.id() {
+                    return Err(DispatchError::Failed("unknown scriptId".to_owned()));
+                }
+                let expression = expression.clone();
                 self.dispatch_runtime(
                     RuntimeSource::Evaluate { expression },
                     req.options,
@@ -1317,6 +1339,7 @@ impl Conn {
                 self.set_default_background_color_override(params, tab)
             }
             PageHandler::NetworkEnable => {
+                self.subscribe_tab(tab, session)?;
                 self.network_enabled.insert(tab.id());
                 if self.network_rx.is_none() {
                     self.network_rx = Some(self.browser.network_broker().subscribe());
@@ -1325,10 +1348,13 @@ impl Conn {
             }
             PageHandler::NetworkDisable => {
                 self.network_enabled.remove(&tab.id());
+                if !self.prompt_tabs.contains(&tab.id()) {
+                    self.unsubscribe_tab(tab.id(), session);
+                }
                 self.maybe_drop_network_rx();
                 Ok(json!({}))
             }
-            PageHandler::NetworkGetResponseBody => self.get_response_body(params),
+            PageHandler::NetworkGetResponseBody => self.get_response_body(tab, params),
             PageHandler::NetworkSetExtraHttpHeaders => set_extra_http_headers(tab, params).await,
             PageHandler::NetworkGetCookies => self.network_get_cookies(tab, params).await,
             PageHandler::NetworkGetAllCookies => self.network_get_all_cookies(tab).await,
@@ -1395,8 +1421,10 @@ impl Conn {
     }
 
     fn page_disable(&mut self, tab: &TabHandle, session: Option<&str>) -> Value {
-        self.unsubscribe_tab(tab.id(), session);
         self.prompt_tabs.remove(&tab.id());
+        if !self.network_enabled.contains(&tab.id()) {
+            self.unsubscribe_tab(tab.id(), session);
+        }
         self.browser.prompt_broker().dismiss_tab(tab.id());
         if self.prompt_tabs.is_empty() {
             self.prompt_rx = None;
@@ -1746,22 +1774,16 @@ impl Conn {
         session: Option<&str>,
     ) -> Result<Value, DispatchError> {
         let params: params::DisposeBrowserContext = params::parse(params)?;
-        let uc = user_context_from_cdp(&params.browser_context_id);
-        if uc.is_default() {
-            return Err(DispatchError::Failed(
-                "cannot dispose default browser context".to_owned(),
-            ));
-        }
-        let known = self
-            .browser
-            .user_contexts()
-            .await
-            .map_err(|err| DispatchError::Failed(err.to_string()))?;
-        if !known.contains(&uc) {
+        let Some(uc) = user_context_from_cdp(&params.browser_context_id) else {
             return Err(DispatchError::Failed(format!(
                 "unknown browser context: {}",
                 params.browser_context_id
             )));
+        };
+        if uc.is_default() {
+            return Err(DispatchError::Failed(
+                "cannot dispose default browser context".to_owned(),
+            ));
         }
         let tabs = self.browser.tabs_in(&uc).await.unwrap_or_default();
         for id in tabs {
@@ -1844,6 +1866,12 @@ impl Conn {
         self.default_contexts.remove(&id);
         self.isolated_worlds.remove(&id);
         self.isolated_contexts.retain(|_, (owner, _)| *owner != id);
+        self.compiled_scripts.retain(|_, (owner, _)| *owner != id);
+        self.compiled_script_order
+            .retain(|key| self.compiled_scripts.contains_key(key));
+        self.response_bodies.retain(|_, (owner, _)| *owner != id);
+        self.response_body_order
+            .retain(|key| self.response_bodies.contains_key(key));
         self.omit_background.remove(&id);
         if self.tab.as_ref().is_some_and(|tab| tab.id() == id) {
             self.tab = None;
@@ -1934,26 +1962,30 @@ impl Conn {
         Ok(json!({}))
     }
 
-    fn get_response_body(&self, params: &Value) -> Result<Value, DispatchError> {
+    fn get_response_body(&self, tab: &TabHandle, params: &Value) -> Result<Value, DispatchError> {
         let params: params::GetResponseBody = params::parse(params)?;
-        if let Some(bytes) = self.response_bodies.get(&params.request_id) {
-            return Ok(json!({
-                "body": BASE64_STANDARD.encode(bytes),
-                "base64Encoded": true,
-            }));
+        if let Some(raw_num) = params.request_id.strip_prefix("net-") {
+            if let Ok(num) = raw_num.parse::<u64>()
+                && let Some((owner, bytes)) = self
+                    .browser
+                    .network_broker()
+                    .response_body_with_tab(NetworkRequestId::new(num))
+                && owner == Some(tab.id())
+            {
+                return Ok(json!({
+                    "body": BASE64_STANDARD.encode(&bytes),
+                    "base64Encoded": true,
+                }));
+            }
+            return Err(DispatchError::Failed(
+                "No resource with given identifier found".into(),
+            ));
         }
-        let raw_num = params
-            .request_id
-            .strip_prefix("net-")
-            .unwrap_or(&params.request_id);
-        if let Ok(num) = raw_num.parse::<u64>()
-            && let Some(bytes) = self
-                .browser
-                .network_broker()
-                .response_body(NetworkRequestId::new(num))
+        if let Some((owner, bytes)) = self.response_bodies.get(&params.request_id)
+            && *owner == tab.id()
         {
             return Ok(json!({
-                "body": BASE64_STANDARD.encode(&bytes),
+                "body": BASE64_STANDARD.encode(bytes),
                 "base64Encoded": true,
             }));
         }
@@ -2017,8 +2049,11 @@ impl Conn {
         } else {
             for pat in patterns {
                 let phase = match pat.request_stage.as_deref() {
+                    None | Some("Request") => InterceptPhase::BeforeRequestSent,
                     Some("Response") => InterceptPhase::ResponseStarted,
-                    _ => InterceptPhase::BeforeRequestSent,
+                    Some(_) => {
+                        return Err(DispatchError::InvalidParams("requestStage".to_owned()));
+                    }
                 };
                 let url_pat =
                     UrlPattern::Wildcard(pat.url_pattern.unwrap_or_else(|| "*".to_owned()));
@@ -2138,39 +2173,56 @@ impl Conn {
         tab: &TabHandle,
         params: &Value,
     ) -> Result<Value, DispatchError> {
+        const MAX_COMPILED_SCRIPTS: usize = 256;
         let params: params::CompileScript = params::parse(params)?;
         let _ = params.execution_context_id;
+        let source_url = params.source_url.unwrap_or_default();
         let check = format!(
             "(() => {{ try {{ new Function({}); return ''; }} catch (e) {{ return String(e && e.message ? e.message : e); }} }})()",
-            json_string(&params.expression)
+            json_string(&format!("{}\n", params.expression))
         );
         match tab.execute_browser_script(&check).await {
-            Ok(RemoteValue::String(err)) if !err.is_empty() => Ok(json!({
-                "exceptionDetails": {
-                    "exceptionId": 1,
-                    "text": err,
-                    "lineNumber": 0,
-                    "columnNumber": 0,
-                }
-            })),
+            Ok(RemoteValue::String(err)) if !err.is_empty() => {
+                let exception_id = self.next_exception_id();
+                Ok(json!({
+                    "exceptionDetails": {
+                        "exceptionId": exception_id,
+                        "text": err,
+                        "lineNumber": 0,
+                        "columnNumber": 0,
+                        "url": source_url,
+                    }
+                }))
+            }
             Ok(_) => {
                 if params.persist_script.unwrap_or(false) {
+                    while self.compiled_script_order.len() >= MAX_COMPILED_SCRIPTS {
+                        if let Some(oldest) = self.compiled_script_order.pop_front() {
+                            self.compiled_scripts.remove(&oldest);
+                        }
+                    }
                     self.next_script = self.next_script.saturating_add(1);
                     let id = format!("script-{}", self.next_script);
-                    self.compiled_scripts.insert(id.clone(), params.expression);
+                    self.compiled_scripts
+                        .insert(id.clone(), (tab.id(), params.expression));
+                    self.compiled_script_order.push_back(id.clone());
                     Ok(json!({ "scriptId": id }))
                 } else {
                     Ok(json!({}))
                 }
             }
-            Err(err) => Ok(json!({
-                "exceptionDetails": {
-                    "exceptionId": 1,
-                    "text": err.to_string(),
-                    "lineNumber": 0,
-                    "columnNumber": 0,
-                }
-            })),
+            Err(err) => {
+                let exception_id = self.next_exception_id();
+                Ok(json!({
+                    "exceptionDetails": {
+                        "exceptionId": exception_id,
+                        "text": err.to_string(),
+                        "lineNumber": 0,
+                        "columnNumber": 0,
+                        "url": source_url,
+                    }
+                }))
+            }
         }
     }
 
@@ -2263,6 +2315,7 @@ impl Conn {
                 request_id,
                 tab,
                 is_navigation,
+                resource_type,
                 error_text,
                 ..
             } => {
@@ -2273,7 +2326,7 @@ impl Conn {
                     let failed = json!({
                         "requestId": format!("net-{request_id}"),
                         "timestamp": timestamp,
-                        "type": "Other",
+                        "type": resource_type,
                         "errorText": error_text,
                     });
                     for sess in self.sessions_for_tab(tab_id) {
@@ -2371,6 +2424,9 @@ impl Conn {
             tab: Some(tab_id),
             frame,
             url,
+            method,
+            request_headers,
+            resource_type,
             status,
             status_text,
             headers,
@@ -2389,6 +2445,10 @@ impl Conn {
         if !owned_fetch {
             return;
         }
+        let req_header_map: serde_json::Map<String, Value> = request_headers
+            .into_iter()
+            .map(|(k, v)| (k, Value::String(v)))
+            .collect();
         let resp_headers: Vec<Value> = headers
             .into_iter()
             .map(|(name, value)| json!({"name": name, "value": value}))
@@ -2397,11 +2457,11 @@ impl Conn {
             "requestId": format!("net-{request_id}"),
             "request": {
                 "url": url,
-                "method": "GET",
-                "headers": {},
+                "method": method,
+                "headers": Value::Object(req_header_map),
             },
             "frameId": cdp_frame_id(tab_id, frame),
-            "resourceType": "Other",
+            "resourceType": resource_type,
             "responseStatusCode": status,
             "responseStatusText": status_text,
             "responseHeaders": resp_headers,
@@ -2423,6 +2483,7 @@ impl Conn {
             frame,
             is_navigation,
             url,
+            resource_type,
             status,
             status_text,
             headers,
@@ -2447,7 +2508,7 @@ impl Conn {
             "loaderId": self.current_loader(tab_id),
             "frameId": cdp_frame_id(tab_id, frame),
             "timestamp": timestamp,
-            "type": "Other",
+            "type": resource_type,
             "response": {
                 "url": url,
                 "status": status,
@@ -3003,7 +3064,9 @@ fn new_conn(
         network_rx: None,
         prompt_rx: None,
         compiled_scripts: HashMap::new(),
+        compiled_script_order: VecDeque::new(),
         next_script: 1,
+        next_exception_id: 1,
         events: Vec::new(),
         loader_ids: HashMap::new(),
         current_loaders: HashMap::new(),
@@ -3033,8 +3096,10 @@ async fn run_socket(mut socket: WebSocket, state: AppState, tab: Option<TabHandl
     let (deferred_tx, mut deferred_rx) = mpsc::unbounded_channel();
     let mut lifecycle_rx = state.browser.subscribe();
     let mut conn = new_conn(state, tab, deferred_tx);
+    let stop = conn.stop.clone();
     loop {
         let wake = tokio::select! {
+            () = stop.wait() => SocketWake::Shutdown,
             event = conn.tab_events_rx.recv() => SocketWake::Event(event),
             lifecycle = lifecycle_rx.recv() => SocketWake::Lifecycle(lifecycle),
             net = recv_optional(&mut conn.network_rx) => SocketWake::Network(net),
@@ -3076,7 +3141,8 @@ async fn run_socket(mut socket: WebSocket, state: AppState, tab: Option<TabHandl
                     break;
                 }
             }
-            SocketWake::Event(None)
+            SocketWake::Shutdown
+            | SocketWake::Event(None)
             | SocketWake::Incoming(None | Some(Ok(WsMessage::Close(_)) | Err(_))) => break,
             SocketWake::Incoming(Some(Ok(WsMessage::Text(text)))) => {
                 let outcome = conn.dispatch_text(text.as_str()).await;
@@ -3120,7 +3186,14 @@ struct NavigationResponse {
     body: Vec<u8>,
 }
 
+enum StorageCookieOp {
+    Get,
+    Set,
+    Clear,
+}
+
 enum SocketWake {
+    Shutdown,
     Event(Option<ConnEvent>),
     Lifecycle(Result<BrowserLifecycleEvent, broadcast::error::RecvError>),
     Network(Result<NetworkEvent, broadcast::error::RecvError>),
@@ -3199,7 +3272,9 @@ mod tests {
             network_rx: None,
             prompt_rx: None,
             compiled_scripts: HashMap::new(),
+            compiled_script_order: VecDeque::new(),
             next_script: 1,
+            next_exception_id: 1,
             events: Vec::new(),
             loader_ids: HashMap::new(),
             current_loaders: HashMap::new(),
