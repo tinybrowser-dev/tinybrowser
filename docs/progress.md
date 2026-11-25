@@ -4108,9 +4108,9 @@ opener, and parallel-click tests fixed by the webdriver work left the
 expectation file, which now only shrinks.
 
 Blink's inspector-protocol corpus (`tools/cdp-tests/run --all`) measures the
-protocol itself, and it is not the common path. Of 1,494 tests, 483 need
+protocol itself, and it is not the common path. Of 1,494 tests, 482 need
 Chromium hosts, certificates, or PHP fixtures (`MISSING_FIXTURE`) and 7 need
-harness features, leaving 1,004 executable; 24 pass. Most of the corpus
+harness features, leaving 1,005 executable; 24 pass. Most of the corpus
 asserts DevTools-frontend behavior (Debugger, Tracing, CSS editing, Audits,
 WebAuthn), but even the common domains are low: page 8/75, dom 2/81,
 runtime 3/31, network 2/51, fetch 2/71, storage 0/25, emulation 0/98. The
