@@ -57,8 +57,19 @@ pub(crate) struct RealmRegistry {
     next_decoder: u64,
     // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#textFieldSelection
     selections: HashMap<NodeId, (u32, u32, u8)>,
+    // https://w3c.github.io/selection-api/#selection-interface
+    document_selections: HashMap<u32, DocumentSelection>,
     // https://html.spec.whatwg.org/multipage/interaction.html#focusable-area
     active_elements: HashMap<u32, NodeId>,
+}
+
+// https://w3c.github.io/selection-api/#selection-interface
+#[derive(Clone, Default)]
+pub(crate) struct DocumentSelection {
+    pub(crate) start: Option<(NodeId, u32)>,
+    pub(crate) end: Option<(NodeId, u32)>,
+    pub(crate) direction: u8,
+    pub(crate) version: u32,
 }
 
 pub(crate) struct PrivateSlots {
@@ -531,6 +542,27 @@ fn object_url_id() -> Option<String> {
 }
 
 impl RealmRegistry {
+    // https://w3c.github.io/selection-api/#selection-interface
+    pub(crate) fn document_selection(&self, document: u32) -> Option<&DocumentSelection> {
+        self.document_selections.get(&document)
+    }
+
+    // https://w3c.github.io/selection-api/#selection-interface
+    pub(crate) fn update_document_selection(
+        &mut self,
+        document: u32,
+        start: Option<(NodeId, u32)>,
+        end: Option<(NodeId, u32)>,
+        direction: u8,
+    ) -> u32 {
+        let selection = self.document_selections.entry(document).or_default();
+        selection.version = selection.version.wrapping_add(1);
+        selection.start = start;
+        selection.end = end;
+        selection.direction = direction;
+        selection.version
+    }
+
     pub(crate) fn insert_document(&mut self, id: u32, world: &Rc<RefCell<World>>) {
         self.documents.insert(id, Rc::downgrade(world));
     }
@@ -576,6 +608,7 @@ impl RealmRegistry {
         self.adopted_ids
             .retain(|from, to| from.document_id() != id && to.document_id() != id);
         self.selections.retain(|node, _| node.document_id() != id);
+        self.document_selections.remove(&id);
         self.active_elements.remove(&id);
     }
 

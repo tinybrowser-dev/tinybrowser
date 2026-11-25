@@ -4096,3 +4096,35 @@ Expectation files: wdspec has no metadata entries, so these failures are
 counted rather than suppressed. Playwright's `pw-expectations.json` remains
 the only expectation file, and its runner exits non-zero on an unexpected
 pass, so an entry that stops being needed fails the gate instead of growing.
+
+## CDP conformance, 2026-11-25
+
+CDP has two suites because they measure different things. The upstream
+Playwright gate is the common-API suite: Playwright drives every operation
+over CDP, so a missing method or a wrong reply shape fails the page test that
+used it. The gate covers 502 tests; 415 pass (82.7%), 87 are recorded
+non-passes, and a regression or an unexpected pass fails the run. The popup,
+opener, and parallel-click tests fixed by the webdriver work left the
+expectation file, which now only shrinks.
+
+Blink's inspector-protocol corpus (`tools/cdp-tests/run --all`) measures the
+protocol itself, and it is not the common path. Of 1,494 tests, 483 need
+Chromium hosts, certificates, or PHP fixtures (`MISSING_FIXTURE`) and 7 need
+harness features, leaving 1,004 executable; 24 pass. Most of the corpus
+asserts DevTools-frontend behavior (Debugger, Tracing, CSS editing, Audits,
+WebAuthn), but even the common domains are low: page 8/75, dom 2/81,
+runtime 3/31, network 2/51, fetch 2/71, storage 0/25, emulation 0/98. The
+common-domain subset is 19/515 (3.7%).
+
+The gap is concentrated in a few methods. The most-called missing ones are
+`Debugger.enable` (58 tests), `Audits.enable` (50), `CSS.getMatchedStylesForNode`
+(47), `Tracing.start` (32), `Animation.enable` (22),
+`Browser.grantPermissions` (20), `Target.setDiscoverTargets` (14),
+`CSS.getInlineStylesForNode` (12), and `Emulation.setPressureSourceOverrideEnabled`
+(9). They are the next CDP work; the Playwright gate is unaffected until one
+of them enters a common automation path.
+
+The corpus stays out of CI: it needs fixtures that only exist in a Chromium
+checkout, and a full run takes minutes. The push gate exercises the common
+CDP path through the Playwright workflow instead.
+

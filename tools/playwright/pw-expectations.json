@@ -31,10 +31,6 @@
     "expected": "FAIL",
     "reason": "TypeError: Cannot read properties of null (reading 'press')"
   },
-  "page-basic.spec.ts::page.close should work with window.close": {
-    "expected": "FAIL",
-    "reason": "TimeoutError: page.waitForEvent: Timeout 1500ms exceeded while waiting for event \"popup\""
-  },
   "page-basic.spec.ts::page.frame should respect name": {
     "expected": "FAIL",
     "reason": "Error: expect(received).toBeTruthy()"
@@ -46,10 +42,6 @@
   "page-basic.spec.ts::should have sane user agent": {
     "expected": "FAIL",
     "reason": "Error: expect(received).toBe(expected) // Object.is equality"
-  },
-  "page-basic.spec.ts::should provide access to the opener page": {
-    "expected": "FAIL",
-    "reason": "TimeoutError: page.waitForEvent: Timeout 1500ms exceeded while waiting for event \"popup\""
   },
   "page-click.spec.ts::ensure events are dispatched in the individual tasks": {
     "expected": "FAIL",
@@ -102,10 +94,6 @@
   "page-click.spec.ts::should click the button with fixed position inside an iframe": {
     "expected": "SKIP",
     "reason": "skipped"
-  },
-  "page-click.spec.ts::should issue clicks in parallel in page and popup": {
-    "expected": "FAIL",
-    "reason": "TimeoutError: page.waitForEvent: Timeout 1500ms exceeded while waiting for event \"popup\""
   },
   "page-click.spec.ts::should not hang when frame is detached": {
     "expected": "FAIL",
@@ -266,10 +254,6 @@
   "page-history.spec.ts::page.reload during renderer-initiated navigation": {
     "expected": "FAIL",
     "reason": "Test timeout of 3000ms exceeded."
-  },
-  "page-history.spec.ts::should reload proper page": {
-    "expected": "FAIL",
-    "reason": "TimeoutError: page.waitForEvent: Timeout 1500ms exceeded while waiting for event \"popup\""
   },
   "page-screenshot.spec.ts::mask option › should mask in parallel": {
     "expected": "FAIL",

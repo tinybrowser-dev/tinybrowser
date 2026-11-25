@@ -21,6 +21,7 @@ mod performance;
 pub(crate) use node::document::prepare_classic_script;
 mod parsing;
 mod range;
+mod selection;
 mod webidl;
 mod window;
 
@@ -922,6 +923,7 @@ fn install_host_functions(ctx: &Ctx<'_>) -> Result<()> {
     parsing::install_document_parse(ctx)?;
     cssom_host::install(ctx)?;
     origin::install(ctx)?;
+    selection::install(ctx)?;
     Ok(())
 }
 

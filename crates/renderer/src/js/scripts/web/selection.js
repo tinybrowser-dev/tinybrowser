@@ -5,6 +5,7 @@
   let range = null;
   // https://w3c.github.io/selection-api/#dfn-directionless
   let direction = null;
+  let version = -1;
 
   const documentOf = () => {
     const document = globalThis.document;
@@ -12,6 +13,7 @@
       selectionDocument = document;
       range = null;
       direction = null;
+      version = -1;
     }
     return document;
   };
@@ -31,13 +33,17 @@
     const document = documentOf();
     let current = node;
     while (current !== null) {
-      if (current === document) return true;
+      if (sameNode(current, document)) return true;
       current = current.parentNode !== null ? current.parentNode : (current.host ?? null);
     }
     return false;
   };
 
   const point = (node, offset) => ({ node, offset });
+
+  // https://dom.spec.whatwg.org/#dom-node-issamenode
+  const sameNode = (a, b) => a === b
+    || (a !== null && b !== null && typeof a.isSameNode === 'function' && a.isSameNode(b));
 
   const anchorPoint = () => (direction === 'backward'
     ? point(range.endContainer, range.endOffset)
@@ -91,7 +97,7 @@
       if (a.offset === b.offset) return 0;
       return a.offset < b.offset ? -1 : 1;
     }
-    if (a.node.getRootNode() === b.node.getRootNode()) {
+    if (sameNode(a.node.getRootNode(), b.node.getRootNode())) {
       const scratch = documentOf().createRange();
       scratch.setStart(b.node, b.offset);
       scratch.setEnd(b.node, b.offset);
@@ -109,8 +115,42 @@
 
   const setBoundaries = (anchor, focus) => {
     const order = comparePoints(anchor, focus);
-    range = order <= 0 ? newRange(anchor, focus) : newRange(focus, anchor);
-    direction = order < 0 ? 'forward' : (order > 0 ? 'backward' : 'forward');
+    return {
+      range: order <= 0 ? newRange(anchor, focus) : newRange(focus, anchor),
+      direction: order < 0 ? 'forward' : (order > 0 ? 'backward' : 'forward'),
+    };
+  };
+
+  const directionCode = () => (direction === 'forward' ? 1 : (direction === 'backward' ? 2 : 0));
+  const directionFrom = (code) => (code === 1 ? 'forward' : (code === 2 ? 'backward' : null));
+
+  // https://w3c.github.io/selection-api/#selection-interface
+  const sync = () => {
+    const document = documentOf();
+    const state = host.__tbSelectionState(document);
+    if (state === null || state[0] === version) return;
+    version = state[0];
+    const [, startNode, startOffset, endNode, endOffset, code] = state;
+    direction = directionFrom(code);
+    range = startNode === null || endNode === null
+      ? null
+      : newRange(point(startNode, startOffset), point(endNode, endOffset));
+  };
+
+  const commit = (nextRange, nextDirection) => {
+    const document = documentOf();
+    range = nextRange;
+    direction = nextDirection;
+    if (nextRange === null) {
+      version = host.__tbSelectionClear(document);
+      return;
+    }
+    version = host.__tbSelectionCommit(
+      document,
+      nextRange.startContainer, nextRange.startOffset,
+      nextRange.endContainer, nextRange.endOffset,
+      directionCode(),
+    );
   };
 
   const requireRange = () => {
@@ -142,25 +182,31 @@
 
   const [Selection, selection] = __tbInstallGlobal('Selection', class Selection {
     get anchorNode() {
+      sync();
       return range === null ? null : exposed(anchorPoint()).node;
     }
     get anchorOffset() {
+      sync();
       return range === null ? 0 : exposed(anchorPoint()).offset;
     }
     get focusNode() {
+      sync();
       return range === null ? null : exposed(focusPoint()).node;
     }
     get focusOffset() {
+      sync();
       return range === null ? 0 : exposed(focusPoint()).offset;
     }
     // https://w3c.github.io/selection-api/#dom-selection-iscollapsed
     get isCollapsed() {
+      sync();
       const anchor = this.anchorNode;
       const focus = this.focusNode;
       return anchor === focus
         && (anchor === null || this.anchorOffset === this.focusOffset);
     }
     get rangeCount() {
+      sync();
       if (range === null || !inDocumentTree(range.startContainer)
           || !inDocumentTree(range.endContainer)) {
         return 0;
@@ -177,6 +223,7 @@
     }
     // https://w3c.github.io/selection-api/#dom-selection-getrangeat
     getRangeAt(index) {
+      sync();
       if (index !== 0 || this.rangeCount === 0) {
         throw new DOMException('no range at this index', 'IndexSizeError');
       }
@@ -185,27 +232,28 @@
     }
     addRange(candidate) {
       requireRangeArgument(candidate);
+      sync();
       const document = documentOf();
-      if (candidate.startContainer.getRootNode() !== document
-          || candidate.endContainer.getRootNode() !== document) {
+      const rootStart = candidate.startContainer.getRootNode();
+      const rootEnd = candidate.endContainer.getRootNode();
+      if (!sameNode(rootStart, document) || !sameNode(rootEnd, document)) {
         return;
       }
       if (this.rangeCount !== 0) return;
-      range = candidate;
-      direction = null;
+      commit(candidate, null);
     }
     removeRange(candidate) {
       // https://webidl.spec.whatwg.org/#es-interface
       requireRangeArgument(candidate);
+      sync();
       if (range !== candidate) {
         throw new DOMException('the range is not in the selection', 'NotFoundError');
       }
-      range = null;
-      direction = null;
+      commit(null, null);
     }
     removeAllRanges() {
-      range = null;
-      direction = null;
+      sync();
+      commit(null, null);
     }
     empty() {
       this.removeAllRanges();
@@ -216,28 +264,32 @@
         this.removeAllRanges();
         return;
       }
+      sync();
       checkNode(node);
       if (offset > lengthOf(node)) {
         throw new DOMException('offset is past the node length', 'IndexSizeError');
       }
       if (!inDocumentTree(node)) return;
-      range = newRange(point(node, offset), point(node, offset));
+      commit(newRange(point(node, offset), point(node, offset)), direction);
     }
     setPosition(node, offset) {
       this.collapse(node, offset);
     }
     collapseToStart() {
+      sync();
       const current = requireRange();
       const start = point(current.startContainer, current.startOffset);
-      range = newRange(start, start);
+      commit(newRange(start, start), direction);
     }
     collapseToEnd() {
+      sync();
       const current = requireRange();
       const end = point(current.endContainer, current.endOffset);
-      range = newRange(end, end);
+      commit(newRange(end, end), direction);
     }
     // https://w3c.github.io/selection-api/#dom-selection-extend
     extend(node, offset) {
+      sync();
       if (!inDocumentTree(node)) return;
       if (range === null) {
         throw new DOMException('the selection is empty', 'InvalidStateError');
@@ -245,34 +297,39 @@
       const anchor = anchorPoint();
       const focus = point(node, offset);
       // https://w3c.github.io/selection-api/#dom-selection-extend
-      if (focus.node.getRootNode() !== range.startContainer.getRootNode()) {
-        range = newRange(focus, focus);
-        direction = 'forward';
+      if (!sameNode(focus.node.getRootNode(), range.startContainer.getRootNode())) {
+        commit(newRange(focus, focus), 'forward');
         return;
       }
       const order = comparePoints(anchor, focus);
-      range = order <= 0 ? newRange(anchor, focus) : newRange(focus, anchor);
-      // https://w3c.github.io/selection-api/#dom-selection-extend
-      direction = order < 0 ? 'forward' : (order > 0 ? 'backward' : 'forward');
+      commit(
+        order <= 0 ? newRange(anchor, focus) : newRange(focus, anchor),
+        // https://w3c.github.io/selection-api/#dom-selection-extend
+        order < 0 ? 'forward' : (order > 0 ? 'backward' : 'forward'),
+      );
     }
     // https://w3c.github.io/selection-api/#dom-selection-setbaseandextent
     setBaseAndExtent(anchorNode, anchorOffset, focusNode, focusOffset) {
+      sync();
       if (anchorOffset > lengthOf(anchorNode) || focusOffset > lengthOf(focusNode)) {
         throw new DOMException('offset is past the node length', 'IndexSizeError');
       }
       if (!inDocumentTree(anchorNode) || !inDocumentTree(focusNode)) return;
-      setBoundaries(point(anchorNode, anchorOffset), point(focusNode, focusOffset));
+      const boundaries = setBoundaries(
+        point(anchorNode, anchorOffset), point(focusNode, focusOffset));
+      commit(boundaries.range, boundaries.direction);
     }
     // https://w3c.github.io/selection-api/#dom-selection-selectallchildren
     selectAllChildren(node) {
+      sync();
       checkNode(node);
-      if (node.getRootNode() !== documentOf()) return;
+      if (!sameNode(node.getRootNode(), documentOf())) return;
       const end = lengthOf(node);
-      range = newRange(point(node, 0), point(node, end));
-      direction = 'forward';
+      commit(newRange(point(node, 0), point(node, end)), 'forward');
     }
     // https://w3c.github.io/selection-api/#dom-selection-containsnode
     containsNode(node, allowPartialContainment) {
+      sync();
       if (range === null || !inDocumentTree(node)) return false;
       if (allowPartialContainment) return range.intersectsNode(node);
       const start = point(range.startContainer, range.startOffset);
@@ -285,7 +342,11 @@
   // https://w3c.github.io/selection-api/#dom-selection-deletefromdocument
   __tbDefineProperty(Selection.prototype, 'deleteFromDocument', {
     value: function deleteFromDocument() {
-      if (range !== null) range.deleteContents();
+      sync();
+      if (range !== null) {
+        range.deleteContents();
+        commit(range, direction);
+      }
     },
     writable: true, enumerable: true, configurable: true,
   });
@@ -293,6 +354,7 @@
   // https://w3c.github.io/selection-api/#dom-selection-stringifier
   __tbDefineProperty(Selection.prototype, 'toString', {
     value: function toString() {
+      sync();
       return range === null ? '' : range.toString();
     },
     writable: true, enumerable: true, configurable: true,
