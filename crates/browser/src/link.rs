@@ -1698,7 +1698,7 @@ struct SpawnedRenderer {
 }
 
 #[cfg(unix)]
-fn spawn_transport(command: &mut Command) -> io::Result<SpawnedRenderer> {
+fn spawn_transport(mut command: Command) -> io::Result<SpawnedRenderer> {
     let (host, child_end) = std::os::unix::net::UnixStream::pair()?;
     command
         .stdin(Stdio::from(std::os::fd::OwnedFd::from(child_end)))
@@ -1717,7 +1717,7 @@ fn spawn_transport(command: &mut Command) -> io::Result<SpawnedRenderer> {
 }
 
 #[cfg(not(unix))]
-fn spawn_transport(command: &mut Command) -> io::Result<SpawnedRenderer> {
+fn spawn_transport(mut command: Command) -> io::Result<SpawnedRenderer> {
     command.stdin(Stdio::piped()).stdout(Stdio::piped());
     let mut child = command.spawn()?;
     #[cfg(windows)]
@@ -1842,14 +1842,14 @@ pub(crate) async fn spawn_process(
         tabs,
         sandbox,
     } = services;
-    let mut command = renderer_command(sandbox)?;
+    let command = renderer_command(sandbox)?;
     let SpawnedRenderer {
         mut child,
         reader,
         writer,
         #[cfg(windows)]
         job,
-    } = spawn_transport(&mut command)?;
+    } = spawn_transport(command)?;
     let Some(stderr) = child.stderr.take() else {
         let _ = child.start_kill();
         return Err(io::Error::other("renderer stderr missing"));
@@ -1874,7 +1874,7 @@ pub(crate) async fn spawn_process(
     let alive = Arc::new(AtomicBool::new(true));
     let (ready_tx, ready_rx) = oneshot::channel();
     let failure = LinkFailure {
-        router: router.clone(),
+        router,
         alive: Arc::clone(&alive),
         kill: kill.clone(),
         renderer: id,

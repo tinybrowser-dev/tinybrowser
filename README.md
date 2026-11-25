@@ -89,7 +89,7 @@ The `wasm32-wasip2` release tarball ships `tinybrowser.wasm` implementing [crate
 - No Service Workers, WebGL, WebAudio, or page-facing WebSockets
 - QuickJS is a bytecode interpreter with no JIT (JS-heavy apps run slower than V8)
 - No GPU acceleration or continuous paint loop (headless one-shot rendering only)
-- No OS process sandbox / OOPIF isolation yet
+- No out-of-process iframe (OOPIF) isolation yet
 - OpenSSL TLS fingerprint (not Chrome JA3/JA4 impersonation)
 
 ## Building from source
