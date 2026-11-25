@@ -17,7 +17,24 @@ pub(crate) fn install(ctx: &Ctx<'_>) -> Result<()> {
     bridge.set("__tbUnregisterFont", Func::from(unregister_font))?;
     bridge.set("__tbValidateFont", Func::from(validate_font))?;
     bridge.set("__tbFontFamilyAvailable", Func::from(family_available))?;
+    bridge.set("__tbFontFaceStatus", Func::from(font_face_status))?;
     Ok(())
+}
+
+// https://drafts.csswg.org/css-font-loading/#dom-fontface-status
+fn font_face_status(ctx: Ctx<'_>, sheet: u64, path: Vec<usize>) -> Result<&'static str> {
+    let world = world(&ctx)?;
+    let world = world.borrow();
+    let Some(parsed) = world.main_document() else {
+        return Ok("unloaded");
+    };
+    let status = match parsed.document.base.font_face_status(sheet, &path) {
+        blitz_dom::font_face_events::FontFaceRuleStatus::Unloaded => "unloaded",
+        blitz_dom::font_face_events::FontFaceRuleStatus::Loading => "loading",
+        blitz_dom::font_face_events::FontFaceRuleStatus::Loaded => "loaded",
+        blitz_dom::font_face_events::FontFaceRuleStatus::Error => "error",
+    };
+    Ok(status)
 }
 
 const MAX_FONT_BYTES: usize = 64 * 1024 * 1024;

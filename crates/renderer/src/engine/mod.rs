@@ -4054,6 +4054,87 @@ mod messaging_tests {
         );
     }
 
+    // https://drafts.csswg.org/css-font-loading/#font-face-set-ready
+    #[test]
+    fn isolated_and_lazy_realms_observe_font_face_status_after_settlement() {
+        use base64::Engine as _;
+
+        let encoded = base64::engine::general_purpose::STANDARD.encode(blitz_dom::BULLET_FONT);
+        let html = format!(
+            "<!doctype html><style>\
+             @font-face {{ font-family: LoadedFace; src: url(\"data:font/ttf;base64,{encoded}\"); }}\
+             @font-face {{ font-family: ErrorFace; src: local(NoSuchFamily); }}\
+             @media all {{ @font-face {{ font-family: NestedFace; src: url(\"data:font/ttf;base64,{encoded}\"); }} }}\
+             </style><p style=\"font-family: LoadedFace\">hello</p>"
+        );
+        let mut engine = engine();
+        engine
+            .mount_frame(
+                FrameId::MAIN,
+                &mount("https://example.test/isolated-fonts", &html),
+            )
+            .expect("mount");
+        for _ in 0..10 {
+            let _ready = engine.drain_ready();
+        }
+        let probe = r"
+            (function () {
+              window.__fontsReady = false;
+              document.fonts.ready.then(() => { window.__fontsReady = true; });
+              return JSON.stringify({
+                status: document.fonts.status,
+                size: document.fonts.size,
+                faces: Array.from(document.fonts, face => [face.family, face.status]),
+              });
+            })()
+        ";
+        let expected = r#"{"status":"loaded","size":3,"faces":[["LoadedFace","loaded"],["ErrorFace","error"],["NestedFace","unloaded"]]}"#;
+        let isolated = engine
+            .execute_remote_in(
+                FrameId::MAIN,
+                crate::ScriptSource::Isolated {
+                    world: "utility",
+                    source: probe,
+                },
+                None,
+            )
+            .expect("isolated fonts probe");
+        assert!(
+            matches!(isolated, crate::RemoteValue::String(ref value) if value == expected),
+            "isolated world must read settled/unloaded font statuses: {isolated:?}"
+        );
+        let _ready = engine.drain_ready();
+        let isolated_ready = engine
+            .execute_remote_in(
+                FrameId::MAIN,
+                crate::ScriptSource::Isolated {
+                    world: "utility",
+                    source: "String(window.__fontsReady)",
+                },
+                None,
+            )
+            .expect("isolated ready probe");
+        assert!(
+            matches!(isolated_ready, crate::RemoteValue::String(ref value) if value == "true"),
+            "document.fonts.ready must resolve in the isolated world: {isolated_ready:?}"
+        );
+        let main = engine
+            .eval_in(FrameId::MAIN, probe)
+            .expect("main fonts probe");
+        assert_eq!(
+            main, expected,
+            "lazily created main world must also observe settled/unloaded font statuses"
+        );
+        let _ready = engine.drain_ready();
+        let main_ready = engine
+            .eval_in(FrameId::MAIN, "String(window.__fontsReady)")
+            .expect("main ready probe");
+        assert_eq!(
+            main_ready, "true",
+            "document.fonts.ready must resolve in a lazily created main world"
+        );
+    }
+
     // https://webassembly.github.io/spec/js-api/#dom-memory-grow
     #[test]
     fn web_assembly_memory_grow_extends_a_shared_buffer_in_place() {

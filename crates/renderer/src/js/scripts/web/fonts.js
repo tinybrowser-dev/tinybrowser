@@ -672,39 +672,30 @@ function __tbFontFromRule(rule) {
   state.cssConnected = true;
   __tbCssFontFaces.set(rule, face);
   // https://drafts.csswg.org/css-font-loading/#font-face-constructor
+  // https://drafts.csswg.org/css-font-loading/#dom-fontface-status
   const address = __tbCssomRuleAddress(rule);
-  state.status = 'loading';
   if (address !== null) {
-    const key = address.sheetId + '/' + address.path.join('/');
-    const settled = __tbSettledFontRules.get(key);
-    if (settled !== undefined) {
-      __tbSettledFontRules.delete(key);
-      if (settled) face._complete();
-      else face._fail(__tbFontError('font source failed to load', 'NetworkError'));
+    const status = host.__tbFontFaceStatus(address.sheetId, address.path);
+    if (status === 'loading') {
+      state.status = 'loading';
+    } else if (status === 'loaded') {
+      face._complete();
+    } else if (status === 'error') {
+      face._fail(__tbFontError('font source failed to load', 'NetworkError'));
     }
   }
   return face;
 }
 
-const __tbSettledFontRules = new Map();
-
 // https://drafts.csswg.org/css-fonts-4/#src-desc
 // https://drafts.csswg.org/css-font-loading/#dom-fontface-status
 host.__tbFontFaceSettled = function (sheetId, path, loaded) {
-  const address = sheetId + '/' + path.join('/');
   const rule = __tbCssomRuleAt(sheetId, path);
-  if (rule === null) {
-    __tbSettledFontRules.set(address, loaded);
-    return;
-  }
+  if (rule === null) return;
   const face = __tbCssFontFaces.get(rule);
-  if (face === undefined) {
-    __tbSettledFontRules.set(address, loaded);
-    return;
-  }
-  __tbSettledFontRules.delete(address);
+  if (face === undefined) return;
   const state = __tbFontFaceState(face);
-  if (state.status !== 'loading') return;
+  if (state.status === 'loaded' || state.status === 'error') return;
   if (loaded) {
     face._complete();
   } else {
