@@ -3,7 +3,9 @@ use std::io;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 
-use browser::{AgentOptions, Browser, BrowserHandle, BrowserOptions, Profile, ProfileName};
+use browser::{
+    AgentOptions, Browser, BrowserHandle, BrowserOptions, Profile, ProfileName, RendererSandbox,
+};
 use serde_json::json;
 use server::{Request, Response, Shutdown};
 
@@ -19,6 +21,7 @@ pub async fn run(
     data_home: &Path,
     port: Option<u16>,
     network: AgentOptions,
+    sandbox: RendererSandbox,
 ) -> io::Result<()> {
     let registration = match port {
         None => {
@@ -51,6 +54,7 @@ pub async fn run(
         data_home: Some(data_home.to_path_buf()),
         profile: profile.clone(),
         network,
+        sandbox,
     })
     .map_err(io::Error::from)?;
     let initial = browser

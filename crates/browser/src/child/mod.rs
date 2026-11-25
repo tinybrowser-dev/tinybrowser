@@ -1,6 +1,8 @@
 pub(crate) mod sandbox;
 mod session;
 
+pub use sandbox::RendererSandbox;
+
 const INBOX_CAPACITY: usize = 256;
 
 const OUTBOX_CONTROL_CAPACITY: usize = 256;
@@ -27,8 +29,16 @@ use crate::wire::{
 };
 use renderer::{OpenerPolicy, WindowId};
 
-pub fn serve() -> io::Result<()> {
-    sandbox::engage()?;
+pub fn serve(sandbox: RendererSandbox) -> io::Result<()> {
+    match sandbox {
+        RendererSandbox::Enabled => sandbox::engage()?,
+        RendererSandbox::Disabled => {
+            logging::warn!(
+                target: "renderer::sandbox",
+                "renderer OS sandbox disabled via --no-sandbox"
+            );
+        }
+    }
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_time()
         .build()?;

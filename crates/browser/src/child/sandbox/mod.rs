@@ -12,6 +12,13 @@ pub(crate) use windows::ProcessJob;
 
 use std::io;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RendererSandbox {
+    #[default]
+    Enabled,
+    Disabled,
+}
+
 pub(super) fn engage() -> io::Result<()> {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {

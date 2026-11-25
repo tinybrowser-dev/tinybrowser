@@ -1796,12 +1796,16 @@ pub(crate) struct RendererServices {
     pub(crate) browser: crate::browser::BrowserHandle,
     pub(crate) registry: Arc<AssignmentRegistry>,
     pub(crate) tabs: TabRegistry,
+    pub(crate) sandbox: crate::child::RendererSandbox,
 }
 
-fn renderer_command() -> io::Result<Command> {
+fn renderer_command(sandbox: crate::child::RendererSandbox) -> io::Result<Command> {
     let mut command = Command::new(std::env::current_exe()?);
+    command.arg("--renderer");
+    if matches!(sandbox, crate::child::RendererSandbox::Disabled) {
+        command.arg("--no-sandbox");
+    }
     command
-        .arg("--renderer")
         .env_clear()
         .env("TINYBROWSER_LOG", logging::level().as_str())
         .stderr(Stdio::piped());
@@ -1836,8 +1840,9 @@ pub(crate) async fn spawn_process(
         browser,
         registry,
         tabs,
+        sandbox,
     } = services;
-    let mut command = renderer_command()?;
+    let mut command = renderer_command(sandbox)?;
     let SpawnedRenderer {
         mut child,
         reader,

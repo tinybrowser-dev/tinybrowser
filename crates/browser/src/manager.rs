@@ -9,6 +9,7 @@ use tokio::sync::{Semaphore, mpsc};
 use crate::actor::TabId;
 use crate::assignment::{Assignment, AssignmentRegistry};
 use crate::browser::TabRegistry;
+use crate::child::RendererSandbox;
 use crate::context::{PartitionServices, UserContextId};
 use crate::link::{RendererHandle, RendererLock, RendererServices, spawn_process};
 use crate::network::TabNetworkHandle;
@@ -27,6 +28,7 @@ struct ManagerInner {
     sessions: Arc<SessionStorage>,
     browser: crate::browser::BrowserHandle,
     tabs: TabRegistry,
+    sandbox: RendererSandbox,
     next: AtomicU64,
     slots: Arc<Semaphore>,
     registry: Arc<AssignmentRegistry>,
@@ -46,6 +48,7 @@ impl RendererProcessManager {
         browser: crate::browser::BrowserHandle,
         tabs: TabRegistry,
         identity: net::ValidIdentity,
+        sandbox: RendererSandbox,
     ) -> Self {
         let (releases, release_rx) = mpsc::unbounded_channel();
         let inner = Arc::new(ManagerInner {
@@ -53,6 +56,7 @@ impl RendererProcessManager {
             sessions,
             browser,
             tabs,
+            sandbox,
             next: AtomicU64::new(1),
             slots: Arc::new(Semaphore::new(renderer_process_limit())),
             registry: Arc::new(AssignmentRegistry::new(releases)),
@@ -230,6 +234,7 @@ async fn spawn_slot(
                 browser: inner.browser.clone(),
                 registry: Arc::clone(&inner.registry),
                 tabs: inner.tabs.clone(),
+                sandbox: inner.sandbox,
             },
             slot,
         )
