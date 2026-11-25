@@ -295,7 +295,7 @@ dependencies = [
 
 [[package]]
 name = "browser"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "dial",
  "landlock",
@@ -394,7 +394,7 @@ dependencies = [
 
 [[package]]
 name = "cdp"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "base64 0.23.1",
  "browser",
@@ -501,7 +501,7 @@ dependencies = [
 
 [[package]]
 name = "cookies"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "publicsuffix",
  "secure-context",
@@ -701,7 +701,7 @@ dependencies = [
 
 [[package]]
 name = "dial"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -800,7 +800,7 @@ dependencies = [
 
 [[package]]
 name = "enumerated"
-version = "0.0.2"
+version = "0.0.3"
 
 [[package]]
 name = "enumflags2"
@@ -1812,7 +1812,7 @@ checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 
 [[package]]
 name = "logging"
-version = "0.0.2"
+version = "0.0.3"
 
 [[package]]
 name = "macro-string"
@@ -1940,7 +1940,7 @@ dependencies = [
 
 [[package]]
 name = "net"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "async-compression",
  "base64 0.23.1",
@@ -2751,7 +2751,7 @@ dependencies = [
 
 [[package]]
 name = "renderer"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "anyrender_svg",
  "anyrender_tiny_skia",
@@ -2934,7 +2934,7 @@ dependencies = [
 
 [[package]]
 name = "secure-context"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "url",
 ]
@@ -3048,7 +3048,7 @@ dependencies = [
 
 [[package]]
 name = "server"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -3593,7 +3593,7 @@ dependencies = [
 
 [[package]]
 name = "tinybrowser"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "browser",
  "cdp",
@@ -3611,7 +3611,7 @@ dependencies = [
 
 [[package]]
 name = "tinybrowser-wasm"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "bytes",
  "dial",
@@ -4097,7 +4097,7 @@ dependencies = [
 
 [[package]]
 name = "webdriver"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "base64 0.22.1",
  "browser",
@@ -4114,7 +4114,7 @@ dependencies = [
 
 [[package]]
 name = "webidl-bindgen"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "oxc_allocator",
  "oxc_ast",
@@ -4130,7 +4130,7 @@ dependencies = [
 
 [[package]]
 name = "webstorage"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "serde",
 ]
@@ -4378,7 +4378,7 @@ dependencies = [
 
 [[package]]
 name = "wpt-fast"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "rquickjs",
  "wpt-report",
@@ -4386,7 +4386,7 @@ dependencies = [
 
 [[package]]
 name = "wpt-harness"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "bytes",
  "cookies",
@@ -4405,7 +4405,7 @@ dependencies = [
 
 [[package]]
 name = "wpt-report"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "serde",
  "serde_json",
