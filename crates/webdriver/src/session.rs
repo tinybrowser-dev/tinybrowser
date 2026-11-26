@@ -808,6 +808,20 @@ pub(crate) async fn blank_window(
     Ok(tab)
 }
 
+pub(crate) async fn status(sessions: &tokio::sync::Mutex<Sessions>) -> (bool, String) {
+    let browser = {
+        let guard = sessions.lock().await;
+        if !guard.open.is_empty() || guard.creating {
+            return (false, "session already started".to_owned());
+        }
+        guard.browser.clone()
+    };
+    match browser.renderer_health().await {
+        Ok(()) => (true, "ready".to_owned()),
+        Err(message) => (false, message),
+    }
+}
+
 pub(crate) async fn create_session(
     sessions: &tokio::sync::Mutex<Sessions>,
     caps: MatchedCapabilities,
@@ -820,7 +834,10 @@ pub(crate) async fn create_session(
         guard.creating = true;
         (guard.browser.clone(), guard.bound)
     };
-    let result = build_session_tabs(&browser).await;
+    let result = match browser.ensure_renderer_ready().await {
+        Ok(()) => build_session_tabs(&browser).await,
+        Err(error) => Err(error.to_string()),
+    };
     let mut guard = sessions.lock().await;
     guard.creating = false;
     let tabs = result?;

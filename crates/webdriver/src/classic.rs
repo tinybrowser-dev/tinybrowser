@@ -293,13 +293,7 @@ async fn dispatch_misc(
 }
 
 async fn status(sessions: &Mutex<Sessions>) -> (u16, Value) {
-    let guard = sessions.lock().await;
-    let ready = guard.open.is_empty();
-    let message = if ready {
-        "ready"
-    } else {
-        "session already started"
-    };
+    let (ready, message) = crate::session::status(sessions).await;
     ok(json!({"ready": ready, "message": message}))
 }
 

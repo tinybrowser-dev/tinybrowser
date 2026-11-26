@@ -100,7 +100,7 @@ webdriver = { workspace = true }
 logging = { workspace = true }
 serde_json = "1"
 thiserror = "2"
-tokio = { version = "1.53", default-features = false, features = ["rt-multi-thread", "net", "sync", "time"] }
+tokio = { version = "1.53", default-features = false, features = ["rt-multi-thread", "net", "signal", "sync", "time"] }
 
 [dev-dependencies]
 # The process-level tests read the built-in identity so a version bump does not

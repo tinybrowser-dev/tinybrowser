@@ -11,13 +11,7 @@ use crate::session::{CapabilityError, parse_context_id, process_capabilities};
 
 // https://w3c.github.io/webdriver-bidi/#command-session-status
 pub(crate) async fn status(state: &Arc<BidiState>) -> BidiResult {
-    let guard = state.sessions.lock().await;
-    let ready = guard.open.is_empty();
-    let message = if ready {
-        "ready"
-    } else {
-        "session already started"
-    };
+    let (ready, message) = crate::session::status(&state.sessions).await;
     Ok(json!({
         "ready": ready,
         "message": message,

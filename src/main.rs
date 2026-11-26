@@ -21,7 +21,8 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Ok(cli::Outcome::Run(cli)) => {
-            if let Err(error) = install_logger(&cli) {
+            let needs_logger = matches!(cli.mode, Mode::Serve(_) | Mode::Renderer);
+            if needs_logger && let Err(error) = install_logger(&cli) {
                 eprintln!("error: {error}");
                 if let Some(source) = std::error::Error::source(&error) {
                     eprintln!("  caused by: {source}");
@@ -29,7 +30,7 @@ fn main() -> ExitCode {
                 return ExitCode::from(2);
             }
             let code = run(*cli);
-            if !logging::flush() {
+            if needs_logger && !logging::flush() {
                 logging::error!(target: "logging", "file log did not flush before exit");
             }
             code
@@ -51,14 +52,38 @@ fn run(cli: Cli) -> ExitCode {
                 ExitCode::from(1)
             }
         },
-        Mode::Daemon {
-            port,
-            profile,
-            network,
-        } => run_browser_process("daemon", async move {
+        Mode::Serve(config) => run_browser_process("daemon", async move {
             let home = default_data_home()?;
-            daemon::run(&profile, &home, port, *network, sandbox).await
+            daemon::serve(&config.profile, &home, config.port, config.network, sandbox).await
         }),
+        Mode::Start(config) => match default_data_home().and_then(|home| {
+            daemon::start(&config.profile, &home, config.port, &config.forward_args)
+        }) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("error: {error}");
+                ExitCode::from(1)
+            }
+        },
+        Mode::Stop { profile } => {
+            match default_data_home().and_then(|home| daemon::stop(&profile, &home)) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    ExitCode::from(1)
+                }
+            }
+        }
+        Mode::Status { profile } => {
+            match default_data_home().and_then(|home| daemon::status(&profile, &home)) {
+                Ok(true) => ExitCode::SUCCESS,
+                Ok(false) => ExitCode::from(1),
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    ExitCode::from(1)
+                }
+            }
+        }
     }
 }
 
@@ -70,8 +95,8 @@ fn install_logger(cli: &Cli) -> Result<(), logging::InstallError> {
     });
     let level = requested.or_else(env_level).unwrap_or(Level::Info);
     let file = cli.log_file.clone().or_else(|| match &cli.mode {
-        Mode::Daemon { profile, .. } => profile_log_file(profile),
-        Mode::Renderer => None,
+        Mode::Serve(config) => profile_log_file(&config.profile),
+        Mode::Start(_) | Mode::Stop { .. } | Mode::Status { .. } | Mode::Renderer => None,
     });
     logging::install(level, file, std::time::SystemTime::now)
 }

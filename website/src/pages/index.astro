@@ -13,18 +13,17 @@ const unixCmd =
   "curl -fsSL https://raw.githubusercontent.com/tinybrowser-dev/tinybrowser/main/install.sh | sh"
 const winCmd =
   "irm https://raw.githubusercontent.com/tinybrowser-dev/tinybrowser/main/install.ps1 | iex"
-const startCmd = `tinybrowser &\n# or bind a specific port (serves both CDP and WebDriver):\ntinybrowser --port 4444 &`
+const startCmd = `tinybrowser start\n# check status or stop explicitly:\ntinybrowser status\ntinybrowser stop`
 const agentPrompt = `Install tinybrowser (a ~17 MiB headless browser for AI agents) and set it up for browser automation:
 
 1. Install the binary:
    - macOS / Linux: ${unixCmd}
    - Windows (PowerShell): ${winCmd}
-   - Ensure the install directory (~/.local/bin or %LOCALAPPDATA%\\tinybrowser\\bin) is on PATH, then run \`tinybrowser --help\` to inspect all endpoints, flags, and paths.
-2. Start the server (runs in the foreground, so append \`&\` to background it; serves both CDP and W3C WebDriver on one loopback port):
-   - Auto-port (profile-locked): \`tinybrowser &\`
-     Writes \`{ "pid", "host": "127.0.0.1", "port" }\` to \`$XDG_RUNTIME_DIR/tinybrowser/default/daemon.json\`.
-   - Fixed port: \`tinybrowser --port 4444 &\`
-   Done when \`GET http://127.0.0.1:<port>/status\` returns 200.
+   - Ensure the install directory (~/.local/bin or %LOCALAPPDATA%\\tinybrowser\\bin) is on PATH, then run \`tinybrowser --help\` to inspect all commands, endpoints, flags, and paths.
+2. Start the browser daemon once per profile (stays open across tabs and commands; serves both CDP and W3C WebDriver on one loopback port):
+   - \`tinybrowser start\` (or \`tinybrowser start --port 4444\`)
+     Waits until the server is bound and a renderer is verified ready, then prints \`{"profile","pid","host","port","url"}\` on stdout.
+   - Check or stop explicitly with \`tinybrowser status\` and \`tinybrowser stop\` (use \`tinybrowser serve\` for foreground/supervisor mode).
 3. Connect over CDP (\`chromium.connectOverCDP("http://127.0.0.1:<port>")\`, using \`browser.contexts()[0].pages()[0]\`) or W3C WebDriver (\`POST http://127.0.0.1:<port>/session\`).`
 ---
 
@@ -53,9 +52,9 @@ const agentPrompt = `Install tinybrowser (a ~17 MiB headless browser for AI agen
       )}
     </p>
     <p class="hook">
-      It serves Chrome DevTools Protocol and W3C WebDriver on one loopback port, so it works with
-      Playwright and Selenium. Because it is small and compiles to WebAssembly (WASI Preview 2), you
-      can also embed it in a browser, as in the <a href="/demo">live demo</a>.
+      It serves Chrome DevTools Protocol and W3C WebDriver (Classic and BiDi) on one loopback port,
+      so it works with Playwright and Selenium. Because it is small and compiles to WebAssembly
+      (WASI Preview 2), you can also embed it in a browser, as in the <a href="/demo">live demo</a>.
     </p>
     <p class="hook-note">
       Not 100% of web APIs are covered yet. Check the <a href="/wpt">WPT page</a> for full API

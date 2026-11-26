@@ -4,7 +4,7 @@ use std::sync::Weak;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, PoisonError};
 
-use tokio::sync::{Semaphore, mpsc};
+use tokio::sync::{Semaphore, mpsc, watch};
 
 use crate::actor::TabId;
 use crate::assignment::{Assignment, AssignmentRegistry};
@@ -33,6 +33,7 @@ struct ManagerInner {
     slots: Arc<Semaphore>,
     registry: Arc<AssignmentRegistry>,
     state: tokio::sync::Mutex<ManagerState>,
+    spare_gen: watch::Sender<u64>,
 }
 
 #[derive(Default)]
@@ -40,6 +41,7 @@ struct ManagerState {
     spare: Option<Arc<RendererHandle>>,
     sites: HashMap<RendererLock, Vec<Weak<RendererHandle>>>,
     spawning_spare: bool,
+    last_spawn_error: Option<String>,
 }
 
 impl RendererProcessManager {
@@ -51,6 +53,7 @@ impl RendererProcessManager {
         sandbox: RendererSandbox,
     ) -> Self {
         let (releases, release_rx) = mpsc::unbounded_channel();
+        let (spare_gen, _spare_gen_rx) = watch::channel(0);
         let inner = Arc::new(ManagerInner {
             identity,
             sessions,
@@ -61,10 +64,77 @@ impl RendererProcessManager {
             slots: Arc::new(Semaphore::new(renderer_process_limit())),
             registry: Arc::new(AssignmentRegistry::new(releases)),
             state: tokio::sync::Mutex::new(ManagerState::default()),
+            spare_gen,
         });
         tokio::spawn(release_loop(Arc::downgrade(&inner), release_rx));
         fill_spare(&inner);
         Self { inner }
+    }
+
+    pub(crate) async fn ensure_ready(&self) -> io::Result<()> {
+        let mut waited_for_inflight = false;
+        loop {
+            let mut gen_rx = self.inner.spare_gen.subscribe();
+            {
+                let mut state = self.inner.state.lock().await;
+                if has_live_renderer(&state) {
+                    state.last_spawn_error = None;
+                    return Ok(());
+                }
+                if state.spawning_spare {
+                    waited_for_inflight = true;
+                } else if waited_for_inflight {
+                    let message = state
+                        .last_spawn_error
+                        .clone()
+                        .unwrap_or_else(|| "renderer failed to start".to_owned());
+                    return Err(io::Error::other(message));
+                } else {
+                    state.spawning_spare = true;
+                    break;
+                }
+            }
+            if gen_rx.changed().await.is_err() {
+                return Err(io::Error::other("renderer manager stopped"));
+            }
+        }
+        let result = spawn_slot(&self.inner, None).await;
+        let mut state = self.inner.state.lock().await;
+        state.spawning_spare = false;
+        let outcome = match result {
+            Ok(Some(spare)) => {
+                state.spare = Some(spare);
+                state.last_spawn_error = None;
+                Ok(())
+            }
+            Ok(None) if has_live_renderer(&state) => {
+                state.last_spawn_error = None;
+                Ok(())
+            }
+            Ok(None) => {
+                let error = io::Error::other("renderer process budget exhausted");
+                state.last_spawn_error = Some(error.to_string());
+                Err(error)
+            }
+            Err(error) => {
+                state.last_spawn_error = Some(error.to_string());
+                Err(error)
+            }
+        };
+        let next = self.inner.spare_gen.borrow().wrapping_add(1);
+        let _ = self.inner.spare_gen.send(next);
+        outcome
+    }
+
+    pub(crate) async fn health(&self) -> Result<(), String> {
+        let state = self.inner.state.lock().await;
+        if has_live_renderer(&state) {
+            return Ok(());
+        }
+        if let Some(error) = &state.last_spawn_error {
+            return Err(error.clone());
+        }
+        Ok(())
     }
 
     pub(crate) async fn acquire(
@@ -120,22 +190,31 @@ impl RendererProcessManager {
             .filter(|spare| spare.alive.load(Ordering::Relaxed));
         let process = if let Some(spare) = spare {
             spare.bind(&lock, &partition, &self.inner.registry, &self.inner.tabs)?;
+            state.last_spawn_error = None;
             spare
-        } else if let Some(process) =
-            spawn_slot(&self.inner, Some((lock.clone(), partition.clone()))).await?
-        {
-            process
         } else {
-            let candidates = state.sites.entry(lock.clone()).or_default();
-            candidates.retain(|candidate| {
-                candidate
-                    .upgrade()
-                    .is_some_and(|process| process.alive.load(Ordering::Relaxed))
-            });
-            candidates
-                .iter()
-                .find_map(Weak::upgrade)
-                .ok_or_else(|| io::Error::other("renderer process budget exhausted"))?
+            match spawn_slot(&self.inner, Some((lock.clone(), partition.clone()))).await {
+                Ok(Some(process)) => {
+                    state.last_spawn_error = None;
+                    process
+                }
+                Ok(None) => {
+                    let candidates = state.sites.entry(lock.clone()).or_default();
+                    candidates.retain(|candidate| {
+                        candidate
+                            .upgrade()
+                            .is_some_and(|process| process.alive.load(Ordering::Relaxed))
+                    });
+                    candidates
+                        .iter()
+                        .find_map(Weak::upgrade)
+                        .ok_or_else(|| io::Error::other("renderer process budget exhausted"))?
+                }
+                Err(error) => {
+                    state.last_spawn_error = Some(error.to_string());
+                    return Err(error);
+                }
+            }
         };
         let processes = state.sites.entry(lock).or_default();
         if !processes.iter().any(|candidate| {
@@ -193,6 +272,20 @@ async fn release_loop(
     }
 }
 
+fn has_live_renderer(state: &ManagerState) -> bool {
+    state
+        .spare
+        .as_ref()
+        .is_some_and(|spare| spare.alive.load(Ordering::Relaxed))
+        || state.sites.values().any(|processes| {
+            processes.iter().any(|candidate| {
+                candidate
+                    .upgrade()
+                    .is_some_and(|process| process.alive.load(Ordering::Relaxed))
+            })
+        })
+}
+
 fn fill_spare(inner: &Arc<ManagerInner>) {
     let inner = Arc::clone(inner);
     tokio::spawn(async move {
@@ -203,16 +296,21 @@ fn fill_spare(inner: &Arc<ManagerInner>) {
             }
             state.spawning_spare = true;
         }
-        let result = match spawn_slot(&inner, None).await {
-            Ok(Some(spare)) => Ok(spare),
-            Ok(None) => Err(io::Error::other("renderer process budget exhausted")),
-            Err(error) => Err(error),
-        };
+        let result = spawn_slot(&inner, None).await;
         let mut state = inner.state.lock().await;
         state.spawning_spare = false;
-        if let Ok(spare) = result {
-            state.spare = Some(spare);
+        match result {
+            Ok(Some(spare)) => {
+                state.spare = Some(spare);
+                state.last_spawn_error = None;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                state.last_spawn_error = Some(error.to_string());
+            }
         }
+        let next = inner.spare_gen.borrow().wrapping_add(1);
+        let _ = inner.spare_gen.send(next);
     });
 }
 

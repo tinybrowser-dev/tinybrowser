@@ -1,8 +1,9 @@
 # Priorities
 
-The current cut is the `v0.0.1` release (Linux, macOS, Windows, Android/Termux,
-and the `wasm32-wasip2` demo); these tiers rank web-platform work behind it.
-Chrome extensions and WebMCP are parked until after release.
+The initial releases (`v0.0.1` onward: Linux x86_64 static musl, macOS arm64,
+Windows x86_64, Android/Termux arm64, and the `wasm32-wasip2` component) have
+shipped; these tiers rank ongoing web-platform work. Chrome extensions and
+WebMCP remain parked behind the core tiers.
 
 P0 is not flat. The tiers group it by measured reach; Next effort
 ranks the work by reach and the current WPT gap together. Reach is the

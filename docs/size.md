@@ -1,8 +1,10 @@
 # Binary size
 
-Method: `nix develop -c cargo build --release` (the shipped artifact; there is
-no post-link step), then `size`, `nm -C --print-size --size-sort`, and
-`cargo bloat`. Any codegen or profile change is gated on a WPT parity run
+Method: `nix develop -c cargo build --release` (dynamically linked glibc Linux
+build; there is no post-link step — the shipped static musl release artifact
+with `--features vendored-tls` adds vendored OpenSSL and lands around ~17 MiB),
+then `size`, `nm -C --print-size --size-sort`, and `cargo bloat`. Any codegen or
+profile change is gated on a WPT parity run
 (`tools/wpt/cli.py run webdriver --score dom/nodes/`) that must match the previous
 pass/unexp/timeout/crash counts, and a release smoke via
 `tools/wpt/cli.py run webdriver --binary <release binary>`.

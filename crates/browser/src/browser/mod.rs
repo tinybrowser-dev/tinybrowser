@@ -132,6 +132,8 @@ pub(super) enum Command {
         name: Option<String>,
     },
     OpenWindow(OpenWindowOptions),
+    EnsureRendererReady,
+    RendererHealth,
 }
 
 pub(super) enum Reply {
@@ -150,6 +152,8 @@ pub(super) enum Reply {
     AddCookie(bool),
     DeletedCount(usize),
     OpenWindow(Result<TabId, BrowserError>),
+    EnsureRendererReady(io::Result<()>),
+    RendererHealth(Result<(), String>),
 }
 
 impl Reply {
@@ -169,7 +173,9 @@ impl Reply {
             | Self::SetCacheDisabled
             | Self::AddCookie(_)
             | Self::DeletedCount(_)
-            | Self::OpenWindow(_) => Err(BrowserError::Protocol),
+            | Self::OpenWindow(_)
+            | Self::EnsureRendererReady(_)
+            | Self::RendererHealth(_) => Err(BrowserError::Protocol),
         }
     }
 
@@ -189,7 +195,9 @@ impl Reply {
             | Self::SetCacheDisabled
             | Self::AddCookie(_)
             | Self::DeletedCount(_)
-            | Self::OpenWindow(_) => Err(BrowserError::Protocol),
+            | Self::OpenWindow(_)
+            | Self::EnsureRendererReady(_)
+            | Self::RendererHealth(_) => Err(BrowserError::Protocol),
         }
     }
 
@@ -209,7 +217,9 @@ impl Reply {
             | Self::SetCacheDisabled
             | Self::AddCookie(_)
             | Self::DeletedCount(_)
-            | Self::OpenWindow(_) => Err(BrowserError::Protocol),
+            | Self::OpenWindow(_)
+            | Self::EnsureRendererReady(_)
+            | Self::RendererHealth(_) => Err(BrowserError::Protocol),
         }
     }
 
@@ -229,7 +239,9 @@ impl Reply {
             | Self::SetCacheDisabled
             | Self::AddCookie(_)
             | Self::DeletedCount(_)
-            | Self::OpenWindow(_) => Err(BrowserError::Protocol),
+            | Self::OpenWindow(_)
+            | Self::EnsureRendererReady(_)
+            | Self::RendererHealth(_) => Err(BrowserError::Protocol),
         }
     }
 
@@ -249,7 +261,9 @@ impl Reply {
             | Self::SetCacheDisabled
             | Self::AddCookie(_)
             | Self::DeletedCount(_)
-            | Self::OpenWindow(_) => Err(BrowserError::Protocol),
+            | Self::OpenWindow(_)
+            | Self::EnsureRendererReady(_)
+            | Self::RendererHealth(_) => Err(BrowserError::Protocol),
         }
     }
 
@@ -269,7 +283,9 @@ impl Reply {
             | Self::SetCacheDisabled
             | Self::AddCookie(_)
             | Self::DeletedCount(_)
-            | Self::OpenWindow(_) => Err(BrowserError::Protocol),
+            | Self::OpenWindow(_)
+            | Self::EnsureRendererReady(_)
+            | Self::RendererHealth(_) => Err(BrowserError::Protocol),
         }
     }
 
@@ -289,7 +305,9 @@ impl Reply {
             | Self::SetCacheDisabled
             | Self::AddCookie(_)
             | Self::DeletedCount(_)
-            | Self::OpenWindow(_) => Err(BrowserError::Protocol),
+            | Self::OpenWindow(_)
+            | Self::EnsureRendererReady(_)
+            | Self::RendererHealth(_) => Err(BrowserError::Protocol),
         }
     }
 
@@ -309,7 +327,9 @@ impl Reply {
             | Self::SetCacheDisabled
             | Self::AddCookie(_)
             | Self::DeletedCount(_)
-            | Self::OpenWindow(_) => Err(BrowserError::Protocol),
+            | Self::OpenWindow(_)
+            | Self::EnsureRendererReady(_)
+            | Self::RendererHealth(_) => Err(BrowserError::Protocol),
         }
     }
 
@@ -329,7 +349,9 @@ impl Reply {
             | Self::SetCacheDisabled
             | Self::AddCookie(_)
             | Self::DeletedCount(_)
-            | Self::OpenWindow(_) => Err(BrowserError::Protocol),
+            | Self::OpenWindow(_)
+            | Self::EnsureRendererReady(_)
+            | Self::RendererHealth(_) => Err(BrowserError::Protocol),
         }
     }
 
@@ -349,7 +371,9 @@ impl Reply {
             | Self::SetCacheDisabled
             | Self::AddCookie(_)
             | Self::DeletedCount(_)
-            | Self::OpenWindow(_) => Err(BrowserError::Protocol),
+            | Self::OpenWindow(_)
+            | Self::EnsureRendererReady(_)
+            | Self::RendererHealth(_) => Err(BrowserError::Protocol),
         }
     }
 
@@ -369,7 +393,9 @@ impl Reply {
             | Self::ClearCache
             | Self::AddCookie(_)
             | Self::DeletedCount(_)
-            | Self::OpenWindow(_) => Err(BrowserError::Protocol),
+            | Self::OpenWindow(_)
+            | Self::EnsureRendererReady(_)
+            | Self::RendererHealth(_) => Err(BrowserError::Protocol),
         }
     }
 
@@ -389,7 +415,9 @@ impl Reply {
             | Self::ClearCache
             | Self::SetCacheDisabled
             | Self::DeletedCount(_)
-            | Self::OpenWindow(_) => Err(BrowserError::Protocol),
+            | Self::OpenWindow(_)
+            | Self::EnsureRendererReady(_)
+            | Self::RendererHealth(_) => Err(BrowserError::Protocol),
         }
     }
 
@@ -409,7 +437,9 @@ impl Reply {
             | Self::ClearCache
             | Self::SetCacheDisabled
             | Self::AddCookie(_)
-            | Self::OpenWindow(_) => Err(BrowserError::Protocol),
+            | Self::OpenWindow(_)
+            | Self::EnsureRendererReady(_)
+            | Self::RendererHealth(_) => Err(BrowserError::Protocol),
         }
     }
 
@@ -429,7 +459,9 @@ impl Reply {
             | Self::ClearCache
             | Self::SetCacheDisabled
             | Self::AddCookie(_)
-            | Self::DeletedCount(_) => Err(BrowserError::Protocol),
+            | Self::DeletedCount(_)
+            | Self::EnsureRendererReady(_)
+            | Self::RendererHealth(_) => Err(BrowserError::Protocol),
         }
     }
 
@@ -449,7 +481,53 @@ impl Reply {
             | Self::SetCacheDisabled
             | Self::AddCookie(_)
             | Self::DeletedCount(_)
-            | Self::OpenWindow(_) => Err(io::Error::other("browser protocol mismatch")),
+            | Self::OpenWindow(_)
+            | Self::EnsureRendererReady(_)
+            | Self::RendererHealth(_) => Err(io::Error::other("browser protocol mismatch")),
+        }
+    }
+
+    fn into_ensure_renderer_ready(self) -> io::Result<()> {
+        match self {
+            Self::EnsureRendererReady(result) => result,
+            Self::CreateTab(_)
+            | Self::Tabs(_)
+            | Self::Tab(_)
+            | Self::CloseTab(_)
+            | Self::CreateUserContext(_)
+            | Self::RemoveUserContext(_)
+            | Self::UserContexts(_)
+            | Self::Close(_)
+            | Self::CookieRecords(_)
+            | Self::ClearCookies
+            | Self::ClearCache
+            | Self::SetCacheDisabled
+            | Self::AddCookie(_)
+            | Self::DeletedCount(_)
+            | Self::OpenWindow(_)
+            | Self::RendererHealth(_) => Err(io::Error::other("browser protocol mismatch")),
+        }
+    }
+
+    fn into_renderer_health(self) -> Result<(), String> {
+        match self {
+            Self::RendererHealth(result) => result,
+            Self::CreateTab(_)
+            | Self::Tabs(_)
+            | Self::Tab(_)
+            | Self::CloseTab(_)
+            | Self::CreateUserContext(_)
+            | Self::RemoveUserContext(_)
+            | Self::UserContexts(_)
+            | Self::Close(_)
+            | Self::CookieRecords(_)
+            | Self::ClearCookies
+            | Self::ClearCache
+            | Self::SetCacheDisabled
+            | Self::AddCookie(_)
+            | Self::DeletedCount(_)
+            | Self::OpenWindow(_)
+            | Self::EnsureRendererReady(_) => Err("browser protocol mismatch".to_owned()),
         }
     }
 }
@@ -592,6 +670,23 @@ impl BrowserHandle {
     #[must_use]
     pub fn is_closed(&self) -> bool {
         self.client.is_closed()
+    }
+
+    pub async fn ensure_renderer_ready(&self) -> io::Result<()> {
+        self.call(Command::EnsureRendererReady)
+            .await
+            .map_err(|_| stopped())?
+            .into_ensure_renderer_ready()
+    }
+
+    pub async fn renderer_health(&self) -> Result<(), String> {
+        if self.is_closed() {
+            return Err("browser stopped".to_owned());
+        }
+        self.call(Command::RendererHealth)
+            .await
+            .map_err(|_| "browser stopped".to_owned())?
+            .into_renderer_health()
     }
 
     pub async fn cookie_records(&self, url: &Url) -> Result<Vec<net::CookieRecord>, BrowserError> {

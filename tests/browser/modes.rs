@@ -44,9 +44,10 @@ fn short_v_prints_the_version() {
 fn version_short_circuits_anywhere() {
     let fixture = Fixture::new("tinybrowser-version-global");
     for args in [
-        &["--profile=default", "-v"][..],
+        &["start", "--profile=default", "-v"][..],
         &["--renderer", "--version"],
-        &["--port=0", "-V"],
+        &["serve", "--port=0", "-V"],
+        &["stop", "-v"],
     ] {
         let output = run(&fixture, args);
         assert!(output.status.success(), "{args:?}");
@@ -57,22 +58,51 @@ fn version_short_circuits_anywhere() {
 }
 
 #[test]
+fn bare_invocation_prints_help() {
+    let fixture = Fixture::new("tinybrowser-bare-help");
+    let output = run(&fixture, &[]);
+    assert!(output.status.success());
+    let out = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        out.contains("Usage: tinybrowser <COMMAND> [OPTIONS]"),
+        "{out}"
+    );
+}
+
+#[test]
+fn flags_without_command_are_rejected() {
+    let fixture = Fixture::new("tinybrowser-missing-cmd");
+    let output = run(&fixture, &["--port=0"]);
+    assert_eq!(output.status.code(), Some(2));
+    let err = String::from_utf8_lossy(&output.stderr);
+    assert!(err.contains("missing command"), "{err}");
+}
+
+#[test]
 fn rejects_unknown_log_level() {
     let fixture = Fixture::new("tinybrowser-log-level");
-    let output = run(&fixture, &["--log-level=noisy"]);
+    let output = run(&fixture, &["serve", "--log-level=noisy"]);
     assert_eq!(output.status.code(), Some(2));
     let err = String::from_utf8_lossy(&output.stderr);
     assert!(err.contains("unknown log level"), "{err}");
 }
 
 #[test]
-fn help_documents_workflow_endpoints_and_flags() {
+fn help_documents_commands_workflow_endpoints_and_flags() {
     let fixture = Fixture::new("tinybrowser-help");
     for flag in ["--help", "-h"] {
         let output = run(&fixture, &[flag]);
         assert!(output.status.success(), "{flag}");
         let out = String::from_utf8_lossy(&output.stdout);
-        assert!(out.contains("Usage: tinybrowser [OPTIONS]"), "{out}");
+        assert!(
+            out.contains("Usage: tinybrowser <COMMAND> [OPTIONS]"),
+            "{out}"
+        );
+        assert!(out.contains("Commands:"), "{out}");
+        assert!(out.contains("start"), "{out}");
+        assert!(out.contains("status"), "{out}");
+        assert!(out.contains("stop"), "{out}");
+        assert!(out.contains("serve"), "{out}");
         assert!(out.contains("Workflow:"), "{out}");
         assert!(
             out.contains("Endpoints (http://127.0.0.1:<port>):"),
@@ -87,18 +117,36 @@ fn help_documents_workflow_endpoints_and_flags() {
 }
 
 #[test]
-fn subcommands_and_positionals_are_rejected() {
-    let fixture = Fixture::new("tinybrowser-no-subcommands");
+fn unknown_subcommands_and_positionals_are_rejected() {
+    let fixture = Fixture::new("tinybrowser-bad-subcommands");
     for args in [
         &["daemon"][..],
         &["webdriver"],
         &["renderer"],
         &["help"],
-        &["help", "webdriver"],
+        &["start", "stop"],
         &["--daemon"],
         &["--webdriver=9"],
-        &["--", "daemon"],
+        &["--", "start"],
         &["--", "nonsense"],
+    ] {
+        let output = run(&fixture, args);
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        let err = String::from_utf8_lossy(&output.stderr);
+        assert!(err.contains("unexpected argument"), "{args:?}: {err}");
+    }
+}
+
+#[test]
+fn stop_and_status_reject_daemon_only_flags() {
+    let fixture = Fixture::new("tinybrowser-control-flags");
+    for args in [
+        &["stop", "--port=4444"][..],
+        &["status", "--port=4444"],
+        &["stop", "--no-sandbox"],
+        &["status", "--verbose"],
+        &["stop", "--proxy=http://127.0.0.1:1"],
+        &["status", "--resolve=*.test=127.0.0.1"],
     ] {
         let output = run(&fixture, args);
         assert_eq!(output.status.code(), Some(2), "{args:?}");
@@ -111,11 +159,11 @@ fn subcommands_and_positionals_are_rejected() {
 fn repeated_single_value_flags_are_rejected() {
     let fixture = Fixture::new("tinybrowser-repeated-flags");
     for args in [
-        &["--verbose", "--verbose"][..],
-        &["--log-level=info", "--log-level=debug"],
-        &["--profile=a", "--profile=b"],
-        &["--port=1", "--port=2"],
-        &["--no-sandbox", "--no-sandbox"],
+        &["serve", "--verbose", "--verbose"][..],
+        &["serve", "--log-level=info", "--log-level=debug"],
+        &["serve", "--profile=a", "--profile=b"],
+        &["serve", "--port=1", "--port=2"],
+        &["serve", "--no-sandbox", "--no-sandbox"],
         &["--renderer", "--renderer"],
     ] {
         let output = run(&fixture, args);
@@ -126,7 +174,10 @@ fn repeated_single_value_flags_are_rejected() {
 #[test]
 fn rejects_an_invalid_proxy_before_starting() {
     let fixture = Fixture::new("tinybrowser-proxy");
-    let output = run(&fixture, &["--port=0", "--proxy=http://proxy.test/path"]);
+    let output = run(
+        &fixture,
+        &["start", "--port=0", "--proxy=http://proxy.test/path"],
+    );
     assert_eq!(output.status.code(), Some(2));
     let err = String::from_utf8_lossy(&output.stderr);
     assert!(err.contains("proxy URI"), "{err}");
@@ -135,7 +186,7 @@ fn rejects_an_invalid_proxy_before_starting() {
 #[test]
 fn rejects_an_invalid_resolve_spec_before_starting() {
     let fixture = Fixture::new("tinybrowser-resolve");
-    let output = run(&fixture, &["--port=0", "--resolve=not-a-spec"]);
+    let output = run(&fixture, &["start", "--port=0", "--resolve=not-a-spec"]);
     assert_eq!(output.status.code(), Some(2));
     let err = String::from_utf8_lossy(&output.stderr);
     assert!(err.contains("resolve spec"), "{err}");
@@ -148,7 +199,7 @@ fn rejects_an_unparseable_tls_ca_before_starting() {
     std::fs::write(&ca, b"not a certificate").expect("write CA");
     let output = run(
         &fixture,
-        &["--port=0", &format!("--tls-ca={}", ca.display())],
+        &["start", "--port=0", &format!("--tls-ca={}", ca.display())],
     );
     assert_eq!(output.status.code(), Some(2));
     let err = String::from_utf8_lossy(&output.stderr);
@@ -165,7 +216,11 @@ fn rejects_a_missing_tls_ca_file_before_starting() {
     let missing = fixture.data().join("missing/test-ca.pem");
     let output = run(
         &fixture,
-        &["--port=0", &format!("--tls-ca={}", missing.display())],
+        &[
+            "start",
+            "--port=0",
+            &format!("--tls-ca={}", missing.display()),
+        ],
     );
     assert_eq!(output.status.code(), Some(2));
     let err = String::from_utf8_lossy(&output.stderr);
@@ -179,17 +234,20 @@ fn rejects_a_missing_tls_ca_file_before_starting() {
 #[test]
 fn help_wins_over_an_unreadable_tls_ca() {
     let fixture = Fixture::new("tinybrowser-help-tls-ca");
-    let output = run(&fixture, &["--tls-ca=/missing", "--help"]);
+    let output = run(&fixture, &["start", "--tls-ca=/missing", "--help"]);
     assert!(output.status.success(), "{output:?}");
     let out = String::from_utf8_lossy(&output.stdout);
     assert!(out.contains("Usage:"), "{out}");
 }
 
 #[test]
-fn renderer_rejects_daemon_flags_in_either_order() {
+fn renderer_rejects_daemon_flags_and_commands_in_either_order() {
     let fixture = Fixture::new("tinybrowser-renderer-flag-conflict");
     for args in [
-        &["--renderer", "--profile=default"][..],
+        &["--renderer", "start"][..],
+        &["start", "--renderer"],
+        &["serve", "--renderer"],
+        &["--renderer", "--profile=default"],
         &["--profile=default", "--renderer"],
         &["--renderer", "--port=9"],
         &["--port=9", "--renderer"],
@@ -227,7 +285,7 @@ fn log_file_flag_names_the_log_file() {
 #[test]
 fn no_sandbox_rejects_inline_value() {
     let fixture = Fixture::new("tinybrowser-no-sandbox-value");
-    let output = run(&fixture, &["--no-sandbox=true"]);
+    let output = run(&fixture, &["serve", "--no-sandbox=true"]);
     assert_eq!(output.status.code(), Some(2));
     let err = String::from_utf8_lossy(&output.stderr);
     assert!(err.contains("unexpected value for '--no-sandbox'"), "{err}");
@@ -259,9 +317,9 @@ fn no_sandbox_disables_renderer_sandbox_and_logs_warning() {
 fn log_file_rejects_missing_and_repeated_values() {
     let fixture = Fixture::new("tinybrowser-log-file-bad");
     for args in [
-        &["--log-file"][..],
-        &["--log-file="],
-        &["--log-file=a.log", "--log-file=b.log"],
+        &["serve", "--log-file"][..],
+        &["serve", "--log-file="],
+        &["serve", "--log-file=a.log", "--log-file=b.log"],
     ] {
         let output = run(&fixture, args);
         assert_eq!(output.status.code(), Some(2), "{args:?}");

@@ -16,6 +16,7 @@ fn start_in(mut fixture: Fixture, extra_args: Vec<String>) -> (String, Fixture) 
     let port = listener.local_addr().expect("addr").port();
     drop(listener);
     let mut command = Command::new(env!("CARGO_BIN_EXE_tinybrowser"));
+    command.arg("serve");
     command.arg(format!("--port={port}"));
     command.args(extra_args);
     let child = command

@@ -17,12 +17,18 @@ pub(crate) struct Cli {
     pub(crate) mode: Mode,
 }
 
+pub(crate) struct DaemonConfig {
+    pub(crate) port: Option<u16>,
+    pub(crate) profile: Profile,
+    pub(crate) network: AgentOptions,
+    pub(crate) forward_args: Vec<OsString>,
+}
+
 pub(crate) enum Mode {
-    Daemon {
-        port: Option<u16>,
-        profile: Profile,
-        network: Box<AgentOptions>,
-    },
+    Start(Box<DaemonConfig>),
+    Serve(Box<DaemonConfig>),
+    Stop { profile: Profile },
+    Status { profile: Profile },
     Renderer,
 }
 
@@ -36,6 +42,8 @@ pub(crate) enum Outcome {
 pub(crate) enum CliError {
     #[error("Invalid UTF-8 was detected in one or more arguments")]
     NotUtf8,
+    #[error("missing command; expected start, stop, status, or serve")]
+    MissingCommand,
     #[error("a value is required for '--{flag} {placeholder}' but none was supplied")]
     MissingValue {
         flag: &'static str,
@@ -73,24 +81,27 @@ pub(crate) enum TlsCaError {
 
 pub(crate) const HELP: &str = r#"Headless web browser for AI agents (CDP + W3C WebDriver on one loopback port).
 
-Usage: tinybrowser [OPTIONS]
+Usage: tinybrowser <COMMAND> [OPTIONS]
+
+Commands:
+  start   Start the browser daemon in the background and wait until ready
+  status  Report daemon status and endpoint as JSON (exits 1 when stopped)
+  stop    Gracefully stop the running daemon for a profile
+  serve   Run the browser daemon in the foreground (for supervisors / containers)
 
 Workflow:
-  1. Start the server (runs in the foreground; append `&` or use a supervisor to background it):
-     - Profile-locked ephemeral port: `tinybrowser &`
-       Acquires `$XDG_RUNTIME_DIR/tinybrowser/<profile>/lock`, binds `127.0.0.1:<port>`,
-       and atomically writes `$XDG_RUNTIME_DIR/tinybrowser/<profile>/daemon.json`:
-         {"pid":<u32>,"host":"127.0.0.1","port":<u16>}
-       Done when `daemon.json` exists and `GET http://127.0.0.1:<port>/status` returns 200.
-       A second start for the same locked profile exits 0 immediately.
-     - Explicit port: `tinybrowser --port <PORT> &`
-       Binds `127.0.0.1:<PORT>` directly (`--port 0` selects an ephemeral port).
-       Done when `GET http://127.0.0.1:<PORT>/status` returns 200.
-  2. Connect a client to `http://127.0.0.1:<port>`:
+  1. Start the browser once per profile (stays open across tabs and commands):
+       tinybrowser start
+     Waits until the server is bound and a renderer is verified ready, then prints:
+       {"profile":"default","pid":12345,"host":"127.0.0.1","port":41234,"url":"http://127.0.0.1:41234"}
+     Running `tinybrowser start` again for the same profile reuses the running daemon.
+  2. Connect any CDP or W3C WebDriver client to `http://127.0.0.1:<port>`:
      - Playwright / CDP: `chromium.connectOverCDP("http://127.0.0.1:<port>")`
        One blank page target is pre-created at startup (`browser.contexts()[0].pages()[0]`).
      - W3C WebDriver: `POST http://127.0.0.1:<port>/session` with body `{"capabilities":{}}`
-       Adopts the open page target as the initial window handle (`w1`).
+  3. Inspect or stop explicitly when done:
+       tinybrowser status
+       tinybrowser stop
 
 Endpoints (http://127.0.0.1:<port>):
   GET  /json/version         CDP browser metadata and `webSocketDebuggerUrl`
@@ -98,10 +109,12 @@ Endpoints (http://127.0.0.1:<port>):
   WS   /devtools/browser     CDP browser WebSocket (flattened `sessionId` routing)
   WS   /devtools/page/<id>   CDP page target WebSocket
   GET  /status               WebDriver readiness probe (`{"value":{"ready":true,"message":"ready"}}`)
-  POST /session              WebDriver create session (one active session at a time)
-  *    /session/<id>/...     WebDriver session commands (`url`, `execute/sync`, `execute/async`,
+  POST /session              WebDriver Classic create session (one active session at a time)
+  *    /session/<id>/...     WebDriver Classic session commands (`url`, `execute/sync`, `execute/async`,
                              `element`, `elements`, `screenshot`, `window`, `cookie`, `timeouts`,
                              `actions`, `permissions`)
+  WS   /session              WebDriver BiDi WebSocket (standalone BiDi session)
+  WS   /session/<id>         WebDriver BiDi WebSocket attached to an existing Classic session
 
 Request requirements:
   - `Host` header must name a loopback host (`127.0.0.1`, `localhost`, or `[::1]`).
@@ -111,12 +124,12 @@ Request requirements:
     return `403 Forbidden`.
   - WebDriver `POST` requests with a `Content-Type` header must use `application/json`.
 
-Options:
-      --port <PORT>
-          Bind `127.0.0.1:<PORT>` (`0..=65535`). When omitted, locks the profile,
-          binds an ephemeral port, and writes `daemon.json` in the runtime directory.
+Options (`start` and `serve`):
       --profile <NAME>
           Profile name (`[A-Za-z0-9._-]+`, max 64 bytes) [default: default]
+          Also accepted by `status` and `stop`.
+      --port <PORT>
+          Bind `127.0.0.1:<PORT>` (`0..=65535`; default `0` selects an ephemeral port)
       --proxy <URI>
           Outbound HTTP/HTTPS proxy (`http://<host>[:<port>]` or `https://<host>[:<port>]`)
       --user-agent <VALUE>
@@ -138,7 +151,7 @@ Options:
           kernel does not permit the renderer sandbox.
       --renderer
           Internal: run a child renderer worker over inherited file descriptor 0.
-          Spawned automatically by the daemon; cannot be combined with daemon options.
+          Spawned automatically by the daemon; cannot be combined with commands or daemon options.
   -v, -V, --version
           Print `tinybrowser <version>` to stdout and exit 0
   -h, --help
@@ -151,8 +164,8 @@ Paths:
   Default log file: `$XDG_DATA_HOME/tinybrowser/logs/<profile>.log`
 
 Exit codes:
-  0  Clean exit (`--help`, `--version`, `Browser.close`, or profile daemon already running)
-  1  Runtime, bind, or I/O failure (details written to the log file)
+  0  Success (`--help`, `--version`, `start`, `stop`, healthy `status`, or clean `serve` exit)
+  1  Runtime, renderer startup, bind, or I/O failure, or `status` when daemon is stopped/unhealthy
   2  Command-line usage or flag validation error (details written to stderr)
 "#;
 
@@ -162,43 +175,55 @@ pub(crate) fn parse(args: impl Iterator<Item = OsString>) -> Result<Outcome, Cli
 
 struct Scanner<I: Iterator<Item = OsString>> {
     args: Peekable<I>,
+    saw_any: bool,
     end_of_flags: bool,
+    command: Option<Command>,
     log_level: Option<Level>,
     log_file: Option<PathBuf>,
     verbose: bool,
-    no_sandbox: bool,
-    mode: Option<Partial>,
-}
-
-enum Partial {
-    Daemon(Box<DaemonArgs>),
-    Renderer,
-}
-
-#[derive(Default)]
-struct DaemonArgs {
-    port: Option<u16>,
+    sandbox: Option<RendererSandbox>,
     profile: Option<Profile>,
-    user_agent_set: bool,
+    port: Option<u16>,
+    user_agent: Option<ValidIdentity>,
     network: AgentOptions,
     tls_ca: Vec<PathBuf>,
+    has_daemon_only_flags: Option<&'static str>,
+    forward_args: Vec<OsString>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Command {
+    Start,
+    Serve,
+    Stop,
+    Status,
+    Renderer,
 }
 
 impl<I: Iterator<Item = OsString>> Scanner<I> {
     fn new(args: I) -> Self {
         Self {
             args: args.peekable(),
+            saw_any: false,
             end_of_flags: false,
+            command: None,
             log_level: None,
             log_file: None,
             verbose: false,
-            no_sandbox: false,
-            mode: None,
+            sandbox: None,
+            profile: None,
+            port: None,
+            user_agent: None,
+            network: AgentOptions::default(),
+            tls_ca: Vec::new(),
+            has_daemon_only_flags: None,
+            forward_args: Vec::new(),
         }
     }
 
     fn scan(mut self) -> Result<Outcome, CliError> {
         while let Some(arg) = self.args.next() {
+            self.saw_any = true;
             let text = arg.to_str().ok_or(CliError::NotUtf8)?;
             if let Some(outcome) = self.token(text)? {
                 return Ok(outcome);
@@ -216,81 +241,37 @@ impl<I: Iterator<Item = OsString>> Scanner<I> {
             return Ok(None);
         }
         if let Some(long) = text.strip_prefix("--") {
-            return self.long(long);
+            return self.long(text, long);
         }
         if let Some(short) = text.strip_prefix('-')
             && !short.is_empty()
         {
             return Self::short(short);
         }
-        Err(CliError::UnexpectedArgument(text.to_owned()))
+        self.subcommand(text)
     }
 
-    fn long(&mut self, long: &str) -> Result<Option<Outcome>, CliError> {
+    fn subcommand(&mut self, text: &str) -> Result<Option<Outcome>, CliError> {
+        if self.command.is_some() {
+            return Err(CliError::UnexpectedArgument(text.to_owned()));
+        }
+        let parsed = match text {
+            "start" => Command::Start,
+            "serve" => Command::Serve,
+            "stop" => Command::Stop,
+            "status" => Command::Status,
+            _ => return Err(CliError::UnexpectedArgument(text.to_owned())),
+        };
+        self.command = Some(parsed);
+        Ok(None)
+    }
+
+    fn long(&mut self, raw_token: &str, long: &str) -> Result<Option<Outcome>, CliError> {
         let (name, inline) = match long.split_once('=') {
             Some((name, value)) => (name, Some(value)),
             None => (long, None),
         };
         match name {
-            "log-level" => {
-                let raw = self.value("log-level", "<LEVEL>", inline)?;
-                if self.log_level.is_some() {
-                    return Err(CliError::Repeated {
-                        spelling: "--log-level <LEVEL>",
-                    });
-                }
-                self.log_level = Some(raw.parse()?);
-                Ok(None)
-            }
-            "log-file" => {
-                let raw = self.value("log-file", "<PATH>", inline)?;
-                if self.log_file.is_some() {
-                    return Err(CliError::Repeated {
-                        spelling: "--log-file <PATH>",
-                    });
-                }
-                self.log_file = Some(PathBuf::from(raw));
-                Ok(None)
-            }
-            "verbose" => {
-                if inline.is_some() {
-                    return Err(CliError::UnexpectedValue { flag: "verbose" });
-                }
-                if self.verbose {
-                    return Err(CliError::Repeated {
-                        spelling: "--verbose",
-                    });
-                }
-                self.verbose = true;
-                Ok(None)
-            }
-            "no-sandbox" => {
-                if inline.is_some() {
-                    return Err(CliError::UnexpectedValue { flag: "no-sandbox" });
-                }
-                if self.no_sandbox {
-                    return Err(CliError::Repeated {
-                        spelling: "--no-sandbox",
-                    });
-                }
-                self.no_sandbox = true;
-                Ok(None)
-            }
-            "renderer" => {
-                if inline.is_some() {
-                    return Err(CliError::UnexpectedValue { flag: "renderer" });
-                }
-                match self.mode {
-                    None => {
-                        self.mode = Some(Partial::Renderer);
-                        Ok(None)
-                    }
-                    Some(Partial::Renderer) => Err(CliError::Repeated {
-                        spelling: "--renderer",
-                    }),
-                    Some(Partial::Daemon(_)) => Err(unexpected("renderer")),
-                }
-            }
             "version" => {
                 if inline.is_some() {
                     return Err(CliError::UnexpectedValue { flag: "version" });
@@ -303,92 +284,157 @@ impl<I: Iterator<Item = OsString>> Scanner<I> {
                 }
                 Ok(Some(Outcome::Help))
             }
-            _ => self.daemon_flag(name, inline),
-        }
-    }
-
-    fn daemon_args(&mut self, name: &str) -> Result<&mut DaemonArgs, CliError> {
-        if matches!(self.mode, Some(Partial::Renderer)) {
-            return Err(unexpected(name));
-        }
-        if self.mode.is_none() {
-            self.mode = Some(Partial::Daemon(Box::default()));
-        }
-        match &mut self.mode {
-            Some(Partial::Daemon(daemon)) => Ok(daemon),
-            Some(Partial::Renderer) | None => Err(unexpected(name)),
+            "renderer" => {
+                if inline.is_some() {
+                    return Err(CliError::UnexpectedValue { flag: "renderer" });
+                }
+                match self.command {
+                    None => {
+                        self.command = Some(Command::Renderer);
+                        Ok(None)
+                    }
+                    Some(Command::Renderer) => Err(CliError::Repeated {
+                        spelling: "--renderer",
+                    }),
+                    Some(Command::Start | Command::Serve | Command::Stop | Command::Status) => {
+                        Err(unexpected("renderer"))
+                    }
+                }
+            }
+            "log-level" => {
+                let raw = self.value("log-level", "<LEVEL>", inline)?;
+                if self.log_level.is_some() {
+                    return Err(CliError::Repeated {
+                        spelling: "--log-level <LEVEL>",
+                    });
+                }
+                self.log_level = Some(raw.parse()?);
+                self.record_forward(raw_token, inline, &raw);
+                Ok(None)
+            }
+            "log-file" => {
+                let raw = self.value("log-file", "<PATH>", inline)?;
+                if self.log_file.is_some() {
+                    return Err(CliError::Repeated {
+                        spelling: "--log-file <PATH>",
+                    });
+                }
+                self.log_file = Some(PathBuf::from(&raw));
+                self.record_forward(raw_token, inline, &raw);
+                Ok(None)
+            }
+            "verbose" => {
+                if inline.is_some() {
+                    return Err(CliError::UnexpectedValue { flag: "verbose" });
+                }
+                if self.verbose {
+                    return Err(CliError::Repeated {
+                        spelling: "--verbose",
+                    });
+                }
+                self.verbose = true;
+                self.forward_args.push(OsString::from(raw_token));
+                Ok(None)
+            }
+            "no-sandbox" => {
+                if inline.is_some() {
+                    return Err(CliError::UnexpectedValue { flag: "no-sandbox" });
+                }
+                if self.sandbox.is_some() {
+                    return Err(CliError::Repeated {
+                        spelling: "--no-sandbox",
+                    });
+                }
+                self.sandbox = Some(RendererSandbox::Disabled);
+                self.forward_args.push(OsString::from(raw_token));
+                Ok(None)
+            }
+            "profile" => {
+                let raw = self.value("profile", "<NAME>", inline)?;
+                let profile = Profile::parse(&raw)?;
+                if self.profile.is_some() {
+                    return Err(CliError::Repeated {
+                        spelling: "--profile <NAME>",
+                    });
+                }
+                self.profile = Some(profile);
+                self.record_forward(raw_token, inline, &raw);
+                Ok(None)
+            }
+            _ => self.daemon_flag(raw_token, name, inline),
         }
     }
 
     fn daemon_flag(
         &mut self,
+        raw_token: &str,
         name: &str,
         inline: Option<&str>,
     ) -> Result<Option<Outcome>, CliError> {
-        match name {
-            "profile" => {
-                let raw = self.value("profile", "<NAME>", inline)?;
-                let profile = Profile::parse(&raw)?;
-                let daemon = self.daemon_args(name)?;
-                if daemon.profile.is_some() {
-                    return Err(CliError::Repeated {
-                        spelling: "--profile <NAME>",
-                    });
-                }
-                daemon.profile = Some(profile);
-                Ok(None)
-            }
+        let flag_name = match name {
             "port" => {
                 let raw = self.value("port", "<PORT>", inline)?;
-                let port: u16 = raw.parse().map_err(|_| CliError::InvalidPort(raw))?;
-                let daemon = self.daemon_args(name)?;
-                if daemon.port.is_some() {
+                let port: u16 = raw
+                    .parse()
+                    .map_err(|_| CliError::InvalidPort(raw.clone()))?;
+                if self.port.is_some() {
                     return Err(CliError::Repeated {
                         spelling: "--port <PORT>",
                     });
                 }
-                daemon.port = Some(port);
-                Ok(None)
+                self.port = Some(port);
+                self.record_forward(raw_token, inline, &raw);
+                "port"
             }
             "resolve" => {
                 let raw = self.value("resolve", "<PATTERN=ADDR>", inline)?;
                 let rule = raw.parse()?;
-                let daemon = self.daemon_args(name)?;
-                daemon.network.resolve.push(rule);
-                Ok(None)
+                self.network.resolve.push(rule);
+                self.record_forward(raw_token, inline, &raw);
+                "resolve"
             }
             "tls-ca" => {
                 let raw = self.value("tls-ca", "<PATH>", inline)?;
-                let daemon = self.daemon_args(name)?;
-                daemon.tls_ca.push(PathBuf::from(raw));
-                Ok(None)
+                self.tls_ca.push(PathBuf::from(&raw));
+                self.record_forward(raw_token, inline, &raw);
+                "tls-ca"
             }
             "proxy" => {
                 let raw = self.value("proxy", "<URI>", inline)?;
                 let proxy = raw.parse::<Proxy>()?;
-                let daemon = self.daemon_args(name)?;
-                if daemon.network.proxy.is_some() {
+                if self.network.proxy.is_some() {
                     return Err(CliError::Repeated {
                         spelling: "--proxy <URI>",
                     });
                 }
-                daemon.network.proxy = Some(proxy);
-                Ok(None)
+                self.network.proxy = Some(proxy);
+                self.record_forward(raw_token, inline, &raw);
+                "proxy"
             }
             "user-agent" => {
                 let raw = self.value("user-agent", "<VALUE>", inline)?;
                 let identity = ValidIdentity::parse_spec(&raw)?;
-                let daemon = self.daemon_args(name)?;
-                if daemon.user_agent_set {
+                if self.user_agent.is_some() {
                     return Err(CliError::Repeated {
                         spelling: "--user-agent <VALUE>",
                     });
                 }
-                daemon.user_agent_set = true;
-                daemon.network.identity = identity;
-                Ok(None)
+                self.user_agent = Some(identity);
+                self.record_forward(raw_token, inline, &raw);
+                "user-agent"
             }
-            _ => Err(unexpected(name)),
+            _ => return Err(unexpected(name)),
+        };
+        if self.has_daemon_only_flags.is_none() {
+            self.has_daemon_only_flags = Some(flag_name);
+        }
+        Ok(None)
+    }
+
+    fn record_forward(&mut self, raw_token: &str, inline: Option<&str>, value: &str) {
+        self.forward_args.push(OsString::from(raw_token));
+        if inline.is_none() {
+            self.forward_args.push(OsString::from(value));
         }
     }
 
@@ -428,30 +474,67 @@ impl<I: Iterator<Item = OsString>> Scanner<I> {
         }
     }
 
-    fn finish(self) -> Result<Outcome, CliError> {
-        let mode = match self.mode {
-            Some(Partial::Renderer) => Mode::Renderer,
-            Some(Partial::Daemon(mut daemon)) => {
-                for path in daemon.tls_ca {
-                    daemon.network.tls_cas.push(read_ca(&path)?);
+    fn finish(mut self) -> Result<Outcome, CliError> {
+        if !self.saw_any {
+            return Ok(Outcome::Help);
+        }
+        let Some(command) = self.command else {
+            return Err(CliError::MissingCommand);
+        };
+        let mode = match command {
+            Command::Renderer => {
+                if let Some(flag) = self.has_daemon_only_flags {
+                    return Err(unexpected(flag));
                 }
-                Mode::Daemon {
-                    port: daemon.port,
-                    profile: daemon.profile.unwrap_or_default(),
-                    network: Box::new(daemon.network),
+                if self.profile.is_some() {
+                    return Err(unexpected("profile"));
+                }
+                Mode::Renderer
+            }
+            Command::Stop | Command::Status => {
+                if let Some(flag) = self.has_daemon_only_flags {
+                    return Err(unexpected(flag));
+                }
+                if self.log_level.is_some() {
+                    return Err(unexpected("log-level"));
+                }
+                if self.log_file.is_some() {
+                    return Err(unexpected("log-file"));
+                }
+                if self.verbose {
+                    return Err(unexpected("verbose"));
+                }
+                if self.sandbox.is_some() {
+                    return Err(unexpected("no-sandbox"));
+                }
+                let profile = self.profile.unwrap_or_default();
+                if command == Command::Stop {
+                    Mode::Stop { profile }
+                } else {
+                    Mode::Status { profile }
                 }
             }
-            None => Mode::Daemon {
-                port: None,
-                profile: Profile::default(),
-                network: Box::default(),
-            },
+            Command::Start | Command::Serve => {
+                if let Some(identity) = self.user_agent {
+                    self.network.identity = identity;
+                }
+                for path in self.tls_ca {
+                    self.network.tls_cas.push(read_ca(&path)?);
+                }
+                let config = Box::new(DaemonConfig {
+                    port: self.port,
+                    profile: self.profile.unwrap_or_default(),
+                    network: self.network,
+                    forward_args: self.forward_args,
+                });
+                if command == Command::Start {
+                    Mode::Start(config)
+                } else {
+                    Mode::Serve(config)
+                }
+            }
         };
-        let sandbox = if self.no_sandbox {
-            RendererSandbox::Disabled
-        } else {
-            RendererSandbox::Enabled
-        };
+        let sandbox = self.sandbox.unwrap_or(RendererSandbox::Enabled);
         Ok(Outcome::Run(Box::new(Cli {
             log_level: self.log_level,
             log_file: self.log_file,

@@ -23,7 +23,7 @@ irm https://raw.githubusercontent.com/tinybrowser-dev/tinybrowser/main/install.p
 
 Or download an archive directly from [GitHub Releases](https://github.com/tinybrowser-dev/tinybrowser/releases).
 
-### Platform support (`v0.0.1`)
+### Platform support
 
 | Target | Status | Notes |
 | --- | --- | --- |
@@ -36,24 +36,26 @@ Or download an archive directly from [GitHub Releases](https://github.com/tinybr
 
 ## Usage
 
-`tinybrowser` runs a unified loopback server in the foreground, serving both **Chrome DevTools Protocol (CDP)** and **W3C Classic WebDriver** on the same port. Append `&` (or run it under a process supervisor) to keep it in the background.
+`tinybrowser` runs a profile-locked loopback daemon serving both **Chrome DevTools Protocol (CDP)** and **W3C WebDriver** on the same port. Start it explicitly once, keep it open across tabs and commands, and stop it explicitly when done:
 
 ```sh
-# Profile-locked ephemeral port (writes $XDG_RUNTIME_DIR/tinybrowser/<profile>/daemon.json):
-tinybrowser &
+# Start detached daemon and wait until ready (prints endpoint JSON):
+tinybrowser start
+# -> {"profile":"default","pid":12345,"host":"127.0.0.1","port":41234,"url":"http://127.0.0.1:41234"}
 
-# Named profile:
-tinybrowser --profile agent &
+# Named profile or fixed port:
+tinybrowser start --profile agent
+tinybrowser start --port 4444
 
-# Explicit port:
-tinybrowser --port 4444 &
+# Inspect or stop explicitly:
+tinybrowser status
+tinybrowser stop
+
+# Run in the foreground (for Docker / systemd / supervisors):
+tinybrowser serve --port 4444
 ```
 
-When started without `--port`, the daemon acquires `$XDG_RUNTIME_DIR/tinybrowser/<profile>/lock`, binds a loopback port, and writes its endpoint to `$XDG_RUNTIME_DIR/tinybrowser/<profile>/daemon.json`:
-
-```json
-{ "pid": 12345, "host": "127.0.0.1", "port": 41234 }
-```
+`tinybrowser start` acquires `$XDG_RUNTIME_DIR/tinybrowser/<profile>/lock`, binds a loopback port, verifies a renderer starts cleanly, writes `$XDG_RUNTIME_DIR/tinybrowser/<profile>/daemon.json`, and prints the endpoint as single-line JSON. Running `start` again for the same profile reuses the running daemon.
 
 Connect from Playwright over CDP:
 
@@ -67,9 +69,9 @@ console.log(await page.title());
 await page.screenshot({ path: "example.png" });
 ```
 
-Or connect any W3C WebDriver client to `http://127.0.0.1:<port>` (`GET /status`, `POST /session`).
+Or connect any W3C WebDriver Classic (`GET /status`, `POST /session`) or BiDi (`WS /session`, `WS /session/<id>`) client to `http://127.0.0.1:<port>`.
 
-Optional network and logging flags: `--port <PORT>`, `--profile <NAME>`, `--user-agent <VALUE>`, `--proxy <URI>`, `--resolve <PATTERN=ADDR>`, `--tls-ca <PATH>`, `--log-level <LEVEL>`, `--log-file <PATH>`, `--verbose`. Run `tinybrowser --help` for full endpoint and path documentation.
+Optional flags for `start` and `serve`: `--port <PORT>`, `--profile <NAME>`, `--user-agent <VALUE>`, `--proxy <URI>`, `--resolve <PATTERN=ADDR>`, `--tls-ca <PATH>`, `--no-sandbox`, `--log-level <LEVEL>`, `--log-file <PATH>`, `--verbose`. Run `tinybrowser --help` for full endpoint and path documentation.
 
 ### Embedded Wasm component
 
@@ -82,7 +84,8 @@ The `wasm32-wasip2` release tarball ships `tinybrowser.wasm` implementing [crate
 - JavaScript via QuickJS (`quickjs-ng` fork), WebIDL bindings, DOM, events, `fetch`, XHR, Streams, URL, Encoding, Forms, Custom Elements, Canvas 2D, `Intl` (`NumberFormat` / `DateTimeFormat` via ICU4X)
 - Dedicated and Shared Workers, `IndexedDB`, `CookieStore`, `localStorage` / `sessionStorage`, `postMessage` / `MessageChannel` / `BroadcastChannel`
 - Browser-owned HTTP/1.1 + HTTP/2 network stack (`crates/net`): CORS, ORB, 6265bis cookies + CHIPS, CSP, HTTP cache, `Sec-Fetch-*`
-- CDP (Playwright-compatible) and classic WebDriver
+- Site-locked renderer processes with OS sandboxing (`Landlock` + `seccomp-bpf` on Linux, Seatbelt on macOS, Job Objects on Windows; `--no-sandbox` opt-out for containers without Landlock)
+- CDP (Playwright-compatible), W3C WebDriver Classic, and W3C WebDriver BiDi
 
 **Not yet (see [docs/upstream.md](docs/upstream.md#engine-and-upstream-limitations) and [open issues](https://github.com/tinybrowser-dev/tinybrowser/issues)):**
 - No Service Workers, WebGL, WebAudio, or page-facing WebSockets

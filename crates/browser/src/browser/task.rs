@@ -501,6 +501,7 @@ pub(crate) struct BrowserTask {
 
 enum DispatchOutcome {
     Continue(Reply),
+    Deferred,
     Stop(Reply),
 }
 
@@ -541,12 +542,13 @@ impl BrowserTask {
                 break;
             };
             match input {
-                ServerInput::Call { id, body } => match self.dispatch(body).await {
+                ServerInput::Call { id, body } => match self.dispatch(id, body).await {
                     DispatchOutcome::Continue(reply) => {
                         if self.server.reply(id, reply).await.is_err() {
                             break;
                         }
                     }
+                    DispatchOutcome::Deferred => {}
                     DispatchOutcome::Stop(reply) => {
                         let _result = self.server.reply(id, reply).await;
                         return;
@@ -561,7 +563,11 @@ impl BrowserTask {
         let _result = self.shutdown().await;
     }
 
-    async fn dispatch(&mut self, command: Command) -> DispatchOutcome {
+    async fn dispatch(
+        &mut self,
+        id: crate::exchange::RequestId,
+        command: Command,
+    ) -> DispatchOutcome {
         let reply = match command {
             Command::CreateTab { user_context } => {
                 Reply::CreateTab(self.create_tab(NewTab::browser_created(user_context)))
@@ -625,6 +631,26 @@ impl BrowserTask {
                 name.as_deref(),
             )),
             Command::OpenWindow(request) => Reply::OpenWindow(self.open_window(request)),
+            Command::EnsureRendererReady => {
+                let renderers = Arc::clone(&self.renderers);
+                let responder = self.server.responder();
+                tokio::spawn(async move {
+                    let result = renderers.ensure_ready().await;
+                    let _ = responder
+                        .reply(id, Reply::EnsureRendererReady(result))
+                        .await;
+                });
+                return DispatchOutcome::Deferred;
+            }
+            Command::RendererHealth => {
+                let renderers = Arc::clone(&self.renderers);
+                let responder = self.server.responder();
+                tokio::spawn(async move {
+                    let result = renderers.health().await;
+                    let _ = responder.reply(id, Reply::RendererHealth(result)).await;
+                });
+                return DispatchOutcome::Deferred;
+            }
             Command::Close => {
                 let result = self.shutdown().await;
                 return DispatchOutcome::Stop(Reply::Close(result));

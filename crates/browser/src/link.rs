@@ -1676,16 +1676,64 @@ async fn read_bounded_line<R: tokio::io::AsyncBufRead + Unpin>(
     }
 }
 
-async fn forward_stderr(stderr: tokio::process::ChildStderr) {
+const MAX_STARTUP_STDERR_LINES: usize = 8;
+
+async fn forward_stderr(
+    stderr: tokio::process::ChildStderr,
+    startup_stderr: Arc<Mutex<Option<Vec<String>>>>,
+) {
     let mut reader = tokio::io::BufReader::new(stderr);
     let mut bytes = Vec::new();
     while let Ok(Some(truncated)) = read_bounded_line(&mut reader, &mut bytes).await {
         let text = String::from_utf8_lossy(&bytes);
+        if let Some(lines) = &mut *startup_stderr
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            && lines.len() < MAX_STARTUP_STDERR_LINES
+        {
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                lines.push(trimmed.to_owned());
+            }
+        }
         if truncated {
             logging::log_forwarded(&format!("{text} [truncated]\n"));
         } else {
             logging::log_forwarded(&text);
         }
+    }
+}
+
+fn strip_log_prefix(line: &str) -> &str {
+    let mut parts = line.splitn(4, ' ');
+    let (Some(_stamp), Some(level), Some(_target), Some(message)) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return line;
+    };
+    if matches!(level, "ERROR" | "WARN" | "INFO" | "DEBUG" | "TRACE") && !message.is_empty() {
+        message
+    } else {
+        line
+    }
+}
+
+fn startup_failure_message(startup_stderr: &Mutex<Option<Vec<String>>>) -> String {
+    let detail = startup_stderr
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take()
+        .and_then(|lines| {
+            lines
+                .iter()
+                .rev()
+                .find(|line| line.contains(" ERROR "))
+                .or_else(|| lines.last())
+                .map(|line| strip_log_prefix(line).to_owned())
+        });
+    match detail {
+        Some(reason) => format!("renderer handshake failed: {reason}"),
+        None => "renderer handshake failed".to_owned(),
     }
 }
 
@@ -1899,35 +1947,31 @@ pub(crate) async fn spawn_process(
         browser,
         dials: Arc::new(Mutex::new(HashMap::new())),
     };
+    let startup_stderr = Arc::new(Mutex::new(Some(Vec::new())));
     let reader_task = tokio::spawn(reader_task(reader, failure, Some(ready_tx)));
     let service_task = tokio::spawn(service_task(server, service_context));
-    let stderr_task = tokio::spawn(forward_stderr(stderr));
+    let stderr_task = tokio::spawn(forward_stderr(stderr, Arc::clone(&startup_stderr)));
     let _reaper = tokio::spawn(child_task(
         child,
         kill_rx,
         #[cfg(windows)]
         job,
     ));
-    if client
-        .notify(HostNotice::Hello {
-            identity: Box::new(identity),
-        })
-        .await
-        .is_err()
-        || timeout(HANDSHAKE_TIMEOUT, ready_rx).await != Ok(Ok(true))
-    {
+    let tasks = vec![writer_task, reader_task, service_task, stderr_task];
+    if !handshake_succeeded(&client, identity, ready_rx).await {
         let _ = kill.send(true);
-        let _result = writer_task.await;
-        let _result = reader_task.await;
-        let _result = service_task.await;
-        let _result = stderr_task.await;
-        return Err(io::Error::other("renderer handshake failed"));
+        for task in tasks {
+            let _result = task.await;
+        }
+        return Err(io::Error::other(startup_failure_message(&startup_stderr)));
     }
+    *startup_stderr
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = None;
     logging::debug!(
         target: "browser::link",
         "renderer {id:?} ready for site lock {lock:?}"
     );
-    let tasks = vec![writer_task, reader_task, service_task, stderr_task];
     Ok(RendererHandle {
         id,
         client,
@@ -1938,6 +1982,20 @@ pub(crate) async fn spawn_process(
         assignments: AtomicUsize::new(0),
         _slot: slot,
     })
+}
+
+async fn handshake_succeeded(
+    client: &RendererClient,
+    identity: net::ValidIdentity,
+    ready_rx: oneshot::Receiver<bool>,
+) -> bool {
+    client
+        .notify(HostNotice::Hello {
+            identity: Box::new(identity),
+        })
+        .await
+        .is_ok()
+        && timeout(HANDSHAKE_TIMEOUT, ready_rx).await == Ok(Ok(true))
 }
 
 async fn child_task(

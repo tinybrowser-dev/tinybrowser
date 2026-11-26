@@ -81,7 +81,7 @@ function waitForStatus(origin, timeoutMs = 10_000) {
 async function startDaemon(binary) {
   const runtimeDir = mkdtempSync(join(tmpdir(), "tb-pw-"));
   const daemonJson = join(runtimeDir, "tinybrowser", "default", "daemon.json");
-  const child = spawn(binary, [], {
+  const child = spawn(binary, ["serve"], {
     env: {
       ...process.env,
       XDG_RUNTIME_DIR: runtimeDir,

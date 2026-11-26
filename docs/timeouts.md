@@ -13,7 +13,7 @@ admits. At 4 processes × 20 chunks that is ~6.5 min of every chunk's ~14 min, a
 the chunk phase is 23m33s of the 31m21s CI run.
 
 The budgets are already the floor: `DEFAULT_TIMEOUT = 3` / `LONG_TIMEOUT = 5`
-plus `EXTRA_TIMEOUT = 2` (`tools/wpt/tinybrowser_wpt.py:42-44`) against
+plus `EXTRA_TIMEOUT = 2` (`tools/wpt/timeouts.py`) against
 upstream's 10/60/5. The kill lands at 5 s (3 968 files) or 7 s (1 260 files),
 which is exactly the two clusters in the reports. Nothing can be shaved there: a
 test has to stop hanging, or the feature it waits on has to fail fast.
@@ -89,34 +89,27 @@ match wins, so a test can appear under a broader class than its own subject).
 
 ## Verified root causes
 
-### 1. `srcdoc` markup never reaches the frame document — 622 timeouts, 4 280 s
+### 1. `srcdoc` markup never reaches the frame document — 622 timeouts, 4 280 s (resolved)
 
-The probe above, run against the 2026-10-18 binary: `load` fires and
-`contentDocument`/`contentWindow` exist, while
-`contentDocument.body.textContent` is `""` (the probe fails at its first step,
-"markup parsed"). The frame stays on its initial `about:blank`; the `srcdoc`
-value is never parsed into it.
+In the 2026-10-18 baseline, the probe above showed `load` firing and
+`contentDocument`/`contentWindow` existing while
+`contentDocument.body.textContent` stayed `""`: the frame remained on
+`about:blank` and never parsed the `srcdoc` markup.
 
-That is why the file hangs: the security-features harness (behind
-`/referrer-policy/gen/*`, `/mixed-content/gen/*`, `/upgrade-insecure-requests/gen/*`,
-`/fetch/metadata/*`) fetches a frame document, hands it to the iframe through
-`srcdoc`, then waits for that frame's own script to fetch and postMessage.
-No script, no message, no verdict (`common/security-features/resources/common.sub.js:1316-1323`).
+That caused the security-features harness (behind `/referrer-policy/gen/*`,
+`/mixed-content/gen/*`, `/upgrade-insecure-requests/gen/*`, `/fetch/metadata/*`)
+to hang waiting for the frame's script to fetch and `postMessage`
+(`common/security-features/resources/common.sub.js:1316-1323`).
 
-Fix site: `navigate_frame` treats a container with no `src` as blank, and
-`load_frame_url` dispatches on scheme with no `srcdoc` arm
-(`crates/renderer/src/engine.rs:712`, `:908`, `:1031`). Spec: process the iframe
-attributes, `srcdoc` case — navigate the content navigable to `about:srcdoc` with
-the attribute's value as the document source
-(<https://html.spec.whatwg.org/multipage/iframe-embed-object.html#attr-iframe-srcdoc>).
+Implemented in `crates/renderer/src/engine/mod.rs` (`FrameNavigation::srcdoc` /
+`load_frame_srcdoc`, <https://html.spec.whatwg.org/multipage/iframe-embed-object.html#attr-iframe-srcdoc>).
 
-### 2. `document.write` into a blank child frame — same family
+### 2. `document.write` into a blank child frame — same family (resolved)
 
 `iframe-blank` source contexts fetch the frame document and inject it with
-`iframe.contentDocument.write(content)` + `close()` (`common.sub.js:1327-1338`),
-then wait for the same postMessage. Same failure mode as #1: the injected markup
-becomes no document. Re-run the probe against a `contentDocument.write` variant
-when fixing #1.
+`iframe.contentDocument.write(content)` + `close()` (`common.sub.js:1327-1338`).
+`Document.write()` / `writeln()` / `close()` now route into the target document's
+own world (`crates/renderer/src/js/bindings/node/document.rs`).
 
 ### 3. Media elements never finish resource selection — 445 timeouts, 2 283 s
 
@@ -124,7 +117,7 @@ when fixing #1.
 `resource-selection-*` event. The timeline for
 `/webvtt/rendering/cues-with-video/processing-model/2_tracks.html` shows the
 media never fetched at all: no `/media/white.webm`, no `support/test.vtt` record.
-`crates/renderer/src/js/bindings/node/media.rs:29` is honest about the state
+`crates/renderer/src/js/bindings/node/media.rs:28` is honest about the state
 (`networkState` stays `NETWORK_NO_SOURCE`), but the spec's *dedicated media
 source failure steps* never run, so the element never fires `error` and the
 test's wait never settles
@@ -151,11 +144,12 @@ the engine already tracks.
 - **Perform Actions** (370, 2 012 s): `/html/editing/dnd/*` and every test that
   drives input through `test_driver.Actions()`. The timeline ends at
   `testdriver-actions.js`; the awaited drag/drop/pointer event never arrives.
-  `perform_actions` exists (`crates/webdriver/src/lib.rs:656`) and does answer —
+  `perform_actions` exists (`crates/webdriver/src/classic.rs:2368` and
+  `crates/webdriver/src/bidi/input.rs:225`) and does answer —
   so the gap is the page-side event the test waits on, not the endpoint.
-- **bfcache / pageswap / BiDi** (67, 475 s, 49% hang rate): tests wait for a
-  test-only navigation or a BiDi event that is never delivered; 16 of them report
-  "TestRunner hit external timeout", the shape of a page that never yields.
+- **bfcache / pageswap / BiDi** (67, 475 s, 49% hang rate in the 2026-10-18 run):
+  WebDriver BiDi is now implemented (`crates/webdriver/src/bidi/`); the remaining
+  hangs in this bucket are test-only navigation hooks (bfcache, pageswap).
 - **Bluetooth** (10, 104 s): all "TestRunner hit external timeout".
 - **Permissions** (6, 34 s) and other testdriver endpoints (295, 1 723 s).
 

@@ -68,7 +68,7 @@ fn engage_landlock() -> io::Result<()> {
         #[cfg(not(target_os = "android"))]
         {
             return Err(io::Error::other(
-                "renderer Landlock sandbox not enforced by host kernel",
+                "renderer Landlock sandbox not enforced by host kernel (pass --no-sandbox only inside an already-isolated container)",
             ));
         }
     }
