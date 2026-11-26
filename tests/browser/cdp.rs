@@ -850,3 +850,44 @@ fn document_open_announces_replaced_contexts() {
         "a fresh default context is announced, got {created_contexts:?}"
     );
 }
+
+#[test]
+fn capture_screenshot_tall_clip_with_display_none_descendant() {
+    let (_fixture, mut client) = start();
+
+    let created = client
+        .call("Target.createTarget", &json!({"url": "about:blank"}), None)
+        .expect("create");
+    let target_id = created["targetId"].as_str().expect("target id").to_owned();
+    let attached = client
+        .call(
+            "Target.attachToTarget",
+            &json!({"targetId": target_id, "flatten": true}),
+            None,
+        )
+        .expect("attach");
+    let session = attached["sessionId"].as_str().expect("session").to_owned();
+
+    client
+        .call(
+            "Runtime.evaluate",
+            &json!({
+                "expression": "document.body.innerHTML = '<div style=\"height:50vh\"></div><div id=h style=\"display:none\"></div>'; getComputedStyle(document.body).height; document.getElementById('h').appendChild(document.createElement('span')); 'ready'",
+                "returnByValue": true,
+            }),
+            Some(&session),
+        )
+        .expect("setup");
+
+    let shot = client
+        .call(
+            "Page.captureScreenshot",
+            &json!({
+                "clip": { "x": 0, "y": 0, "width": 800, "height": 2000, "scale": 1 }
+            }),
+            Some(&session),
+        )
+        .expect("tall clip screenshot must not panic renderer");
+    let data = shot["data"].as_str().expect("base64 png");
+    assert_ne!(data, "");
+}
