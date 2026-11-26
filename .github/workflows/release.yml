@@ -432,12 +432,33 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Full history and tags: the release notes are the commits since the
+      # previous `v*` tag.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - name: Download the release assets
         uses: actions/download-artifact@v8
         with:
           pattern: tinybrowser-${{ needs.verify.outputs.version }}-*
           path: dist
           merge-multiple: true
+      - name: Release notes
+        env:
+          TAG: ${{ needs.verify.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          prev="$(git describe --tags --abbrev=0 --match 'v*' "$TAG^")"
+          {
+            echo "## Changes since $prev"
+            echo
+            git log --no-merges --invert-grep --grep='^chore: release ' \
+              --format='- %s (%h)' "$prev..$TAG"
+            echo
+            echo "**Full diff**: https://github.com/$REPO/compare/$prev...$TAG"
+          } > release-notes.md
+          cat release-notes.md
       - name: Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -449,4 +470,4 @@ jobs:
             --repo "${{ github.repository }}" \
             dist/*.tar.gz dist/*.zip dist/sha256sums.txt \
             --title "tinybrowser ${{ needs.verify.outputs.version }}" \
-            --generate-notes
+            --notes-file release-notes.md
