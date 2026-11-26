@@ -3,7 +3,7 @@
 # The shipped binary is exactly `cargo build --release`: the release profile
 # carries the size invariants (`panic = "abort"`, `build-std`,
 # `force-unwind-tables=no`, LTO, strip), so nothing here repacks, compresses,
-# or strips it afterwards (docs/size.md).
+# or strips it afterwards (docs/adr/0005-abort-on-panic-without-unwind-tables.md).
 #
 # A tag must name the version in `Cargo.toml`, and the built binary must pass a
 # smoke run of the webdriver lane before it is published: the release profile

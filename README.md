@@ -87,7 +87,7 @@ The `wasm32-wasip2` release tarball ships `tinybrowser.wasm` implementing [crate
 - Site-locked renderer processes with OS sandboxing (`Landlock` + `seccomp-bpf` on Linux, Seatbelt on macOS, Job Objects on Windows; `--no-sandbox` opt-out for containers without Landlock)
 - CDP (Playwright-compatible), W3C WebDriver Classic, and W3C WebDriver BiDi
 
-**Not yet (see [docs/upstream.md](docs/upstream.md#engine-and-upstream-limitations) and [open issues](https://github.com/tinybrowser-dev/tinybrowser/issues)):**
+**Not yet (see [open issues](https://github.com/tinybrowser-dev/tinybrowser/issues)):**
 - No Service Workers, WebGL, WebAudio, or page-facing WebSockets
 - QuickJS is a bytecode interpreter with no JIT (JS-heavy apps run slower than V8)
 - No GPU acceleration or continuous paint loop (headless one-shot rendering only)

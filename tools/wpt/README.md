@@ -121,7 +121,7 @@ budget plus 30 s before it ends the attempt, which is far above the slowest
 real file and below a stack overflow on the deepest page.
 
 One process does not run a whole chunk. The engine keeps ~5 MB per file alive
-(`docs/upstream.md`), so `cli.py` splits the selection into windows of 600 files
+(glibc arena fragmentation), so `cli.py` splits the selection into windows of 600 files
 and starts a fresh harness process for each; the journal carries the verdicts
 across windows, so a window boundary re-runs nothing and loses nothing. The
 window is a memory bound, not a result cache: every file still runs exactly
@@ -161,7 +161,7 @@ A conformance change is a failure-list diff: failures prints the
 canonical list of a --score log, baseline runs both sides in a detached
 worktree (exit 1 on new failures). Metadata-expected TIMEOUTs:
 --skip-timeout in dev only; score/overnight refuse it. overnight needs
-explicit approval. Update the docs/progress.md total after scoring.
+explicit approval.
 Timeout policy (DEFAULT/LONG/EXTRA seconds) lives in tools/wpt/timeouts.py.
 
 `merge --summary-out run.json` writes the compact record of a CI run: totals,
@@ -209,8 +209,7 @@ rect). aamtest is a red foundation.
 Blocked on engine, not harness: XPath (no `document.evaluate`), PDF
 printing (no backend), per-tab focus/visibility, the BiDi emulation
 overrides, user activation bless (~340), and Web Bluetooth (~350).
-print-reftest is unregistered. Classic and BiDi conformance numbers and the
-expectation policy are in `docs/progress.md` (2026-11-25).
+print-reftest is unregistered.
 
 Conventions: metadata in tools/wpt/metadata. An expected FAIL is allowed
 only for an understood gap, names the reason, and is deleted as soon as the

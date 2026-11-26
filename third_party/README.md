@@ -38,11 +38,12 @@ which clones each submodule's object store again.
 - Update: pull upstream in the submodule, push the fork branch, bump
   the pointer here. Check pins with git submodule status. Fresh clones
   (canonical checkout): git submodule update --init --recursive.
-- Patch scope: only make fork changes small and self-contained enough that
-  pulling from upstream stays easy. Large architectural changes to forks stay
-  upstream and belong in docs/upstream.md.
-- Conflicts: upstream wins — take upstream's shape, re-apply our patch
-  on top. The rule and its reason live in docs/upstream.md.
+- Patch scope: keep fork changes small and self-contained so pulling from
+  upstream stays easy. Track larger upstream or feature gaps as GitHub issues;
+  `git log upstream/<branch>..HEAD` is the live patch list.
+- Conflicts: upstream wins — take upstream's shape and re-apply our patch
+  on top. The fork carries fixes upstream has not taken yet, not a competing
+  design.
 
 ## Vendored crates (ship in binary)
 

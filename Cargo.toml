@@ -181,9 +181,8 @@ redundant_clone = "deny"
 needless_collect = "deny"
 
 # ─── Release profile ──────────────────────────────────────────────────────────
-# The tuned profile from docs/size.md: every tuned marginal measured
-# there assumes exactly these flags. Lives here so any measurement in the doc
-# reproduces verbatim (`cargo build --release`, no env overrides).
+# Tuned release profile (see docs/adr/0005-abort-on-panic-without-unwind-tables.md):
+# `cargo build --release` carries every size invariant with no env overrides.
 [profile.release]
 opt-level = "z"
 lto = "fat"

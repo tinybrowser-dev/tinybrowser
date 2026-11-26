@@ -4,23 +4,23 @@ We are building the smallest, lightest, and fastest headless browser for AI agen
 Maximize web spec conformance per byte.
 
 - WHATWG specs are ground truth. Start every implementation and review from the spec. Follow exact algorithm order and cite the spec URL (`// https://...` or `/// <https://...>`) at the implementation site.
-- Heavily reference mature engines. Read Chromium/Firefox source code (see `docs/engines.md`). Never clone the repositories. When the spec and a shipped browser disagree, state the disagreement in a 1-line comment attached to the spec URL and follow the browser that matches the spec algorithm.
+- Heavily reference mature engines. Read Chromium/Firefox source code via online code search or raw GitHub URLs. Never clone the repositories. When the spec and a shipped browser disagree, state the disagreement in a 1-line comment attached to the spec URL and follow the browser that matches the spec algorithm.
 - No prose comments. Only `// SAFETY:` invariants and spec/RFC URL citations (plus a 1-line spec disagreement or UA-defined constant note attached to the URL) are permitted in code; enforced by `tools/check`.
 - Breaking changes, churn, and rewrites are always welcome. When code fights you, zoom out and fix the architectural design. Do not work or patch around it.
 - Simplicity is not brevity. A naive short version that skips edge cases is simplistic, not simple. Write the obvious version, even when it takes more lines, and never drop a spec branch or an error path to keep a change small.
 - No lint silencing. Fix the underlying design flaw instead of suppressing compiler or lint diagnostics.
 - Handwritten `unsafe` is prohibited unless runtime safety is proven (`// SAFETY:` invariant, Miri/valgrind checks via `tools/check`) and no safe alternative is as simple, clear, or fast.
-- Let upstream bugs fail honestly. Never build tinybrowser workarounds for upstream engine bugs; record gaps in `docs/upstream.md`.
+- Let upstream bugs fail honestly. Never build tinybrowser workarounds for upstream engine bugs; track gaps as GitHub issues.
 - Keep feedback loop fast. Cargo tests cover tinybrowser internals only (`cargo test --workspace`); never test web-platform spec conformance in cargo tests. Run the smallest slice that answers the question (single files or directories, never full suites). Never run long or whole-suite test runs without explicit approval.
-- A WPT timeout is a failure. The harness budget (`tools/wpt/timeouts.py`) is the speed standard, so a test that cannot finish inside it is too slow and is a work item. Profile and fix the slow path; never raise a budget to hide one.
+- A WPT timeout is a failure. The harness budget (`tools/wpt/timeouts.py`) is the speed standard, so a test that cannot finish inside it is too slow and is a work item. Profile and fix the slow path; never raise a budget, pass `--skip-timeout`, or exclude a directory to hide a hang.
 - Commit messages should also record decisions.
 - Throwaway experiments belong in `/tmp/`.
 
 ## Upstream
 
-Never open a pull request to upstream for any reason. This is absolute: no upstream PR, no fork-to-upstream PR, no "small patch they would want". Fixes for `DioxusLabs/blitz`, `servo/html5ever`, `DelSkayn/rquickjs`, and `quickjs-ng/quickjs` stay commits on `tinybrowser-dev/*` forks and are recorded in `docs/upstream.md`.
-
-Only make fork changes small and self-contained enough that pulling from upstream stays easy. Large architectural changes to a fork stay upstream and are recorded under `## Engine and upstream limitations` in `docs/upstream.md`; tinybrowser-owned feature gaps are tracked as GitHub issues.
+- Never open a pull request to upstream for any reason. This is absolute: no upstream PR, no fork-to-upstream PR, no "small patch they would want". Fixes for `DioxusLabs/blitz`, `servo/html5ever`, `DelSkayn/rquickjs`, and `quickjs-ng/quickjs` stay commits on `tinybrowser-dev/*` forks (`git log upstream/<branch>..HEAD` is the live patch list).
+- Keep fork changes small and self-contained so pulling from upstream stays straightforward — not micro-wins, compile/size tricks, or large fork rewrites. Every fork commit needs a spec or crash reason in its commit message. Track unfixed engine gaps and feature work as GitHub issues.
+- On fork syncs, upstream wins conflicts: take upstream's shape and re-apply the fork patch on top of it, even where the fork had fixed the code upstream rewrites. The fork carries fixes upstream has not taken yet, not a competing design.
 
 ## Disk
 
@@ -48,19 +48,17 @@ Only make fork changes small and self-contained enough that pulling from upstrea
 
 - Size is an important constraint, but never try to gain smaller size by removing feature(s).
 - No binary packing. No compressor, stub, or self-extractor step (nothing UPX-like).
-- The toolchain is pinned nightly (`rust-toolchain.toml`) for `[profile.release] rustflags` and in-tree std. Release invariants live in `Cargo.toml`/`build.rs` with their size reason: `panic = "abort"`, `force-unwind-tables=no`, `[unstable] build-std`. Changing one means re-measuring; see `docs/size.md`.
+- The toolchain is pinned nightly (`rust-toolchain.toml`) for `[profile.release] rustflags` and in-tree std. Release invariants live in `Cargo.toml`/`build.rs` with their size reason: `panic = "abort"`, `force-unwind-tables=no`, `[unstable] build-std`. Changing one means re-measuring; see `docs/adr/0005-abort-on-panic-without-unwind-tables.md`.
 - Release never unwinds. Design for it: no cleanup may depend on `Drop` after a panic, never use `catch_unwind` on a production path, and a child process must not outlive its parent (`crates/browser/src/child/mod.rs` exits on channel EOF).
 - A panic must leave a record. The panic hook writes synchronously to the log file before the abort (`crates/logging/src/crash.rs`); the async log queue is lost on abort. Keep crash-path code panic-free.
 
 ## Method
 
 - Measure the ceiling before designing. Prove what a change can win (stub the code out, read `.text`, count call sites) before writing it.
-- Record flat experiments in `docs/size.md`. Negative results are results, so nobody retries them.
 - Data over code. Generated glue becomes tables plus shared funnels: monomorphize per IDL type, never per member.
 - Parity gates every refactor. WPT before/after must match exactly (same pass/unexp/timeout/crash counts), and any release-binary change gets a WPT smoke run via `--binary`.
 - After fixing a bug that no type, check, or test covers, run the `harden-repo` skill so it cannot regress.
 - Delete stale config when its reason expires. Workarounds are removed with the reason recorded in the commit, not left to rot.
-- Forks are for small, self-contained correctness fixes that stay easy to pull from upstream — not micro-wins or large fork rewrites. A fork change needs a spec or crash reason recorded in `docs/upstream.md`; compile/size tricks and large fork changes stay upstream.
 
 ## Types and boundaries
 
@@ -74,7 +72,7 @@ Only make fork changes small and self-contained enough that pulling from upstrea
 - A change that makes "one X" deletes every other X in the same change, fork
   included, and adds a guard to `tools/check` when a grep can see it.
 - Prefer the upstream crate or spec table over a hand copy; when a copy stays,
-  record the reason in `docs/upstream.md`.
+  record the reason in the commit message or a GitHub issue.
 - A test names the mutation that makes it fail, and the commit says it was
   checked.
 
@@ -87,8 +85,7 @@ Only make fork changes small and self-contained enough that pulling from upstrea
   `tools/check` uses `nix develop` when available and the installed toolchain
   otherwise, so the same script runs in CI.
 - **Architecture decisions**: Read `docs/adr/` for hard-to-reverse architectural invariants (IPC boundary, realm-free DOM layer, Rust/JS state ownership, WebIDL codegen funnels, OS-thread dedicated workers, abort-on-panic release profile).
-- **Engine behavior**: Read `docs/engines.md` to search and fetch Chromium/Firefox sources without cloning.
 - **Engine forks & submodules**: Read `third_party/README.md` for submodule maintenance, fork branches, and update workflows.
 - **Linked worktrees**: Run `tools/worktree-init` after `git worktree add`. It shares submodule objects with the canonical checkout and leaves WPT to the harness's canonical-checkout fallback; see `third_party/README.md`. Do not initialize a linked worktree with a bare `git submodule update --init --recursive`; it clones object stores and unused upstream test fixtures again.
-- **WPT & conformance harness**: Read `tools/wpt/README.md` for test runners, scoring, and failure diffing. Check `.github/workflows/wpt.yml` runs (`gh run list --workflow=wpt.yml`) against `docs/progress.md` for regressions.
-- **Upstream gaps, priorities, snapshot**: See `docs/upstream.md`, `docs/priorities.md`, `docs/progress.md`.
+- **WPT & conformance harness**: Read `tools/wpt/README.md` for test runners, scoring, and failure diffing. Check `.github/workflows/wpt.yml` runs (`gh run list --workflow=wpt.yml`) for regressions.
+- **Priorities and gaps**: Read `docs/priorities.md` for ranked tiers. Open engine and feature gaps live in GitHub issues.
