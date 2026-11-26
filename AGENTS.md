@@ -58,6 +58,7 @@ Only make fork changes small and self-contained enough that pulling from upstrea
 - Record flat experiments in `docs/size.md`. Negative results are results, so nobody retries them.
 - Data over code. Generated glue becomes tables plus shared funnels: monomorphize per IDL type, never per member.
 - Parity gates every refactor. WPT before/after must match exactly (same pass/unexp/timeout/crash counts), and any release-binary change gets a WPT smoke run via `--binary`.
+- After fixing a bug that no type, check, or test covers, run the `harden-repo` skill so it cannot regress.
 - Delete stale config when its reason expires. Workarounds are removed with the reason recorded in the commit, not left to rot.
 - Forks are for small, self-contained correctness fixes that stay easy to pull from upstream — not micro-wins or large fork rewrites. A fork change needs a spec or crash reason recorded in `docs/upstream.md`; compile/size tricks and large fork changes stay upstream.
 
