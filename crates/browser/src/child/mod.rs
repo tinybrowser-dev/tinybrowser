@@ -31,9 +31,10 @@ use renderer::{OpenerPolicy, WindowId};
 
 pub fn serve(sandbox: RendererSandbox) -> io::Result<()> {
     let (input, mut output) = endpoint()?;
+    let font_dirs = renderer::preload_system_fonts();
     match sandbox {
         RendererSandbox::Enabled => {
-            if let Err(error) = sandbox::engage() {
+            if let Err(error) = sandbox::engage(&font_dirs) {
                 send_startup_failed(&mut output, &error.to_string());
                 return Err(error);
             }

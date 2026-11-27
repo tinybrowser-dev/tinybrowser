@@ -2072,6 +2072,60 @@ mod transport_port_tests {
         assert_eq!(methods, vec!["OPTIONS", "PUT", "PUT"]);
     }
 
+    // https://fetch.spec.whatwg.org/#cors-preflight-cache
+    #[tokio::test]
+    async fn an_uncredentialed_preflight_grant_is_not_reused_with_credentials() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let agent = Agent::with_transport(
+            AgentOptions::default(),
+            Arc::new(ScriptedTransport {
+                script: Mutex::new(std::collections::VecDeque::from([
+                    (
+                        204,
+                        vec![
+                            ("access-control-allow-origin", "http://a.test"),
+                            ("access-control-allow-methods", "*"),
+                            ("access-control-allow-headers", "*"),
+                            ("access-control-max-age", "60"),
+                        ],
+                    ),
+                    (200, vec![("access-control-allow-origin", "http://a.test")]),
+                    (
+                        204,
+                        vec![
+                            ("access-control-allow-origin", "http://a.test"),
+                            ("access-control-allow-credentials", "true"),
+                            ("access-control-allow-methods", "PUT"),
+                            ("access-control-allow-headers", "x-custom"),
+                        ],
+                    ),
+                    (
+                        200,
+                        vec![
+                            ("access-control-allow-origin", "http://a.test"),
+                            ("access-control-allow-credentials", "true"),
+                        ],
+                    ),
+                ])),
+                seen: Arc::clone(&seen),
+            }),
+        );
+        for credentials in [CredentialsMode::SameOrigin, CredentialsMode::Include] {
+            let mut request = cross_origin_request();
+            request.method = Method::PUT;
+            request.cors.credentials = credentials;
+            request
+                .headers
+                .insert("x-custom", "1")
+                .expect("a test header");
+            let response = agent.send(request).await.expect("request succeeds");
+            assert_eq!(response.status(), 200);
+        }
+        let seen = seen.lock().unwrap_or_else(PoisonError::into_inner);
+        let methods: Vec<&str> = seen.iter().map(|entry| entry.0.as_str()).collect();
+        assert_eq!(methods, vec!["OPTIONS", "PUT", "OPTIONS", "PUT"]);
+    }
+
     // https://chromedevtools.github.io/devtools-protocol/tot/Network/#method-setExtraHTTPHeaders
     #[tokio::test]
     async fn request_override_extra_headers_are_sent_on_outbound_requests() {

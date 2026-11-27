@@ -1739,19 +1739,16 @@ fn spawn_transport(sandbox: crate::child::RendererSandbox) -> io::Result<Spawned
     command.stdin(Stdio::piped()).stdout(Stdio::piped());
     let mut child = command.spawn()?;
     #[cfg(windows)]
-    let job = match sandbox {
-        crate::child::RendererSandbox::Enabled => match child
-            .raw_handle()
-            .ok_or_else(|| io::Error::other("renderer process handle missing"))
-            .and_then(crate::child::sandbox::ProcessJob::assign)
-        {
-            Ok(job) => Some(job),
-            Err(error) => {
-                let _ = child.start_kill();
-                return Err(error);
-            }
-        },
-        crate::child::RendererSandbox::Disabled => None,
+    let job = match child
+        .raw_handle()
+        .ok_or_else(|| io::Error::other("renderer process handle missing"))
+        .and_then(|handle| crate::child::sandbox::ProcessJob::assign(handle, sandbox))
+    {
+        Ok(job) => Some(job),
+        Err(error) => {
+            let _ = child.start_kill();
+            return Err(error);
+        }
     };
     let Some(stdin) = child.stdin.take() else {
         let _ = child.start_kill();
@@ -1835,6 +1832,21 @@ fn renderer_command(sandbox: crate::child::RendererSandbox) -> io::Result<Comman
         .stderr(Stdio::piped());
     #[cfg(unix)]
     command.process_group(0);
+    #[cfg(target_os = "linux")]
+    {
+        static LINUX_FONT_DIRS: std::sync::OnceLock<Option<std::ffi::OsString>> =
+            std::sync::OnceLock::new();
+        if let Some(joined) = LINUX_FONT_DIRS.get_or_init(|| {
+            let dirs = renderer::linux_system_font_dirs();
+            if dirs.is_empty() {
+                None
+            } else {
+                std::env::join_paths(dirs).ok()
+            }
+        }) {
+            command.env("TINYBROWSER_FONT_DIRS", joined);
+        }
+    }
     for key in [
         "FONTCONFIG_FILE",
         "FONTCONFIG_PATH",
@@ -1843,7 +1855,6 @@ fn renderer_command(sandbox: crate::child::RendererSandbox) -> io::Result<Comman
         "LC_ALL",
         "TZ",
         "SYSTEMROOT",
-        "PREFIX",
     ] {
         if let Ok(value) = std::env::var(key) {
             command.env(key, value);

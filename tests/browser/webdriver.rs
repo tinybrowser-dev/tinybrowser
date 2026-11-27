@@ -862,15 +862,20 @@ fn cookie_roundtrip() {
     assert_eq!(http_only["value"]["httpOnly"], json!(true));
     let all = request(&addr, "GET", &format!("/session/{id}/cookie"), None);
     assert_eq!(all["value"].as_array().map(Vec::len), Some(2));
+    let deleted_one = request(&addr, "DELETE", &format!("/session/{id}/cookie/a"), None);
+    assert_eq!(deleted_one["value"], Value::Null);
+    let after_one = request(&addr, "GET", &format!("/session/{id}/cookie"), None);
+    let remaining_names: Vec<&str> = after_one["value"]
+        .as_array()
+        .expect("cookie list")
+        .iter()
+        .filter_map(|cookie| cookie["name"].as_str())
+        .collect();
+    assert_eq!(remaining_names, vec!["h"]);
     let cleared = request(&addr, "DELETE", &format!("/session/{id}/cookie"), None);
     assert_eq!(cleared["value"], Value::Null);
-    let empty = request(
-        &addr,
-        "POST",
-        &format!("/session/{id}/execute/sync"),
-        Some(r#"{"script":"return document.cookie","args":[]}"#),
-    );
-    assert_eq!(empty["value"], json!(""));
+    let remaining = request(&addr, "GET", &format!("/session/{id}/cookie"), None);
+    assert_eq!(remaining["value"], json!([]));
 }
 
 #[test]

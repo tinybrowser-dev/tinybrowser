@@ -19,7 +19,9 @@ mod ffi {
 (deny default)\n\
 (allow process-info-pidinfo (target self))\n\
 (allow process-info-setcontrol (target self))\n\
-(allow mach-lookup (global-name \"com.apple.system.logger\"))\n\
+(allow mach-lookup\n\
+  (global-name \"com.apple.system.logger\")\n\
+  (global-name \"com.apple.fonts\"))\n\
 (allow sysctl-read)\n\
 (allow file-read-metadata)\n\
 (allow file-read-data\n\
@@ -73,7 +75,12 @@ mod tests {
     fn sandbox_blocks_filesystem_network_and_exec_in_child() {
         const CHILD_ENV: &str = "TINYBROWSER_MACOS_SANDBOX_TEST_CHILD";
         if std::env::var_os(CHILD_ENV).is_some() {
+            let _font_dirs = renderer::preload_system_fonts();
             engage().expect("seatbelt engage");
+            assert!(
+                renderer::Fonts::default().has_families(),
+                "system fonts must resolve inside seatbelt"
+            );
             let thread_result = std::thread::spawn(|| 42usize)
                 .join()
                 .expect("worker thread must spawn inside seatbelt");

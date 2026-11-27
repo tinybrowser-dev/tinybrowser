@@ -1052,4 +1052,182 @@ mod tests {
             "max-age: 0 evicts the cache entry"
         );
     }
+
+    #[test]
+    fn credentialed_wildcards_are_literal_in_the_cache() {
+        let now = Instant::now();
+        let mut cache = PreflightCache::default();
+        let response = headers(&[
+            ("Access-Control-Allow-Origin", "https://a.test"),
+            ("Access-Control-Allow-Credentials", "true"),
+            ("Access-Control-Allow-Methods", "PUT, *"),
+            ("Access-Control-Allow-Headers", "X-Custom, *"),
+            ("Access-Control-Max-Age", "60"),
+        ]);
+        cache.store("https://a.test", "https://b.test/api", true, &response, now);
+        assert!(cache.allows(
+            "https://a.test",
+            "https://b.test/api",
+            true,
+            &Method::PUT,
+            &["x-custom".to_owned()],
+            now + Duration::from_secs(10),
+        ));
+        assert!(
+            !cache.allows(
+                "https://a.test",
+                "https://b.test/api",
+                true,
+                &Method::DELETE,
+                &[],
+                now + Duration::from_secs(10),
+            ),
+            "wildcard method is literal with credentials"
+        );
+        assert!(
+            !cache.allows(
+                "https://a.test",
+                "https://b.test/api",
+                true,
+                &Method::PUT,
+                &["x-other".to_owned()],
+                now + Duration::from_secs(10),
+            ),
+            "wildcard header is literal with credentials"
+        );
+    }
+
+    #[test]
+    fn entries_are_keyed_by_url() {
+        let now = Instant::now();
+        let mut cache = PreflightCache::default();
+        let response = headers(&[
+            ("Access-Control-Allow-Origin", "*"),
+            ("Access-Control-Allow-Methods", "PUT"),
+            ("Access-Control-Max-Age", "60"),
+        ]);
+        cache.store(
+            "https://a.test",
+            "https://b.test/api",
+            false,
+            &response,
+            now,
+        );
+        assert!(cache.allows(
+            "https://a.test",
+            "https://b.test/api",
+            false,
+            &Method::PUT,
+            &[],
+            now + Duration::from_secs(1),
+        ));
+        assert!(!cache.allows(
+            "https://a.test",
+            "https://b.test/other",
+            false,
+            &Method::PUT,
+            &[],
+            now + Duration::from_secs(1),
+        ));
+    }
+
+    #[test]
+    fn missing_or_bad_max_age_lasts_five_seconds() {
+        let now = Instant::now();
+        for header in [None, Some("abc"), Some("")] {
+            let mut cache = PreflightCache::default();
+            let mut raw = vec![
+                ("Access-Control-Allow-Origin", "*"),
+                ("Access-Control-Allow-Methods", "PUT"),
+            ];
+            if let Some(value) = header {
+                raw.push(("Access-Control-Max-Age", value));
+            }
+            let response = headers(&raw);
+            cache.store(
+                "https://a.test",
+                "https://b.test/api",
+                false,
+                &response,
+                now,
+            );
+            assert!(
+                cache.allows(
+                    "https://a.test",
+                    "https://b.test/api",
+                    false,
+                    &Method::PUT,
+                    &[],
+                    now + Duration::from_secs(4),
+                ),
+                "max-age={header:?} should hit at +4s"
+            );
+            assert!(
+                !cache.allows(
+                    "https://a.test",
+                    "https://b.test/api",
+                    false,
+                    &Method::PUT,
+                    &[],
+                    now + Duration::from_secs(6),
+                ),
+                "max-age={header:?} should miss at +6s"
+            );
+        }
+    }
+
+    #[test]
+    fn max_age_is_capped_at_two_hours() {
+        let now = Instant::now();
+        let mut cache = PreflightCache::default();
+        let response = headers(&[
+            ("Access-Control-Allow-Origin", "*"),
+            ("Access-Control-Allow-Methods", "PUT"),
+            ("Access-Control-Max-Age", "86400"),
+        ]);
+        cache.store(
+            "https://a.test",
+            "https://b.test/api",
+            false,
+            &response,
+            now,
+        );
+        assert!(cache.allows(
+            "https://a.test",
+            "https://b.test/api",
+            false,
+            &Method::PUT,
+            &[],
+            now + Duration::from_secs(7199),
+        ));
+        assert!(!cache.allows(
+            "https://a.test",
+            "https://b.test/api",
+            false,
+            &Method::PUT,
+            &[],
+            now + Duration::from_secs(7201),
+        ));
+    }
+
+    #[test]
+    fn entry_count_is_bounded() {
+        let now = Instant::now();
+        let mut cache = PreflightCache::default();
+        let response = headers(&[
+            ("Access-Control-Allow-Origin", "*"),
+            ("Access-Control-Allow-Methods", "PUT"),
+            ("Access-Control-Max-Age", "60"),
+        ]);
+        for idx in 0..(PreflightCache::MAX_ENTRIES + 10) {
+            cache.store(
+                "https://a.test",
+                &format!("https://b.test/api/{idx}"),
+                false,
+                &response,
+                now,
+            );
+        }
+        assert_eq!(cache.entries.len(), PreflightCache::MAX_ENTRIES);
+    }
 }

@@ -48,7 +48,10 @@ mod ffi {
     }
 
     impl ProcessJob {
-        pub(crate) fn assign(process_handle: *mut c_void) -> io::Result<Self> {
+        pub(crate) fn assign(
+            process_handle: *mut c_void,
+            sandbox: super::super::RendererSandbox,
+        ) -> io::Result<Self> {
             // SAFETY: Null security attributes and name create an anonymous job owned by the browser parent.
             let job = unsafe { CreateJobObjectW(ptr::null(), ptr::null()) };
             if job.is_null() {
@@ -58,10 +61,15 @@ mod ffi {
 
             // SAFETY: Zero-initialized POD Win32 struct with explicit limit flags.
             let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
-            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-                | JOB_OBJECT_LIMIT_ACTIVE_PROCESS
-                | JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION;
-            limits.BasicLimitInformation.ActiveProcessLimit = 1;
+            limits.BasicLimitInformation.LimitFlags = match sandbox {
+                super::super::RendererSandbox::Enabled => {
+                    limits.BasicLimitInformation.ActiveProcessLimit = 1;
+                    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+                        | JOB_OBJECT_LIMIT_ACTIVE_PROCESS
+                        | JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION
+                }
+                super::super::RendererSandbox::Disabled => JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            };
             // SAFETY: `guard.0` is a valid job handle and `limits` matches `JobObjectExtendedLimitInformation`.
             let ok = unsafe {
                 SetInformationJobObject(
@@ -75,27 +83,29 @@ mod ffi {
                 return Err(io::Error::last_os_error());
             }
 
-            let ui = JOBOBJECT_BASIC_UI_RESTRICTIONS {
-                UIRestrictionsClass: JOB_OBJECT_UILIMIT_DESKTOP
-                    | JOB_OBJECT_UILIMIT_DISPLAYSETTINGS
-                    | JOB_OBJECT_UILIMIT_EXITWINDOWS
-                    | JOB_OBJECT_UILIMIT_GLOBALATOMS
-                    | JOB_OBJECT_UILIMIT_HANDLES
-                    | JOB_OBJECT_UILIMIT_READCLIPBOARD
-                    | JOB_OBJECT_UILIMIT_SYSTEMPARAMETERS
-                    | JOB_OBJECT_UILIMIT_WRITECLIPBOARD,
-            };
-            // SAFETY: `guard.0` is a valid job handle and `ui` matches `JobObjectBasicUIRestrictions`.
-            let ok = unsafe {
-                SetInformationJobObject(
-                    guard.0,
-                    JobObjectBasicUIRestrictions,
-                    (&raw const ui).cast(),
-                    u32::try_from(size_of::<JOBOBJECT_BASIC_UI_RESTRICTIONS>()).unwrap_or(0),
-                )
-            };
-            if ok == 0 {
-                return Err(io::Error::last_os_error());
+            if sandbox == super::super::RendererSandbox::Enabled {
+                let ui = JOBOBJECT_BASIC_UI_RESTRICTIONS {
+                    UIRestrictionsClass: JOB_OBJECT_UILIMIT_DESKTOP
+                        | JOB_OBJECT_UILIMIT_DISPLAYSETTINGS
+                        | JOB_OBJECT_UILIMIT_EXITWINDOWS
+                        | JOB_OBJECT_UILIMIT_GLOBALATOMS
+                        | JOB_OBJECT_UILIMIT_HANDLES
+                        | JOB_OBJECT_UILIMIT_READCLIPBOARD
+                        | JOB_OBJECT_UILIMIT_SYSTEMPARAMETERS
+                        | JOB_OBJECT_UILIMIT_WRITECLIPBOARD,
+                };
+                // SAFETY: `guard.0` is a valid job handle and `ui` matches `JobObjectBasicUIRestrictions`.
+                let ok = unsafe {
+                    SetInformationJobObject(
+                        guard.0,
+                        JobObjectBasicUIRestrictions,
+                        (&raw const ui).cast(),
+                        u32::try_from(size_of::<JOBOBJECT_BASIC_UI_RESTRICTIONS>()).unwrap_or(0),
+                    )
+                };
+                if ok == 0 {
+                    return Err(io::Error::last_os_error());
+                }
             }
 
             // SAFETY: `guard.0` is valid and `process_handle` is the child's live Win32 process handle.
@@ -241,7 +251,12 @@ mod tests {
     fn sandbox_blocks_child_process_creation_in_child() {
         const CHILD_ENV: &str = "TINYBROWSER_WINDOWS_SANDBOX_TEST_CHILD";
         if std::env::var_os(CHILD_ENV).is_some() {
+            let _font_dirs = renderer::preload_system_fonts();
             engage().expect("windows sandbox engage");
+            assert!(
+                renderer::Fonts::default().has_families(),
+                "system fonts must resolve inside windows sandbox"
+            );
             let thread_result = std::thread::spawn(|| 42usize)
                 .join()
                 .expect("worker thread must spawn inside windows sandbox");
@@ -263,7 +278,11 @@ mod tests {
             .env(CHILD_ENV, "1")
             .spawn()
             .expect("spawn sandbox child");
-        let _job = ProcessJob::assign(child.as_raw_handle()).expect("assign child to parent job");
+        let _job = ProcessJob::assign(
+            child.as_raw_handle(),
+            super::super::RendererSandbox::Enabled,
+        )
+        .expect("assign child to parent job");
         let status = child.wait().expect("wait sandbox child");
         assert!(
             status.success(),

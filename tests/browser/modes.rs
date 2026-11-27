@@ -99,10 +99,26 @@ fn help_documents_commands_workflow_endpoints_and_flags() {
             "{out}"
         );
         assert!(out.contains("Commands:"), "{out}");
-        assert!(out.contains("start"), "{out}");
-        assert!(out.contains("status"), "{out}");
-        assert!(out.contains("stop"), "{out}");
-        assert!(out.contains("serve"), "{out}");
+        assert!(
+            out.contains(
+                "\n  start   Start the browser daemon in the background and wait until ready"
+            ),
+            "{out}"
+        );
+        assert!(
+            out.contains(
+                "\n  status  Report daemon status and endpoint as JSON (exits 1 when stopped)"
+            ),
+            "{out}"
+        );
+        assert!(
+            out.contains("\n  stop    Gracefully stop the running daemon for a profile"),
+            "{out}"
+        );
+        assert!(
+            out.contains("\n  serve   Run the browser daemon in the foreground (for supervisors / containers)"),
+            "{out}"
+        );
         assert!(out.contains("Workflow:"), "{out}");
         assert!(
             out.contains("Endpoints (http://127.0.0.1:<port>):"),
@@ -291,26 +307,96 @@ fn no_sandbox_rejects_inline_value() {
     assert!(err.contains("unexpected value for '--no-sandbox'"), "{err}");
 }
 
+#[cfg(target_os = "linux")]
+fn proc_seccomp_mode(pid: u32) -> Option<u32> {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    for line in status.lines() {
+        if let Some(rest) = line.strip_prefix("Seccomp:") {
+            return rest.trim().parse().ok();
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
 #[test]
-fn no_sandbox_disables_renderer_sandbox_and_logs_warning() {
-    let fixture = Fixture::new("tinybrowser-no-sandbox-renderer");
-    let path = fixture.data().join("no-sandbox.log");
-    let output = run(
-        &fixture,
-        &[
-            "--log-file",
-            path.to_str().expect("utf-8 path"),
-            "--no-sandbox",
-            "--renderer",
-        ],
+fn renderer_processes_run_with_seccomp_by_default() {
+    let mut fixture = Fixture::new("tinybrowser-seccomp-default");
+    let daemon_pid = fixture.spawn_daemon();
+    let mut client = fixture.connect();
+    let _session = crate::fixture::load_page(
+        &mut client,
+        "data:text/html,<p>sandbox</p>",
+        std::time::Duration::from_secs(10),
     );
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let logged = std::fs::read_to_string(&path).expect("log file created");
+    let children = crate::fixture::poll_until("renderer children", || {
+        let pids = crate::fixture::renderer_children(daemon_pid);
+        (!pids.is_empty()).then_some(pids)
+    });
+    for pid in children {
+        assert_eq!(
+            proc_seccomp_mode(pid),
+            Some(2),
+            "default renderer pid {pid} must run in seccomp filter mode"
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn no_sandbox_disables_renderer_seccomp_and_logs_warning() {
+    let mut fixture = Fixture::new("tinybrowser-seccomp-disabled");
+    let log_path = fixture.data().join("no-sandbox.log");
+    let daemon = std::process::Command::new(env!("CARGO_BIN_EXE_tinybrowser"))
+        .args([
+            "serve",
+            "--profile=default",
+            "--no-sandbox",
+            "--log-file",
+            log_path.to_str().expect("utf-8 path"),
+        ])
+        .env("XDG_RUNTIME_DIR", fixture.runtime())
+        .env("XDG_DATA_HOME", fixture.data())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn serve --no-sandbox");
+    let daemon_pid = daemon.id();
+    fixture.append_child(daemon);
+    let mut client = fixture.connect();
+    let _session = crate::fixture::load_page(
+        &mut client,
+        "data:text/html,<p>nosandbox</p>",
+        std::time::Duration::from_secs(10),
+    );
+    let children = crate::fixture::poll_until("renderer children", || {
+        let pids = crate::fixture::renderer_children(daemon_pid);
+        (!pids.is_empty()).then_some(pids)
+    });
+    for pid in children {
+        assert_eq!(
+            proc_seccomp_mode(pid),
+            Some(0),
+            "--no-sandbox renderer pid {pid} must not engage seccomp"
+        );
+    }
+    drop(client);
+    let logged = crate::fixture::poll_until("sandbox warning logs", || {
+        let text = std::fs::read_to_string(&log_path).ok()?;
+        (text.contains("WARN browser::sandbox renderer OS sandbox disabled via --no-sandbox")
+            && text
+                .contains("WARN renderer::sandbox renderer OS sandbox disabled via --no-sandbox"))
+        .then_some(text)
+    });
+    assert!(
+        logged.contains("WARN browser::sandbox renderer OS sandbox disabled via --no-sandbox"),
+        "{logged}"
+    );
     assert!(
         logged.contains("WARN renderer::sandbox renderer OS sandbox disabled via --no-sandbox"),
         "{logged}"
     );
-    assert!(logged.contains("INFO renderer ready"), "{logged}");
 }
 
 #[test]

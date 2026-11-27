@@ -29,10 +29,38 @@ pub use render::RgbaImage;
 pub struct Fonts(parley::FontContext);
 
 #[cfg(target_os = "linux")]
+static LINUX_SYSTEM_FONTS: std::sync::OnceLock<(Fonts, Vec<std::path::PathBuf>)> =
+    std::sync::OnceLock::new();
+
+#[cfg(target_os = "linux")]
 impl Default for Fonts {
     fn default() -> Self {
-        static SYSTEM_FONTS: std::sync::OnceLock<Fonts> = std::sync::OnceLock::new();
-        SYSTEM_FONTS.get_or_init(load_linux_system_fonts).clone()
+        LINUX_SYSTEM_FONTS
+            .get_or_init(load_linux_system_fonts)
+            .0
+            .clone()
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[must_use]
+pub fn linux_system_font_dirs() -> Vec<std::path::PathBuf> {
+    discover_linux_fonts().0
+}
+
+#[must_use]
+pub fn preload_system_fonts() -> Vec<std::path::PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        LINUX_SYSTEM_FONTS
+            .get_or_init(load_linux_system_fonts)
+            .1
+            .clone()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = Fonts::default();
+        Vec::new()
     }
 }
 
@@ -510,7 +538,7 @@ fn apply_linux_script_fallbacks(
 }
 
 #[cfg(target_os = "linux")]
-fn load_linux_system_fonts() -> Fonts {
+fn discover_linux_fonts() -> (Vec<std::path::PathBuf>, Vec<fontconfig_parser::Alias>) {
     use std::collections::HashSet;
     use std::path::{Path, PathBuf};
 
@@ -521,18 +549,27 @@ fn load_linux_system_fonts() -> Fonts {
         let _ = config.merge_config(Path::new("/etc/fonts/fonts.conf"));
     }
 
-    let mut dirs: Vec<PathBuf> = config.dirs.into_iter().map(|dir| dir.path).collect();
-    dirs.push(PathBuf::from("/usr/share/fonts"));
-    dirs.push(PathBuf::from("/usr/local/share/fonts"));
-    if let Ok(xdg_data) = std::env::var("XDG_DATA_HOME")
-        && !xdg_data.is_empty()
-    {
-        dirs.push(PathBuf::from(xdg_data).join("fonts"));
-    } else if let Ok(home) = std::env::var("HOME")
-        && !home.is_empty()
-    {
-        dirs.push(PathBuf::from(&home).join(".local/share/fonts"));
-        dirs.push(PathBuf::from(home).join(".fonts"));
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Ok(provided) = std::env::var("TINYBROWSER_FONT_DIRS") {
+        for entry in std::env::split_paths(&provided) {
+            if !entry.as_os_str().is_empty() {
+                dirs.push(entry);
+            }
+        }
+    } else {
+        dirs.extend(config.dirs.into_iter().map(|dir| dir.path));
+        dirs.push(PathBuf::from("/usr/share/fonts"));
+        dirs.push(PathBuf::from("/usr/local/share/fonts"));
+        if let Ok(xdg_data) = std::env::var("XDG_DATA_HOME")
+            && !xdg_data.is_empty()
+        {
+            dirs.push(PathBuf::from(xdg_data).join("fonts"));
+        } else if let Ok(home) = std::env::var("HOME")
+            && !home.is_empty()
+        {
+            dirs.push(PathBuf::from(&home).join(".local/share/fonts"));
+            dirs.push(PathBuf::from(home).join(".fonts"));
+        }
     }
 
     let mut seen_dirs = HashSet::new();
@@ -544,16 +581,25 @@ fn load_linux_system_fonts() -> Fonts {
             unique_dirs.push(canonical);
         }
     }
+    (unique_dirs, config.aliases)
+}
 
+#[cfg(target_os = "linux")]
+fn load_linux_system_fonts() -> (Fonts, Vec<std::path::PathBuf>) {
+    let (unique_dirs, aliases) = discover_linux_fonts();
     let mut font_ctx = parley::FontContext::default();
     font_ctx.collection.load_fonts_from_paths(&unique_dirs);
     let first_family = font_ctx.collection.family_ids().next();
-    apply_linux_generic_families(&mut font_ctx, &config.aliases, first_family);
-    apply_linux_script_fallbacks(&mut font_ctx, &config.aliases);
-    Fonts(font_ctx)
+    apply_linux_generic_families(&mut font_ctx, &aliases, first_family);
+    apply_linux_script_fallbacks(&mut font_ctx, &aliases);
+    (Fonts(font_ctx), unique_dirs)
 }
 
 impl Fonts {
+    #[must_use]
+    pub fn has_families(&mut self) -> bool {
+        self.0.collection.family_ids().next().is_some()
+    }
     pub fn register_font(&mut self, data: Arc<dyn AsRef<[u8]> + Send + Sync>) -> usize {
         self.0
             .collection

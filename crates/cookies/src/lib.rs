@@ -1436,8 +1436,8 @@ mod tests {
     use url::Url;
 
     use super::{
-        CookieJar, CookieOp, CookieRecord, CookieSameSite, InitiatorKind, RetrievalKind,
-        schemeful_same_site, site, site_for_origin,
+        CookieFilter, CookieJar, CookieOp, CookieRecord, CookieSameSite, DirectCookie,
+        InitiatorKind, MAX_LIFETIME, RetrievalKind, schemeful_same_site, site, site_for_origin,
     };
     const NOW: u64 = 1_791_763_200;
     const DAY: Duration = Duration::from_hours(24);
@@ -2263,5 +2263,124 @@ mod tests {
             ..embedded_fetch
         };
         assert_eq!(jar.cookie_string(first_party_fetch), "s=1; l=1; n=1");
+    }
+
+    fn plain_direct(name: &str, value: &str) -> DirectCookie {
+        DirectCookie {
+            name: name.to_owned(),
+            value: value.to_owned(),
+            domain: "example.com".to_owned(),
+            path: "/".to_owned(),
+            host_only: true,
+            secure: false,
+            http_only: false,
+            same_site: CookieSameSite::Lax,
+            expiry: None,
+            partition_key: None,
+        }
+    }
+
+    #[test]
+    fn set_direct_needs_secure_for_samesite_none() {
+        let mut jar = CookieJar::default();
+        let mut cookie = plain_direct("a", "1");
+        cookie.same_site = CookieSameSite::None;
+        assert!(!jar.set_direct(cookie.clone(), at(NOW)));
+        assert_eq!(
+            jar.matching_records(&CookieFilter::default(), at(NOW)),
+            Vec::new()
+        );
+        cookie.secure = true;
+        assert!(jar.set_direct(cookie, at(NOW)));
+        assert_eq!(
+            jar.matching_records(&CookieFilter::default(), at(NOW))
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn set_direct_needs_secure_for_partitioned() {
+        let mut jar = CookieJar::default();
+        let mut cookie = plain_direct("p", "1");
+        cookie.partition_key = Some("https://top.test".to_owned());
+        assert!(!jar.set_direct(cookie.clone(), at(NOW)));
+        assert_eq!(
+            jar.matching_records(&CookieFilter::default(), at(NOW)),
+            Vec::new()
+        );
+        cookie.secure = true;
+        assert!(jar.set_direct(cookie, at(NOW)));
+        assert_eq!(
+            jar.matching_records(&CookieFilter::default(), at(NOW))
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn set_direct_applies_cookie_prefixes() {
+        let mut jar = CookieJar::default();
+        assert!(!jar.set_direct(plain_direct("__Secure-a", "1"), at(NOW)));
+        assert!(!jar.set_direct(plain_direct("__Host-a", "1"), at(NOW)));
+        let mut domain_host = plain_direct("__Host-a", "1");
+        domain_host.secure = true;
+        domain_host.host_only = false;
+        assert!(!jar.set_direct(domain_host, at(NOW)));
+        let mut valid_host = plain_direct("__Host-a", "1");
+        valid_host.secure = true;
+        assert!(jar.set_direct(valid_host, at(NOW)));
+        let records = jar.matching_records(&CookieFilter::default(), at(NOW));
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].name, "__Host-a");
+    }
+
+    #[test]
+    fn set_direct_caps_lifetime() {
+        let mut jar = CookieJar::default();
+        let now = at(NOW);
+        let mut cookie = plain_direct("long", "1");
+        cookie.expiry = Some(now + DAY * 1000);
+        assert!(jar.set_direct(cookie, now));
+        let records = jar.matching_records(&CookieFilter::default(), now);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].expiry, Some(now + MAX_LIFETIME));
+    }
+
+    #[test]
+    fn filter_size_is_name_plus_value() {
+        let mut jar = CookieJar::default();
+        assert!(jar.set_direct(plain_direct("a", "v"), at(NOW)));
+        let exact = CookieFilter {
+            size: Some(2),
+            ..CookieFilter::default()
+        };
+        let wrong = CookieFilter {
+            size: Some(3),
+            ..CookieFilter::default()
+        };
+        assert_eq!(jar.matching_records(&exact, at(NOW)).len(), 1);
+        assert_eq!(jar.matching_records(&wrong, at(NOW)), Vec::new());
+    }
+
+    #[test]
+    fn delete_for_url_with_a_name_keeps_the_rest() {
+        let mut jar = CookieJar::default();
+        let page = url("http://example.com/");
+        assert!(jar.set_direct(plain_direct("a", "1"), at(NOW)));
+        let mut http_only = plain_direct("b", "2");
+        http_only.http_only = true;
+        assert!(jar.set_direct(http_only, at(NOW)));
+
+        assert_eq!(jar.delete_for_url(http(&page, at(NOW)), Some("a")), 1);
+        let remaining = jar.matching_records(&CookieFilter::default(), at(NOW));
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].name, "b");
+
+        assert_eq!(jar.delete_for_url(http(&page, at(NOW)), None), 1);
+        assert_eq!(
+            jar.matching_records(&CookieFilter::default(), at(NOW)),
+            Vec::new()
+        );
     }
 }

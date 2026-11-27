@@ -1,9 +1,10 @@
 // https://docs.kernel.org/userspace-api/landlock.html
+// https://raw.githubusercontent.com/chromium/chromium/main/sandbox/linux/seccomp-bpf-helpers/baseline_policy.cc
 // https://raw.githubusercontent.com/chromium/chromium/main/sandbox/policy/linux/bpf_renderer_policy_linux.cc
 
 use std::collections::BTreeMap;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use landlock::{
     ABI, Access, AccessFs, AccessNet, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset,
@@ -18,24 +19,22 @@ use seccompiler::{
 const X32_SYSCALL_BIT: i64 = 0x4000_0000;
 
 const CLONE_THREAD: u64 = 0x0001_0000;
-const CLONE_NAMESPACE_FLAGS: [u64; 8] = [
-    0x0002_0000,
-    0x0200_0000,
-    0x0400_0000,
-    0x0800_0000,
-    0x1000_0000,
-    0x2000_0000,
-    0x4000_0000,
-    0x0000_0080,
-];
+const CLONE_NAMESPACE_MASK: u64 = 0x0002_0000
+    | 0x0200_0000
+    | 0x0400_0000
+    | 0x0800_0000
+    | 0x1000_0000
+    | 0x2000_0000
+    | 0x4000_0000
+    | 0x0000_0080;
 
-pub(super) fn engage() -> io::Result<()> {
-    engage_landlock()?;
+pub(super) fn engage(font_dirs: &[PathBuf]) -> io::Result<()> {
+    engage_landlock(font_dirs)?;
     engage_seccomp()?;
     Ok(())
 }
 
-fn engage_landlock() -> io::Result<()> {
+fn engage_landlock(font_dirs: &[PathBuf]) -> io::Result<()> {
     let abi = ABI::V5;
     let mut ruleset = Ruleset::default()
         .set_compatibility(CompatLevel::BestEffort)
@@ -47,7 +46,7 @@ fn engage_landlock() -> io::Result<()> {
         .map_err(io::Error::other)?;
 
     let read_access = AccessFs::from_read(abi);
-    for path in allowed_read_paths() {
+    for path in allowed_read_paths(font_dirs) {
         let Ok(fd) = PathFd::new(&path) else {
             continue;
         };
@@ -75,44 +74,21 @@ fn engage_landlock() -> io::Result<()> {
     Ok(())
 }
 
-fn allowed_read_paths() -> Vec<PathBuf> {
+fn allowed_read_paths(font_dirs: &[PathBuf]) -> Vec<PathBuf> {
     let mut paths = vec![
-        PathBuf::from("/etc/fonts"),
         PathBuf::from("/etc/localtime"),
-        PathBuf::from("/usr/share/fonts"),
-        PathBuf::from("/usr/local/share/fonts"),
         PathBuf::from("/usr/share/zoneinfo"),
-        PathBuf::from("/run/current-system/sw/share/X11/fonts"),
-        PathBuf::from("/run/current-system/sw/share/fonts"),
         PathBuf::from("/nix/store"),
-        PathBuf::from("/system/fonts"),
-        PathBuf::from("/system/etc/fonts.xml"),
         PathBuf::from("/dev/null"),
         PathBuf::from("/dev/urandom"),
         PathBuf::from("/dev/zero"),
         PathBuf::from("/proc/self/stat"),
         PathBuf::from("/proc/self/maps"),
     ];
-    if let Ok(file) = std::env::var("FONTCONFIG_FILE") {
-        let path = PathBuf::from(&file);
-        if let Some(parent) = path.parent()
-            && !parent.as_os_str().is_empty()
-        {
-            paths.push(parent.to_path_buf());
+    for dir in font_dirs {
+        if !paths.contains(dir) {
+            paths.push(dir.clone());
         }
-        paths.push(path);
-    }
-    if let Ok(list) = std::env::var("FONTCONFIG_PATH") {
-        for entry in std::env::split_paths(&list) {
-            if !entry.as_os_str().is_empty() {
-                paths.push(entry);
-            }
-        }
-    }
-    if let Ok(prefix) = std::env::var("PREFIX") {
-        let base = Path::new(&prefix);
-        paths.push(base.join("etc/fonts"));
-        paths.push(base.join("share/fonts"));
     }
     paths
 }
@@ -174,110 +150,182 @@ fn build_clone3_fallback_program(arch: TargetArch) -> io::Result<BpfProgram> {
     filter.try_into().map_err(io::Error::other)
 }
 
+// https://raw.githubusercontent.com/chromium/chromium/main/sandbox/policy/linux/bpf_renderer_policy_linux.cc
 fn build_seccomp_program(arch: TargetArch) -> io::Result<BpfProgram> {
-    let rules = seccomp_rule_map()?;
+    let rules = seccomp_allow_map()?;
     let eperm = u32::try_from(libc::EPERM).unwrap_or(1);
     let filter = SeccompFilter::new(
         rules,
-        SeccompAction::Allow,
         SeccompAction::Errno(eperm),
+        SeccompAction::Allow,
         arch,
     )
     .map_err(io::Error::other)?;
     filter.try_into().map_err(io::Error::other)
 }
 
-fn seccomp_rule_map() -> io::Result<BTreeMap<i64, Vec<SeccompRule>>> {
+fn seccomp_allow_map() -> io::Result<BTreeMap<i64, Vec<SeccompRule>>> {
     let mut rules: BTreeMap<i64, Vec<SeccompRule>> = BTreeMap::new();
-    for syscall in denied_syscalls() {
+    for syscall in allowed_syscalls() {
         rules.insert(syscall, Vec::new());
-        #[cfg(target_arch = "x86_64")]
-        rules.insert(syscall | X32_SYSCALL_BIT, Vec::new());
     }
-    #[cfg(target_arch = "x86_64")]
-    for x32_nr in 512..=547 {
-        rules.insert(x32_nr | X32_SYSCALL_BIT, Vec::new());
-    }
-    let clone_deny_rules = clone_deny_rules()?;
-    rules.insert(libc::SYS_clone, clone_deny_rules);
-    #[cfg(target_arch = "x86_64")]
-    rules.insert(libc::SYS_clone | X32_SYSCALL_BIT, Vec::new());
+    rules.insert(libc::SYS_clone3, Vec::new());
+    rules.insert(libc::SYS_clone, clone_allow_rules()?);
+    rules.insert(libc::SYS_prctl, prctl_allow_rules()?);
     Ok(rules)
 }
 
-fn clone_deny_rules() -> io::Result<Vec<SeccompRule>> {
-    let mut rules = Vec::with_capacity(1 + CLONE_NAMESPACE_FLAGS.len());
-    let not_thread = SeccompCondition::new(
+fn clone_allow_rules() -> io::Result<Vec<SeccompRule>> {
+    let is_thread = SeccompCondition::new(
         0,
         SeccompCmpArgLen::Qword,
         SeccompCmpOp::MaskedEq(CLONE_THREAD),
+        CLONE_THREAD,
+    )
+    .map_err(io::Error::other)?;
+    let no_namespaces = SeccompCondition::new(
+        0,
+        SeccompCmpArgLen::Qword,
+        SeccompCmpOp::MaskedEq(CLONE_NAMESPACE_MASK),
         0,
     )
     .map_err(io::Error::other)?;
-    rules.push(SeccompRule::new(vec![not_thread]).map_err(io::Error::other)?);
-    for flag in CLONE_NAMESPACE_FLAGS {
-        let has_ns = SeccompCondition::new(
+    Ok(vec![
+        SeccompRule::new(vec![is_thread, no_namespaces]).map_err(io::Error::other)?,
+    ])
+}
+
+fn prctl_allow_rules() -> io::Result<Vec<SeccompRule>> {
+    let mut rules = Vec::with_capacity(2);
+    for option in [libc::PR_SET_NAME, libc::PR_GET_NAME] {
+        let cond = SeccompCondition::new(
             0,
             SeccompCmpArgLen::Qword,
-            SeccompCmpOp::MaskedEq(flag),
-            flag,
+            SeccompCmpOp::Eq,
+            u64::try_from(option).unwrap_or(0),
         )
         .map_err(io::Error::other)?;
-        rules.push(SeccompRule::new(vec![has_ns]).map_err(io::Error::other)?);
+        rules.push(SeccompRule::new(vec![cond]).map_err(io::Error::other)?);
     }
     Ok(rules)
 }
 
-fn denied_syscalls() -> Vec<i64> {
-    vec![
-        libc::SYS_socket,
-        libc::SYS_socketpair,
-        libc::SYS_connect,
-        libc::SYS_bind,
-        libc::SYS_listen,
-        libc::SYS_accept,
-        libc::SYS_accept4,
-        libc::SYS_execve,
-        libc::SYS_execveat,
-        libc::SYS_ptrace,
-        libc::SYS_process_vm_readv,
-        libc::SYS_process_vm_writev,
-        libc::SYS_pidfd_open,
-        libc::SYS_pidfd_getfd,
-        libc::SYS_kcmp,
-        libc::SYS_mount,
-        libc::SYS_umount2,
-        libc::SYS_chroot,
-        libc::SYS_pivot_root,
-        libc::SYS_unshare,
-        libc::SYS_setns,
-        libc::SYS_open_by_handle_at,
-        libc::SYS_name_to_handle_at,
-        libc::SYS_bpf,
-        libc::SYS_io_uring_setup,
-        libc::SYS_io_uring_enter,
-        libc::SYS_io_uring_register,
-        libc::SYS_userfaultfd,
-        libc::SYS_keyctl,
-        libc::SYS_add_key,
-        libc::SYS_request_key,
-        libc::SYS_perf_event_open,
-        libc::SYS_kexec_load,
-        libc::SYS_init_module,
-        libc::SYS_finit_module,
-        libc::SYS_delete_module,
-        libc::SYS_reboot,
-        libc::SYS_syslog,
-        libc::SYS_quotactl,
-        libc::SYS_acct,
-        libc::SYS_swapon,
-        libc::SYS_swapoff,
-        libc::SYS_personality,
-        #[cfg(target_arch = "x86_64")]
-        libc::SYS_fork,
-        #[cfg(target_arch = "x86_64")]
-        libc::SYS_vfork,
-    ]
+const ALLOWED_SYSCALLS: &[i64] = &[
+    libc::SYS_brk,
+    libc::SYS_mmap,
+    libc::SYS_munmap,
+    libc::SYS_mprotect,
+    libc::SYS_madvise,
+    libc::SYS_mremap,
+    libc::SYS_mlock,
+    libc::SYS_munlock,
+    libc::SYS_futex,
+    libc::SYS_set_robust_list,
+    libc::SYS_get_robust_list,
+    libc::SYS_rseq,
+    libc::SYS_sched_yield,
+    libc::SYS_sched_getaffinity,
+    libc::SYS_sched_getparam,
+    libc::SYS_sched_getscheduler,
+    libc::SYS_sched_setscheduler,
+    libc::SYS_gettid,
+    libc::SYS_getpid,
+    libc::SYS_getppid,
+    libc::SYS_getuid,
+    libc::SYS_geteuid,
+    libc::SYS_getgid,
+    libc::SYS_getegid,
+    libc::SYS_set_tid_address,
+    libc::SYS_prlimit64,
+    libc::SYS_getrusage,
+    libc::SYS_membarrier,
+    libc::SYS_tgkill,
+    libc::SYS_tkill,
+    libc::SYS_exit,
+    libc::SYS_exit_group,
+    libc::SYS_clock_gettime,
+    libc::SYS_clock_getres,
+    libc::SYS_clock_nanosleep,
+    libc::SYS_nanosleep,
+    libc::SYS_gettimeofday,
+    libc::SYS_getrandom,
+    libc::SYS_times,
+    libc::SYS_rt_sigaction,
+    libc::SYS_rt_sigprocmask,
+    libc::SYS_rt_sigreturn,
+    libc::SYS_sigaltstack,
+    libc::SYS_restart_syscall,
+    libc::SYS_read,
+    libc::SYS_write,
+    libc::SYS_readv,
+    libc::SYS_writev,
+    libc::SYS_pread64,
+    libc::SYS_pwrite64,
+    libc::SYS_close,
+    libc::SYS_close_range,
+    libc::SYS_lseek,
+    libc::SYS_fstat,
+    libc::SYS_newfstatat,
+    libc::SYS_statx,
+    libc::SYS_fstatfs,
+    libc::SYS_getdents64,
+    libc::SYS_openat,
+    libc::SYS_readlinkat,
+    libc::SYS_faccessat,
+    libc::SYS_faccessat2,
+    libc::SYS_fcntl,
+    libc::SYS_dup,
+    libc::SYS_dup3,
+    libc::SYS_pipe2,
+    libc::SYS_eventfd2,
+    libc::SYS_epoll_create1,
+    libc::SYS_epoll_ctl,
+    libc::SYS_epoll_pwait,
+    libc::SYS_epoll_pwait2,
+    libc::SYS_ppoll,
+    libc::SYS_pselect6,
+    libc::SYS_ioctl,
+    libc::SYS_recvfrom,
+    libc::SYS_recvmsg,
+    libc::SYS_sendto,
+    libc::SYS_sendmsg,
+    libc::SYS_shutdown,
+    libc::SYS_getsockopt,
+    libc::SYS_setsockopt,
+    libc::SYS_getsockname,
+    libc::SYS_getpeername,
+    libc::SYS_fsync,
+    libc::SYS_fdatasync,
+    libc::SYS_getcwd,
+    libc::SYS_uname,
+    libc::SYS_sysinfo,
+];
+
+#[cfg(target_arch = "x86_64")]
+const X86_64_ALLOWED_SYSCALLS: &[i64] = &[
+    libc::SYS_open,
+    libc::SYS_stat,
+    libc::SYS_lstat,
+    libc::SYS_access,
+    libc::SYS_readlink,
+    libc::SYS_dup2,
+    libc::SYS_pipe,
+    libc::SYS_poll,
+    libc::SYS_select,
+    libc::SYS_epoll_create,
+    libc::SYS_epoll_wait,
+    libc::SYS_eventfd,
+    libc::SYS_arch_prctl,
+    libc::SYS_time,
+    libc::SYS_getdents,
+    libc::SYS_getrlimit,
+];
+
+fn allowed_syscalls() -> Vec<i64> {
+    let mut syscalls = ALLOWED_SYSCALLS.to_vec();
+    #[cfg(target_arch = "x86_64")]
+    syscalls.extend_from_slice(X86_64_ALLOWED_SYSCALLS);
+    syscalls
 }
 
 #[cfg(test)]
@@ -292,19 +340,36 @@ mod tests {
         assert_ne!(clone3.len(), 0);
         assert_ne!(program.len(), 0);
 
-        let rules = seccomp_rule_map().expect("rule map");
-        assert!(rules.contains_key(&libc::SYS_pidfd_open));
-        assert!(rules.contains_key(&libc::SYS_pidfd_getfd));
-        assert!(rules.contains_key(&libc::SYS_kcmp));
-        assert_eq!(
-            rules.get(&libc::SYS_clone).map(Vec::len),
-            Some(1 + CLONE_NAMESPACE_FLAGS.len())
-        );
+        let rules = seccomp_allow_map().expect("allow map");
+        assert!(rules.contains_key(&libc::SYS_read));
+        assert!(rules.contains_key(&libc::SYS_futex));
+        assert_eq!(rules.get(&libc::SYS_clone).map(Vec::len), Some(1));
+        assert_eq!(rules.get(&libc::SYS_prctl).map(Vec::len), Some(2));
+        for forbidden in [
+            libc::SYS_socket,
+            libc::SYS_socketpair,
+            libc::SYS_connect,
+            libc::SYS_execve,
+            libc::SYS_execveat,
+            libc::SYS_ptrace,
+            libc::SYS_pidfd_open,
+            libc::SYS_pidfd_getfd,
+            libc::SYS_kcmp,
+            libc::SYS_io_uring_setup,
+            libc::SYS_unshare,
+            libc::SYS_mount,
+            libc::SYS_bpf,
+        ] {
+            assert!(
+                !rules.contains_key(&forbidden),
+                "syscall {forbidden} must not be in the seccomp allowlist"
+            );
+        }
         #[cfg(target_arch = "x86_64")]
         {
-            assert!(rules.contains_key(&(libc::SYS_socket | X32_SYSCALL_BIT)));
-            assert!(rules.contains_key(&(libc::SYS_clone | X32_SYSCALL_BIT)));
-            assert!(rules.contains_key(&(0x0208 | X32_SYSCALL_BIT)));
+            assert!(!rules.contains_key(&(libc::SYS_read | X32_SYSCALL_BIT)));
+            assert!(!rules.contains_key(&(libc::SYS_clone | X32_SYSCALL_BIT)));
+            assert!(!rules.contains_key(&(0x0208 | X32_SYSCALL_BIT)));
         }
     }
 
@@ -312,8 +377,19 @@ mod tests {
     fn sandbox_blocks_filesystem_network_and_exec_in_child() {
         const CHILD_ENV: &str = "TINYBROWSER_SANDBOX_TEST_CHILD";
         if std::env::var_os(CHILD_ENV).is_some() {
-            engage().expect("sandbox engage");
-            let thread_result = std::thread::spawn(|| 42usize)
+            let font_dirs = renderer::preload_system_fonts();
+            let had_fonts = renderer::Fonts::default().has_families();
+            engage(&font_dirs).expect("sandbox engage");
+            if had_fonts {
+                assert!(
+                    renderer::Fonts::default().has_families(),
+                    "preloaded system fonts must resolve inside the sandbox"
+                );
+            }
+            let thread_result = std::thread::Builder::new()
+                .name("sandbox-worker".to_owned())
+                .spawn(|| 42usize)
+                .expect("spawn named worker")
                 .join()
                 .expect("worker thread must still spawn under clone3->clone fallback");
             assert_eq!(thread_result, 42);

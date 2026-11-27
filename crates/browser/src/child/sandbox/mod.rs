@@ -11,6 +11,7 @@ mod windows;
 pub(crate) use windows::ProcessJob;
 
 use std::io;
+use std::path::PathBuf;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RendererSandbox {
@@ -19,17 +20,19 @@ pub enum RendererSandbox {
     Disabled,
 }
 
-pub(super) fn engage() -> io::Result<()> {
+pub(super) fn engage(font_dirs: &[PathBuf]) -> io::Result<()> {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
-        linux::engage()
+        linux::engage(font_dirs)
     }
     #[cfg(target_os = "macos")]
     {
+        let _ = font_dirs;
         macos::engage()
     }
     #[cfg(target_os = "windows")]
     {
+        let _ = font_dirs;
         windows::engage()
     }
     #[cfg(not(any(
@@ -39,6 +42,7 @@ pub(super) fn engage() -> io::Result<()> {
         target_os = "windows"
     )))]
     {
+        let _ = font_dirs;
         Ok(())
     }
 }

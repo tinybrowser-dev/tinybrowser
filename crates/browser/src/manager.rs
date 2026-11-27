@@ -105,6 +105,12 @@ impl RendererProcessManager {
         identity: net::ValidIdentity,
         sandbox: RendererSandbox,
     ) -> Self {
+        if sandbox == RendererSandbox::Disabled {
+            logging::warn!(
+                target: "browser::sandbox",
+                "renderer OS sandbox disabled via --no-sandbox"
+            );
+        }
         let (releases, release_rx) = mpsc::unbounded_channel();
         let (spare_gen, _spare_gen_rx) = watch::channel(0);
         let inner = Arc::new(ManagerInner {
