@@ -12,6 +12,7 @@ pub mod names;
 pub mod protocol;
 pub mod sniff;
 pub mod xml;
+pub mod xpath;
 
 pub use protocol::FrameKind;
 

@@ -24,6 +24,7 @@ mod range;
 mod selection;
 mod webidl;
 mod window;
+mod xpath;
 
 pub(super) use attributes::*;
 pub(super) use clone::*;
@@ -43,6 +44,7 @@ pub(super) use range::*;
 pub(crate) use webidl::selector_matching_elements;
 pub(super) use webidl::*;
 pub(super) use window::*;
+pub(super) use xpath::*;
 
 use std::cell::RefCell;
 
@@ -797,6 +799,9 @@ fn install_document(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
     Class::<JsRange>::define(&globals)?;
     Class::<JsStaticRange>::define(&globals)?;
     Class::<JsMutationRecord>::define(&globals)?;
+    Class::<JsXPathResult>::define(&globals)?;
+    Class::<JsXPathExpression>::define(&globals)?;
+    Class::<JsXPathEvaluator>::define(&globals)?;
     node::install_custom_construction(ctx)?;
     crate::js::bridge::object(ctx)?.set("__tb_handlerNames", HANDLER_ATTRIBUTES.to_vec())?;
     crate::js::bridge::object(ctx)?

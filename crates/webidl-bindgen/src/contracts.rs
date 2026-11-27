@@ -1430,6 +1430,7 @@ fn lower_argument(
                     null_default: false,
                     legacy_null_to_empty: false,
                     boolean_default: None,
+                    ushort_default: None,
                     union_default: None,
                 },
                 parameter: quote! { Vec<#element> },
@@ -1449,38 +1450,11 @@ fn lower_argument(
         return Err(Error("LegacyNullToEmptyString requires DOMString".into()));
     }
     // https://webidl.spec.whatwg.org/#dfn-overload-resolution-algorithm
-    match (&type_, argument.optional.is_some(), &argument.default) {
-        (_, false, None)
-        | (
-            ReturnType::String
-            | ReturnType::UsvString
-            | ReturnType::Boolean
-            | ReturnType::Union(_, _)
-            | ReturnType::Any,
-            true,
-            None,
-        ) => {}
-        (ReturnType::Any, true, Some(default))
-            if matches!(default.value, DefaultValue::Null(_)) => {}
-        (ReturnType::Boolean, true, Some(default))
-            if matches!(default.value, DefaultValue::Boolean(_)) => {}
-        (ReturnType::NullableDocumentType, true, Some(default))
-            if matches!(default.value, DefaultValue::Null(_)) => {}
-        (ReturnType::Dictionary(_), true, Some(default))
-            if matches!(default.value, DefaultValue::EmptyDictionary(_)) => {}
-        (ReturnType::Union(_, _) | ReturnType::NullableUnion(_, _), true, Some(default))
-            if matches!(
-                default.value,
-                DefaultValue::EmptyDictionary(_) | DefaultValue::Null(_)
-            ) => {}
-        (ReturnType::Union(_, _) | ReturnType::NullableUnion(_, _), true, Some(default))
-            if matches!(default.value, DefaultValue::Boolean(_)) => {}
-        _ => {
-            return Err(Error(
-                "native operation optionality or default is not supported yet".into(),
-            ));
-        }
-    }
+    validate_argument_optionality(
+        &type_,
+        argument.optional.is_some(),
+        argument.default.as_ref(),
+    )?;
     let arity = if argument.optional.is_some() {
         ArgumentArity::Optional
     } else {
@@ -1493,6 +1467,12 @@ fn lower_argument(
             DefaultValue::Boolean(value) => Some(value.0),
             _ => None,
         });
+    let ushort_default = argument
+        .default
+        .as_ref()
+        .filter(|_| matches!(type_, ReturnType::UnsignedShort))
+        .map(parse_ushort_default)
+        .transpose()?;
     let parameter = argument_parameter(&type_, arity, boolean_default)?;
     let union_default = union_default(&type_, argument)?;
     Ok(LoweredArgument {
@@ -1505,11 +1485,81 @@ fn lower_argument(
                 .is_some_and(|default| matches!(default.value, DefaultValue::Null(_))),
             legacy_null_to_empty,
             boolean_default,
+            ushort_default,
             union_default,
         },
         parameter,
         arity,
     })
+}
+
+fn validate_argument_optionality(
+    type_: &ReturnType,
+    optional: bool,
+    default: Option<&weedle::common::Default<'_>>,
+) -> Result<(), Error> {
+    match (type_, optional, default) {
+        (_, false, None)
+        | (
+            ReturnType::String
+            | ReturnType::UsvString
+            | ReturnType::Boolean
+            | ReturnType::Union(_, _)
+            | ReturnType::Any,
+            true,
+            None,
+        ) => Ok(()),
+        (ReturnType::Any | ReturnType::PlatformObject, true, Some(default))
+            if matches!(default.value, DefaultValue::Null(_)) =>
+        {
+            Ok(())
+        }
+        (ReturnType::UnsignedShort, true, Some(default))
+            if matches!(default.value, DefaultValue::Integer(_)) =>
+        {
+            Ok(())
+        }
+        (ReturnType::Boolean, true, Some(default))
+            if matches!(default.value, DefaultValue::Boolean(_)) =>
+        {
+            Ok(())
+        }
+        (ReturnType::NullableDocumentType, true, Some(default))
+            if matches!(default.value, DefaultValue::Null(_)) =>
+        {
+            Ok(())
+        }
+        (ReturnType::Dictionary(_), true, Some(default))
+            if matches!(default.value, DefaultValue::EmptyDictionary(_)) =>
+        {
+            Ok(())
+        }
+        (ReturnType::Union(_, _) | ReturnType::NullableUnion(_, _), true, Some(default))
+            if matches!(
+                default.value,
+                DefaultValue::EmptyDictionary(_) | DefaultValue::Null(_) | DefaultValue::Boolean(_)
+            ) =>
+        {
+            Ok(())
+        }
+        _ => Err(Error(
+            "native operation optionality or default is not supported yet".into(),
+        )),
+    }
+}
+
+fn parse_ushort_default(default: &weedle::common::Default<'_>) -> Result<u16, Error> {
+    let DefaultValue::Integer(lit) = &default.value else {
+        return Err(Error("unsigned short default must be an integer".into()));
+    };
+    let parsed = match lit {
+        weedle::literal::IntegerLit::Dec(dec) => dec.0.parse::<u16>(),
+        weedle::literal::IntegerLit::Hex(hex) => {
+            u16::from_str_radix(hex.0.trim_start_matches("0x").trim_start_matches("0X"), 16)
+        }
+        weedle::literal::IntegerLit::Oct(oct) => u16::from_str_radix(oct.0, 8),
+    };
+    parsed.map_err(|_| Error("unsigned short default out of range".into()))
 }
 
 fn union_default(

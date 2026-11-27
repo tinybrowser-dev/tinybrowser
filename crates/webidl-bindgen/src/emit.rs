@@ -1208,11 +1208,14 @@ fn operation_argument_at(
         let value = params.arg(#index).unwrap_or_else(|| Value::new_undefined(ctx.clone()));
     };
     match &argument.type_ {
-        ReturnType::Any => {
+        ReturnType::Any | ReturnType::PlatformObject => {
             let fetch = if argument.null_default {
                 // https://webidl.spec.whatwg.org/#es-any
                 quote! {
-                    let value = params.arg(#index).unwrap_or_else(|| Value::new_null(ctx.clone()));
+                    let value = params
+                        .arg(#index)
+                        .filter(|value| !value.is_undefined())
+                        .unwrap_or_else(|| Value::new_null(ctx.clone()));
                 }
             } else {
                 fetch
@@ -1222,7 +1225,6 @@ fn operation_argument_at(
         ReturnType::Node
         | ReturnType::NullableNode
         | ReturnType::Callback
-        | ReturnType::PlatformObject
         | ReturnType::Dictionary(_)
         | ReturnType::Enumeration(_)
         | ReturnType::Union(..)
@@ -1321,10 +1323,9 @@ fn operation_scalar_argument(
             };
             quote! { let #variable = #conversion; }
         }
-        ReturnType::UnsignedShort => quote! {
-            // https://webidl.spec.whatwg.org/#es-unsigned-short
-            let #variable = host::ushort_argument(params, #index)?;
-        },
+        ReturnType::UnsignedShort => {
+            ushort_argument_tokens(argument.ushort_default, index, variable)
+        }
         ReturnType::Short => quote! {
             // https://webidl.spec.whatwg.org/#es-short
             let value = host::fetch(params, #index);
@@ -1349,6 +1350,27 @@ fn operation_scalar_argument(
             let #variable = host::restricted_double_argument(params, #index)?;
         },
         _ => unreachable!("validated operation argument"),
+    }
+}
+
+fn ushort_argument_tokens(
+    default: Option<u16>,
+    index: &TokenStream,
+    variable: &proc_macro2::Ident,
+) -> TokenStream {
+    // https://webidl.spec.whatwg.org/#es-unsigned-short
+    if let Some(default) = default {
+        quote! {
+            let #variable = if host::fetch(params, #index).is_undefined() {
+                #default
+            } else {
+                host::ushort_argument(params, #index)?
+            };
+        }
+    } else {
+        quote! {
+            let #variable = host::ushort_argument(params, #index)?;
+        }
     }
 }
 

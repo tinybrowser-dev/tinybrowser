@@ -1316,3 +1316,79 @@ fn send_keys_preserves_focus_keycode_and_fractional_pointer_move() {
     );
     assert_eq!(moved["value"], Value::Null, "{moved}");
 }
+
+#[test]
+fn xpath_locator_and_dom_xpath_api() {
+    let html = "<!doctype html>\
+        <ul id=list><li class=item>alpha</li><li class=item>beta</li></ul>";
+    let server = TestServer::start(vec![("/page", ok("text/html", html.as_bytes()))], None);
+    let (addr, _fixture) = start(Vec::new());
+    let created = request(&addr, "POST", "/session", Some("{}"));
+    let id = created["value"]["sessionId"]
+        .as_str()
+        .expect("session id")
+        .to_owned();
+    let url = format!("http://{}/page", server.address());
+    let nav = request(
+        &addr,
+        "POST",
+        &format!("/session/{id}/url"),
+        Some(&json!({"url": url}).to_string()),
+    );
+    assert_eq!(nav["value"], Value::Null, "{nav}");
+
+    let found_all = request(
+        &addr,
+        "POST",
+        &format!("/session/{id}/elements"),
+        Some(r#"{"using":"xpath","value":"//ul[@id='list']/li[@class='item']"}"#),
+    );
+    assert_eq!(
+        found_all["value"].as_array().map(Vec::len),
+        Some(2),
+        "{found_all}"
+    );
+
+    let found_one = request(
+        &addr,
+        "POST",
+        &format!("/session/{id}/element"),
+        Some(r#"{"using":"xpath","value":"//li[text()='beta']"}"#),
+    );
+    let elem = found_one["value"]["element-6066-11e4-a52e-4f735466cecf"]
+        .as_str()
+        .expect("element id")
+        .to_owned();
+    let text = request(
+        &addr,
+        "GET",
+        &format!("/session/{id}/element/{elem}/text"),
+        None,
+    );
+    assert_eq!(text["value"], json!("beta"), "{text}");
+
+    let invalid = request(
+        &addr,
+        "POST",
+        &format!("/session/{id}/element"),
+        Some(r#"{"using":"xpath","value":"//li["}"#),
+    );
+    assert_eq!(
+        invalid["value"]["error"],
+        json!("invalid selector"),
+        "{invalid}"
+    );
+
+    let dom_api = request(
+        &addr,
+        "POST",
+        &format!("/session/{id}/execute/sync"),
+        Some(
+            r#"{"script":"const ev = new XPathEvaluator(); const expr = ev.createExpression('//li', null); const it = expr.evaluate(document, XPathResult.ORDERED_NODE_ITERATOR_TYPE, null); const first = it.iterateNext().textContent; document.getElementById('list').appendChild(document.createElement('li')); let invalidated = it.invalidIteratorState; let threw = ''; try { it.iterateNext(); } catch (e) { threw = e.name; } return [first, invalidated, threw, document.evaluate('count(//li)', document, null, XPathResult.NUMBER_TYPE, null).numberValue];","args":[]}"#,
+        ),
+    );
+    assert_eq!(dom_api["value"][0], json!("alpha"), "{dom_api}");
+    assert_eq!(dom_api["value"][1], json!(true), "{dom_api}");
+    assert_eq!(dom_api["value"][2], json!("InvalidStateError"), "{dom_api}");
+    assert_eq!(dom_api["value"][3].as_f64(), Some(3.0), "{dom_api}");
+}

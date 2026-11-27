@@ -16,6 +16,8 @@ pub struct SideTables {
     pub journal: Vec<(u64, JournalEntry)>,
     next_journal_position: u64,
     recording: bool,
+    // https://dom.spec.whatwg.org/#dom-xpathresult-invaliditeratorstate
+    pub mutation_generation: u64,
     // https://html.spec.whatwg.org/multipage/scripting.html#already-started
     started_scripts: HashSet<blitz_traits::node_id::NodeId>,
     // https://html.spec.whatwg.org/multipage/form-elements.html#selectedness-setting-algorithm
@@ -138,6 +140,8 @@ impl BlitzDocument {
     }
 
     pub fn record(&mut self, entry: JournalEntry) {
+        // https://dom.spec.whatwg.org/#dom-xpathresult-invaliditeratorstate
+        self.side.mutation_generation = self.side.mutation_generation.wrapping_add(1);
         if self.side.recording {
             let position = self.side.next_journal_position;
             self.side.next_journal_position = self.side.next_journal_position.wrapping_add(1);

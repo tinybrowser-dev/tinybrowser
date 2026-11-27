@@ -110,6 +110,7 @@ pub(crate) struct OperationArgument {
     pub(crate) null_default: bool,
     pub(crate) legacy_null_to_empty: bool,
     pub(crate) boolean_default: Option<bool>,
+    pub(crate) ushort_default: Option<u16>,
     pub(crate) union_default: Option<UnionDefault>,
 }
 

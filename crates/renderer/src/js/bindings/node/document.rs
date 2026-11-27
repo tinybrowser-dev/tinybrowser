@@ -534,6 +534,45 @@ impl<'js> document_generated::Document<'js> for JsNode {
     fn get_forms(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
         self.get_forms(ctx)
     }
+
+    // https://dom.spec.whatwg.org/#dom-xpathevaluatorbase-createexpression
+    fn create_expression(
+        &self,
+        ctx: Ctx<'js>,
+        expression: rquickjs::String<'js>,
+        resolver: Value<'js>,
+    ) -> Result<Value<'js>> {
+        crate::js::bindings::xpath::create_expression(&ctx, expression, resolver)
+    }
+
+    // https://dom.spec.whatwg.org/#dom-xpathevaluatorbase-creatensresolver
+    fn create_ns_resolver(
+        &self,
+        ctx: Ctx<'js>,
+        node: crate::js::bindings::host::NodeReference,
+    ) -> Result<Value<'js>> {
+        crate::js::bindings::xpath::create_ns_resolver(&ctx, node)
+    }
+
+    // https://dom.spec.whatwg.org/#dom-xpathevaluatorbase-evaluate
+    fn evaluate(
+        &self,
+        ctx: Ctx<'js>,
+        expression: rquickjs::String<'js>,
+        context_node: crate::js::bindings::host::NodeReference,
+        resolver: Value<'js>,
+        result_type: u16,
+        result: Value<'js>,
+    ) -> Result<Value<'js>> {
+        crate::js::bindings::xpath::evaluate_expression(
+            &ctx,
+            expression,
+            context_node,
+            resolver,
+            result_type,
+            result,
+        )
+    }
 }
 
 impl<'js> document_fragment_generated::DocumentFragment<'js> for JsNode {
