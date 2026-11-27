@@ -3823,4 +3823,51 @@ mod realm_tests {
         drop(main);
         drop(shared);
     }
+
+    #[test]
+    fn shadow_slot_layout_fallback_and_exportparts() {
+        let shared = SharedJsRuntime::default();
+        let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
+        let documents = Rc::new(RefCell::new(crate::documents::DocumentStore::default()));
+        let registry = Rc::new(RefCell::new(crate::js::RealmRegistry::default()));
+        let main = world_with_document(
+            &shared,
+            &services,
+            &documents,
+            &registry,
+            "https://example.test/",
+            "<!doctype html><style>#outer::part(exported) { color: rgb(11, 22, 33); }</style>\
+             <div id=host><div id=slotted slot=main style='height:30px'></div><div id=unslotted slot=missing style='height:40px'></div></div>\
+             <div id=outer></div>",
+        );
+        let stop = Arc::clone(&main.borrow().runtime.stop);
+        let main_realm =
+            JsRealm::new(&shared.handle(), Rc::clone(&main), stop).expect("main realm");
+
+        let result = main_realm
+            .eval(
+                "const host = document.getElementById('host');\
+                 const root = host.attachShadow({ mode: 'open' });\
+                 root.innerHTML = '<slot name=\"main\"><div id=fb1 style=\"height:10px\"></div></slot><slot name=\"empty\"><div id=fb2 style=\"height:15px\"></div></slot>';\
+                 const outer = document.getElementById('outer');\
+                 const outerRoot = outer.attachShadow({ mode: 'open' });\
+                 outerRoot.innerHTML = '<div id=mid exportparts=\"inner: exported\"></div>';\
+                 const mid = outerRoot.getElementById('mid');\
+                 const innerRoot = mid.attachShadow({ mode: 'open' });\
+                 innerRoot.innerHTML = '<span part=\"inner\">X</span>';\
+                 const exportedColor = getComputedStyle(innerRoot.querySelector('span')).color;\
+                 const slottedH = document.getElementById('slotted').getBoundingClientRect().height;\
+                 const unslottedH = document.getElementById('unslotted').getBoundingClientRect().height;\
+                 const fb1H = root.getElementById('fb1').getBoundingClientRect().height;\
+                 const fb2H = root.getElementById('fb2').getBoundingClientRect().height;\
+                 const hostH = host.getBoundingClientRect().height;\
+                 [exportedColor, slottedH, unslottedH, fb1H, fb2H, hostH].join('|')",
+            )
+            .expect("eval shadow slot layout");
+        assert_eq!(result, "rgb(11, 22, 33)|30|0|0|15|45");
+
+        drop(main_realm);
+        drop(main);
+        drop(shared);
+    }
 }

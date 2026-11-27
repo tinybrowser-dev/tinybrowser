@@ -81,37 +81,29 @@ pub fn is_connected(base: &blitz_dom::BaseDocument, id: BlitzNodeId) -> bool {
 pub fn is_in_flat_tree(base: &blitz_dom::BaseDocument, id: BlitzNodeId) -> bool {
     let mut current = base.get_node(id);
     while let Some(node) = current {
-        let Some(parent) = node.parent else {
+        let Some(parent_id) = node.parent else {
             return true;
         };
-        if let Some(element) = base
-            .get_node(parent)
-            .and_then(|parent| parent.data.downcast_element())
-            && let Some(root) = element.shadow_root
-            && !shadow_tree_has_slot(base, root)
+        let Some(parent) = base.get_node(parent_id) else {
+            return true;
+        };
+        if parent
+            .data
+            .downcast_element()
+            .is_some_and(|element| element.shadow_root.is_some())
         {
+            let Some(slot_id) = node.assigned_slot_id() else {
+                return false;
+            };
+            current = base.get_node(slot_id);
+            continue;
+        }
+        if parent.is_html_slot() && !parent.assigned_slottables().is_empty() {
             return false;
         }
-        current = base.get_node(parent);
+        current = Some(parent);
     }
     true
-}
-
-// https://html.spec.whatwg.org/multipage/scripting.html#the-slot-element
-fn shadow_tree_has_slot(base: &blitz_dom::BaseDocument, root: BlitzNodeId) -> bool {
-    let mut pending = vec![root];
-    while let Some(id) = pending.pop() {
-        let Some(node) = base.get_node(id) else {
-            continue;
-        };
-        if node.data.downcast_element().is_some_and(|element| {
-            element.name.ns == html_namespace() && element.name.local.as_str() == "slot"
-        }) {
-            return true;
-        }
-        pending.extend(node.children.iter().copied());
-    }
-    false
 }
 
 pub fn is_child_navigable_container(base: &blitz_dom::BaseDocument, id: BlitzNodeId) -> bool {
