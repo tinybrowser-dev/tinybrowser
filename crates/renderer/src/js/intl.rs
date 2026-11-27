@@ -76,13 +76,10 @@ const ICU_DATA: &[u8] = include_bytes!("intl_data.postcard");
 // https://searchfox.org/firefox-main/source/js/src/builtin/intl/NumberFormat.cpp#1128-1307
 // https://searchfox.org/firefox-main/source/js/src/builtin/intl/NumberFormat.cpp#1652-1689
 // https://searchfox.org/firefox-main/source/js/src/builtin/intl/DateTimeFormat.cpp#497-855
-const INSTALL_INTL_DEFLATE: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/js_blobs/intl.deflate"));
-
-fn install_intl_js(ctx: &Ctx<'_>) -> Result<&'static str> {
-    static CACHE: std::sync::OnceLock<Box<str>> = std::sync::OnceLock::new();
-    super::blob::decompress(ctx, INSTALL_INTL_DEFLATE, &CACHE)
-}
+static INTL_SHIM: super::blob::ShimBlob = super::blob::ShimBlob::new(include_bytes!(concat!(
+    env!("OUT_DIR"),
+    "/js_blobs/intl.deflate"
+)));
 
 struct IntlData {
     canonicalizer: Rc<LocaleCanonicalizer>,
@@ -151,7 +148,7 @@ pub(super) fn install(ctx: &Ctx<'_>) -> Result<()> {
             format_date_time_args(&ctx, &date_provider, &args)
         }),
     )?;
-    super::bridge::evaluate(ctx, install_intl_js(ctx)?)
+    super::bridge::evaluate_shim(ctx, &INTL_SHIM)
 }
 
 fn resolve_locale(tag: &str) -> String {

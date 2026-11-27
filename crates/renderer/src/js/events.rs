@@ -502,34 +502,22 @@ fn dispatch_trusted_bridge<'js>(
 }
 
 // https://webidl.spec.whatwg.org/#interface-object
-pub(crate) const INSTALL_EVENT_TARGET_CTOR_DEFLATE: &[u8] = include_bytes!(concat!(
-    env!("OUT_DIR"),
-    "/js_blobs/event_target_ctor.deflate"
-));
-
-pub(crate) fn install_event_target_ctor_js(ctx: &Ctx<'_>) -> Result<&'static str> {
-    static CACHE: std::sync::OnceLock<Box<str>> = std::sync::OnceLock::new();
-    super::blob::decompress(ctx, INSTALL_EVENT_TARGET_CTOR_DEFLATE, &CACHE)
-}
+pub(crate) static EVENT_TARGET_CTOR_SHIM: super::blob::ShimBlob =
+    super::blob::ShimBlob::new(include_bytes!(concat!(
+        env!("OUT_DIR"),
+        "/js_blobs/event_target_ctor.deflate"
+    )));
 
 // https://dom.spec.whatwg.org/#interface-abortcontroller
 // https://dom.spec.whatwg.org/#abortsignal
-pub(crate) const INSTALL_ABORT_DEFLATE: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/js_blobs/abort.deflate"));
-
-pub(crate) fn install_abort_js(ctx: &Ctx<'_>) -> Result<&'static str> {
-    static CACHE: std::sync::OnceLock<Box<str>> = std::sync::OnceLock::new();
-    super::blob::decompress(ctx, INSTALL_ABORT_DEFLATE, &CACHE)
-}
+pub(crate) static ABORT_SHIM: super::blob::ShimBlob = super::blob::ShimBlob::new(include_bytes!(
+    concat!(env!("OUT_DIR"), "/js_blobs/abort.deflate")
+));
 
 // https://webidl.spec.whatwg.org/#interface-object
-pub(crate) const INSTALL_EVENT_CTOR_DEFLATE: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/js_blobs/event_ctor.deflate"));
-
-pub(crate) fn install_event_ctor_js(ctx: &Ctx<'_>) -> Result<&'static str> {
-    static CACHE: std::sync::OnceLock<Box<str>> = std::sync::OnceLock::new();
-    super::blob::decompress(ctx, INSTALL_EVENT_CTOR_DEFLATE, &CACHE)
-}
+pub(crate) static EVENT_CTOR_SHIM: super::blob::ShimBlob = super::blob::ShimBlob::new(
+    include_bytes!(concat!(env!("OUT_DIR"), "/js_blobs/event_ctor.deflate")),
+);
 
 fn register_standalone<'js>(ctx: &Ctx<'js>, id: u64, target: &Object<'js>) -> Result<()> {
     bindings::world(ctx)?
@@ -674,23 +662,15 @@ pub(crate) fn init_custom_event<'js>(ctx: Ctx<'js>, args: Rest<Value<'js>>) -> R
     Ok(true)
 }
 
-pub(crate) const INSTALL_CUSTOM_EVENT_DEFLATE: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/js_blobs/custom_event.deflate"));
+pub(crate) static CUSTOM_EVENT_SHIM: super::blob::ShimBlob = super::blob::ShimBlob::new(
+    include_bytes!(concat!(env!("OUT_DIR"), "/js_blobs/custom_event.deflate")),
+);
 
-pub(crate) fn install_custom_event_js(ctx: &Ctx<'_>) -> Result<&'static str> {
-    static CACHE: std::sync::OnceLock<Box<str>> = std::sync::OnceLock::new();
-    super::blob::decompress(ctx, INSTALL_CUSTOM_EVENT_DEFLATE, &CACHE)
-}
-
-pub(crate) const INSTALL_SECURITY_POLICY_VIOLATION_EVENT_DEFLATE: &[u8] = include_bytes!(concat!(
-    env!("OUT_DIR"),
-    "/js_blobs/security_policy_violation_event.deflate"
-));
-
-pub(crate) fn install_security_policy_violation_event_js(ctx: &Ctx<'_>) -> Result<&'static str> {
-    static CACHE: std::sync::OnceLock<Box<str>> = std::sync::OnceLock::new();
-    super::blob::decompress(ctx, INSTALL_SECURITY_POLICY_VIOLATION_EVENT_DEFLATE, &CACHE)
-}
+pub(crate) static SECURITY_POLICY_VIOLATION_EVENT_SHIM: super::blob::ShimBlob =
+    super::blob::ShimBlob::new(include_bytes!(concat!(
+        env!("OUT_DIR"),
+        "/js_blobs/security_policy_violation_event.deflate"
+    )));
 
 // https://w3c.github.io/webappsec-csp/#securitypolicyviolationevent
 pub(crate) fn construct_security_policy_violation_event<'js>(

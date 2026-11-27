@@ -331,15 +331,11 @@ fn xhr_parse_document<'js>(
 }
 
 // https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-domparser-parsefromstring
-pub(crate) const INSTALL_DOMPARSER_CTOR_DEFLATE: &[u8] = include_bytes!(concat!(
-    env!("OUT_DIR"),
-    "/js_blobs/dom_parser_ctor.deflate"
-));
-
-pub(crate) fn install_domparser_ctor_js(ctx: &Ctx<'_>) -> Result<&'static str> {
-    static CACHE: std::sync::OnceLock<Box<str>> = std::sync::OnceLock::new();
-    crate::js::blob::decompress(ctx, INSTALL_DOMPARSER_CTOR_DEFLATE, &CACHE)
-}
+pub(crate) static DOMPARSER_CTOR_SHIM: crate::js::blob::ShimBlob =
+    crate::js::blob::ShimBlob::new(include_bytes!(concat!(
+        env!("OUT_DIR"),
+        "/js_blobs/dom_parser_ctor.deflate"
+    )));
 
 // https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#xmlserializer
 #[derive(Trace, rquickjs::JsLifetime)]

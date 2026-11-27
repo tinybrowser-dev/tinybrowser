@@ -737,7 +737,7 @@ fn install_common(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
         .unwrap_or(0.0);
     world.borrow().win_mut().event_clock = (std::time::Instant::now(), performance_now);
     Class::<JsEvent>::define(&globals)?;
-    crate::js::bridge::evaluate(ctx, events::install_event_ctor_js(ctx)?)?;
+    crate::js::bridge::evaluate_shim(ctx, &events::EVENT_CTOR_SHIM)?;
     crate::js::bridge::object(ctx)?.set(
         "__tb_new_custom_event",
         rquickjs::prelude::Func::from(events::construct_custom_event),
@@ -746,20 +746,17 @@ fn install_common(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
         "__tb_init_custom_event",
         rquickjs::prelude::Func::from(events::init_custom_event),
     )?;
-    crate::js::bridge::evaluate(ctx, events::install_custom_event_js(ctx)?)?;
+    crate::js::bridge::evaluate_shim(ctx, &events::CUSTOM_EVENT_SHIM)?;
     crate::js::bridge::object(ctx)?.set(
         "__tb_new_security_policy_violation_event",
         rquickjs::prelude::Func::from(events::construct_security_policy_violation_event),
     )?;
-    crate::js::bridge::evaluate(
-        ctx,
-        events::install_security_policy_violation_event_js(ctx)?,
-    )?;
+    crate::js::bridge::evaluate_shim(ctx, &events::SECURITY_POLICY_VIOLATION_EVENT_SHIM)?;
     Class::<JsEventTarget>::define(&globals)?;
     events::install_event_target_bridge(ctx)?;
-    crate::js::bridge::evaluate(ctx, events::install_event_target_ctor_js(ctx)?)?;
+    crate::js::bridge::evaluate_shim(ctx, &events::EVENT_TARGET_CTOR_SHIM)?;
     Class::<JsDomException>::define(&globals)?;
-    crate::js::bridge::evaluate(ctx, events::install_abort_js(ctx)?)?;
+    crate::js::bridge::evaluate_shim(ctx, &events::ABORT_SHIM)?;
     install_host_functions(ctx)?;
     capture_host_primitives(ctx, &globals, world)?;
     globals.set(
@@ -794,7 +791,7 @@ fn install_document(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
     Class::<JsNamedNodeMap>::define(&globals)?;
     forms::install(ctx, &crate::js::bridge::object(ctx)?)?;
     Class::<JsDomParser>::define(&globals)?;
-    crate::js::bridge::evaluate(ctx, parsing::install_domparser_ctor_js(ctx)?)?;
+    crate::js::bridge::evaluate_shim(ctx, &parsing::DOMPARSER_CTOR_SHIM)?;
     Class::<JsXmlSerializer>::define(&globals)?;
     Class::<JsMutationObserver>::define(&globals)?;
     Class::<JsRange>::define(&globals)?;
@@ -1574,16 +1571,13 @@ pub(super) fn deref_weak<'js>(
     }
 }
 
-const INSTALL_BRANDS_DEFLATE: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/js_blobs/brands.deflate"));
-
-fn install_brands_js(ctx: &Ctx<'_>) -> Result<&'static str> {
-    static CACHE: std::sync::OnceLock<Box<str>> = std::sync::OnceLock::new();
-    super::blob::decompress(ctx, INSTALL_BRANDS_DEFLATE, &CACHE)
-}
+static BRANDS_SHIM: super::blob::ShimBlob = super::blob::ShimBlob::new(include_bytes!(concat!(
+    env!("OUT_DIR"),
+    "/js_blobs/brands.deflate"
+)));
 
 fn install_brands(ctx: &Ctx<'_>) -> Result<()> {
-    crate::js::bridge::evaluate(ctx, install_brands_js(ctx)?)?;
+    crate::js::bridge::evaluate_shim(ctx, &BRANDS_SHIM)?;
     let table: Object = crate::js::bridge::object(ctx)?.get("__tb_brandTable")?;
     let entries = table
         .props::<String, Object>()
@@ -1609,13 +1603,9 @@ fn install_brands(ctx: &Ctx<'_>) -> Result<()> {
     Ok(())
 }
 
-pub(super) const INSTALL_COLLECTIONS_DEFLATE: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/js_blobs/collections.deflate"));
-
-pub(super) fn install_collections_js(ctx: &Ctx<'_>) -> Result<&'static str> {
-    static CACHE: std::sync::OnceLock<Box<str>> = std::sync::OnceLock::new();
-    super::blob::decompress(ctx, INSTALL_COLLECTIONS_DEFLATE, &CACHE)
-}
+pub(super) static COLLECTIONS_SHIM: super::blob::ShimBlob = super::blob::ShimBlob::new(
+    include_bytes!(concat!(env!("OUT_DIR"), "/js_blobs/collections.deflate")),
+);
 
 pub(crate) fn try_world(ctx: &Ctx<'_>) -> Option<Rc<RefCell<World>>> {
     REALM_WORLDS.with(|worlds| {

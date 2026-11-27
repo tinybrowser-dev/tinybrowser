@@ -1,14 +1,16 @@
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use rquickjs::{
-    Context, Ctx, Exception, Function, Object, Persistent, Result, Runtime, Value,
+    CompiledScript, Context, Ctx, Exception, Function, Object, Persistent, Result, Runtime, Value,
     context::EvalOptions, object::Accessor, prelude::Func,
 };
 
 use super::World;
 use super::bindings::world;
+use super::blob::ShimBlob;
 
 pub(crate) fn prepare(runtime: &Runtime, world: &Rc<RefCell<World>>) -> Result<()> {
     let registry = world.borrow().registry();
@@ -66,11 +68,8 @@ pub(crate) fn install(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
     // https://cookiestore.spec.whatwg.org/#dom-cookiestore-get
     let opaque_origin = matches!(world.borrow().doc().origin, url::Origin::Opaque(_));
     bridge.set("__tbOpaqueOrigin", opaque_origin)?;
-    let install: Function = ctx.eval(format!(
-        "(function(host) {{ 'use strict';\n{}\n{}\n}})",
-        include_str!("scripts/primordials.js"),
-        include_str!("scripts/remote_object.js")
-    ))?;
+    let install = compiled_bridge_install(ctx)?;
+    let install: Function = ctx.eval_compiled(install)?;
     install.call::<_, ()>((bridge.clone(),))?;
     if let Some(slots) = &mut registry.borrow_mut().private_slots {
         slots.realms.insert(ctx.as_raw().as_ptr() as usize);
@@ -175,16 +174,34 @@ pub(crate) fn frame_id(value: f64) -> Option<crate::protocol::FrameId> {
     enforce_range_u64(value).map(crate::protocol::FrameId::new)
 }
 
-pub(crate) fn evaluate(ctx: &Ctx<'_>, source: &str) -> Result<()> {
+fn compiled_bridge_install(ctx: &Ctx<'_>) -> Result<&'static CompiledScript> {
+    static CACHE: OnceLock<CompiledScript> = OnceLock::new();
+    if let Some(cached) = CACHE.get() {
+        return Ok(cached);
+    }
+    let source = format!(
+        "(function(host) {{ 'use strict';\n{}\n{}\n}})",
+        include_str!("scripts/primordials.js"),
+        include_str!("scripts/remote_object.js")
+    );
+    let mut options = EvalOptions::default();
+    options.filename = Some(ENGINE_FILENAME.into());
+    let compiled = ctx.compile_script(source, options)?;
+    Ok(CACHE.get_or_init(|| compiled))
+}
+
+pub(crate) fn evaluate_shim(ctx: &Ctx<'_>, shim: &'static ShimBlob) -> Result<()> {
     let primordials = include_str!("scripts/primordials.js");
     let bindings = include_str!("scripts/bindings.js");
     // https://w3c.github.io/webappsec-csp/#create-violation-for-global
-    let mut options = EvalOptions::default();
-    options.filename = Some(ENGINE_FILENAME.into());
-    let initializer: Function = ctx.eval_with_options(
-        format!("(function(host) {{ 'use strict';\n{primordials}\n{bindings}\n{source}\n}})"),
-        options,
+    let compiled = shim.compiled(
+        ctx,
+        |source| {
+            format!("(function(host) {{ 'use strict';\n{primordials}\n{bindings}\n{source}\n}})")
+        },
+        ENGINE_FILENAME,
     )?;
+    let initializer: Function = ctx.eval_compiled(compiled)?;
     initializer.call((object(ctx)?,))
 }
 

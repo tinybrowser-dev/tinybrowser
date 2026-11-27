@@ -61,21 +61,15 @@ enum MicrotaskCheckpoint {
     Defer,
 }
 
-const INSTALL_WEB_APIS_DEFLATE: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/js_blobs/web_bundle.deflate"));
+static WEB_APIS_SHIM: blob::ShimBlob = blob::ShimBlob::new(include_bytes!(concat!(
+    env!("OUT_DIR"),
+    "/js_blobs/web_bundle.deflate"
+)));
 
-fn install_web_apis_js(ctx: &Ctx<'_>) -> rquickjs::Result<&'static str> {
-    static CACHE: std::sync::OnceLock<Box<str>> = std::sync::OnceLock::new();
-    blob::decompress(ctx, INSTALL_WEB_APIS_DEFLATE, &CACHE)
-}
-
-const INSTALL_WORKER_APIS_DEFLATE: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/js_blobs/worker_bundle.deflate"));
-
-fn install_worker_apis_js(ctx: &Ctx<'_>) -> rquickjs::Result<&'static str> {
-    static CACHE: std::sync::OnceLock<Box<str>> = std::sync::OnceLock::new();
-    blob::decompress(ctx, INSTALL_WORKER_APIS_DEFLATE, &CACHE)
-}
+static WORKER_APIS_SHIM: blob::ShimBlob = blob::ShimBlob::new(include_bytes!(concat!(
+    env!("OUT_DIR"),
+    "/js_blobs/worker_bundle.deflate"
+)));
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ScriptValue {
@@ -1373,7 +1367,7 @@ impl JsRealm {
             encoding::install(&ctx)?;
             bindings::install_messaging(&ctx)?;
             reactions::install(&ctx)?;
-            bridge::evaluate(&ctx, install_web_apis_js(&ctx)?)?;
+            bridge::evaluate_shim(&ctx, &WEB_APIS_SHIM)?;
             crate::js::canvas::install_serialization(&ctx)?;
             reactions::capture(&ctx)?;
             for name in ["PopStateEvent", "HashChangeEvent"] {
@@ -1432,7 +1426,7 @@ impl JsRealm {
             bindings::install_messaging(&ctx)?;
             // https://html.spec.whatwg.org/multipage/workers.html#apis-available-to-workers
             crate::js::canvas::install(&ctx)?;
-            bridge::evaluate(&ctx, install_worker_apis_js(&ctx)?)?;
+            bridge::evaluate_shim(&ctx, &WORKER_APIS_SHIM)?;
             Ok(())
         })
     }

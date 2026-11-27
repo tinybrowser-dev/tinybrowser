@@ -1,21 +1,39 @@
 use std::io::Read as _;
 use std::sync::OnceLock;
 
-use rquickjs::{Ctx, Exception, Result};
+use rquickjs::{CompiledScript, Ctx, Exception, Result, context::EvalOptions};
 
-pub(crate) fn decompress(
-    ctx: &Ctx<'_>,
+pub(crate) struct ShimBlob {
     deflated: &'static [u8],
-    cache: &'static OnceLock<Box<str>>,
-) -> Result<&'static str> {
-    if let Some(cached) = cache.get() {
-        return Ok(cached);
+    compiled: OnceLock<CompiledScript>,
+}
+
+impl ShimBlob {
+    pub(crate) const fn new(deflated: &'static [u8]) -> Self {
+        Self {
+            deflated,
+            compiled: OnceLock::new(),
+        }
     }
-    let mut out = String::new();
-    flate2::read::DeflateDecoder::new(deflated)
-        .read_to_string(&mut out)
-        .map_err(|err| Exception::throw_internal(ctx, &err.to_string()))?;
-    Ok(cache.get_or_init(|| out.into_boxed_str()))
+
+    pub(crate) fn compiled(
+        &'static self,
+        ctx: &Ctx<'_>,
+        wrap: impl FnOnce(&str) -> String,
+        filename: &str,
+    ) -> Result<&'static CompiledScript> {
+        if let Some(cached) = self.compiled.get() {
+            return Ok(cached);
+        }
+        let mut source = String::new();
+        flate2::read::DeflateDecoder::new(self.deflated)
+            .read_to_string(&mut source)
+            .map_err(|err| Exception::throw_internal(ctx, &err.to_string()))?;
+        let mut options = EvalOptions::default();
+        options.filename = Some(filename.to_owned());
+        let compiled = ctx.compile_script(wrap(&source), options)?;
+        Ok(self.compiled.get_or_init(|| compiled))
+    }
 }
 
 #[cfg(test)]

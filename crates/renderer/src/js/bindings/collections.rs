@@ -1,4 +1,4 @@
-use super::{install_collections_js, live_collection, world, world_for_node, wrap_node};
+use super::{COLLECTIONS_SHIM, live_collection, world, world_for_node, wrap_node};
 
 use rquickjs::{
     Atom, Ctx, Exception, Function, Object, Result, Value,
@@ -1451,7 +1451,7 @@ pub(super) fn static_node_list<'js>(ctx: &Ctx<'js>, handles: &[Handle]) -> Resul
 pub(crate) fn install_collection_brand(ctx: &Ctx<'_>) -> Result<()> {
     crate::js::bridge::object(ctx)?.set("__tbWindowNamedValue", Func::from(window_named_value))?;
     crate::js::bridge::object(ctx)?.set("__tbWindowNamedHas", Func::from(window_named_has))?;
-    crate::js::bridge::evaluate(ctx, install_collections_js(ctx)?)?;
+    crate::js::bridge::evaluate_shim(ctx, &COLLECTIONS_SHIM)?;
     Ok(())
 }
 
