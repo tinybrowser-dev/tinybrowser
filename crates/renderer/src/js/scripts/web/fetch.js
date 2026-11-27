@@ -1227,20 +1227,34 @@ globalThis.fetch = function(input, init) {
       return;
     }
     // https://fetch.spec.whatwg.org/#keepalive-flag
+    if (host.__tbKeepaliveQuotaFor === undefined) {
+      const keepaliveQuotas = host.slots('tinybrowser.keepalive.quota');
+      host.__tbKeepaliveQuotaFor = key => {
+        const slotKey = key !== null && (typeof key === 'object' || typeof key === 'function')
+          ? key
+          : host;
+        let quota = keepaliveQuotas.get(slotKey);
+        if (quota === undefined) {
+          quota = { bytes: 0 };
+          keepaliveQuotas.set(slotKey, quota);
+        }
+        return quota;
+      };
+    }
     let keepaliveReserved = 0;
-    if (keepalive) {
-      if (host.__tbKeepaliveQuota === undefined) host.__tbKeepaliveQuota = { bytes: 0 };
+    const keepaliveQuota = keepalive ? host.__tbKeepaliveQuotaFor(globalThis.navigator) : null;
+    if (keepaliveQuota !== null) {
       const size = typeof data.bodySize === 'number' && data.bodySize > 0 ? data.bodySize : 0;
-      if (host.__tbKeepaliveQuota.bytes + size > 65536) {
+      if (keepaliveQuota.bytes + size > 65536) {
         finish(reject, new TypeError('Failed to fetch'));
         return;
       }
-      host.__tbKeepaliveQuota.bytes += size;
+      keepaliveQuota.bytes += size;
       keepaliveReserved = size;
     }
     const releaseKeepalive = () => {
-      if (keepaliveReserved > 0 && host.__tbKeepaliveQuota !== undefined) {
-        host.__tbKeepaliveQuota.bytes -= Math.min(host.__tbKeepaliveQuota.bytes, keepaliveReserved);
+      if (keepaliveReserved > 0 && keepaliveQuota !== null) {
+        keepaliveQuota.bytes -= Math.min(keepaliveQuota.bytes, keepaliveReserved);
         keepaliveReserved = 0;
       }
     };

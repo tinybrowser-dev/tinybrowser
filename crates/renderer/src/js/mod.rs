@@ -527,6 +527,30 @@ impl JsRealm {
         })
     }
 
+    // https://html.spec.whatwg.org/multipage/webappapis.html#fetch-an-inline-module-script-graph
+    pub(crate) fn declare_inline_module(&self, name: &str, source: &str) -> Result<(), JsError> {
+        self.enter_script_url(name, || {
+            self.with_budget(None, MicrotaskCheckpoint::Defer, || {
+                self.context.with(|ctx| {
+                    let _ = modules::declare_inline(&ctx, name, source)?;
+                    Ok(())
+                })
+            })
+        })
+    }
+
+    // https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-module-script-tree
+    pub(crate) fn declare_external_module(&self, url: &str) -> Result<(), JsError> {
+        self.enter_script_url(url, || {
+            self.with_budget(None, MicrotaskCheckpoint::Defer, || {
+                self.context.with(|ctx| {
+                    let _ = modules::load_module(&ctx, url)?;
+                    Ok(())
+                })
+            })
+        })
+    }
+
     pub(crate) fn eval_inline_module(&self, name: &str, source: &str) -> Result<(), JsError> {
         self.enter_script_url(name, || {
             self.with_budget(None, MicrotaskCheckpoint::Perform, || {
@@ -2504,7 +2528,7 @@ pub(crate) fn script_at(world: &World, id: crate::dom::tree::NodeId) -> Option<S
         },
     };
     // https://html.spec.whatwg.org/multipage/scripting.html#prepare-the-script-element
-    let typ = crate::dom::tree::attr(base, id.node, "type").map(str::trim_ascii);
+    let typ = crate::dom::tree::attr(base, id.node, "type");
     let language = crate::dom::tree::attr(base, id.node, "language");
     let type_string = match (typ, language) {
         (Some(""), _) | (None, Some("") | None) => "text/javascript".to_owned(),
@@ -2515,7 +2539,7 @@ pub(crate) fn script_at(world: &World, id: crate::dom::tree::NodeId) -> Option<S
         Some(Script::Module(source))
     } else if type_string.eq_ignore_ascii_case("importmap") {
         Some(Script::ImportMap(source))
-    } else if javascript_mime_essence(&type_string) {
+    } else if javascript_mime_essence(type_string.trim_ascii()) {
         Some(Script::Classic(source))
     } else {
         None

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
@@ -17,6 +17,8 @@ pub(crate) struct ImportMap {
     imports: SpecifierMap,
     scopes: ScopesMap,
     integrity: HashMap<String, String>,
+    // https://html.spec.whatwg.org/multipage/webappapis.html#resolved-module-set
+    resolved_module_set: HashSet<(String, String)>,
 }
 
 impl ImportMap {
@@ -24,6 +26,7 @@ impl ImportMap {
         self.imports.clear();
         self.scopes.clear();
         self.integrity.clear();
+        self.resolved_module_set.clear();
     }
 
     // https://html.spec.whatwg.org/multipage/webappapis.html#parse-an-import-map-string
@@ -51,12 +54,24 @@ impl ImportMap {
             imports,
             scopes,
             integrity,
+            resolved_module_set: HashSet::new(),
         })
     }
 
     // https://html.spec.whatwg.org/multipage/webappapis.html#merge-existing-and-new-import-maps
     pub(crate) fn merge(&mut self, incoming: Self) {
         for (scope, entries) in incoming.scopes {
+            let entries: SpecifierMap = entries
+                .into_iter()
+                .filter(|(rule_key, _)| {
+                    !self.resolved_module_set.iter().any(|(base, normalized)| {
+                        scope_matches(&scope, base) && specifier_rule_matches(rule_key, normalized)
+                    })
+                })
+                .collect();
+            if entries.is_empty() {
+                continue;
+            }
             if let Some((_, existing)) = self.scopes.iter_mut().find(|(key, _)| *key == scope) {
                 merge_specifier_entries(existing, entries);
             } else {
@@ -65,32 +80,53 @@ impl ImportMap {
         }
         self.scopes
             .sort_by(|(a, _), (b, _)| cmp_code_units_desc(a, b));
-        merge_specifier_entries(&mut self.imports, incoming.imports);
+        let filtered_imports: SpecifierMap = incoming
+            .imports
+            .into_iter()
+            .filter(|(rule_key, _)| {
+                !self
+                    .resolved_module_set
+                    .iter()
+                    .any(|(_, normalized)| specifier_rule_matches(rule_key, normalized))
+            })
+            .collect();
+        merge_specifier_entries(&mut self.imports, filtered_imports);
         for (url, value) in incoming.integrity {
             self.integrity.entry(url).or_insert(value);
         }
     }
 
     // https://html.spec.whatwg.org/multipage/webappapis.html#resolve-a-module-specifier
-    pub(crate) fn resolve(&self, specifier: &str, base_url: &Url) -> std::result::Result<Url, ()> {
+    pub(crate) fn resolve(
+        &mut self,
+        specifier: &str,
+        base_url: &Url,
+    ) -> std::result::Result<Url, ()> {
         let as_url = resolve_url_like_module_specifier(specifier, base_url);
         let normalized = as_url.as_ref().map_or(specifier, Url::as_str);
         let base_serialized = base_url.as_str();
-        for (scope_prefix, scope_imports) in &self.scopes {
-            if (base_serialized == scope_prefix
-                || (scope_prefix.ends_with('/')
-                    && base_serialized.starts_with(scope_prefix.as_str())))
-                && let Some(resolved) =
-                    resolve_imports_match(normalized, as_url.as_ref(), scope_imports)
-            {
-                return resolved;
-            }
-        }
-        if let Some(resolved) = resolve_imports_match(normalized, as_url.as_ref(), &self.imports) {
-            return resolved;
-        }
-        as_url.ok_or(())
+        let resolved = self
+            .scopes
+            .iter()
+            .find_map(|(scope_prefix, scope_imports)| {
+                scope_matches(scope_prefix, base_serialized)
+                    .then(|| resolve_imports_match(normalized, as_url.as_ref(), scope_imports))?
+            })
+            .or_else(|| resolve_imports_match(normalized, as_url.as_ref(), &self.imports))
+            .unwrap_or_else(|| as_url.clone().ok_or(()))?;
+        // https://html.spec.whatwg.org/multipage/webappapis.html#add-module-to-resolved-module-set
+        self.resolved_module_set
+            .insert((base_serialized.to_owned(), normalized.to_owned()));
+        Ok(resolved)
     }
+}
+
+fn scope_matches(scope_prefix: &str, base_url: &str) -> bool {
+    base_url == scope_prefix || (scope_prefix.ends_with('/') && base_url.starts_with(scope_prefix))
+}
+
+fn specifier_rule_matches(rule_key: &str, normalized: &str) -> bool {
+    rule_key == normalized || (rule_key.ends_with('/') && normalized.starts_with(rule_key))
 }
 
 // https://html.spec.whatwg.org/multipage/webappapis.html#code-unit-less-than
@@ -249,23 +285,29 @@ impl Resolver for WebModuleResolver {
     ) -> Result<String> {
         // https://tc39.es/ecma262/#sec-hostresolveimportedmodule
         // https://html.spec.whatwg.org/multipage/webappapis.html#resolve-a-module-specifier
+        let throw_resolve = || {
+            rquickjs::Exception::throw_type(
+                ctx,
+                &format!("Failed to resolve module specifier '{name}'"),
+            )
+        };
         let world = super::bindings::world(ctx).ok();
         let base = match Url::parse(base) {
             Ok(base) => base,
             Err(_) => world
                 .as_ref()
                 .map(|world| world.borrow().doc().document_url.clone())
-                .ok_or_else(|| Error::new_resolving(base, name))?,
+                .ok_or_else(throw_resolve)?,
         };
         let resolved = match world {
-            Some(world) => world.borrow().doc().import_map.resolve(name, &base),
+            Some(world) => world.borrow().doc_mut().import_map.resolve(name, &base),
             None => resolve_url_like_module_specifier(name, &base).ok_or(()),
         }
-        .map_err(|()| Error::new_resolving(base.as_str(), name))?;
+        .map_err(|()| throw_resolve())?;
         match resolved.scheme() {
             // https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script
             "http" | "https" | "blob" | "data" => Ok(resolved.into()),
-            _ => Err(Error::new_resolving(base.as_str(), name)),
+            _ => Err(throw_resolve()),
         }
     }
 }

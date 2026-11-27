@@ -514,8 +514,17 @@ pub(crate) struct Document {
     csp: CspState,
     // https://html.spec.whatwg.org/multipage/scripting.html#prepare-the-script-element
     parser_blocked_script: Option<crate::dom::tree::NodeId>,
-    deferred_modules: Vec<(crate::dom::tree::NodeId, crate::js::ScriptElementSource)>,
+    deferred_modules: Vec<DeferredModule>,
     stop: Arc<crate::js::Stop>,
+}
+
+enum DeferredModule {
+    Ready {
+        element: crate::dom::tree::NodeId,
+        source: crate::js::ScriptElementSource,
+    },
+    Blocked(crate::dom::tree::NodeId),
+    Failed,
 }
 
 impl Drop for Document {
@@ -2725,8 +2734,9 @@ impl Document {
                     }
                 }
                 Some(crate::js::Script::Module(source)) => {
-                    // https://html.spec.whatwg.org/multipage/scripting.html#attr-script-defer
-                    self.deferred_modules.push((id, source));
+                    // https://html.spec.whatwg.org/multipage/scripting.html#prepare-the-script-element
+                    let prepared = self.prepare_deferred_module(id, source);
+                    self.deferred_modules.push(prepared);
                 }
                 Some(crate::js::Script::ImportMap(crate::js::ScriptElementSource::Inline {
                     source,
@@ -3445,21 +3455,81 @@ impl Document {
         result
     }
 
+    // https://html.spec.whatwg.org/multipage/scripting.html#prepare-the-script-element
+    // https://html.spec.whatwg.org/multipage/webappapis.html#fetch-an-inline-module-script-graph
+    fn prepare_deferred_module(
+        &mut self,
+        element: crate::dom::tree::NodeId,
+        source: crate::js::ScriptElementSource,
+    ) -> DeferredModule {
+        let declared = match &source {
+            crate::js::ScriptElementSource::Inline { source: text, .. } => {
+                let violations = self.inline_script_violations(text, element);
+                if !violations.is_empty() {
+                    self.fire_csp_violations(element, &violations);
+                }
+                if crate::csp::blocks(&violations) {
+                    return DeferredModule::Blocked(element);
+                }
+                let name = format!("{}#inline-module-{element:?}", self.url);
+                self.with_module_root(Some(element), |this| {
+                    this.js
+                        .as_ref()
+                        .map_or(Ok(()), |js| js.declare_inline_module(&name, text))
+                })
+            }
+            crate::js::ScriptElementSource::Src(src) => match self.resolve_dial_url(src) {
+                Ok(url) => {
+                    let violations = self.script_url_violations(&url, element);
+                    if !violations.is_empty() {
+                        self.fire_csp_violations(element, &violations);
+                    }
+                    if crate::csp::blocks(&violations) {
+                        return DeferredModule::Blocked(element);
+                    }
+                    self.with_module_root(Some(element), |this| {
+                        this.js
+                            .as_ref()
+                            .map_or(Ok(()), |js| js.declare_external_module(url.as_str()))
+                    })
+                }
+                Err(_) => return DeferredModule::Failed,
+            },
+        };
+        if declared.is_err() {
+            DeferredModule::Failed
+        } else {
+            DeferredModule::Ready { element, source }
+        }
+    }
+
     fn run_deferred_modules(&mut self) {
         let modules = std::mem::take(&mut self.deferred_modules);
-        for (element, source) in modules {
-            match self.run_module_body(element, source) {
-                None => self.tasks.push(
+        for module in modules {
+            match module {
+                DeferredModule::Blocked(element) => self.tasks.push(
                     crate::task_queue::TaskSource::DomManipulation,
                     crate::document::Task::NodeError(element),
                 ),
-                Some(result) => {
-                    if result.is_err() {
-                        self.record_event(RendererEvent::ScriptFailed);
-                    } else {
-                        self.fire_js(|js| js.fire_node_load(element));
-                    }
+                DeferredModule::Failed => {
+                    self.record_event(RendererEvent::ScriptFailed);
                     self.adopt_js_work();
+                }
+                DeferredModule::Ready { element, source } => {
+                    match self.run_module_body(element, source) {
+                        None => self.tasks.push(
+                            crate::task_queue::TaskSource::DomManipulation,
+                            crate::document::Task::NodeError(element),
+                        ),
+                        Some(result) => {
+                            if result.is_err() {
+                                self.record_event(RendererEvent::ScriptFailed);
+                            } else {
+                                self.fire_js(|js| js.fire_node_load(element));
+                            }
+                            self.adopt_js_work();
+                        }
+                    }
                 }
             }
         }

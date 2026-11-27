@@ -264,11 +264,17 @@
   if (host.__tbIsWorker !== true) {
     const navigatorBrand = host.slots('webidl.Navigator');
     // https://w3c.github.io/beacon/#sec-sendBeacon-method
-    const quotaFor = () => {
-      if (host.__tbKeepaliveQuota === undefined) {
-        host.__tbKeepaliveQuota = { bytes: 0 };
+    const quotaFor = nav => {
+      if (host.__tbKeepaliveQuotaFor !== undefined) {
+        return host.__tbKeepaliveQuotaFor(nav);
       }
-      return host.__tbKeepaliveQuota;
+      const quotas = host.slots('tinybrowser.keepalive.quota');
+      let quota = quotas.get(nav);
+      if (quota === undefined) {
+        quota = { bytes: 0 };
+        quotas.set(nav, quota);
+      }
+      return quota;
     };
     const sendBeacon = function sendBeacon(url, data) {
       if (arguments.length < 1) {
