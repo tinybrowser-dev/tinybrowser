@@ -997,3 +997,95 @@ fn renderer_crash_emits_target_crashed_and_recovers_on_navigate() {
         json!("alive")
     );
 }
+
+// https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#event-executionContextCreated
+#[test]
+fn each_frame_reports_its_own_execution_context() {
+    let server = TestServer::start(
+        vec![
+            (
+                "/",
+                ok(
+                    "text/html",
+                    b"<!doctype html><iframe src=\"/child\"></iframe>",
+                ),
+            ),
+            (
+                "/child",
+                ok(
+                    "text/html",
+                    b"<!doctype html><script>window.childValue = 'from-child';</script>",
+                ),
+            ),
+        ],
+        None,
+    );
+    let (_fixture, mut client) = start();
+    let session = crate::fixture::load_page(
+        &mut client,
+        &format!("http://{}/", server.address()),
+        Duration::from_secs(10),
+    );
+    client
+        .call("Runtime.enable", &json!({}), Some(&session))
+        .expect("runtime enable");
+
+    let tree = client
+        .call("Page.getFrameTree", &json!({}), Some(&session))
+        .expect("frame tree");
+    let main_frame_id = tree["frameTree"]["frame"]["id"]
+        .as_str()
+        .expect("main frame id");
+    let child_frame_id = tree["frameTree"]["childFrames"][0]["frame"]["id"]
+        .as_str()
+        .expect("child frame id")
+        .to_owned();
+    assert!(
+        child_frame_id.starts_with(&format!("{main_frame_id}.")),
+        "a child frame id is scoped to its tab: {child_frame_id}"
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let child_context = loop {
+        let event = client
+            .read_event(Duration::from_millis(500))
+            .expect("read event");
+        if let Some(event) = event
+            && event["method"] == json!("Runtime.executionContextCreated")
+            && event["params"]["context"]["auxData"]["frameId"] == json!(child_frame_id)
+        {
+            break event["params"]["context"]["id"]
+                .as_u64()
+                .expect("context id");
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the child frame never reported an execution context"
+        );
+    };
+
+    let evaluated = client
+        .call(
+            "Runtime.evaluate",
+            &json!({
+                "expression": "window.childValue",
+                "contextId": child_context,
+                "returnByValue": true,
+            }),
+            Some(&session),
+        )
+        .expect("evaluate in the child frame");
+    assert_eq!(evaluated["result"]["value"], json!("from-child"));
+
+    let main = client
+        .call(
+            "Runtime.evaluate",
+            &json!({
+                "expression": "typeof window.childValue",
+                "returnByValue": true,
+            }),
+            Some(&session),
+        )
+        .expect("evaluate in the main frame");
+    assert_eq!(main["result"]["value"], json!("undefined"));
+}

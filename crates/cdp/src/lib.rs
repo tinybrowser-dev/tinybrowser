@@ -335,10 +335,12 @@ struct Conn {
     current_loaders: HashMap<TabId, String>,
     // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#event-consoleAPICalled
     default_contexts: HashMap<TabId, u64>,
+    // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#event-executionContextCreated
+    frame_contexts: HashMap<(TabId, FrameId), u64>,
     // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-setLifecycleEventsEnabled
     lifecycle_events: bool,
     isolated_worlds: HashMap<TabId, Vec<String>>,
-    isolated_contexts: HashMap<u64, (TabId, String)>,
+    isolated_contexts: HashMap<u64, (TabId, FrameId, String)>,
     omit_background: HashMap<TabId, bool>,
     response_bodies: HashMap<String, (TabId, Vec<u8>)>,
     response_body_order: VecDeque<String>,
@@ -530,9 +532,8 @@ impl Conn {
             }
             TabEvent::RealmReplaced => {
                 // https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#document-open-steps
-                let frame_id = tab_id.to_string();
                 let url = tab.document_url().await.unwrap_or_default();
-                self.push_execution_contexts(&mut messages, tab_id, &frame_id, &url, sess);
+                self.push_execution_contexts(&mut messages, tab_id, &url, sess);
             }
             TabEvent::Binding { name, payload } => {
                 self.push_binding_called(&mut messages, tab_id, &name, &payload, sess);
@@ -543,12 +544,15 @@ impl Conn {
             }
             TabEvent::FrameAttached { frame, parent, .. } => {
                 push_frame_attached(&mut messages, tab_id, frame, parent, sess);
+                self.replace_frame_contexts(&mut messages, tab_id, frame, "about:blank", sess);
             }
             TabEvent::FrameNavigated { frame, parent, url } => {
                 push_frame_navigated(&mut messages, tab_id, frame, parent, &url, sess);
+                self.replace_frame_contexts(&mut messages, tab_id, frame, &url, sess);
             }
             TabEvent::FrameDetached { frame, .. } => {
                 push_frame_detached(&mut messages, tab_id, frame, sess);
+                self.destroy_frame_contexts(&mut messages, tab_id, frame, sess);
             }
             event @ TabEvent::ExceptionThrown { .. } => {
                 self.push_exception_event(&mut messages, tab_id, &event, timestamp, sess);
@@ -854,58 +858,123 @@ impl Conn {
         });
         attach_session(&mut navigated, session);
         messages.push(navigated);
-        self.push_execution_contexts(messages, tab_id, &frame_id, &url, session);
+        self.push_execution_contexts(messages, tab_id, &url, session);
         let _ = tab.execute_browser_script(RUNTIME_CLEAR_HANDLES).await;
     }
 
-    // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#event-executionContextCreated
+    // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#event-executionContextsCleared
     fn push_execution_contexts(
         &mut self,
         messages: &mut Vec<Value>,
         tab_id: TabId,
-        frame_id: &str,
         url: &str,
         session: Option<&str>,
     ) {
-        let origin = url_security_origin(url);
         let mut cleared = json!({
             "method": "Runtime.executionContextsCleared",
             "params": {},
         });
         attach_session(&mut cleared, session);
         messages.push(cleared);
-        let mut worlds = vec![String::new()];
-        if let Some(isolated) = self.isolated_worlds.get(&tab_id) {
-            worlds.extend(isolated.iter().cloned());
-        }
+        self.frame_contexts.retain(|(owner, _), _| *owner != tab_id);
         self.isolated_contexts
-            .retain(|_, (owner, _)| *owner != tab_id);
-        for world in worlds {
-            let context_id = self.next_context;
-            self.next_context = self.next_context.saturating_add(1);
-            let default = world.is_empty();
-            if default {
-                self.default_contexts.insert(tab_id, context_id);
-            } else {
-                self.isolated_contexts
-                    .insert(context_id, (tab_id, world.clone()));
+            .retain(|_, (owner, _, _)| *owner != tab_id);
+        self.default_contexts.remove(&tab_id);
+        self.create_frame_context(messages, tab_id, FrameId::MAIN, None, url, session);
+    }
+
+    // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#event-executionContextCreated
+    fn replace_frame_contexts(
+        &mut self,
+        messages: &mut Vec<Value>,
+        tab_id: TabId,
+        frame: FrameId,
+        url: &str,
+        session: Option<&str>,
+    ) {
+        self.destroy_frame_contexts(messages, tab_id, frame, session);
+        self.create_frame_context(messages, tab_id, frame, None, url, session);
+        if let Some(worlds) = self.isolated_worlds.get(&tab_id).cloned() {
+            for world in worlds {
+                self.create_frame_context(messages, tab_id, frame, Some(&world), url, session);
             }
-            let mut created = json!({
-                "method": "Runtime.executionContextCreated",
-                "params": {"context": {
-                    "id": context_id,
-                    "origin": origin,
-                    "name": world,
-                    "uniqueId": format!("ctx-{context_id}"),
-                    "auxData": {
-                        "isDefault": default,
-                        "type": if default { "default" } else { "isolated" },
-                        "frameId": frame_id,
-                    },
-                }},
+        }
+    }
+
+    fn create_frame_context(
+        &mut self,
+        messages: &mut Vec<Value>,
+        tab_id: TabId,
+        frame: FrameId,
+        world: Option<&str>,
+        url: &str,
+        session: Option<&str>,
+    ) {
+        let context_id = self.next_context;
+        self.next_context = self.next_context.saturating_add(1);
+        let default = world.is_none();
+        if default {
+            self.frame_contexts.insert((tab_id, frame), context_id);
+            if frame == FrameId::MAIN {
+                self.default_contexts.insert(tab_id, context_id);
+            }
+        } else {
+            self.isolated_contexts.insert(
+                context_id,
+                (tab_id, frame, world.unwrap_or_default().to_owned()),
+            );
+        }
+        let mut created = json!({
+            "method": "Runtime.executionContextCreated",
+            "params": {"context": {
+                "id": context_id,
+                "origin": url_security_origin(url),
+                "name": world.unwrap_or_default(),
+                "uniqueId": format!("ctx-{context_id}"),
+                "auxData": {
+                    "isDefault": default,
+                    "type": if default { "default" } else { "isolated" },
+                    "frameId": cdp_frame_id(tab_id, frame),
+                },
+            }},
+        });
+        attach_session(&mut created, session);
+        messages.push(created);
+    }
+
+    // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#event-executionContextDestroyed
+    fn destroy_frame_contexts(
+        &mut self,
+        messages: &mut Vec<Value>,
+        tab_id: TabId,
+        frame: FrameId,
+        session: Option<&str>,
+    ) {
+        let mut destroyed = Vec::new();
+        self.frame_contexts.retain(|&(owner, id), context| {
+            let remove = owner == tab_id && id == frame;
+            if remove {
+                destroyed.push(*context);
+            }
+            !remove
+        });
+        self.isolated_contexts.retain(|context, (owner, id, _)| {
+            let remove = *owner == tab_id && *id == frame;
+            if remove {
+                destroyed.push(*context);
+            }
+            !remove
+        });
+        if frame == FrameId::MAIN {
+            self.default_contexts.remove(&tab_id);
+        }
+        for context_id in destroyed {
+            let mut event = json!({
+                "method": "Runtime.executionContextDestroyed",
+                "params": {"executionContextId": context_id},
             });
-            attach_session(&mut created, session);
-            messages.push(created);
+            attach_session(&mut event, session);
+            messages.push(event);
         }
     }
 
@@ -1385,8 +1454,8 @@ impl Conn {
                     .ok()
                     .and_then(|ctx| ctx.execution_context_id)
                     .and_then(|id| self.isolated_contexts.get(&id))
-                    .filter(|(owner, _)| *owner == tab.id())
-                    .map(|(_, name)| name.clone());
+                    .filter(|(owner, _, _)| *owner == tab.id())
+                    .map(|(_, _, name)| name.clone());
                 run_script(method, params, tab, world.as_deref()).await
             }
         }
@@ -1521,23 +1590,14 @@ impl Conn {
         tab: &TabHandle,
         session: Option<&str>,
     ) -> Result<Value, DispatchError> {
-        self.default_contexts.insert(tab.id(), tab.id().get());
         let url = tab.document_url().await.unwrap_or_default();
-        self.push_session_event(
-            session,
-            "Runtime.executionContextCreated",
-            &json!({"context": {
-                "id": tab.id().get(),
-                "origin": url_security_origin(&url),
-                "name": "",
-                "uniqueId": format!("ctx-{}", tab.id()),
-                "auxData": {
-                    "isDefault": true,
-                    "type": "default",
-                    "frameId": tab.id().to_string(),
-                },
-            }}),
-        );
+        let mut events = Vec::new();
+        self.replace_frame_contexts(&mut events, tab.id(), FrameId::MAIN, &url, session);
+        let frames = tab.frames().await.unwrap_or_default();
+        for frame in frames.into_iter().filter(|frame| frame.id != FrameId::MAIN) {
+            self.replace_frame_contexts(&mut events, tab.id(), frame.id, &frame.url, session);
+        }
+        self.events.extend(events);
         Ok(json!({}))
     }
 
@@ -1579,9 +1639,9 @@ impl Conn {
         session: Option<&str>,
     ) -> Result<Value, DispatchError> {
         let params: params::CreateIsolatedWorld = params.parse()?;
+        let frame = requested_frame(tab, params.frame_id.as_deref())?;
         let context_id = self.next_context;
         self.next_context = self.next_context.saturating_add(1);
-        let frame_id = params.frame_id;
         let name = params.world_name.unwrap_or_default();
         if !name.is_empty() {
             let worlds = self.isolated_worlds.entry(tab.id()).or_default();
@@ -1589,7 +1649,7 @@ impl Conn {
                 worlds.push(name.clone());
             }
             self.isolated_contexts
-                .insert(context_id, (tab.id(), name.clone()));
+                .insert(context_id, (tab.id(), frame, name.clone()));
         }
         self.push_session_event(
             session,
@@ -1602,7 +1662,7 @@ impl Conn {
                 "auxData": {
                     "isDefault": false,
                     "type": "isolated",
-                    "frameId": frame_id,
+                    "frameId": cdp_frame_id(tab.id(), frame),
                 },
             }}),
         );
@@ -1828,8 +1888,10 @@ impl Conn {
         self.loader_ids.remove(&id);
         self.current_loaders.remove(&id);
         self.default_contexts.remove(&id);
+        self.frame_contexts.retain(|(owner, _), _| *owner != id);
         self.isolated_worlds.remove(&id);
-        self.isolated_contexts.retain(|_, (owner, _)| *owner != id);
+        self.isolated_contexts
+            .retain(|_, (owner, _, _)| *owner != id);
         self.compiled_scripts.retain(|_, (owner, _)| *owner != id);
         self.compiled_script_order
             .retain(|key| self.compiled_scripts.contains_key(key));
@@ -2598,6 +2660,32 @@ impl Conn {
         self.events.push(message);
     }
 
+    fn resolve_runtime_target(
+        &self,
+        tab: &TabHandle,
+        options: &params::RuntimeOptions,
+    ) -> Result<(FrameId, Option<String>), DispatchError> {
+        let mut frame = requested_frame(tab, options.frame_id.as_deref())?;
+        let Some(id) = options.context_id.or(options.execution_context_id) else {
+            return Ok((frame, None));
+        };
+        if let Some((_, context_frame, name)) = self
+            .isolated_contexts
+            .get(&id)
+            .filter(|(owner, _, _)| *owner == tab.id())
+        {
+            return Ok((*context_frame, Some(name.clone())));
+        }
+        if let Some(((_, context_frame), _)) = self
+            .frame_contexts
+            .iter()
+            .find(|((owner, _), context)| *owner == tab.id() && **context == id)
+        {
+            frame = *context_frame;
+        }
+        Ok((frame, None))
+    }
+
     async fn dispatch_runtime(
         &mut self,
         source: RuntimeSource,
@@ -2606,16 +2694,11 @@ impl Conn {
         request_id: &Value,
         session: Option<&str>,
     ) -> Result<DispatchResult, DispatchError> {
-        let frame = requested_frame(tab, options.frame_id.as_deref())?;
+        let (frame, context_world) = self.resolve_runtime_target(tab, &options)?;
         let return_by_value = options.return_by_value.unwrap_or(false);
         let await_promise = options.await_promise.unwrap_or(false);
         let object_group = options.object_group.as_deref().unwrap_or("");
         let allow_unsafe_eval = options.allow_unsafe_eval_blocked_by_csp.unwrap_or(true);
-        let context_world = options
-            .context_id
-            .or(options.execution_context_id)
-            .and_then(|id| self.isolated_contexts.get(&id))
-            .map(|(_, name)| name.clone());
         let await_timeout = match options.timeout.filter(|millis| *millis > 0.0) {
             Some(millis) => Duration::try_from_secs_f64(millis / 1000.0)
                 .map_err(|_| DispatchError::InvalidParams("timeout".to_owned()))?,
@@ -3074,6 +3157,7 @@ fn new_conn(
         loader_ids: HashMap::new(),
         current_loaders: HashMap::new(),
         default_contexts: HashMap::new(),
+        frame_contexts: HashMap::new(),
         lifecycle_events: false,
         isolated_worlds: HashMap::new(),
         isolated_contexts: HashMap::new(),
@@ -3315,6 +3399,7 @@ mod tests {
             loader_ids: HashMap::new(),
             current_loaders: HashMap::new(),
             default_contexts: HashMap::new(),
+            frame_contexts: HashMap::new(),
             lifecycle_events: false,
             isolated_worlds: HashMap::new(),
             isolated_contexts: HashMap::new(),

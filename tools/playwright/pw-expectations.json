@@ -119,10 +119,6 @@
     "expected": "FAIL",
     "reason": "Error: expect(received).toBe(expected) // Object.is equality"
   },
-  "page-evaluate.spec.ts::should await promise from popup": {
-    "expected": "FAIL",
-    "reason": "Error: page.evaluate: script: not a function |     at <anonymous> (<input>:3:16)"
-  },
   "page-evaluate.spec.ts::should not throw an error when evaluation does a synchronous navigation and returns an object": {
     "expected": "FAIL",
     "reason": "Test timeout of 3000ms exceeded."
