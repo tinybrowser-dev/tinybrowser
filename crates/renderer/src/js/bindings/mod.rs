@@ -3542,6 +3542,123 @@ mod realm_tests {
         assert_eq!(log, "pd:true,ck:true");
     }
 
+    // https://w3c.github.io/pointerevents/#compatibility-mapping-with-mouse-events
+    #[test]
+    fn a_canceled_pointerdown_suppresses_compatibility_mouse_events_but_not_click() {
+        let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
+        let mut embedded = crate::EmbeddedRenderer::new(services, net::ValidIdentity::default());
+        let mount = crate::Mount {
+            head: crate::ResponseHead::local(
+                url::Url::parse("https://example.test/").expect("url"),
+                Some("text/html; charset=utf-8".into()),
+                None,
+            ),
+            tab: crate::TabState::default(),
+            body: b"<!doctype html><body style=\"margin:0\">\
+                    <button id=\"b\" style=\"width:120px;height:40px\">go</button>\
+                    <script>\
+                    window.__log = [];\
+                    window.__cancel = true;\
+                    b.addEventListener('pointermove', () => window.__log.push('pm'));\
+                    b.addEventListener('mousemove', () => window.__log.push('mm'));\
+                    b.addEventListener('pointerdown', e => {\
+                      window.__log.push('pd:' + e.constructor.name + ':' + e.pointerId + ':' + e.pointerType);\
+                      if (window.__cancel) e.preventDefault();\
+                    });\
+                    b.addEventListener('mousedown', () => window.__log.push('md'));\
+                    b.addEventListener('pointerup', () => window.__log.push('pu'));\
+                    b.addEventListener('mouseup', () => window.__log.push('mu'));\
+                    b.addEventListener('click', e => window.__log.push(\
+                      'ck:' + (e instanceof PointerEvent) + ':' + e.pointerId + ':' + e.pointerType));\
+                    </script></body>"
+                .to_vec(),
+        };
+        embedded.mount(&mount).expect("mount");
+        let _frame = embedded
+            .render(&crate::ScreenshotRequest {
+                viewport_width: 300,
+                viewport_height: 200,
+                clip: None,
+                format: crate::ScreenshotFormat::Png,
+                omit_background: false,
+            })
+            .expect("render");
+        embedded
+            .execute_browser(
+                r#"(function(){return host.__tbWebDriverActions([{"type":"pointer","id":"mouse","parameters":{"pointerType":"mouse"},"actions":[{"type":"pointerMove","origin":"viewport","x":20,"y":20},{"type":"pointerDown","button":0},{"type":"pointerUp","button":0}]}]);})()"#,
+                None,
+            )
+            .expect("input");
+        assert_eq!(
+            embedded.eval("window.__log.join(',')").expect("eval"),
+            "pm,mm,pd:PointerEvent:1:mouse,pu,ck:true:1:mouse"
+        );
+
+        embedded
+            .eval("window.__log = []; window.__cancel = false;")
+            .expect("reset");
+        embedded
+            .execute_browser(
+                r#"(function(){return host.__tbWebDriverActions([{"type":"pointer","id":"mouse","parameters":{"pointerType":"mouse"},"actions":[{"type":"pointerMove","origin":"viewport","x":20,"y":20},{"type":"pointerDown","button":0},{"type":"pointerUp","button":0}]}]);})()"#,
+                None,
+            )
+            .expect("input");
+        assert_eq!(
+            embedded.eval("window.__log.join(',')").expect("eval"),
+            "pm,mm,pd:PointerEvent:1:mouse,md,pu,mu,ck:true:1:mouse"
+        );
+    }
+
+    // https://w3c.github.io/webdriver/#element-click
+    #[test]
+    fn element_click_uses_the_shared_pointer_pipeline() {
+        let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
+        let mut embedded = crate::EmbeddedRenderer::new(services, net::ValidIdentity::default());
+        let mount = crate::Mount {
+            head: crate::ResponseHead::local(
+                url::Url::parse("https://example.test/").expect("url"),
+                Some("text/html; charset=utf-8".into()),
+                None,
+            ),
+            tab: crate::TabState::default(),
+            body: b"<!doctype html><body style=\"margin:0\">\
+                    <button id=\"b\" style=\"width:120px;height:40px\">go</button>\
+                    <script>\
+                    window.__log = [];\
+                    b.addEventListener('pointerdown', e => {\
+                      window.__log.push('pd:' + e.pointerId + ':' + e.pointerType + ':' + e.isPrimary);\
+                    });\
+                    b.addEventListener('mousedown', () => window.__log.push('md'));\
+                    b.addEventListener('pointerup', () => window.__log.push('pu'));\
+                    b.addEventListener('mouseup', () => window.__log.push('mu'));\
+                    b.addEventListener('click', e => window.__log.push(\
+                      'ck:' + (e instanceof PointerEvent) + ':' + e.pointerId + ':' + e.pointerType));\
+                    </script></body>"
+                .to_vec(),
+        };
+        embedded.mount(&mount).expect("mount");
+        let _frame = embedded
+            .render(&crate::ScreenshotRequest {
+                viewport_width: 300,
+                viewport_height: 200,
+                clip: None,
+                format: crate::ScreenshotFormat::Png,
+                omit_background: false,
+            })
+            .expect("render");
+        let result = embedded
+            .execute_browser(
+                "host.__tbWebDriverElementClick(document.getElementById('b'))",
+                None,
+            )
+            .expect("click");
+        assert_eq!(result, crate::RemoteValue::String("ok".into()));
+        assert_eq!(
+            embedded.eval("window.__log.join(',')").expect("eval"),
+            "pd:1:mouse:true,md,pu,mu,ck:true:1:mouse"
+        );
+    }
+
     // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-createIsolatedWorld
     #[test]
     fn isolated_realm_shares_live_document_and_bypasses_page_csp() {

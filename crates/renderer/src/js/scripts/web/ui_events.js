@@ -185,15 +185,15 @@ globalThis.PointerEvent = class PointerEvent extends MouseEvent {
     init = init || {};
     const event = __tbConstruct(__tbMouseEventConstructor, [type, init], new.target);
     __tbPointerEventData.set(event, {
-        pointerId: init.pointerId === undefined ? 1 : init.pointerId,
+        pointerId: init.pointerId === undefined ? 0 : init.pointerId,
         // https://w3c.github.io/pointerevents/#dom-pointerevent-width
         width: init.width === undefined ? 1 : __tbNumberCtor(init.width),
         height: init.height === undefined ? 1 : __tbNumberCtor(init.height),
         pressure: init.pressure === undefined ? 0 : init.pressure,
         tangentialPressure: init.tangentialPressure || 0,
         tiltX: init.tiltX || 0, tiltY: init.tiltY || 0, twist: init.twist || 0,
-        pointerType: init.pointerType || 'mouse',
-        isPrimary: init.isPrimary === undefined ? true : !!init.isPrimary,
+        pointerType: init.pointerType === undefined ? '' : init.pointerType,
+        isPrimary: init.isPrimary === undefined ? false : !!init.isPrimary,
     });
     return event;
   }

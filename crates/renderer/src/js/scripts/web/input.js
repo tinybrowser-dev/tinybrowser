@@ -7,10 +7,19 @@
   const pointerStates = new __tbPrivateMap();
   const pointerIds = [];
   const pressedKeys = [];
+  const primaryPointers = new __tbPrivateMap();
+  const preventMouseEvents = new __tbPrivateSet();
+  let nextPointerId = 1;
   const pointerState = (id, pointerType) => {
     if (!pointerStates.has(id)) {
+      const type = pointerType || 'mouse';
+      const pointerId = nextPointerId++;
+      const isPrimary = !primaryPointers.has(type);
+      if (isPrimary) primaryPointers.set(type, pointerId);
       pointerIds.push(id);
-      pointerStates.set(id, { x: 0, y: 0, buttons: 0, target: null, pointerType: pointerType || 'mouse' });
+      pointerStates.set(id, {
+        x: 0, y: 0, buttons: 0, target: null, pointerType: type, pointerId, isPrimary,
+      });
     }
     return pointerStates.get(id);
   };
@@ -51,10 +60,10 @@
     bubbles: true, cancelable: true, composed: true, view: globalThis,
     clientX: x, clientY: y, screenX: x, screenY: y, buttons: buttons || 0,
   }, modifierInit(extra && extra.modifiers), extra || {});
-  const pointerInit = (state, x, y, buttonsOrExtra, maybeExtra) => {
-    const extra = maybeExtra === undefined ? null : maybeExtra;
-    return Object.assign(mouseInit(x, y, state.buttons, extra), {
-      pointerId: 1, isPrimary: true, pointerType: state.pointerType,
+  const pointerInit = (state, x, y, extra) => {
+    const init = Object.assign({ button: -1 }, extra || null);
+    return Object.assign(mouseInit(x, y, state.buttons, init), {
+      pointerId: state.pointerId, isPrimary: state.isPrimary, pointerType: state.pointerType,
       pressure: state.buttons ? 0.5 : 0,
     });
   };
@@ -62,7 +71,7 @@
   let activeNode = null;
   const clearActive = () => {
     if (activeNode !== null) {
-      try { host.__tbSetActive(activeNode, false); } catch (error) {}
+      host.__tbSetActive(activeNode, false);
       activeNode = null;
     }
   };
@@ -71,10 +80,8 @@
     if (!node) return;
     let target = node;
     if (node.localName === 'label') target = node.control || node;
-    try {
-      host.__tbSetActive(target, true);
-      activeNode = target;
-    } catch (error) {}
+    host.__tbSetActive(target, true);
+    activeNode = target;
   };
   const pointerItem = (state, item) => {
     if (item.type === 'pointerMove') {
@@ -87,19 +94,21 @@
       else throw new Error('stale element reference: pointer origin did not resolve');
       const next = at(x, y);
       if (state.target && state.target !== next) {
-        fire(state.target, new PointerEvent('pointerout', pointerInit(state, state.x, state.y, state.buttons)));
-        fire(state.target, new PointerEvent('pointerleave', pointerInit(state, state.x, state.y, state.buttons)));
+        fire(state.target, new PointerEvent('pointerout', pointerInit(state, state.x, state.y)));
+        fire(state.target, new PointerEvent('pointerleave', pointerInit(state, state.x, state.y)));
         fire(state.target, new MouseEvent('mouseout', mouseInit(state.x, state.y, state.buttons)));
         fire(state.target, new MouseEvent('mouseleave', mouseInit(state.x, state.y, state.buttons)));
-        fire(next, new PointerEvent('pointerover', pointerInit(state, x, y, state.buttons)));
-        fire(next, new PointerEvent('pointerenter', pointerInit(state, x, y, state.buttons)));
+        fire(next, new PointerEvent('pointerover', pointerInit(state, x, y)));
+        fire(next, new PointerEvent('pointerenter', pointerInit(state, x, y)));
         fire(next, new MouseEvent('mouseover', mouseInit(x, y, state.buttons)));
         fire(next, new MouseEvent('mouseenter', mouseInit(x, y, state.buttons)));
       }
       state.x = x; state.y = y; state.target = next;
       const moveExtra = item.modifiers ? { modifiers: item.modifiers } : null;
-      fire(next, new PointerEvent('pointermove', pointerInit(state, x, y, state.buttons, moveExtra)));
-      fire(next, new MouseEvent('mousemove', mouseInit(x, y, state.buttons, moveExtra)));
+      fire(next, new PointerEvent('pointermove', pointerInit(state, x, y, moveExtra)));
+      if (!preventMouseEvents.has(state.pointerType)) {
+        fire(next, new MouseEvent('mousemove', mouseInit(x, y, state.buttons, moveExtra)));
+      }
     } else if (item.type === 'pointerDown') {
       if (item.x !== undefined) state.x = item.x;
       if (item.y !== undefined) state.y = item.y;
@@ -109,12 +118,17 @@
       state.buttons |= 1 << button;
       const node = at(state.x, state.y);
       state.target = node;
-      if (node && typeof node.focus === 'function') { try { node.focus(); } catch (error) {} }
+      if (node && typeof node.focus === 'function') node.focus();
       setActive(node);
-      fire(node, new PointerEvent('pointerdown', pointerInit(state, state.x, state.y, state.buttons, extra)));
-      fire(node, new MouseEvent('mousedown', mouseInit(state.x, state.y, state.buttons, extra)));
+      // https://w3c.github.io/pointerevents/#mapping-for-devices-that-support-hover
+      if (!fire(node, new PointerEvent('pointerdown', pointerInit(state, state.x, state.y, extra)))) {
+        preventMouseEvents.add(state.pointerType);
+      }
+      if (!preventMouseEvents.has(state.pointerType)) {
+        fire(node, new MouseEvent('mousedown', mouseInit(state.x, state.y, state.buttons, extra)));
+      }
       if (button === 2) {
-        fire(node, new MouseEvent('contextmenu', mouseInit(state.x, state.y, state.buttons, extra)));
+        fire(node, new PointerEvent('contextmenu', pointerInit(state, state.x, state.y, extra)));
       }
     } else if (item.type === 'pointerUp') {
       if (item.x !== undefined) state.x = item.x;
@@ -126,17 +140,25 @@
       state.buttons &= ~(1 << button);
       clearActive();
       const node = at(state.x, state.y);
-      fire(node, new PointerEvent('pointerup', pointerInit(state, state.x, state.y, state.buttons, extra)));
-      fire(node, new MouseEvent('mouseup', mouseInit(state.x, state.y, state.buttons, extra)));
+      fire(node, new PointerEvent('pointerup', pointerInit(state, state.x, state.y, extra)));
+      // https://w3c.github.io/pointerevents/#mapping-for-devices-that-support-hover
+      if (!preventMouseEvents.has(state.pointerType)) {
+        fire(node, new MouseEvent('mouseup', mouseInit(state.x, state.y, state.buttons, extra)));
+      }
+      preventMouseEvents.delete(state.pointerType);
       if (button === 0) {
         // https://html.spec.whatwg.org/multipage/interaction.html#activation-behavior
-        fire(node, new MouseEvent('click', mouseInit(state.x, state.y, 0, extra)));
+        fire(node, new PointerEvent('click', pointerInit(state, state.x, state.y, extra)));
         if (detail === 2) {
           fire(node, new MouseEvent('dblclick', mouseInit(state.x, state.y, 0, extra)));
         }
       }
     } else if (item.type === 'pointerCancel') {
-      fire(at(state.x, state.y), new PointerEvent('pointercancel', pointerInit(state, state.x, state.y, state.buttons)));
+      fire(at(state.x, state.y), new PointerEvent('pointercancel', pointerInit(state, state.x, state.y)));
+      if (!preventMouseEvents.has(state.pointerType)) {
+        host.__tbDispatchTrusted(new MouseEvent('mouseup', mouseInit(state.x, state.y, state.buttons)));
+      }
+      preventMouseEvents.delete(state.pointerType);
       state.buttons = 0;
     } else throw new TypeError('unknown pointer action type: ' + item.type);
   };
@@ -603,7 +625,7 @@
       if (shadowIncludingContains(hit, element)) return 'not_interactable';
       return 'intercepted';
     }
-    const state = pointerState('__tb_element_click', 'mouse');
+    const state = pointerState('mouse', 'mouse');
     pointerItem(state, { type: 'pointerMove', x: x, y: y });
     pointerItem(state, { type: 'pointerDown', button: 0, clickCount: 1 });
     pointerItem(state, { type: 'pointerUp', button: 0, clickCount: 1 });
@@ -794,6 +816,8 @@
         pointerStates.delete(id);
       }
     }
+    primaryPointers.clear();
+    preventMouseEvents.clear();
     clearActive();
     return true;
   };
