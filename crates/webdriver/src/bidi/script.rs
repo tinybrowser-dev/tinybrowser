@@ -450,14 +450,14 @@ async fn parse_preload_contexts(
     }
 }
 
-async fn parse_preload_user_contexts(
+fn parse_preload_user_contexts(
     state: &Arc<BidiState>,
     map: &serde_json::Map<String, Value>,
 ) -> Result<Option<Vec<UserContextId>>, BidiError> {
     match map.get("userContexts") {
         None => Ok(None),
         Some(Value::Array(arr)) if !arr.is_empty() => {
-            let known = state.browser.user_contexts().await.unwrap_or_default();
+            let known = state.browser.user_contexts().unwrap_or_default();
             let mut list = Vec::with_capacity(arr.len());
             for item in arr {
                 let Some(raw) = item.as_str() else {
@@ -491,19 +491,19 @@ pub(crate) async fn add_preload_script(state: &Arc<BidiState>, params: &Value) -
         ));
     }
     let contexts = parse_preload_contexts(state, map).await?;
-    let user_contexts = parse_preload_user_contexts(state, map).await?;
+    let user_contexts = parse_preload_user_contexts(state, map)?;
 
     let script_id = random_id().unwrap_or_else(|_| "preload-1".to_owned());
     let wrapped = format!("(({fn_decl}\n)())");
     let mut tab_script_ids = Vec::new();
-    let target_tabs = state.browser.tabs().await.unwrap_or_default();
+    let target_tabs = state.browser.tabs().unwrap_or_default();
     for tab_id in target_tabs {
         if let Some(ref ctxs) = contexts
             && !ctxs.contains(&tab_id)
         {
             continue;
         }
-        if let Ok(tab) = state.browser.tab(tab_id).await {
+        if let Ok(tab) = state.browser.tab(tab_id) {
             if let Some(ref ucs) = user_contexts
                 && !ucs.contains(tab.user_context())
             {
@@ -548,7 +548,7 @@ pub(crate) async fn remove_preload_script(state: &Arc<BidiState>, params: &Value
         )));
     };
     for (tab_id, init_id) in entry.tab_script_ids {
-        if let Ok(tab) = state.browser.tab(tab_id).await {
+        if let Ok(tab) = state.browser.tab(tab_id) {
             let _ = tab.remove_init_script(init_id).await;
         }
     }
@@ -644,9 +644,9 @@ pub(crate) async fn get_realms(state: &Arc<BidiState>, params: &Value) -> BidiRe
                 }));
             }
         }
-    } else if let Ok(ids) = state.browser.tabs().await {
+    } else if let Ok(ids) = state.browser.tabs() {
         for id in ids {
-            if let Ok(tab) = state.browser.tab(id).await
+            if let Ok(tab) = state.browser.tab(id)
                 && let Ok(frames) = tab.frames().await
             {
                 for frame in frames {

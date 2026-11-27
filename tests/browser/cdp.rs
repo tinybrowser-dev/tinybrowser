@@ -2,7 +2,7 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::{Duration, Instant};
 
-use crate::fixture::{Fixture, TestServer, evaluate, load_page, ok};
+use crate::fixture::{Fixture, TestServer, evaluate, load_page, ok, renderer_children};
 use serde_json::json;
 
 fn start() -> (Fixture, cdp::Client) {
@@ -890,4 +890,110 @@ fn capture_screenshot_tall_clip_with_display_none_descendant() {
         .expect("tall clip screenshot must not panic renderer");
     let data = shot["data"].as_str().expect("base64 png");
     assert_ne!(data, "");
+}
+
+fn navigate_and_wait_load(client: &mut cdp::Client, session: &str, url: &str) {
+    client
+        .call("Page.navigate", &json!({"url": url}), Some(session))
+        .expect("navigate");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        if let Some(event) = client
+            .read_event(Duration::from_millis(200))
+            .expect("read event")
+            && event["method"] == json!("Page.loadEventFired")
+        {
+            return;
+        }
+    }
+    panic!("timed out waiting for Page.loadEventFired on {url}");
+}
+
+#[test]
+fn renderer_crash_emits_target_crashed_and_recovers_on_navigate() {
+    let server = TestServer::start(
+        vec![("/", ok("text/html", b"<!doctype html><title>alive</title>"))],
+        None,
+    );
+    let url = format!("http://{}/", server.address());
+    let (mut fixture, mut client) = start();
+    let daemon = fixture.children()[0].id();
+
+    let created = client
+        .call("Target.createTarget", &json!({"url": "about:blank"}), None)
+        .expect("create");
+    let target_id = created["targetId"].as_str().expect("target id").to_owned();
+    let attached = client
+        .call(
+            "Target.attachToTarget",
+            &json!({"targetId": target_id, "flatten": true}),
+            None,
+        )
+        .expect("attach");
+    let session = attached["sessionId"].as_str().expect("session").to_owned();
+    client
+        .call("Page.enable", &json!({}), Some(&session))
+        .expect("page enable");
+
+    navigate_and_wait_load(&mut client, &session, &url);
+    assert_eq!(
+        evaluate(&mut client, &session, "document.title"),
+        json!("alive")
+    );
+
+    let renderers = renderer_children(daemon);
+    assert!(!renderers.is_empty(), "expected live renderer process");
+    for pid in renderers {
+        let status = std::process::Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .status()
+            .expect("kill renderer");
+        assert!(status.success(), "SIGKILL renderer {pid}");
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut saw_inspector = false;
+    let mut saw_target = false;
+    while Instant::now() < deadline && !(saw_inspector && saw_target) {
+        let Some(event) = client
+            .read_event(Duration::from_millis(200))
+            .expect("read event")
+        else {
+            continue;
+        };
+        match event["method"].as_str() {
+            Some("Inspector.targetCrashed") if event["sessionId"] == json!(session) => {
+                saw_inspector = true;
+            }
+            Some("Target.targetCrashed") if event["params"]["targetId"] == json!(target_id) => {
+                saw_target = true;
+            }
+            _ => {}
+        }
+    }
+    assert!(saw_inspector, "missing Inspector.targetCrashed");
+    assert!(saw_target, "missing Target.targetCrashed");
+
+    let after_crash = client.call(
+        "Runtime.evaluate",
+        &json!({"expression": "1 + 1", "returnByValue": true}),
+        Some(&session),
+    );
+    let crashed_text = match after_crash {
+        Err(err) => err.to_string(),
+        Ok(value) => value["exceptionDetails"]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned(),
+    };
+    assert!(
+        crashed_text.contains("crashed"),
+        "eval on crashed tab must report crash instead of silent about:blank: {crashed_text}"
+    );
+
+    navigate_and_wait_load(&mut client, &session, &url);
+    assert_eq!(
+        evaluate(&mut client, &session, "document.title"),
+        json!("alive")
+    );
 }

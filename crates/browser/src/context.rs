@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use std::fmt;
 use std::io;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, PoisonError, RwLock};
 
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -86,9 +87,9 @@ pub(crate) struct BrowserContext {
     store: Arc<ProfileStore>,
     base_network: net::AgentOptions,
     broker: Arc<NetworkBroker>,
-    default_partition: StoragePartition,
-    ephemeral: HashMap<UserContextId, StoragePartition>,
-    next_user_context: u64,
+    default_partition: Arc<StoragePartition>,
+    ephemeral: RwLock<HashMap<UserContextId, Arc<StoragePartition>>>,
+    next_user_context: AtomicU64,
     sessions: Arc<SessionStorage>,
 }
 
@@ -113,7 +114,7 @@ impl BrowserContext {
             store: Arc::new(store),
             base_network: network_options,
             broker,
-            default_partition: StoragePartition {
+            default_partition: Arc::new(StoragePartition {
                 network,
                 services: PartitionServices {
                     cookies,
@@ -121,61 +122,80 @@ impl BrowserContext {
                     indexed_db,
                     events: Arc::new(RendererEventHub::default()),
                 },
-            },
-            ephemeral: HashMap::new(),
-            next_user_context: 1,
+            }),
+            ephemeral: RwLock::new(HashMap::new()),
+            next_user_context: AtomicU64::new(1),
             sessions: Arc::new(SessionStorage::default()),
         })
     }
 
-    fn partition(&self, context: &UserContextId) -> Option<&StoragePartition> {
+    fn partition(&self, context: &UserContextId) -> Option<Arc<StoragePartition>> {
         if context.is_default() {
-            Some(&self.default_partition)
+            Some(Arc::clone(&self.default_partition))
         } else {
-            self.ephemeral.get(context)
+            self.ephemeral
+                .read()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(context)
+                .cloned()
         }
     }
 
-    pub(crate) fn create_user_context(&mut self) -> UserContextId {
-        let raw = self.next_user_context;
-        self.next_user_context = self.next_user_context.saturating_add(1);
+    pub(crate) fn create_user_context(&self) -> UserContextId {
+        let raw = self.next_user_context.fetch_add(1, Ordering::Relaxed);
         let id = UserContextId(format!("user-context-{raw}"));
         let cookies = Arc::new(CookieStore::new(self.base_network.clock.clone()));
         let mut options = self.base_network.clone();
         options.cookie_jar = Some(cookies.jar());
         let network = NetworkContext::new(options, Arc::clone(&self.broker));
-        self.ephemeral.insert(
-            id.clone(),
-            StoragePartition {
-                network,
-                services: PartitionServices {
-                    cookies,
-                    local_storage: Arc::new(StorageAreas::default()),
-                    indexed_db: Arc::new(StorageAreas::default()),
-                    events: Arc::new(RendererEventHub::default()),
-                },
-            },
-        );
+        self.ephemeral
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(
+                id.clone(),
+                Arc::new(StoragePartition {
+                    network,
+                    services: PartitionServices {
+                        cookies,
+                        local_storage: Arc::new(StorageAreas::default()),
+                        indexed_db: Arc::new(StorageAreas::default()),
+                        events: Arc::new(RendererEventHub::default()),
+                    },
+                }),
+            );
         id
     }
 
-    pub(crate) fn remove_user_context(&mut self, id: &UserContextId) -> bool {
+    pub(crate) fn remove_user_context(&self, id: &UserContextId) -> bool {
         if id.is_default() {
             return false;
         }
-        self.ephemeral.remove(id).is_some()
+        self.ephemeral
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(id)
+            .is_some()
     }
 
     #[must_use]
     pub(crate) fn has_user_context(&self, id: &UserContextId) -> bool {
-        id.is_default() || self.ephemeral.contains_key(id)
+        id.is_default()
+            || self
+                .ephemeral
+                .read()
+                .unwrap_or_else(PoisonError::into_inner)
+                .contains_key(id)
     }
 
     #[must_use]
     pub(crate) fn user_contexts(&self) -> Vec<UserContextId> {
-        let mut list = Vec::with_capacity(1 + self.ephemeral.len());
+        let ephemeral = self
+            .ephemeral
+            .read()
+            .unwrap_or_else(PoisonError::into_inner);
+        let mut list = Vec::with_capacity(1 + ephemeral.len());
         list.push(UserContextId::default_context());
-        let mut extra: Vec<UserContextId> = self.ephemeral.keys().cloned().collect();
+        let mut extra: Vec<UserContextId> = ephemeral.keys().cloned().collect();
         extra.sort_by(|a, b| a.as_str().cmp(b.as_str()));
         list.extend(extra);
         list

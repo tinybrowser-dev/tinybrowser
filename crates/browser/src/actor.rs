@@ -119,6 +119,8 @@ pub enum TabEvent {
         line: u32,
         column: u32,
     },
+    // https://chromedevtools.github.io/devtools-protocol/tot/Inspector/#event-targetCrashed
+    Crashed,
 }
 
 impl TabId {
@@ -777,6 +779,7 @@ struct Tab {
     renderers: Arc<RendererProcessManager>,
     network: TabNetworkHandle,
     renderer: Option<Arc<Assignment>>,
+    crashed: bool,
     pending_mount: Option<Mount>,
     // https://html.spec.whatwg.org/multipage/document-sequences.html#the-rules-for-choosing-a-navigable
     tabs: TabRegistry,
@@ -834,6 +837,7 @@ impl Tab {
             renderers,
             network,
             renderer: None,
+            crashed: false,
             pending_mount: Some(pending_mount),
             tabs,
             document_origin: tab.document_origin,
@@ -958,6 +962,7 @@ impl Tab {
             .await
             .map_err(|error| renderer_unavailable(&error.to_string()))?;
         self.drop_renderer();
+        self.crashed = false;
         self.events_rx = Some(handle.subscribe());
         self.site = Some(site.clone());
         self.renderer = Some(handle);
@@ -1058,10 +1063,21 @@ impl Tab {
         self.renderer = None;
     }
 
+    async fn mark_crashed(&mut self) {
+        self.drop_renderer();
+        if !self.crashed {
+            self.crashed = true;
+            self.record_event(TabEvent::Crashed).await;
+        }
+    }
+
     async fn deliver_window_message(
         &mut self,
         RemoteWindowMessage { message }: RemoteWindowMessage,
     ) -> Result<(), TabError> {
+        if self.crashed {
+            return Err(TabError::RendererCrashed);
+        }
         if self.renderer.is_none() {
             self.mount_virtual().await?;
         }
@@ -1072,6 +1088,9 @@ impl Tab {
     }
 
     async fn renderer_request(&mut self, command: RendererCommand) -> Result<Reply, TabError> {
+        if self.crashed {
+            return Err(TabError::RendererCrashed);
+        }
         if self.renderer.is_none() {
             self.mount_virtual().await?;
         }
@@ -1079,8 +1098,12 @@ impl Tab {
             return Err(TabError::ActorStopped);
         };
         let result = renderer.request(command).await;
-        if result.is_err() {
-            self.drop_renderer();
+        if matches!(
+            result,
+            Err(TabError::ActorStopped | TabError::RendererUnavailable { .. })
+        ) {
+            self.mark_crashed().await;
+            return Err(TabError::RendererCrashed);
         }
         result
     }
@@ -1102,6 +1125,9 @@ impl Tab {
         &mut self,
         command: RendererCommand,
     ) -> Result<Vec<u8>, TabError> {
+        if self.crashed {
+            return Err(TabError::RendererCrashed);
+        }
         if self.renderer.is_none() {
             self.mount_virtual().await?;
         }
@@ -1109,8 +1135,12 @@ impl Tab {
             return Err(TabError::ActorStopped);
         };
         let result = renderer.request_bytes(command).await;
-        if result.is_err() {
-            self.drop_renderer();
+        if matches!(
+            result,
+            Err(TabError::ActorStopped | TabError::RendererUnavailable { .. })
+        ) {
+            self.mark_crashed().await;
+            return Err(TabError::RendererCrashed);
         }
         result
     }
@@ -2006,7 +2036,7 @@ async fn coordinator_loop(
             }
             Wake::Renderer(None) => {
                 let loading = tab.waiting_for_load();
-                tab.drop_renderer();
+                tab.mark_crashed().await;
                 if loading {
                     tab.cancel_dial();
                     tab.nav = None;
@@ -2015,7 +2045,7 @@ async fn coordinator_loop(
                     tab.record_event(TabEvent::NavigationFailed(NavigationFailure::Failed))
                         .await;
                 }
-                fail_waiters(&mut tab, &server, &mut waiters, &TabError::ActorStopped).await;
+                fail_waiters(&mut tab, &server, &mut waiters, &TabError::RendererCrashed).await;
             }
             Wake::Delivery(Some(message)) => {
                 let _result = tab.deliver_window_message(message).await;
@@ -2307,6 +2337,9 @@ async fn remove_init_script(tab: &mut Tab, id: u64) -> Result<(), TabError> {
 async fn add_binding(tab: &mut Tab, name: String, run_immediately: bool) -> Result<(), TabError> {
     if !tab.bindings.contains(&name) {
         tab.bindings.push(name.clone());
+    }
+    if run_immediately && tab.crashed {
+        return Err(TabError::RendererCrashed);
     }
     if run_immediately && tab.renderer.is_none() {
         tab.mount_virtual().await?;

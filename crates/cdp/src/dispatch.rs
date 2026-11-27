@@ -2136,7 +2136,7 @@ pub(crate) fn cookie_param_to_direct(
     })
 }
 
-pub(crate) async fn set_cdp_cookies(
+pub(crate) fn set_cdp_cookies(
     browser: &BrowserHandle,
     user_context: &UserContextId,
     cookies: &[crate::params::CookieParam],
@@ -2146,15 +2146,14 @@ pub(crate) async fn set_cdp_cookies(
     for param in cookies {
         let direct = cookie_param_to_direct(param, fallback_url)?;
         let stored = browser
-            .set_direct_cookie_in(user_context, direct)
-            .await
+            .set_direct_cookie_in(user_context, &direct)
             .map_err(|error| DispatchError::Failed(error.to_string()))?;
         all_ok &= stored;
     }
     Ok(all_ok)
 }
 
-pub(crate) async fn delete_cdp_cookies(
+pub(crate) fn delete_cdp_cookies(
     browser: &BrowserHandle,
     user_context: &UserContextId,
     params: &crate::params::DeleteCookies,
@@ -2173,8 +2172,7 @@ pub(crate) async fn delete_cdp_cookies(
         ..CookieFilter::default()
     };
     browser
-        .delete_cookies_in(user_context, filter)
-        .await
+        .delete_cookies_in(user_context, &filter)
         .map_err(|error| DispatchError::Failed(error.to_string()))?;
     Ok(())
 }
@@ -2603,7 +2601,7 @@ pub(crate) async fn target_info(
     id: TabId,
     browser_context_id: &str,
 ) -> Value {
-    let (url, title, opener) = match browser.tab(id).await {
+    let (url, title, opener) = match browser.tab(id) {
         Ok(tab) => {
             let url = tab
                 .document_url()

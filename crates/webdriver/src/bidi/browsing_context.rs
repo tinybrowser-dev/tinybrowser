@@ -28,7 +28,6 @@ pub(crate) async fn resolve_context(
     let tab = state
         .browser
         .tab(tab_id)
-        .await
         .map_err(|_| BidiError::no_such_frame(format!("unknown context: {raw}")))?;
     if frame_id != FrameId::MAIN {
         let frames = tab
@@ -68,7 +67,7 @@ pub(crate) async fn create(state: &Arc<BidiState>, params: &Value) -> BidiResult
                     "unknown user context: {raw}"
                 )));
             };
-            let known = state.browser.user_contexts().await.unwrap_or_default();
+            let known = state.browser.user_contexts().unwrap_or_default();
             if !known.contains(&uc) {
                 return Err(BidiError::no_such_user_context(format!(
                     "unknown user context: {raw}"
@@ -179,11 +178,10 @@ pub(crate) async fn get_tree(state: &Arc<BidiState>, params: &Value) -> BidiResu
         let ids = state
             .browser
             .tabs()
-            .await
             .map_err(|err| BidiError::unknown_error(err.to_string()))?;
         let mut out = Vec::with_capacity(ids.len());
         for id in ids {
-            if let Ok(tab) = state.browser.tab(id).await {
+            if let Ok(tab) = state.browser.tab(id) {
                 out.push(build_tree_info(&tab, FrameId::MAIN, max_depth, 0).await?);
             }
         }
@@ -542,7 +540,7 @@ pub(crate) async fn set_viewport(state: &Arc<BidiState>, params: &Value) -> Bidi
                 "userContexts must not be empty",
             ));
         }
-        let known = state.browser.user_contexts().await.unwrap_or_default();
+        let known = state.browser.user_contexts().unwrap_or_default();
         for item in arr {
             let Some(raw) = item.as_str() else {
                 return Err(BidiError::invalid_argument("userContext must be a string"));
@@ -556,20 +554,20 @@ pub(crate) async fn set_viewport(state: &Arc<BidiState>, params: &Value) -> Bidi
                 return Err(BidiError::no_such_user_context(raw));
             }
             if let Some((w, h)) = viewport
-                && let Ok(tabs) = state.browser.tabs_in(&uc).await
+                && let Ok(tabs) = state.browser.tabs_in(&uc)
             {
                 for id in tabs {
-                    if let Ok(tab) = state.browser.tab(id).await {
+                    if let Ok(tab) = state.browser.tab(id) {
                         let _ = tab.set_viewport(w, h).await;
                     }
                 }
             }
         }
     } else if let Some((w, h)) = viewport
-        && let Ok(tabs) = state.browser.tabs().await
+        && let Ok(tabs) = state.browser.tabs()
     {
         for id in tabs {
-            if let Ok(tab) = state.browser.tab(id).await {
+            if let Ok(tab) = state.browser.tab(id) {
                 let _ = tab.set_viewport(w, h).await;
             }
         }

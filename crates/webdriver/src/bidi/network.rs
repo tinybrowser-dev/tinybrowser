@@ -307,7 +307,7 @@ pub(crate) fn fail_request(state: &Arc<BidiState>, params: &Value) -> BidiResult
 }
 
 // https://w3c.github.io/webdriver-bidi/#command-network-setCacheBehavior
-pub(crate) async fn set_cache_behavior(state: &Arc<BidiState>, params: &Value) -> BidiResult {
+pub(crate) fn set_cache_behavior(state: &Arc<BidiState>, params: &Value) -> BidiResult {
     let map = require_object(params, "params")?;
     let behavior = require_str(map, "cacheBehavior")?;
     let disabled = match behavior {
@@ -341,21 +341,18 @@ pub(crate) async fn set_cache_behavior(state: &Arc<BidiState>, params: &Value) -
             let tab = state
                 .browser
                 .tab(tab_id)
-                .await
                 .map_err(|_| BidiError::no_such_frame(raw))?;
             let _ = state
                 .browser
-                .set_cache_disabled_in(tab.user_context(), disabled)
-                .await;
+                .set_cache_disabled_in(tab.user_context(), disabled);
         }
     } else {
         for uc in state
             .browser
             .user_contexts()
-            .await
             .unwrap_or_else(|_| vec![UserContextId::default_context()])
         {
-            let _ = state.browser.set_cache_disabled_in(&uc, disabled).await;
+            let _ = state.browser.set_cache_disabled_in(&uc, disabled);
         }
     }
     Ok(json!({}))
@@ -416,7 +413,7 @@ async fn resolve_optional_scope(
                 "userContexts must not be empty",
             ));
         }
-        let known = state.browser.user_contexts().await.unwrap_or_default();
+        let known = state.browser.user_contexts().unwrap_or_default();
         let mut ucs = HashSet::with_capacity(arr.len());
         for item in arr {
             let Some(raw) = item.as_str() else {
@@ -428,9 +425,9 @@ async fn resolve_optional_scope(
             if !known.contains(&uc) {
                 return Err(BidiError::no_such_user_context(raw));
             }
-            if let Ok(ids) = state.browser.tabs_in(&uc).await {
+            if let Ok(ids) = state.browser.tabs_in(&uc) {
                 for id in ids {
-                    if let Ok(tab) = state.browser.tab(id).await {
+                    if let Ok(tab) = state.browser.tab(id) {
                         tabs.push(tab);
                     }
                 }
@@ -439,9 +436,9 @@ async fn resolve_optional_scope(
         }
         Ok((CollectorScope::UserContexts(ucs), tabs))
     } else {
-        if let Ok(ids) = state.browser.tabs().await {
+        if let Ok(ids) = state.browser.tabs() {
             for id in ids {
-                if let Ok(tab) = state.browser.tab(id).await {
+                if let Ok(tab) = state.browser.tab(id) {
                     tabs.push(tab);
                 }
             }
@@ -550,7 +547,6 @@ async fn collector_matches_tab(
             state
                 .browser
                 .tab(tab_id)
-                .await
                 .is_ok_and(|handle| set.contains(handle.user_context()))
         }
     }

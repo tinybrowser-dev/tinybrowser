@@ -73,7 +73,7 @@ async fn resolve_partition(
                     let Some(uc) = UserContextId::parse(raw) else {
                         return Err(BidiError::no_such_user_context(raw));
                     };
-                    let known = state.browser.user_contexts().await.unwrap_or_default();
+                    let known = state.browser.user_contexts().unwrap_or_default();
                     if !known.contains(&uc) {
                         return Err(BidiError::no_such_user_context(raw));
                     }
@@ -225,8 +225,7 @@ pub(crate) async fn get_cookies(state: &Arc<BidiState>, params: &Value) -> BidiR
     }
     let records = state
         .browser
-        .matching_cookie_records_in(&partition.user_context, filter)
-        .await
+        .matching_cookie_records_in(&partition.user_context, &filter)
         .map_err(|err| BidiError::unknown_error(err.to_string()))?;
     let cookies: Vec<Value> = records.iter().map(bidi_cookie_json).collect();
     Ok(json!({
@@ -272,7 +271,7 @@ pub(crate) async fn set_cookie(state: &Arc<BidiState>, params: &Value) -> BidiRe
         .browser
         .set_direct_cookie_in(
             &partition.user_context,
-            DirectCookie {
+            &DirectCookie {
                 name: name.to_owned(),
                 value,
                 domain: domain.to_owned(),
@@ -285,7 +284,6 @@ pub(crate) async fn set_cookie(state: &Arc<BidiState>, params: &Value) -> BidiRe
                 partition_key: partition.cookie_partition_key(),
             },
         )
-        .await
         .map_err(|err| BidiError::unknown_error(err.to_string()))?;
     if !stored {
         return Err(BidiError::unable_to_set_cookie("cookie rejected"));
@@ -303,8 +301,7 @@ pub(crate) async fn delete_cookies(state: &Arc<BidiState>, params: &Value) -> Bi
     }
     let _ = state
         .browser
-        .delete_cookies_in(&partition.user_context, filter)
-        .await
+        .delete_cookies_in(&partition.user_context, &filter)
         .map_err(|err| BidiError::unknown_error(err.to_string()))?;
     Ok(json!({ "partitionKey": partition.key_json() }))
 }

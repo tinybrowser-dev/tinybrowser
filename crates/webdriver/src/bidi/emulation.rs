@@ -54,7 +54,7 @@ async fn resolve_target_tabs(
                 "userContexts must not be empty",
             ));
         }
-        let known = state.browser.user_contexts().await.unwrap_or_default();
+        let known = state.browser.user_contexts().unwrap_or_default();
         for item in arr {
             let Some(raw) = item.as_str() else {
                 return Err(BidiError::invalid_argument("userContext must be a string"));
@@ -65,9 +65,9 @@ async fn resolve_target_tabs(
             if !known.contains(&uc) {
                 return Err(BidiError::no_such_user_context(raw));
             }
-            if let Ok(ids) = state.browser.tabs_in(&uc).await {
+            if let Ok(ids) = state.browser.tabs_in(&uc) {
                 for id in ids {
-                    if let Ok(tab) = state.browser.tab(id).await {
+                    if let Ok(tab) = state.browser.tab(id) {
                         tabs.push(tab);
                     }
                 }
@@ -293,7 +293,7 @@ pub(crate) async fn set_permission(state: &Arc<BidiState>, params: &Value) -> Bi
         let Some(uc) = UserContextId::parse(raw) else {
             return Err(BidiError::no_such_user_context(raw));
         };
-        let known = state.browser.user_contexts().await.unwrap_or_default();
+        let known = state.browser.user_contexts().unwrap_or_default();
         if !known.contains(&uc) {
             return Err(BidiError::no_such_user_context(raw));
         }

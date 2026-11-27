@@ -31,6 +31,7 @@ pub use intercept::{
     InterceptDecision, InterceptId, InterceptPhase, InterceptResolveError, InterceptRule,
     NetworkBroker, NetworkEvent, NetworkRequestId, UrlPattern, now_millis, wildcard_matches,
 };
+pub use manager::{RendererState, SpawnError};
 pub use net::{
     Agent, AgentOptions, Brand, CookieFilter, CookieRecord, CookieSameSite, DirectCookie, Identity,
     InvalidCa, InvalidIdentity, InvalidProxy, InvalidResolveRule, Proxy, ResolveRule, TrustedCa,

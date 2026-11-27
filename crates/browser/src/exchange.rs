@@ -126,17 +126,6 @@ impl<T> Sender<T> {
         *self.closed.borrow() || self.control.is_closed()
     }
 
-    async fn wait_closed(&self) {
-        if self.is_closed() {
-            return;
-        }
-        let mut closed = self.closed.subscribe();
-        tokio::select! {
-            () = self.control.closed() => {}
-            () = wait_closed(&mut closed) => {}
-        }
-    }
-
     async fn send(&self, value: T) -> Result<(), Error>
     where
         T: Lane,
@@ -421,14 +410,6 @@ where
     IR: Send + 'static,
     IN: Clone + Send + 'static,
 {
-    pub(crate) fn is_closed(&self) -> bool {
-        self.tx.is_closed()
-    }
-
-    pub(crate) async fn wait_closed(&self) {
-        self.tx.wait_closed().await;
-    }
-
     pub(crate) async fn call(&self, body: OC) -> Result<IR, Error> {
         let (id, receiver) = self.start_call(body, Pending::Unary).await?;
         let mut cancel = CancelOnDrop::new(id, self.tx.clone(), Arc::clone(&self.pending));

@@ -1170,13 +1170,23 @@ fn renderer_death_fails_a_pending_navigation_and_the_session_recovers() {
         "pending navigation never failed after the renderer died: {elapsed:?}"
     );
 
-    let executed = request(
+    let crashed_exec = request(
         &addr,
         "POST",
         &format!("/session/{id}/execute/sync"),
         Some(r#"{"script":"return 2+2","args":[]}"#),
     );
-    assert_eq!(executed["value"], json!(4.0), "{executed}");
+    assert_eq!(
+        crashed_exec["value"]["error"],
+        json!("unknown error"),
+        "{crashed_exec}"
+    );
+    assert!(
+        crashed_exec["value"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("crashed")),
+        "{crashed_exec}"
+    );
 
     server.release();
     let recovered = request(
@@ -1186,6 +1196,14 @@ fn renderer_death_fails_a_pending_navigation_and_the_session_recovers() {
         Some(&json!({"url": format!("http://{}/", server.address())}).to_string()),
     );
     assert_eq!(recovered["value"], Value::Null, "{recovered}");
+
+    let executed = request(
+        &addr,
+        "POST",
+        &format!("/session/{id}/execute/sync"),
+        Some(r#"{"script":"return 2+2","args":[]}"#),
+    );
+    assert_eq!(executed["value"], json!(4.0), "{executed}");
 }
 
 #[test]

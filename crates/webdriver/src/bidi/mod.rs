@@ -355,7 +355,7 @@ impl BidiState {
                 return;
             }
         }
-        let Ok(tab) = self.browser.tab(tab_id).await else {
+        let Ok(tab) = self.browser.tab(tab_id) else {
             self.attaching_tabs.lock().await.remove(&tab_id);
             return;
         };
@@ -377,7 +377,7 @@ impl BidiState {
     }
 
     pub(crate) async fn attach_all_existing_tabs(self: &Arc<Self>) {
-        if let Ok(ids) = self.browser.tabs().await {
+        if let Ok(ids) = self.browser.tabs() {
             for id in ids {
                 self.attach_tab(id).await;
             }
@@ -605,11 +605,11 @@ async fn dispatch_command(state: &Arc<BidiState>, method: &str, params: &Value) 
         // https://w3c.github.io/webdriver-bidi/#module-browser
         "browser.close" => browser_mod::close(state).await,
         "browser.createUserContext" => browser_mod::create_user_context(state, params).await,
-        "browser.getUserContexts" => browser_mod::get_user_contexts(state).await,
+        "browser.getUserContexts" => browser_mod::get_user_contexts(state),
         "browser.removeUserContext" => browser_mod::remove_user_context(state, params).await,
         "browser.getClientWindows" => browser_mod::get_client_windows(state).await,
         "browser.setClientWindowState" => browser_mod::set_client_window_state(state, params).await,
-        "browser.setDownloadBehavior" => browser_mod::set_download_behavior(state, params).await,
+        "browser.setDownloadBehavior" => browser_mod::set_download_behavior(state, params),
 
         // https://w3c.github.io/webdriver-bidi/#module-browsingContext
         "browsingContext.create" => browsing_context::create(state, params).await,
@@ -646,7 +646,7 @@ async fn dispatch_command(state: &Arc<BidiState>, method: &str, params: &Value) 
         "network.continueResponse" => network::continue_response(state, params),
         "network.provideResponse" => network::provide_response(state, params),
         "network.failRequest" => network::fail_request(state, params),
-        "network.setCacheBehavior" => network::set_cache_behavior(state, params).await,
+        "network.setCacheBehavior" => network::set_cache_behavior(state, params),
         "network.setExtraHeaders" => network::set_extra_headers(state, params).await,
         "network.addDataCollector" => network::add_data_collector(state, params).await,
         "network.removeDataCollector" => network::remove_data_collector(state, params).await,
@@ -933,7 +933,8 @@ async fn forward_nav_tab_event(
         | TabEvent::ExceptionThrown { .. }
         | TabEvent::Binding { .. }
         | TabEvent::NavigationResponded { .. }
-        | TabEvent::RealmReplaced => return,
+        | TabEvent::RealmReplaced
+        | TabEvent::Crashed => return,
     };
     emit_nav_event(
         state,
@@ -1011,6 +1012,7 @@ async fn forward_tab_event(
         }
         TabEvent::NavigationResponded { .. }
         | TabEvent::RealmReplaced
+        | TabEvent::Crashed
         | TabEvent::Binding { .. } => {}
     }
 }

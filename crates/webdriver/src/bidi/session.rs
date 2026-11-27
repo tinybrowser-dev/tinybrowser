@@ -45,7 +45,7 @@ pub(crate) async fn end(state: &Arc<BidiState>) -> BidiResult {
     if let Some(sid) = sid {
         let tabs: Vec<TabId> = {
             let mut guard = state.sessions.lock().await;
-            guard.sync_windows(&sid).await;
+            guard.sync_windows(&sid);
             guard
                 .open
                 .remove(&sid)
@@ -53,7 +53,7 @@ pub(crate) async fn end(state: &Arc<BidiState>) -> BidiResult {
         };
         state.browser.prompt_broker().set_default_behavior(None);
         state.browser.prompt_broker().set_hold_for_classic(false);
-        let _ = state.browser.clear_cookies().await;
+        let _ = state.browser.clear_cookies();
         for tab_id in tabs {
             let _ = state.browser.close_tab(tab_id).await;
         }
@@ -65,8 +65,8 @@ pub(crate) async fn end(state: &Arc<BidiState>) -> BidiResult {
 pub(crate) async fn subscribe(state: &Arc<BidiState>, params: &Value) -> BidiResult {
     let map = require_object(params, "params")?;
     let events = parse_event_list(map)?;
-    let contexts = parse_optional_contexts(state, map).await?;
-    let user_contexts = parse_optional_user_contexts(state, map).await?;
+    let contexts = parse_optional_contexts(state, map)?;
+    let user_contexts = parse_optional_user_contexts(state, map)?;
     if contexts.is_some() && user_contexts.is_some() {
         return Err(BidiError::invalid_argument(
             "cannot specify both contexts and userContexts",
@@ -147,7 +147,7 @@ pub(crate) async fn unsubscribe(state: &Arc<BidiState>, params: &Value) -> BidiR
         return Ok(json!({}));
     }
     let events = parse_event_list(map)?;
-    let contexts = parse_optional_contexts(state, map).await?;
+    let contexts = parse_optional_contexts(state, map)?;
     state
         .subscriptions
         .lock()
@@ -178,7 +178,7 @@ fn parse_event_list(map: &serde_json::Map<String, Value>) -> Result<Vec<String>,
     Ok(events)
 }
 
-async fn parse_optional_contexts(
+fn parse_optional_contexts(
     state: &Arc<BidiState>,
     map: &serde_json::Map<String, Value>,
 ) -> Result<Option<Vec<TabId>>, BidiError> {
@@ -191,7 +191,7 @@ async fn parse_optional_contexts(
     if arr.is_empty() {
         return Err(BidiError::invalid_argument("contexts must not be empty"));
     }
-    let live_tabs = state.browser.tabs().await.unwrap_or_default();
+    let live_tabs = state.browser.tabs().unwrap_or_default();
     let mut out = Vec::with_capacity(arr.len());
     for item in arr {
         let Some(raw) = item.as_str() else {
@@ -208,7 +208,7 @@ async fn parse_optional_contexts(
     Ok(Some(out))
 }
 
-async fn parse_optional_user_contexts(
+fn parse_optional_user_contexts(
     state: &Arc<BidiState>,
     map: &serde_json::Map<String, Value>,
 ) -> Result<Option<Vec<UserContextId>>, BidiError> {
@@ -223,7 +223,7 @@ async fn parse_optional_user_contexts(
             "userContexts must not be empty",
         ));
     }
-    let known = state.browser.user_contexts().await.unwrap_or_default();
+    let known = state.browser.user_contexts().unwrap_or_default();
     let mut out = Vec::with_capacity(arr.len());
     for item in arr {
         let Some(raw) = item.as_str() else {

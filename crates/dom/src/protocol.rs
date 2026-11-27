@@ -137,6 +137,7 @@ pub enum TabError {
     UnknownHistoryEntry { entry: u64 },
     Script(ScriptFailure),
     ActorStopped,
+    RendererCrashed,
     RendererUnavailable { message: String },
     ResourceLimit { resource: ResourceLimit },
     Render { message: String },
@@ -151,6 +152,7 @@ impl fmt::Display for TabError {
             Self::UnknownHistoryEntry { entry } => write!(f, "unknown history entry: {entry}"),
             Self::Script(failure) => write!(f, "script: {failure}"),
             Self::ActorStopped => f.write_str("renderer stopped"),
+            Self::RendererCrashed => f.write_str("renderer crashed"),
             Self::RendererUnavailable { message } => {
                 write!(f, "renderer unavailable: {message}")
             }

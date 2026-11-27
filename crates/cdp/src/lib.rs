@@ -100,9 +100,9 @@ async fn serve_request(request: Request, state: AppState) -> Response {
     match route {
         "/json/version" => get_only(&request, json_route(&version_json(&state))),
         "/json" | "/json/list" => get_only(&request, json_route(&list_json(&state).await)),
-        "/devtools/browser" => upgrade_route(request, state, None).await,
+        "/devtools/browser" => upgrade_route(request, state, None),
         _ => match route.strip_prefix("/devtools/page/") {
-            Some(raw) => upgrade_route(request, state, Some(raw.to_owned())).await,
+            Some(raw) => upgrade_route(request, state, Some(raw.to_owned())),
             None => status_response(StatusCode::NOT_FOUND, "not found"),
         },
     }
@@ -129,12 +129,12 @@ fn route_path(path: &str) -> &str {
 }
 
 // https://www.rfc-editor.org/rfc/rfc6455#section-4.2.1
-async fn upgrade_route(request: Request, state: AppState, raw: Option<String>) -> Response {
+fn upgrade_route(request: Request, state: AppState, raw: Option<String>) -> Response {
     let tab = if let Some(raw) = raw {
         let Ok(id) = raw.parse::<u64>() else {
             return status_response(StatusCode::BAD_REQUEST, "invalid page target");
         };
-        let Ok(tab) = state.browser.tab(TabId::new(id)).await else {
+        let Ok(tab) = state.browser.tab(TabId::new(id)) else {
             return status_response(StatusCode::NOT_FOUND, "unknown page target");
         };
         Some(tab)
@@ -165,8 +165,8 @@ fn version_json(state: &AppState) -> Value {
 
 async fn list_json(state: &AppState) -> Value {
     let mut targets = Vec::new();
-    for id in state.browser.tabs().await.unwrap_or_default() {
-        let url = match state.browser.tab(id).await {
+    for id in state.browser.tabs().unwrap_or_default() {
+        let url = match state.browser.tab(id) {
             Ok(tab) => tab
                 .document_url()
                 .await
@@ -553,6 +553,7 @@ impl Conn {
             event @ TabEvent::ExceptionThrown { .. } => {
                 self.push_exception_event(&mut messages, tab_id, &event, timestamp, sess);
             }
+            TabEvent::Crashed => push_target_crashed(&mut messages, tab_id, sess),
         }
         messages
     }
@@ -908,14 +909,14 @@ impl Conn {
         }
     }
 
-    async fn context_of(&self, id: TabId) -> String {
-        match self.browser.tab(id).await {
+    fn context_of(&self, id: TabId) -> String {
+        match self.browser.tab(id) {
             Ok(tab) => cdp_context_id(tab.user_context()),
             Err(_) => DEFAULT_BROWSER_CONTEXT_ID.to_owned(),
         }
     }
 
-    async fn resolve_user_context(
+    fn resolve_user_context(
         &self,
         raw: Option<&str>,
         fallback: &UserContextId,
@@ -929,7 +930,6 @@ impl Conn {
         let known = self
             .browser
             .user_contexts()
-            .await
             .map_err(|err| DispatchError::Failed(err.to_string()))?;
         if !known.contains(&uc) {
             return Err(DispatchError::InvalidParams("browserContextId".to_owned()));
@@ -964,7 +964,7 @@ impl Conn {
                     .parse::<u64>()
                     .map(TabId::new)
                     .map_err(|_| DispatchError::InvalidParams("targetId".to_owned()))?;
-                let context_id = self.context_of(id).await;
+                let context_id = self.context_of(id);
                 Ok(json!({"targetInfo": target_info(&self.browser, id, &context_id).await}))
             }
             None => Ok(json!({
@@ -990,11 +990,11 @@ impl Conn {
         self.auto_attach = auto_attach;
         self.auto_attach_session = session.map(str::to_owned);
         if auto_attach {
-            for id in self.browser.tabs().await.unwrap_or_default() {
+            for id in self.browser.tabs().unwrap_or_default() {
                 if self.auto_attached_tabs.contains(&id) {
                     continue;
                 }
-                if let Ok(tab) = self.browser.tab(id).await {
+                if let Ok(tab) = self.browser.tab(id) {
                     let session_id = self.mint(Target::Page(tab.clone()));
                     self.auto_attached_tabs.insert(id);
                     self.push_attached(session, &session_id, &tab).await;
@@ -1018,8 +1018,8 @@ impl Conn {
             None
         };
         if params.discover {
-            for id in self.browser.tabs().await.unwrap_or_default() {
-                let context_id = self.context_of(id).await;
+            for id in self.browser.tabs().unwrap_or_default() {
+                let context_id = self.context_of(id);
                 let info = target_info(&self.browser, id, &context_id).await;
                 self.push_session_event(
                     session,
@@ -1155,14 +1155,12 @@ impl Conn {
             Handler::ClearBrowserCookies => {
                 self.browser
                     .clear_cookies_in(&target_uc)
-                    .await
                     .map_err(|error| DispatchError::Failed(error.to_string()))?;
                 Ok(DispatchResult::Immediate(json!({})))
             }
             Handler::ClearBrowserCache => {
                 self.browser
                     .clear_cache_in(&target_uc)
-                    .await
                     .map_err(|error| DispatchError::Failed(error.to_string()))?;
                 Ok(DispatchResult::Immediate(json!({})))
             }
@@ -1170,21 +1168,17 @@ impl Conn {
                 let params: params::SetCacheDisabled = params.parse()?;
                 self.browser
                     .set_cache_disabled_in(&target_uc, params.cache_disabled)
-                    .await
                     .map_err(|error| DispatchError::Failed(error.to_string()))?;
                 Ok(DispatchResult::Immediate(json!({})))
             }
             Handler::StorageGetCookies => self
                 .dispatch_storage_cookies(StorageCookieOp::Get, params, &target_uc)
-                .await
                 .map(DispatchResult::Immediate),
             Handler::StorageSetCookies => self
                 .dispatch_storage_cookies(StorageCookieOp::Set, params, &target_uc)
-                .await
                 .map(DispatchResult::Immediate),
             Handler::StorageClearCookies => self
                 .dispatch_storage_cookies(StorageCookieOp::Clear, params, &target_uc)
-                .await
                 .map(DispatchResult::Immediate),
             Handler::GetTargetInfo => match target {
                 Target::Page(tab) => {
@@ -1214,7 +1208,7 @@ impl Conn {
         }
     }
 
-    async fn dispatch_storage_cookies(
+    fn dispatch_storage_cookies(
         &self,
         op: StorageCookieOp,
         params: params::RawParams<'_>,
@@ -1223,33 +1217,28 @@ impl Conn {
         match op {
             StorageCookieOp::Get => {
                 let params: params::StorageBrowserContext = params.parse()?;
-                let uc = self
-                    .resolve_user_context(params.browser_context_id.as_deref(), fallback)
-                    .await?;
+                let uc =
+                    self.resolve_user_context(params.browser_context_id.as_deref(), fallback)?;
                 let records = self
                     .browser
                     .all_cookie_records_in(&uc)
-                    .await
                     .map_err(|error| DispatchError::Failed(error.to_string()))?;
                 let cookies: Vec<Value> = records.iter().map(cdp_cookie_json).collect();
                 Ok(json!({ "cookies": cookies }))
             }
             StorageCookieOp::Set => {
                 let params: params::SetCookies = params.parse()?;
-                let uc = self
-                    .resolve_user_context(params.browser_context_id.as_deref(), fallback)
-                    .await?;
-                set_cdp_cookies(&self.browser, &uc, &params.cookies, None).await?;
+                let uc =
+                    self.resolve_user_context(params.browser_context_id.as_deref(), fallback)?;
+                set_cdp_cookies(&self.browser, &uc, &params.cookies, None)?;
                 Ok(json!({}))
             }
             StorageCookieOp::Clear => {
                 let params: params::StorageBrowserContext = params.parse()?;
-                let uc = self
-                    .resolve_user_context(params.browser_context_id.as_deref(), fallback)
-                    .await?;
+                let uc =
+                    self.resolve_user_context(params.browser_context_id.as_deref(), fallback)?;
                 self.browser
                     .clear_cookies_in(&uc)
-                    .await
                     .map_err(|error| DispatchError::Failed(error.to_string()))?;
                 Ok(json!({}))
             }
@@ -1356,12 +1345,12 @@ impl Conn {
             PageHandler::NetworkGetResponseBody => self.get_response_body(tab, params),
             PageHandler::NetworkSetExtraHttpHeaders => set_extra_http_headers(tab, params).await,
             PageHandler::NetworkGetCookies => self.network_get_cookies(tab, params).await,
-            PageHandler::NetworkGetAllCookies => self.network_get_all_cookies(tab).await,
+            PageHandler::NetworkGetAllCookies => self.network_get_all_cookies(tab),
             PageHandler::NetworkSetCookie => self.network_set_cookie(tab, params).await,
             PageHandler::NetworkSetCookies => self.network_set_cookies(tab, params).await,
             PageHandler::NetworkDeleteCookies => {
                 let params: params::DeleteCookies = params.parse()?;
-                delete_cdp_cookies(&self.browser, tab.user_context(), &params).await?;
+                delete_cdp_cookies(&self.browser, tab.user_context(), &params)?;
                 Ok(json!({}))
             }
             PageHandler::NetworkSetBlockedUrls => self.network_set_blocked_urls(tab, params),
@@ -1481,11 +1470,7 @@ impl Conn {
             let Ok(parsed) = url::Url::parse(&raw) else {
                 continue;
             };
-            if let Ok(records) = self
-                .browser
-                .cookie_records_in(tab.user_context(), &parsed)
-                .await
-            {
+            if let Ok(records) = self.browser.cookie_records_in(tab.user_context(), &parsed) {
                 for rec in records {
                     let key = (rec.name.clone(), rec.domain.clone(), rec.path.clone());
                     if seen.insert(key) {
@@ -1497,11 +1482,10 @@ impl Conn {
         Ok(json!({ "cookies": cookies }))
     }
 
-    async fn network_get_all_cookies(&self, tab: &TabHandle) -> Result<Value, DispatchError> {
+    fn network_get_all_cookies(&self, tab: &TabHandle) -> Result<Value, DispatchError> {
         let records = self
             .browser
             .all_cookie_records_in(tab.user_context())
-            .await
             .map_err(|err| DispatchError::Failed(err.to_string()))?;
         let cookies: Vec<Value> = records.iter().map(cdp_cookie_json).collect();
         Ok(json!({ "cookies": cookies }))
@@ -1519,8 +1503,7 @@ impl Conn {
             tab.user_context(),
             &[param],
             current_url.as_deref(),
-        )
-        .await?;
+        )?;
         Ok(json!({ "success": success }))
     }
 
@@ -1536,8 +1519,7 @@ impl Conn {
             tab.user_context(),
             &params.cookies,
             current_url.as_deref(),
-        )
-        .await?;
+        )?;
         Ok(json!({}))
     }
 
@@ -1693,7 +1675,6 @@ impl Conn {
                 let mut ids: Vec<String> = self
                     .browser
                     .user_contexts()
-                    .await
                     .map_err(|err| DispatchError::Failed(err.to_string()))?
                     .into_iter()
                     .filter(|uc| !uc.is_default())
@@ -1713,7 +1694,6 @@ impl Conn {
                 let tab = self
                     .browser
                     .tab(id)
-                    .await
                     .map_err(|err| DispatchError::Failed(err.to_string()))?;
                 Ok(json!({ "sessionId": self.mint(Target::Page(tab)) }))
             }
@@ -1737,12 +1717,10 @@ impl Conn {
         session: Option<&str>,
     ) -> Result<Value, DispatchError> {
         let params: params::CreateTarget = params.parse()?;
-        let uc = self
-            .resolve_user_context(
-                params.browser_context_id.as_deref(),
-                &UserContextId::default_context(),
-            )
-            .await?;
+        let uc = self.resolve_user_context(
+            params.browser_context_id.as_deref(),
+            &UserContextId::default_context(),
+        )?;
         let url = params.url.as_str();
         let tab = self
             .browser
@@ -1785,7 +1763,7 @@ impl Conn {
                 "cannot dispose default browser context".to_owned(),
             ));
         }
-        let tabs = self.browser.tabs_in(&uc).await.unwrap_or_default();
+        let tabs = self.browser.tabs_in(&uc).unwrap_or_default();
         for id in tabs {
             let _ = self.close_tab_id(id, session).await;
         }
@@ -1883,10 +1861,9 @@ impl Conn {
         for id in self
             .browser
             .tabs()
-            .await
             .map_err(|error| DispatchError::Failed(error.to_string()))?
         {
-            let context_id = self.context_of(id).await;
+            let context_id = self.context_of(id);
             target_infos.push(target_info(&self.browser, id, &context_id).await);
         }
         Ok(json!({ "targetInfos": target_infos }))
@@ -2258,7 +2235,7 @@ impl Conn {
                 }
                 if self.auto_attach
                     && !self.auto_attached_tabs.contains(&tab)
-                    && let Ok(handle) = self.browser.tab(tab).await
+                    && let Ok(handle) = self.browser.tab(tab)
                 {
                     let session_id = self.mint(Target::Page(handle.clone()));
                     self.auto_attached_tabs.insert(tab);
@@ -2564,7 +2541,7 @@ impl Conn {
                 if !self.prompt_tabs.contains(&info.tab) {
                     return messages;
                 }
-                let url = match self.browser.tab(info.tab).await {
+                let url = match self.browser.tab(info.tab) {
                     Ok(tab) => tab.document_url().await.unwrap_or_default(),
                     Err(_) => String::new(),
                 };
@@ -3206,10 +3183,27 @@ struct NavigationResponse {
     body: Vec<u8>,
 }
 
+#[derive(Clone, Copy)]
 enum StorageCookieOp {
     Get,
     Set,
     Clear,
+}
+
+fn push_target_crashed(messages: &mut Vec<Value>, tab_id: TabId, session: Option<&str>) {
+    // https://chromedevtools.github.io/devtools-protocol/tot/Inspector/#event-targetCrashed
+    push_event(messages, "Inspector.targetCrashed", &json!({}), session);
+    // https://chromedevtools.github.io/devtools-protocol/tot/Target/#event-targetCrashed
+    push_event(
+        messages,
+        "Target.targetCrashed",
+        &json!({
+            "targetId": tab_id.to_string(),
+            "status": "crashed",
+            "errorCode": 1,
+        }),
+        None,
+    );
 }
 
 enum SocketWake {

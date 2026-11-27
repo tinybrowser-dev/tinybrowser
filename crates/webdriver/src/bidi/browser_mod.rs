@@ -46,11 +46,10 @@ pub(crate) async fn create_user_context(state: &Arc<BidiState>, params: &Value) 
 }
 
 // https://w3c.github.io/webdriver-bidi/#command-browser-getUserContexts
-pub(crate) async fn get_user_contexts(state: &Arc<BidiState>) -> BidiResult {
+pub(crate) fn get_user_contexts(state: &Arc<BidiState>) -> BidiResult {
     let contexts = state
         .browser
         .user_contexts()
-        .await
         .map_err(|err| BidiError::unknown_error(err.to_string()))?;
     let list: Vec<Value> = contexts
         .into_iter()
@@ -91,11 +90,10 @@ pub(crate) async fn get_client_windows(state: &Arc<BidiState>) -> BidiResult {
     let ids = state
         .browser
         .tabs()
-        .await
         .map_err(|err| BidiError::unknown_error(err.to_string()))?;
     let mut windows = Vec::with_capacity(ids.len());
     for (idx, id) in ids.into_iter().enumerate() {
-        let (width, height) = if let Ok(tab) = state.browser.tab(id).await {
+        let (width, height) = if let Ok(tab) = state.browser.tab(id) {
             tab.viewport_size()
                 .await
                 .unwrap_or(browser::DEFAULT_VIEWPORT)
@@ -169,7 +167,6 @@ pub(crate) async fn set_client_window_state(state: &Arc<BidiState>, params: &Val
     let tab = state
         .browser
         .tab(tab_id)
-        .await
         .map_err(|_| BidiError::unknown_error(format!("unknown clientWindow: {window_id}")))?;
     let (cur_w, cur_h) = tab
         .viewport_size()
@@ -199,7 +196,7 @@ pub(crate) async fn set_client_window_state(state: &Arc<BidiState>, params: &Val
 }
 
 // https://w3c.github.io/webdriver-bidi/#command-browser-setDownloadBehavior
-pub(crate) async fn set_download_behavior(state: &Arc<BidiState>, params: &Value) -> BidiResult {
+pub(crate) fn set_download_behavior(state: &Arc<BidiState>, params: &Value) -> BidiResult {
     let map = require_object(params, "params")?;
     let Some(behavior) = map.get("downloadBehavior") else {
         return Err(BidiError::invalid_argument("downloadBehavior is required"));
@@ -235,7 +232,7 @@ pub(crate) async fn set_download_behavior(state: &Arc<BidiState>, params: &Value
                 "userContexts must not be empty",
             ));
         }
-        let known = state.browser.user_contexts().await.unwrap_or_default();
+        let known = state.browser.user_contexts().unwrap_or_default();
         for item in arr {
             let Some(raw) = item.as_str() else {
                 return Err(BidiError::invalid_argument("userContext must be a string"));

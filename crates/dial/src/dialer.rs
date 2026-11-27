@@ -397,7 +397,9 @@ mod tests {
                 let mut headers = HeaderMap::new();
                 headers.insert("cache-control", "max-age=60").unwrap();
                 headers.insert("access-control-allow-origin", "*").unwrap();
-                headers.insert("access-control-allow-headers", "x-tab").unwrap();
+                headers
+                    .insert("access-control-allow-headers", "x-tab")
+                    .unwrap();
                 headers.insert("content-type", "text/css").unwrap();
                 Ok(WireResponse {
                     status: 200,

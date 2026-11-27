@@ -328,7 +328,7 @@ async fn snapshot_session(
         if !guard.open.contains_key(session) {
             return Err(error(404, "invalid session id", session));
         }
-        guard.sync_windows(session).await;
+        guard.sync_windows(session);
         guard
             .snapshot(session)
             .ok_or_else(|| error(404, "no such window", "current window is closed"))?
@@ -359,7 +359,7 @@ async fn snapshot_top_level_checking_alert(
         if !guard.open.contains_key(session) {
             return Err(error(404, "invalid session id", session));
         }
-        guard.sync_windows(session).await;
+        guard.sync_windows(session);
         guard
             .snapshot(session)
             .ok_or_else(|| error(404, "no such window", "current window is closed"))?
@@ -428,7 +428,7 @@ async fn with_session_sync(
     action: impl FnOnce(&mut Sessions) -> (u16, Value),
 ) -> (u16, Value) {
     let mut guard = sessions.lock().await;
-    guard.sync_windows(session).await;
+    guard.sync_windows(session);
     action(&mut guard)
 }
 
@@ -1032,14 +1032,15 @@ fn script_error(err: &TabError) -> (u16, Value) {
         TabError::Script(ScriptFailure::Interrupted) => {
             error(500, "script timeout", "script timeout")
         }
+        TabError::ActorStopped
+        | TabError::RendererCrashed
+        | TabError::RendererUnavailable { .. } => error(500, "unknown error", &err.to_string()),
         TabError::Script(
             ScriptFailure::Engine { .. } | ScriptFailure::BadTimerId | ScriptFailure::HostMissing,
         )
         | TabError::InvalidUrl { .. }
         | TabError::UnknownFrame { .. }
         | TabError::UnknownHistoryEntry { .. }
-        | TabError::ActorStopped
-        | TabError::RendererUnavailable { .. }
         | TabError::ResourceLimit { .. }
         | TabError::Render { .. }
         | TabError::Dom { .. } => error(500, "javascript error", &err.to_string()),
@@ -2607,7 +2608,6 @@ async fn get_cookies(sessions: &Mutex<Sessions>, session: &str) -> (u16, Value) 
     match snapshot
         .browser
         .cookie_records_in(snapshot.tab.user_context(), &url)
-        .await
     {
         Ok(records) => ok(json!(records.iter().map(cookie_json).collect::<Vec<_>>())),
         Err(err) => error(500, "unknown error", &err.to_string()),
@@ -2627,7 +2627,6 @@ async fn get_named_cookie(sessions: &Mutex<Sessions>, session: &str, name: &str)
     match snapshot
         .browser
         .cookie_records_in(snapshot.tab.user_context(), &url)
-        .await
     {
         Ok(records) => match records.iter().find(|record| record.name == name) {
             Some(record) => ok(cookie_json(record)),
@@ -2774,7 +2773,6 @@ async fn add_cookie(sessions: &Mutex<Sessions>, session: &str, body: &str) -> (u
     match snapshot
         .browser
         .add_cookie_in(snapshot.tab.user_context(), &line, &url)
-        .await
     {
         Ok(true) => ok(Value::Null),
         Ok(false) => error(500, "unable to set cookie", "the cookie was rejected"),
@@ -2799,7 +2797,6 @@ async fn delete_named_cookie(
     match snapshot
         .browser
         .delete_cookies_for_url_in(snapshot.tab.user_context(), &url, Some(name))
-        .await
     {
         Ok(_) => ok(Value::Null),
         Err(err) => error(500, "unknown error", &err.to_string()),
@@ -2819,7 +2816,6 @@ async fn delete_cookies(sessions: &Mutex<Sessions>, session: &str) -> (u16, Valu
     match snapshot
         .browser
         .delete_cookies_for_url_in(snapshot.tab.user_context(), &url, None)
-        .await
     {
         Ok(_) => ok(Value::Null),
         Err(err) => error(500, "unknown error", &err.to_string()),
@@ -3059,7 +3055,7 @@ async fn new_window(sessions: &Mutex<Sessions>, session: &str, body: &str) -> (u
     }
     let browser = {
         let mut guard = sessions.lock().await;
-        guard.sync_windows(session).await;
+        guard.sync_windows(session);
         if !guard.open.contains_key(session) {
             return error(404, "invalid session id", session);
         }
@@ -3087,7 +3083,7 @@ async fn new_window(sessions: &Mutex<Sessions>, session: &str, body: &str) -> (u
 async fn delete_session(sessions: &Mutex<Sessions>, session: &str) -> (u16, Value) {
     let (browser, tabs) = {
         let mut guard = sessions.lock().await;
-        guard.sync_windows(session).await;
+        guard.sync_windows(session);
         let Some(found) = guard.open.remove(session) else {
             return ok(Value::Null);
         };
@@ -3100,7 +3096,7 @@ async fn delete_session(sessions: &Mutex<Sessions>, session: &str) -> (u16, Valu
     };
     browser.prompt_broker().set_default_behavior(None);
     browser.prompt_broker().set_hold_for_classic(false);
-    let _ = browser.clear_cookies().await;
+    let _ = browser.clear_cookies();
     for tab_id in tabs {
         let _result = browser.close_tab(tab_id).await;
     }
@@ -3114,7 +3110,7 @@ async fn close_window(sessions: &Mutex<Sessions>, session: &str) -> (u16, Value)
     }
     let (browser, tab_id, remaining) = {
         let mut guard = sessions.lock().await;
-        guard.sync_windows(session).await;
+        guard.sync_windows(session);
         let Some(found) = guard.open.get_mut(session) else {
             return error(404, "invalid session id", session);
         };
@@ -3131,7 +3127,7 @@ async fn close_window(sessions: &Mutex<Sessions>, session: &str) -> (u16, Value)
     if remaining.is_empty() {
         browser.prompt_broker().set_default_behavior(None);
         browser.prompt_broker().set_hold_for_classic(false);
-        let _ = browser.clear_cookies().await;
+        let _ = browser.clear_cookies();
     }
     let _result = browser.close_tab(tab_id).await;
     ok(json!(remaining))

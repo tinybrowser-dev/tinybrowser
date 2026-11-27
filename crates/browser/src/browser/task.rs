@@ -1,21 +1,16 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, watch};
 
 use crate::actor::{NewTab, RemoteWindowMessage, TabHandle, TabId, TabTask};
-use crate::child::RendererSandbox;
 use crate::context::{BrowserContext, UserContextId};
-use crate::exchange::ServerInput;
 use crate::frames::FrameInfo;
 use crate::intercept::NetworkBroker;
 use crate::manager::RendererProcessManager;
 use crate::prompt::PromptBroker;
 
-use super::{
-    BrowserError, BrowserHandle, BrowserLifecycleEvent, BrowserServer, Command, Notice,
-    OpenWindowOptions, Reply,
-};
+use super::{BrowserError, BrowserLifecycleEvent, Command, OpenWindowOptions};
 
 // https://html.spec.whatwg.org/multipage/browsing-the-web.html#resetBCName
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -56,7 +51,7 @@ pub(crate) struct TabRegistry {
 }
 
 impl TabRegistry {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             records: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -285,7 +280,7 @@ impl TabRegistry {
         self.lock().entry(tab).or_default().user_context = user_context;
     }
 
-    fn ids_in(&self, user_context: &UserContextId) -> Vec<TabId> {
+    pub(super) fn ids_in(&self, user_context: &UserContextId) -> Vec<TabId> {
         self.lock()
             .iter()
             .filter(|(_, record)| record.is_live() && &record.user_context == user_context)
@@ -421,7 +416,7 @@ impl TabRegistry {
         }
     }
 
-    fn ids(&self) -> Vec<TabId> {
+    pub(super) fn ids(&self) -> Vec<TabId> {
         self.lock()
             .iter()
             .filter(|(_, record)| record.is_live())
@@ -489,8 +484,9 @@ fn group_root(records: &HashMap<TabId, TabRecord>, tab: TabId) -> TabId {
 }
 
 pub(crate) struct BrowserTask {
-    server: BrowserServer,
-    context: BrowserContext,
+    commands: mpsc::Receiver<Command>,
+    closed: watch::Sender<bool>,
+    context: Arc<BrowserContext>,
     renderers: Arc<RendererProcessManager>,
     tabs: TabRegistry,
     lifecycle: broadcast::Sender<BrowserLifecycleEvent>,
@@ -499,33 +495,24 @@ pub(crate) struct BrowserTask {
     next_tab: Option<u64>,
 }
 
-enum DispatchOutcome {
-    Continue(Reply),
-    Deferred,
-    Stop(Reply),
-}
-
 impl BrowserTask {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "browser actor owns its subsystems"
+    )]
     pub(super) fn new(
-        server: BrowserServer,
-        context: BrowserContext,
-        browser: BrowserHandle,
+        commands: mpsc::Receiver<Command>,
+        closed: watch::Sender<bool>,
+        context: Arc<BrowserContext>,
+        tabs: TabRegistry,
+        renderers: Arc<RendererProcessManager>,
         lifecycle: broadcast::Sender<BrowserLifecycleEvent>,
         network_broker: Arc<NetworkBroker>,
         prompt_broker: Arc<PromptBroker>,
-        sandbox: RendererSandbox,
     ) -> Self {
-        let tabs = TabRegistry::new();
-        let identity = browser.identity().clone();
-        let renderers = Arc::new(RendererProcessManager::new(
-            context.session_storage(),
-            browser,
-            tabs.clone(),
-            identity,
-            sandbox,
-        ));
         Self {
-            server,
+            commands,
+            closed,
             context,
             renderers,
             tabs,
@@ -537,126 +524,37 @@ impl BrowserTask {
     }
 
     pub(super) async fn run(mut self) {
-        loop {
-            let Some(input) = self.server.recv().await else {
-                break;
-            };
-            match input {
-                ServerInput::Call { id, body } => match self.dispatch(id, body).await {
-                    DispatchOutcome::Continue(reply) => {
-                        if self.server.reply(id, reply).await.is_err() {
-                            break;
-                        }
-                    }
-                    DispatchOutcome::Deferred => {}
-                    DispatchOutcome::Stop(reply) => {
-                        let _result = self.server.reply(id, reply).await;
-                        return;
-                    }
-                },
-                ServerInput::Notify(Notice::Close) => break,
-                ServerInput::RequestChunk
-                | ServerInput::RequestEnd
-                | ServerInput::Cancel { .. } => {}
+        while let Some(command) = self.commands.recv().await {
+            match command {
+                Command::CreateTab {
+                    user_context,
+                    reply,
+                } => {
+                    let _ = reply.send(self.create_tab(NewTab::browser_created(user_context)));
+                }
+                Command::CloseTab { id, reply } => {
+                    let _ = reply.send(self.close_tab(id));
+                }
+                Command::CreateUserContext { reply } => {
+                    let _ = reply.send(self.context.create_user_context());
+                }
+                Command::RemoveUserContext { id, reply } => {
+                    let _ = reply.send(self.remove_user_context(&id));
+                }
+                Command::OpenWindow { options, reply } => {
+                    let _ = reply.send(self.open_window(*options));
+                }
+                Command::Close { reply } => {
+                    let result = self.shutdown().await;
+                    let _ = self.closed.send(true);
+                    let _ = reply.send(result);
+                    return;
+                }
+                Command::RequestClose => break,
             }
         }
         let _result = self.shutdown().await;
-    }
-
-    async fn dispatch(
-        &mut self,
-        id: crate::exchange::RequestId,
-        command: Command,
-    ) -> DispatchOutcome {
-        let reply = match command {
-            Command::CreateTab { user_context } => {
-                Reply::CreateTab(self.create_tab(NewTab::browser_created(user_context)))
-            }
-            Command::Tabs => Reply::Tabs(self.tabs.ids()),
-            Command::TabsIn { user_context } => Reply::Tabs(self.tabs.ids_in(&user_context)),
-            Command::Tab { id } => Reply::Tab(self.tabs.tab(id).ok_or(BrowserError::UnknownTab)),
-            Command::CloseTab { id } => Reply::CloseTab(self.close_tab(id)),
-            Command::CreateUserContext => {
-                Reply::CreateUserContext(self.context.create_user_context())
-            }
-            Command::RemoveUserContext { id } => {
-                Reply::RemoveUserContext(self.remove_user_context(&id))
-            }
-            Command::UserContexts => Reply::UserContexts(self.context.user_contexts()),
-            Command::CookieRecords { user_context, url } => {
-                Reply::CookieRecords(self.context.cookie_records(&user_context, &url))
-            }
-            Command::AllCookieRecords { user_context } => {
-                Reply::CookieRecords(self.context.all_cookie_records(&user_context))
-            }
-            Command::MatchingCookieRecords {
-                user_context,
-                filter,
-            } => Reply::CookieRecords(self.context.matching_cookie_records(&user_context, &filter)),
-            Command::ClearCookies { user_context } => {
-                self.context.clear_cookies(&user_context);
-                Reply::ClearCookies
-            }
-            Command::ClearCache { user_context } => {
-                self.context.clear_cache(&user_context);
-                Reply::ClearCache
-            }
-            Command::SetCacheDisabled {
-                user_context,
-                disabled,
-            } => {
-                self.context.set_cache_disabled(&user_context, disabled);
-                Reply::SetCacheDisabled
-            }
-            Command::AddCookie {
-                user_context,
-                cookie,
-                url,
-            } => Reply::AddCookie(self.context.add_cookie(&user_context, &cookie, &url)),
-            Command::SetDirectCookie {
-                user_context,
-                cookie,
-            } => Reply::AddCookie(self.context.set_direct_cookie(&user_context, &cookie)),
-            Command::DeleteCookies {
-                user_context,
-                filter,
-            } => Reply::DeletedCount(self.context.delete_cookies(&user_context, &filter)),
-            Command::DeleteCookiesForUrl {
-                user_context,
-                url,
-                name,
-            } => Reply::DeletedCount(self.context.delete_cookies_for_url(
-                &user_context,
-                &url,
-                name.as_deref(),
-            )),
-            Command::OpenWindow(request) => Reply::OpenWindow(self.open_window(request)),
-            Command::EnsureRendererReady => {
-                let renderers = Arc::clone(&self.renderers);
-                let responder = self.server.responder();
-                tokio::spawn(async move {
-                    let result = renderers.ensure_ready().await;
-                    let _ = responder
-                        .reply(id, Reply::EnsureRendererReady(result))
-                        .await;
-                });
-                return DispatchOutcome::Deferred;
-            }
-            Command::RendererHealth => {
-                let renderers = Arc::clone(&self.renderers);
-                let responder = self.server.responder();
-                tokio::spawn(async move {
-                    let result = renderers.health().await;
-                    let _ = responder.reply(id, Reply::RendererHealth(result)).await;
-                });
-                return DispatchOutcome::Deferred;
-            }
-            Command::Close => {
-                let result = self.shutdown().await;
-                return DispatchOutcome::Stop(Reply::Close(result));
-            }
-        };
-        DispatchOutcome::Continue(reply)
+        let _ = self.closed.send(true);
     }
 
     fn create_tab(&mut self, tab: NewTab) -> Result<TabHandle, BrowserError> {
@@ -774,6 +672,7 @@ impl BrowserTask {
         for mut task in self.tabs.drain() {
             task.shutdown().await;
         }
+        self.renderers.shutdown().await;
         self.context.persist().await
     }
 }

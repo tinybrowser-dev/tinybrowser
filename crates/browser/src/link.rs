@@ -763,7 +763,7 @@ fn spawn_window_close(
             return;
         }
         let script_closable = tabs.is_script_created(target)
-            || match browser.tab(target).await {
+            || match browser.tab(target) {
                 Ok(tab) => matches!(
                     tab.history().await,
                     Ok(history) if history.entries().len() == 1
@@ -1036,7 +1036,7 @@ impl WindowRouter<'_> {
                 );
             } else {
                 let initiator = window_initiator(&context.tabs, assignment, source, opener)?;
-                if let Ok(handle) = context.browser.tab(target).await {
+                if let Ok(handle) = context.browser.tab(target) {
                     tokio::spawn(async move {
                         let _result = handle.goto_from(url.as_str(), initiator).await;
                     });
@@ -1170,7 +1170,7 @@ async fn route_navigate_top_level(
             source,
             renderer::OpenerPolicy::Keep,
         )?;
-        if let Ok(handle) = context.browser.tab(assignment.tab).await {
+        if let Ok(handle) = context.browser.tab(assignment.tab) {
             tokio::spawn(async move {
                 let _result = handle.goto_from(url.as_str(), initiator).await;
             });

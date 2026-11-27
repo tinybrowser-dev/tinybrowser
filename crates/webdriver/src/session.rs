@@ -755,9 +755,9 @@ impl Sessions {
     }
 
     // https://w3c.github.io/webdriver/#get-window-handles
-    pub(crate) async fn sync_windows(&mut self, session: &str) {
+    pub(crate) fn sync_windows(&mut self, session: &str) {
         let browser = self.browser.clone();
-        let Ok(ids) = browser.tabs().await else {
+        let Ok(ids) = browser.tabs() else {
             return;
         };
         let Some(found) = self.open.get_mut(session) else {
@@ -770,7 +770,7 @@ impl Sessions {
             if found.windows.values().any(|window| window.tab.id() == id) {
                 continue;
             }
-            let Ok(tab) = browser.tab(id).await else {
+            let Ok(tab) = browser.tab(id) else {
                 continue;
             };
             self.next_window = self.next_window.saturating_add(1);
@@ -817,8 +817,10 @@ pub(crate) async fn status(sessions: &tokio::sync::Mutex<Sessions>) -> (bool, St
         guard.browser.clone()
     };
     match browser.renderer_health().await {
-        Ok(()) => (true, "ready".to_owned()),
-        Err(message) => (false, message),
+        browser::RendererState::Live
+        | browser::RendererState::Starting
+        | browser::RendererState::NoneLive => (true, "ready".to_owned()),
+        browser::RendererState::Failed(error) => (false, error.to_string()),
     }
 }
 
@@ -888,9 +890,9 @@ pub(crate) async fn create_session(
 
 async fn build_session_tabs(browser: &BrowserHandle) -> Result<Vec<TabHandle>, String> {
     let mut tabs = Vec::new();
-    if let Ok(ids) = browser.tabs().await {
+    if let Ok(ids) = browser.tabs() {
         for tab_id in ids {
-            if let Ok(tab) = browser.tab(tab_id).await {
+            if let Ok(tab) = browser.tab(tab_id) {
                 tabs.push(tab);
             }
         }
