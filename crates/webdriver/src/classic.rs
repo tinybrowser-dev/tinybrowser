@@ -8,7 +8,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use browser::{
     CookieRecord, CookieSameSite, FrameId, PromptBehavior, PromptEvent, PromptKind, RemoteValue,
     ScreenshotClip, ScreenshotFormat, ScreenshotRequest, ScriptFailure, TabError, TabEvent,
-    TabHandle, TabId, UserContextId,
+    TabHandle, TabId,
 };
 use serde_json::{Map, Value, json};
 use tokio::sync::Mutex;
@@ -3053,15 +3053,15 @@ async fn new_window(sessions: &Mutex<Sessions>, session: &str, body: &str) -> (u
     if let Err(reply) = snapshot_top_level_checking_alert(sessions, session).await {
         return reply;
     }
-    let browser = {
+    let (browser, user_context) = {
         let mut guard = sessions.lock().await;
         guard.sync_windows(session);
-        if !guard.open.contains_key(session) {
+        let Some(found) = guard.open.get(session) else {
             return error(404, "invalid session id", session);
-        }
-        guard.browser.clone()
+        };
+        (guard.browser.clone(), found.user_context.clone())
     };
-    let tab = match crate::session::blank_window(&browser, UserContextId::default_context()).await {
+    let tab = match crate::session::blank_window(&browser, user_context).await {
         Ok(tab) => tab,
         Err(err) => return error(500, "unknown error", &err),
     };
@@ -3081,25 +3081,15 @@ async fn new_window(sessions: &Mutex<Sessions>, session: &str, body: &str) -> (u
 
 // https://w3c.github.io/webdriver/#delete-session
 async fn delete_session(sessions: &Mutex<Sessions>, session: &str) -> (u16, Value) {
-    let (browser, tabs) = {
+    let (browser, removed) = {
         let mut guard = sessions.lock().await;
         guard.sync_windows(session);
         let Some(found) = guard.open.remove(session) else {
             return ok(Value::Null);
         };
-        let tabs: Vec<_> = found
-            .windows
-            .into_values()
-            .map(|window| window.tab.id())
-            .collect();
-        (guard.browser.clone(), tabs)
+        (guard.browser.clone(), found)
     };
-    browser.prompt_broker().set_default_behavior(None);
-    browser.prompt_broker().set_hold_for_classic(false);
-    let _ = browser.clear_cookies();
-    for tab_id in tabs {
-        let _result = browser.close_tab(tab_id).await;
-    }
+    crate::session::teardown_session(&browser, removed).await;
     ok(Value::Null)
 }
 
@@ -3108,7 +3098,7 @@ async fn close_window(sessions: &Mutex<Sessions>, session: &str) -> (u16, Value)
     if let Err(reply) = snapshot_top_level_checking_alert(sessions, session).await {
         return reply;
     }
-    let (browser, tab_id, remaining) = {
+    let (browser, tab_id, remaining, removed_session) = {
         let mut guard = sessions.lock().await;
         guard.sync_windows(session);
         let Some(found) = guard.open.get_mut(session) else {
@@ -3119,15 +3109,15 @@ async fn close_window(sessions: &Mutex<Sessions>, session: &str) -> (u16, Value)
         };
         let tab_id = window.tab.id();
         let remaining = guard.ordered_handles(session).unwrap_or_default();
-        if remaining.is_empty() {
-            guard.open.remove(session);
-        }
-        (guard.browser.clone(), tab_id, remaining)
+        let removed_session = if remaining.is_empty() {
+            guard.open.remove(session)
+        } else {
+            None
+        };
+        (guard.browser.clone(), tab_id, remaining, removed_session)
     };
-    if remaining.is_empty() {
-        browser.prompt_broker().set_default_behavior(None);
-        browser.prompt_broker().set_hold_for_classic(false);
-        let _ = browser.clear_cookies();
+    if let Some(removed) = removed_session {
+        crate::session::teardown_session(&browser, removed).await;
     }
     let _result = browser.close_tab(tab_id).await;
     ok(json!(remaining))

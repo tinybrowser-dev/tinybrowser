@@ -14,13 +14,13 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use browser::{
-    BrowserHandle, BrowserLifecycleEvent, FrameId, NetworkEvent, NetworkRequestId, PromptEvent,
-    TabEvent, TabId, UserContextId, now_millis,
+    AutomationSession, BrowserHandle, BrowserLifecycleEvent, FrameId, NetworkEvent,
+    NetworkRequestId, PromptEvent, TabEvent, TabId, UserContextId, now_millis,
 };
 use futures_util::{SinkExt as _, StreamExt as _};
 use serde_json::{Value, json};
 use server::ws::{WebSocket, WsMessage};
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, broadcast, mpsc};
 use tokio::task::{JoinHandle, JoinSet};
 
 use crate::bidi::protocol::{BidiError, BidiResult, error_response, event_message, ok_response};
@@ -294,31 +294,37 @@ pub(crate) type SandboxMap = HashMap<(TabId, FrameId), HashSet<String>>;
 pub(crate) struct BidiState {
     pub(crate) sessions: Arc<Mutex<Sessions>>,
     pub(crate) browser: BrowserHandle,
+    pub(crate) automation: AutomationSession,
     pub(crate) session_id: Mutex<Option<String>>,
     pub(crate) subscriptions: Arc<Mutex<SubscriptionSet>>,
     pub(crate) out_tx: mpsc::UnboundedSender<Value>,
     pub(crate) attached_tabs: Arc<Mutex<HashMap<TabId, JoinHandle<()>>>>,
     pub(crate) attaching_tabs: Arc<Mutex<HashSet<TabId>>>,
-    pub(crate) tab_user_contexts: Arc<Mutex<HashMap<TabId, UserContextId>>>,
     pub(crate) active_navigations: Arc<Mutex<HashMap<(TabId, FrameId), String>>>,
     pub(crate) sandboxes: Arc<Mutex<SandboxMap>>,
     pub(crate) log_buffer: Arc<Mutex<VecDeque<BufferedLogEntry>>>,
     pub(crate) data_collectors: Arc<Mutex<HashMap<String, DataCollector>>>,
-    pub(crate) intercepts: std::sync::Mutex<Vec<browser::InterceptId>>,
 }
 
 impl BidiState {
     pub(crate) async fn emit(&self, method: &str, tab: Option<TabId>, params: Value) -> bool {
-        let uc = if let Some(t) = tab {
-            self.tab_user_contexts.lock().await.get(&t).cloned()
-        } else {
-            None
-        };
+        let uc = tab.and_then(|t| self.browser.tab(t).ok().map(|h| h.user_context().clone()));
+        self.emit_with_context(method, tab, uc.as_ref(), params)
+            .await
+    }
+
+    pub(crate) async fn emit_with_context(
+        &self,
+        method: &str,
+        tab: Option<TabId>,
+        user_context: Option<&UserContextId>,
+        params: Value,
+    ) -> bool {
         let subscribed = self
             .subscriptions
             .lock()
             .await
-            .matches(method, tab, uc.as_ref());
+            .matches(method, tab, user_context);
         if subscribed {
             let _ = self.out_tx.send(event_message(method, &params));
         }
@@ -331,7 +337,15 @@ impl BidiState {
         user_context: UserContextId,
         params: Value,
     ) {
-        if !self.emit("log.entryAdded", Some(tab), params.clone()).await {
+        if !self
+            .emit_with_context(
+                "log.entryAdded",
+                Some(tab),
+                Some(&user_context),
+                params.clone(),
+            )
+            .await
+        {
             let mut buf = self.log_buffer.lock().await;
             if buf.len() >= 128 {
                 buf.pop_front();
@@ -359,8 +373,6 @@ impl BidiState {
             self.attaching_tabs.lock().await.remove(&tab_id);
             return;
         };
-        let uc = tab.user_context().clone();
-        self.tab_user_contexts.lock().await.insert(tab_id, uc);
         let Ok(mut rx) = tab.subscribe() else {
             self.attaching_tabs.lock().await.remove(&tab_id);
             return;
@@ -387,21 +399,28 @@ impl BidiState {
 
 fn spawn_lifecycle_forwarder(
     state: Arc<BidiState>,
-    mut rx: tokio::sync::broadcast::Receiver<BrowserLifecycleEvent>,
+    mut rx: broadcast::Receiver<BrowserLifecycleEvent>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        while let Ok(event) = rx.recv().await {
+        loop {
+            let event = match rx.recv().await {
+                Ok(event) => event,
+                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    logging::warn!(
+                        target: "webdriver::bidi",
+                        "lifecycle broadcast lagged by {skipped} events; resyncing tabs"
+                    );
+                    state.attach_all_existing_tabs().await;
+                    continue;
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            };
             match event {
                 BrowserLifecycleEvent::TabCreated {
                     tab,
                     user_context,
                     opener,
                 } => {
-                    state
-                        .tab_user_contexts
-                        .lock()
-                        .await
-                        .insert(tab, user_context.clone());
                     state.attach_tab(tab).await;
                     let info = json!({
                         "context": format_context_id(tab, FrameId::MAIN),
@@ -413,7 +432,12 @@ fn spawn_lifecycle_forwarder(
                         "clientWindow": format_context_id(tab, FrameId::MAIN),
                     });
                     state
-                        .emit("browsingContext.contextCreated", Some(tab), info)
+                        .emit_with_context(
+                            "browsingContext.contextCreated",
+                            Some(tab),
+                            Some(&user_context),
+                            info,
+                        )
                         .await;
                 }
                 BrowserLifecycleEvent::TabClosed { tab, user_context } => {
@@ -427,13 +451,57 @@ fn spawn_lifecycle_forwarder(
                         "clientWindow": format_context_id(tab, FrameId::MAIN),
                     });
                     state
-                        .emit("browsingContext.contextDestroyed", Some(tab), info)
+                        .emit_with_context(
+                            "browsingContext.contextDestroyed",
+                            Some(tab),
+                            Some(&user_context),
+                            info,
+                        )
                         .await;
-                    state.tab_user_contexts.lock().await.remove(&tab);
                     if let Some(handle) = state.attached_tabs.lock().await.remove(&tab) {
                         handle.abort();
                     }
                 }
+            }
+        }
+    })
+}
+
+fn spawn_network_forwarder(
+    state: Arc<BidiState>,
+    mut rx: broadcast::Receiver<NetworkEvent>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            match rx.recv().await {
+                Ok(event) => forward_network_event(&state, event).await,
+                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    logging::warn!(
+                        target: "webdriver::bidi",
+                        "network broadcast lagged by {skipped} events"
+                    );
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    })
+}
+
+fn spawn_prompt_forwarder(
+    state: Arc<BidiState>,
+    mut rx: broadcast::Receiver<PromptEvent>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            match rx.recv().await {
+                Ok(event) => forward_prompt_event(&state, event).await,
+                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    logging::warn!(
+                        target: "webdriver::bidi",
+                        "prompt broadcast lagged by {skipped} events"
+                    );
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
             }
         }
     })
@@ -450,40 +518,29 @@ pub(crate) async fn serve_websocket(
         (guard.browser.clone(), guard.shutdown.clone())
     };
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Value>();
+    let automation = browser.open_automation_session();
+    let lifecycle_rx = automation.subscribe_lifecycle();
+    let network_rx = automation.subscribe_network();
+    let prompt_rx = automation.subscribe_prompts();
     let state = Arc::new(BidiState {
         sessions,
-        browser: browser.clone(),
+        browser,
+        automation,
         session_id: Mutex::new(initial_session),
         subscriptions: Arc::new(Mutex::new(SubscriptionSet::default())),
         out_tx,
         attached_tabs: Arc::new(Mutex::new(HashMap::new())),
         attaching_tabs: Arc::new(Mutex::new(HashSet::new())),
-        tab_user_contexts: Arc::new(Mutex::new(HashMap::new())),
         active_navigations: Arc::new(Mutex::new(HashMap::new())),
         sandboxes: Arc::new(Mutex::new(HashMap::new())),
         log_buffer: Arc::new(Mutex::new(VecDeque::new())),
         data_collectors: Arc::new(Mutex::new(HashMap::new())),
-        intercepts: std::sync::Mutex::new(Vec::new()),
     });
     state.attach_all_existing_tabs().await;
 
-    let lifecycle_task = spawn_lifecycle_forwarder(Arc::clone(&state), browser.subscribe());
-    let mut network_rx = browser.network_broker().subscribe();
-    let mut prompt_rx = browser.prompt_broker().subscribe();
-
-    let network_state = Arc::clone(&state);
-    let network_task = tokio::spawn(async move {
-        while let Ok(event) = network_rx.recv().await {
-            forward_network_event(&network_state, event).await;
-        }
-    });
-
-    let prompt_state = Arc::clone(&state);
-    let prompt_task = tokio::spawn(async move {
-        while let Ok(event) = prompt_rx.recv().await {
-            forward_prompt_event(&prompt_state, event).await;
-        }
-    });
+    let lifecycle_task = spawn_lifecycle_forwarder(Arc::clone(&state), lifecycle_rx);
+    let network_task = spawn_network_forwarder(Arc::clone(&state), network_rx);
+    let prompt_task = spawn_prompt_forwarder(Arc::clone(&state), prompt_rx);
 
     let (mut sink, mut stream) = socket.split();
     let writer = tokio::spawn(async move {
@@ -530,28 +587,12 @@ pub(crate) async fn serve_websocket(
     network_task.abort();
     prompt_task.abort();
     writer.abort();
-    state.clear_intercepts();
     let attached = std::mem::take(&mut *state.attached_tabs.lock().await);
     for (_, handle) in attached {
         handle.abort();
     }
     if is_standalone {
         let _ = session::end(&state).await;
-    }
-}
-
-impl BidiState {
-    pub(crate) fn clear_intercepts(&self) {
-        let ids: Vec<browser::InterceptId> = self
-            .intercepts
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .drain(..)
-            .collect();
-        let broker = self.browser.network_broker();
-        for id in ids {
-            broker.remove_intercept(id);
-        }
     }
 }
 

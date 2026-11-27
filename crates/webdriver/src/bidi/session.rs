@@ -40,22 +40,16 @@ pub(crate) async fn new(state: &Arc<BidiState>, params: &Value) -> BidiResult {
 
 // https://w3c.github.io/webdriver-bidi/#command-session-end
 pub(crate) async fn end(state: &Arc<BidiState>) -> BidiResult {
-    state.clear_intercepts();
+    state.automation.clear_intercepts();
     let sid = state.session_id.lock().await.take();
     if let Some(sid) = sid {
-        let tabs: Vec<TabId> = {
+        let removed = {
             let mut guard = state.sessions.lock().await;
             guard.sync_windows(&sid);
-            guard
-                .open
-                .remove(&sid)
-                .map_or_default(|s| s.windows.into_values().map(|w| w.tab.id()).collect())
+            guard.open.remove(&sid)
         };
-        state.browser.prompt_broker().set_default_behavior(None);
-        state.browser.prompt_broker().set_hold_for_classic(false);
-        let _ = state.browser.clear_cookies();
-        for tab_id in tabs {
-            let _ = state.browser.close_tab(tab_id).await;
+        if let Some(session) = removed {
+            crate::session::teardown_session(&state.browser, session).await;
         }
     }
     Ok(json!({}))

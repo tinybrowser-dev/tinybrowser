@@ -9,6 +9,7 @@ use renderer::{FrameId, PromptKind, PromptOutcome};
 use tokio::sync::{broadcast, oneshot};
 
 use crate::actor::TabId;
+use crate::automation::AutomationSessionId;
 
 const PROMPT_EVENT_CAPACITY: usize = 256;
 
@@ -104,10 +105,47 @@ struct PendingPrompt {
 
 #[derive(Default)]
 struct PromptState {
-    default_behavior: Option<PromptBehaviorMap>,
-    hold_for_classic: bool,
-    tab_behaviors: HashMap<TabId, PromptBehaviorMap>,
+    session_defaults: HashMap<AutomationSessionId, (PromptBehaviorMap, bool)>,
+    tab_behaviors: HashMap<(AutomationSessionId, TabId), PromptBehaviorMap>,
     active: HashMap<TabId, PendingPrompt>,
+}
+
+impl PromptState {
+    fn resolve_for(&self, tab: TabId, kind: PromptKind) -> Option<(PromptBehavior, bool)> {
+        let mut best_tab: Option<(AutomationSessionId, PromptBehavior)> = None;
+        for ((owner, behavior_tab), map) in &self.tab_behaviors {
+            if *behavior_tab == tab
+                && let Some(behavior) = map.resolve(kind)
+                && best_tab.is_none_or(|(best_owner, _)| *owner > best_owner)
+            {
+                best_tab = Some((*owner, behavior));
+            }
+        }
+        if let Some((owner, behavior)) = best_tab {
+            let hold = self
+                .session_defaults
+                .get(&owner)
+                .is_some_and(|(_, hold)| *hold);
+            return Some((behavior, hold));
+        }
+        let mut best_default: Option<(AutomationSessionId, PromptBehavior, bool)> = None;
+        for (owner, (map, hold)) in &self.session_defaults {
+            if let Some(behavior) = map.resolve(kind)
+                && best_default.is_none_or(|(best_owner, _, _)| *owner > best_owner)
+            {
+                best_default = Some((*owner, behavior, *hold));
+            }
+        }
+        best_default.map(|(_, behavior, hold)| (behavior, hold))
+    }
+
+    fn tab_has_policy(&self, tab: TabId) -> bool {
+        !self.session_defaults.is_empty()
+            || self
+                .tab_behaviors
+                .keys()
+                .any(|(_, behavior_tab)| *behavior_tab == tab)
+    }
 }
 
 pub struct PromptBroker {
@@ -136,29 +174,77 @@ impl PromptBroker {
         self.events.subscribe()
     }
 
-    pub fn set_default_behavior(&self, behavior: Option<PromptBehaviorMap>) {
-        self.state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .default_behavior = behavior;
-    }
-
-    pub fn set_hold_for_classic(&self, hold: bool) {
-        self.state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .hold_for_classic = hold;
-    }
-
-    pub fn set_tab_behavior(&self, tab: TabId, behavior: Option<PromptBehaviorMap>) {
+    pub fn set_default_behavior(
+        &self,
+        owner: AutomationSessionId,
+        behavior: Option<PromptBehaviorMap>,
+        hold_for_classic: bool,
+    ) {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         match behavior {
             Some(map) => {
-                state.tab_behaviors.insert(tab, map);
+                state
+                    .session_defaults
+                    .insert(owner, (map, hold_for_classic));
             }
             None => {
-                state.tab_behaviors.remove(&tab);
+                state.session_defaults.remove(&owner);
             }
+        }
+    }
+
+    pub fn set_tab_behavior(
+        &self,
+        owner: AutomationSessionId,
+        tab: TabId,
+        behavior: Option<PromptBehaviorMap>,
+    ) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        match behavior {
+            Some(map) => {
+                state.tab_behaviors.insert((owner, tab), map);
+            }
+            None => {
+                state.tab_behaviors.remove(&(owner, tab));
+            }
+        }
+    }
+
+    pub fn clear_owner_tab(&self, owner: AutomationSessionId, tab: TabId) {
+        let pending = {
+            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            state.tab_behaviors.remove(&(owner, tab));
+            if state.tab_has_policy(tab) {
+                None
+            } else {
+                state.active.remove(&tab)
+            }
+        };
+        if let Some(pending) = pending {
+            self.dismiss_pending(pending);
+        }
+    }
+
+    pub fn clear_owner(&self, owner: AutomationSessionId) {
+        let orphaned: Vec<PendingPrompt> = {
+            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            state.session_defaults.remove(&owner);
+            state
+                .tab_behaviors
+                .retain(|(rule_owner, _), _| *rule_owner != owner);
+            let active_tabs: Vec<TabId> = state.active.keys().copied().collect();
+            let mut removed = Vec::new();
+            for tab in active_tabs {
+                if !state.tab_has_policy(tab)
+                    && let Some(pending) = state.active.remove(&tab)
+                {
+                    removed.push(pending);
+                }
+            }
+            removed
+        };
+        for pending in orphaned {
+            self.dismiss_pending(pending);
         }
     }
 
@@ -202,19 +288,25 @@ impl PromptBroker {
     pub fn dismiss_tab(&self, tab: TabId) {
         let pending = {
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-            state.tab_behaviors.remove(&tab);
+            state
+                .tab_behaviors
+                .retain(|(_, behavior_tab), _| *behavior_tab != tab);
             state.active.remove(&tab)
         };
         if let Some(pending) = pending {
-            let _ = pending.responder.send(PromptOutcome::Dismissed);
-            let _ = self.events.send(PromptEvent::Closed {
-                tab: pending.info.tab,
-                frame: pending.info.frame,
-                kind: pending.info.kind,
-                accepted: false,
-                user_text: None,
-            });
+            self.dismiss_pending(pending);
         }
+    }
+
+    fn dismiss_pending(&self, pending: PendingPrompt) {
+        let _ = pending.responder.send(PromptOutcome::Dismissed);
+        let _ = self.events.send(PromptEvent::Closed {
+            tab: pending.info.tab,
+            frame: pending.info.frame,
+            kind: pending.info.kind,
+            accepted: false,
+            user_text: None,
+        });
     }
 
     pub async fn open_prompt(
@@ -234,13 +326,8 @@ impl PromptBroker {
         };
         let (behavior, hold) = {
             let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-            let resolved = state
-                .tab_behaviors
-                .get(&tab)
-                .and_then(|map| map.resolve(kind))
-                .or_else(|| state.default_behavior.and_then(|map| map.resolve(kind)));
-            match resolved {
-                Some(behavior) => (behavior, state.hold_for_classic),
+            match state.resolve_for(tab, kind) {
+                Some((behavior, hold)) => (behavior, hold),
                 None if self.events.receiver_count() > 0 => (PromptBehavior::Ignore, false),
                 None => return PromptOutcome::Dismissed,
             }

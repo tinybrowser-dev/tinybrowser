@@ -170,10 +170,15 @@ pub(crate) struct NetworkContext {
     streams: StreamMap,
     next_stream: Arc<AtomicU64>,
     broker: Arc<NetworkBroker>,
+    user_context: crate::context::UserContextId,
 }
 
 impl NetworkContext {
-    pub(crate) fn new(mut options: AgentOptions, broker: Arc<NetworkBroker>) -> Self {
+    pub(crate) fn new(
+        mut options: AgentOptions,
+        broker: Arc<NetworkBroker>,
+        user_context: crate::context::UserContextId,
+    ) -> Self {
         if options.timeout_per_call.is_none() {
             options.timeout_per_call = Some(dial::PAGE_FETCH_TIMEOUT);
         }
@@ -185,6 +190,7 @@ impl NetworkContext {
             streams: Arc::new(Mutex::new(HashMap::new())),
             next_stream: Arc::new(AtomicU64::new(1)),
             broker,
+            user_context,
         }
     }
 
@@ -198,6 +204,7 @@ impl NetworkContext {
             streams: Arc::clone(&self.streams),
             next_stream: Arc::clone(&self.next_stream),
             broker: Arc::clone(&self.broker),
+            user_context: self.user_context.clone(),
             tab_id: None,
             overrides: Arc::new(Mutex::new(net::RequestOverrides::default())),
         }
@@ -244,6 +251,7 @@ pub(crate) struct TabNetworkHandle {
     streams: StreamMap,
     next_stream: Arc<AtomicU64>,
     broker: Arc<NetworkBroker>,
+    user_context: crate::context::UserContextId,
     tab_id: Option<TabId>,
     overrides: Arc<Mutex<net::RequestOverrides>>,
 }
@@ -334,6 +342,7 @@ impl TabNetworkHandle {
         let mut request_meta = self.broker.is_active().then(|| RequestMeta {
             request_id: self.broker.next_request_id(),
             tab,
+            user_context: self.user_context.clone(),
             frame: renderer::FrameId::MAIN,
             is_navigation: true,
             url: url.clone(),
@@ -624,6 +633,7 @@ impl TabNetworkHandle {
         let mut request_meta = self.broker.is_active().then(|| RequestMeta {
             request_id: self.broker.next_request_id(),
             tab,
+            user_context: self.user_context.clone(),
             frame,
             is_navigation,
             url: request.url.clone(),
@@ -1496,8 +1506,11 @@ mod tests {
     async fn a_cancelled_stream_releases_its_permit_for_the_next_dial() {
         use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
-        let mut context =
-            NetworkContext::new(AgentOptions::default(), Arc::new(NetworkBroker::new()));
+        let mut context = NetworkContext::new(
+            AgentOptions::default(),
+            Arc::new(NetworkBroker::new()),
+            crate::context::UserContextId::default_context(),
+        );
         context.permits.global = Arc::new(Semaphore::new(1));
         let handle = context.tab_handle();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -1601,7 +1614,11 @@ mod tests {
                 socket.write_all(body).await.expect("response body");
             });
         });
-        let context = NetworkContext::new(AgentOptions::default(), Arc::new(NetworkBroker::new()));
+        let context = NetworkContext::new(
+            AgentOptions::default(),
+            Arc::new(NetworkBroker::new()),
+            crate::context::UserContextId::default_context(),
+        );
         let handle = context.tab_handle();
         let initiator = Url::parse("http://localhost/page")
             .expect("page URL")
@@ -1652,7 +1669,11 @@ mod tests {
                 });
             }
         });
-        let context = NetworkContext::new(AgentOptions::default(), Arc::new(NetworkBroker::new()));
+        let context = NetworkContext::new(
+            AgentOptions::default(),
+            Arc::new(NetworkBroker::new()),
+            crate::context::UserContextId::default_context(),
+        );
         let handle = context.tab_handle();
         let initiator = Url::parse("http://localhost/page")
             .expect("page URL")
@@ -1712,7 +1733,11 @@ mod tests {
     async fn revalidation_sends_a_non_ascii_etag_as_one_byte_per_code_point() {
         use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
-        let context = NetworkContext::new(AgentOptions::default(), Arc::new(NetworkBroker::new()));
+        let context = NetworkContext::new(
+            AgentOptions::default(),
+            Arc::new(NetworkBroker::new()),
+            crate::context::UserContextId::default_context(),
+        );
         let handle = context.tab_handle();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await

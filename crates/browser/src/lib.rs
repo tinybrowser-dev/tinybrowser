@@ -1,5 +1,6 @@
 mod actor;
 mod assignment;
+mod automation;
 mod broadcast;
 mod browser;
 pub mod child;
@@ -20,6 +21,7 @@ mod wire;
 pub use actor::{
     ExecuteScriptOptions, NavigationFailure, RunUntilJsTrueOptions, TabEvent, TabHandle, TabId,
 };
+pub use automation::{AutomationSession, AutomationSessionId};
 pub use browser::{
     Browser, BrowserError, BrowserHandle, BrowserLifecycleEvent, BrowserOpenError, BrowserOptions,
 };
@@ -29,7 +31,8 @@ pub use frames::FrameInfo;
 pub use history::{EntryId, HistoryEntry, HistorySnapshot};
 pub use intercept::{
     InterceptDecision, InterceptId, InterceptPhase, InterceptResolveError, InterceptRule,
-    NetworkBroker, NetworkEvent, NetworkRequestId, UrlPattern, now_millis, wildcard_matches,
+    InterceptScope, NetworkBroker, NetworkEvent, NetworkRequestId, UrlPattern, now_millis,
+    wildcard_matches,
 };
 pub use manager::{RendererState, SpawnError};
 pub use net::{

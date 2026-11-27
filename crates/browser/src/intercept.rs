@@ -13,6 +13,8 @@ use tokio::sync::{broadcast, oneshot};
 use url::Url;
 
 use crate::actor::TabId;
+use crate::automation::AutomationSessionId;
+use crate::context::UserContextId;
 
 const NETWORK_EVENT_CAPACITY: usize = 1024;
 const MAX_CACHED_BODIES: usize = 64;
@@ -187,25 +189,47 @@ pub fn wildcard_matches(pattern: &str, text: &str) -> bool {
     pi == p.len()
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InterceptScope {
+    Global,
+    Tabs(Vec<TabId>),
+    UserContexts(Vec<UserContextId>),
+}
+
 #[derive(Clone, Debug)]
 pub struct InterceptRule {
     pub id: InterceptId,
+    pub owner: AutomationSessionId,
     pub phases: Vec<InterceptPhase>,
-    pub contexts: Option<Vec<TabId>>,
+    pub scope: InterceptScope,
     pub patterns: Vec<UrlPattern>,
 }
 
 impl InterceptRule {
-    fn matches(&self, phase: InterceptPhase, tab: Option<TabId>, url: &Url) -> bool {
+    fn matches(
+        &self,
+        phase: InterceptPhase,
+        tab: Option<TabId>,
+        user_context: &UserContextId,
+        url: &Url,
+    ) -> bool {
         if !self.phases.contains(&phase) {
             return false;
         }
-        if let Some(contexts) = &self.contexts {
-            let Some(tab) = tab else {
-                return false;
-            };
-            if !contexts.contains(&tab) {
-                return false;
+        match &self.scope {
+            InterceptScope::Global => {}
+            InterceptScope::Tabs(tabs) => {
+                let Some(tab) = tab else {
+                    return false;
+                };
+                if !tabs.contains(&tab) {
+                    return false;
+                }
+            }
+            InterceptScope::UserContexts(user_contexts) => {
+                if !user_contexts.contains(user_context) {
+                    return false;
+                }
             }
         }
         if self.patterns.is_empty() {
@@ -219,6 +243,7 @@ impl InterceptRule {
 pub(crate) struct RequestMeta {
     pub(crate) request_id: NetworkRequestId,
     pub(crate) tab: Option<TabId>,
+    pub(crate) user_context: UserContextId,
     pub(crate) frame: FrameId,
     pub(crate) is_navigation: bool,
     pub(crate) url: Url,
@@ -359,7 +384,7 @@ pub(crate) enum ResponseAction {
 struct PendingIntercept {
     tab: Option<TabId>,
     phase: InterceptPhase,
-    intercepts: Vec<InterceptId>,
+    intercepts: Vec<(InterceptId, AutomationSessionId)>,
     responder: oneshot::Sender<InterceptDecision>,
 }
 
@@ -389,8 +414,49 @@ struct CachedBody {
 struct BrokerState {
     intercepts: Vec<InterceptRule>,
     pending: HashMap<NetworkRequestId, PendingIntercept>,
-    blocked_urls: HashMap<TabId, Vec<String>>,
+    blocked_urls: HashMap<(AutomationSessionId, TabId), Vec<String>>,
     bodies: VecDeque<CachedBody>,
+}
+
+impl BrokerState {
+    fn drain_unblocked_where(
+        &mut self,
+        mut remove_entry: impl FnMut(InterceptId, AutomationSessionId) -> bool,
+    ) -> Vec<PendingIntercept> {
+        let mut unblocked = Vec::new();
+        let mut kept = HashMap::new();
+        for (req_id, mut pending) in self.pending.drain() {
+            pending
+                .intercepts
+                .retain(|(id, owner)| !remove_entry(*id, *owner));
+            if pending.intercepts.is_empty() {
+                unblocked.push(pending);
+            } else {
+                kept.insert(req_id, pending);
+            }
+        }
+        self.pending = kept;
+        unblocked
+    }
+}
+
+fn continue_unblocked(unblocked: Vec<PendingIntercept>) {
+    for pending in unblocked {
+        let decision = match pending.phase {
+            InterceptPhase::BeforeRequestSent => InterceptDecision::ContinueRequest {
+                url: None,
+                method: None,
+                headers: None,
+                body: None,
+            },
+            InterceptPhase::ResponseStarted => InterceptDecision::ContinueResponse {
+                status: None,
+                reason_phrase: None,
+                headers: None,
+            },
+        };
+        let _ = pending.responder.send(decision);
+    }
 }
 
 pub struct NetworkBroker {
@@ -439,8 +505,9 @@ impl NetworkBroker {
 
     pub fn add_intercept(
         &self,
+        owner: AutomationSessionId,
         phases: Vec<InterceptPhase>,
-        contexts: Option<Vec<TabId>>,
+        scope: InterceptScope,
         patterns: Vec<UrlPattern>,
     ) -> InterceptId {
         let id = InterceptId(self.next_intercept.fetch_add(1, Ordering::Relaxed));
@@ -450,57 +517,88 @@ impl NetworkBroker {
             .intercepts
             .push(InterceptRule {
                 id,
+                owner,
                 phases,
-                contexts,
+                scope,
                 patterns,
             });
         id
     }
 
-    pub fn remove_intercept(&self, id: InterceptId) -> bool {
+    pub fn remove_intercept(&self, owner: AutomationSessionId, id: InterceptId) -> bool {
         let (removed, unblocked) = {
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
             let before = state.intercepts.len();
-            state.intercepts.retain(|rule| rule.id != id);
+            state
+                .intercepts
+                .retain(|rule| !(rule.id == id && rule.owner == owner));
             let removed = state.intercepts.len() < before;
-            let mut unblocked = Vec::new();
-            let mut kept = HashMap::new();
-            for (req_id, mut pending) in state.pending.drain() {
-                pending.intercepts.retain(|item| *item != id);
-                if pending.intercepts.is_empty() {
-                    unblocked.push(pending);
-                } else {
-                    kept.insert(req_id, pending);
-                }
-            }
-            state.pending = kept;
+            let unblocked = if removed {
+                state.drain_unblocked_where(|item_id, item_owner| {
+                    item_id == id && item_owner == owner
+                })
+            } else {
+                Vec::new()
+            };
             (removed, unblocked)
         };
-        for pending in unblocked {
-            let decision = match pending.phase {
-                InterceptPhase::BeforeRequestSent => InterceptDecision::ContinueRequest {
-                    url: None,
-                    method: None,
-                    headers: None,
-                    body: None,
-                },
-                InterceptPhase::ResponseStarted => InterceptDecision::ContinueResponse {
-                    status: None,
-                    reason_phrase: None,
-                    headers: None,
-                },
-            };
-            let _ = pending.responder.send(decision);
-        }
+        continue_unblocked(unblocked);
         removed
     }
 
-    pub fn set_blocked_urls(&self, tab: TabId, patterns: Vec<String>) {
+    pub fn clear_owner_intercepts(&self, owner: AutomationSessionId) {
+        let unblocked = {
+            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            state.intercepts.retain(|rule| rule.owner != owner);
+            state.drain_unblocked_where(|_, item_owner| item_owner == owner)
+        };
+        continue_unblocked(unblocked);
+    }
+
+    pub fn clear_owner_tab(&self, owner: AutomationSessionId, tab: TabId) {
+        let unblocked = {
+            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            state.blocked_urls.remove(&(owner, tab));
+            let mut removed_ids = Vec::new();
+            state.intercepts.retain(|rule| {
+                let drop_rule = rule.owner == owner
+                    && matches!(&rule.scope, InterceptScope::Tabs(tabs) if tabs.len() == 1 && tabs[0] == tab);
+                if drop_rule {
+                    removed_ids.push(rule.id);
+                    false
+                } else {
+                    true
+                }
+            });
+            if removed_ids.is_empty() {
+                Vec::new()
+            } else {
+                state.drain_unblocked_where(|item_id, item_owner| {
+                    item_owner == owner && removed_ids.contains(&item_id)
+                })
+            }
+        };
+        continue_unblocked(unblocked);
+    }
+
+    pub fn clear_owner(&self, owner: AutomationSessionId) {
+        let unblocked = {
+            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            state.intercepts.retain(|rule| rule.owner != owner);
+            state
+                .blocked_urls
+                .retain(|(rule_owner, _), _| *rule_owner != owner);
+            state.drain_unblocked_where(|_, item_owner| item_owner == owner)
+        };
+        continue_unblocked(unblocked);
+    }
+
+    pub fn set_blocked_urls(&self, owner: AutomationSessionId, tab: TabId, patterns: Vec<String>) {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if patterns.is_empty() {
-            state.blocked_urls.remove(&tab);
+            state.blocked_urls.remove(&(owner, tab));
         } else {
-            state.blocked_urls.insert(tab, patterns);
+            state.blocked_urls.insert((owner, tab), patterns);
         }
     }
 
@@ -510,15 +608,17 @@ impl NetworkBroker {
             return false;
         };
         let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        state.blocked_urls.get(&tab).is_some_and(|patterns| {
-            patterns
-                .iter()
-                .any(|pattern| wildcard_matches(pattern, url))
+        state.blocked_urls.iter().any(|((_, rule_tab), patterns)| {
+            *rule_tab == tab
+                && patterns
+                    .iter()
+                    .any(|pattern| wildcard_matches(pattern, url))
         })
     }
 
     pub fn resolve_intercept(
         &self,
+        owner: AutomationSessionId,
         request_id: NetworkRequestId,
         decision: InterceptDecision,
     ) -> Result<(), InterceptResolveError> {
@@ -526,6 +626,13 @@ impl NetworkBroker {
         let Some(pending) = state.pending.get(&request_id) else {
             return Err(InterceptResolveError::NotFound);
         };
+        if !pending
+            .intercepts
+            .iter()
+            .any(|(_, rule_owner)| *rule_owner == owner)
+        {
+            return Err(InterceptResolveError::NotOwned);
+        }
         let phase_ok = match (&pending.phase, &decision) {
             (
                 InterceptPhase::BeforeRequestSent,
@@ -588,7 +695,9 @@ impl NetworkBroker {
     pub fn clear_tab(&self, tab: TabId) {
         let removed: Vec<PendingIntercept> = {
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-            state.blocked_urls.remove(&tab);
+            state
+                .blocked_urls
+                .retain(|(_, rule_tab), _| *rule_tab != tab);
             let mut removed = Vec::new();
             let mut kept = HashMap::new();
             for (key, pending) in state.pending.drain() {
@@ -625,13 +734,21 @@ impl NetworkBroker {
     pub(crate) async fn before_request_sent(&self, meta: &RequestMeta) -> BeforeRequestAction {
         let (matching, rx) = {
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-            let matching: Vec<InterceptId> = state
+            let matched_rules: Vec<(InterceptId, AutomationSessionId)> = state
                 .intercepts
                 .iter()
-                .filter(|rule| rule.matches(InterceptPhase::BeforeRequestSent, meta.tab, &meta.url))
-                .map(|rule| rule.id)
+                .filter(|rule| {
+                    rule.matches(
+                        InterceptPhase::BeforeRequestSent,
+                        meta.tab,
+                        &meta.user_context,
+                        &meta.url,
+                    )
+                })
+                .map(|rule| (rule.id, rule.owner))
                 .collect();
-            let rx = if matching.is_empty() {
+            let matching: Vec<InterceptId> = matched_rules.iter().map(|(id, _)| *id).collect();
+            let rx = if matched_rules.is_empty() {
                 None
             } else {
                 let (tx, rx) = oneshot::channel();
@@ -640,7 +757,7 @@ impl NetworkBroker {
                     PendingIntercept {
                         tab: meta.tab,
                         phase: InterceptPhase::BeforeRequestSent,
-                        intercepts: matching.clone(),
+                        intercepts: matched_rules,
                         responder: tx,
                     },
                 );
@@ -725,13 +842,21 @@ impl NetworkBroker {
     ) -> ResponseAction {
         let (matching, rx) = {
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-            let matching: Vec<InterceptId> = state
+            let matched_rules: Vec<(InterceptId, AutomationSessionId)> = state
                 .intercepts
                 .iter()
-                .filter(|rule| rule.matches(InterceptPhase::ResponseStarted, req.tab, &resp.url))
-                .map(|rule| rule.id)
+                .filter(|rule| {
+                    rule.matches(
+                        InterceptPhase::ResponseStarted,
+                        req.tab,
+                        &req.user_context,
+                        &resp.url,
+                    )
+                })
+                .map(|rule| (rule.id, rule.owner))
                 .collect();
-            let rx = if matching.is_empty() {
+            let matching: Vec<InterceptId> = matched_rules.iter().map(|(id, _)| *id).collect();
+            let rx = if matched_rules.is_empty() {
                 None
             } else {
                 let (tx, rx) = oneshot::channel();
@@ -740,7 +865,7 @@ impl NetworkBroker {
                     PendingIntercept {
                         tab: req.tab,
                         phase: InterceptPhase::ResponseStarted,
-                        intercepts: matching.clone(),
+                        intercepts: matched_rules,
                         responder: tx,
                     },
                 );
@@ -844,6 +969,7 @@ impl NetworkBroker {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InterceptResolveError {
     NotFound,
+    NotOwned,
     WrongPhase,
 }
 
@@ -853,4 +979,96 @@ pub fn now_millis() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_millis());
     u64::try_from(millis).unwrap_or(u64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn meta(id: u64, tab: TabId, user_context: UserContextId, url: &str) -> RequestMeta {
+        RequestMeta {
+            request_id: NetworkRequestId::new(id),
+            tab: Some(tab),
+            user_context,
+            frame: FrameId::MAIN,
+            is_navigation: false,
+            url: Url::parse(url).expect("url"),
+            method: "GET".to_owned(),
+            headers: Vec::new(),
+            resource_type: "Fetch".to_owned(),
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_intercept_rejects_non_owner_and_user_context_scope_matches_dynamically() {
+        let broker = std::sync::Arc::new(NetworkBroker::new());
+        let owner_a = AutomationSessionId::new(1);
+        let owner_b = AutomationSessionId::new(2);
+        let uc_a = UserContextId::parse("user-context-a").expect("uc a");
+        let uc_b = UserContextId::parse("user-context-b").expect("uc b");
+
+        broker.add_intercept(
+            owner_a,
+            vec![InterceptPhase::BeforeRequestSent],
+            InterceptScope::UserContexts(vec![uc_a.clone()]),
+            vec![UrlPattern::Wildcard("*".to_owned())],
+        );
+
+        let unblocked = broker
+            .before_request_sent(&meta(1, TabId::new(2), uc_b, "http://example.test/b"))
+            .await;
+        assert!(matches!(unblocked, BeforeRequestAction::Proceed));
+
+        let broker_task = std::sync::Arc::clone(&broker);
+        let request = meta(2, TabId::new(1), uc_a, "http://example.test/a");
+        let pending = tokio::spawn(async move { broker_task.before_request_sent(&request).await });
+
+        tokio::task::yield_now().await;
+        assert_eq!(
+            broker.resolve_intercept(
+                owner_b,
+                NetworkRequestId::new(2),
+                InterceptDecision::FailRequest,
+            ),
+            Err(InterceptResolveError::NotOwned)
+        );
+        assert_eq!(
+            broker.resolve_intercept(
+                owner_a,
+                NetworkRequestId::new(2),
+                InterceptDecision::FailRequest,
+            ),
+            Ok(())
+        );
+        let outcome = pending.await.expect("join");
+        assert!(matches!(outcome, BeforeRequestAction::Fail));
+    }
+
+    #[tokio::test]
+    async fn clear_owner_unblocks_pending_intercepts_and_removes_blocked_urls() {
+        let broker = std::sync::Arc::new(NetworkBroker::new());
+        let owner = AutomationSessionId::new(7);
+        let tab = TabId::new(3);
+        let uc = UserContextId::default_context();
+
+        broker.set_blocked_urls(owner, tab, vec!["*blocked*".to_owned()]);
+        assert!(broker.is_blocked_url(Some(tab), "http://example.test/blocked"));
+
+        broker.add_intercept(
+            owner,
+            vec![InterceptPhase::BeforeRequestSent],
+            InterceptScope::Tabs(vec![tab]),
+            vec![UrlPattern::Wildcard("*".to_owned())],
+        );
+
+        let broker_task = std::sync::Arc::clone(&broker);
+        let request = meta(10, tab, uc, "http://example.test/ok");
+        let pending = tokio::spawn(async move { broker_task.before_request_sent(&request).await });
+        tokio::task::yield_now().await;
+
+        broker.clear_owner(owner);
+        assert!(!broker.is_blocked_url(Some(tab), "http://example.test/blocked"));
+        let outcome = pending.await.expect("join");
+        assert!(matches!(outcome, BeforeRequestAction::Continue { .. }));
+    }
 }

@@ -5,6 +5,7 @@ pub(crate) use self::task::{TabNames, TabRegistry};
 use std::fmt;
 use std::io;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
@@ -12,6 +13,7 @@ use url::Url;
 
 use self::task::BrowserTask;
 use crate::actor::{NavigationInitiator, TabHandle, TabId};
+use crate::automation::{AutomationSession, AutomationSessionId};
 use crate::child::RendererSandbox;
 use crate::context::{BrowserContext, UserContextId};
 use crate::intercept::NetworkBroker;
@@ -60,6 +62,7 @@ pub struct BrowserHandle {
     lifecycle: broadcast::Sender<BrowserLifecycleEvent>,
     network_broker: Arc<NetworkBroker>,
     prompt_broker: Arc<PromptBroker>,
+    next_automation_session: Arc<AtomicU64>,
 }
 
 pub(crate) struct OpenWindowOptions {
@@ -136,6 +139,7 @@ impl Browser {
             lifecycle: lifecycle.clone(),
             network_broker: Arc::clone(&network_broker),
             prompt_broker: Arc::clone(&prompt_broker),
+            next_automation_session: Arc::new(AtomicU64::new(1)),
         };
         let renderers = Arc::new(RendererProcessManager::new(
             context.session_storage(),
@@ -196,6 +200,12 @@ impl BrowserHandle {
     #[must_use]
     pub fn prompt_broker(&self) -> &Arc<PromptBroker> {
         &self.prompt_broker
+    }
+
+    #[must_use]
+    pub fn open_automation_session(&self) -> AutomationSession {
+        let raw = self.next_automation_session.fetch_add(1, Ordering::Relaxed);
+        AutomationSession::new(AutomationSessionId::new(raw), self.clone())
     }
 
     fn ensure_open(&self) -> Result<(), BrowserError> {

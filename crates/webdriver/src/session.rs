@@ -10,7 +10,8 @@ use std::time::{Duration, UNIX_EPOCH};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use browser::{
-    BrowserHandle, FrameId, PromptBehavior, PromptBehaviorMap, TabHandle, TabId, UserContextId,
+    AutomationSession, BrowserHandle, FrameId, PromptBehavior, PromptBehaviorMap, TabHandle, TabId,
+    UserContextId,
 };
 use serde_json::{Map, Value, json};
 use server::Shutdown;
@@ -665,6 +666,9 @@ pub(crate) struct Window {
 }
 
 pub(crate) struct Session {
+    pub(crate) user_context: UserContextId,
+    pub(crate) owns_user_context: bool,
+    pub(crate) automation: AutomationSession,
     pub(crate) current: String,
     pub(crate) current_frame: FrameId,
     pub(crate) windows: HashMap<String, Window>,
@@ -757,10 +761,15 @@ impl Sessions {
     // https://w3c.github.io/webdriver/#get-window-handles
     pub(crate) fn sync_windows(&mut self, session: &str) {
         let browser = self.browser.clone();
-        let Ok(ids) = browser.tabs() else {
+        let Some(found) = self.open.get_mut(session) else {
             return;
         };
-        let Some(found) = self.open.get_mut(session) else {
+        let ids = if found.owns_user_context {
+            browser.tabs_in(&found.user_context)
+        } else {
+            browser.tabs()
+        };
+        let Ok(ids) = ids else {
             return;
         };
         found
@@ -836,13 +845,14 @@ pub(crate) async fn create_session(
         guard.creating = true;
         (guard.browser.clone(), guard.bound)
     };
+    let owns_user_context = !caps.web_socket_url;
     let result = match browser.ensure_renderer_ready().await {
-        Ok(()) => build_session_tabs(&browser).await,
+        Ok(()) => build_session_tabs(&browser, owns_user_context).await,
         Err(error) => Err(error.to_string()),
     };
     let mut guard = sessions.lock().await;
     guard.creating = false;
-    let tabs = result?;
+    let (user_context, tabs) = result?;
     let id = random_id()?;
     let mut windows = HashMap::new();
     let mut current = None;
@@ -861,15 +871,20 @@ pub(crate) async fn create_session(
         );
     }
     let Some(current) = current else {
+        if owns_user_context {
+            let _ = browser.remove_user_context(&user_context).await;
+        }
         return Err("failed to create initial window".into());
     };
     let caps_json = caps.to_json(&id, bound);
-    let broker = browser.prompt_broker();
-    broker.set_default_behavior(Some(caps.prompt_behavior));
-    broker.set_hold_for_classic(!caps.web_socket_url);
+    let automation = browser.open_automation_session();
+    automation.set_default_prompt_behavior(Some(caps.prompt_behavior), !caps.web_socket_url);
     guard.open.insert(
         id.clone(),
         Session {
+            user_context,
+            owns_user_context,
+            automation,
             current,
             current_frame: FrameId::MAIN,
             windows,
@@ -888,7 +903,25 @@ pub(crate) async fn create_session(
     Ok((id, caps_json))
 }
 
-async fn build_session_tabs(browser: &BrowserHandle) -> Result<Vec<TabHandle>, String> {
+async fn build_session_tabs(
+    browser: &BrowserHandle,
+    owns_user_context: bool,
+) -> Result<(UserContextId, Vec<TabHandle>), String> {
+    if owns_user_context {
+        let user_context = browser
+            .create_user_context()
+            .await
+            .map_err(|err| err.to_string())?;
+        let tab = match blank_window(browser, user_context.clone()).await {
+            Ok(tab) => tab,
+            Err(error) => {
+                let _ = browser.remove_user_context(&user_context).await;
+                return Err(error);
+            }
+        };
+        return Ok((user_context, vec![tab]));
+    }
+    let user_context = UserContextId::default_context();
     let mut tabs = Vec::new();
     if let Ok(ids) = browser.tabs() {
         for tab_id in ids {
@@ -898,9 +931,28 @@ async fn build_session_tabs(browser: &BrowserHandle) -> Result<Vec<TabHandle>, S
         }
     }
     if tabs.is_empty() {
-        tabs.push(blank_window(browser, UserContextId::default_context()).await?);
+        tabs.push(blank_window(browser, user_context.clone()).await?);
     }
-    Ok(tabs)
+    Ok((user_context, tabs))
+}
+
+pub(crate) async fn teardown_session(browser: &BrowserHandle, session: Session) {
+    let Session {
+        user_context,
+        owns_user_context,
+        automation,
+        windows,
+        ..
+    } = session;
+    drop(automation);
+    if owns_user_context {
+        let _ = browser.remove_user_context(&user_context).await;
+    } else {
+        let _ = browser.clear_cookies_in(&user_context);
+        for window in windows.into_values() {
+            let _ = browser.close_tab(window.tab.id()).await;
+        }
+    }
 }
 
 #[must_use]

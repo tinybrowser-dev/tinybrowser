@@ -6,10 +6,10 @@ use std::time::{Duration, Instant};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use browser::{
-    BrowserHandle, BrowserLifecycleEvent, ConsoleLevel, ExecuteScriptOptions, FrameId,
-    InterceptDecision, InterceptId, InterceptPhase, NetworkEvent, NetworkRequestId, PromptBehavior,
-    PromptBehaviorMap, PromptEvent, RemoteValue, RunUntilJsTrueOptions, TabEvent, TabHandle, TabId,
-    UrlPattern, UserContextId,
+    AutomationSession, BrowserHandle, BrowserLifecycleEvent, ConsoleLevel, ExecuteScriptOptions,
+    FrameId, InterceptDecision, InterceptId, InterceptPhase, InterceptScope, NetworkEvent,
+    NetworkRequestId, PromptBehavior, PromptBehaviorMap, PromptEvent, RemoteValue,
+    RunUntilJsTrueOptions, TabEvent, TabHandle, TabId, UrlPattern, UserContextId,
 };
 use futures_util::{SinkExt as _, StreamExt as _};
 use http::{Method, StatusCode};
@@ -305,6 +305,7 @@ fn connect_ws(addr: SocketAddr, path: &str) -> io::Result<Client> {
 
 struct Conn {
     browser: BrowserHandle,
+    automation: AutomationSession,
     sessions: HashMap<String, Target>,
     next_session: u64,
     tab: Option<TabHandle>,
@@ -320,7 +321,6 @@ struct Conn {
     discover_targets: bool,
     discover_targets_session: Option<String>,
     network_enabled: HashSet<TabId>,
-    blocked_url_tabs: HashSet<TabId>,
     prompt_tabs: HashSet<TabId>,
     fetch_intercepts: HashMap<TabId, Vec<InterceptId>>,
     network_rx: Option<tokio::sync::broadcast::Receiver<NetworkEvent>>,
@@ -1400,9 +1400,9 @@ impl Conn {
         self.subscribe_tab(tab, session)?;
         self.prompt_tabs.insert(tab.id());
         if self.prompt_rx.is_none() {
-            self.prompt_rx = Some(self.browser.prompt_broker().subscribe());
+            self.prompt_rx = Some(self.automation.subscribe_prompts());
         }
-        self.browser.prompt_broker().set_tab_behavior(
+        self.automation.set_tab_prompt_behavior(
             tab.id(),
             Some(PromptBehaviorMap::uniform(PromptBehavior::Ignore)),
         );
@@ -1414,7 +1414,7 @@ impl Conn {
         if !self.network_enabled.contains(&tab.id()) {
             self.unsubscribe_tab(tab.id(), session);
         }
-        self.browser.prompt_broker().dismiss_tab(tab.id());
+        self.automation.clear_tab_prompt(tab.id());
         if self.prompt_tabs.is_empty() {
             self.prompt_rx = None;
         }
@@ -1422,19 +1422,12 @@ impl Conn {
     }
 
     fn network_set_blocked_urls(
-        &mut self,
+        &self,
         tab: &TabHandle,
         params: params::RawParams<'_>,
     ) -> Result<Value, DispatchError> {
         let params: params::SetBlockedUrls = params.parse()?;
-        if params.urls.is_empty() {
-            self.blocked_url_tabs.remove(&tab.id());
-        } else {
-            self.blocked_url_tabs.insert(tab.id());
-        }
-        self.browser
-            .network_broker()
-            .set_blocked_urls(tab.id(), params.urls);
+        self.automation.set_blocked_urls(tab.id(), params.urls);
         Ok(json!({}))
     }
 
@@ -1827,16 +1820,9 @@ impl Conn {
         self.unsubscribe_tab_id(id);
         self.auto_attached_tabs.remove(&id);
         self.network_enabled.remove(&id);
-        if self.blocked_url_tabs.remove(&id) {
-            self.browser
-                .network_broker()
-                .set_blocked_urls(id, Vec::new());
-        }
-        if self.prompt_tabs.remove(&id) {
-            self.browser.prompt_broker().dismiss_tab(id);
-            if self.prompt_tabs.is_empty() {
-                self.prompt_rx = None;
-            }
+        self.automation.clear_tab(id);
+        if self.prompt_tabs.remove(&id) && self.prompt_tabs.is_empty() {
+            self.prompt_rx = None;
         }
         self.clear_fetch_intercepts(id);
         self.loader_ids.remove(&id);
@@ -1983,31 +1969,11 @@ impl Conn {
 
     fn clear_fetch_intercepts(&mut self, tab_id: TabId) {
         if let Some(ids) = self.fetch_intercepts.remove(&tab_id) {
-            let broker = self.browser.network_broker();
             for id in ids {
-                broker.remove_intercept(id);
+                let _ = self.automation.remove_intercept(id);
             }
         }
         self.maybe_drop_network_rx();
-    }
-
-    fn clear_all_fetch_intercepts(&mut self) {
-        let all: Vec<TabId> = self.fetch_intercepts.keys().copied().collect();
-        for tab_id in all {
-            self.clear_fetch_intercepts(tab_id);
-        }
-        let blocked: Vec<TabId> = self.blocked_url_tabs.drain().collect();
-        let net_broker = self.browser.network_broker();
-        for tab_id in blocked {
-            net_broker.set_blocked_urls(tab_id, Vec::new());
-        }
-        let prompt_tabs: Vec<TabId> = self.prompt_tabs.drain().collect();
-        let prompt_broker = self.browser.prompt_broker();
-        for tab_id in prompt_tabs {
-            prompt_broker.dismiss_tab(tab_id);
-        }
-        self.network_rx = None;
-        self.prompt_rx = None;
     }
 
     // https://chromedevtools.github.io/devtools-protocol/tot/Fetch/#method-enable
@@ -2019,15 +1985,14 @@ impl Conn {
         let params: params::FetchEnable = params.parse()?;
         self.clear_fetch_intercepts(tab.id());
         if self.network_rx.is_none() {
-            self.network_rx = Some(self.browser.network_broker().subscribe());
+            self.network_rx = Some(self.automation.subscribe_network());
         }
         let patterns = params.patterns.unwrap_or_default();
-        let broker = self.browser.network_broker();
         let mut ids = Vec::new();
         if patterns.is_empty() {
-            let id = broker.add_intercept(
+            let id = self.automation.add_intercept(
                 vec![InterceptPhase::BeforeRequestSent],
-                Some(vec![tab.id()]),
+                InterceptScope::Tabs(vec![tab.id()]),
                 vec![UrlPattern::Wildcard("*".to_owned())],
             );
             ids.push(id);
@@ -2042,7 +2007,11 @@ impl Conn {
                 };
                 let url_pat =
                     UrlPattern::Wildcard(pat.url_pattern.unwrap_or_else(|| "*".to_owned()));
-                let id = broker.add_intercept(vec![phase], Some(vec![tab.id()]), vec![url_pat]);
+                let id = self.automation.add_intercept(
+                    vec![phase],
+                    InterceptScope::Tabs(vec![tab.id()]),
+                    vec![url_pat],
+                );
                 ids.push(id);
             }
         }
@@ -2076,8 +2045,7 @@ impl Conn {
                     .map_err(|_| DispatchError::InvalidParams("postData".to_owned()))
             })
             .transpose()?;
-        self.browser
-            .network_broker()
+        self.automation
             .resolve_intercept(
                 req_id,
                 InterceptDecision::ContinueRequest {
@@ -2101,8 +2069,7 @@ impl Conn {
         let headers = params
             .response_headers
             .map(|list| list.into_iter().map(|h| (h.name, h.value)).collect());
-        self.browser
-            .network_broker()
+        self.automation
             .resolve_intercept(
                 req_id,
                 InterceptDecision::ContinueResponse {
@@ -2132,8 +2099,7 @@ impl Conn {
             None => Vec::new(),
         };
         let reason_phrase = params.response_phrase.unwrap_or_else(|| "OK".to_owned());
-        self.browser
-            .network_broker()
+        self.automation
             .resolve_intercept(
                 req_id,
                 InterceptDecision::ProvideResponse {
@@ -2151,8 +2117,7 @@ impl Conn {
     fn fetch_fail_request(&self, params: params::RawParams<'_>) -> Result<Value, DispatchError> {
         let params: params::FetchFailRequest = params.parse()?;
         let req_id = Self::parse_fetch_request_id(&params.request_id)?;
-        self.browser
-            .network_broker()
+        self.automation
             .resolve_intercept(req_id, InterceptDecision::FailRequest)
             .map_err(|_| DispatchError::Failed("Invalid InterceptionId.".to_owned()))?;
         Ok(json!({}))
@@ -2215,6 +2180,46 @@ impl Conn {
                 }))
             }
         }
+    }
+
+    async fn resync_lifecycle_tabs(&mut self) -> Vec<Value> {
+        let mut messages = Vec::new();
+        let Ok(live) = self.browser.tabs() else {
+            return messages;
+        };
+        let live_set: HashSet<TabId> = live.iter().copied().collect();
+        let stale: Vec<TabId> = self
+            .auto_attached_tabs
+            .iter()
+            .copied()
+            .filter(|id| !live_set.contains(id))
+            .collect();
+        for tab in stale {
+            let user_context = UserContextId::default_context();
+            messages.extend(
+                self.handle_lifecycle_event(BrowserLifecycleEvent::TabClosed { tab, user_context })
+                    .await,
+            );
+        }
+        if self.auto_attach {
+            for tab in live {
+                if self.auto_attached_tabs.contains(&tab) {
+                    continue;
+                }
+                if let Ok(handle) = self.browser.tab(tab) {
+                    let user_context = handle.user_context().clone();
+                    messages.extend(
+                        self.handle_lifecycle_event(BrowserLifecycleEvent::TabCreated {
+                            tab,
+                            user_context,
+                            opener: None,
+                        })
+                        .await,
+                    );
+                }
+            }
+        }
+        messages
     }
 
     async fn handle_lifecycle_event(&mut self, event: BrowserLifecycleEvent) -> Vec<Value> {
@@ -3038,8 +3043,10 @@ fn new_conn(
     deferred_tx: mpsc::UnboundedSender<Value>,
 ) -> Conn {
     let (tab_events_tx, tab_events_rx) = mpsc::channel(256);
+    let automation = state.browser.open_automation_session();
     Conn {
         browser: state.browser,
+        automation,
         sessions: HashMap::new(),
         next_session: 1,
         tab,
@@ -3055,7 +3062,6 @@ fn new_conn(
         discover_targets: false,
         discover_targets_session: None,
         network_enabled: HashSet::new(),
-        blocked_url_tabs: HashSet::new(),
         prompt_tabs: HashSet::new(),
         fetch_intercepts: HashMap::new(),
         network_rx: None,
@@ -3140,14 +3146,16 @@ async fn run_socket(mut socket: WebSocket, state: AppState, tab: Option<TabHandl
             }
             SocketWake::Shutdown
             | SocketWake::Event(None)
+            | SocketWake::Lifecycle(Err(broadcast::error::RecvError::Closed))
             | SocketWake::Incoming(None | Some(Ok(WsMessage::Close(_)) | Err(_))) => break,
             SocketWake::Incoming(Some(Ok(WsMessage::Text(text)))) => {
                 let outcome = conn.dispatch_text(text.as_str()).await;
-                let queued = conn.take_queued_events();
-                if send_messages(&mut socket, queued).await.is_err() {
+                if send_messages(&mut socket, conn.take_queued_events())
+                    .await
+                    .is_err()
+                {
                     break;
                 }
-                let close = outcome.close;
                 if !outcome.deferred
                     && socket
                         .send(WsMessage::text(outcome.reply.to_string()))
@@ -3156,21 +3164,34 @@ async fn run_socket(mut socket: WebSocket, state: AppState, tab: Option<TabHandl
                 {
                     break;
                 }
-                if close {
+                if outcome.close {
                     break;
                 }
             }
             SocketWake::Incoming(Some(Ok(WsMessage::Ping(payload)))) => {
                 let _result = socket.send(WsMessage::Pong(payload)).await;
             }
-            SocketWake::Lifecycle(Err(_))
-            | SocketWake::Network(Err(_))
-            | SocketWake::Prompt(Err(_))
-            | SocketWake::Deferred(None)
-            | SocketWake::Incoming(Some(Ok(_))) => {}
+            SocketWake::Lifecycle(Err(broadcast::error::RecvError::Lagged(skipped))) => {
+                logging::warn!(
+                    target: "cdp",
+                    "lifecycle broadcast lagged by {skipped} events; resyncing targets"
+                );
+                let messages = conn.resync_lifecycle_tabs().await;
+                if send_messages(&mut socket, messages).await.is_err() {
+                    break;
+                }
+            }
+            SocketWake::Network(Err(broadcast::error::RecvError::Lagged(skipped))) => {
+                logging::warn!(target: "cdp", "network broadcast lagged by {skipped} events");
+            }
+            SocketWake::Network(Err(broadcast::error::RecvError::Closed)) => conn.network_rx = None,
+            SocketWake::Prompt(Err(broadcast::error::RecvError::Lagged(skipped))) => {
+                logging::warn!(target: "cdp", "prompt broadcast lagged by {skipped} events");
+            }
+            SocketWake::Prompt(Err(broadcast::error::RecvError::Closed)) => conn.prompt_rx = None,
+            SocketWake::Deferred(None) | SocketWake::Incoming(Some(Ok(_))) => {}
         }
     }
-    conn.clear_all_fetch_intercepts();
     conn.stop_subscriptions();
     let _result = socket.send(WsMessage::Close(None)).await;
 }
@@ -3263,8 +3284,10 @@ mod tests {
 
     fn test_conn(browser: &Browser) -> Conn {
         let (tab_events_tx, tab_events_rx) = mpsc::channel(8);
+        let automation = browser.handle().open_automation_session();
         Conn {
             browser: browser.handle().clone(),
+            automation,
             sessions: HashMap::new(),
             next_session: 1,
             tab: None,
@@ -3280,7 +3303,6 @@ mod tests {
             discover_targets: false,
             discover_targets_session: None,
             network_enabled: HashSet::new(),
-            blocked_url_tabs: HashSet::new(),
             prompt_tabs: HashSet::new(),
             fetch_intercepts: HashMap::new(),
             network_rx: None,

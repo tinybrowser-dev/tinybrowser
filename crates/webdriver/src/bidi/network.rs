@@ -6,7 +6,7 @@ use std::sync::Arc;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use browser::{
-    FrameId, InterceptDecision, InterceptId, InterceptPhase, InterceptResolveError,
+    FrameId, InterceptDecision, InterceptId, InterceptPhase, InterceptResolveError, InterceptScope,
     NetworkRequestId, TabHandle, TabId, UrlPattern, UserContextId,
 };
 use http::header::{HeaderName, HeaderValue};
@@ -81,15 +81,11 @@ pub(crate) async fn add_intercept(state: &Arc<BidiState>, params: &Value) -> Bid
             return Err(BidiError::invalid_argument("urlPatterns must be an array"));
         }
     };
-    let id = state
-        .browser
-        .network_broker()
-        .add_intercept(phases, contexts, patterns);
-    state
-        .intercepts
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .push(id);
+    let scope = match contexts {
+        Some(tabs) => InterceptScope::Tabs(tabs),
+        None => InterceptScope::Global,
+    };
+    let id = state.automation.add_intercept(phases, scope, patterns);
     Ok(json!({ "intercept": id.to_string() }))
 }
 
@@ -123,16 +119,11 @@ pub(crate) fn remove_intercept(state: &Arc<BidiState>, params: &Value) -> BidiRe
         .and_then(|s| s.parse::<u64>().ok())
         .map(InterceptId::new)
         .ok_or_else(|| BidiError::no_such_intercept(format!("unknown intercept: {raw}")))?;
-    if !state.browser.network_broker().remove_intercept(id) {
+    if !state.automation.remove_intercept(id) {
         return Err(BidiError::no_such_intercept(format!(
             "unknown intercept: {raw}"
         )));
     }
-    state
-        .intercepts
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .retain(|existing| *existing != id);
     Ok(json!({}))
 }
 
@@ -180,7 +171,9 @@ pub(crate) fn decode_bytes_value(val: &Value) -> Result<Vec<u8>, BidiError> {
 
 fn map_resolve_error(err: InterceptResolveError) -> BidiError {
     match err {
-        InterceptResolveError::NotFound => BidiError::no_such_request("no blocked request"),
+        InterceptResolveError::NotFound | InterceptResolveError::NotOwned => {
+            BidiError::no_such_request("no blocked request")
+        }
         InterceptResolveError::WrongPhase => {
             BidiError::invalid_argument("request is not blocked in the expected phase")
         }
@@ -207,8 +200,7 @@ pub(crate) fn continue_request(state: &Arc<BidiState>, params: &Value) -> BidiRe
         Some(v) => Some(decode_bytes_value(v)?),
     };
     state
-        .browser
-        .network_broker()
+        .automation
         .resolve_intercept(
             request_id,
             InterceptDecision::ContinueRequest {
@@ -242,8 +234,7 @@ pub(crate) fn continue_response(state: &Arc<BidiState>, params: &Value) -> BidiR
         Some(v) => Some(parse_bidi_headers(v)?),
     };
     state
-        .browser
-        .network_broker()
+        .automation
         .resolve_intercept(
             request_id,
             InterceptDecision::ContinueResponse {
@@ -279,8 +270,7 @@ pub(crate) fn provide_response(state: &Arc<BidiState>, params: &Value) -> BidiRe
         Some(v) => decode_bytes_value(v)?,
     };
     state
-        .browser
-        .network_broker()
+        .automation
         .resolve_intercept(
             request_id,
             InterceptDecision::ProvideResponse {
@@ -299,8 +289,7 @@ pub(crate) fn fail_request(state: &Arc<BidiState>, params: &Value) -> BidiResult
     let map = require_object(params, "params")?;
     let request_id = parse_request_id(map)?;
     state
-        .browser
-        .network_broker()
+        .automation
         .resolve_intercept(request_id, InterceptDecision::FailRequest)
         .map_err(map_resolve_error)?;
     Ok(json!({}))
@@ -529,7 +518,7 @@ pub(crate) async fn add_data_collector(state: &Arc<BidiState>, params: &Value) -
     Ok(json!({ "collector": id }))
 }
 
-async fn collector_matches_tab(
+fn collector_matches_tab(
     state: &Arc<BidiState>,
     collector: &DataCollector,
     tab: Option<TabId>,
@@ -541,9 +530,6 @@ async fn collector_matches_tab(
             let Some(tab_id) = tab else {
                 return false;
             };
-            if let Some(uc) = state.tab_user_contexts.lock().await.get(&tab_id) {
-                return set.contains(uc);
-            }
             state
                 .browser
                 .tab(tab_id)
@@ -625,7 +611,7 @@ pub(crate) async fn disown_data(state: &Arc<BidiState>, params: &Value) -> BidiR
             "network data unavailable",
         ));
     };
-    if !collector_matches_tab(state, collector, body_tab).await {
+    if !collector_matches_tab(state, collector, body_tab) {
         return Err(BidiError::new(
             "no such network data",
             "request is outside collector scope",
@@ -648,7 +634,7 @@ fn encode_network_bytes(bytes: &[u8]) -> Value {
     }
 }
 
-async fn get_data_for_collector(
+fn get_data_for_collector(
     state: &Arc<BidiState>,
     collector: &mut DataCollector,
     data_type: &str,
@@ -678,7 +664,7 @@ async fn get_data_for_collector(
             "response body unavailable",
         ));
     };
-    if !collector_matches_tab(state, collector, body_tab).await {
+    if !collector_matches_tab(state, collector, body_tab) {
         return Err(BidiError::new(
             "no such network data",
             "request is outside collector scope",
@@ -728,7 +714,7 @@ pub(crate) async fn get_data(state: &Arc<BidiState>, params: &Value) -> BidiResu
                 format!("unknown collector: {cid}"),
             ));
         };
-        return get_data_for_collector(state, collector, data_type, request_id, disown).await;
+        return get_data_for_collector(state, collector, data_type, request_id, disown);
     }
     if data_type == "request" {
         return Err(BidiError::new(
@@ -753,7 +739,7 @@ pub(crate) async fn get_data(state: &Arc<BidiState>, params: &Value) -> BidiResu
         if collector.data_types.iter().any(|t| t == data_type)
             && !collector.disowned.contains(&key)
             && body_len <= collector.max_encoded_data_size
-            && collector_matches_tab(state, collector, body_tab).await
+            && collector_matches_tab(state, collector, body_tab)
         {
             allowed = true;
             break;

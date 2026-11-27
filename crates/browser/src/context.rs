@@ -105,7 +105,11 @@ impl BrowserContext {
         store.load_cookies(&cookies)?;
         let mut default_options = network_options.clone();
         default_options.cookie_jar = Some(cookies.jar());
-        let network = NetworkContext::new(default_options, Arc::clone(&broker));
+        let network = NetworkContext::new(
+            default_options,
+            Arc::clone(&broker),
+            UserContextId::default_context(),
+        );
         let local_storage = Arc::new(StorageAreas::default());
         store.load_local_storage(&local_storage)?;
         let indexed_db = Arc::new(StorageAreas::default());
@@ -147,7 +151,7 @@ impl BrowserContext {
         let cookies = Arc::new(CookieStore::new(self.base_network.clock.clone()));
         let mut options = self.base_network.clone();
         options.cookie_jar = Some(cookies.jar());
-        let network = NetworkContext::new(options, Arc::clone(&self.broker));
+        let network = NetworkContext::new(options, Arc::clone(&self.broker), id.clone());
         self.ephemeral
             .write()
             .unwrap_or_else(PoisonError::into_inner)

@@ -1410,3 +1410,92 @@ fn xpath_locator_and_dom_xpath_api() {
     assert_eq!(dom_api["value"][2], json!("InvalidStateError"), "{dom_api}");
     assert_eq!(dom_api["value"][3].as_f64(), Some(3.0), "{dom_api}");
 }
+
+#[test]
+fn classic_session_uses_isolated_user_context_without_touching_cdp_default_context() {
+    let server = TestServer::start(
+        vec![("/", ok("text/html", b"<!doctype html><title>iso</title>"))],
+        None,
+    );
+    let url = format!("http://{}/", server.address());
+    let (addr, _fixture) = start(Vec::new());
+    let _status = request(&addr, "GET", "/status", None);
+
+    let mut cdp_client = cdp::Client::connect(addr.parse().expect("addr")).expect("cdp connect");
+    let cdp_target = cdp_client
+        .call("Target.createTarget", &json!({"url": "about:blank"}), None)
+        .expect("cdp createTarget");
+    let cdp_target_id = cdp_target["targetId"]
+        .as_str()
+        .expect("target id")
+        .to_owned();
+    let cdp_attached = cdp_client
+        .call(
+            "Target.attachToTarget",
+            &json!({"targetId": cdp_target_id, "flatten": true}),
+            None,
+        )
+        .expect("attach");
+    let cdp_session = cdp_attached["sessionId"]
+        .as_str()
+        .expect("cdp session")
+        .to_owned();
+    cdp_client
+        .call(
+            "Network.setCookie",
+            &json!({"name": "cdp_cookie", "value": "stay", "url": url}),
+            Some(&cdp_session),
+        )
+        .expect("cdp setCookie");
+
+    let created = request(&addr, "POST", "/session", Some("{}"));
+    let sid = created["value"]["sessionId"]
+        .as_str()
+        .expect("session id")
+        .to_owned();
+    let handles = request(
+        &addr,
+        "GET",
+        &format!("/session/{sid}/window/handles"),
+        None,
+    );
+    assert_eq!(
+        handles["value"].as_array().map(Vec::len),
+        Some(1),
+        "classic session must only see its own isolated tab: {handles}"
+    );
+    let _ = request(
+        &addr,
+        "POST",
+        &format!("/session/{sid}/url"),
+        Some(&json!({"url": url}).to_string()),
+    );
+    let wd_cookies = request(&addr, "GET", &format!("/session/{sid}/cookie"), None);
+    assert_eq!(
+        wd_cookies["value"],
+        json!([]),
+        "classic session must not see default-context CDP cookies: {wd_cookies}"
+    );
+    let _ = request(&addr, "DELETE", &format!("/session/{sid}"), None);
+
+    let after_cookies = cdp_client
+        .call("Network.getAllCookies", &json!({}), Some(&cdp_session))
+        .expect("cdp getAllCookies");
+    let kept = after_cookies["cookies"]
+        .as_array()
+        .is_some_and(|list| list.iter().any(|c| c["name"] == json!("cdp_cookie")));
+    assert!(
+        kept,
+        "deleting a classic session must not wipe CDP default-context cookies: {after_cookies}"
+    );
+    let targets = cdp_client
+        .call("Target.getTargets", &json!({}), None)
+        .expect("getTargets");
+    let cdp_alive = targets["targetInfos"]
+        .as_array()
+        .is_some_and(|list| list.iter().any(|t| t["targetId"] == json!(cdp_target_id)));
+    assert!(
+        cdp_alive,
+        "deleting a classic session must not close CDP default-context targets: {targets}"
+    );
+}
