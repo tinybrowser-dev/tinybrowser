@@ -124,6 +124,7 @@ impl Engine {
             registry: Rc::new(RefCell::new(RealmRegistry::default())),
             pending_storage: Rc::new(RefCell::new(Vec::new())),
             turn_deadline: Rc::new(std::cell::Cell::new(None)),
+            event_seq: Rc::new(std::cell::Cell::new(0)),
             worker_dir,
             font_ctx: fonts.0.clone(),
         };
@@ -1067,9 +1068,13 @@ impl Engine {
                 .map_err(|()| TabError::RendererUnavailable {
                     message: "the retained event limit was exceeded".into(),
                 })?;
-            events.extend(pending.into_iter().map(|event| (frame, event)));
+            events.extend(pending.into_iter().map(|(seq, event)| (seq, frame, event)));
         }
-        Ok(events)
+        events.sort_by_key(|(seq, _, _)| *seq);
+        Ok(events
+            .into_iter()
+            .map(|(_, frame, event)| (frame, event))
+            .collect())
     }
 
     pub fn take_browser_events(&mut self) -> Result<Vec<(FrameId, BrowserEvent)>, TabError> {

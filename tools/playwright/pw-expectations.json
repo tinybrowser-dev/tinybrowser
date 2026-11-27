@@ -1,7 +1,7 @@
 {
   "elementhandle-bounding-box.spec.ts::should get bounding box of element inside a cross-origin iframe": {
     "expected": "FAIL",
-    "reason": "TypeError: Cannot read properties of undefined (reading 'waitForSelector')"
+    "reason": "TimeoutError: frame.waitForSelector: Timeout 1500ms exceeded."
   },
   "elementhandle-bounding-box.spec.ts::should handle nested frames": {
     "expected": "FAIL",
@@ -9,7 +9,7 @@
   },
   "locator-query.spec.ts::count() should not throw during navigation": {
     "expected": "FAIL",
-    "reason": "TypeError: Cannot read properties of undefined (reading 'setContent')"
+    "reason": "TimeoutError: frame.setContent: Timeout 2000ms exceeded."
   },
   "locator-query.spec.ts::should allow some, but not all nested frameLocators": {
     "expected": "FAIL",
@@ -18,10 +18,6 @@
   "locator-query.spec.ts::should keep the capture when removing a common frame prefix": {
     "expected": "FAIL",
     "reason": "Error: expect(locator).toHaveAttribute(expected) failed"
-  },
-  "locator-query.spec.ts::should support has:locator": {
-    "expected": "FAIL",
-    "reason": "Error: expect(locator).toHaveCount(expected) failed"
   },
   "page-add-init-script.spec.ts::init script should run only once in iframe": {
     "expected": "FAIL",
@@ -89,7 +85,7 @@
   },
   "page-click.spec.ts::should click the button inside an iframe": {
     "expected": "FAIL",
-    "reason": "TypeError: Cannot read properties of undefined (reading '$')"
+    "reason": "Test timeout of 3000ms exceeded."
   },
   "page-click.spec.ts::should click the button with fixed position inside an iframe": {
     "expected": "SKIP",
@@ -97,7 +93,7 @@
   },
   "page-click.spec.ts::should not hang when frame is detached": {
     "expected": "FAIL",
-    "reason": "TypeError: Cannot read properties of undefined (reading 'goto')"
+    "reason": "Error: frame.goto: Frame was detached"
   },
   "page-click.spec.ts::should not wait with noAutoWaiting 2": {
     "expected": "FAIL",
@@ -129,11 +125,11 @@
   },
   "page-evaluate.spec.ts::should not throw an error when evaluation does a synchronous navigation and returns an object": {
     "expected": "FAIL",
-    "reason": "Error: page.evaluate: script: not a function |     at <anonymous> (<input>:2:21)"
+    "reason": "Test timeout of 3000ms exceeded."
   },
   "page-evaluate.spec.ts::should not throw an error when evaluation does a synchronous navigation and returns undefined": {
     "expected": "FAIL",
-    "reason": "Error: page.evaluate: script: not a function |     at <anonymous> (<input>:2:21)"
+    "reason": "Test timeout of 3000ms exceeded."
   },
   "page-evaluate.spec.ts::should properly serialize window.performance object": {
     "expected": "FAIL",
@@ -145,7 +141,7 @@
   },
   "page-evaluate.spec.ts::should throw a nice error after a navigation": {
     "expected": "FAIL",
-    "reason": "Error: page.evaluate: script: not a function |     at <anonymous> (<input>:2:21)"
+    "reason": "TimeoutError: page.waitForNavigation: Timeout 2000ms exceeded."
   },
   "page-evaluate.spec.ts::should throw for too deep reference chain": {
     "expected": "FAIL",
@@ -153,7 +149,7 @@
   },
   "page-evaluate.spec.ts::should throw when evaluation triggers reload": {
     "expected": "FAIL",
-    "reason": "Error: expect(received).toContain(expected) // indexOf"
+    "reason": "Test timeout of 3000ms exceeded."
   },
   "page-evaluate.spec.ts::should transfer 100Mb of data from page to node.js": {
     "expected": "FAIL",
@@ -173,7 +169,7 @@
   },
   "page-goto.spec.ts::js redirect overrides url bar navigation ": {
     "expected": "FAIL",
-    "reason": "Error: Test timeout of 3000ms exceeded"
+    "reason": "Error: expect(received).toEqual(expected) // deep equality"
   },
   "page-goto.spec.ts::should capture cross-process iframe navigation request": {
     "expected": "FAIL",
@@ -189,15 +185,11 @@
   },
   "page-goto.spec.ts::should fail when replaced by another navigation": {
     "expected": "FAIL",
-    "reason": "TimeoutError: page.goto: Timeout 2ms exceeded."
+    "reason": "Error: expect(received).toContain(expected) // indexOf"
   },
   "page-goto.spec.ts::should navigate from file URL to about:blank": {
     "expected": "FAIL",
     "reason": "Error: page.goto: Protocol error (Page.navigate): Cannot navigate to invalid URL"
-  },
-  "page-goto.spec.ts::should not resolve goto upon window.stop()": {
-    "expected": "FAIL",
-    "reason": "Error: expect(received).toBe(expected) // Object.is equality"
   },
   "page-goto.spec.ts::should return from goto if new navigation is started": {
     "expected": "FAIL",
@@ -217,7 +209,7 @@
   },
   "page-goto.spec.ts::should work with Cross-Origin-Opener-Policy and interception": {
     "expected": "FAIL",
-    "reason": "Error: page.route: Protocol error (Fetch.enable): 'Fetch.enable' wasn't found"
+    "reason": "TypeError: Cannot read properties of null (reading 'finished')"
   },
   "page-goto.spec.ts::should work with file URL": {
     "expected": "FAIL",
@@ -226,10 +218,6 @@
   "page-goto.spec.ts::should work with file URL with subframes": {
     "expected": "FAIL",
     "reason": "Error: page.goto: Protocol error (Page.navigate): Cannot navigate to invalid URL"
-  },
-  "page-goto.spec.ts::should work with lazy loading iframes": {
-    "expected": "FAIL",
-    "reason": "Error: expect(received).toBe(expected) // Object.is equality"
   },
   "page-history.spec.ts::goBack/goForward should work with bfcache-able pages": {
     "expected": "FAIL",
@@ -263,27 +251,27 @@
     "expected": "FAIL",
     "reason": "Test timeout of 3000ms exceeded."
   },
-  "page-screenshot.spec.ts::mask option › should work": {
-    "expected": "FAIL",
-    "reason": "Error: expect(Buffer).toMatchSnapshot(expected) failed (mask overlay needs shadow-scoped constructable stylesheets, see #299)"
-  },
   "page-screenshot.spec.ts::mask option › should work when subframe has stalled navigation": {
     "expected": "FAIL",
-    "reason": "Error: page.route: Protocol error (Fetch.enable): 'Fetch.enable' wasn't found"
+    "reason": "Test timeout of 3000ms exceeded."
   },
   "page-screenshot.spec.ts::mask option › should work with elementhandle": {
     "expected": "FAIL",
-    "reason": "Error: expect(Buffer).toMatchSnapshot(expected) failed (mask overlay needs shadow-scoped constructable stylesheets, see #299)"
+    "reason": "Error: expect(Buffer).toMatchSnapshot(expected) failed"
   },
   "page-screenshot.spec.ts::mask option › should work with locator": {
     "expected": "FAIL",
-    "reason": "Error: expect(Buffer).toMatchSnapshot(expected) failed (mask overlay needs shadow-scoped constructable stylesheets, see #299)"
+    "reason": "Error: expect(Buffer).toMatchSnapshot(expected) failed"
   },
   "page-screenshot.spec.ts::page screenshot animations › should capture screenshots after layoutchanges in transitionend event": {
     "expected": "FAIL",
     "reason": "Error: expect(locator).toBeVisible() failed"
   },
   "page-screenshot.spec.ts::page screenshot animations › should fire transitionend for finite transitions": {
+    "expected": "FAIL",
+    "reason": "Error: expect(received).toBe(expected) // Object.is equality"
+  },
+  "page-screenshot.spec.ts::page screenshot animations › should not capture css animations in shadow DOM": {
     "expected": "FAIL",
     "reason": "Error: expect(received).toBe(expected) // Object.is equality"
   },
@@ -327,10 +315,6 @@
     "expected": "FAIL",
     "reason": "Error: expect(received).toBe(expected) // Object.is equality"
   },
-  "page-screenshot.spec.ts::page screenshot › should capture blinking caret in shadow dom": {
-    "expected": "FAIL",
-    "reason": "TimeoutError: locator.screenshot: Timeout 1493.2110000000002ms exceeded."
-  },
   "page-screenshot.spec.ts::page screenshot › should clip rect with fullPage": {
     "expected": "FAIL",
     "reason": "Error: expect(Buffer).toMatchSnapshot(expected) failed"
@@ -338,10 +322,6 @@
   "page-screenshot.spec.ts::page screenshot › should take fullPage screenshots during navigation": {
     "expected": "SKIP",
     "reason": "timing race against the 1500ms action budget: first screenshot needs ~1.45s while reloads destroy the utility realm; tracked in #334"
-  },
-  "page-screenshot.spec.ts::page screenshot › should work while navigating": {
-    "expected": "FAIL",
-    "reason": "TimeoutError: page.screenshot: Timeout 1500ms exceeded. (isolated realm setup cost, see #331)"
   },
   "page-screenshot.spec.ts::page screenshot › webp screenshots should be lossless by default": {
     "expected": "FAIL",

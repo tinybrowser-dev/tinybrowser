@@ -32,6 +32,7 @@ pub(super) async fn run(
     let mut responses = ResponseStreams::default();
     let mut session = Session {
         identity: net::ValidIdentity::default(),
+        generations: HashMap::new(),
         stop: Arc::clone(stop),
         wake: Arc::clone(&wake),
     };
@@ -40,7 +41,7 @@ pub(super) async fn run(
             stop.request();
             break;
         }
-        match drain_engines(&mut engines, outbox) {
+        match drain_engines(&mut engines, &session.generations, outbox) {
             Drained::Failed => {
                 stop.request();
                 break;
@@ -90,6 +91,7 @@ pub(super) async fn run(
 
 struct Session {
     identity: net::ValidIdentity,
+    generations: HashMap<RendererAssignmentId, u64>,
     stop: Arc<Stop>,
     wake: Arc<Notify>,
 }
@@ -108,10 +110,12 @@ fn handle_host(
             true
         }
         Some(Frame::Notify(HostNotice::Assign { assignment })) => {
+            session.generations.insert(assignment, 0);
             assign_engine(engines, assignment, client, session)
         }
         Some(Frame::Notify(HostNotice::Release { assignment })) => {
             responses.release(assignment, engines);
+            session.generations.remove(&assignment);
             if let Some(mut engine) = engines.remove(&assignment) {
                 engine.release();
             }
@@ -128,23 +132,7 @@ fn handle_host(
         Some(Frame::Call {
             id,
             body: RendererCall::Response { response },
-        }) => {
-            let Some(engine) = engines.get_mut(&response.assignment) else {
-                responses.cancel(id, engines);
-                return reply_result(
-                    outbox,
-                    id,
-                    (
-                        response.assignment,
-                        Err(stream_error("response assignment is gone")),
-                    ),
-                );
-            };
-            match responses.start(id, &response, engine) {
-                Ok(()) => true,
-                Err(error) => reply_result(outbox, id, (response.assignment, Err(error))),
-            }
-        }
+        }) => handle_response_start(id, &response, engines, responses, outbox, session),
         Some(Frame::RequestChunk { id, bytes }) => match responses.push(id, &bytes, engines) {
             Ok(()) => true,
             Err((assignment, error)) => reply_result(outbox, id, (assignment, Err(error))),
@@ -201,6 +189,37 @@ fn handle_host(
             Frame::Notify(HostNotice::Shutdown) | Frame::Reply { .. } | Frame::ResponseChunk { .. },
         )
         | None => false,
+    }
+}
+
+fn handle_response_start(
+    id: RequestId,
+    response: &ResponseStart,
+    engines: &mut HashMap<RendererAssignmentId, Engine>,
+    responses: &mut ResponseStreams,
+    outbox: &exchange::BlockingSender<FromRenderer>,
+    session: &mut Session,
+) -> bool {
+    let Some(engine) = engines.get_mut(&response.assignment) else {
+        responses.cancel(id, engines);
+        return reply_result(
+            outbox,
+            id,
+            (
+                response.assignment,
+                Err(stream_error("response assignment is gone")),
+            ),
+        );
+    };
+    if response.frame == FrameId::MAIN {
+        let _ = engine.take_browser_events();
+        session
+            .generations
+            .insert(response.assignment, response.generation);
+    }
+    match responses.start(id, response, engine) {
+        Ok(()) => true,
+        Err(error) => reply_result(outbox, id, (response.assignment, Err(error))),
     }
 }
 
@@ -346,6 +365,7 @@ const DRAIN_SLICE: Duration = Duration::from_millis(50);
 
 fn drain_engines(
     engines: &mut HashMap<RendererAssignmentId, Engine>,
+    generations: &HashMap<RendererAssignmentId, u64>,
     outbox: &exchange::BlockingSender<FromRenderer>,
 ) -> Drained {
     let now = std::time::Instant::now();
@@ -360,7 +380,8 @@ fn drain_engines(
         if engine.drain_ready_slice(yield_deadline, script_deadline) {
             yielded = true;
         }
-        if !publish(*assignment, engine, outbox) {
+        let generation = generations.get(assignment).copied().unwrap_or(0);
+        if !publish(*assignment, generation, engine, outbox) {
             return Drained::Failed;
         }
         if engine.has_ready_work() {
@@ -709,6 +730,7 @@ fn stream_screenshot(
 
 fn publish(
     assignment: RendererAssignmentId,
+    generation: u64,
     engine: &mut Engine,
     outbox: &exchange::BlockingSender<FromRenderer>,
 ) -> bool {
@@ -721,6 +743,7 @@ fn publish(
             outbox,
             Frame::Notify(RendererNotice::Event {
                 assignment,
+                generation,
                 frame,
                 event,
             }),

@@ -16,7 +16,7 @@ const EVENT_SUBSCRIBER_CAPACITY: usize = 4096;
 
 #[derive(Clone, Debug)]
 pub(crate) enum RendererWake {
-    Event(FrameId, BrowserEvent),
+    Event(u64, FrameId, BrowserEvent),
     WaiterSettled(u64),
 }
 
@@ -53,16 +53,24 @@ impl Assignment {
         self.process.request_bytes(self.id, command).await
     }
 
-    pub(crate) async fn mount(&self, frame: FrameId, mount: Mount) -> Result<Reply, TabError> {
-        self.process.mount(self.id, frame, mount).await
+    pub(crate) async fn mount(
+        &self,
+        frame: FrameId,
+        generation: u64,
+        mount: Mount,
+    ) -> Result<Reply, TabError> {
+        self.process.mount(self.id, frame, generation, mount).await
     }
 
     pub(crate) async fn start_response(
         &self,
         frame: FrameId,
+        generation: u64,
         mount: &Mount,
     ) -> Result<ResponseWriter, TabError> {
-        self.process.start_response(self.id, frame, mount).await
+        self.process
+            .start_response(self.id, frame, generation, mount)
+            .await
     }
 
     #[must_use]
@@ -75,8 +83,13 @@ impl Assignment {
         rx
     }
 
-    pub(crate) fn publish_event(&self, frame: FrameId, event: &BrowserEvent) -> bool {
-        self.publish(&RendererWake::Event(frame, event.clone()))
+    pub(crate) fn publish_event(
+        &self,
+        generation: u64,
+        frame: FrameId,
+        event: &BrowserEvent,
+    ) -> bool {
+        self.publish(&RendererWake::Event(generation, frame, event.clone()))
     }
 
     pub(crate) fn publish_waiter_settled(&self, id: u64) -> bool {

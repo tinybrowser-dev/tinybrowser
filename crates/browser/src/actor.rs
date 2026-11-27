@@ -803,6 +803,7 @@ struct Tab {
     navigation_failed: bool,
     nav: Option<ActiveNavigation>,
     nav_epoch: u64,
+    mount_generation: u64,
     dial_tx: mpsc::UnboundedSender<(u64, Result<NavOutcome, DialFailure>)>,
     dial_rx: mpsc::UnboundedReceiver<(u64, Result<NavOutcome, DialFailure>)>,
     dial_cancel: Option<watch::Sender<bool>>,
@@ -855,6 +856,7 @@ impl Tab {
             navigation_failed: false,
             nav: None,
             nav_epoch: 0,
+            mount_generation: 0,
             dial_tx,
             dial_rx,
             dial_cancel: None,
@@ -973,11 +975,13 @@ impl Tab {
         self.ensure_renderer(site).await?;
         self.pending_mount = None;
         self.document_loaded = false;
+        self.mount_generation = self.mount_generation.saturating_add(1);
+        let generation = self.mount_generation;
         let result = self
             .renderer
             .as_ref()
             .ok_or(TabError::ActorStopped)?
-            .mount(FrameId::MAIN, mount)
+            .mount(FrameId::MAIN, generation, mount)
             .await
             .and_then(reply_unit);
         if result.is_err() {
@@ -1009,8 +1013,12 @@ impl Tab {
                 self.ensure_renderer(site).await?;
                 self.pending_mount = None;
                 self.document_loaded = false;
+                self.mount_generation = self.mount_generation.saturating_add(1);
+                let generation = self.mount_generation;
                 let renderer = self.renderer.as_ref().ok_or(TabError::ActorStopped)?;
-                let stream = renderer.start_response(FrameId::MAIN, &mount).await?;
+                let stream = renderer
+                    .start_response(FrameId::MAIN, generation, &mount)
+                    .await?;
                 let mut received = 0usize;
                 let capture_body =
                     self.network.broker().is_active() || self.subscribers.has_subscribers();
@@ -2029,11 +2037,13 @@ async fn coordinator_loop(
             Wake::Renderer(Some(RendererWake::WaiterSettled(id))) => {
                 settle_waiter(&server, &mut waiters, id).await;
             }
-            Wake::Renderer(Some(RendererWake::Event(frame, event))) => {
-                let navigated = matches!(event, BrowserEvent::Navigated { .. });
-                tab.handle_renderer_event(frame, &event).await;
-                if navigated {
-                    resolve_frame_waiters(&mut tab, &server, &mut waiters, frame).await;
+            Wake::Renderer(Some(RendererWake::Event(generation, frame, event))) => {
+                if generation == tab.mount_generation {
+                    let navigated = matches!(event, BrowserEvent::Navigated { .. });
+                    tab.handle_renderer_event(frame, &event).await;
+                    if navigated {
+                        resolve_frame_waiters(&mut tab, &server, &mut waiters, frame).await;
+                    }
                 }
             }
             Wake::Renderer(None) => {

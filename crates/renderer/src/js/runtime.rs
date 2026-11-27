@@ -127,6 +127,7 @@ pub(crate) struct FrameRuntime {
     pub(crate) registry: Rc<RefCell<RealmRegistry>>,
     pub(crate) pending_storage: Rc<RefCell<Vec<crate::storage::PendingStorageEvent>>>,
     pub(crate) turn_deadline: Rc<Cell<Option<Instant>>>,
+    pub(crate) event_seq: Rc<Cell<u64>>,
     pub(crate) worker_dir: Arc<WorkerDirectory>,
     pub(crate) font_ctx: parley::FontContext,
 }

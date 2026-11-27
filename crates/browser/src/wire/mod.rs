@@ -155,6 +155,7 @@ pub enum HostNotice {
 pub struct ResponseStart {
     pub assignment: RendererAssignmentId,
     pub frame: FrameId,
+    pub generation: u64,
     pub head: renderer::ResponseHead,
     pub tab: renderer::TabState,
 }
@@ -179,6 +180,7 @@ pub enum RendererNotice {
     },
     Event {
         assignment: RendererAssignmentId,
+        generation: u64,
         frame: FrameId,
         event: BrowserEvent,
     },

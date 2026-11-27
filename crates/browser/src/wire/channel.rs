@@ -411,6 +411,7 @@ mod tests {
                     response: Box::new(crate::wire::ResponseStart {
                         assignment: crate::wire::RendererAssignmentId::new(1),
                         frame: renderer::FrameId::MAIN,
+                        generation: 1,
                         head: head.clone(),
                         tab: tab.clone(),
                     }),

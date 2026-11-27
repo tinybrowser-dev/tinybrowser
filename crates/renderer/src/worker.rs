@@ -343,6 +343,7 @@ impl WorkerDirectory {
             registry: Rc::new(RefCell::new(crate::js::RealmRegistry::default())),
             pending_storage: Rc::new(RefCell::new(Vec::new())),
             turn_deadline: Rc::new(std::cell::Cell::new(None)),
+            event_seq: Rc::new(std::cell::Cell::new(0)),
             worker_dir: Arc::clone(self),
             font_ctx: self.runtime.font_ctx.clone(),
         }

@@ -494,7 +494,8 @@ pub(crate) struct Document {
     new_frames: Rc<RefCell<Vec<CreatedFrame>>>,
     load_fired: bool,
     refresh: RefreshState,
-    events: Vec<RendererEvent>,
+    event_seq: Rc<std::cell::Cell<u64>>,
+    events: Vec<(u64, RendererEvent)>,
     events_overflowed: bool,
     js: Option<crate::js::JsRealm>,
     // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-createIsolatedWorld
@@ -722,6 +723,7 @@ impl Document {
             new_frames,
             load_fired: false,
             refresh: RefreshState::default(),
+            event_seq: Rc::clone(&runtime.event_seq),
             events: Vec::new(),
             events_overflowed: false,
             js: None,
@@ -1762,7 +1764,7 @@ impl Document {
         out
     }
 
-    pub(crate) fn take_events(&mut self) -> Result<Vec<RendererEvent>, ()> {
+    pub(crate) fn take_events(&mut self) -> Result<Vec<(u64, RendererEvent)>, ()> {
         if std::mem::take(&mut self.events_overflowed) {
             self.events.clear();
             return Err(());
@@ -2111,7 +2113,7 @@ impl Document {
         if reason == RealmReset::Reopen {
             self.record_event(RendererEvent::Browser(BrowserEvent::RealmReplaced));
         }
-        self.events.retain(|event| {
+        self.events.retain(|(_, event)| {
             !matches!(
                 event,
                 RendererEvent::Browser(BrowserEvent::Load | BrowserEvent::DomContentLoaded)
@@ -3915,7 +3917,9 @@ impl Document {
             self.events_overflowed = true;
             return;
         }
-        self.events.push(event);
+        let seq = self.event_seq.get();
+        self.event_seq.set(seq.wrapping_add(1));
+        self.events.push((seq, event));
     }
 }
 

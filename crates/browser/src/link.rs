@@ -242,9 +242,12 @@ impl RendererHandle {
         self: &Arc<Self>,
         assignment: RendererAssignmentId,
         frame: FrameId,
+        generation: u64,
         mount: Mount,
     ) -> Result<Reply, TabError> {
-        let response = self.start_response(assignment, frame, &mount).await?;
+        let response = self
+            .start_response(assignment, frame, generation, &mount)
+            .await?;
         for chunk in mount
             .body
             .chunks(crate::wire::channel::MAX_BODY_CHUNK_BYTES)
@@ -258,11 +261,13 @@ impl RendererHandle {
         self: &Arc<Self>,
         assignment: RendererAssignmentId,
         frame: FrameId,
+        generation: u64,
         mount: &Mount,
     ) -> Result<ResponseWriter, TabError> {
         let start = Box::new(ResponseStart {
             assignment,
             frame,
+            generation,
             head: mount.head.clone(),
             tab: mount.tab.clone(),
         });
@@ -496,9 +501,10 @@ async fn service_task(mut server: BrowserServiceServer, context: ServiceContext)
             } => route_service_call(&context, id, assignment, call).await,
             ServerInput::Notify(RendererNotice::Event {
                 assignment,
+                generation,
                 frame,
                 event,
-            }) => route_event(&context, assignment, frame, &event),
+            }) => route_event(&context, assignment, generation, frame, &event),
             ServerInput::Notify(RendererNotice::WaiterSettled { assignment, id }) => {
                 route_waiter_settled(&context, assignment, id)
             }
@@ -517,13 +523,14 @@ async fn service_task(mut server: BrowserServiceServer, context: ServiceContext)
 fn route_event(
     context: &ServiceContext,
     assignment: RendererAssignmentId,
+    generation: u64,
     frame: FrameId,
     event: &BrowserEvent,
 ) -> Result<(), RendererViolation> {
     let Some(assignment) = live_assignment(context, assignment)? else {
         return Ok(());
     };
-    if assignment.publish_event(frame, event) {
+    if assignment.publish_event(generation, frame, event) {
         Err(RendererViolation)
     } else {
         Ok(())
