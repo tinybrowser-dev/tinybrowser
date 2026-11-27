@@ -92,21 +92,19 @@ enum Task {
     BroadcastMessage {
         origin: String,
         name: String,
-        payload: String,
+        message: crate::messaging::SerializedMessage,
         source: Option<u64>,
     },
     PortMessage {
         endpoint: u64,
-        payload: String,
-        ports: Vec<u64>,
+        message: crate::messaging::SerializedMessage,
     },
     PortClosed {
         endpoint: u64,
     },
     WorkerMessage {
         worker: crate::worker::WorkerId,
-        payload: String,
-        ports: Vec<u64>,
+        message: crate::messaging::SerializedMessage,
     },
     WorkerError(crate::worker::WorkerError),
     // https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model
@@ -144,8 +142,7 @@ pub(crate) struct WindowMessage {
     pub(crate) source: FrameId,
     pub(crate) origin: String,
     pub(crate) target_origin: TargetOrigin,
-    pub(crate) payload: String,
-    pub(crate) ports: Vec<u64>,
+    pub(crate) message: crate::messaging::SerializedMessage,
 }
 
 // https://html.spec.whatwg.org/multipage/browsing-the-web.html#url-and-history-update-steps
@@ -665,7 +662,7 @@ impl Document {
         bindings: &Rc<RefCell<Vec<String>>>,
     ) -> Self {
         let document_url = about_blank();
-        runtime.shared.borrow_mut().begin_document(frame);
+        runtime.shared.lock().begin_document(frame);
         let world = Rc::new(RefCell::new(World::new(
             document_url.clone(),
             frame,
@@ -1041,7 +1038,7 @@ impl Document {
                 (containers, images)
             })
             .unwrap_or_default();
-        let shared = self.shared.borrow();
+        let shared = self.shared.lock();
         let known: std::collections::HashSet<crate::dom::tree::NodeId> = shared
             .tree
             .children(self.frame)
@@ -1364,7 +1361,7 @@ impl Document {
             .world
             .borrow()
             .shared()
-            .borrow_mut()
+            .lock()
             .tree
             .reset_name_on_cross_origin_navigation(frame, previous == new_origin);
         if cleared && frame == FrameId::MAIN {
@@ -1484,7 +1481,7 @@ impl Document {
     }
 
     pub(crate) fn matches_document(&self, id: DocumentId) -> bool {
-        self.shared.borrow().document_id(self.frame) == Some(id)
+        self.shared.lock().document_id(self.frame) == Some(id)
     }
 
     // https://html.spec.whatwg.org/multipage/webstorage.html#concept-storage-broadcast
@@ -1508,7 +1505,7 @@ impl Document {
         &mut self,
         origin: String,
         name: String,
-        payload: String,
+        message: crate::messaging::SerializedMessage,
         source: Option<u64>,
     ) {
         self.tasks.push(
@@ -1516,20 +1513,20 @@ impl Document {
             Task::BroadcastMessage {
                 origin,
                 name,
-                payload,
+                message,
                 source,
             },
         );
     }
 
-    pub(crate) fn push_port_message(&mut self, endpoint: u64, payload: String, ports: Vec<u64>) {
+    pub(crate) fn push_port_message(
+        &mut self,
+        endpoint: u64,
+        message: crate::messaging::SerializedMessage,
+    ) {
         self.tasks.push(
             crate::task_queue::TaskSource::PostedMessage,
-            Task::PortMessage {
-                endpoint,
-                payload,
-                ports,
-            },
+            Task::PortMessage { endpoint, message },
         );
     }
 
@@ -1543,16 +1540,11 @@ impl Document {
     pub(crate) fn push_worker_message(
         &mut self,
         worker: crate::worker::WorkerId,
-        payload: String,
-        ports: Vec<u64>,
+        message: crate::messaging::SerializedMessage,
     ) {
         self.tasks.push(
             crate::task_queue::TaskSource::PostedMessage,
-            Task::WorkerMessage {
-                worker,
-                payload,
-                ports,
-            },
+            Task::WorkerMessage { worker, message },
         );
     }
 
@@ -1598,13 +1590,20 @@ impl Document {
         &mut self,
         origin: &str,
         name: &str,
-        payload: &str,
+        message: &crate::messaging::SerializedMessage,
         source: Option<u64>,
     ) {
         if !self.ensure_js_ok() {
             return;
         }
-        self.fire_js(|js| js.deliver_broadcast_message(origin, name, payload, source));
+        let delivered = self.with_message_buffers(message, || {
+            self.js
+                .as_ref()
+                .map(|js| js.deliver_broadcast_message(origin, name, &message.data, source))
+        });
+        if matches!(delivered, Some(Err(_))) {
+            self.record_event(RendererEvent::ScriptFailed);
+        }
         self.adopt_js_work();
     }
 
@@ -1623,58 +1622,81 @@ impl Document {
             .target_origin
             .admits(&self.world.borrow().doc().origin)
         {
-            self.shared.borrow_mut().forget_endpoints(&message.ports);
+            self.shared.lock().forget_endpoints(&message.message.ports);
             return;
         }
         if !self.ensure_js_ok() {
             return;
         }
-        let delivered = match &self.js {
-            Some(js) => js.deliver_window_message(
-                message.source.get(),
-                &message.origin,
-                &message.payload,
-                &message.ports,
-            ),
-            None => return,
-        };
+        let delivered = self.with_message_buffers(&message.message, || {
+            self.js.as_ref().map(|js| {
+                js.deliver_window_message(
+                    message.source.get(),
+                    &message.origin,
+                    &message.message.data,
+                    &message.message.ports,
+                )
+            })
+        });
         match delivered {
-            Ok(true) => {}
-            Ok(false) => self.fire_js(|js| {
+            Some(Ok(true)) => {}
+            Some(Ok(false)) => self.fire_js(|js| {
                 js.deliver_window_message_error(message.source.get(), &message.origin)
             }),
-            Err(_) => self.record_event(RendererEvent::ScriptFailed),
+            Some(Err(_)) => self.record_event(RendererEvent::ScriptFailed),
+            None => return,
         }
         self.adopt_js_work();
     }
 
-    fn deliver_port_message(&mut self, endpoint: u64, payload: &str, ports: &[u64]) {
+    fn deliver_port_message(
+        &mut self,
+        endpoint: u64,
+        message: crate::messaging::SerializedMessage,
+    ) {
         // https://html.spec.whatwg.org/multipage/web-messaging.html#message-port-post-message-steps
-        if self.endpoint_moved(endpoint) {
-            let shared = self.shared.clone();
-            let mut shared = shared.borrow_mut();
-            shared.requeue_port_message(endpoint, payload.to_owned(), ports.to_vec());
+        let Some(message) = self
+            .shared
+            .take_port_message_unless_owned(endpoint, self.frame, message)
+        else {
             return;
-        }
+        };
         if !self.ensure_js_ok() {
             return;
         }
-        let delivered = match &self.js {
-            Some(js) => js.deliver_port_message(endpoint, payload, ports),
-            None => return,
-        };
+        let delivered = self.with_message_buffers(&message, || {
+            self.js
+                .as_ref()
+                .map(|js| js.deliver_port_message(endpoint, &message.data, &message.ports))
+        });
         match delivered {
-            Ok(true) => {}
-            Ok(false) => self.fire_js(|js| js.deliver_port_message_error(endpoint)),
-            Err(_) => self.record_event(RendererEvent::ScriptFailed),
+            Some(Ok(true)) => {}
+            Some(Ok(false)) => self.fire_js(|js| js.deliver_port_message_error(endpoint)),
+            Some(Err(_)) => self.record_event(RendererEvent::ScriptFailed),
+            None => return,
         }
         self.adopt_js_work();
+    }
+
+    fn with_message_buffers<T>(
+        &self,
+        message: &crate::messaging::SerializedMessage,
+        operation: impl FnOnce() -> T,
+    ) -> T {
+        let previous = self
+            .world
+            .borrow()
+            .install_message_shared_buffers(message.shared_buffers.clone());
+        let result = operation();
+        self.world.borrow().restore_message_shared_buffers(previous);
+        result
     }
 
     fn deliver_port_close(&mut self, endpoint: u64) {
-        if self.endpoint_moved(endpoint) {
-            let shared = self.shared.clone();
-            shared.borrow_mut().requeue_port_close(endpoint);
+        if !self
+            .shared
+            .take_port_close_unless_owned(endpoint, self.frame)
+        {
             return;
         }
         if !self.ensure_js_ok() {
@@ -1682,12 +1704,6 @@ impl Document {
         }
         self.fire_js(|js| js.deliver_port_close(endpoint));
         self.adopt_js_work();
-    }
-
-    // https://html.spec.whatwg.org/multipage/web-messaging.html#transfer-receiving-steps
-    fn endpoint_moved(&self, endpoint: u64) -> bool {
-        let shared = self.shared.borrow();
-        shared.ports.owner(endpoint) != Some(self.frame)
     }
 
     #[must_use]
@@ -1796,7 +1812,7 @@ impl Document {
         {
             let world = self.world.borrow();
             let shared = world.shared();
-            let mut shared = shared.borrow_mut();
+            let mut shared = shared.lock();
             shared.tree.set_name(
                 frame,
                 tab.name
@@ -1913,7 +1929,7 @@ impl Document {
             )),
         );
         let top_level = {
-            let shared = self.shared.borrow();
+            let shared = self.shared.lock();
             shared.tree.top_level(self.frame) == self.frame
         };
         self.response.stage_head(head, top_level);
@@ -1945,7 +1961,7 @@ impl Document {
     ) {
         self.install_response(head, body, origin);
         // https://html.spec.whatwg.org/multipage/window-object.html#the-window-object
-        if self.js.is_none() && self.shared.borrow().tree.parent(self.frame).is_none() {
+        if self.js.is_none() && self.shared.lock().tree.parent(self.frame).is_none() {
             self.ensure_js_ok();
         }
     }
@@ -2137,16 +2153,16 @@ impl Document {
         for task in self.tasks.take_all() {
             match task {
                 Task::WindowMessage(message) => {
-                    self.shared.borrow_mut().forget_endpoints(&message.ports);
+                    self.shared.lock().forget_endpoints(&message.message.ports);
                 }
-                Task::PortMessage { ports, .. } => {
-                    self.shared.borrow_mut().forget_endpoints(&ports);
+                Task::PortMessage { message, .. } => {
+                    self.shared.lock().forget_endpoints(&message.ports);
                 }
                 _ => {}
             }
         }
         if reason == RealmReset::Navigation {
-            self.shared.borrow_mut().begin_document(self.frame);
+            self.shared.lock().begin_document(self.frame);
             // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-evaluate
             self.world
                 .borrow()
@@ -2172,7 +2188,7 @@ impl Document {
         });
         // https://html.spec.whatwg.org/multipage/web-messaging.html#disentangle
         {
-            let mut shared = self.shared.borrow_mut();
+            let mut shared = self.shared.lock();
             shared.close_frame_ports(self.frame);
             shared.detach_child_frames(self.frame);
         }
@@ -2290,7 +2306,7 @@ impl Document {
         if !self.world.borrow().win().init_scripts.borrow().is_empty() {
             return false;
         }
-        self.shared.borrow().tree.parent(self.frame).is_some()
+        self.shared.lock().tree.parent(self.frame).is_some()
     }
 
     fn install_parsed(&mut self, parsed: Parsed) -> bool {
@@ -3159,7 +3175,7 @@ impl Document {
         // https://chromedevtools.github.io/devtools-protocol/tot/Page/#event-frameNavigated
         // https://html.spec.whatwg.org/multipage/browsing-the-web.html#resetBCName
         let outgoing_name = {
-            let shared = self.shared.borrow();
+            let shared = self.shared.lock();
             crate::protocol::ContextName::parse(shared.tree.name(self.frame))
         };
         self.record_event(RendererEvent::Browser(BrowserEvent::Navigated {

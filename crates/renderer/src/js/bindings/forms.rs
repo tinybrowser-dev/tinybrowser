@@ -366,13 +366,7 @@ fn number_buffer_state_js(text: String) -> u8 {
 fn same_origin_with_top(ctx: Ctx<'_>) -> Result<bool> {
     let current = world(&ctx)?;
     let frame = current.borrow().frame();
-    let top = current
-        .borrow()
-        .runtime
-        .shared
-        .borrow()
-        .tree
-        .top_level(frame);
+    let top = current.borrow().runtime.shared.lock().tree.top_level(frame);
     if top == frame {
         return Ok(true);
     }

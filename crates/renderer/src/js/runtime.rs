@@ -1,5 +1,4 @@
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::ops::Deref;
 use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -18,43 +17,6 @@ use super::RealmRegistry;
 
 pub(crate) type WorkerRequests = Arc<Mutex<Vec<WorkerRequest>>>;
 
-// https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal
-#[derive(Default)]
-pub(crate) struct SharedBufferTable {
-    entries: Mutex<SharedBufferEntries>,
-}
-
-#[derive(Default)]
-struct SharedBufferEntries {
-    next: u64,
-    by_address: HashMap<usize, u64>,
-    buffers: HashMap<u64, rquickjs::SharedBufferLease>,
-}
-
-impl SharedBufferTable {
-    pub(crate) fn register(&self, lease: rquickjs::SharedBufferLease) -> u64 {
-        let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
-        let address = lease.address();
-        if let Some(id) = entries.by_address.get(&address) {
-            return *id;
-        }
-        let id = entries.next;
-        entries.next = entries.next.saturating_add(1);
-        entries.by_address.insert(address, id);
-        entries.buffers.insert(id, lease);
-        id
-    }
-
-    pub(crate) fn get(&self, id: u64) -> Option<rquickjs::SharedBufferLease> {
-        self.entries
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .buffers
-            .get(&id)
-            .cloned()
-    }
-}
-
 #[derive(Clone)]
 pub(crate) struct SharedRuntime {
     pub(crate) services: Arc<dyn BrowserServices>,
@@ -69,7 +31,6 @@ pub(crate) struct SharedRuntime {
     pub(crate) next_worker: Arc<AtomicU64>,
     pub(crate) next_broadcast: Arc<AtomicU64>,
     pub(crate) next_blob_scope: Arc<AtomicU64>,
-    pub(crate) shared_buffers: Arc<SharedBufferTable>,
     pub(crate) font_ctx: parley::FontContext,
 }
 
@@ -95,7 +56,6 @@ impl SharedRuntime {
             next_worker: Arc::new(AtomicU64::new(1)),
             next_broadcast: Arc::new(AtomicU64::new(1)),
             next_blob_scope: Arc::new(AtomicU64::new(1)),
-            shared_buffers: Arc::new(SharedBufferTable::default()),
             font_ctx,
         }
     }

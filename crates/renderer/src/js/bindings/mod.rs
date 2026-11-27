@@ -513,25 +513,24 @@ fn install_worker_constructor_hosts(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -
                     return;
                 };
                 let world = post_world.borrow();
+                let message = world.take_serialized_message(payload, ports);
                 // https://html.spec.whatwg.org/multipage/web-messaging.html#transfer-receiving-steps
                 {
                     let shared_handle = world.shared();
-                    let mut shared = shared_handle.borrow_mut();
-                    for endpoint in &ports {
+                    let mut shared = shared_handle.lock();
+                    for endpoint in &message.ports {
                         shared
                             .ports
                             .route(*endpoint, crate::protocol::FrameId::worker(id));
                     }
                 }
                 // https://html.spec.whatwg.org/multipage/web-messaging.html#transfer-receiving-steps
+                let endpoints = message.ports.clone();
                 if !world.runtime.worker_dir.send(
                     crate::worker::WorkerId::new(id),
-                    crate::worker::WorkerCommand::Post {
-                        payload,
-                        ports: ports.clone(),
-                    },
+                    crate::worker::WorkerCommand::Post { message },
                 ) {
-                    world.shared().borrow_mut().forget_endpoints(&ports);
+                    world.shared().lock().forget_endpoints(&endpoints);
                 }
             },
         ),
@@ -597,8 +596,8 @@ fn install_shared_worker_constructor_host(ctx: &Ctx<'_>, world: &Rc<RefCell<Worl
                 let (frame, shared) = (current.frame(), current.shared());
                 if worker_script_blocked(&current, id, &parsed) {
                     let (page_endpoint, worker_endpoint) =
-                        shared.borrow_mut().ports.new_pair(frame);
-                    shared.borrow_mut().forget_endpoints(&[worker_endpoint]);
+                        shared.lock().ports.new_pair(frame);
+                    shared.lock().forget_endpoints(&[worker_endpoint]);
                     return Ok(vec![
                         crate::js::js_number(id.get()),
                         crate::js::js_number(page_endpoint),
@@ -617,9 +616,9 @@ fn install_shared_worker_constructor_host(ctx: &Ctx<'_>, world: &Rc<RefCell<Worl
                         same_site_cookies,
                     },
                 );
-                let (page_endpoint, worker_endpoint) = shared.borrow_mut().ports.new_pair(frame);
+                let (page_endpoint, worker_endpoint) = shared.lock().ports.new_pair(frame);
                 // https://html.spec.whatwg.org/multipage/web-messaging.html#transfer-receiving-steps
-                if !shared.borrow_mut().ports.detach(worker_endpoint, frame) {
+                if !shared.lock().ports.detach(worker_endpoint, frame) {
                     return Err(Exception::throw_type(&ctx, "Cannot transfer MessagePort"));
                 }
                 current.runtime.push_worker_request_waking(
@@ -700,13 +699,13 @@ fn install_worker_global_hosts(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Res
             let Some(parent) = world.worker_parent() else {
                 return;
             };
+            let message = world.take_serialized_message(payload, ports);
             world
                 .runtime
                 .push_worker_request_waking(crate::worker::WorkerRequest::PostToParent {
                     parent,
                     worker,
-                    payload,
-                    ports,
+                    message,
                 });
         }),
     )?;

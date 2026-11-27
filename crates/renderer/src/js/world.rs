@@ -1231,6 +1231,17 @@ pub(crate) struct World {
     pub(crate) event_ctors: HashMap<String, Persistent<Object<'static>>>,
     pub(crate) weak_references: Option<WeakReferences>,
     pub(crate) deliver_mutations_fn: Option<Persistent<Function<'static>>>,
+    // https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal
+    pub(crate) shared_buffers: RefCell<SharedBufferState>,
+}
+
+// https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal
+#[derive(Default)]
+pub(crate) struct SharedBufferState {
+    buffers: Vec<rquickjs::SharedBufferLease>,
+    bases: Vec<usize>,
+    completed: Vec<rquickjs::SharedBufferLease>,
+    message: Option<Vec<rquickjs::SharedBufferLease>>,
 }
 
 // https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-value
@@ -1617,6 +1628,7 @@ impl World {
             event_ctors: HashMap::new(),
             weak_references: None,
             deliver_mutations_fn: None,
+            shared_buffers: RefCell::new(SharedBufferState::default()),
         }
     }
 
@@ -1659,6 +1671,7 @@ impl World {
             event_ctors: HashMap::new(),
             weak_references: None,
             deliver_mutations_fn: None,
+            shared_buffers: RefCell::new(SharedBufferState::default()),
         }
     }
 
@@ -2031,12 +2044,12 @@ impl World {
 
     // https://html.spec.whatwg.org/multipage/document-sequences.html#nav-container
     pub(crate) fn container(&self) -> Option<NodeId> {
-        self.runtime.shared.borrow().tree.container(self.frame())
+        self.runtime.shared.lock().tree.container(self.frame())
     }
 
     // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-href
     pub(crate) fn has_browsing_context(&self) -> bool {
-        self.runtime.shared.borrow().tree.is_alive(self.frame())
+        self.runtime.shared.lock().tree.is_alive(self.frame())
     }
 
     // https://html.spec.whatwg.org/multipage/webappapis.html#concept-environment-top-level-origin
@@ -2087,9 +2100,9 @@ impl World {
         if frame == FrameId::MAIN {
             return true;
         }
-        let container = self.runtime.shared.borrow().tree.container(frame);
+        let container = self.runtime.shared.lock().tree.container(frame);
         let Some(container) = container else {
-            return self.runtime.shared.borrow().tree.contains(frame);
+            return self.runtime.shared.lock().tree.contains(frame);
         };
         self.owner_world(container).is_some_and(|owner| {
             owner
@@ -2101,6 +2114,84 @@ impl World {
 
     pub(crate) fn shared(&self) -> SharedHandle {
         self.runtime.shared.clone()
+    }
+
+    // https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal
+    pub(crate) fn begin_shared_serialization(&self) {
+        let mut state = self.shared_buffers.borrow_mut();
+        let base = state.buffers.len();
+        state.bases.push(base);
+    }
+
+    pub(crate) fn finish_shared_serialization(&self) {
+        let mut state = self.shared_buffers.borrow_mut();
+        let Some(base) = state.bases.pop() else {
+            return;
+        };
+        state.completed = state.buffers.split_off(base);
+    }
+
+    pub(crate) fn abort_shared_serialization(&self) {
+        let mut state = self.shared_buffers.borrow_mut();
+        let Some(base) = state.bases.pop() else {
+            return;
+        };
+        state.buffers.truncate(base);
+    }
+
+    pub(crate) fn register_shared_buffer(&self, lease: rquickjs::SharedBufferLease) -> Option<u64> {
+        let mut state = self.shared_buffers.borrow_mut();
+        let base = *state.bases.last()?;
+        let index = u64::try_from(state.buffers.len() - base).ok()?;
+        state.buffers.push(lease);
+        Some(index)
+    }
+
+    pub(crate) fn completed_shared_buffer(
+        &self,
+        index: u64,
+    ) -> Option<rquickjs::SharedBufferLease> {
+        self.shared_buffers
+            .borrow()
+            .completed
+            .get(usize::try_from(index).ok()?)
+            .cloned()
+    }
+
+    pub(crate) fn message_shared_buffer(&self, index: u64) -> Option<rquickjs::SharedBufferLease> {
+        self.shared_buffers
+            .borrow()
+            .message
+            .as_ref()?
+            .get(usize::try_from(index).ok()?)
+            .cloned()
+    }
+
+    pub(crate) fn clear_completed_shared_buffers(&self) {
+        self.shared_buffers.borrow_mut().completed.clear();
+    }
+
+    pub(crate) fn install_message_shared_buffers(
+        &self,
+        buffers: Vec<rquickjs::SharedBufferLease>,
+    ) -> Option<Vec<rquickjs::SharedBufferLease>> {
+        self.shared_buffers.borrow_mut().message.replace(buffers)
+    }
+
+    pub(crate) fn restore_message_shared_buffers(
+        &self,
+        previous: Option<Vec<rquickjs::SharedBufferLease>>,
+    ) {
+        self.shared_buffers.borrow_mut().message = previous;
+    }
+
+    pub(crate) fn take_serialized_message(
+        &self,
+        data: String,
+        ports: Vec<u64>,
+    ) -> crate::messaging::SerializedMessage {
+        let shared_buffers = std::mem::take(&mut self.shared_buffers.borrow_mut().completed);
+        crate::messaging::SerializedMessage::with_shared_buffers(data, ports, shared_buffers)
     }
 
     pub(crate) fn register_pending_frames(&mut self, before: Option<NodeId>) -> Vec<NodeId> {
@@ -2119,7 +2210,7 @@ impl World {
         if self
             .runtime
             .shared
-            .borrow()
+            .lock()
             .tree
             .frame_for_container(container)
             .is_some()
@@ -2133,7 +2224,7 @@ impl World {
                     && is_connected(base, container.node)
             })
             .unwrap_or(false);
-        if !eligible || self.runtime.shared.borrow().tree.len() >= MAX_FRAMES {
+        if !eligible || self.runtime.shared.lock().tree.len() >= MAX_FRAMES {
             return false;
         }
         let name = self
@@ -2145,7 +2236,7 @@ impl World {
             .unwrap_or_default();
         let before = self.frame_sort_before(container);
         let frame = {
-            let mut shared = self.runtime.shared.borrow_mut();
+            let mut shared = self.runtime.shared.lock();
             let frame = shared.allocate_frame();
             shared
                 .tree
@@ -2232,12 +2323,7 @@ impl World {
     // https://html.spec.whatwg.org/multipage/browsers.html#determining-the-creation-sandboxing-flags
     // https://html.spec.whatwg.org/multipage/browsers.html#popup-sandboxing-flag-set
     pub(crate) fn install_sandbox(&mut self, created: SandboxFlags) {
-        let popup = self
-            .runtime
-            .shared
-            .borrow()
-            .tree
-            .popup_sandbox(self.frame());
+        let popup = self.runtime.shared.lock().tree.popup_sandbox(self.frame());
         self.doc.borrow_mut().sandbox = created.union(popup);
     }
 
@@ -2320,7 +2406,7 @@ impl World {
         let (frame, host) = {
             let world = world_rc.borrow();
             let shared = world.runtime.shared.clone();
-            let mut shared = shared.borrow_mut();
+            let mut shared = shared.lock();
             if shared.tree.len() >= MAX_FRAMES {
                 return None;
             }
@@ -2338,13 +2424,7 @@ impl World {
             (frame, world.win.borrow().frame_host.clone())
         };
         let Some(host) = host else {
-            world_rc
-                .borrow()
-                .runtime
-                .shared
-                .borrow_mut()
-                .tree
-                .remove(frame);
+            world_rc.borrow().runtime.shared.lock().tree.remove(frame);
             return None;
         };
         (host.auxiliary)(world_rc, frame, opener);
@@ -2423,7 +2503,7 @@ impl World {
     pub(crate) fn frame_for_container(&self, container: NodeId) -> Option<FrameId> {
         self.runtime
             .shared
-            .borrow()
+            .lock()
             .tree
             .frame_for_container(container)
     }
@@ -2436,7 +2516,7 @@ impl World {
                 continue;
             };
             self.fire_frame_unload(frame);
-            let mut shared = self.runtime.shared.borrow_mut();
+            let mut shared = self.runtime.shared.lock();
             if shared.tree.frame_for_container(*container) == Some(frame) {
                 shared.remove_child_navigable(frame, *container);
             }
@@ -2446,7 +2526,7 @@ impl World {
     // https://html.spec.whatwg.org/multipage/document-sequences.html#definitely-close-a-top-level-traversable
     pub(crate) fn close_auxiliary(&self, frame: FrameId) {
         let victims = {
-            let shared = self.runtime.shared.borrow();
+            let shared = self.runtime.shared.lock();
             if shared.tree.opener(frame).is_none() {
                 return;
             }
@@ -2461,7 +2541,7 @@ impl World {
         for frame in victims {
             self.fire_frame_unload(frame);
         }
-        self.runtime.shared.borrow_mut().close_auxiliary(frame);
+        self.runtime.shared.lock().close_auxiliary(frame);
     }
 
     // https://html.spec.whatwg.org/multipage/browsing-the-web.html#unload

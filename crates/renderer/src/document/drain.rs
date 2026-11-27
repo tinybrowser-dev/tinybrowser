@@ -130,7 +130,7 @@ impl Document {
         );
         old.terminate();
         self.decoder = None;
-        self.shared.borrow_mut().close_frame_ports(self.frame);
+        self.shared.lock().close_frame_ports(self.frame);
         self.world.borrow_mut().forget_owned_documents();
     }
 
@@ -228,21 +228,21 @@ impl Document {
             Task::BroadcastMessage {
                 origin,
                 name,
-                payload,
+                message,
                 source,
-            } => self.deliver_broadcast_message(&origin, &name, &payload, source),
-            Task::PortMessage {
-                endpoint,
-                payload,
-                ports,
-            } => self.deliver_port_message(endpoint, &payload, &ports),
+            } => self.deliver_broadcast_message(&origin, &name, &message, source),
+            Task::PortMessage { endpoint, message } => {
+                self.deliver_port_message(endpoint, message);
+            }
             Task::PortClosed { endpoint } => self.deliver_port_close(endpoint),
-            Task::WorkerMessage {
-                worker,
-                payload,
-                ports,
-            } => {
-                self.fire_js(|js| js.deliver_worker_event(worker.get(), &payload, &ports));
+            Task::WorkerMessage { worker, message } => {
+                if let Some(Err(_)) = self.with_message_buffers(&message, || {
+                    self.js.as_ref().map(|js| {
+                        js.deliver_worker_event(worker.get(), &message.data, &message.ports)
+                    })
+                }) {
+                    self.record_event(RendererEvent::ScriptFailed);
+                }
             }
             Task::WorkerError(error) => {
                 self.fire_js(|js| {

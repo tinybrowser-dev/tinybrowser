@@ -304,10 +304,10 @@ impl Engine {
                 WorkerRequest::BroadcastPost {
                     origin,
                     name,
-                    payload,
+                    message,
                     channel,
                 } => {
-                    self.broadcast_local(&origin, &name, &payload, channel);
+                    self.broadcast_local(&origin, &name, &message, channel);
                 }
                 WorkerRequest::Error(error) => {
                     self.push_worker_error(*error);
@@ -324,10 +324,9 @@ impl Engine {
                 WorkerRequest::PostToParent {
                     parent,
                     worker,
-                    payload,
-                    ports,
+                    message,
                 } => {
-                    self.push_worker_message(parent, worker, payload, ports);
+                    self.push_worker_message(parent, worker, message);
                 }
             }
         }
@@ -357,10 +356,7 @@ impl Engine {
         match existing {
             Some((id, existing)) if self.runtime.worker_dir.is_live(id) => {
                 if existing != options {
-                    self.runtime
-                        .shared
-                        .borrow_mut()
-                        .forget_endpoints(&[endpoint]);
+                    self.runtime.shared.lock().forget_endpoints(&[endpoint]);
                     self.push_worker_load_failed(created.parent, created.id);
                     return;
                 }
@@ -374,10 +370,7 @@ impl Engine {
                     .worker_dir
                     .send(id, WorkerCommand::Connect { endpoint })
                 {
-                    self.runtime
-                        .shared
-                        .borrow_mut()
-                        .forget_endpoints(&[endpoint]);
+                    self.runtime.shared.lock().forget_endpoints(&[endpoint]);
                 }
             }
             Some(_) | None => {
@@ -399,10 +392,7 @@ impl Engine {
                     .worker_dir
                     .send(id, WorkerCommand::Connect { endpoint })
                 {
-                    self.runtime
-                        .shared
-                        .borrow_mut()
-                        .forget_endpoints(&[endpoint]);
+                    self.runtime.shared.lock().forget_endpoints(&[endpoint]);
                 }
             }
         }
@@ -422,7 +412,7 @@ impl Engine {
         };
         self.runtime
             .shared
-            .borrow_mut()
+            .lock()
             .close_frame_ports(FrameId::worker(id.get()));
         for (owner, worker) in realm.owners {
             self.push_worker_load_failed(owner, worker);
@@ -441,7 +431,7 @@ impl Engine {
             // https://html.spec.whatwg.org/multipage/workers.html#dom-sharedworkerglobalscope-close
             self.runtime
                 .shared
-                .borrow_mut()
+                .lock()
                 .close_frame_ports(FrameId::worker(id.get()));
         }
         let frames: Vec<FrameId> = self.frames.keys().copied().collect();
@@ -457,23 +447,19 @@ impl Engine {
         &mut self,
         frame: FrameId,
         endpoint: u64,
-        payload: String,
-        ports: &[u64],
+        message: crate::messaging::SerializedMessage,
     ) -> bool {
         let Some(raw) = frame.as_worker() else {
             return false;
         };
         let id = WorkerId::new(raw);
-        let sent = self.runtime.worker_dir.send(
-            id,
-            WorkerCommand::PortMessage {
-                endpoint,
-                payload,
-                ports: ports.to_vec(),
-            },
-        );
+        let ports = message.ports.clone();
+        let sent = self
+            .runtime
+            .worker_dir
+            .send(id, WorkerCommand::PortMessage { endpoint, message });
         if !sent {
-            self.runtime.shared.borrow_mut().forget_endpoints(ports);
+            self.runtime.shared.lock().forget_endpoints(&ports);
         }
         sent
     }
@@ -492,30 +478,31 @@ impl Engine {
         &mut self,
         owner: FrameId,
         worker: WorkerId,
-        payload: String,
-        ports: Vec<u64>,
+        message: crate::messaging::SerializedMessage,
     ) {
         if self.frames.contains_key(&owner) {
-            Self::route_endpoints(&self.runtime.shared, &ports, owner);
+            Self::route_endpoints(&self.runtime.shared, &message.ports, owner);
             if let Some(document) = self.frames.get_mut(&owner) {
-                document.push_worker_message(worker, payload, ports);
+                document.push_worker_message(worker, message);
             }
             return;
         }
         if let Some(raw) = owner.as_worker() {
-            Self::route_endpoints(&self.runtime.shared, &ports, owner);
+            Self::route_endpoints(&self.runtime.shared, &message.ports, owner);
+            let ports = message.ports.clone();
             if self.runtime.worker_dir.send(
                 WorkerId::new(raw),
                 WorkerCommand::NestedMessage {
                     worker: worker.get(),
-                    payload,
-                    ports: ports.clone(),
+                    message,
                 },
             ) {
                 return;
             }
+            self.runtime.shared.lock().forget_endpoints(&ports);
+            return;
         }
-        self.runtime.shared.borrow_mut().forget_endpoints(&ports);
+        self.runtime.shared.lock().forget_endpoints(&message.ports);
     }
 
     fn push_worker_error(&mut self, error: WorkerError) {
@@ -651,7 +638,7 @@ impl Engine {
     // https://html.spec.whatwg.org/multipage/iframe-embed-object.html#the-iframe-element
     fn sync_child_frame_viewports(&mut self) {
         let pairs: Vec<(FrameId, FrameId, crate::dom::tree::NodeId)> = {
-            let shared = self.runtime.shared.borrow();
+            let shared = self.runtime.shared.lock();
             self.frames
                 .keys()
                 .flat_map(|parent| {
@@ -915,7 +902,7 @@ impl Engine {
             .get(&entry)
             .map(|entry| (entry.navigation.clone(), entry.state.clone()));
         let (embedder, container) = {
-            let shared = self.runtime.shared.borrow();
+            let shared = self.runtime.shared.lock();
             (shared.tree.parent(frame), shared.tree.container(frame))
         };
         let Some((navigation, state)) = cached else {
@@ -1522,6 +1509,7 @@ impl Engine {
         payload: &str,
         source: Option<u64>,
     ) {
+        let message = crate::messaging::SerializedMessage::new(payload.to_owned(), Vec::new());
         for document in self.frames.values_mut() {
             // https://html.spec.whatwg.org/multipage/web-messaging.html#broadcasting-to-other-browsing-contexts
             if document.storage_key().as_ref() != Some(origin) {
@@ -1533,7 +1521,7 @@ impl Engine {
             document.push_broadcast_message(
                 origin.to_string(),
                 name.to_owned(),
-                payload.to_owned(),
+                message.clone(),
                 source,
             );
         }
@@ -1546,7 +1534,7 @@ impl Engine {
                 worker.queue_broadcast(
                     origin_string.clone(),
                     name.to_owned(),
-                    payload.to_owned(),
+                    message.clone(),
                     source,
                 );
             }
@@ -1554,7 +1542,13 @@ impl Engine {
     }
 
     // https://html.spec.whatwg.org/multipage/web-messaging.html#broadcasting-to-other-browsing-contexts
-    fn broadcast_local(&mut self, origin: &url::Origin, name: &str, payload: &str, channel: u64) {
+    fn broadcast_local(
+        &mut self,
+        origin: &url::Origin,
+        name: &str,
+        message: &crate::messaging::SerializedMessage,
+        channel: u64,
+    ) {
         let origin_string = origin.unicode_serialization();
         for document in self.frames.values_mut() {
             let world = document.world();
@@ -1564,7 +1558,7 @@ impl Engine {
             document.push_broadcast_message(
                 origin_string.clone(),
                 name.to_owned(),
-                payload.to_owned(),
+                message.clone(),
                 Some(channel),
             );
         }
@@ -1576,7 +1570,7 @@ impl Engine {
                 worker.queue_broadcast(
                     origin_string.clone(),
                     name.to_owned(),
-                    payload.to_owned(),
+                    message.clone(),
                     Some(channel),
                 );
             }
@@ -1634,7 +1628,7 @@ impl Engine {
             let adopted = self.adopt_pending_frames();
             self.sync_child_frame_viewports();
             let standalone = self.joint_history.is_some();
-            let removed = self.runtime.shared.borrow_mut().take_removed_frames();
+            let removed = self.runtime.shared.lock().take_removed_frames();
             for (frame, container) in &removed {
                 if let Some(container) = container {
                     self.runtime.registry.borrow_mut().forget_frame(*container);
@@ -1663,7 +1657,7 @@ impl Engine {
                 streams,
                 ran_scripts,
             } = self.take_pending_work();
-            let deliveries = self.runtime.shared.borrow_mut().take_deliveries();
+            let deliveries = self.runtime.shared.lock().take_deliveries();
             let had_work = workers
                 || adopted
                 || ran_scripts
@@ -1789,14 +1783,14 @@ impl Engine {
         let Some(child) = self
             .runtime
             .shared
-            .borrow()
+            .lock()
             .tree
             .frame_for_container(container)
         else {
             return;
         };
         let descendants: Vec<crate::dom::tree::NodeId> = {
-            let shared = self.runtime.shared.borrow();
+            let shared = self.runtime.shared.lock();
             shared
                 .tree
                 .children(child)
@@ -1807,7 +1801,7 @@ impl Engine {
         for nested in descendants {
             self.remove_subtree(nested);
         }
-        if let Some(parent) = self.runtime.shared.borrow().tree.parent(child)
+        if let Some(parent) = self.runtime.shared.lock().tree.parent(child)
             && let Some(document) = self.frames.get_mut(&parent)
         {
             document.cancel_frame_load(container);
@@ -1818,7 +1812,7 @@ impl Engine {
             .borrow_mut()
             .forget_frame_world(self.runtime.engine_id, child);
         {
-            let mut shared = self.runtime.shared.borrow_mut();
+            let mut shared = self.runtime.shared.lock();
             shared.tree.remove(child);
             shared.forget_document(child);
         }
@@ -1837,7 +1831,7 @@ impl Engine {
 
     fn remove_descendants(&mut self, parent: FrameId) {
         let containers: Vec<crate::dom::tree::NodeId> = {
-            let shared = self.runtime.shared.borrow();
+            let shared = self.runtime.shared.lock();
             shared
                 .tree
                 .children(parent)
@@ -1858,7 +1852,7 @@ impl Engine {
         navigation: &FrameNavigation,
     ) -> NavOutcome {
         let (embedder, container) = {
-            let shared = self.runtime.shared.borrow();
+            let shared = self.runtime.shared.lock();
             (shared.tree.parent(child), shared.tree.container(child))
         };
         // https://html.spec.whatwg.org/multipage/iframe-embed-object.html#process-the-iframe-attributes
@@ -1921,7 +1915,7 @@ impl Engine {
             let world = world.borrow();
             (world.doc().sandbox, world.user_activation_active())
         };
-        let shared = self.runtime.shared.borrow();
+        let shared = self.runtime.shared.lock();
         let tree = &shared.tree;
         if tree.is_inclusive_descendant(initiator, chosen)
             || tree.auxiliary_opener(chosen) == Some(initiator)
@@ -2062,7 +2056,7 @@ impl Engine {
     }
 
     fn frame_src_applies(&self, child: FrameId, url: &Url) -> bool {
-        if self.runtime.shared.borrow().tree.parent(child).is_none() {
+        if self.runtime.shared.lock().tree.parent(child).is_none() {
             return false;
         }
         if !matches!(url.scheme(), "http" | "https" | "data" | "blob") {
@@ -2087,7 +2081,7 @@ impl Engine {
                 break;
             };
             ancestors.push(document.url().clone());
-            cursor = self.runtime.shared.borrow().tree.parent(frame);
+            cursor = self.runtime.shared.lock().tree.parent(frame);
         }
         ancestors
     }
@@ -2112,7 +2106,7 @@ impl Engine {
         if violations.is_empty() {
             return false;
         }
-        let container = self.runtime.shared.borrow().tree.container(child);
+        let container = self.runtime.shared.lock().tree.container(child);
         if let Some(document) = self.frames.get_mut(&embedder) {
             let target = container.or_else(|| document.document_node());
             if let Some(target) = target {
@@ -2150,7 +2144,7 @@ impl Engine {
         navigation: &FrameNavigation,
     ) -> bool {
         // https://w3c.github.io/webappsec-csp/#effective-directive-for-a-request
-        let embedder = self.runtime.shared.borrow().tree.parent(child);
+        let embedder = self.runtime.shared.lock().tree.parent(child);
         let check_frame_src = self.frame_src_applies(child, url);
         if check_frame_src
             && let Some(embedder) = embedder
@@ -2184,7 +2178,7 @@ impl Engine {
             "http" | "https" => {
                 // https://github.com/privacycg/CHIPS#computing-the-cookie-partition-key
                 let top_level_navigation = {
-                    let shared = self.runtime.shared.borrow();
+                    let shared = self.runtime.shared.lock();
                     shared.tree.top_level(child) == child
                 };
                 if top_level_navigation
@@ -2314,7 +2308,7 @@ impl Engine {
             .is_some_and(Document::is_initial_blank);
         // https://w3c.github.io/webappsec-csp/#should-block-navigation-request
         // https://w3c.github.io/webappsec-csp/#report-violation
-        let container = self.runtime.shared.borrow().tree.container(child);
+        let container = self.runtime.shared.lock().tree.container(child);
         let violations = self
             .frames
             .get(&initiator)
@@ -2463,7 +2457,7 @@ impl Engine {
             // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-href
             let initiator = navigation.source.unwrap_or(queued_on);
             let chosen = {
-                let shared = self.runtime.shared.borrow();
+                let shared = self.runtime.shared.lock();
                 let tree = &shared.tree;
                 match &navigation.target {
                     NavigationTarget::Container(container) => tree
@@ -2485,7 +2479,7 @@ impl Engine {
             }
             // https://html.spec.whatwg.org/multipage/browsers.html#determining-the-creation-sandboxing-flags
             if let Some(container) = container
-                && let Some(embedder) = self.runtime.shared.borrow().tree.parent(chosen)
+                && let Some(embedder) = self.runtime.shared.lock().tree.parent(chosen)
                 && let Some(embedder) = self.frames.get(&embedder)
             {
                 navigation.sandbox =
@@ -2507,11 +2501,11 @@ impl Engine {
 
     fn publish_streams(&mut self, streams: Vec<(FrameId, bool)>) {
         for (frame, closed) in streams {
-            let container = self.runtime.shared.borrow().tree.container(frame);
+            let container = self.runtime.shared.lock().tree.container(frame);
             if let Some(container) = container {
                 self.publish_frame_document(container, frame);
                 if closed {
-                    let parent = self.runtime.shared.borrow().tree.parent(frame);
+                    let parent = self.runtime.shared.lock().tree.parent(frame);
                     if let Some(parent) = parent {
                         self.mark_frame_load_pending(container, parent);
                     }
@@ -2530,56 +2524,50 @@ impl Engine {
                     source,
                     origin,
                     target_origin,
-                    payload,
-                    ports,
+                    message,
                 } => {
                     // https://html.spec.whatwg.org/multipage/webappapis.html#concept-task-runnable
                     match self.frames.get_mut(&target) {
                         Some(document_now) if document_now.matches_document(document) => {
-                            Self::route_endpoints(&self.runtime.shared, &ports, target);
+                            Self::route_endpoints(&self.runtime.shared, &message.ports, target);
                             document_now.push_window_message(WindowMessage {
                                 source,
                                 origin,
                                 target_origin,
-                                payload,
-                                ports,
+                                message,
                             });
                         }
-                        _ => self.runtime.shared.borrow_mut().forget_endpoints(&ports),
+                        _ => self.runtime.shared.lock().forget_endpoints(&message.ports),
                     }
                 }
-                Delivery::PortMessage {
-                    endpoint,
-                    payload,
-                    ports,
-                } => {
-                    let owner = self.runtime.shared.borrow().ports.owner(endpoint);
+                Delivery::PortMessage { endpoint, message } => {
+                    let owner = self.runtime.shared.lock().ports.owner(endpoint);
                     match owner {
                         Some(frame) if self.frames.contains_key(&frame) => {
-                            Self::route_endpoints(&self.runtime.shared, &ports, frame);
+                            Self::route_endpoints(&self.runtime.shared, &message.ports, frame);
                             if let Some(document) = self.frames.get_mut(&frame) {
-                                document.push_port_message(endpoint, payload, ports);
+                                document.push_port_message(endpoint, message);
                             }
                         }
                         // https://html.spec.whatwg.org/multipage/web-messaging.html#message-port-post-message-steps
                         Some(frame) if frame.as_worker().is_some() => {
-                            Self::route_endpoints(&self.runtime.shared, &ports, frame);
-                            self.queue_worker_port_message(frame, endpoint, payload, &ports);
+                            Self::route_endpoints(&self.runtime.shared, &message.ports, frame);
+                            self.queue_worker_port_message(frame, endpoint, message);
                         }
                         Some(_) => {
-                            self.runtime.shared.borrow_mut().forget_endpoints(&ports);
+                            self.runtime.shared.lock().forget_endpoints(&message.ports);
                         }
                         None => {
                             // https://html.spec.whatwg.org/multipage/web-messaging.html#transfer-receiving-steps
                             self.runtime
                                 .shared
-                                .borrow_mut()
-                                .requeue_port_message(endpoint, payload, ports);
+                                .lock()
+                                .requeue_port_message(endpoint, message);
                         }
                     }
                 }
                 Delivery::PortClosed { endpoint } => {
-                    let owner = self.runtime.shared.borrow().ports.owner(endpoint);
+                    let owner = self.runtime.shared.lock().ports.owner(endpoint);
                     match owner {
                         Some(frame) if self.frames.contains_key(&frame) => {
                             if let Some(document) = self.frames.get_mut(&frame) {
@@ -2590,11 +2578,7 @@ impl Engine {
                             self.queue_worker_port_closed(frame, endpoint);
                         }
                         Some(_) => {}
-                        None => self
-                            .runtime
-                            .shared
-                            .borrow_mut()
-                            .requeue_port_close(endpoint),
+                        None => self.runtime.shared.lock().requeue_port_close(endpoint),
                     }
                 }
             }
@@ -2603,7 +2587,7 @@ impl Engine {
 
     // https://html.spec.whatwg.org/multipage/web-messaging.html#transfer-receiving-steps
     fn route_endpoints(shared: &SharedHandle, endpoints: &[u64], target: FrameId) {
-        let mut shared = shared.borrow_mut();
+        let mut shared = shared.lock();
         for endpoint in endpoints {
             shared.ports.route(*endpoint, target);
         }
@@ -2641,7 +2625,7 @@ impl Engine {
                 let Some(child) = self
                     .runtime
                     .shared
-                    .borrow()
+                    .lock()
                     .tree
                     .frame_for_container(container)
                 else {
@@ -3428,6 +3412,83 @@ mod messaging_tests {
         assert_eq!(
             probe, r#"{"crossOriginIsolated":false,"secure":false}"#,
             "a policy header cannot isolate an insecure origin"
+        );
+    }
+
+    // https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal
+    #[test]
+    fn a_posted_shared_array_buffer_keeps_sharing_memory() {
+        let mut engine = engine();
+        engine
+            .mount_frame(
+                FrameId::MAIN,
+                &mount_http(
+                    "https://example.test/shared",
+                    "<!doctype html><p>shared",
+                    &[
+                        ("Cross-Origin-Opener-Policy", "same-origin"),
+                        ("Cross-Origin-Embedder-Policy", "require-corp"),
+                    ],
+                ),
+            )
+            .expect("mount");
+        let _ready = engine.drain_ready();
+        let probe = engine
+            .eval_in(
+                FrameId::MAIN,
+                r"
+                (function () {
+                  window.__portData = null;
+                  window.__windowData = null;
+                  window.__buffer = new SharedArrayBuffer(4);
+                  new Uint8Array(window.__buffer)[0] = 7;
+                  const channel = new MessageChannel();
+                  channel.port1.onmessage = event => { window.__portData = event.data; };
+                  channel.port2.postMessage(window.__buffer);
+                  addEventListener('message', event => { window.__windowData = event.data; });
+                  postMessage(window.__buffer, '*');
+                  return 'started';
+                })()
+                ",
+            )
+            .expect("post");
+        assert_eq!(probe, "started");
+        for _ in 0..20 {
+            let _ready = engine.drain_ready();
+            let received = engine
+                .eval_in(
+                    FrameId::MAIN,
+                    "String(window.__portData !== null && window.__windowData !== null)",
+                )
+                .expect("received");
+            if received == "true" {
+                break;
+            }
+        }
+        let result = engine
+            .eval_in(
+                FrameId::MAIN,
+                r"
+                (function () {
+                  const portView = new Uint8Array(window.__portData);
+                  const windowView = new Uint8Array(window.__windowData);
+                  portView[0] = 9;
+                  const portShares = new Uint8Array(window.__buffer)[0] === 9;
+                  windowView[0] = 11;
+                  return JSON.stringify({
+                    portShared: window.__portData instanceof SharedArrayBuffer,
+                    windowShared: window.__windowData instanceof SharedArrayBuffer,
+                    portShares,
+                    windowShares: new Uint8Array(window.__buffer)[0] === 11,
+                    length: window.__portData.byteLength,
+                  });
+                })()
+                ",
+            )
+            .expect("probe");
+        assert_eq!(
+            result,
+            r#"{"portShared":true,"windowShared":true,"portShares":true,"windowShares":true,"length":4}"#
         );
     }
 

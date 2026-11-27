@@ -408,7 +408,7 @@ fn navigable_target_name(world: &crate::js::world::World, id: NodeId) -> Option<
         return None;
     }
     let shared = world.shared();
-    let name = shared.borrow().tree.name(frame).to_owned();
+    let name = shared.lock().tree.name(frame).to_owned();
     (!name.is_empty()).then_some(name)
 }
 

@@ -2222,7 +2222,7 @@ pub(super) fn reposition_moved_frame(ctx: &Ctx<'_>, moved: NodeId) -> Result<()>
         .borrow()
         .runtime
         .shared
-        .borrow_mut()
+        .lock()
         .tree
         .reposition(frame, before);
     Ok(())

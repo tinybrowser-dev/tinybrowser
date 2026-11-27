@@ -318,8 +318,21 @@ const __tbStartStreamTransfer = (stream, port) => {
 };
 
 // https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializewithtransfer
+// https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializewithtransfer
 const __tbEncode = (value, transfer, sourcePort) => {
-  // https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializewithtransfer
+  host.__tbBeginSharedSerialization();
+  let encoded;
+  try {
+    encoded = __tbSerialize(value, transfer, sourcePort);
+  } catch (error) {
+    host.__tbAbortSharedSerialization();
+    throw error;
+  }
+  host.__tbFinishSharedSerialization();
+  return encoded;
+};
+
+const __tbSerialize = (value, transfer, sourcePort) => {
   const buffers = new __tbPrivateMap();
   const transferred = new __tbPrivateMap();
   const streams = new __tbPrivateMap();
@@ -641,7 +654,7 @@ const __tbEncode = (value, transfer, sourcePort) => {
   return { __proto__: null, payload: __tbPayloadVersion + __tbJsonStringify({ __proto__: null, root, nodes }), ports };
 };
 
-const __tbDecode = (payload, ports) => {
+const __tbDecode = (payload, ports, local) => {
   const text = String(payload);
   if (text.indexOf(__tbPayloadVersion) !== 0) throw new Error('structured clone payload mismatch');
   const wire = __tbJsonParse(text.slice(__tbPayloadVersion.length));
@@ -667,7 +680,7 @@ const __tbDecode = (payload, ports) => {
       case 'shared': {
         // https://html.spec.whatwg.org/multipage/structured-data.html#structureddeserialize
         const buffer = host.__tbCreateSharedBuffer(
-          nodes[index][1], nodes[index][2], nodes[index][3]);
+          nodes[index][1], nodes[index][2], nodes[index][3], local === true);
         if (buffer === undefined || buffer === null) throw __tbCloneFailure();
         if (buffer.byteLength !== nodes[index][2]) throw __tbCloneFailure();
         if (nodes[index][3] !== 0 && buffer.maxByteLength !== nodes[index][3]) {
@@ -838,8 +851,13 @@ globalThis.structuredClone = function(value, options) {
   const transfer = options == null ? undefined : options.transfer;
   const encoded = __tbEncode(value, transfer, null);
   const materialized = __tbMaterializePorts(encoded.ports);
-  const clone = __tbDecode(encoded.payload, materialized.ports);
-  __tbFirePortCloses(materialized.closes);
+  let clone;
+  try {
+    clone = __tbDecode(encoded.payload, materialized.ports, true);
+  } finally {
+    host.__tbClearSharedBuffers();
+    __tbFirePortCloses(materialized.closes);
+  }
   return clone;
 };
 
@@ -1238,7 +1256,7 @@ host.__tbDeliverMessage = function(payload, sourceFrame, origin, portIds) {
   const materialized = __tbMaterializePorts(portIds);
   let data;
   try {
-    data = __tbDecode(payload, materialized.ports);
+    data = __tbDecode(payload, materialized.ports, false);
   } catch (error) {
     __tbDiscardPorts(portIds);
     return false;
@@ -1260,7 +1278,7 @@ host.__tbDeliverRemoteMessage = function(origin, payload) {
   if (String(payload).indexOf(__tbPayloadVersion) !== 0) return;
   let data;
   try {
-    data = __tbDecode(payload, []);
+    data = __tbDecode(payload, [], false);
   } catch (error) {
     return;
   }
@@ -1320,7 +1338,7 @@ host.__tbDeliverBroadcast = function(name, payload, origin, sourceChannel) {
     let event;
     try {
       event = new __tbMessageEventConstructor('message', {
-        data: __tbDecode(payload, []), origin: origin, source: null, ports: Object.freeze([]),
+        data: __tbDecode(payload, [], false), origin: origin, source: null, ports: Object.freeze([]),
       });
     } catch (error) {
       event = new __tbMessageEventConstructor('messageerror', {
@@ -1339,7 +1357,7 @@ host.__tbDeliverPortMessage = function(endpoint, payload, portIds) {
   const materialized = __tbMaterializePorts(portIds);
   let value;
   try {
-    value = __tbDecode(payload, materialized.ports);
+    value = __tbDecode(payload, materialized.ports, false);
   } catch (error) {
     __tbDiscardPorts(portIds);
     return false;

@@ -48,6 +48,22 @@ pub(crate) fn install_messaging(ctx: &Ctx<'_>) -> Result<()> {
         "__tbCreateSharedBuffer",
         rquickjs::prelude::Func::from(create_shared_buffer),
     )?;
+    globals.set(
+        "__tbBeginSharedSerialization",
+        rquickjs::prelude::Func::from(begin_shared_serialization),
+    )?;
+    globals.set(
+        "__tbFinishSharedSerialization",
+        rquickjs::prelude::Func::from(finish_shared_serialization),
+    )?;
+    globals.set(
+        "__tbAbortSharedSerialization",
+        rquickjs::prelude::Func::from(abort_shared_serialization),
+    )?;
+    globals.set(
+        "__tbClearSharedBuffers",
+        rquickjs::prelude::Func::from(clear_shared_buffers),
+    )?;
     Ok(())
 }
 
@@ -145,19 +161,50 @@ fn register_shared_buffer(ctx: Ctx<'_>, value: Value<'_>) -> Result<Option<u64>>
         return Ok(None);
     };
     let world = world(&ctx)?;
-    let world = world.borrow();
-    Ok(Some(world.runtime.shared_buffers.register(lease)))
+    Ok(world.borrow().register_shared_buffer(lease))
+}
+
+fn begin_shared_serialization(ctx: Ctx<'_>) {
+    if let Ok(world) = world(&ctx) {
+        world.borrow().begin_shared_serialization();
+    }
+}
+
+fn finish_shared_serialization(ctx: Ctx<'_>) {
+    if let Ok(world) = world(&ctx) {
+        world.borrow().finish_shared_serialization();
+    }
+}
+
+fn abort_shared_serialization(ctx: Ctx<'_>) {
+    if let Ok(world) = world(&ctx) {
+        world.borrow().abort_shared_serialization();
+    }
+}
+
+fn clear_shared_buffers(ctx: Ctx<'_>) {
+    if let Ok(world) = world(&ctx) {
+        world.borrow().clear_completed_shared_buffers();
+    }
 }
 
 fn create_shared_buffer(
     ctx: Ctx<'_>,
-    id: u64,
+    index: u64,
     byte_length: u64,
     max_byte_length: u64,
+    local: bool,
 ) -> Result<Option<rquickjs::ArrayBuffer<'_>>> {
     let world = world(&ctx)?;
-    let table = std::sync::Arc::clone(&world.borrow().runtime.shared_buffers);
-    let Some(lease) = table.get(id) else {
+    let lease = {
+        let world = world.borrow();
+        if local {
+            world.completed_shared_buffer(index)
+        } else {
+            world.message_shared_buffer(index)
+        }
+    };
+    let Some(lease) = lease else {
         return Ok(None);
     };
     let invalid = || Exception::throw_range(&ctx, "invalid SharedArrayBuffer length");
@@ -195,7 +242,7 @@ fn close_frame(ctx: Ctx<'_>, frame: f64) {
     let frame = FrameId::new(frame);
     {
         let shared = world.borrow().shared();
-        if shared.borrow().tree.opener(frame) != Some(caller) {
+        if shared.lock().tree.opener(frame) != Some(caller) {
             return;
         }
     }
@@ -302,18 +349,21 @@ fn broadcast_post(ctx: Ctx<'_>, name: String, payload: String, channel: u64) {
     if world.worker_id().is_none() && !world.is_attached() {
         return;
     }
+    let message = world.take_serialized_message(payload, Vec::new());
     match world.storage_origin() {
-        Some(origin) => world
-            .runtime
-            .services
-            .broadcast_post(&origin, &name, &payload, channel),
+        Some(origin) => {
+            world
+                .runtime
+                .services
+                .broadcast_post(&origin, &name, &message.data, channel);
+        }
         None => {
             world
                 .runtime
                 .push_worker_request_waking(crate::worker::WorkerRequest::BroadcastPost {
                     origin: world.doc().origin.clone(),
                     name,
-                    payload,
+                    message,
                     channel,
                 });
         }
@@ -346,6 +396,7 @@ fn post_window_message(
         return Ok(());
     }
     let world = world(&ctx)?;
+    let message = world.borrow().take_serialized_message(payload, ports);
     let (source, origin, origin_identity, shared) = {
         let world = world.borrow();
         (
@@ -356,31 +407,31 @@ fn post_window_message(
         )
     };
     // https://html.spec.whatwg.org/multipage/web-messaging.html#transfer-receiving-steps
-    if !shared.borrow().ports.all_in_transit_from(&ports, source) {
+    if !shared
+        .lock()
+        .ports
+        .all_in_transit_from(&message.ports, source)
+    {
         return Ok(());
     }
     // https://html.spec.whatwg.org/multipage/web-messaging.html#window-post-message-steps
     let Some(target_origin) = TargetOrigin::parse(&target_origin, Some(&origin_identity)) else {
-        shared.borrow_mut().forget_endpoints(&ports);
+        shared.lock().forget_endpoints(&message.ports);
         return Ok(());
     };
     // https://html.spec.whatwg.org/multipage/webappapis.html#queue-a-global-task
-    let Some(document) = shared.borrow().document_id(FrameId::new(target)) else {
-        shared.borrow_mut().forget_endpoints(&ports);
+    let Some(document) = shared.lock().document_id(FrameId::new(target)) else {
+        shared.lock().forget_endpoints(&message.ports);
         return Ok(());
     };
-    shared
-        .borrow_mut()
-        .deliveries
-        .push(Delivery::WindowMessage {
-            target: FrameId::new(target),
-            document,
-            source,
-            origin,
-            target_origin,
-            payload,
-            ports,
-        });
+    shared.lock().deliveries.push(Delivery::WindowMessage {
+        target: FrameId::new(target),
+        document,
+        source,
+        origin,
+        target_origin,
+        message,
+    });
     Ok(())
 }
 
@@ -400,7 +451,7 @@ pub(super) fn accept_worker_transfer(
         (world.frame(), world.shared())
     };
     shared
-        .borrow()
+        .lock()
         .ports
         .all_in_transit_from(&ports, frame)
         .then_some(ports)
@@ -412,7 +463,7 @@ fn port_new(ctx: Ctx<'_>) -> Result<Vec<f64>> {
         let world = world.borrow();
         (world.frame(), world.shared())
     };
-    let (first, second) = shared.borrow_mut().ports.new_pair(frame);
+    let (first, second) = shared.lock().ports.new_pair(frame);
     Ok(vec![
         crate::js::js_number(first),
         crate::js::js_number(second),
@@ -433,24 +484,28 @@ fn port_post(ctx: Ctx<'_>, endpoint: f64, payload: String, ports: Vec<f64>) -> R
     if !endpoint_owned(&world, endpoint) {
         return Ok(());
     }
-    let (frame, shared) = {
+    let (frame, shared, message) = {
         let world = world.borrow();
-        (world.frame(), world.shared())
+        (
+            world.frame(),
+            world.shared(),
+            world.take_serialized_message(payload, ports),
+        )
     };
     {
         // https://html.spec.whatwg.org/multipage/web-messaging.html#message-port-post-message-steps
-        let shared = shared.borrow();
-        if !shared.ports.all_in_transit_from(&ports, frame) {
+        let shared = shared.lock();
+        if !shared.ports.all_in_transit_from(&message.ports, frame) {
             return Ok(());
         }
     }
-    let mut shared = shared.borrow_mut();
+    let mut shared = shared.lock();
     let Shared {
         ports: table,
         deliveries,
         ..
     } = &mut *shared;
-    table.post(endpoint, payload, ports, deliveries);
+    table.post(endpoint, message, deliveries);
     Ok(())
 }
 
@@ -463,7 +518,7 @@ fn port_start(ctx: Ctx<'_>, endpoint: f64) -> Result<()> {
         return Ok(());
     }
     let shared = world.borrow().shared();
-    let mut shared = shared.borrow_mut();
+    let mut shared = shared.lock();
     let Shared {
         ports: table,
         deliveries,
@@ -482,7 +537,7 @@ fn port_close(ctx: Ctx<'_>, endpoint: f64) -> Result<()> {
         return Ok(());
     }
     let shared = world.borrow().shared();
-    let mut shared = shared.borrow_mut();
+    let mut shared = shared.lock();
     let Shared {
         ports: table,
         deliveries,
@@ -501,7 +556,7 @@ fn port_detach(ctx: Ctx<'_>, endpoint: f64) -> Result<bool> {
         let world = world.borrow();
         (world.frame(), world.shared())
     };
-    Ok(shared.borrow_mut().ports.detach(endpoint, frame))
+    Ok(shared.lock().ports.detach(endpoint, frame))
 }
 
 fn port_adopt(ctx: Ctx<'_>, endpoint: f64) -> Result<Option<bool>> {
@@ -513,7 +568,7 @@ fn port_adopt(ctx: Ctx<'_>, endpoint: f64) -> Result<Option<bool>> {
         let world = world.borrow();
         (world.frame(), world.shared())
     };
-    Ok(shared.borrow_mut().ports.adopt(endpoint, frame))
+    Ok(shared.lock().ports.adopt(endpoint, frame))
 }
 
 fn port_peer(ctx: Ctx<'_>, endpoint: f64) -> Result<Option<f64>> {
@@ -525,7 +580,7 @@ fn port_peer(ctx: Ctx<'_>, endpoint: f64) -> Result<Option<f64>> {
         return Ok(None);
     }
     let shared = world.borrow().shared();
-    let Some(peer) = shared.borrow().ports.peer(endpoint) else {
+    let Some(peer) = shared.lock().ports.peer(endpoint) else {
         return Ok(None);
     };
     Ok(Some(crate::js::js_number(peer)))
@@ -537,7 +592,7 @@ fn frame_parent(ctx: Ctx<'_>, frame: f64) -> Result<Option<f64>> {
     };
     let world = world(&ctx)?;
     let shared = world.borrow().shared();
-    let Some(parent) = shared.borrow().tree.parent(FrameId::new(frame)) else {
+    let Some(parent) = shared.lock().tree.parent(FrameId::new(frame)) else {
         return Ok(None);
     };
     Ok(Some(crate::js::js_number(parent.get())))
@@ -550,7 +605,7 @@ fn frame_top(ctx: Ctx<'_>, frame: f64) -> Result<Option<f64>> {
     let mut frame = FrameId::new(frame);
     let world = world(&ctx)?;
     let shared = world.borrow().shared();
-    let shared = shared.borrow();
+    let shared = shared.lock();
     while let Some(parent) = shared.tree.parent(frame) {
         frame = parent;
     }
@@ -563,7 +618,7 @@ fn frame_child_count(ctx: Ctx<'_>, frame: f64) -> Result<f64> {
     };
     let world = world(&ctx)?;
     let shared = world.borrow().shared();
-    let count = shared.borrow().tree.children(FrameId::new(frame)).len();
+    let count = shared.lock().tree.children(FrameId::new(frame)).len();
     Ok(crate::js::js_number(
         u64::try_from(count).unwrap_or(u64::MAX),
     ))
@@ -579,7 +634,7 @@ fn frame_child(ctx: Ctx<'_>, frame: f64, index: f64) -> Result<Option<f64>> {
     let world = world(&ctx)?;
     let shared = world.borrow().shared();
     let Some(child) = shared
-        .borrow()
+        .lock()
         .tree
         .children(FrameId::new(frame))
         .get(index)
@@ -662,7 +717,7 @@ fn frame_element(ctx: Ctx<'_>) -> Result<Value<'_>> {
     let frame = world.borrow().frame();
     let shared = world.borrow().shared();
     let (container, parent) = {
-        let shared = shared.borrow();
+        let shared = shared.lock();
         (shared.tree.container(frame), shared.tree.parent(frame))
     };
     let Some(container) = container else {
@@ -688,7 +743,7 @@ fn frame_name(ctx: Ctx<'_>, frame: f64) -> Result<String> {
     };
     let world = world(&ctx)?;
     let shared = world.borrow().shared();
-    Ok(shared.borrow().tree.name(FrameId::new(frame)).to_owned())
+    Ok(shared.lock().tree.name(FrameId::new(frame)).to_owned())
 }
 
 // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-name
@@ -703,7 +758,7 @@ fn set_frame_name(ctx: Ctx<'_>, frame: f64, name: String) -> Result<()> {
         let world = world.borrow();
         let services = world.runtime.services.clone();
         let shared_world = world.shared();
-        let mut shared = shared_world.borrow_mut();
+        let mut shared = shared_world.lock();
         let changed = shared.tree.name(frame) != name;
         shared.tree.set_name(frame, name.clone());
         (services, changed)
@@ -723,7 +778,7 @@ fn frame_registered(ctx: Ctx<'_>, frame: f64) -> Result<bool> {
     };
     let world = world(&ctx)?;
     let shared = world.borrow().shared();
-    Ok(shared.borrow().tree.contains(FrameId::new(frame)))
+    Ok(shared.lock().tree.contains(FrameId::new(frame)))
 }
 
 // https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-get
@@ -1097,7 +1152,7 @@ fn endpoint_owned(world: &Rc<RefCell<World>>, endpoint: u64) -> bool {
         let world = world.borrow();
         (world.frame(), world.shared())
     };
-    shared.borrow().ports.owner(endpoint) == Some(frame)
+    shared.lock().ports.owner(endpoint) == Some(frame)
 }
 
 fn protocol_id(value: f64) -> Option<u64> {

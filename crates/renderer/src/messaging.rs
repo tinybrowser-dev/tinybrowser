@@ -14,26 +14,51 @@ impl SharedHandle {
         Self(Arc::new(Mutex::new(shared)))
     }
 
-    pub(crate) fn borrow(&self) -> MutexGuard<'_, Shared> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    pub(crate) fn borrow_mut(&self) -> MutexGuard<'_, Shared> {
+    pub(crate) fn lock(&self) -> MutexGuard<'_, Shared> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     // https://fetch.spec.whatwg.org/#keepalive-flag
     pub(crate) fn begin_keepalive_fetch(&self) {
-        self.borrow_mut().keepalive_fetches += 1;
+        self.lock().keepalive_fetches += 1;
     }
 
     pub(crate) fn end_keepalive_fetch(&self) {
-        let mut shared = self.borrow_mut();
+        let mut shared = self.lock();
         shared.keepalive_fetches = shared.keepalive_fetches.saturating_sub(1);
     }
 
     pub(crate) fn has_keepalive_fetches(&self) -> bool {
-        self.borrow().keepalive_fetches > 0
+        self.lock().keepalive_fetches > 0
+    }
+
+    // https://html.spec.whatwg.org/multipage/web-messaging.html#port-message-queue
+    pub(crate) fn take_port_message_unless_owned(
+        &self,
+        endpoint: u64,
+        frame: FrameId,
+        message: SerializedMessage,
+    ) -> Option<SerializedMessage> {
+        let mut shared = self.lock();
+        if shared.ports.owner(endpoint) == Some(frame) {
+            return Some(message);
+        }
+        let shared = &mut *shared;
+        shared
+            .ports
+            .requeue(endpoint, message, &mut shared.deliveries);
+        None
+    }
+
+    // https://html.spec.whatwg.org/multipage/web-messaging.html#port-message-queue
+    pub(crate) fn take_port_close_unless_owned(&self, endpoint: u64, frame: FrameId) -> bool {
+        let mut shared = self.lock();
+        if shared.ports.owner(endpoint) == Some(frame) {
+            return true;
+        }
+        let shared = &mut *shared;
+        shared.ports.requeue_close(endpoint, &mut shared.deliveries);
+        false
     }
 }
 
@@ -41,6 +66,37 @@ impl SharedHandle {
 pub(crate) const MAX_FRAMES: usize = 256;
 
 pub(crate) const PAYLOAD_VERSION: &str = "tb1:";
+
+// https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal
+#[derive(Clone)]
+pub(crate) struct SerializedMessage {
+    pub(crate) data: String,
+    pub(crate) ports: Vec<u64>,
+    pub(crate) shared_buffers: Vec<rquickjs::SharedBufferLease>,
+}
+
+impl SerializedMessage {
+    pub(crate) fn new(data: String, ports: Vec<u64>) -> Self {
+        Self {
+            data,
+            ports,
+            shared_buffers: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn with_shared_buffers(
+        data: String,
+        ports: Vec<u64>,
+        shared_buffers: Vec<rquickjs::SharedBufferLease>,
+    ) -> Self {
+        Self {
+            data,
+            ports,
+            shared_buffers,
+        }
+    }
+}
 
 // https://html.spec.whatwg.org/multipage/document-sequences.html#child-navigable
 // https://html.spec.whatwg.org/multipage/document-sequences.html#auxiliary-browsing-context
@@ -337,10 +393,8 @@ pub(crate) struct PortEndpoint {
     queue: VecDeque<QueuedPortMessage>,
 }
 
-#[derive(Default)]
 struct QueuedPortMessage {
-    payload: String,
-    ports: Vec<u64>,
+    message: SerializedMessage,
 }
 
 #[derive(Default)]
@@ -383,8 +437,7 @@ impl PortTable {
     pub(crate) fn post(
         &mut self,
         from: u64,
-        payload: String,
-        ports: Vec<u64>,
+        message: SerializedMessage,
         deliveries: &mut Vec<Delivery>,
     ) {
         let Some(port) = self.ports.get(&from) else {
@@ -402,13 +455,12 @@ impl PortTable {
         if peer.closed {
             return;
         }
-        peer.queue.push_back(QueuedPortMessage { payload, ports });
+        peer.queue.push_back(QueuedPortMessage { message });
         if peer.enabled && !peer.detached {
             while let Some(message) = peer.queue.pop_front() {
                 deliveries.push(Delivery::PortMessage {
                     endpoint: peer_id,
-                    payload: message.payload,
-                    ports: message.ports,
+                    message: message.message,
                 });
             }
         }
@@ -417,8 +469,7 @@ impl PortTable {
     pub(crate) fn requeue(
         &mut self,
         endpoint: u64,
-        payload: String,
-        ports: Vec<u64>,
+        message: SerializedMessage,
         deliveries: &mut Vec<Delivery>,
     ) {
         let Some(port) = self.ports.get_mut(&endpoint) else {
@@ -428,13 +479,12 @@ impl PortTable {
             return;
         }
         // https://html.spec.whatwg.org/multipage/web-messaging.html#port-message-queue
-        port.queue.push_front(QueuedPortMessage { payload, ports });
+        port.queue.push_front(QueuedPortMessage { message });
         if port.enabled && !port.detached {
             while let Some(message) = port.queue.pop_front() {
                 deliveries.push(Delivery::PortMessage {
                     endpoint,
-                    payload: message.payload,
-                    ports: message.ports,
+                    message: message.message,
                 });
             }
         }
@@ -468,8 +518,7 @@ impl PortTable {
         while let Some(message) = port.queue.pop_front() {
             deliveries.push(Delivery::PortMessage {
                 endpoint,
-                payload: message.payload,
-                ports: message.ports,
+                message: message.message,
             });
         }
     }
@@ -593,13 +642,11 @@ pub(crate) enum Delivery {
         source: FrameId,
         origin: String,
         target_origin: crate::protocol::TargetOrigin,
-        payload: String,
-        ports: Vec<u64>,
+        message: SerializedMessage,
     },
     PortMessage {
         endpoint: u64,
-        payload: String,
-        ports: Vec<u64>,
+        message: SerializedMessage,
     },
     PortClosed {
         endpoint: u64,
@@ -669,9 +716,8 @@ impl Shared {
         }
     }
 
-    pub(crate) fn requeue_port_message(&mut self, endpoint: u64, payload: String, ports: Vec<u64>) {
-        self.ports
-            .requeue(endpoint, payload, ports, &mut self.deliveries);
+    pub(crate) fn requeue_port_message(&mut self, endpoint: u64, message: SerializedMessage) {
+        self.ports.requeue(endpoint, message, &mut self.deliveries);
     }
 
     pub(crate) fn requeue_port_close(&mut self, endpoint: u64) {

@@ -215,14 +215,13 @@ pub(crate) enum WorkerRequest {
     BroadcastPost {
         origin: url::Origin,
         name: String,
-        payload: String,
+        message: crate::messaging::SerializedMessage,
         channel: u64,
     },
     PostToParent {
         parent: FrameId,
         worker: WorkerId,
-        payload: String,
-        ports: Vec<u64>,
+        message: crate::messaging::SerializedMessage,
     },
     // https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model
     LoadFailed {
@@ -265,13 +264,11 @@ impl WorkerError {
 
 pub(crate) enum WorkerCommand {
     Post {
-        payload: String,
-        ports: Vec<u64>,
+        message: crate::messaging::SerializedMessage,
     },
     PortMessage {
         endpoint: u64,
-        payload: String,
-        ports: Vec<u64>,
+        message: crate::messaging::SerializedMessage,
     },
     PortClosed {
         endpoint: u64,
@@ -283,7 +280,7 @@ pub(crate) enum WorkerCommand {
     Broadcast {
         origin: String,
         name: String,
-        payload: String,
+        message: crate::messaging::SerializedMessage,
         source: Option<u64>,
     },
     // https://fetch.spec.whatwg.org/#fetch-processresponse
@@ -293,8 +290,7 @@ pub(crate) enum WorkerCommand {
     },
     NestedMessage {
         worker: u64,
-        payload: String,
-        ports: Vec<u64>,
+        message: crate::messaging::SerializedMessage,
     },
     NestedError(Box<WorkerError>),
     NestedLoadFailure {
@@ -497,13 +493,13 @@ impl WorkerHandle {
         &mut self,
         origin: String,
         name: String,
-        payload: String,
+        message: crate::messaging::SerializedMessage,
         source: Option<u64>,
     ) {
         self.send(WorkerCommand::Broadcast {
             origin,
             name,
-            payload,
+            message,
             source,
         });
     }
@@ -572,6 +568,19 @@ fn finish_worker_thread(directory: &WorkerDirectory, state: &WorkerThreadState) 
     state.closed.store(true, Ordering::Release);
     state.active.store(0, Ordering::Release);
     directory.runtime.wake.notify_one();
+}
+
+fn with_message_buffers<T>(
+    world: &Rc<RefCell<World>>,
+    message: &crate::messaging::SerializedMessage,
+    operation: impl FnOnce() -> T,
+) -> T {
+    let previous = world
+        .borrow()
+        .install_message_shared_buffers(message.shared_buffers.clone());
+    let result = operation();
+    world.borrow().restore_message_shared_buffers(previous);
+    result
 }
 
 fn run_worker(
@@ -673,14 +682,12 @@ fn run_worker(
 
 enum WorkerTask {
     Message {
-        payload: String,
-        ports: Vec<u64>,
+        message: crate::messaging::SerializedMessage,
     },
     // https://html.spec.whatwg.org/multipage/web-messaging.html#message-port-post-message-steps
     PortMessage {
         endpoint: u64,
-        payload: String,
-        ports: Vec<u64>,
+        message: crate::messaging::SerializedMessage,
     },
     PortClosed {
         endpoint: u64,
@@ -692,7 +699,7 @@ enum WorkerTask {
     Broadcast {
         origin: String,
         name: String,
-        payload: String,
+        message: crate::messaging::SerializedMessage,
         source: Option<u64>,
     },
     Timer(TimerId),
@@ -871,10 +878,12 @@ impl Worker {
     fn deliver_message(
         &self,
         worker: WorkerId,
-        payload: &str,
-        ports: &[u64],
+        message: &crate::messaging::SerializedMessage,
     ) -> Result<(), JsError> {
-        self.js.deliver_worker_event(worker.get(), payload, ports)
+        with_message_buffers(&self.world, message, || {
+            self.js
+                .deliver_worker_event(worker.get(), &message.data, &message.ports)
+        })
     }
 
     // https://html.spec.whatwg.org/multipage/workers.html#runtime-script-errors-in-workers
@@ -893,29 +902,25 @@ impl Worker {
         self.js.deliver_worker_load_error(worker.get())
     }
 
-    fn queue_message(&mut self, payload: String, ports: Vec<u64>) {
+    fn queue_message(&mut self, message: crate::messaging::SerializedMessage) {
         // https://html.spec.whatwg.org/multipage/workers.html#terminate-a-worker
         if !self.closed {
             self.tasks.push(
                 crate::task_queue::TaskSource::PostedMessage,
-                WorkerTask::Message { payload, ports },
+                WorkerTask::Message { message },
             );
         }
     }
 
     // https://html.spec.whatwg.org/multipage/web-messaging.html#message-port-post-message-steps
-    fn queue_port_message(&mut self, endpoint: u64, payload: String, ports: Vec<u64>) {
+    fn queue_port_message(&mut self, endpoint: u64, message: crate::messaging::SerializedMessage) {
         if self.closed {
-            self.forget_endpoints(&ports);
+            self.forget_endpoints(&message.ports);
             return;
         }
         self.tasks.push(
             crate::task_queue::TaskSource::PostedMessage,
-            WorkerTask::PortMessage {
-                endpoint,
-                payload,
-                ports,
-            },
+            WorkerTask::PortMessage { endpoint, message },
         );
     }
 
@@ -944,7 +949,7 @@ impl Worker {
         &mut self,
         origin: String,
         name: String,
-        payload: String,
+        message: crate::messaging::SerializedMessage,
         source: Option<u64>,
     ) {
         if !self.closed {
@@ -953,7 +958,7 @@ impl Worker {
                 WorkerTask::Broadcast {
                     origin,
                     name,
-                    payload,
+                    message,
                     source,
                 },
             );
@@ -967,7 +972,7 @@ impl Worker {
         self.world
             .borrow()
             .shared()
-            .borrow_mut()
+            .lock()
             .forget_endpoints(endpoints);
     }
 
@@ -981,29 +986,23 @@ impl Worker {
 
     fn apply_command(&mut self, command: WorkerCommand) {
         match command {
-            WorkerCommand::Post { payload, ports } => self.queue_message(payload, ports),
-            WorkerCommand::PortMessage {
-                endpoint,
-                payload,
-                ports,
-            } => self.queue_port_message(endpoint, payload, ports),
+            WorkerCommand::Post { message } => self.queue_message(message),
+            WorkerCommand::PortMessage { endpoint, message } => {
+                self.queue_port_message(endpoint, message);
+            }
             WorkerCommand::PortClosed { endpoint } => self.queue_port_closed(endpoint),
             WorkerCommand::Connect { endpoint } => self.queue_connect(endpoint),
             WorkerCommand::Broadcast {
                 origin,
                 name,
-                payload,
+                message,
                 source,
-            } => self.queue_broadcast(origin, name, payload, source),
+            } => self.queue_broadcast(origin, name, message, source),
             WorkerCommand::FetchDone { js_id, outcome } => {
                 self.finish_fetch(js_id, outcome.map(|outcome| *outcome));
             }
-            WorkerCommand::NestedMessage {
-                worker,
-                payload,
-                ports,
-            } => {
-                let _ = self.deliver_message(WorkerId::new(worker), &payload, &ports);
+            WorkerCommand::NestedMessage { worker, message } => {
+                let _ = self.deliver_message(WorkerId::new(worker), &message);
             }
             WorkerCommand::NestedError(error) => {
                 let _ = self.deliver_error(&error);
@@ -1023,6 +1022,49 @@ impl Worker {
         }
     }
 
+    fn run_script(&mut self, script: WorkerScript) -> bool {
+        {
+            let _turn = self.js.enter_turn();
+            match script {
+                // https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model
+                WorkerScript::Classic(source) => {
+                    match self.js.eval_worker_script(&source, self.url.as_str()) {
+                        Ok(()) | Err(WorkerScriptError::Runtime) => {}
+                        Err(WorkerScriptError::Parse) => {
+                            self.report_load_failure();
+                            self.closed = true;
+                            return false;
+                        }
+                        // https://html.spec.whatwg.org/multipage/workers.html#terminate-a-worker
+                        Err(WorkerScriptError::Interrupted) => {
+                            self.closed = true;
+                            return false;
+                        }
+                    }
+                }
+                // https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model
+                WorkerScript::Module => match self.js.eval_worker_module(self.url.as_str()) {
+                    Ok(()) | Err(WorkerScriptError::Runtime) => {}
+                    Err(WorkerScriptError::Parse) => {
+                        // https://w3c.github.io/webappsec-csp/#report-violation
+                        self.adopt_js_work();
+                        self.report_load_failure();
+                        self.closed = true;
+                        return false;
+                    }
+                    Err(WorkerScriptError::Interrupted) => {
+                        self.adopt_js_work();
+                        self.closed = true;
+                        return false;
+                    }
+                },
+            }
+        }
+        // https://w3c.github.io/webappsec-csp/#report-violation
+        self.adopt_js_work();
+        !self.closed
+    }
+
     fn drain_step(&mut self) -> bool {
         if self.world.borrow().worker_close_requested.get() {
             self.close();
@@ -1031,46 +1073,7 @@ impl Worker {
             return false;
         }
         if let Some(script) = self.script.take() {
-            {
-                let _turn = self.js.enter_turn();
-                match script {
-                    // https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model
-                    WorkerScript::Classic(source) => {
-                        match self.js.eval_worker_script(&source, self.url.as_str()) {
-                            Ok(()) | Err(WorkerScriptError::Runtime) => {}
-                            Err(WorkerScriptError::Parse) => {
-                                self.report_load_failure();
-                                self.closed = true;
-                                return false;
-                            }
-                            // https://html.spec.whatwg.org/multipage/workers.html#terminate-a-worker
-                            Err(WorkerScriptError::Interrupted) => {
-                                self.closed = true;
-                                return false;
-                            }
-                        }
-                    }
-                    // https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model
-                    WorkerScript::Module => match self.js.eval_worker_module(self.url.as_str()) {
-                        Ok(()) | Err(WorkerScriptError::Runtime) => {}
-                        Err(WorkerScriptError::Parse) => {
-                            // https://w3c.github.io/webappsec-csp/#report-violation
-                            self.adopt_js_work();
-                            self.report_load_failure();
-                            self.closed = true;
-                            return false;
-                        }
-                        Err(WorkerScriptError::Interrupted) => {
-                            self.adopt_js_work();
-                            self.closed = true;
-                            return false;
-                        }
-                    },
-                }
-            }
-            // https://w3c.github.io/webappsec-csp/#report-violation
-            self.adopt_js_work();
-            return !self.closed;
+            return self.run_script(script);
         }
         self.adopt_js_work();
         let now = self.now();
@@ -1083,18 +1086,20 @@ impl Worker {
         };
         let _turn = self.js.enter_turn();
         match task {
-            WorkerTask::Message { payload, ports } => {
-                if let Err(error) = self.js.deliver_worker_message(&payload, &ports) {
+            WorkerTask::Message { message } => {
+                let delivered = with_message_buffers(&self.world, &message, || {
+                    self.js
+                        .deliver_worker_event(self.id.get(), &message.data, &message.ports)
+                });
+                if let Err(error) = delivered {
                     // https://html.spec.whatwg.org/multipage/web-messaging.html#transfer-receiving-steps
-                    self.forget_endpoints(&ports);
+                    self.forget_endpoints(&message.ports);
                     self.report_error(&error);
                 }
             }
-            WorkerTask::PortMessage {
-                endpoint,
-                payload,
-                ports,
-            } => self.deliver_port_message(endpoint, payload, ports),
+            WorkerTask::PortMessage { endpoint, message } => {
+                self.deliver_port_message(endpoint, message);
+            }
             WorkerTask::PortClosed { endpoint } => self.deliver_port_close(endpoint),
             WorkerTask::Connect { endpoint } => {
                 if let Err(error) = self.js.deliver_shared_connect(endpoint) {
@@ -1105,13 +1110,14 @@ impl Worker {
             WorkerTask::Broadcast {
                 origin,
                 name,
-                payload,
+                message,
                 source,
             } => {
-                if let Err(error) = self
-                    .js
-                    .deliver_broadcast_message(&origin, &name, &payload, source)
-                {
+                let delivered = with_message_buffers(&self.world, &message, || {
+                    self.js
+                        .deliver_broadcast_message(&origin, &name, &message.data, source)
+                });
+                if let Err(error) = delivered {
                     self.report_error(&error);
                 }
             }
@@ -1157,8 +1163,8 @@ impl Worker {
     fn discard_queued_tasks(&mut self) {
         while let Some(task) = self.tasks.pop_front() {
             match task {
-                WorkerTask::Message { ports, .. } | WorkerTask::PortMessage { ports, .. } => {
-                    self.forget_endpoints(&ports);
+                WorkerTask::Message { message } | WorkerTask::PortMessage { message, .. } => {
+                    self.forget_endpoints(&message.ports);
                 }
                 WorkerTask::Connect { endpoint } => self.forget_endpoints(&[endpoint]),
                 WorkerTask::PortClosed { .. }
@@ -1170,16 +1176,21 @@ impl Worker {
     }
 
     // https://html.spec.whatwg.org/multipage/web-messaging.html#message-port-post-message-steps
-    fn deliver_port_message(&mut self, endpoint: u64, payload: String, ports: Vec<u64>) {
+    fn deliver_port_message(
+        &mut self,
+        endpoint: u64,
+        message: crate::messaging::SerializedMessage,
+    ) {
         let frame = self.world.borrow().frame();
         let shared = self.world.borrow().shared();
-        if shared.borrow().ports.owner(endpoint) != Some(frame) {
-            shared
-                .borrow_mut()
-                .requeue_port_message(endpoint, payload, ports);
+        let Some(message) = shared.take_port_message_unless_owned(endpoint, frame, message) else {
             return;
-        }
-        match self.js.deliver_port_message(endpoint, &payload, &ports) {
+        };
+        let delivered = with_message_buffers(&self.world, &message, || {
+            self.js
+                .deliver_port_message(endpoint, &message.data, &message.ports)
+        });
+        match delivered {
             Ok(true) => {}
             // https://html.spec.whatwg.org/multipage/web-messaging.html#message-port-post-message-steps
             Ok(false) => {
@@ -1188,7 +1199,7 @@ impl Worker {
                 }
             }
             Err(error) => {
-                self.forget_endpoints(&ports);
+                self.forget_endpoints(&message.ports);
                 self.report_error(&error);
             }
         }
@@ -1197,8 +1208,7 @@ impl Worker {
     fn deliver_port_close(&mut self, endpoint: u64) {
         let frame = self.world.borrow().frame();
         let shared = self.world.borrow().shared();
-        if shared.borrow().ports.owner(endpoint) != Some(frame) {
-            shared.borrow_mut().requeue_port_close(endpoint);
+        if !shared.take_port_close_unless_owned(endpoint, frame) {
             return;
         }
         if let Err(error) = self.js.deliver_port_close(endpoint) {

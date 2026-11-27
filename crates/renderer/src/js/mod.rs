@@ -853,21 +853,6 @@ impl JsRealm {
         })
     }
 
-    pub(crate) fn deliver_worker_message(
-        &self,
-        payload: &str,
-        ports: &[u64],
-    ) -> Result<(), JsError> {
-        let ports = ports.to_vec();
-        self.with_budget(None, MicrotaskCheckpoint::Perform, || {
-            self.context.with(|ctx| {
-                let deliver: Function = bridge::object(&ctx)?.get("__tbWorkerDeliverMessage")?;
-                deliver.call::<_, ()>((payload, ports))?;
-                Ok(())
-            })
-        })
-    }
-
     // https://html.spec.whatwg.org/multipage/workers.html#dom-sharedworkerglobalscope-onconnect
     pub(crate) fn deliver_shared_connect(&self, endpoint: u64) -> Result<(), JsError> {
         self.with_budget(None, MicrotaskCheckpoint::Perform, || {
@@ -2291,6 +2276,7 @@ fn install_window_messaging_functions(
             move |ctx: Ctx<'_>, window: u64, target_origin: String, payload: String| {
                 let world = post_message.borrow();
                 let origin = world.doc().origin.clone();
+                let message = world.take_serialized_message(payload, Vec::new());
                 // https://html.spec.whatwg.org/multipage/web-messaging.html#window-post-message-steps
                 let Some(target) =
                     crate::protocol::TargetOrigin::parse(&target_origin, Some(&origin))
@@ -2312,7 +2298,7 @@ fn install_window_messaging_functions(
                     crate::protocol::PostedMessage {
                         origin: crate::protocol::SerializedOrigin::from(&origin),
                         target_origin: target,
-                        payload,
+                        payload: message.data,
                     },
                 );
                 Ok(())
@@ -2407,7 +2393,7 @@ fn open_window(
         world
             .runtime
             .shared
-            .borrow()
+            .lock()
             .tree
             .choose_navigable(&target, world.frame())
     };
@@ -2515,7 +2501,7 @@ fn window_name(ctx: Ctx<'_>, window: u64) -> rquickjs::Result<String> {
         return Ok(String::new());
     };
     let shared = target.borrow().shared();
-    Ok(shared.borrow().tree.name(FrameId::MAIN).to_owned())
+    Ok(shared.lock().tree.name(FrameId::MAIN).to_owned())
 }
 
 fn set_window_name(ctx: Ctx<'_>, window: u64, name: String) -> rquickjs::Result<()> {
@@ -2526,7 +2512,7 @@ fn set_window_name(ctx: Ctx<'_>, window: u64, name: String) -> rquickjs::Result<
         let target = target.borrow();
         let services = target.runtime.services.clone();
         let shared = target.shared();
-        let mut shared = shared.borrow_mut();
+        let mut shared = shared.lock();
         let changed = shared.tree.name(FrameId::MAIN) != name;
         shared.tree.set_name(FrameId::MAIN, name.clone());
         (services, changed)
@@ -2549,7 +2535,7 @@ fn install_auxiliary_host_functions(
         Func::from(move || {
             let world = opener.borrow();
             let frame = world.frame();
-            let shared = world.runtime.shared.borrow();
+            let shared = world.runtime.shared.lock();
             shared
                 .tree
                 .opener(frame)
