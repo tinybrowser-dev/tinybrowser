@@ -171,6 +171,9 @@ pub struct RendererReply {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum RendererNotice {
     Ready,
+    StartupFailed {
+        message: String,
+    },
     Event {
         assignment: RendererAssignmentId,
         frame: FrameId,

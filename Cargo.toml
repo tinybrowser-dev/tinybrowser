@@ -98,6 +98,7 @@ cdp = { workspace = true }
 server = { workspace = true }
 webdriver = { workspace = true }
 logging = { workspace = true }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 tokio = { version = "1.53", default-features = false, features = ["rt-multi-thread", "net", "signal", "sync", "time"] }

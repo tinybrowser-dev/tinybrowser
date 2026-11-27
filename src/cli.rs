@@ -21,14 +21,20 @@ pub(crate) struct DaemonConfig {
     pub(crate) port: Option<u16>,
     pub(crate) profile: Profile,
     pub(crate) network: AgentOptions,
-    pub(crate) forward_args: Vec<OsString>,
 }
 
 pub(crate) enum Mode {
-    Start(Box<DaemonConfig>),
+    Start {
+        config: Box<DaemonConfig>,
+        command_index: usize,
+    },
     Serve(Box<DaemonConfig>),
-    Stop { profile: Profile },
-    Status { profile: Profile },
+    Stop {
+        profile: Profile,
+    },
+    Status {
+        profile: Profile,
+    },
     Renderer,
 }
 
@@ -175,9 +181,11 @@ pub(crate) fn parse(args: impl Iterator<Item = OsString>) -> Result<Outcome, Cli
 
 struct Scanner<I: Iterator<Item = OsString>> {
     args: Peekable<I>,
+    index: usize,
     saw_any: bool,
     end_of_flags: bool,
     command: Option<Command>,
+    command_index: Option<usize>,
     log_level: Option<Level>,
     log_file: Option<PathBuf>,
     verbose: bool,
@@ -188,7 +196,6 @@ struct Scanner<I: Iterator<Item = OsString>> {
     network: AgentOptions,
     tls_ca: Vec<PathBuf>,
     has_daemon_only_flags: Option<&'static str>,
-    forward_args: Vec<OsString>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -204,9 +211,11 @@ impl<I: Iterator<Item = OsString>> Scanner<I> {
     fn new(args: I) -> Self {
         Self {
             args: args.peekable(),
+            index: 0,
             saw_any: false,
             end_of_flags: false,
             command: None,
+            command_index: None,
             log_level: None,
             log_file: None,
             verbose: false,
@@ -217,22 +226,28 @@ impl<I: Iterator<Item = OsString>> Scanner<I> {
             network: AgentOptions::default(),
             tls_ca: Vec::new(),
             has_daemon_only_flags: None,
-            forward_args: Vec::new(),
         }
     }
 
     fn scan(mut self) -> Result<Outcome, CliError> {
-        while let Some(arg) = self.args.next() {
+        while let Some(arg) = self.next_arg() {
+            let token_index = self.index - 1;
             self.saw_any = true;
             let text = arg.to_str().ok_or(CliError::NotUtf8)?;
-            if let Some(outcome) = self.token(text)? {
+            if let Some(outcome) = self.token(text, token_index)? {
                 return Ok(outcome);
             }
         }
         self.finish()
     }
 
-    fn token(&mut self, text: &str) -> Result<Option<Outcome>, CliError> {
+    fn next_arg(&mut self) -> Option<OsString> {
+        let arg = self.args.next()?;
+        self.index += 1;
+        Some(arg)
+    }
+
+    fn token(&mut self, text: &str, token_index: usize) -> Result<Option<Outcome>, CliError> {
         if self.end_of_flags {
             return Err(CliError::UnexpectedArgument(text.to_owned()));
         }
@@ -241,17 +256,17 @@ impl<I: Iterator<Item = OsString>> Scanner<I> {
             return Ok(None);
         }
         if let Some(long) = text.strip_prefix("--") {
-            return self.long(text, long);
+            return self.long(long);
         }
         if let Some(short) = text.strip_prefix('-')
             && !short.is_empty()
         {
             return Self::short(short);
         }
-        self.subcommand(text)
+        self.subcommand(text, token_index)
     }
 
-    fn subcommand(&mut self, text: &str) -> Result<Option<Outcome>, CliError> {
+    fn subcommand(&mut self, text: &str, token_index: usize) -> Result<Option<Outcome>, CliError> {
         if self.command.is_some() {
             return Err(CliError::UnexpectedArgument(text.to_owned()));
         }
@@ -263,10 +278,11 @@ impl<I: Iterator<Item = OsString>> Scanner<I> {
             _ => return Err(CliError::UnexpectedArgument(text.to_owned())),
         };
         self.command = Some(parsed);
+        self.command_index = Some(token_index);
         Ok(None)
     }
 
-    fn long(&mut self, raw_token: &str, long: &str) -> Result<Option<Outcome>, CliError> {
+    fn long(&mut self, long: &str) -> Result<Option<Outcome>, CliError> {
         let (name, inline) = match long.split_once('=') {
             Some((name, value)) => (name, Some(value)),
             None => (long, None),
@@ -309,7 +325,6 @@ impl<I: Iterator<Item = OsString>> Scanner<I> {
                     });
                 }
                 self.log_level = Some(raw.parse()?);
-                self.record_forward(raw_token, inline, &raw);
                 Ok(None)
             }
             "log-file" => {
@@ -320,7 +335,6 @@ impl<I: Iterator<Item = OsString>> Scanner<I> {
                     });
                 }
                 self.log_file = Some(PathBuf::from(&raw));
-                self.record_forward(raw_token, inline, &raw);
                 Ok(None)
             }
             "verbose" => {
@@ -333,7 +347,6 @@ impl<I: Iterator<Item = OsString>> Scanner<I> {
                     });
                 }
                 self.verbose = true;
-                self.forward_args.push(OsString::from(raw_token));
                 Ok(None)
             }
             "no-sandbox" => {
@@ -346,7 +359,6 @@ impl<I: Iterator<Item = OsString>> Scanner<I> {
                     });
                 }
                 self.sandbox = Some(RendererSandbox::Disabled);
-                self.forward_args.push(OsString::from(raw_token));
                 Ok(None)
             }
             "profile" => {
@@ -358,16 +370,14 @@ impl<I: Iterator<Item = OsString>> Scanner<I> {
                     });
                 }
                 self.profile = Some(profile);
-                self.record_forward(raw_token, inline, &raw);
                 Ok(None)
             }
-            _ => self.daemon_flag(raw_token, name, inline),
+            _ => self.daemon_flag(name, inline),
         }
     }
 
     fn daemon_flag(
         &mut self,
-        raw_token: &str,
         name: &str,
         inline: Option<&str>,
     ) -> Result<Option<Outcome>, CliError> {
@@ -383,20 +393,17 @@ impl<I: Iterator<Item = OsString>> Scanner<I> {
                     });
                 }
                 self.port = Some(port);
-                self.record_forward(raw_token, inline, &raw);
                 "port"
             }
             "resolve" => {
                 let raw = self.value("resolve", "<PATTERN=ADDR>", inline)?;
                 let rule = raw.parse()?;
                 self.network.resolve.push(rule);
-                self.record_forward(raw_token, inline, &raw);
                 "resolve"
             }
             "tls-ca" => {
                 let raw = self.value("tls-ca", "<PATH>", inline)?;
                 self.tls_ca.push(PathBuf::from(&raw));
-                self.record_forward(raw_token, inline, &raw);
                 "tls-ca"
             }
             "proxy" => {
@@ -408,7 +415,6 @@ impl<I: Iterator<Item = OsString>> Scanner<I> {
                     });
                 }
                 self.network.proxy = Some(proxy);
-                self.record_forward(raw_token, inline, &raw);
                 "proxy"
             }
             "user-agent" => {
@@ -420,7 +426,6 @@ impl<I: Iterator<Item = OsString>> Scanner<I> {
                     });
                 }
                 self.user_agent = Some(identity);
-                self.record_forward(raw_token, inline, &raw);
                 "user-agent"
             }
             _ => return Err(unexpected(name)),
@@ -429,13 +434,6 @@ impl<I: Iterator<Item = OsString>> Scanner<I> {
             self.has_daemon_only_flags = Some(flag_name);
         }
         Ok(None)
-    }
-
-    fn record_forward(&mut self, raw_token: &str, inline: Option<&str>, value: &str) {
-        self.forward_args.push(OsString::from(raw_token));
-        if inline.is_none() {
-            self.forward_args.push(OsString::from(value));
-        }
     }
 
     fn short(short: &str) -> Result<Option<Outcome>, CliError> {
@@ -468,7 +466,7 @@ impl<I: Iterator<Item = OsString>> Scanner<I> {
         if text.starts_with('-') {
             return Err(missing());
         }
-        match self.args.next() {
+        match self.next_arg() {
             Some(arg) => arg.into_string().map_err(|_| CliError::NotUtf8),
             None => Err(missing()),
         }
@@ -525,10 +523,12 @@ impl<I: Iterator<Item = OsString>> Scanner<I> {
                     port: self.port,
                     profile: self.profile.unwrap_or_default(),
                     network: self.network,
-                    forward_args: self.forward_args,
                 });
                 if command == Command::Start {
-                    Mode::Start(config)
+                    Mode::Start {
+                        config,
+                        command_index: self.command_index.unwrap_or(0),
+                    }
                 } else {
                     Mode::Serve(config)
                 }

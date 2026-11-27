@@ -1,6 +1,7 @@
 mod cli;
 mod daemon;
 
+use std::ffi::OsString;
 use std::future::Future;
 use std::io;
 use std::path::PathBuf;
@@ -11,7 +12,8 @@ use cli::{Cli, Mode};
 use logging::Level;
 
 fn main() -> ExitCode {
-    match cli::parse(std::env::args_os().skip(1)) {
+    let raw_args: Vec<OsString> = std::env::args_os().skip(1).collect();
+    match cli::parse(raw_args.iter().cloned()) {
         Ok(cli::Outcome::Version) => {
             println!("tinybrowser {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
@@ -21,15 +23,24 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Ok(cli::Outcome::Run(cli)) => {
+            let mut handshake = if matches!(cli.mode, Mode::Serve(_)) {
+                daemon::HandshakeChannel::from_env()
+            } else {
+                None
+            };
             let needs_logger = matches!(cli.mode, Mode::Serve(_) | Mode::Renderer);
             if needs_logger && let Err(error) = install_logger(&cli) {
-                eprintln!("error: {error}");
-                if let Some(source) = std::error::Error::source(&error) {
-                    eprintln!("  caused by: {source}");
+                if let Some(channel) = handshake.take() {
+                    channel.send_failed(&error.to_string());
+                } else {
+                    eprintln!("error: {error}");
+                    if let Some(source) = std::error::Error::source(&error) {
+                        eprintln!("  caused by: {source}");
+                    }
                 }
                 return ExitCode::from(2);
             }
-            let code = run(*cli);
+            let code = run(*cli, &raw_args, handshake);
             if needs_logger && !logging::flush() {
                 logging::error!(target: "logging", "file log did not flush before exit");
             }
@@ -42,7 +53,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(cli: Cli) -> ExitCode {
+fn run(cli: Cli, raw_args: &[OsString], handshake: Option<daemon::HandshakeChannel>) -> ExitCode {
     let sandbox = cli.sandbox;
     match cli.mode {
         Mode::Renderer => match browser::child::serve(sandbox) {
@@ -52,19 +63,36 @@ fn run(cli: Cli) -> ExitCode {
                 ExitCode::from(1)
             }
         },
-        Mode::Serve(config) => run_browser_process("daemon", async move {
+        Mode::Serve(config) => run_browser_process("daemon", handshake, |handshake| async move {
             let home = default_data_home()?;
-            daemon::serve(&config.profile, &home, config.port, config.network, sandbox).await
+            daemon::serve(
+                &config.profile,
+                &home,
+                config.port,
+                config.network,
+                sandbox,
+                handshake,
+            )
+            .await
         }),
-        Mode::Start(config) => match default_data_home().and_then(|home| {
-            daemon::start(&config.profile, &home, config.port, &config.forward_args)
-        }) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(error) => {
-                eprintln!("error: {error}");
-                ExitCode::from(1)
+        Mode::Start {
+            config,
+            command_index,
+        } => {
+            let mut serve_args = raw_args.to_vec();
+            if let Some(slot) = serve_args.get_mut(command_index) {
+                *slot = OsString::from("serve");
             }
-        },
+            match default_data_home()
+                .and_then(|home| daemon::start(&config.profile, &home, config.port, &serve_args))
+            {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    ExitCode::from(1)
+                }
+            }
+        }
         Mode::Stop { profile } => {
             match default_data_home().and_then(|home| daemon::stop(&profile, &home)) {
                 Ok(()) => ExitCode::SUCCESS,
@@ -96,7 +124,7 @@ fn install_logger(cli: &Cli) -> Result<(), logging::InstallError> {
     let level = requested.or_else(env_level).unwrap_or(Level::Info);
     let file = cli.log_file.clone().or_else(|| match &cli.mode {
         Mode::Serve(config) => profile_log_file(&config.profile),
-        Mode::Start(_) | Mode::Stop { .. } | Mode::Status { .. } | Mode::Renderer => None,
+        Mode::Start { .. } | Mode::Stop { .. } | Mode::Status { .. } | Mode::Renderer => None,
     });
     logging::install(level, file, std::time::SystemTime::now)
 }
@@ -116,10 +144,14 @@ fn profile_log_file(profile: &Profile) -> Option<PathBuf> {
     )
 }
 
-fn run_browser_process(
+fn run_browser_process<F>(
     target: &'static str,
-    future: impl Future<Output = io::Result<()>>,
-) -> ExitCode {
+    handshake: Option<daemon::HandshakeChannel>,
+    build: impl FnOnce(Option<daemon::HandshakeChannel>) -> F,
+) -> ExitCode
+where
+    F: Future<Output = io::Result<()>>,
+{
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -127,11 +159,14 @@ fn run_browser_process(
     {
         Ok(runtime) => runtime,
         Err(error) => {
+            if let Some(channel) = handshake {
+                channel.send_failed(&format!("runtime failed: {error}"));
+            }
             logging::error!(target: target, "runtime failed: {error}");
             return ExitCode::from(1);
         }
     };
-    match runtime.block_on(future) {
+    match runtime.block_on(build(handshake)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             logging::error!(target: target, "{error}");

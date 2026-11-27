@@ -208,3 +208,61 @@ fn start_status_and_stop_manage_detached_daemon() {
     let after_status = run_cli(&fixture, &["status"]);
     assert_eq!(after_status.status.code(), Some(1));
 }
+
+#[test]
+fn daemon_status_stays_ready_during_active_webdriver_session_and_start_reports_bind_failure() {
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+
+    let fixture = Fixture::new("tinybrowser-control");
+
+    let busy = TcpListener::bind(("127.0.0.1", 0)).expect("bind busy port");
+    let busy_port = busy.local_addr().expect("busy addr").port();
+    let failed = run_cli(&fixture, &["start", "--port", &busy_port.to_string()]);
+    assert_eq!(failed.status.code(), Some(1));
+    let failed_err = String::from_utf8_lossy(&failed.stderr);
+    assert!(
+        failed_err.contains("bind failed"),
+        "expected structured bind error, got: {failed_err}"
+    );
+    drop(busy);
+
+    let started = run_cli(&fixture, &["--profile", "start", "start"]);
+    assert!(
+        started.status.success(),
+        "start with profile named 'start' failed: {}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+    let started_json: serde_json::Value =
+        serde_json::from_slice(&started.stdout).expect("start json");
+    assert_eq!(started_json["profile"], serde_json::json!("start"));
+    let port = u16::try_from(started_json["port"].as_u64().expect("port")).expect("port u16");
+
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect webdriver");
+    stream
+        .write_all(
+            b"POST /session HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+        )
+        .expect("create session");
+    let mut response = String::new();
+    stream.read_to_string(&mut response).expect("read session");
+    assert!(response.contains("sessionId"), "{response}");
+
+    let status_out = run_cli(&fixture, &["status", "--profile", "start"]);
+    assert!(
+        status_out.status.success(),
+        "daemon status must remain healthy while a WebDriver session is active: {}",
+        String::from_utf8_lossy(&status_out.stdout)
+    );
+    let status_json: serde_json::Value =
+        serde_json::from_slice(&status_out.stdout).expect("status json");
+    assert_eq!(status_json["running"], serde_json::json!(true));
+    assert_eq!(status_json["ready"], serde_json::json!(true));
+
+    let stopped = run_cli(&fixture, &["stop", "--profile", "start"]);
+    assert!(
+        stopped.status.success(),
+        "stop failed: {}",
+        String::from_utf8_lossy(&stopped.stderr)
+    );
+}

@@ -30,8 +30,14 @@ use crate::wire::{
 use renderer::{OpenerPolicy, WindowId};
 
 pub fn serve(sandbox: RendererSandbox) -> io::Result<()> {
+    let (input, mut output) = endpoint()?;
     match sandbox {
-        RendererSandbox::Enabled => sandbox::engage()?,
+        RendererSandbox::Enabled => {
+            if let Err(error) = sandbox::engage() {
+                send_startup_failed(&mut output, &error.to_string());
+                return Err(error);
+            }
+        }
         RendererSandbox::Disabled => {
             logging::warn!(
                 target: "renderer::sandbox",
@@ -39,17 +45,34 @@ pub fn serve(sandbox: RendererSandbox) -> io::Result<()> {
             );
         }
     }
-    let runtime = tokio::runtime::Builder::new_current_thread()
+    let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_time()
-        .build()?;
-    let writer = runtime.block_on(serve_async())?;
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            send_startup_failed(&mut output, &error.to_string());
+            return Err(error);
+        }
+    };
+    let writer = runtime.block_on(serve_async(input, output));
     writer
         .join()
         .map_err(|_| io::Error::other("writer panicked"))?
 }
 
-async fn serve_async() -> io::Result<thread::JoinHandle<io::Result<()>>> {
-    let (input, output) = endpoint()?;
+fn send_startup_failed(output: &mut Box<dyn Write + Send>, message: &str) {
+    let notice: FromRenderer = Frame::Notify(RendererNotice::StartupFailed {
+        message: message.to_owned(),
+    });
+    let _ = crate::wire::channel::write_control(output, &notice);
+    let _ = output.flush();
+}
+
+async fn serve_async(
+    input: Box<dyn Read + Send>,
+    output: Box<dyn Write + Send>,
+) -> thread::JoinHandle<io::Result<()>> {
     let (command_tx, command_rx) = exchange::pair(INBOX_CAPACITY, INBOX_CAPACITY);
     let (out_tx, out_rx) = exchange::blocking_pair(OUTBOX_CONTROL_CAPACITY, OUTBOX_DATA_CAPACITY);
     let stop = Arc::new(Stop::new());
@@ -84,7 +107,7 @@ async fn serve_async() -> io::Result<thread::JoinHandle<io::Result<()>>> {
     });
     session::run(command_rx, &out_tx, client, &stop, Arc::clone(&wake)).await;
     drop(out_tx);
-    Ok(writer)
+    writer
 }
 
 #[cfg(unix)]

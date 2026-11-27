@@ -428,7 +428,7 @@ fn report_reader_error(failure: &LinkFailure, error: &std::io::Error) {
 async fn reader_task(
     mut reader: Box<dyn AsyncRead + Send + Unpin>,
     failure: LinkFailure,
-    ready: Option<oneshot::Sender<bool>>,
+    ready: Option<oneshot::Sender<Result<(), String>>>,
 ) {
     let mut ready = ready;
     let mut buffer = Vec::new();
@@ -461,19 +461,28 @@ async fn reader_task(
             },
         };
         if let Some(ready_tx) = ready.take() {
-            let ok = matches!(message, Frame::Notify(RendererNotice::Ready));
-            let _ = ready_tx.send(ok);
-            if !ok {
-                break;
+            match message {
+                Frame::Notify(RendererNotice::Ready) => {
+                    let _ = ready_tx.send(Ok(()));
+                    continue;
+                }
+                Frame::Notify(RendererNotice::StartupFailed { message }) => {
+                    let _ = ready_tx.send(Err(message));
+                    break;
+                }
+                _ => {
+                    let _ =
+                        ready_tx.send(Err("unexpected message during renderer handshake".into()));
+                    break;
+                }
             }
-            continue;
         }
         if failure.router.route(message).is_err() {
             break;
         }
     }
     if let Some(ready_tx) = ready {
-        let _ = ready_tx.send(false);
+        let _ = ready_tx.send(Err("renderer exited before completing handshake".into()));
     }
     failure.trigger();
 }
@@ -493,7 +502,7 @@ async fn service_task(mut server: BrowserServiceServer, context: ServiceContext)
             ServerInput::Notify(RendererNotice::WaiterSettled { assignment, id }) => {
                 route_waiter_settled(&context, assignment, id)
             }
-            ServerInput::Notify(RendererNotice::Ready)
+            ServerInput::Notify(RendererNotice::Ready | RendererNotice::StartupFailed { .. })
             | ServerInput::RequestChunk
             | ServerInput::RequestEnd
             | ServerInput::Cancel { .. } => Err(RendererViolation),
@@ -1676,64 +1685,16 @@ async fn read_bounded_line<R: tokio::io::AsyncBufRead + Unpin>(
     }
 }
 
-const MAX_STARTUP_STDERR_LINES: usize = 8;
-
-async fn forward_stderr(
-    stderr: tokio::process::ChildStderr,
-    startup_stderr: Arc<Mutex<Option<Vec<String>>>>,
-) {
+async fn forward_stderr(stderr: tokio::process::ChildStderr) {
     let mut reader = tokio::io::BufReader::new(stderr);
     let mut bytes = Vec::new();
     while let Ok(Some(truncated)) = read_bounded_line(&mut reader, &mut bytes).await {
         let text = String::from_utf8_lossy(&bytes);
-        if let Some(lines) = &mut *startup_stderr
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            && lines.len() < MAX_STARTUP_STDERR_LINES
-        {
-            let trimmed = text.trim();
-            if !trimmed.is_empty() {
-                lines.push(trimmed.to_owned());
-            }
-        }
         if truncated {
             logging::log_forwarded(&format!("{text} [truncated]\n"));
         } else {
             logging::log_forwarded(&text);
         }
-    }
-}
-
-fn strip_log_prefix(line: &str) -> &str {
-    let mut parts = line.splitn(4, ' ');
-    let (Some(_stamp), Some(level), Some(_target), Some(message)) =
-        (parts.next(), parts.next(), parts.next(), parts.next())
-    else {
-        return line;
-    };
-    if matches!(level, "ERROR" | "WARN" | "INFO" | "DEBUG" | "TRACE") && !message.is_empty() {
-        message
-    } else {
-        line
-    }
-}
-
-fn startup_failure_message(startup_stderr: &Mutex<Option<Vec<String>>>) -> String {
-    let detail = startup_stderr
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .take()
-        .and_then(|lines| {
-            lines
-                .iter()
-                .rev()
-                .find(|line| line.contains(" ERROR "))
-                .or_else(|| lines.last())
-                .map(|line| strip_log_prefix(line).to_owned())
-        });
-    match detail {
-        Some(reason) => format!("renderer handshake failed: {reason}"),
-        None => "renderer handshake failed".to_owned(),
     }
 }
 
@@ -1947,10 +1908,9 @@ pub(crate) async fn spawn_process(
         browser,
         dials: Arc::new(Mutex::new(HashMap::new())),
     };
-    let startup_stderr = Arc::new(Mutex::new(Some(Vec::new())));
     let reader_task = tokio::spawn(reader_task(reader, failure, Some(ready_tx)));
     let service_task = tokio::spawn(service_task(server, service_context));
-    let stderr_task = tokio::spawn(forward_stderr(stderr, Arc::clone(&startup_stderr)));
+    let stderr_task = tokio::spawn(forward_stderr(stderr));
     let _reaper = tokio::spawn(child_task(
         child,
         kill_rx,
@@ -1958,16 +1918,13 @@ pub(crate) async fn spawn_process(
         job,
     ));
     let tasks = vec![writer_task, reader_task, service_task, stderr_task];
-    if !handshake_succeeded(&client, identity, ready_rx).await {
+    if let Err(error) = complete_handshake(&client, identity, ready_rx).await {
         let _ = kill.send(true);
         for task in tasks {
             let _result = task.await;
         }
-        return Err(io::Error::other(startup_failure_message(&startup_stderr)));
+        return Err(error);
     }
-    *startup_stderr
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner) = None;
     logging::debug!(
         target: "browser::link",
         "renderer {id:?} ready for site lock {lock:?}"
@@ -1984,18 +1941,28 @@ pub(crate) async fn spawn_process(
     })
 }
 
-async fn handshake_succeeded(
+async fn complete_handshake(
     client: &RendererClient,
     identity: net::ValidIdentity,
-    ready_rx: oneshot::Receiver<bool>,
-) -> bool {
+    ready_rx: oneshot::Receiver<Result<(), String>>,
+) -> io::Result<()> {
     client
         .notify(HostNotice::Hello {
             identity: Box::new(identity),
         })
         .await
-        .is_ok()
-        && timeout(HANDSHAKE_TIMEOUT, ready_rx).await == Ok(Ok(true))
+        .map_err(|_| io::Error::other("renderer handshake failed: channel closed"))?;
+    match timeout(HANDSHAKE_TIMEOUT, ready_rx).await {
+        Ok(Ok(Ok(()))) => Ok(()),
+        Ok(Ok(Err(message))) => Err(io::Error::other(format!(
+            "renderer handshake failed: {message}"
+        ))),
+        Ok(Err(_)) => Err(io::Error::other("renderer handshake failed")),
+        Err(_) => Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "renderer handshake timed out",
+        )),
+    }
 }
 
 async fn child_task(

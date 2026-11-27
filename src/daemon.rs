@@ -1,30 +1,117 @@
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions, TryLockError};
-use std::io::{self, BufRead as _, Read as _, Write as _};
+use std::io::{self, BufRead as _, Read as _, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use browser::{
     AgentOptions, Browser, BrowserHandle, BrowserOptions, Profile, ProfileName, RendererSandbox,
+    RendererState,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use server::{Request, Response, Shutdown};
+use server::{Method, Request, Response, Shutdown, StatusCode};
 
 const START_TIMEOUT: Duration = Duration::from_secs(15);
 const STOP_TIMEOUT: Duration = Duration::from_secs(5);
 const ENDPOINT_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
-const MAX_CHILD_STDERR_BYTES: usize = 64 * 1024;
+const HANDSHAKE_ENV: &str = "TINYBROWSER_START_HANDSHAKE";
+const CONTROL_STATUS_PATH: &str = "/_tinybrowser/status";
+const CONTROL_STOP_PATH: &str = "/_tinybrowser/stop";
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DaemonEndpoint {
     pub pid: u32,
     pub host: String,
     pub port: u16,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct DaemonReady {
+    profile: String,
+    pid: u32,
+    host: String,
+    port: u16,
+    url: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct ControlStatus {
+    ready: bool,
+    message: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct DaemonStatusOutput {
+    running: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ready: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+    profile: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pid: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    host: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    port: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    url: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum StartHandshake {
+    Ready(DaemonReady),
+    Failed { message: String },
+}
+
+pub struct HandshakeChannel {
+    writer: Box<dyn Write + Send>,
+}
+
+impl HandshakeChannel {
+    pub fn from_env() -> Option<Self> {
+        std::env::var_os(HANDSHAKE_ENV)?;
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsFd as _;
+            use std::os::unix::net::UnixStream;
+
+            let fd = io::stdin().as_fd().try_clone_to_owned().ok()?;
+            let stream = UnixStream::from(fd);
+            Some(Self {
+                writer: Box::new(stream),
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            Some(Self {
+                writer: Box::new(io::stdout()),
+            })
+        }
+    }
+
+    fn send_ready(mut self, ready: &DaemonReady) {
+        if let Ok(line) = serde_json::to_string(&StartHandshake::Ready(ready.clone())) {
+            let _ = writeln!(self.writer, "{line}");
+            let _ = self.writer.flush();
+        }
+    }
+
+    pub fn send_failed(mut self, message: &str) {
+        let payload = StartHandshake::Failed {
+            message: message.to_owned(),
+        };
+        if let Ok(line) = serde_json::to_string(&payload) {
+            let _ = writeln!(self.writer, "{line}");
+            let _ = self.writer.flush();
+        }
+    }
 }
 
 impl DaemonEndpoint {
@@ -38,14 +125,14 @@ impl DaemonEndpoint {
         format!("http://{}:{}", self.host, self.port)
     }
 
-    fn to_ready_json(&self, profile: &ProfileName) -> Value {
-        json!({
-            "profile": profile.as_str(),
-            "pid": self.pid,
-            "host": self.host,
-            "port": self.port,
-            "url": self.url(),
-        })
+    fn to_ready(&self, profile: &ProfileName) -> DaemonReady {
+        DaemonReady {
+            profile: profile.as_str().to_owned(),
+            pid: self.pid,
+            host: self.host.clone(),
+            port: self.port,
+            url: self.url(),
+        }
     }
 }
 
@@ -55,6 +142,24 @@ pub async fn serve(
     port: Option<u16>,
     network: AgentOptions,
     sandbox: RendererSandbox,
+    mut handshake: Option<HandshakeChannel>,
+) -> io::Result<()> {
+    let result = serve_inner(profile, data_home, port, network, sandbox, &mut handshake).await;
+    if let Err(ref error) = result
+        && let Some(channel) = handshake.take()
+    {
+        channel.send_failed(&error.to_string());
+    }
+    result
+}
+
+async fn serve_inner(
+    profile: &Profile,
+    data_home: &Path,
+    port: Option<u16>,
+    network: AgentOptions,
+    sandbox: RendererSandbox,
+    handshake: &mut Option<HandshakeChannel>,
 ) -> io::Result<()> {
     let runtime = profile_runtime_dir(profile.name(), data_home);
     fs::create_dir_all(&runtime)?;
@@ -69,7 +174,7 @@ pub async fn serve(
             existing.host,
             existing.port
         );
-        emit_json(&existing.to_ready_json(profile.name()));
+        announce_ready(handshake, &existing.to_ready(profile.name()));
         return Ok(());
     };
     logging::debug!(target: "daemon", "runtime dir {}", runtime.display());
@@ -115,18 +220,26 @@ pub async fn serve(
         let _ = browser.close().await;
         return Err(error);
     }
-    emit_json(&endpoint.to_ready_json(profile.name()));
+    announce_ready(handshake, &endpoint.to_ready(profile.name()));
     let result = serve_http(&listener, browser.handle()).await;
     remove_endpoint(&runtime);
     let close = browser.close().await;
     result.and(close)
 }
 
+fn announce_ready(handshake: &mut Option<HandshakeChannel>, ready: &DaemonReady) {
+    if let Some(channel) = handshake.take() {
+        channel.send_ready(ready);
+    } else {
+        emit_serialized(ready);
+    }
+}
+
 pub fn start(
     profile: &Profile,
     data_home: &Path,
     port: Option<u16>,
-    forward_args: &[OsString],
+    serve_args: &[OsString],
 ) -> io::Result<()> {
     let runtime = profile_runtime_dir(profile.name(), data_home);
     fs::create_dir_all(&runtime)?;
@@ -136,72 +249,110 @@ pub fn start(
     } else {
         let existing = wait_for_endpoint(&runtime, ENDPOINT_WAIT_TIMEOUT)?;
         check_port_conflict(profile.name(), port, &existing)?;
-        let _ = probe_status(&existing)?;
-        emit_json(&existing.to_ready_json(profile.name()));
+        let _ = probe_control_status(&existing)?;
+        emit_serialized(&existing.to_ready(profile.name()));
         return Ok(());
     }
     let mut command = Command::new(std::env::current_exe()?);
+    command.args(serve_args).env(HANDSHAKE_ENV, "1");
+    detach_command(&mut command);
+    spawn_and_await_handshake(command)
+}
+
+#[cfg(unix)]
+fn spawn_and_await_handshake(mut command: Command) -> io::Result<()> {
+    use std::os::fd::OwnedFd;
+    use std::os::unix::net::UnixStream;
+
+    let (parent_end, child_end) = UnixStream::pair()?;
     command
-        .arg("serve")
-        .args(forward_args)
+        .stdin(Stdio::from(OwnedFd::from(child_end)))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut child = command.spawn()?;
+    parent_end.set_read_timeout(Some(START_TIMEOUT))?;
+    let mut reader = io::BufReader::new(parent_end);
+    let mut line = String::new();
+    match reader.read_line(&mut line) {
+        Ok(0) => {
+            let status = child.wait()?;
+            Err(io::Error::other(format!(
+                "daemon exited before completing startup handshake ({status})"
+            )))
+        }
+        Ok(_) => decode_handshake_line(line.trim(), &mut child),
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+            ) =>
+        {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "timed out waiting for daemon to start",
+            ))
+        }
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(error)
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn spawn_and_await_handshake(mut command: Command) -> io::Result<()> {
+    use std::sync::mpsc;
+
+    command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    detach_command(&mut command);
+        .stderr(Stdio::null());
     let mut child = command.spawn()?;
     let Some(stdout) = child.stdout.take() else {
         let _ = child.kill();
         let _ = child.wait();
-        return Err(io::Error::other("daemon stdout missing"));
+        return Err(io::Error::other("daemon handshake pipe missing"));
     };
-    let Some(stderr) = child.stderr.take() else {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(io::Error::other("daemon stderr missing"));
-    };
-    let stderr_handle = thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = stderr
-            .take(MAX_CHILD_STDERR_BYTES as u64)
-            .read_to_end(&mut buf);
-        String::from_utf8_lossy(&buf).into_owned()
-    });
     let (ready_tx, ready_rx) = mpsc::channel();
-    let _stdout_handle = thread::spawn(move || {
+    let _reader = thread::spawn(move || {
         let mut reader = io::BufReader::new(stdout);
         let mut line = String::new();
         let result = reader.read_line(&mut line).map(|_| line);
         let _ = ready_tx.send(result);
     });
     match ready_rx.recv_timeout(START_TIMEOUT) {
-        Ok(Ok(line)) if !line.trim().is_empty() => {
-            let trimmed = line.trim();
-            let parsed: Value = serde_json::from_str(trimmed).map_err(|error| {
-                io::Error::other(format!("invalid daemon startup response: {error}"))
-            })?;
-            emit_json(&parsed);
-            Ok(())
-        }
+        Ok(Ok(line)) if !line.trim().is_empty() => decode_handshake_line(line.trim(), &mut child),
         Ok(Ok(_) | Err(_)) | Err(mpsc::RecvTimeoutError::Disconnected) => {
             let status = child.wait()?;
-            let captured = stderr_handle.join().unwrap_or_default();
-            Err(io::Error::other(extract_daemon_error(&captured, status)))
+            Err(io::Error::other(format!(
+                "daemon exited before completing startup handshake ({status})"
+            )))
         }
         Err(mpsc::RecvTimeoutError::Timeout) => {
             let _ = child.kill();
             let _ = child.wait();
-            let captured = stderr_handle.join().unwrap_or_default();
-            let detail = extract_last_error(&captured);
-            match detail {
-                Some(reason) => Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    format!("timed out waiting for daemon to start: {reason}"),
-                )),
-                None => Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "timed out waiting for daemon to start",
-                )),
-            }
+            Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "timed out waiting for daemon to start",
+            ))
+        }
+    }
+}
+
+fn decode_handshake_line(trimmed: &str, child: &mut std::process::Child) -> io::Result<()> {
+    let parsed: StartHandshake = serde_json::from_str(trimmed)
+        .map_err(|error| io::Error::other(format!("invalid daemon startup response: {error}")))?;
+    match parsed {
+        StartHandshake::Ready(ready) => {
+            emit_serialized(&ready);
+            Ok(())
+        }
+        StartHandshake::Failed { message } => {
+            let _ = child.wait();
+            Err(io::Error::other(message))
         }
     }
 }
@@ -209,49 +360,55 @@ pub fn start(
 pub fn status(profile: &Profile, data_home: &Path) -> io::Result<bool> {
     let runtime = profile_runtime_dir(profile.name(), data_home);
     if !runtime.exists() {
-        emit_json(&json!({
-            "running": false,
-            "profile": profile.name().as_str(),
-        }));
+        emit_serialized(&stopped_status(profile.name()));
         return Ok(false);
     }
     if let Some(_lock) = acquire_lock(&runtime)? {
         remove_endpoint(&runtime);
-        emit_json(&json!({
-            "running": false,
-            "profile": profile.name().as_str(),
-        }));
+        emit_serialized(&stopped_status(profile.name()));
         return Ok(false);
     }
     let endpoint = wait_for_endpoint(&runtime, PROBE_TIMEOUT)?;
-    match probe_status(&endpoint) {
-        Ok((ready, message)) => {
-            let healthy = ready || message == "session already started";
-            emit_json(&json!({
-                "running": true,
-                "ready": ready,
-                "message": message,
-                "profile": profile.name().as_str(),
-                "pid": endpoint.pid,
-                "host": endpoint.host,
-                "port": endpoint.port,
-                "url": endpoint.url(),
-            }));
-            Ok(healthy)
+    match probe_control_status(&endpoint) {
+        Ok(control) => {
+            emit_serialized(&DaemonStatusOutput {
+                running: true,
+                ready: Some(control.ready),
+                message: Some(control.message),
+                profile: profile.name().as_str().to_owned(),
+                pid: Some(endpoint.pid),
+                host: Some(endpoint.host.clone()),
+                port: Some(endpoint.port),
+                url: Some(endpoint.url()),
+            });
+            Ok(control.ready)
         }
         Err(error) => {
-            emit_json(&json!({
-                "running": true,
-                "ready": false,
-                "message": error.to_string(),
-                "profile": profile.name().as_str(),
-                "pid": endpoint.pid,
-                "host": endpoint.host,
-                "port": endpoint.port,
-                "url": endpoint.url(),
-            }));
+            emit_serialized(&DaemonStatusOutput {
+                running: true,
+                ready: Some(false),
+                message: Some(error.to_string()),
+                profile: profile.name().as_str().to_owned(),
+                pid: Some(endpoint.pid),
+                host: Some(endpoint.host.clone()),
+                port: Some(endpoint.port),
+                url: Some(endpoint.url()),
+            });
             Ok(false)
         }
+    }
+}
+
+fn stopped_status(profile: &ProfileName) -> DaemonStatusOutput {
+    DaemonStatusOutput {
+        running: false,
+        ready: None,
+        message: None,
+        profile: profile.as_str().to_owned(),
+        pid: None,
+        host: None,
+        port: None,
+        url: None,
     }
 }
 
@@ -273,10 +430,7 @@ pub fn stop(profile: &Profile, data_home: &Path) -> io::Result<()> {
         return Ok(());
     }
     let endpoint = wait_for_endpoint(&runtime, PROBE_TIMEOUT)?;
-    let addr = endpoint.addr()?;
-    if let Ok(mut client) = cdp::Client::connect(addr) {
-        let _ = client.call("Browser.close", &json!({}), None);
-    }
+    let _ = request_control_stop(&endpoint);
     let deadline = Instant::now() + STOP_TIMEOUT;
     loop {
         if let Some(_lock) = acquire_lock(&runtime)? {
@@ -320,6 +474,15 @@ fn detach_command(command: &mut Command) {
 #[cfg(not(any(unix, windows)))]
 fn detach_command(_command: &mut Command) {}
 
+fn emit_serialized<T: Serialize>(value: &T) {
+    if let Ok(line) = serde_json::to_string(value) {
+        let stdout = io::stdout();
+        let mut out = stdout.lock();
+        let _ = writeln!(out, "{line}");
+        let _ = out.flush();
+    }
+}
+
 fn emit_json(value: &Value) {
     let stdout = io::stdout();
     let mut out = stdout.lock();
@@ -349,65 +512,43 @@ fn check_port_conflict(
     Ok(())
 }
 
-fn extract_daemon_error(stderr: &str, status: std::process::ExitStatus) -> String {
-    if let Some(reason) = extract_last_error(stderr) {
-        return reason;
-    }
-    let trimmed = stderr.trim();
-    if !trimmed.is_empty() {
-        return trimmed.to_owned();
-    }
-    format!("daemon exited with {status}")
-}
-
-fn extract_last_error(stderr: &str) -> Option<String> {
-    stderr
-        .lines()
-        .rev()
-        .find(|line| line.contains(" ERROR "))
-        .map(|line| {
-            let mut parts = line.splitn(4, ' ');
-            match (parts.next(), parts.next(), parts.next(), parts.next()) {
-                (Some(_), Some("ERROR"), Some(_), Some(message)) if !message.is_empty() => {
-                    message.to_owned()
-                }
-                _ => line.trim().to_owned(),
-            }
-        })
-}
-
-fn probe_status(endpoint: &DaemonEndpoint) -> io::Result<(bool, String)> {
+fn control_http_request(
+    endpoint: &DaemonEndpoint,
+    method: &str,
+    path: &str,
+) -> io::Result<Vec<u8>> {
     let addr = endpoint.addr()?;
     let mut stream = TcpStream::connect_timeout(&addr, PROBE_TIMEOUT)?;
     stream.set_read_timeout(Some(PROBE_TIMEOUT))?;
     stream.set_write_timeout(Some(PROBE_TIMEOUT))?;
-    stream.write_all(b"GET /status HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")?;
+    write!(
+        stream,
+        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    )?;
     let mut response = Vec::new();
     stream.read_to_end(&mut response)?;
     let split = response
         .windows(4)
         .position(|window| window == b"\r\n\r\n")
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid /status response"))?;
-    let body = &response[split + 4..];
-    let parsed: Value = serde_json::from_slice(body)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, format!("{error}")))?;
-    let value = parsed
-        .get("value")
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing status value"))?;
-    let ready = value
-        .get("ready")
-        .and_then(Value::as_bool)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing ready flag"))?;
-    let message = value
-        .get("message")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_owned();
-    Ok((ready, message))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid control response"))?;
+    Ok(response[split + 4..].to_vec())
+}
+
+fn probe_control_status(endpoint: &DaemonEndpoint) -> io::Result<ControlStatus> {
+    let body = control_http_request(endpoint, "GET", CONTROL_STATUS_PATH)?;
+    serde_json::from_slice(&body)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, format!("{error}")))
+}
+
+fn request_control_stop(endpoint: &DaemonEndpoint) -> io::Result<()> {
+    let _ = control_http_request(endpoint, "POST", CONTROL_STOP_PATH)?;
+    Ok(())
 }
 
 #[derive(Clone)]
 struct CombinedRouter {
+    browser: BrowserHandle,
+    shutdown: Shutdown,
     cdp: cdp::Router,
     webdriver: webdriver::Router,
 }
@@ -417,6 +558,8 @@ async fn serve_http(listener: &TcpListener, browser: &BrowserHandle) -> io::Resu
     let shutdown = Shutdown::new();
     spawn_signal_watcher(shutdown.clone());
     let router = CombinedRouter {
+        browser: browser.clone(),
+        shutdown: shutdown.clone(),
         cdp: cdp::Router::new(browser.clone(), bound, shutdown.clone()),
         webdriver: webdriver::Router::with_endpoint(browser.clone(), bound, shutdown.clone()),
     };
@@ -452,11 +595,68 @@ fn spawn_signal_watcher(shutdown: Shutdown) {
 }
 
 async fn serve_request(request: Request, router: CombinedRouter) -> Response {
-    if is_webdriver_path(request.uri().path()) {
-        router.webdriver.handle(request).await
-    } else {
-        router.cdp.handle(request).await
+    match request.uri().path() {
+        CONTROL_STATUS_PATH => serve_control_status(&request, &router.browser).await,
+        CONTROL_STOP_PATH => serve_control_stop(&request, &router.shutdown),
+        path if is_webdriver_path(path) => router.webdriver.handle(request).await,
+        _ => router.cdp.handle(request).await,
     }
+}
+
+fn check_control_guards(request: &Request) -> Option<Response> {
+    if !server::is_loopback_host(request) {
+        return Some(server::text(
+            StatusCode::FORBIDDEN,
+            "non-loopback Host header rejected",
+        ));
+    }
+    if server::has_origin(request) {
+        return Some(server::text(
+            StatusCode::FORBIDDEN,
+            "Origin header rejected",
+        ));
+    }
+    if server::has_browser_fetch_metadata(request) {
+        return Some(server::text(
+            StatusCode::FORBIDDEN,
+            "Sec-Fetch-* header rejected",
+        ));
+    }
+    None
+}
+
+async fn serve_control_status(request: &Request, browser: &BrowserHandle) -> Response {
+    if let Some(rejected) = check_control_guards(request) {
+        return rejected;
+    }
+    if request.method() != Method::GET && request.method() != Method::HEAD {
+        return server::method_not_allowed("GET,HEAD");
+    }
+    let status = match browser.renderer_health().await {
+        RendererState::Live | RendererState::Starting | RendererState::NoneLive => ControlStatus {
+            ready: true,
+            message: "ready".to_owned(),
+        },
+        RendererState::Failed(error) => ControlStatus {
+            ready: false,
+            message: error.to_string(),
+        },
+    };
+    match serde_json::to_value(&status) {
+        Ok(value) => server::json(StatusCode::OK, &value),
+        Err(_) => server::text(StatusCode::INTERNAL_SERVER_ERROR, "status encode failed"),
+    }
+}
+
+fn serve_control_stop(request: &Request, shutdown: &Shutdown) -> Response {
+    if let Some(rejected) = check_control_guards(request) {
+        return rejected;
+    }
+    if request.method() != Method::POST {
+        return server::method_not_allowed("POST");
+    }
+    shutdown.request();
+    server::json(StatusCode::OK, &json!({ "stopping": true }))
 }
 
 fn is_webdriver_path(path: &str) -> bool {
@@ -501,24 +701,8 @@ fn acquire_lock(runtime: &Path) -> io::Result<Option<File>> {
 fn read_endpoint(runtime: &Path) -> io::Result<DaemonEndpoint> {
     let path = runtime.join("daemon.json");
     let text = fs::read_to_string(&path)?;
-    let parsed: Value = serde_json::from_str(&text)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, format!("{error}")))?;
-    let pid = parsed
-        .get("pid")
-        .and_then(Value::as_u64)
-        .and_then(|value| u32::try_from(value).ok())
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing pid"))?;
-    let host = parsed
-        .get("host")
-        .and_then(Value::as_str)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing host"))?
-        .to_owned();
-    let port = parsed
-        .get("port")
-        .and_then(Value::as_u64)
-        .and_then(|value| u16::try_from(value).ok())
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing port"))?;
-    Ok(DaemonEndpoint { pid, host, port })
+    serde_json::from_str(&text)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, format!("{error}")))
 }
 
 fn wait_for_endpoint(runtime: &Path, timeout: Duration) -> io::Result<DaemonEndpoint> {
@@ -565,11 +749,8 @@ fn restrict_file(path: &Path) -> io::Result<()> {
 fn write_endpoint(runtime: &Path, endpoint: &DaemonEndpoint) -> io::Result<()> {
     let path = runtime.join("daemon.json");
     let tmp = runtime.join(format!("daemon.{}.tmp", endpoint.pid));
-    let body = json!({
-        "pid": endpoint.pid,
-        "host": endpoint.host,
-        "port": endpoint.port,
-    });
+    let body = serde_json::to_string(endpoint)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, format!("{error}")))?;
     let mut options = fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -580,7 +761,7 @@ fn write_endpoint(runtime: &Path, endpoint: &DaemonEndpoint) -> io::Result<()> {
     let write_result = (|| -> io::Result<()> {
         let mut file = options.open(&tmp)?;
         restrict_file(&tmp)?;
-        file.write_all(body.to_string().as_bytes())?;
+        file.write_all(body.as_bytes())?;
         file.sync_all()?;
         fs::rename(&tmp, &path)?;
         restrict_file(&path)

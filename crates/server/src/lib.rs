@@ -10,7 +10,8 @@ use std::time::Duration;
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 use bytes::Bytes;
-use http::{HeaderValue, Request as HttpRequest, Response as HttpResponse, StatusCode, header};
+use http::{HeaderValue, Request as HttpRequest, Response as HttpResponse, header};
+pub use http::{Method, StatusCode};
 use http_body_util::{BodyExt as _, Full, LengthLimitError, Limited};
 use hyper::body::{Body, Incoming};
 use hyper::service::service_fn;
