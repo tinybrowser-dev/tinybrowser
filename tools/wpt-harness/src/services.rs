@@ -590,7 +590,7 @@ pub struct FsServices {
     cache: Arc<HttpCache>,
     clock: net::Clock,
     manual_clock: Option<Arc<HarnessClock>>,
-    storage: Mutex<HashMap<(StorageKind, StorageKey, String), String>>,
+    storage: webstorage::StorageService<u64>,
     cookies: Arc<Mutex<Vec<net::CookieRecord>>>,
 }
 
@@ -619,6 +619,8 @@ impl FsServices {
             ..net::AgentOptions::default()
         };
         let cache = Arc::new(HttpCache::new(clock.clone()));
+        let storage = webstorage::StorageService::default();
+        storage.create_session(0);
         Self {
             #[cfg(test)]
             origin,
@@ -626,7 +628,7 @@ impl FsServices {
             cache,
             clock,
             manual_clock,
-            storage: Mutex::new(HashMap::new()),
+            storage,
             cookies,
         }
     }
@@ -655,10 +657,8 @@ impl FsServices {
         self.agent.clear_cookies();
         self.publish_cookies();
         self.cache.clear();
-        self.storage
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clear();
+        self.storage.clear_all();
+        self.storage.create_session(0);
     }
 
     pub(crate) fn headers_for(file: &Path, request: &RequestContext<'_>) -> Headers {
@@ -858,21 +858,11 @@ impl StorageHost for FsServices {
         None
     }
     fn storage_get(&self, kind: StorageKind, origin: &StorageKey, key: &str) -> Option<String> {
-        self.storage
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(&(kind, origin.clone(), key.to_owned()))
-            .cloned()
+        self.storage.get(kind, 0, origin, key)
     }
 
     fn storage_keys(&self, kind: StorageKind, origin: &StorageKey) -> Vec<String> {
-        self.storage
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .keys()
-            .filter(|(key_kind, key_origin, _)| *key_kind == kind && key_origin == origin)
-            .map(|(_, _, key)| key.clone())
-            .collect()
+        self.storage.keys(kind, 0, origin)
     }
 
     fn storage_set(
@@ -884,11 +874,7 @@ impl StorageHost for FsServices {
         value: &str,
         _source: FrameId,
     ) -> Result<Option<StorageChange>, StorageError> {
-        self.storage
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert((kind, origin.clone(), key.to_owned()), value.to_owned());
-        Ok(None)
+        self.storage.set(kind, 0, origin, key, value)
     }
 
     fn storage_remove(
@@ -899,16 +885,7 @@ impl StorageHost for FsServices {
         key: &str,
         _source: FrameId,
     ) -> Option<StorageChange> {
-        let old_value = self
-            .storage
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&(kind, origin.clone(), key.to_owned()))?;
-        Some(StorageChange {
-            key: Some(key.to_owned()),
-            old_value: Some(old_value),
-            new_value: None,
-        })
+        self.storage.remove(kind, 0, origin, key)
     }
 
     fn storage_clear(
@@ -918,17 +895,7 @@ impl StorageHost for FsServices {
         _url: &str,
         _source: FrameId,
     ) -> Option<StorageChange> {
-        let mut storage = self.storage.lock().unwrap_or_else(PoisonError::into_inner);
-        let before = storage.len();
-        storage.retain(|(key_kind, key_origin, _), _| !(*key_kind == kind && key_origin == origin));
-        if storage.len() == before {
-            return None;
-        }
-        Some(StorageChange {
-            key: None,
-            old_value: None,
-            new_value: None,
-        })
+        self.storage.clear(kind, 0, origin)
     }
 }
 

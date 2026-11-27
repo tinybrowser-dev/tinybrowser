@@ -22,6 +22,7 @@ net = { workspace = true }
 dial = { workspace = true }
 # The browser's own cookie jar, so `document.cookie` behaves as it does there.
 cookies = { workspace = true }
+webstorage = { workspace = true }
 bytes = "1"
 http-body-util = "0.1"
 percent-encoding = "2"

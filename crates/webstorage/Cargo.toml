@@ -10,3 +10,4 @@ workspace = true
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
+url = { version = "2", features = ["serde"] }

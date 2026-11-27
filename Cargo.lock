@@ -4159,6 +4159,7 @@ name = "webstorage"
 version = "0.0.6"
 dependencies = [
  "serde",
+ "url",
 ]
 
 [[package]]
@@ -4426,6 +4427,7 @@ dependencies = [
  "tokio",
  "url",
  "uuid",
+ "webstorage",
  "wpt-report",
 ]
 

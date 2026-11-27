@@ -17,7 +17,7 @@ use renderer::{
     DialRequest, EmbeddedRenderer, HistoryHandling, MessagingHost, Mount, NetworkHost, RemoteValue,
     RendererEvent, StorageChange, StorageHost, StorageKey, StorageKind,
 };
-use webstorage::StorageArea;
+use webstorage::StorageService;
 
 #[expect(
     unsafe_code,
@@ -54,9 +54,7 @@ struct ContextState {
     jar: Arc<Mutex<net::CookieJar>>,
     identity: net::ValidIdentity,
     cache: Arc<HttpCache>,
-    local_storage: Mutex<HashMap<StorageKey, StorageArea>>,
-    indexed_db: Mutex<HashMap<StorageKey, StorageArea>>,
-    session_storage: Mutex<HashMap<u64, HashMap<StorageKey, StorageArea>>>,
+    storage: StorageService<u64>,
 }
 
 impl ContextState {
@@ -76,9 +74,7 @@ impl ContextState {
             jar,
             identity,
             cache,
-            local_storage: Mutex::new(HashMap::new()),
-            indexed_db: Mutex::new(HashMap::new()),
-            session_storage: Mutex::new(HashMap::new()),
+            storage: StorageService::default(),
         }
     }
 
@@ -187,19 +183,23 @@ impl GuestContext for Context {
     }
 
     fn local_storage(&self, origin: String) -> Vec<StorageEntry> {
-        let Some(key) = storage_key_from_url(&origin) else {
+        let Some(key) = StorageKey::parse(&origin) else {
             return Vec::new();
         };
-        read_storage_entries(&self.state.local_storage, &key)
+        self.state
+            .storage
+            .local()
+            .sorted_entries(&key)
+            .into_iter()
+            .map(|(key, value)| StorageEntry { key, value })
+            .collect()
     }
 
     fn clear_local_storage(&self, origin: String) {
-        let Some(key) = storage_key_from_url(&origin) else {
+        let Some(key) = StorageKey::parse(&origin) else {
             return;
         };
-        if let Some(area) = lock(&self.state.local_storage).get_mut(&key) {
-            let _change = area.clear();
-        }
+        let _change = self.state.storage.local().clear(&key);
     }
 }
 
@@ -408,6 +408,8 @@ impl GuestTab for Tab {
             *self.active_navigation_dial.borrow_mut() = None;
             match outcome {
                 Ok(mount) => {
+                    self.services
+                        .set_committed_origin(StorageKey::from_origin(&mount.head.url.origin()));
                     if let Err(error) = self.renderer.borrow_mut().mount(&mount) {
                         self.navigation_errors.borrow_mut().push(error.to_string());
                     }
@@ -443,6 +445,7 @@ impl GuestTab for Tab {
                                 ref url, ..
                             }) = event
                         {
+                            self.services.set_committed_origin(StorageKey::parse(url));
                             self.history
                                 .borrow_mut()
                                 .push(HistoryEntry::Remote(url.clone()));
@@ -475,36 +478,33 @@ impl GuestTab for Tab {
     }
 
     fn session_storage(&self, origin: String) -> Vec<StorageEntry> {
-        let Some(key) = storage_key_from_url(&origin) else {
+        let Some(key) = StorageKey::parse(&origin) else {
             return Vec::new();
         };
-        let namespaces = lock(&self.context.session_storage);
-        let Some(area) = namespaces
-            .get(&self.owner)
-            .and_then(|namespace| namespace.get(&key))
-        else {
-            return Vec::new();
-        };
-        collect_storage_entries(area)
+        self.context
+            .storage
+            .session()
+            .sorted_entries(self.owner, &key)
+            .into_iter()
+            .map(|(key, value)| StorageEntry { key, value })
+            .collect()
     }
 
     fn clear_session_storage(&self, origin: String) {
-        let Some(key) = storage_key_from_url(&origin) else {
+        let Some(key) = StorageKey::parse(&origin) else {
             return;
         };
-        if let Some(area) = lock(&self.context.session_storage)
-            .get_mut(&self.owner)
-            .and_then(|namespace| namespace.get_mut(&key))
-        {
-            let _change = area.clear();
-        }
+        let _change = self.context.storage.session().clear(self.owner, &key);
     }
 }
 
 impl Tab {
     fn in_context(context: Arc<ContextState>, url: String, html: String) -> Result<Self, String> {
         let parsed = url::Url::parse(&url).map_err(|_| format!("invalid url: {url}"))?;
-        let services = Arc::new(WasmServices::new(Arc::clone(&context)));
+        let services = Arc::new(WasmServices::new(
+            Arc::clone(&context),
+            StorageKey::from_origin(&parsed.origin()),
+        ));
         let owner = services.owner;
         let shared_fonts = lock(fonts()).clone();
         let mut renderer = EmbeddedRenderer::with_fonts(
@@ -537,6 +537,8 @@ impl Tab {
     fn mount_entry(&self, url: &str, html: &str) -> Result<(), String> {
         let parsed = url::Url::parse(url).map_err(|_| format!("invalid url: {url}"))?;
         self.cancel_pending_navigation();
+        self.services
+            .set_committed_origin(StorageKey::from_origin(&parsed.origin()));
         let mount = Mount {
             head: renderer::ResponseHead::local(
                 parsed,
@@ -594,30 +596,6 @@ impl Tab {
         }
         let _discarded = lock(&self.pending_navigation).take();
     }
-}
-
-fn storage_key_from_url(origin: &str) -> Option<StorageKey> {
-    let parsed = url::Url::parse(origin).ok()?;
-    StorageKey::from_origin(&parsed.origin())
-}
-
-fn read_storage_entries(
-    store: &Mutex<HashMap<StorageKey, StorageArea>>,
-    key: &StorageKey,
-) -> Vec<StorageEntry> {
-    let areas = lock(store);
-    let Some(area) = areas.get(key) else {
-        return Vec::new();
-    };
-    collect_storage_entries(area)
-}
-
-fn collect_storage_entries(area: &StorageArea) -> Vec<StorageEntry> {
-    let mut keys = area.keys();
-    keys.sort();
-    keys.into_iter()
-        .filter_map(|key| area.get(&key).map(|value| StorageEntry { key, value }))
-        .collect()
 }
 
 fn format_remote_value(value: &RemoteValue) -> String {
@@ -895,12 +873,14 @@ struct WasmServices {
     agent: Agent,
     dialer: Dialer,
     overrides: Mutex<net::RequestOverrides>,
+    committed_origin: Mutex<Option<StorageKey>>,
     registry: Arc<DialRegistry>,
 }
 
 impl WasmServices {
-    fn new(context: Arc<ContextState>) -> Self {
+    fn new(context: Arc<ContextState>, initial_origin: Option<StorageKey>) -> Self {
         let owner = NEXT_OWNER.fetch_add(1, Ordering::Relaxed);
+        context.storage.create_session(owner);
         let agent = context.agent_for_owner(owner);
         let dialer = Dialer::new(agent.clone(), Arc::clone(&context.cache));
         Self {
@@ -909,8 +889,21 @@ impl WasmServices {
             agent,
             dialer,
             overrides: Mutex::new(net::RequestOverrides::default()),
+            committed_origin: Mutex::new(initial_origin),
             registry: Arc::new(DialRegistry::new()),
         }
+    }
+
+    fn set_committed_origin(&self, origin: Option<StorageKey>) {
+        *lock(&self.committed_origin) = origin;
+    }
+
+    fn authorize_storage(&self, origin: &StorageKey) -> Option<StorageKey> {
+        let committed = lock(&self.committed_origin);
+        committed
+            .as_ref()
+            .filter(|allowed| *allowed == origin)
+            .cloned()
     }
 
     fn set_identity(&self, identity: Option<net::ValidIdentity>) {
@@ -1008,145 +1001,58 @@ impl StorageHost for WasmServices {
     }
 
     fn storage_get(&self, kind: StorageKind, origin: &StorageKey, key: &str) -> Option<String> {
-        match kind {
-            StorageKind::Local => lock(&self.context.local_storage)
-                .get(origin)
-                .and_then(|area| area.get(key)),
-            StorageKind::Session => lock(&self.context.session_storage)
-                .get(&self.owner)
-                .and_then(|namespace| namespace.get(origin))
-                .and_then(|area| area.get(key)),
-            StorageKind::IndexedDb => lock(&self.context.indexed_db)
-                .get(origin)
-                .and_then(|area| area.get(key)),
-        }
+        let authorized = self.authorize_storage(origin)?;
+        self.context.storage.get(kind, self.owner, &authorized, key)
     }
 
     fn storage_keys(&self, kind: StorageKind, origin: &StorageKey) -> Vec<String> {
-        match kind {
-            StorageKind::Local => lock(&self.context.local_storage)
-                .get(origin)
-                .map_or_default(StorageArea::keys),
-            StorageKind::Session => lock(&self.context.session_storage)
-                .get(&self.owner)
-                .and_then(|namespace| namespace.get(origin))
-                .map_or_default(StorageArea::keys),
-            StorageKind::IndexedDb => lock(&self.context.indexed_db)
-                .get(origin)
-                .map_or_default(StorageArea::keys),
-        }
+        let Some(authorized) = self.authorize_storage(origin) else {
+            return Vec::new();
+        };
+        self.context.storage.keys(kind, self.owner, &authorized)
     }
 
     fn storage_set(
         &self,
         kind: StorageKind,
         origin: &StorageKey,
-        url: &str,
+        _url: &str,
         key: &str,
         value: &str,
         _source: renderer::FrameId,
     ) -> Result<Option<StorageChange>, renderer::StorageError> {
-        if !wasm_url_matches_origin(url, origin) {
-            return Err(renderer::StorageError::QuotaExceeded);
-        }
-        match kind {
-            StorageKind::Local => set_bounded_area(
-                &mut lock(&self.context.local_storage),
-                origin,
-                key,
-                value,
-                webstorage::TOTAL_STORAGE_QUOTA_BYTES,
-            ),
-            StorageKind::Session => {
-                let mut sessions = lock(&self.context.session_storage);
-                let namespace = sessions.entry(self.owner).or_default();
-                set_bounded_area(
-                    namespace,
-                    origin,
-                    key,
-                    value,
-                    webstorage::SESSION_STORAGE_QUOTA_BYTES,
-                )
-            }
-            StorageKind::IndexedDb => set_bounded_area(
-                &mut lock(&self.context.indexed_db),
-                origin,
-                key,
-                value,
-                webstorage::TOTAL_STORAGE_QUOTA_BYTES,
-            ),
-        }
+        let Some(authorized) = self.authorize_storage(origin) else {
+            return Ok(None);
+        };
+        self.context
+            .storage
+            .set(kind, self.owner, &authorized, key, value)
     }
 
     fn storage_remove(
         &self,
         kind: StorageKind,
         origin: &StorageKey,
-        url: &str,
+        _url: &str,
         key: &str,
         _source: renderer::FrameId,
     ) -> Option<StorageChange> {
-        if !wasm_url_matches_origin(url, origin) {
-            return None;
-        }
-        match kind {
-            StorageKind::Local => lock(&self.context.local_storage)
-                .get_mut(origin)?
-                .remove(key),
-            StorageKind::Session => lock(&self.context.session_storage)
-                .get_mut(&self.owner)?
-                .get_mut(origin)?
-                .remove(key),
-            StorageKind::IndexedDb => lock(&self.context.indexed_db).get_mut(origin)?.remove(key),
-        }
+        let authorized = self.authorize_storage(origin)?;
+        self.context
+            .storage
+            .remove(kind, self.owner, &authorized, key)
     }
 
     fn storage_clear(
         &self,
         kind: StorageKind,
         origin: &StorageKey,
-        url: &str,
+        _url: &str,
         _source: renderer::FrameId,
     ) -> Option<StorageChange> {
-        if !wasm_url_matches_origin(url, origin) {
-            return None;
-        }
-        match kind {
-            StorageKind::Local => lock(&self.context.local_storage).get_mut(origin)?.clear(),
-            StorageKind::Session => lock(&self.context.session_storage)
-                .get_mut(&self.owner)?
-                .get_mut(origin)?
-                .clear(),
-            StorageKind::IndexedDb => lock(&self.context.indexed_db).get_mut(origin)?.clear(),
-        }
+        let authorized = self.authorize_storage(origin)?;
+        self.context.storage.clear(kind, self.owner, &authorized)
     }
-}
-
-fn wasm_url_matches_origin(url: &str, origin: &StorageKey) -> bool {
-    url::Url::parse(url)
-        .ok()
-        .and_then(|parsed| StorageKey::from_origin(&parsed.origin()))
-        .as_ref()
-        == Some(origin)
-}
-
-fn set_bounded_area(
-    areas: &mut HashMap<StorageKey, StorageArea>,
-    origin: &StorageKey,
-    key: &str,
-    value: &str,
-    total_limit: usize,
-) -> Result<Option<StorageChange>, renderer::StorageError> {
-    let other_used: usize = areas
-        .iter()
-        .filter(|(key_origin, _)| *key_origin != origin)
-        .map(|(_, area)| area.used_bytes())
-        .sum();
-    let limit = total_limit.saturating_sub(other_used);
-    areas
-        .entry(origin.clone())
-        .or_default()
-        .set_with_limit(key, value, limit)
 }
 
 impl BrowsingContextHost for WasmServices {
@@ -1191,6 +1097,6 @@ impl Drop for WasmServices {
         for id in ids {
             self.registry.cancel(id);
         }
-        lock(&self.context.session_storage).remove(&self.owner);
+        self.context.storage.remove_session(self.owner);
     }
 }

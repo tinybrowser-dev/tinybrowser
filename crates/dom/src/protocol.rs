@@ -8,7 +8,7 @@ pub use net::fetch::{
     DialRequest, FrameId, MAX_RESPONSE_BODY_BYTES, ReferrerRequest, RequestCache, RequestPolicy,
     ResponseBody, SandboxFlag, SandboxFlags, SerializedOrigin, StreamId, cross_origin_credentials,
 };
-pub use webstorage::{STORAGE_QUOTA_BYTES, StorageChange, StorageError};
+pub use webstorage::{STORAGE_QUOTA_BYTES, StorageChange, StorageError, StorageKey, StorageKind};
 
 use net::cors::CrossOrigin;
 
@@ -344,35 +344,6 @@ impl ScriptCookie {
             value: record.value.clone(),
             slot: record.slot(),
             state: record.state(),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum StorageKind {
-    Local,
-    Session,
-    // https://w3c.github.io/IndexedDB/#database
-    IndexedDb,
-}
-
-impl StorageKind {
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Local => "local",
-            Self::Session => "session",
-            Self::IndexedDb => "indexeddb",
-        }
-    }
-
-    #[must_use]
-    pub fn parse(token: &str) -> Option<Self> {
-        match token {
-            "local" => Some(Self::Local),
-            "session" => Some(Self::Session),
-            "indexeddb" => Some(Self::IndexedDb),
-            _ => None,
         }
     }
 }
@@ -1152,49 +1123,6 @@ pub trait BrowsingContextHost: Send + Sync + 'static {
 
 pub trait MessagingHost: Send + Sync + 'static {
     fn broadcast_post(&self, origin: &StorageKey, name: &str, payload: &str, channel: u64);
-}
-
-// https://html.spec.whatwg.org/multipage/webstorage.html#the-localstorage-attribute
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct StorageKey(url::Origin);
-
-impl StorageKey {
-    #[must_use]
-    pub fn from_origin(origin: &url::Origin) -> Option<Self> {
-        matches!(origin, url::Origin::Tuple(..)).then(|| Self(origin.clone()))
-    }
-
-    #[must_use]
-    pub fn parse(spec: &str) -> Option<Self> {
-        match SerializedOrigin::parse(spec)? {
-            SerializedOrigin::Tuple(origin) => Some(Self(origin)),
-            SerializedOrigin::Opaque => None,
-        }
-    }
-
-    #[must_use]
-    pub fn origin(&self) -> &url::Origin {
-        &self.0
-    }
-}
-
-impl std::fmt::Display for StorageKey {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.0.ascii_serialization())
-    }
-}
-
-impl Serialize for StorageKey {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&self.to_string())
-    }
-}
-
-impl<'de> Deserialize<'de> for StorageKey {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let raw = String::deserialize(deserializer)?;
-        Self::parse(&raw).ok_or_else(|| serde::de::Error::custom("a storage key is a tuple origin"))
-    }
 }
 
 // https://html.spec.whatwg.org/multipage/web-messaging.html#window-post-message-steps
