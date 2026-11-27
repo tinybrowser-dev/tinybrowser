@@ -3,7 +3,7 @@
 
 // https://html.spec.whatwg.org/multipage/parsing.html#encoding-sniffing-algorithm
 // https://encoding.spec.whatwg.org/#concept-encoding-get
-pub(crate) fn sniff_encoding(
+pub fn sniff_encoding(
     bytes: &[u8],
     content_type: Option<&str>,
     eof: bool,
@@ -166,10 +166,10 @@ fn prescan_charset(body: &[u8]) -> Option<&'static encoding_rs::Encoding> {
 }
 
 // https://mimesniff.spec.whatwg.org/#read-the-resource-header
-pub(crate) const RESOURCE_HEADER_LEN: usize = 1445;
+pub const RESOURCE_HEADER_LEN: usize = 1445;
 
 #[derive(Clone, Copy, Default)]
-pub(crate) struct MimeGuard {
+pub struct MimeGuard {
     pub no_sniff: bool,
     pub http: bool,
 }
@@ -177,7 +177,7 @@ pub(crate) struct MimeGuard {
 // https://mimesniff.spec.whatwg.org/#mime-type-sniffing-algorithm
 // https://mimesniff.spec.whatwg.org/#supplied-mime-type-detection-algorithm
 #[must_use]
-pub(crate) fn sniff_mime(
+pub fn sniff_mime(
     header: &[u8],
     supplied: Option<&str>,
     no_sniff: bool,
@@ -224,7 +224,7 @@ pub(crate) fn sniff_mime(
 }
 
 #[must_use]
-pub(crate) fn apache_bug_content_type(value: &str) -> bool {
+pub fn apache_bug_content_type(value: &str) -> bool {
     matches!(
         value,
         "text/plain"
@@ -244,14 +244,14 @@ pub fn nosniff(value: &str) -> bool {
 }
 
 #[must_use]
-pub(crate) fn headers_nosniff(headers: &[(String, String)]) -> bool {
+pub fn headers_nosniff(headers: &[(String, String)]) -> bool {
     net::combined_header_in(headers, "x-content-type-options").is_some_and(|value| nosniff(&value))
 }
 
 // https://fetch.spec.whatwg.org/#concept-header-extract-mime-type
 // https://mimesniff.spec.whatwg.org/#supplied-mime-type-detection-algorithm
 #[must_use]
-pub(crate) fn extract_mime_type(value: &str) -> Option<String> {
+pub fn extract_mime_type(value: &str) -> Option<String> {
     let mut mime_type: Option<MimeType> = None;
     let mut essence: Option<String> = None;
     let mut charset: Option<String> = None;
@@ -433,12 +433,12 @@ fn parse_mime_type(input: &str) -> Option<MimeType> {
 
 // https://xhr.spec.whatwg.org/#the-overridemimetype(
 #[must_use]
-pub(crate) fn parse_serialized_mime_type(input: &str) -> String {
+pub fn parse_serialized_mime_type(input: &str) -> String {
     parse_mime_type(input).map_or_else(String::new, |mime| mime.serialize())
 }
 
 #[must_use]
-pub(crate) fn mime_type_parts(input: &str) -> Option<(String, String)> {
+pub fn mime_type_parts(input: &str) -> Option<(String, String)> {
     let mime = parse_mime_type(input)?;
     let boundary = mime
         .parameters

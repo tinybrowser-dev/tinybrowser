@@ -147,6 +147,11 @@ jobs:
         uses: mozilla-actions/sccache-action@v0.0.11
         with:
           version: "v0.18.0"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: tools/playwright/package-lock.json
       - name: Workspace gate
         env:
           SCCACHE_GHA_ENABLED: "true"
@@ -162,11 +167,6 @@ jobs:
           SCCACHE_GHA_ENABLED: "true"
           RUSTC_WRAPPER: "sccache"
         run: cargo check -p tinybrowser-wasm --target wasm32-wasip2
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: tools/playwright/package-lock.json
       - name: Playwright internal bridge
         env:
           SCCACHE_GHA_ENABLED: "true"

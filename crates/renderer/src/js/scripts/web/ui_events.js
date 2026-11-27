@@ -267,7 +267,7 @@ globalThis.KeyboardEvent = class KeyboardEvent extends UIEvent {
   }
   // https://www.w3.org/TR/DOM-Level-3-Events/#dom-keyboardevent-initkeyboardevent
   initKeyboardEvent(type, bubbles, cancelable, view, keyIdentifier, location,
-      modifiersList, repeat, locale) {
+      modifiersList, repeat, _locale) {
     if (host.__tbEventDispatching(this)) return;
     __tbEventConstructor.prototype.initEvent.call(this, type, bubbles, cancelable);
     const modifiers = modifiersList === undefined || modifiersList === null

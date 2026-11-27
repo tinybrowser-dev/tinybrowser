@@ -10,7 +10,7 @@ use crate::dom::tree::{html_namespace, qualified_name, svg_namespace};
 use crate::dom_string::DomString;
 
 #[derive(Default)]
-pub(crate) struct HtmlOutput(Vec<u16>);
+pub struct HtmlOutput(Vec<u16>);
 
 impl HtmlOutput {
     fn push_str(&mut self, text: &str) {
@@ -21,7 +21,8 @@ impl HtmlOutput {
         self.0.extend_from_slice(units);
     }
 
-    pub(crate) fn finish(self) -> DomString {
+    #[must_use]
+    pub fn finish(self) -> DomString {
         DomString::from_utf16(self.0)
     }
 }
@@ -248,7 +249,7 @@ fn serialize_html_node(
     }
 }
 
-pub(crate) fn serialize_html_children(doc: &BlitzDocument, parent: BlitzId) -> DomString {
+pub fn serialize_html_children(doc: &BlitzDocument, parent: BlitzId) -> DomString {
     let base = &doc.base;
     let mut output = HtmlOutput(Vec::new());
     if let Some(node) = base.get_node(parent) {
@@ -259,7 +260,7 @@ pub(crate) fn serialize_html_children(doc: &BlitzDocument, parent: BlitzId) -> D
     output.finish()
 }
 
-pub(crate) fn serialize_html_outer(
+pub fn serialize_html_outer(
     doc: &BlitzDocument,
     id: BlitzId,
     name: &QualName,
@@ -271,7 +272,8 @@ pub(crate) fn serialize_html_outer(
 }
 
 // https://html.spec.whatwg.org/multipage/parsing.html#serialising-html-fragments
-pub(crate) fn splice_before_close_tag(shell: DomString, children: &DomString) -> DomString {
+#[must_use]
+pub fn splice_before_close_tag(shell: DomString, children: &DomString) -> DomString {
     let units = shell.units();
     let Some(end) = units.iter().rposition(|unit| *unit == u16::from(b'<')) else {
         return shell;
@@ -309,7 +311,7 @@ fn push_escaped_xml_attribute(output: &mut HtmlOutput, value: &str) {
 }
 
 // https://w3c.github.io/DOM-Parsing/#xml-serialization
-pub(crate) fn serialize_xml_element(
+pub fn serialize_xml_element(
     doc: &BlitzDocument,
     id: BlitzId,
     name: &QualName,
@@ -351,7 +353,7 @@ pub(crate) fn serialize_xml_element(
     output.push_str(">");
 }
 
-pub(crate) fn serialize_xml_node(doc: &BlitzDocument, id: BlitzId, output: &mut HtmlOutput) {
+pub fn serialize_xml_node(doc: &BlitzDocument, id: BlitzId, output: &mut HtmlOutput) {
     let base = &doc.base;
     let Some(node) = base.get_node(id) else {
         return;
@@ -421,7 +423,7 @@ pub(crate) fn serialize_xml_node(doc: &BlitzDocument, id: BlitzId, output: &mut 
     }
 }
 
-pub(crate) fn serialize_xml_children(doc: &BlitzDocument, parent: BlitzId) -> DomString {
+pub fn serialize_xml_children(doc: &BlitzDocument, parent: BlitzId) -> DomString {
     let base = &doc.base;
     let mut output = HtmlOutput(Vec::new());
     if let Some(node) = base.get_node(parent) {

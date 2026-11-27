@@ -973,7 +973,7 @@ class FontFaceSet extends __tbFontEventTarget {
     return this.values();
   }
 
-  check(font, text) {
+  check(font, _text) {
     let families;
     try {
       families = __tbFontFamilies(font);
@@ -1000,7 +1000,7 @@ class FontFaceSet extends __tbFontEventTarget {
     return true;
   }
 
-  load(font, text) {
+  load(font, _text) {
     return new Promise((resolve, reject) => {
       let families;
       try {

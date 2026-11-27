@@ -1,15 +1,16 @@
 use blitz_dom::NodeData;
 use blitz_traits::node_id::NodeId as BlitzNodeId;
-pub(crate) use blitz_traits::node_id::NodeId as BlitzId;
+pub use blitz_traits::node_id::NodeId as BlitzId;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct NodeId {
+pub struct NodeId {
     pub document: u32,
     pub node: BlitzNodeId,
 }
 
 impl NodeId {
-    pub(crate) fn document_id(self) -> u32 {
+    #[must_use]
+    pub fn document_id(self) -> u32 {
         self.document
     }
 }
@@ -33,7 +34,7 @@ impl Ord for NodeId {
 }
 
 // https://dom.spec.whatwg.org/#concept-shadow-including-parent
-pub(crate) fn shadow_including_parent(
+pub fn shadow_including_parent(
     base: &blitz_dom::BaseDocument,
     id: BlitzNodeId,
 ) -> Option<BlitzNodeId> {
@@ -45,10 +46,7 @@ pub(crate) fn shadow_including_parent(
 }
 
 // https://dom.spec.whatwg.org/#concept-shadow-root
-pub(crate) fn shadow_root_host(
-    base: &blitz_dom::BaseDocument,
-    id: BlitzNodeId,
-) -> Option<BlitzNodeId> {
+pub fn shadow_root_host(base: &blitz_dom::BaseDocument, id: BlitzNodeId) -> Option<BlitzNodeId> {
     match &base.get_node(id)?.data {
         blitz_dom::NodeData::ShadowRoot { host, .. } => Some(*host),
         _ => None,
@@ -56,7 +54,7 @@ pub(crate) fn shadow_root_host(
 }
 
 // https://dom.spec.whatwg.org/#concept-shadow-including-parent
-pub(crate) fn shadow_including_ancestors(
+pub fn shadow_including_ancestors(
     base: &blitz_dom::BaseDocument,
     start: Option<BlitzNodeId>,
 ) -> impl Iterator<Item = &blitz_dom::Node> + '_ {
@@ -66,10 +64,7 @@ pub(crate) fn shadow_including_ancestors(
 }
 
 // https://dom.spec.whatwg.org/#concept-shadow-including-root
-pub(crate) fn shadow_including_root(
-    base: &blitz_dom::BaseDocument,
-    id: BlitzNodeId,
-) -> BlitzNodeId {
+pub fn shadow_including_root(base: &blitz_dom::BaseDocument, id: BlitzNodeId) -> BlitzNodeId {
     let mut root = id;
     while let Some(parent) = shadow_including_parent(base, root) {
         root = parent;
@@ -78,12 +73,12 @@ pub(crate) fn shadow_including_root(
 }
 
 // https://dom.spec.whatwg.org/#connected
-pub(crate) fn is_connected(base: &blitz_dom::BaseDocument, id: BlitzNodeId) -> bool {
+pub fn is_connected(base: &blitz_dom::BaseDocument, id: BlitzNodeId) -> bool {
     shadow_including_root(base, id) == base.root_node().id
 }
 
 // https://drafts.csswg.org/css-scoping-1/#flat-tree
-pub(crate) fn is_in_flat_tree(base: &blitz_dom::BaseDocument, id: BlitzNodeId) -> bool {
+pub fn is_in_flat_tree(base: &blitz_dom::BaseDocument, id: BlitzNodeId) -> bool {
     let mut current = base.get_node(id);
     while let Some(node) = current {
         let Some(parent) = node.parent else {
@@ -119,10 +114,7 @@ fn shadow_tree_has_slot(base: &blitz_dom::BaseDocument, root: BlitzNodeId) -> bo
     false
 }
 
-pub(crate) fn is_child_navigable_container(
-    base: &blitz_dom::BaseDocument,
-    id: BlitzNodeId,
-) -> bool {
+pub fn is_child_navigable_container(base: &blitz_dom::BaseDocument, id: BlitzNodeId) -> bool {
     base.get_node(id).is_some_and(|node| {
         let blitz_dom::NodeData::Element(element) = &node.data else {
             return false;
@@ -134,7 +126,7 @@ pub(crate) fn is_child_navigable_container(
 }
 
 // https://html.spec.whatwg.org/multipage/links.html#link-type-stylesheet
-pub(crate) fn is_stylesheet_link(base: &blitz_dom::BaseDocument, id: BlitzNodeId) -> bool {
+pub fn is_stylesheet_link(base: &blitz_dom::BaseDocument, id: BlitzNodeId) -> bool {
     is_html_element(base, id, "link")
         && attr(base, id, "rel").is_some_and(|rel| {
             rel.split_ascii_whitespace()
@@ -142,11 +134,7 @@ pub(crate) fn is_stylesheet_link(base: &blitz_dom::BaseDocument, id: BlitzNodeId
         })
 }
 
-pub(crate) fn child_ids(
-    base: &blitz_dom::BaseDocument,
-    document: u32,
-    id: BlitzNodeId,
-) -> Vec<NodeId> {
+pub fn child_ids(base: &blitz_dom::BaseDocument, document: u32, id: BlitzNodeId) -> Vec<NodeId> {
     base.get_node(id).map_or_else(Vec::new, |node| {
         node.children
             .iter()
@@ -173,11 +161,7 @@ fn attr_find(
 }
 
 // https://dom.spec.whatwg.org/#concept-element-attributes-get-by-name
-pub(crate) fn attr<'a>(
-    base: &'a blitz_dom::BaseDocument,
-    id: BlitzNodeId,
-    name: &str,
-) -> Option<&'a str> {
+pub fn attr<'a>(base: &'a blitz_dom::BaseDocument, id: BlitzNodeId, name: &str) -> Option<&'a str> {
     let local = markup5ever::LocalName::from(name);
     attr_find(base, id, |qualified| {
         qualified.local == local && qualified.ns == markup5ever::ns!()
@@ -185,7 +169,7 @@ pub(crate) fn attr<'a>(
 }
 
 // https://dom.spec.whatwg.org/#concept-element-attributes-get-by-name
-pub(crate) fn attr_by_qualified_name<'a>(
+pub fn attr_by_qualified_name<'a>(
     base: &'a blitz_dom::BaseDocument,
     id: BlitzNodeId,
     qualified: &str,
@@ -195,7 +179,8 @@ pub(crate) fn attr_by_qualified_name<'a>(
     })
 }
 
-pub(crate) fn is_handler_attribute_name(local: &str) -> bool {
+#[must_use]
+pub fn is_handler_attribute_name(local: &str) -> bool {
     local.strip_prefix("on").is_some_and(|typ| {
         !typ.is_empty()
             && typ
@@ -204,19 +189,23 @@ pub(crate) fn is_handler_attribute_name(local: &str) -> bool {
     })
 }
 
-pub(crate) fn html_namespace() -> markup5ever::Namespace {
+#[must_use]
+pub fn html_namespace() -> markup5ever::Namespace {
     markup5ever::ns!(html)
 }
 
-pub(crate) fn svg_namespace() -> markup5ever::Namespace {
+#[must_use]
+pub fn svg_namespace() -> markup5ever::Namespace {
     markup5ever::ns!(svg)
 }
 
-pub(crate) fn mathml_namespace() -> markup5ever::Namespace {
+#[must_use]
+pub fn mathml_namespace() -> markup5ever::Namespace {
     markup5ever::ns!(mathml)
 }
 
-pub(crate) fn is_html_tag(data: Option<&blitz_dom::NodeData>, local: &str) -> bool {
+#[must_use]
+pub fn is_html_tag(data: Option<&blitz_dom::NodeData>, local: &str) -> bool {
     match data {
         Some(blitz_dom::NodeData::Element(element)) => {
             element.name.ns == html_namespace() && element.name.local.as_str() == local
@@ -226,14 +215,12 @@ pub(crate) fn is_html_tag(data: Option<&blitz_dom::NodeData>, local: &str) -> bo
 }
 
 // https://html.spec.whatwg.org/multipage/scripting.html#the-template-element
-pub(crate) fn is_template_tag(name: &markup5ever::QualName) -> bool {
+#[must_use]
+pub fn is_template_tag(name: &markup5ever::QualName) -> bool {
     name.ns == html_namespace() && name.local.as_str() == "template"
 }
 
-pub(crate) fn template_contents(
-    base: &blitz_dom::BaseDocument,
-    id: BlitzNodeId,
-) -> Option<BlitzNodeId> {
+pub fn template_contents(base: &blitz_dom::BaseDocument, id: BlitzNodeId) -> Option<BlitzNodeId> {
     base.get_node(id)?
         .data
         .downcast_element()
@@ -241,11 +228,7 @@ pub(crate) fn template_contents(
         .and_then(|element| element.template_contents)
 }
 
-pub(crate) fn is_html_element(
-    base: &blitz_dom::BaseDocument,
-    id: BlitzNodeId,
-    local: &str,
-) -> bool {
+pub fn is_html_element(base: &blitz_dom::BaseDocument, id: BlitzNodeId, local: &str) -> bool {
     base.get_node(id)
         .is_some_and(|node| is_html_tag(Some(&node.data), local))
 }
@@ -253,7 +236,7 @@ pub(crate) fn is_html_element(
 // https://dom.spec.whatwg.org/#concept-id
 // https://dom.spec.whatwg.org/#dom-nonelementparentnode-getelementbyid
 // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#form-owner
-pub(crate) fn first_element_with_id(
+pub fn first_element_with_id(
     base: &blitz_dom::BaseDocument,
     document: u32,
     root: BlitzNodeId,
@@ -285,7 +268,7 @@ pub(crate) fn first_element_with_id(
 }
 
 // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#reset-the-form-owner
-pub(crate) fn form_owner_of(
+pub fn form_owner_of(
     base: &blitz_dom::BaseDocument,
     document: u32,
     node: BlitzId,
@@ -314,7 +297,8 @@ pub(crate) fn form_owner_of(
 }
 
 // https://dom.spec.whatwg.org/#concept-element-qualified-name
-pub(crate) fn qualified_name(name: &markup5ever::QualName) -> String {
+#[must_use]
+pub fn qualified_name(name: &markup5ever::QualName) -> String {
     match &name.prefix {
         Some(prefix) if !prefix.is_empty() => format!("{prefix}:{}", name.local),
         _ => name.local.to_string(),
@@ -322,7 +306,8 @@ pub(crate) fn qualified_name(name: &markup5ever::QualName) -> String {
 }
 
 // https://dom.spec.whatwg.org/#concept-element-html-uppercased-qualified-name
-pub(crate) fn element_node_name(name: &markup5ever::QualName, uppercase: bool) -> String {
+#[must_use]
+pub fn element_node_name(name: &markup5ever::QualName, uppercase: bool) -> String {
     let qualified = qualified_name(name);
     if uppercase && name.ns == html_namespace() {
         qualified.to_ascii_uppercase()
@@ -332,7 +317,8 @@ pub(crate) fn element_node_name(name: &markup5ever::QualName, uppercase: bool) -
 }
 
 // https://dom.spec.whatwg.org/#dom-node-nodetype
-pub(crate) fn node_type(data: Option<&NodeData>) -> Option<u16> {
+#[must_use]
+pub fn node_type(data: Option<&NodeData>) -> Option<u16> {
     match data {
         Some(NodeData::Element(_)) => Some(1),
         Some(NodeData::Text(_)) => Some(3),
@@ -348,7 +334,7 @@ pub(crate) fn node_type(data: Option<&NodeData>) -> Option<u16> {
 
 // https://dom.spec.whatwg.org/#dom-node-nodename
 // https://dom.spec.whatwg.org/#concept-element-html-uppercased-qualified-name
-pub(crate) fn node_name(base: &blitz_dom::BaseDocument, id: BlitzId, html: bool) -> Option<String> {
+pub fn node_name(base: &blitz_dom::BaseDocument, id: BlitzId, html: bool) -> Option<String> {
     let data = base.get_node(id).map(|node| &node.data);
     match data {
         Some(NodeData::Element(element)) => Some(element_node_name(&element.name, html)),
@@ -365,11 +351,7 @@ pub(crate) fn node_name(base: &blitz_dom::BaseDocument, id: BlitzId, html: bool)
     }
 }
 
-pub(crate) fn sibling(
-    base: &blitz_dom::BaseDocument,
-    id: BlitzId,
-    forward: bool,
-) -> Option<BlitzId> {
+pub fn sibling(base: &blitz_dom::BaseDocument, id: BlitzId, forward: bool) -> Option<BlitzId> {
     let node = base.get_node(id)?;
     let parent = node.parent?;
     let siblings = &base.get_node(parent)?.children;
@@ -383,12 +365,12 @@ pub(crate) fn sibling(
     }
 }
 
-pub(crate) fn is_element(base: &blitz_dom::BaseDocument, id: BlitzId) -> bool {
+pub fn is_element(base: &blitz_dom::BaseDocument, id: BlitzId) -> bool {
     base.get_node(id)
         .is_some_and(|node| matches!(node.data, NodeData::Element(_)))
 }
 
-pub(crate) fn root_of(base: &blitz_dom::BaseDocument, id: BlitzId) -> BlitzId {
+pub fn root_of(base: &blitz_dom::BaseDocument, id: BlitzId) -> BlitzId {
     let mut root = id;
     while let Some(parent) = base.get_node(root).and_then(|node| node.parent) {
         root = parent;
@@ -396,11 +378,7 @@ pub(crate) fn root_of(base: &blitz_dom::BaseDocument, id: BlitzId) -> BlitzId {
     root
 }
 
-pub(crate) fn ancestor_chain(
-    base: &blitz_dom::BaseDocument,
-    document: u32,
-    id: BlitzId,
-) -> Vec<NodeId> {
+pub fn ancestor_chain(base: &blitz_dom::BaseDocument, document: u32, id: BlitzId) -> Vec<NodeId> {
     let mut chain = vec![NodeId { document, node: id }];
     let mut cursor = id;
     while let Some(parent) = base.get_node(cursor).and_then(|node| node.parent) {
@@ -414,7 +392,7 @@ pub(crate) fn ancestor_chain(
 }
 
 // https://dom.spec.whatwg.org/#concept-tree-order
-pub(crate) fn tree_order(
+pub fn tree_order(
     base: &blitz_dom::BaseDocument,
     document: u32,
     a: BlitzId,

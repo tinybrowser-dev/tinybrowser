@@ -1,7 +1,7 @@
 use markup5ever::QualName;
 
 #[must_use]
-pub(crate) fn qualified_name_eq(name: &QualName, query: &str) -> bool {
+pub fn qualified_name_eq(name: &QualName, query: &str) -> bool {
     match name.prefix.as_ref() {
         Some(prefix) if !prefix.is_empty() => {
             let prefix = prefix.as_str();

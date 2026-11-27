@@ -309,7 +309,7 @@ globalThis.XMLHttpRequest = class XMLHttpRequest extends EventTarget {
     }
     // https://fetch.spec.whatwg.org/#scheme-fetch
     if (data.url.indexOf('blob:') === 0) {
-      const generation = data.generation;
+      const blobGeneration = data.generation;
       const entry = data.method === 'GET' ? __tbLookupObjectUrl(data.url) : null;
       setTimeout(() => {
         if (entry === null) {
@@ -319,7 +319,7 @@ globalThis.XMLHttpRequest = class XMLHttpRequest extends EventTarget {
         const bytes = typeof entry.contents === 'string'
           ? __tbUtf8Encode(entry.contents)
           : entry.contents;
-        __tbXhrFinish(this, data, generation, 200, bytes, data.url,
+        __tbXhrFinish(this, data, blobGeneration, 200, bytes, data.url,
           [['content-type', entry.type]], false);
       }, 0);
       __tbXhrTimeout(this, data);
@@ -363,7 +363,7 @@ globalThis.XMLHttpRequest = class XMLHttpRequest extends EventTarget {
     const data = __tbBrand(this, __tbXhrData);
     if (data.state < 2) return '';
     return __tbArray.map(__tbHeadersList(data.responseHeaders), entry => [entry[0], entry[1]])
-      .sort(([left], [right]) => left.localeCompare(right))
+      .toSorted(([left], [right]) => left.localeCompare(right))
       .map(([name, value]) => name + ': ' + value + '\r\n').join('');
   }
   // https://xhr.spec.whatwg.org/#the-overridemimetype(

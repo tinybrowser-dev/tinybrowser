@@ -5,10 +5,11 @@ use crate::Parsed;
 
 static MIME_ESSENCES: Mutex<Option<HashSet<&'static str>>> = Mutex::new(None);
 
-pub(crate) const PARSERERROR_NS: &str = "http://www.mozilla.org/newlayout/xml/parsererror.xml";
+pub const PARSERERROR_NS: &str = "http://www.mozilla.org/newlayout/xml/parsererror.xml";
 
 // https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-domparser-parsefromstring
-pub(crate) fn parse_document(
+#[must_use]
+pub fn parse_document(
     input: &str,
     content_type: &'static str,
     base_url: String,
@@ -29,7 +30,8 @@ pub(crate) fn parse_document(
 }
 
 // https://dom.spec.whatwg.org/#concept-document-quirks
-pub(crate) fn parse_navigated(
+#[must_use]
+pub fn parse_navigated(
     input: &str,
     content_type: &'static str,
     config: blitz_dom::DocumentConfig,
@@ -107,7 +109,8 @@ fn parser_error_document(
 }
 
 // https://mimesniff.spec.whatwg.org/#xml-mime-type
-pub(crate) fn navigated_content_type(header: &str) -> Option<&'static str> {
+#[must_use]
+pub fn navigated_content_type(header: &str) -> Option<&'static str> {
     let essence = header.split(';').next()?.trim().to_ascii_lowercase();
     let (kind, subtype) = essence.split_once('/')?;
     if kind.is_empty() || !(subtype == "xml" || subtype.ends_with("+xml")) {
@@ -123,7 +126,8 @@ pub(crate) fn navigated_content_type(header: &str) -> Option<&'static str> {
 
 // https://html.spec.whatwg.org/multipage/nav-history-apis.html#concept-document-content-type
 // https://html.spec.whatwg.org/multipage/dom.html#dom-document-contenttype
-pub(crate) fn document_content_type(header: &str) -> &'static str {
+#[must_use]
+pub fn document_content_type(header: &str) -> &'static str {
     if let Some(xml) = navigated_content_type(header) {
         return xml;
     }

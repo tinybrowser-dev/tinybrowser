@@ -13,15 +13,15 @@
   function slots(name) {
     if (name !== undefined && named[name] !== undefined) return named[name];
     const map = new WeakMapConstructor();
-    const slots = create(null);
-    slots.get = key => apply(get, map, [key]);
-    slots.set = (key, value) => { apply(set, map, [key, value]); };
-    slots.has = key => apply(has, map, [key]);
-    slots.delete = key => apply(remove, map, [key]);
-    slots.add = key => { apply(set, map, [key, true]); };
-    freeze(slots);
-    if (name !== undefined) named[name] = slots;
-    return slots;
+    const table = create(null);
+    table.get = key => apply(get, map, [key]);
+    table.set = (key, value) => { apply(set, map, [key, value]); };
+    table.has = key => apply(has, map, [key]);
+    table.delete = key => apply(remove, map, [key]);
+    table.add = key => { apply(set, map, [key, true]); };
+    freeze(table);
+    if (name !== undefined) named[name] = table;
+    return table;
   }
   slots.bytes = source => new Uint8ArrayConstructor(source);
   return freeze(slots);

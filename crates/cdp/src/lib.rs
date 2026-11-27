@@ -378,11 +378,11 @@ enum RuntimeEntry {
 impl RuntimeEntry {
     fn decode(
         self,
-        params: &Value,
+        params: params::RawParams<'_>,
     ) -> Result<(RuntimeSource, params::RuntimeOptions), DispatchError> {
         match self {
             Self::Evaluate => {
-                let request: params::RuntimeEvaluate = params::parse(params)?;
+                let request: params::RuntimeEvaluate = params.parse()?;
                 Ok((
                     RuntimeSource::Evaluate {
                         expression: request.expression,
@@ -391,7 +391,7 @@ impl RuntimeEntry {
                 ))
             }
             Self::CallFunctionOn => {
-                let request: params::RuntimeCallFunctionOn = params::parse(params)?;
+                let request: params::RuntimeCallFunctionOn = params.parse()?;
                 Ok((
                     RuntimeSource::CallFunctionOn {
                         declaration: request.function_declaration,
@@ -953,8 +953,11 @@ impl Conn {
     }
 
     // https://chromedevtools.github.io/devtools-protocol/tot/Target/#method-getTargetInfo
-    async fn target_info_for(&mut self, params: &Value) -> Result<Value, DispatchError> {
-        let params: params::GetTargetInfo = params::parse(params)?;
+    async fn target_info_for(
+        &mut self,
+        params: params::RawParams<'_>,
+    ) -> Result<Value, DispatchError> {
+        let params: params::GetTargetInfo = params.parse()?;
         match params.target_id {
             Some(raw) => {
                 let id = raw
@@ -979,10 +982,10 @@ impl Conn {
 
     async fn set_auto_attach(
         &mut self,
-        params: &Value,
+        params: params::RawParams<'_>,
         session: Option<&str>,
     ) -> Result<Value, DispatchError> {
-        let params: params::SetAutoAttach = params::parse(params)?;
+        let params: params::SetAutoAttach = params.parse()?;
         let auto_attach = params.auto_attach;
         self.auto_attach = auto_attach;
         self.auto_attach_session = session.map(str::to_owned);
@@ -1004,10 +1007,10 @@ impl Conn {
     // https://chromedevtools.github.io/devtools-protocol/tot/Target/#method-setDiscoverTargets
     async fn set_discover_targets(
         &mut self,
-        params: &Value,
+        params: params::RawParams<'_>,
         session: Option<&str>,
     ) -> Result<Value, DispatchError> {
-        let params: params::SetDiscoverTargets = params::parse(params)?;
+        let params: params::SetDiscoverTargets = params.parse()?;
         self.discover_targets = params.discover;
         self.discover_targets_session = if params.discover {
             session.map(str::to_owned)
@@ -1077,11 +1080,7 @@ impl Conn {
                 deferred: false,
             };
         };
-        let empty = json!({});
-        let params = parsed
-            .get("params")
-            .filter(|value| !value.is_null())
-            .unwrap_or(&empty);
+        let params = params::RawParams::from_request(&parsed);
         let session = parsed.get("sessionId").and_then(Value::as_str);
         match self.dispatch(method, params, &id, session).await {
             Ok(DispatchResult::Immediate(result)) => {
@@ -1119,7 +1118,7 @@ impl Conn {
     async fn dispatch(
         &mut self,
         method: &str,
-        params: &Value,
+        params: params::RawParams<'_>,
         request_id: &Value,
         session: Option<&str>,
     ) -> Result<DispatchResult, DispatchError> {
@@ -1145,7 +1144,7 @@ impl Conn {
     async fn dispatch_handler(
         &mut self,
         handler: Handler,
-        params: &Value,
+        params: params::RawParams<'_>,
         target: &Target,
         request_id: &Value,
         session: Option<&str>,
@@ -1168,7 +1167,7 @@ impl Conn {
                 Ok(DispatchResult::Immediate(json!({})))
             }
             Handler::SetCacheDisabled => {
-                let params: params::SetCacheDisabled = params::parse(params)?;
+                let params: params::SetCacheDisabled = params.parse()?;
                 self.browser
                     .set_cache_disabled_in(&target_uc, params.cache_disabled)
                     .await
@@ -1218,12 +1217,12 @@ impl Conn {
     async fn dispatch_storage_cookies(
         &self,
         op: StorageCookieOp,
-        params: &Value,
+        params: params::RawParams<'_>,
         fallback: &UserContextId,
     ) -> Result<Value, DispatchError> {
         match op {
             StorageCookieOp::Get => {
-                let params: params::StorageBrowserContext = params::parse(params)?;
+                let params: params::StorageBrowserContext = params.parse()?;
                 let uc = self
                     .resolve_user_context(params.browser_context_id.as_deref(), fallback)
                     .await?;
@@ -1236,7 +1235,7 @@ impl Conn {
                 Ok(json!({ "cookies": cookies }))
             }
             StorageCookieOp::Set => {
-                let params: params::SetCookies = params::parse(params)?;
+                let params: params::SetCookies = params.parse()?;
                 let uc = self
                     .resolve_user_context(params.browser_context_id.as_deref(), fallback)
                     .await?;
@@ -1244,7 +1243,7 @@ impl Conn {
                 Ok(json!({}))
             }
             StorageCookieOp::Clear => {
-                let params: params::StorageBrowserContext = params::parse(params)?;
+                let params: params::StorageBrowserContext = params.parse()?;
                 let uc = self
                     .resolve_user_context(params.browser_context_id.as_deref(), fallback)
                     .await?;
@@ -1260,7 +1259,7 @@ impl Conn {
     async fn dispatch_page(
         &mut self,
         handler: PageHandler,
-        params: &Value,
+        params: params::RawParams<'_>,
         tab: &TabHandle,
         request_id: &Value,
         session: Option<&str>,
@@ -1277,7 +1276,7 @@ impl Conn {
                     .await
             }
             PageHandler::RuntimeRunScript => {
-                let req: params::RunScript = params::parse(params)?;
+                let req: params::RunScript = params.parse()?;
                 let Some((owner, expression)) = self.compiled_scripts.get(&req.script_id) else {
                     return Err(DispatchError::Failed("unknown scriptId".to_owned()));
                 };
@@ -1305,7 +1304,7 @@ impl Conn {
     async fn dispatch_page_sync(
         &mut self,
         handler: PageHandler,
-        params: &Value,
+        params: params::RawParams<'_>,
         tab: &TabHandle,
         session: Option<&str>,
     ) -> Result<Value, DispatchError> {
@@ -1361,7 +1360,7 @@ impl Conn {
             PageHandler::NetworkSetCookie => self.network_set_cookie(tab, params).await,
             PageHandler::NetworkSetCookies => self.network_set_cookies(tab, params).await,
             PageHandler::NetworkDeleteCookies => {
-                let params: params::DeleteCookies = params::parse(params)?;
+                let params: params::DeleteCookies = params.parse()?;
                 delete_cdp_cookies(&self.browser, tab.user_context(), &params).await?;
                 Ok(json!({}))
             }
@@ -1378,7 +1377,7 @@ impl Conn {
             PageHandler::RuntimeCompileScript => self.runtime_compile_script(tab, params).await,
             PageHandler::CreateIsolatedWorld => self.create_isolated_world(params, tab, session),
             PageHandler::SetLifecycleEventsEnabled => {
-                let params: params::SetLifecycleEventsEnabled = params::parse(params)?;
+                let params: params::SetLifecycleEventsEnabled = params.parse()?;
                 self.lifecycle_events = params.enabled;
                 Ok(json!({}))
             }
@@ -1393,8 +1392,9 @@ impl Conn {
             PageHandler::TracingEnd => Ok(self.tracing_end(session)),
             PageHandler::Script(method) => {
                 let world = params
-                    .get("executionContextId")
-                    .and_then(Value::as_u64)
+                    .parse::<params::ExecutionContext>()
+                    .ok()
+                    .and_then(|ctx| ctx.execution_context_id)
                     .and_then(|id| self.isolated_contexts.get(&id))
                     .filter(|(owner, _)| *owner == tab.id())
                     .map(|(_, name)| name.clone());
@@ -1435,9 +1435,9 @@ impl Conn {
     fn network_set_blocked_urls(
         &mut self,
         tab: &TabHandle,
-        params: &Value,
+        params: params::RawParams<'_>,
     ) -> Result<Value, DispatchError> {
-        let params: params::SetBlockedUrls = params::parse(params)?;
+        let params: params::SetBlockedUrls = params.parse()?;
         if params.urls.is_empty() {
             self.blocked_url_tabs.remove(&tab.id());
         } else {
@@ -1452,9 +1452,9 @@ impl Conn {
     fn handle_javascript_dialog(
         &self,
         tab: &TabHandle,
-        params: &Value,
+        params: params::RawParams<'_>,
     ) -> Result<Value, DispatchError> {
-        let params: params::HandleJavaScriptDialog = params::parse(params)?;
+        let params: params::HandleJavaScriptDialog = params.parse()?;
         if !self
             .browser
             .prompt_broker()
@@ -1468,9 +1468,9 @@ impl Conn {
     async fn network_get_cookies(
         &self,
         tab: &TabHandle,
-        params: &Value,
+        params: params::RawParams<'_>,
     ) -> Result<Value, DispatchError> {
-        let params: params::GetCookies = params::parse(params)?;
+        let params: params::GetCookies = params.parse()?;
         let urls: Vec<String> = match params.urls {
             Some(list) => list,
             None => vec![tab.document_url().await.unwrap_or_default()],
@@ -1510,9 +1510,9 @@ impl Conn {
     async fn network_set_cookie(
         &self,
         tab: &TabHandle,
-        params: &Value,
+        params: params::RawParams<'_>,
     ) -> Result<Value, DispatchError> {
-        let param: params::CookieParam = params::parse(params)?;
+        let param: params::CookieParam = params.parse()?;
         let current_url = tab.document_url().await.ok();
         let success = set_cdp_cookies(
             &self.browser,
@@ -1527,9 +1527,9 @@ impl Conn {
     async fn network_set_cookies(
         &self,
         tab: &TabHandle,
-        params: &Value,
+        params: params::RawParams<'_>,
     ) -> Result<Value, DispatchError> {
-        let params: params::SetCookies = params::parse(params)?;
+        let params: params::SetCookies = params.parse()?;
         let current_url = tab.document_url().await.ok();
         set_cdp_cookies(
             &self.browser,
@@ -1599,11 +1599,11 @@ impl Conn {
 
     fn create_isolated_world(
         &mut self,
-        params: &Value,
+        params: params::RawParams<'_>,
         tab: &TabHandle,
         session: Option<&str>,
     ) -> Result<Value, DispatchError> {
-        let params: params::CreateIsolatedWorld = params::parse(params)?;
+        let params: params::CreateIsolatedWorld = params.parse()?;
         let context_id = self.next_context;
         self.next_context = self.next_context.saturating_add(1);
         let frame_id = params.frame_id;
@@ -1637,10 +1637,10 @@ impl Conn {
     // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-navigateToHistoryEntry
     async fn navigate_to_history_entry(
         &mut self,
-        params: &Value,
+        params: params::RawParams<'_>,
         tab: &TabHandle,
     ) -> Result<Value, DispatchError> {
-        let params: params::NavigateToHistoryEntry = params::parse(params)?;
+        let params: params::NavigateToHistoryEntry = params.parse()?;
         tab.traverse_to_entry(browser::EntryId::new(params.entry_id))
             .await
             .map_err(|error| DispatchError::Failed(error.to_string()))?;
@@ -1650,7 +1650,7 @@ impl Conn {
     async fn dispatch_browser(
         &mut self,
         handler: BrowserHandler,
-        params: &Value,
+        params: params::RawParams<'_>,
         session: Option<&str>,
     ) -> Result<Value, DispatchError> {
         match handler {
@@ -1703,7 +1703,7 @@ impl Conn {
                 Ok(json!({ "browserContextIds": ids }))
             }
             BrowserHandler::AttachToTarget => {
-                let params: params::AttachToTarget = params::parse(params)?;
+                let params: params::AttachToTarget = params.parse()?;
                 let id = target_id(&params.target_id)?;
                 if params.flatten != Some(true) {
                     return Err(DispatchError::Failed(
@@ -1721,7 +1721,7 @@ impl Conn {
                 Ok(json!({ "sessionId": self.mint(Target::Browser) }))
             }
             BrowserHandler::DetachFromTarget => {
-                let params: params::DetachFromTarget = params::parse(params)?;
+                let params: params::DetachFromTarget = params.parse()?;
                 if let Some(session) = params.session_id {
                     self.sessions.remove(&session);
                     self.unsubscribe_session(&session);
@@ -1733,10 +1733,10 @@ impl Conn {
 
     async fn create_target(
         &mut self,
-        params: &Value,
+        params: params::RawParams<'_>,
         session: Option<&str>,
     ) -> Result<Value, DispatchError> {
-        let params: params::CreateTarget = params::parse(params)?;
+        let params: params::CreateTarget = params.parse()?;
         let uc = self
             .resolve_user_context(
                 params.browser_context_id.as_deref(),
@@ -1770,10 +1770,10 @@ impl Conn {
 
     async fn dispose_browser_context(
         &mut self,
-        params: &Value,
+        params: params::RawParams<'_>,
         session: Option<&str>,
     ) -> Result<Value, DispatchError> {
-        let params: params::DisposeBrowserContext = params::parse(params)?;
+        let params: params::DisposeBrowserContext = params.parse()?;
         let Some(uc) = user_context_from_cdp(&params.browser_context_id) else {
             return Err(DispatchError::Failed(format!(
                 "unknown browser context: {}",
@@ -1798,10 +1798,10 @@ impl Conn {
 
     async fn close_target(
         &mut self,
-        params: &Value,
+        params: params::RawParams<'_>,
         session: Option<&str>,
     ) -> Result<Value, DispatchError> {
-        let params: params::CloseTarget = params::parse(params)?;
+        let params: params::CloseTarget = params.parse()?;
         let id = target_id(&params.target_id)?;
         self.close_tab_id(id, session).await?;
         Ok(json!({ "success": true }))
@@ -1894,12 +1894,12 @@ impl Conn {
 
     async fn navigate_tab(
         &mut self,
-        params: &Value,
+        params: params::RawParams<'_>,
         tab: &TabHandle,
         request_id: &Value,
         session: Option<&str>,
     ) -> Result<DispatchResult, DispatchError> {
-        let params: params::Navigate = params::parse(params)?;
+        let params: params::Navigate = params.parse()?;
         let url = if params.url.is_empty() {
             "about:blank"
         } else {
@@ -1946,10 +1946,10 @@ impl Conn {
 
     fn set_default_background_color_override(
         &mut self,
-        params: &Value,
+        params: params::RawParams<'_>,
         tab: &TabHandle,
     ) -> Result<Value, DispatchError> {
-        let params: params::DefaultBackgroundColorOverride = params::parse(params)?;
+        let params: params::DefaultBackgroundColorOverride = params.parse()?;
         let omit = params
             .color
             .and_then(|color| color.a)
@@ -1962,8 +1962,12 @@ impl Conn {
         Ok(json!({}))
     }
 
-    fn get_response_body(&self, tab: &TabHandle, params: &Value) -> Result<Value, DispatchError> {
-        let params: params::GetResponseBody = params::parse(params)?;
+    fn get_response_body(
+        &self,
+        tab: &TabHandle,
+        params: params::RawParams<'_>,
+    ) -> Result<Value, DispatchError> {
+        let params: params::GetResponseBody = params.parse()?;
         if let Some(raw_num) = params.request_id.strip_prefix("net-") {
             if let Ok(num) = raw_num.parse::<u64>()
                 && let Some((owner, bytes)) = self
@@ -2030,8 +2034,12 @@ impl Conn {
     }
 
     // https://chromedevtools.github.io/devtools-protocol/tot/Fetch/#method-enable
-    fn fetch_enable(&mut self, tab: &TabHandle, params: &Value) -> Result<Value, DispatchError> {
-        let params: params::FetchEnable = params::parse(params)?;
+    fn fetch_enable(
+        &mut self,
+        tab: &TabHandle,
+        params: params::RawParams<'_>,
+    ) -> Result<Value, DispatchError> {
+        let params: params::FetchEnable = params.parse()?;
         self.clear_fetch_intercepts(tab.id());
         if self.network_rx.is_none() {
             self.network_rx = Some(self.browser.network_broker().subscribe());
@@ -2074,8 +2082,11 @@ impl Conn {
     }
 
     // https://chromedevtools.github.io/devtools-protocol/tot/Fetch/#method-continueRequest
-    fn fetch_continue_request(&self, params: &Value) -> Result<Value, DispatchError> {
-        let params: params::FetchContinueRequest = params::parse(params)?;
+    fn fetch_continue_request(
+        &self,
+        params: params::RawParams<'_>,
+    ) -> Result<Value, DispatchError> {
+        let params: params::FetchContinueRequest = params.parse()?;
         let req_id = Self::parse_fetch_request_id(&params.request_id)?;
         let headers = params
             .headers
@@ -2104,8 +2115,11 @@ impl Conn {
     }
 
     // https://chromedevtools.github.io/devtools-protocol/tot/Fetch/#method-continueResponse
-    fn fetch_continue_response(&self, params: &Value) -> Result<Value, DispatchError> {
-        let params: params::FetchContinueResponse = params::parse(params)?;
+    fn fetch_continue_response(
+        &self,
+        params: params::RawParams<'_>,
+    ) -> Result<Value, DispatchError> {
+        let params: params::FetchContinueResponse = params.parse()?;
         let req_id = Self::parse_fetch_request_id(&params.request_id)?;
         let headers = params
             .response_headers
@@ -2125,8 +2139,8 @@ impl Conn {
     }
 
     // https://chromedevtools.github.io/devtools-protocol/tot/Fetch/#method-fulfillRequest
-    fn fetch_fulfill_request(&self, params: &Value) -> Result<Value, DispatchError> {
-        let params: params::FetchFulfillRequest = params::parse(params)?;
+    fn fetch_fulfill_request(&self, params: params::RawParams<'_>) -> Result<Value, DispatchError> {
+        let params: params::FetchFulfillRequest = params.parse()?;
         let req_id = Self::parse_fetch_request_id(&params.request_id)?;
         let headers = params
             .response_headers
@@ -2157,8 +2171,8 @@ impl Conn {
     }
 
     // https://chromedevtools.github.io/devtools-protocol/tot/Fetch/#method-failRequest
-    fn fetch_fail_request(&self, params: &Value) -> Result<Value, DispatchError> {
-        let params: params::FetchFailRequest = params::parse(params)?;
+    fn fetch_fail_request(&self, params: params::RawParams<'_>) -> Result<Value, DispatchError> {
+        let params: params::FetchFailRequest = params.parse()?;
         let req_id = Self::parse_fetch_request_id(&params.request_id)?;
         self.browser
             .network_broker()
@@ -2171,10 +2185,10 @@ impl Conn {
     async fn runtime_compile_script(
         &mut self,
         tab: &TabHandle,
-        params: &Value,
+        params: params::RawParams<'_>,
     ) -> Result<Value, DispatchError> {
         const MAX_COMPILED_SCRIPTS: usize = 256;
-        let params: params::CompileScript = params::parse(params)?;
+        let params: params::CompileScript = params.parse()?;
         let _ = params.execution_context_id;
         let source_url = params.source_url.unwrap_or_default();
         let check = format!(
@@ -2923,8 +2937,11 @@ fn runtime_source_expression(source: RuntimeSource) -> RuntimeScript {
     }
 }
 
-async fn set_extra_http_headers(tab: &TabHandle, params: &Value) -> Result<Value, DispatchError> {
-    let params: params::SetExtraHttpHeaders = params::parse(params)?;
+async fn set_extra_http_headers(
+    tab: &TabHandle,
+    params: params::RawParams<'_>,
+) -> Result<Value, DispatchError> {
+    let params: params::SetExtraHttpHeaders = params.parse()?;
     let mut headers = Vec::with_capacity(params.headers.len());
     for (name, value) in params.headers {
         let Some(text) = value.as_str() else {
@@ -3012,8 +3029,11 @@ fn push_frame_detached(
     );
 }
 
-async fn set_document_content(tab: &TabHandle, params: &Value) -> Result<Value, DispatchError> {
-    let params: params::SetDocumentContent = params::parse(params)?;
+async fn set_document_content(
+    tab: &TabHandle,
+    params: params::RawParams<'_>,
+) -> Result<Value, DispatchError> {
+    let params: params::SetDocumentContent = params.parse()?;
     let frame = requested_frame(tab, Some(params.frame_id.as_str()))?;
     if frame == FrameId::MAIN {
         tab.load_html(&params.html)

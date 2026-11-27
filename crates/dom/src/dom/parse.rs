@@ -1,10 +1,11 @@
 // https://infra.spec.whatwg.org/#ascii-whitespace
-pub(crate) fn is_html_whitespace(char: Option<&char>) -> bool {
+#[must_use]
+pub fn is_html_whitespace(char: Option<&char>) -> bool {
     matches!(char, Some(' ' | '\t' | '\n' | '\u{c}' | '\r'))
 }
 
 // https://infra.spec.whatwg.org/#rules-for-parsing-integers
-pub(crate) fn parse_integer(value: &str) -> Option<i32> {
+pub fn parse_integer(value: &str) -> Option<i32> {
     let mut chars = value.chars().peekable();
     while is_html_whitespace(chars.peek()) {
         chars.next();
@@ -33,7 +34,8 @@ pub(crate) fn parse_integer(value: &str) -> Option<i32> {
 }
 
 // https://infra.spec.whatwg.org/#rules-for-parsing-non-negative-integers
-pub(crate) fn parse_non_negative_integer(value: &str) -> Option<u32> {
+#[must_use]
+pub fn parse_non_negative_integer(value: &str) -> Option<u32> {
     match parse_integer(value)? {
         0 => Some(0),
         parsed @ 1..=2_147_483_647 => u32::try_from(parsed).ok(),
@@ -42,7 +44,8 @@ pub(crate) fn parse_non_negative_integer(value: &str) -> Option<u32> {
 }
 
 // https://infra.spec.whatwg.org/#rules-for-parsing-floating-point-number-values
-pub(crate) fn parse_double(value: &str) -> Option<f64> {
+#[must_use]
+pub fn parse_double(value: &str) -> Option<f64> {
     let bytes = value.as_bytes();
     let mut pos = 0;
     while pos < bytes.len() && matches!(bytes[pos], b' ' | b'\t' | b'\n' | b'\x0c' | b'\r') {

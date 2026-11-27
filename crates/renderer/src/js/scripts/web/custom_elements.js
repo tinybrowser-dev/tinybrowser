@@ -20,7 +20,6 @@
   const mapHas = Map.prototype.has;
   const arrayIncludes = Array.prototype.includes;
   const createObject = Object.create;
-  const arrayFrom = Array.from;
   const observe = MutationObserver.prototype.observe;
   const callbackNames = ['connectedCallback', 'disconnectedCallback', 'connectedMoveCallback', 'adoptedCallback', 'attributeChangedCallback'];
   const formCallbackNames = ['formAssociatedCallback', 'formResetCallback', 'formDisabledCallback', 'formStateRestoreCallback'];
@@ -113,7 +112,7 @@
   function validName(name) {
     if (typeof name !== 'string' || !__tbApply(__tbStringIncludes, name, ['-'])
         || name !== __tbApply(__tbStringToLowerCase, name, [])
-        || !__tbApply(__tbRegExpTest, /^[a-z][.0-9_a-z\-]*$/, [name])) {
+        || !__tbApply(__tbRegExpTest, /^[a-z][.0-9_a-z-]*$/, [name])) {
       return false;
     }
     for (let index = 0; index < reservedNames.length; index++) {
@@ -418,14 +417,14 @@
       const record = records[index];
       if (record.type === 'childList') {
         const removed = record.removedNodes;
-        for (let index = 0, length = nativeApply(listLengthGetter, removed, []); index < length; ++index) {
-          const node = nativeApply(listItem, removed, [index]);
+        for (let childIndex = 0, length = nativeApply(listLengthGetter, removed, []); childIndex < length; ++childIndex) {
+          const node = nativeApply(listItem, removed, [childIndex]);
           if (atomicMoves.has(node)) continue;
           notifyDisconnected(node);
         }
         const added = record.addedNodes;
-        for (let index = 0, length = nativeApply(listLengthGetter, added, []); index < length; ++index) {
-          const node = nativeApply(listItem, added, [index]);
+        for (let childIndex = 0, length = nativeApply(listLengthGetter, added, []); childIndex < length; ++childIndex) {
+          const node = nativeApply(listItem, added, [childIndex]);
           if (atomicMoves.has(node)) {
             atomicMoves.delete(node);
             continue;

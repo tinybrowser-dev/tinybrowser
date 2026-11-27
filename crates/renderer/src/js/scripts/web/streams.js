@@ -66,7 +66,7 @@ const __tbStreamWake = data => {
 const __tbWritableData = host.slots('tinybrowser.writable.data');
 const __tbWritableBrand = value => __tbBrand(value, __tbWritableData);
 globalThis.ReadableStream = class ReadableStream {
-  constructor(source, strategy) {
+  constructor(source, _strategy) {
     const sourceObject = source === undefined ? {} : Object(source);
     // https://streams.spec.whatwg.org/#readable-stream-initialize
     const own = key => __tbGetOwnPropertyDescriptor(sourceObject, key) !== undefined;
@@ -321,7 +321,7 @@ const __tbDrainClosedStream = stream => {
   return chunks;
 };
 globalThis.WritableStream = class WritableStream {
-  constructor(sink, strategy) {
+  constructor(sink, _strategy) {
     const sinkObject = sink === undefined ? {} : Object(sink);
     let resolveClosed;
     let rejectClosed;

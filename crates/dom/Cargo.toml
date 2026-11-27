@@ -1,0 +1,38 @@
+[package]
+name = "dom"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+base64 = "0.23"
+blitz-dom = { version = "=0.3.0-beta.5", default-features = false, features = [
+    "svg",
+    "woff",
+    "accessibility",
+    "file-input",
+    "custom-widget",
+    "text-transform-icu",
+    "floats",
+    "writing-mode",
+] }
+blitz-html = "=0.3.0-beta.5"
+blitz-traits = "=0.3.0-beta.5"
+encoding_rs = "0.8"
+enumerated = { workspace = true }
+markup5ever = { workspace = true }
+net = { workspace = true }
+parley = { version = "0.13", default-features = false, features = ["libm"] }
+percent-encoding = "2"
+secure-context = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.11"
+style = { package = "stylo", version = "0.24.0" }
+style_traits = { package = "stylo_traits", version = "0.24.0" }
+url = { version = "2", features = ["serde"] }
+webstorage = { workspace = true }
+xml5ever = { workspace = true }

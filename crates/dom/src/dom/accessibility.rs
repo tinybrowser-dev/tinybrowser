@@ -12,10 +12,11 @@ use crate::protocol::{AxNode, AxProperty, AxPropertyValue};
 
 const MAX_AX_NODES: usize = 16_384;
 
-pub(crate) fn build_ax_tree(
+#[must_use]
+pub fn build_ax_tree<S: std::hash::BuildHasher>(
     base: &BaseDocument,
     root: NodeId,
-    ids: &HashMap<NodeId, u64>,
+    ids: &HashMap<NodeId, u64, S>,
     focused: Option<NodeId>,
 ) -> Vec<AxNode> {
     let mut builder = AxBuilder {
@@ -31,17 +32,17 @@ pub(crate) fn build_ax_tree(
     builder.nodes
 }
 
-struct AxBuilder<'a> {
+struct AxBuilder<'a, S> {
     base: &'a BaseDocument,
     document: u32,
-    ids: &'a HashMap<NodeId, u64>,
+    ids: &'a HashMap<NodeId, u64, S>,
     focused: Option<NodeId>,
     id_map: HashMap<String, BlitzId>,
     label_map: HashMap<String, Vec<BlitzId>>,
     nodes: Vec<AxNode>,
 }
 
-impl AxBuilder<'_> {
+impl<S: std::hash::BuildHasher> AxBuilder<'_, S> {
     fn visit(&mut self, node: BlitzId, parent_ax: Option<&str>) -> Option<String> {
         if self.nodes.len() >= MAX_AX_NODES {
             return None;

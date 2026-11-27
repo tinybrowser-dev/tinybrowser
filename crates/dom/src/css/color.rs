@@ -7,11 +7,11 @@ use style::values::Parser;
 use style::values::specified::Color as SpecifiedColor;
 use style_traits::ToCss;
 
-pub(crate) struct ParsedColor {
-    pub(crate) absolute: AbsoluteColor,
-    pub(crate) bytes: [u8; 4],
-    pub(crate) value: [f32; 4],
-    pub(crate) serialized: Option<String>,
+pub struct ParsedColor {
+    pub absolute: AbsoluteColor,
+    pub bytes: [u8; 4],
+    pub value: [f32; 4],
+    pub serialized: Option<String>,
 }
 
 // https://drafts.csswg.org/css-color-4/#currentcolor-color
@@ -27,7 +27,8 @@ fn parse_absolute(
     Some(computed.resolve_to_absolute(current))
 }
 
-pub(crate) fn parse_exact(
+#[must_use]
+pub fn parse_exact(
     input: &str,
     device: Option<&Device>,
     current: &AbsoluteColor,
@@ -59,7 +60,8 @@ pub(crate) fn parse_exact(
     clippy::cast_sign_loss,
     reason = "channels are clamped to 0..1 before scaling to 0..255"
 )]
-pub(crate) fn to_bytes([r, g, b, a]: [f32; 4]) -> [u8; 4] {
+#[must_use]
+pub fn to_bytes([r, g, b, a]: [f32; 4]) -> [u8; 4] {
     let channel = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
     [channel(r), channel(g), channel(b), channel(a)]
 }

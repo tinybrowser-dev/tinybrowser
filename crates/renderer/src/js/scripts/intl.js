@@ -19,7 +19,6 @@
   const stringToUpperCase = Function.prototype.call.bind(String.prototype.toUpperCase);
   const stringToLowerCase = Function.prototype.call.bind(String.prototype.toLowerCase);
   const stringTrim = Function.prototype.call.bind(String.prototype.trim);
-  const numberConstructor = Number;
   const numberIsFinite = Number.isFinite;
   const numberMaxSafeInteger = Number.MAX_SAFE_INTEGER;
   const booleanConstructor = Boolean;
@@ -559,7 +558,7 @@
       arrayPush(dateParts, md);
     }
     if (c.year !== undefined) {
-      const yStr = c.year === '2-digit' ? pad2(mathAbs(year) % 100) : '' + year;
+      const yStr = c.year === '2-digit' ? pad2(Math.abs(year) % 100) : '' + year;
       arrayPush(dateParts, yStr);
     }
     if (c.era !== undefined) {
@@ -794,7 +793,7 @@
 
   // https://tc39.es/ecma402/#segmenter-objects
   const graphemePattern = /\r\n|\p{RI}\p{RI}|\p{Extended_Pictographic}(?:\p{Emoji_Modifier}|\uFE0F\u20E3?|[\u{E0020}-\u{E007E}]+\u{E007F})?(?:\u200D\p{Extended_Pictographic}(?:\p{Emoji_Modifier}|\uFE0F\u20E3?|[\u{E0020}-\u{E007E}]+\u{E007F})?)*|.\p{M}*|[\r\n]/gu;
-  const wordPattern = /[\p{L}\p{N}_]+(?:['’.\-][\p{L}\p{N}_]+)*|\s+|./gus;
+  const wordPattern = /[\p{L}\p{N}_]+(?:['’.-][\p{L}\p{N}_]+)*|\s+|./gus;
   const sentencePattern = /[^.!?]+(?:[.!?]+["')\]}\u201D\u2019]*\s*|$)/gus;
   const wordLikePattern = /[\p{L}\p{N}]/u;
 

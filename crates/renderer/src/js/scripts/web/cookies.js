@@ -12,8 +12,8 @@
   const kUnsafePair = /[;\u0000-\u0008\u000A-\u001F\u007F]/;
   const kMaxNameValuePair = 4096;
   const kMaxAttribute = 1024;
-  const kLongMin = -9223372036854775808;
-  const kLongMax = 9223372036854775807;
+  const kLongMin = -(2 ** 63);
+  const kLongExclusiveMax = 2 ** 63;
 
   const kCreationUrl = new URL(host.__tbCookieStoreCreationUrl());
   const kApiBaseUrl = new URL(host.__tbCookieStoreApiBaseUrl());
@@ -207,7 +207,7 @@
     if (maxAge !== null && maxAge !== undefined) {
       // https://webidl.spec.whatwg.org/#es-long-long
       const age = Number(maxAge);
-      if (!Number.isFinite(age) || age < kLongMin || age > kLongMax) {
+      if (!Number.isFinite(age) || age < kLongMin || age >= kLongExclusiveMax) {
         throw new TypeError('maxAge is not a long long');
       }
       maxAge = Math.trunc(age);

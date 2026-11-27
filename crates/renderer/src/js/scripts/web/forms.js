@@ -566,7 +566,7 @@
   const FORMDATA = host.slots('tb-formdata-event-data');
 
   // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#submitevent
-  function SubmitEvent(type) {
+  function SubmitEvent(_type) {
     if (new.target === undefined) {
       throw new TypeError('Class constructor SubmitEvent cannot be invoked without new');
     }
@@ -597,7 +597,7 @@
   });
 
   // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#formdataevent
-  function FormDataEvent(type) {
+  function FormDataEvent(_type) {
     if (new.target === undefined) {
       throw new TypeError('Class constructor FormDataEvent cannot be invoked without new');
     }

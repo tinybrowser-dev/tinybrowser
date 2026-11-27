@@ -4,7 +4,7 @@ use crate::render::{RenderError, RgbaImage};
 
 pub(crate) const MAX_VIEWPORT_SIDE: u32 = 4096;
 
-pub(crate) const INVALID_BASE_URL: &str = "http://invalid/";
+pub(crate) use crate::INVALID_BASE_URL;
 
 pub(crate) fn blitz_base_url(url: &url::Url) -> String {
     if url.cannot_be_a_base() {

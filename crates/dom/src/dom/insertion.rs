@@ -10,7 +10,7 @@ use crate::dom::tree::{
     is_html_element, mathml_namespace, sibling, svg_namespace,
 };
 
-pub(crate) enum InsertedNode {
+pub enum InsertedNode {
     Fragment { elements: usize, has_text: bool },
     Element,
     Text,
@@ -20,10 +20,7 @@ pub(crate) enum InsertedNode {
 }
 
 // https://dom.spec.whatwg.org/#concept-node-ensure-pre-insert-validity
-pub(crate) fn classify_inserted(
-    doc: &crate::documents::BlitzDocument,
-    id: BlitzId,
-) -> InsertedNode {
+pub fn classify_inserted(doc: &crate::documents::BlitzDocument, id: BlitzId) -> InsertedNode {
     // https://dom.spec.whatwg.org/#concept-node-insert
     if doc.is_fragment(id) {
         let Some(fragment) = doc.base.get_node(id) else {
@@ -51,14 +48,14 @@ pub(crate) fn classify_inserted(
     }
 }
 
-pub(crate) fn is_doctype(doc: &crate::documents::BlitzDocument, id: BlitzId) -> bool {
+pub fn is_doctype(doc: &crate::documents::BlitzDocument, id: BlitzId) -> bool {
     doc.base
         .get_node(id)
         .is_some_and(|node| matches!(node.data, NodeData::Doctype { .. }))
 }
 
 // https://dom.spec.whatwg.org/#concept-node-ensure-pre-insert-validity
-pub(crate) fn parent_has_doctype(
+pub fn parent_has_doctype(
     doc: &crate::documents::BlitzDocument,
     parent: BlitzId,
     excluded: &[BlitzId],
@@ -70,7 +67,7 @@ pub(crate) fn parent_has_doctype(
     })
 }
 
-pub(crate) fn sibling_doctype_follows(
+pub fn sibling_doctype_follows(
     doc: &crate::documents::BlitzDocument,
     parent: BlitzId,
     child: BlitzId,
@@ -87,7 +84,7 @@ pub(crate) fn sibling_doctype_follows(
         .any(|kid| is_doctype(doc, *kid))
 }
 
-pub(crate) fn sibling_element_precedes(
+pub fn sibling_element_precedes(
     doc: &crate::documents::BlitzDocument,
     parent: BlitzId,
     child: BlitzId,
@@ -105,7 +102,7 @@ pub(crate) fn sibling_element_precedes(
 }
 
 // https://dom.spec.whatwg.org/#concept-node-ensure-pre-insert-validity
-pub(crate) fn parent_has_element(
+pub fn parent_has_element(
     doc: &crate::documents::BlitzDocument,
     parent: BlitzId,
     excluded: &[BlitzId],
@@ -117,7 +114,7 @@ pub(crate) fn parent_has_element(
     })
 }
 
-pub(crate) fn siblings_around(
+pub fn siblings_around(
     base: &blitz_dom::BaseDocument,
     document: u32,
     parent: BlitzId,
@@ -149,10 +146,7 @@ pub(crate) fn siblings_around(
 }
 
 #[must_use = "destroy these child navigables after releasing the tree borrow"]
-pub(crate) fn iframe_containers_in_subtrees(
-    parsed: &crate::Parsed,
-    roots: &[NodeId],
-) -> Vec<NodeId> {
+pub fn iframe_containers_in_subtrees(parsed: &crate::Parsed, roots: &[NodeId]) -> Vec<NodeId> {
     let mut containers = Vec::new();
     for root in roots {
         let mut stack = vec![root.node];
@@ -172,7 +166,7 @@ pub(crate) fn iframe_containers_in_subtrees(
 }
 
 // https://dom.spec.whatwg.org/#concept-node-remove
-pub(crate) fn unlink_journaled(parsed: &mut crate::Parsed, target: NodeId) {
+pub fn unlink_journaled(parsed: &mut crate::Parsed, target: NodeId) {
     let document = target.document;
     let (parent, previous, next) = {
         let base = &parsed.document.base;
@@ -234,11 +228,7 @@ pub(crate) fn unlink_journaled(parsed: &mut crate::Parsed, target: NodeId) {
 }
 
 // https://dom.spec.whatwg.org/#concept-node-insert
-pub(crate) fn adjust_children_leaving(
-    parsed: &mut crate::Parsed,
-    fragment: NodeId,
-    children: &[NodeId],
-) {
+pub fn adjust_children_leaving(parsed: &mut crate::Parsed, fragment: NodeId, children: &[NodeId]) {
     if children.is_empty() || parsed.document.side.ranges.is_empty() {
         return;
     }
@@ -249,7 +239,7 @@ pub(crate) fn adjust_children_leaving(
     }
 }
 
-pub(crate) fn place_journaled(
+pub fn place_journaled(
     parsed: &mut crate::Parsed,
     parent: NodeId,
     child: NodeId,
@@ -324,7 +314,7 @@ fn place_inner(
 }
 
 // https://dom.spec.whatwg.org/#concept-node-pre-insert
-pub(crate) fn insert_parsed(
+pub fn insert_parsed(
     parsed: &mut crate::Parsed,
     parent: NodeId,
     node: NodeId,
@@ -345,7 +335,7 @@ pub(crate) fn insert_parsed(
 }
 
 // https://dom.spec.whatwg.org/#concept-node-insert
-pub(crate) fn splice_parsed(
+pub fn splice_parsed(
     parsed: &mut crate::Parsed,
     parent: NodeId,
     fragment: NodeId,
@@ -439,7 +429,7 @@ pub(crate) fn splice_parsed(
 
 // https://dom.spec.whatwg.org/#concept-node-replace-all
 #[must_use = "destroy these child navigables after releasing the tree borrow"]
-pub(crate) fn replace_all_with_node(
+pub fn replace_all_with_node(
     parsed: &mut crate::Parsed,
     parent: NodeId,
     node: NodeId,
@@ -467,7 +457,7 @@ pub(crate) fn replace_all_with_node(
 
 // https://dom.spec.whatwg.org/#concept-node-replace-all
 #[must_use = "destroy these child navigables after releasing the tree borrow"]
-pub(crate) fn replace_all_journaled(
+pub fn replace_all_journaled(
     parsed: &mut crate::Parsed,
     parent: NodeId,
     added: Vec<NodeId>,
@@ -516,11 +506,7 @@ pub(crate) fn replace_all_journaled(
     iframes
 }
 
-pub(crate) fn collect_nonce_elements(
-    base: &blitz_dom::BaseDocument,
-    id: NodeId,
-    out: &mut Vec<NodeId>,
-) {
+pub fn collect_nonce_elements(base: &blitz_dom::BaseDocument, id: NodeId, out: &mut Vec<NodeId>) {
     if let Some(element) = base
         .get_node(id.node)
         .and_then(|node| node.data.downcast_element())
@@ -549,14 +535,14 @@ pub(crate) fn collect_nonce_elements(
     }
 }
 
-pub(crate) enum InsertionStep {
+pub enum InsertionStep {
     Iframe(NodeId),
     Script(NodeId),
     Meta(NodeId),
     Base(NodeId),
 }
 
-pub(crate) fn collect_html_insertion_steps(
+pub fn collect_html_insertion_steps(
     base: &blitz_dom::BaseDocument,
     id: NodeId,
     out: &mut Vec<InsertionStep>,
@@ -586,7 +572,7 @@ pub(crate) fn collect_html_insertion_steps(
 }
 
 // https://dom.spec.whatwg.org/#concept-node-ensure-pre-insert-validity
-pub(crate) fn ensure_parented(
+pub fn ensure_parented(
     base: &blitz_dom::BaseDocument,
     parent: NodeId,
     reference: NodeId,
@@ -603,7 +589,7 @@ pub(crate) fn ensure_parented(
 }
 
 // https://dom.spec.whatwg.org/#concept-node-ensure-pre-insert-validity
-pub(crate) fn ensure_no_cycle(
+pub fn ensure_no_cycle(
     base: &blitz_dom::BaseDocument,
     parent: BlitzId,
     node: BlitzId,
@@ -626,7 +612,7 @@ pub(crate) fn ensure_no_cycle(
 }
 
 // https://dom.spec.whatwg.org/#concept-node-ensure-pre-insertion-validity
-pub(crate) fn ensure_document_content_model(
+pub fn ensure_document_content_model(
     doc: &crate::documents::BlitzDocument,
     parent: NodeId,
     reference: Option<NodeId>,
@@ -664,7 +650,7 @@ pub(crate) fn ensure_document_content_model(
 }
 
 // https://dom.spec.whatwg.org/#concept-node-ensure-pre-insert-validity
-pub(crate) fn ensure_doctype_position(
+pub fn ensure_doctype_position(
     doc: &crate::documents::BlitzDocument,
     parent: NodeId,
     reference: Option<NodeId>,
@@ -682,14 +668,14 @@ pub(crate) fn ensure_doctype_position(
 }
 
 // https://dom.spec.whatwg.org/#dom-parentnode-movebefore
-pub(crate) enum MoveTarget {
+pub enum MoveTarget {
     End,
     Before(NodeId),
     Unparented,
 }
 
 // https://dom.spec.whatwg.org/#move
-pub(crate) fn ensure_can_move(
+pub fn ensure_can_move(
     doc: &crate::documents::BlitzDocument,
     parent: NodeId,
     node: NodeId,
@@ -754,12 +740,7 @@ pub(crate) fn ensure_can_move(
 }
 
 // https://dom.spec.whatwg.org/#concept-node-move
-pub(crate) fn move_parsed(
-    parsed: &mut crate::Parsed,
-    parent: NodeId,
-    node: NodeId,
-    target: &MoveTarget,
-) {
+pub fn move_parsed(parsed: &mut crate::Parsed, parent: NodeId, node: NodeId, target: &MoveTarget) {
     let reference = match target {
         MoveTarget::Before(child) => Some(*child),
         MoveTarget::End | MoveTarget::Unparented => None,
@@ -878,15 +859,12 @@ fn adjust_replace_removal(parsed: &mut crate::Parsed, parent: NodeId, old: NodeI
     }
 }
 
-pub(crate) fn fragment_children(
-    doc: &crate::documents::BlitzDocument,
-    fragment: NodeId,
-) -> Vec<NodeId> {
+pub fn fragment_children(doc: &crate::documents::BlitzDocument, fragment: NodeId) -> Vec<NodeId> {
     crate::dom::tree::child_ids(&doc.base, fragment.document, fragment.node)
 }
 
 // https://dom.spec.whatwg.org/#concept-node-replace
-pub(crate) enum Replacement {
+pub enum Replacement {
     Node(NodeId),
     FragmentContents {
         fragment: NodeId,
@@ -896,7 +874,7 @@ pub(crate) enum Replacement {
 }
 
 // https://dom.spec.whatwg.org/#concept-node-replace
-pub(crate) fn replace_parsed(
+pub fn replace_parsed(
     parsed: &mut crate::Parsed,
     parent: NodeId,
     old: NodeId,

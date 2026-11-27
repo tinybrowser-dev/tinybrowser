@@ -66,7 +66,7 @@
         current = null;
       }
     }
-    return chain.reverse();
+    return chain.toReversed();
   };
 
   const compareTreeOrder = (a, b) => {
@@ -180,8 +180,8 @@
   };
 
   // https://w3c.github.io/selection-api/#dom-selection-anchornode
-  const exposed = (point) => (inDocumentTree(point.node)
-    ? point
+  const exposed = (targetPoint) => (inDocumentTree(targetPoint.node)
+    ? targetPoint
     : { node: null, offset: 0 });
 
   const [Selection, selection] = __tbInstallGlobal('Selection', class Selection {

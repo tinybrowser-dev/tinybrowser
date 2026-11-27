@@ -12,7 +12,7 @@ use browser::{
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
-use crate::params::CallArgument;
+use crate::params::{CallArgument, RawParams};
 
 const MAX_SCREENSHOT_DIM: f64 = 4096.0;
 
@@ -798,7 +798,7 @@ pub(crate) fn route(method: &str, target: &Target) -> Option<Handler> {
         .map(|route| route.handler)
 }
 
-pub(crate) fn accept(reason: Accepted, params: &Value) -> Result<Value, DispatchError> {
+pub(crate) fn accept(reason: Accepted, params: RawParams<'_>) -> Result<Value, DispatchError> {
     if premise_holds(reason, params)? {
         Ok(json!({}))
     } else {
@@ -806,10 +806,10 @@ pub(crate) fn accept(reason: Accepted, params: &Value) -> Result<Value, Dispatch
     }
 }
 
-fn premise_holds(reason: Accepted, params: &Value) -> Result<bool, DispatchError> {
+fn premise_holds(reason: Accepted, params: RawParams<'_>) -> Result<bool, DispatchError> {
     match reason {
         Accepted::DefaultEmulatedMedia => {
-            let params: crate::params::SetEmulatedMedia = crate::params::parse(params)?;
+            let params: crate::params::SetEmulatedMedia = params.parse()?;
             Ok(emulated_media_is_default(&params))
         }
         Accepted::WaitingForDebugger
@@ -823,7 +823,7 @@ fn premise_holds(reason: Accepted, params: &Value) -> Result<bool, DispatchError
 
 pub(crate) async fn run_script(
     method: ScriptMethod,
-    params: &Value,
+    params: RawParams<'_>,
     tab: &TabHandle,
     world: Option<&str>,
 ) -> Result<Value, DispatchError> {
@@ -1042,8 +1042,11 @@ pub(crate) fn isolated_world_of_handle(object_id: &str) -> Option<&str> {
 }
 
 // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-getProperties
-async fn runtime_get_properties(tab: &TabHandle, params: &Value) -> Result<Value, DispatchError> {
-    let params: crate::params::GetProperties = crate::params::parse(params)?;
+async fn runtime_get_properties(
+    tab: &TabHandle,
+    params: RawParams<'_>,
+) -> Result<Value, DispatchError> {
+    let params: crate::params::GetProperties = params.parse()?;
     if params.object_id.is_empty() {
         return Err(DispatchError::InvalidParams("objectId".to_owned()));
     }
@@ -1066,9 +1069,9 @@ async fn runtime_get_properties(tab: &TabHandle, params: &Value) -> Result<Value
 
 pub(crate) async fn runtime_release_object(
     tab: &TabHandle,
-    params: &Value,
+    params: RawParams<'_>,
 ) -> Result<Value, DispatchError> {
-    let params: crate::params::ReleaseObject = crate::params::parse(params)?;
+    let params: crate::params::ReleaseObject = params.parse()?;
     let script = RUNTIME_RELEASE.replace(
         "__ARGS__",
         &json!({"objectId": params.object_id}).to_string(),
@@ -1092,9 +1095,9 @@ pub(crate) async fn runtime_release_object(
 
 pub(crate) async fn runtime_release_object_group(
     tab: &TabHandle,
-    params: &Value,
+    params: RawParams<'_>,
 ) -> Result<Value, DispatchError> {
-    let params: crate::params::ReleaseObjectGroup = crate::params::parse(params)?;
+    let params: crate::params::ReleaseObjectGroup = params.parse()?;
     let script = RUNTIME_RELEASE.replace(
         "__ARGS__",
         &json!({"objectGroup": params.object_group}).to_string(),
@@ -1156,8 +1159,8 @@ fn emulated_media_is_default(params: &crate::params::SetEmulatedMedia) -> bool {
     }
 }
 
-async fn add_init_script(params: &Value, tab: &TabHandle) -> Result<Value, DispatchError> {
-    let params: crate::params::AddInitScript = crate::params::parse(params)?;
+async fn add_init_script(params: RawParams<'_>, tab: &TabHandle) -> Result<Value, DispatchError> {
+    let params: crate::params::AddInitScript = params.parse()?;
     let id = tab
         .add_init_script(params.source, params.run_immediately.unwrap_or(false))
         .await
@@ -1165,8 +1168,11 @@ async fn add_init_script(params: &Value, tab: &TabHandle) -> Result<Value, Dispa
     Ok(json!({"identifier": id.to_string()}))
 }
 
-async fn remove_init_script(params: &Value, tab: &TabHandle) -> Result<Value, DispatchError> {
-    let params: crate::params::RemoveInitScript = crate::params::parse(params)?;
+async fn remove_init_script(
+    params: RawParams<'_>,
+    tab: &TabHandle,
+) -> Result<Value, DispatchError> {
+    let params: crate::params::RemoveInitScript = params.parse()?;
     let id = params
         .identifier
         .parse::<u64>()
@@ -1178,8 +1184,11 @@ async fn remove_init_script(params: &Value, tab: &TabHandle) -> Result<Value, Di
 }
 
 // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-addBinding
-pub(crate) async fn add_binding(params: &Value, tab: &TabHandle) -> Result<Value, DispatchError> {
-    let params: crate::params::AddBinding = crate::params::parse(params)?;
+pub(crate) async fn add_binding(
+    params: RawParams<'_>,
+    tab: &TabHandle,
+) -> Result<Value, DispatchError> {
+    let params: crate::params::AddBinding = params.parse()?;
     tab.add_binding(&params.name, true)
         .await
         .map_err(|error| DispatchError::Failed(error.to_string()))?;
@@ -1187,8 +1196,11 @@ pub(crate) async fn add_binding(params: &Value, tab: &TabHandle) -> Result<Value
 }
 
 // https://chromedevtools.github.io/devtools-protocol/tot/Emulation/#method-setDeviceMetricsOverride
-async fn set_device_metrics(params: &Value, tab: &TabHandle) -> Result<Value, DispatchError> {
-    let params: crate::params::SetDeviceMetrics = crate::params::parse(params)?;
+async fn set_device_metrics(
+    params: RawParams<'_>,
+    tab: &TabHandle,
+) -> Result<Value, DispatchError> {
+    let params: crate::params::SetDeviceMetrics = params.parse()?;
     let width = narrow_metric(params.width, "width")?;
     let height = narrow_metric(params.height, "height")?;
     if width == 0 || height == 0 {
@@ -1220,8 +1232,11 @@ async fn clear_device_metrics(tab: &TabHandle) -> Result<Value, DispatchError> {
 }
 
 // https://chromedevtools.github.io/devtools-protocol/tot/Emulation/#method-setUserAgentOverride
-async fn set_user_agent_override(params: &Value, tab: &TabHandle) -> Result<Value, DispatchError> {
-    let params: crate::params::UserAgentOverride = crate::params::parse(params)?;
+async fn set_user_agent_override(
+    params: RawParams<'_>,
+    tab: &TabHandle,
+) -> Result<Value, DispatchError> {
+    let params: crate::params::UserAgentOverride = params.parse()?;
     let override_identity = if params.user_agent.is_empty() {
         None
     } else {
@@ -1296,22 +1311,22 @@ async fn set_user_agent_override(params: &Value, tab: &TabHandle) -> Result<Valu
 }
 
 // https://chromedevtools.github.io/devtools-protocol/tot/Emulation/#method-setTimezoneOverride
-fn set_timezone_override(params: &Value) -> Result<Value, DispatchError> {
-    let params: crate::params::SetTimezoneOverride = crate::params::parse(params)?;
+fn set_timezone_override(params: RawParams<'_>) -> Result<Value, DispatchError> {
+    let params: crate::params::SetTimezoneOverride = params.parse()?;
     let _ = params.timezone_id;
     Ok(json!({}))
 }
 
 // https://chromedevtools.github.io/devtools-protocol/tot/Emulation/#method-setLocaleOverride
-fn set_locale_override(params: &Value) -> Result<Value, DispatchError> {
-    let params: crate::params::SetLocaleOverride = crate::params::parse(params)?;
+fn set_locale_override(params: RawParams<'_>) -> Result<Value, DispatchError> {
+    let params: crate::params::SetLocaleOverride = params.parse()?;
     let _ = params.locale;
     Ok(json!({}))
 }
 
 // https://chromedevtools.github.io/devtools-protocol/tot/Emulation/#method-setGeolocationOverride
-fn set_geolocation_override(params: &Value) -> Result<Value, DispatchError> {
-    let params: crate::params::SetGeolocationOverride = crate::params::parse(params)?;
+fn set_geolocation_override(params: RawParams<'_>) -> Result<Value, DispatchError> {
+    let params: crate::params::SetGeolocationOverride = params.parse()?;
     if let Some(lat) = params.latitude
         && !(-90.0..=90.0).contains(&lat)
     {
@@ -1375,9 +1390,9 @@ pub(crate) async fn dom_get_document(tab: &TabHandle) -> Result<Value, DispatchE
 
 pub(crate) async fn input_mouse_event(
     tab: &TabHandle,
-    params: &Value,
+    params: RawParams<'_>,
 ) -> Result<Value, DispatchError> {
-    let params: crate::params::MouseEvent = crate::params::parse(params)?;
+    let params: crate::params::MouseEvent = params.parse()?;
     let kind = params.kind.as_str();
     let button = match params.button.as_deref().unwrap_or("left") {
         "middle" => 1,
@@ -1458,9 +1473,9 @@ fn cdp_key_value<'a>(key: &'a str, text: &'a str, kind: &str) -> &'a str {
 
 pub(crate) async fn input_key_event(
     tab: &TabHandle,
-    params: &Value,
+    params: RawParams<'_>,
 ) -> Result<Value, DispatchError> {
-    let params: crate::params::KeyEvent = crate::params::parse(params)?;
+    let params: crate::params::KeyEvent = params.parse()?;
     let kind = params.kind.as_str();
     let key = params.key.as_deref().unwrap_or("");
     let text = params.text.as_deref().unwrap_or("");
@@ -1479,9 +1494,9 @@ pub(crate) async fn input_key_event(
 
 pub(crate) async fn input_insert_text(
     tab: &TabHandle,
-    params: &Value,
+    params: RawParams<'_>,
 ) -> Result<Value, DispatchError> {
-    let params: crate::params::InsertText = crate::params::parse(params)?;
+    let params: crate::params::InsertText = params.parse()?;
     if params.text.is_empty() {
         return Ok(json!({}));
     }
@@ -1493,9 +1508,9 @@ pub(crate) async fn input_insert_text(
 
 pub(crate) async fn input_touch_event(
     tab: &TabHandle,
-    params: &Value,
+    params: RawParams<'_>,
 ) -> Result<Value, DispatchError> {
-    let params: crate::params::TouchEvent = crate::params::parse(params)?;
+    let params: crate::params::TouchEvent = params.parse()?;
     let kind = params.kind.as_str();
     let Some(point) = params.touch_points.first() else {
         return Ok(json!({}));
@@ -1517,9 +1532,9 @@ pub(crate) async fn input_touch_event(
 
 pub(crate) async fn input_emulate_touch_from_mouse(
     tab: &TabHandle,
-    params: &Value,
+    params: RawParams<'_>,
 ) -> Result<Value, DispatchError> {
-    let params: crate::params::EmulateTouchFromMouse = crate::params::parse(params)?;
+    let params: crate::params::EmulateTouchFromMouse = params.parse()?;
     let kind = params.kind.as_str();
     let mut items =
         vec![json!({"type": "pointerMove", "origin": "viewport", "x": params.x, "y": params.y})];
@@ -1641,9 +1656,9 @@ fn described_node(node: &DomNode) -> Value {
 
 pub(crate) async fn dom_query_selector(
     tab: &TabHandle,
-    params: &Value,
+    params: RawParams<'_>,
 ) -> Result<Value, DispatchError> {
-    let params: crate::params::QuerySelector = crate::params::parse(params)?;
+    let params: crate::params::QuerySelector = params.parse()?;
     let reply = dom_request(
         tab,
         DomRequest::QuerySelector {
@@ -1660,9 +1675,9 @@ pub(crate) async fn dom_query_selector(
 
 pub(crate) async fn dom_query_selector_all(
     tab: &TabHandle,
-    params: &Value,
+    params: RawParams<'_>,
 ) -> Result<Value, DispatchError> {
-    let params: crate::params::QuerySelector = crate::params::parse(params)?;
+    let params: crate::params::QuerySelector = params.parse()?;
     let reply = dom_request(
         tab,
         DomRequest::QuerySelectorAll {
@@ -1679,9 +1694,9 @@ pub(crate) async fn dom_query_selector_all(
 
 pub(crate) async fn dom_describe_node(
     tab: &TabHandle,
-    params: &Value,
+    params: RawParams<'_>,
 ) -> Result<Value, DispatchError> {
-    let target: crate::params::NodeTarget = crate::params::parse(params)?;
+    let target: crate::params::NodeTarget = params.parse()?;
     let node = match target_node(tab, &target).await? {
         TargetNode::Default => 0,
         TargetNode::Node(id) => id,
@@ -1698,9 +1713,9 @@ pub(crate) async fn dom_describe_node(
 
 pub(crate) async fn dom_outer_html(
     tab: &TabHandle,
-    params: &Value,
+    params: RawParams<'_>,
 ) -> Result<Value, DispatchError> {
-    let target: crate::params::NodeTarget = crate::params::parse(params)?;
+    let target: crate::params::NodeTarget = params.parse()?;
     if !has_node_identifier(&target) {
         return Err(DispatchError::InvalidParams(
             "nodeId, backendNodeId, or objectId".to_owned(),
@@ -1719,9 +1734,9 @@ pub(crate) async fn dom_outer_html(
 
 pub(crate) async fn dom_attributes(
     tab: &TabHandle,
-    params: &Value,
+    params: RawParams<'_>,
 ) -> Result<Value, DispatchError> {
-    let target: crate::params::NodeTarget = crate::params::parse(params)?;
+    let target: crate::params::NodeTarget = params.parse()?;
     if !has_node_identifier(&target) {
         return Err(DispatchError::InvalidParams(
             "nodeId, backendNodeId, or objectId".to_owned(),
@@ -1740,10 +1755,10 @@ pub(crate) async fn dom_attributes(
 
 pub(crate) async fn dom_resolve_node(
     tab: &TabHandle,
-    params: &Value,
+    params: RawParams<'_>,
     world: Option<&str>,
 ) -> Result<Value, DispatchError> {
-    let target: crate::params::NodeTarget = crate::params::parse(params)?;
+    let target: crate::params::NodeTarget = params.parse()?;
     let node = match target_node(tab, &target).await? {
         TargetNode::Default => 0,
         TargetNode::Node(id) => id,
@@ -1776,9 +1791,9 @@ pub(crate) async fn dom_resolve_node(
 
 pub(crate) async fn dom_node_for_location(
     tab: &TabHandle,
-    params: &Value,
+    params: RawParams<'_>,
 ) -> Result<Value, DispatchError> {
-    let params: crate::params::NodeForLocation = crate::params::parse(params)?;
+    let params: crate::params::NodeForLocation = params.parse()?;
     let reply = dom_request(
         tab,
         DomRequest::GetNodeForLocation {
@@ -1793,8 +1808,11 @@ pub(crate) async fn dom_node_for_location(
     Ok(json!({"nodeId": node_id}))
 }
 
-pub(crate) async fn dom_box_model(tab: &TabHandle, params: &Value) -> Result<Value, DispatchError> {
-    let target: crate::params::NodeTarget = crate::params::parse(params)?;
+pub(crate) async fn dom_box_model(
+    tab: &TabHandle,
+    params: RawParams<'_>,
+) -> Result<Value, DispatchError> {
+    let target: crate::params::NodeTarget = params.parse()?;
     let node = match target_node(tab, &target).await? {
         TargetNode::Default => 0,
         TargetNode::Node(id) => id,
@@ -1823,9 +1841,9 @@ pub(crate) async fn dom_box_model(tab: &TabHandle, params: &Value) -> Result<Val
 
 pub(crate) async fn dom_content_quads(
     tab: &TabHandle,
-    params: &Value,
+    params: RawParams<'_>,
 ) -> Result<Value, DispatchError> {
-    let target: crate::params::NodeTarget = crate::params::parse(params)?;
+    let target: crate::params::NodeTarget = params.parse()?;
     let node = match target_node(tab, &target).await? {
         TargetNode::Default => 0,
         TargetNode::Node(id) => id,
@@ -1841,9 +1859,9 @@ pub(crate) async fn dom_content_quads(
 // https://chromedevtools.github.io/devtools-protocol/tot/DOM/#method-scrollIntoViewIfNeeded
 pub(crate) async fn dom_scroll_into_view_if_needed(
     tab: &TabHandle,
-    params: &Value,
+    params: RawParams<'_>,
 ) -> Result<Value, DispatchError> {
-    let target: crate::params::NodeTarget = crate::params::parse(params)?;
+    let target: crate::params::NodeTarget = params.parse()?;
     let node = match target_node(tab, &target).await? {
         TargetNode::Default => 0,
         TargetNode::Node(id) => id,
@@ -1901,8 +1919,8 @@ async fn run_dom_mutation(
 }
 
 // https://chromedevtools.github.io/devtools-protocol/tot/DOM/#method-focus
-async fn dom_focus(tab: &TabHandle, params: &Value) -> Result<Value, DispatchError> {
-    let target: crate::params::NodeTarget = crate::params::parse(params)?;
+async fn dom_focus(tab: &TabHandle, params: RawParams<'_>) -> Result<Value, DispatchError> {
+    let target: crate::params::NodeTarget = params.parse()?;
     if !has_node_identifier(&target) {
         return Err(DispatchError::InvalidParams(
             "nodeId, backendNodeId, or objectId".to_owned(),
@@ -1917,8 +1935,11 @@ async fn dom_focus(tab: &TabHandle, params: &Value) -> Result<Value, DispatchErr
 }
 
 // https://chromedevtools.github.io/devtools-protocol/tot/DOM/#method-setAttributeValue
-async fn dom_set_attribute_value(tab: &TabHandle, params: &Value) -> Result<Value, DispatchError> {
-    let params: crate::params::DomSetAttributeValue = crate::params::parse(params)?;
+async fn dom_set_attribute_value(
+    tab: &TabHandle,
+    params: RawParams<'_>,
+) -> Result<Value, DispatchError> {
+    let params: crate::params::DomSetAttributeValue = params.parse()?;
     let target = crate::params::NodeTarget {
         node: Some(params.node_id),
         backend: None,
@@ -1933,8 +1954,11 @@ async fn dom_set_attribute_value(tab: &TabHandle, params: &Value) -> Result<Valu
 }
 
 // https://chromedevtools.github.io/devtools-protocol/tot/DOM/#method-removeAttribute
-async fn dom_remove_attribute(tab: &TabHandle, params: &Value) -> Result<Value, DispatchError> {
-    let params: crate::params::DomRemoveAttribute = crate::params::parse(params)?;
+async fn dom_remove_attribute(
+    tab: &TabHandle,
+    params: RawParams<'_>,
+) -> Result<Value, DispatchError> {
+    let params: crate::params::DomRemoveAttribute = params.parse()?;
     let target = crate::params::NodeTarget {
         node: Some(params.node_id),
         backend: None,
@@ -1948,8 +1972,8 @@ async fn dom_remove_attribute(tab: &TabHandle, params: &Value) -> Result<Value, 
 }
 
 // https://chromedevtools.github.io/devtools-protocol/tot/DOM/#method-removeNode
-async fn dom_remove_node(tab: &TabHandle, params: &Value) -> Result<Value, DispatchError> {
-    let params: crate::params::DomRemoveNode = crate::params::parse(params)?;
+async fn dom_remove_node(tab: &TabHandle, params: RawParams<'_>) -> Result<Value, DispatchError> {
+    let params: crate::params::DomRemoveNode = params.parse()?;
     let target = crate::params::NodeTarget {
         node: Some(params.node_id),
         backend: None,
@@ -1964,9 +1988,12 @@ async fn dom_remove_node(tab: &TabHandle, params: &Value) -> Result<Value, Dispa
 }
 
 // https://chromedevtools.github.io/devtools-protocol/tot/DOM/#method-setFileInputFiles
-async fn dom_set_file_input_files(tab: &TabHandle, params: &Value) -> Result<Value, DispatchError> {
+async fn dom_set_file_input_files(
+    tab: &TabHandle,
+    params: RawParams<'_>,
+) -> Result<Value, DispatchError> {
     const MAX_UPLOAD_BYTES: u64 = 64 * 1024 * 1024;
-    let params: crate::params::DomSetFileInputFiles = crate::params::parse(params)?;
+    let params: crate::params::DomSetFileInputFiles = params.parse()?;
     if !has_node_identifier(&params.target) {
         return Err(DispatchError::InvalidParams(
             "nodeId, backendNodeId, or objectId".to_owned(),
@@ -2179,9 +2206,9 @@ pub(crate) async fn css_stylesheets(tab: &TabHandle) -> Result<Vec<Value>, Dispa
 
 pub(crate) async fn css_computed_style(
     tab: &TabHandle,
-    params: &Value,
+    params: RawParams<'_>,
 ) -> Result<Value, DispatchError> {
-    let params: crate::params::ComputedStyleForNode = crate::params::parse(params)?;
+    let params: crate::params::ComputedStyleForNode = params.parse()?;
     let reply = dom_request(
         tab,
         DomRequest::GetComputedStyle {
@@ -2262,10 +2289,10 @@ fn viewport_rect(width: f64, height: f64) -> Value {
 
 pub(crate) async fn capture_screenshot(
     tab: &TabHandle,
-    params: &Value,
+    params: RawParams<'_>,
     omit_background: bool,
 ) -> Result<Value, DispatchError> {
-    let params: crate::params::CaptureScreenshot = crate::params::parse(params)?;
+    let params: crate::params::CaptureScreenshot = params.parse()?;
     let format = match params.format.as_deref().unwrap_or("png") {
         s if s.eq_ignore_ascii_case("png") => ScreenshotFormat::Png,
         s if s.eq_ignore_ascii_case("jpeg") => ScreenshotFormat::Jpeg {
@@ -2660,24 +2687,43 @@ pub(crate) fn json_io(err: serde_json::Error) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::{ROUTES, arguments_expression, capture_side, get_properties_script};
-    use crate::params::{self, CallArgument, GetProperties, SetDeviceMetrics};
+    use crate::params::{CallArgument, GetProperties, RawParams, SetDeviceMetrics};
     use serde_json::json;
 
     #[test]
     fn device_metrics_require_integers_in_range() {
-        let params: SetDeviceMetrics =
-            params::parse(&json!({"width": 1024, "height": 768})).expect("integer metrics");
+        let req = json!({"params": {"width": 1024, "height": 768}});
+        let params: SetDeviceMetrics = RawParams::from_request(&req)
+            .parse()
+            .expect("integer metrics");
         assert_eq!(params.width, 1024);
         assert_eq!(params.height, 768);
-        assert!(params::parse::<SetDeviceMetrics>(&json!({"height": 768})).is_err());
-        assert!(params::parse::<SetDeviceMetrics>(&json!({"width": 10.5, "height": 1})).is_err());
-        assert!(params::parse::<SetDeviceMetrics>(&json!({"width": -1, "height": 1})).is_err());
-        assert!(params::parse::<SetDeviceMetrics>(&json!({"width": 1, "height": 1})).is_ok());
+        assert!(
+            RawParams::from_request(&json!({"params": {"height": 768}}))
+                .parse::<SetDeviceMetrics>()
+                .is_err()
+        );
+        assert!(
+            RawParams::from_request(&json!({"params": {"width": 10.5, "height": 1}}))
+                .parse::<SetDeviceMetrics>()
+                .is_err()
+        );
+        assert!(
+            RawParams::from_request(&json!({"params": {"width": -1, "height": 1}}))
+                .parse::<SetDeviceMetrics>()
+                .is_err()
+        );
+        assert!(
+            RawParams::from_request(&json!({"params": {"width": 1, "height": 1}}))
+                .parse::<SetDeviceMetrics>()
+                .is_ok()
+        );
     }
 
     #[test]
     fn get_properties_arguments_keep_the_helper_shape() {
-        let params: GetProperties = params::parse(&json!({"objectId": "h1"})).expect("params");
+        let req = json!({"params": {"objectId": "h1"}});
+        let params: GetProperties = RawParams::from_request(&req).parse().expect("params");
         let script = get_properties_script(&params);
         for expected in [
             r#""objectId":"h1""#,

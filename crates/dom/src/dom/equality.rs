@@ -140,7 +140,8 @@ fn kinds_equal(left: &EqualKind, right: &EqualKind) -> bool {
 }
 
 // https://dom.spec.whatwg.org/#concept-node-equals
-pub(crate) fn nodes_equal(store: &DocumentStore, left: NodeId, right: NodeId) -> bool {
+#[must_use]
+pub fn nodes_equal(store: &DocumentStore, left: NodeId, right: NodeId) -> bool {
     let left_view = store
         .get(left.document)
         .and_then(|parsed| equal_view(&parsed.document, left.node));

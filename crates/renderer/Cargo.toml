@@ -9,6 +9,7 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
+dom = { workspace = true }
 webstorage = { workspace = true }
 enumerated = { workspace = true }
 net = { workspace = true }

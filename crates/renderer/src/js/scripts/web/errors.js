@@ -6,7 +6,7 @@
   const construct = Reflect.construct;
 
   // https://html.spec.whatwg.org/multipage/webappapis.html#erroreventinit
-  function ErrorEvent(type) {
+  function ErrorEvent(_type) {
     if (new.target === undefined) {
       throw new TypeError('Class constructor ErrorEvent cannot be invoked without new');
     }
@@ -52,7 +52,7 @@
   });
 
   // https://html.spec.whatwg.org/multipage/webappapis.html#promiserejectioneventinit
-  function PromiseRejectionEvent(type) {
+  function PromiseRejectionEvent(_type) {
     if (new.target === undefined) {
       throw new TypeError('Class constructor PromiseRejectionEvent cannot be invoked without new');
     }

@@ -100,7 +100,8 @@ impl DomString {
         }
     }
     // https://infra.spec.whatwg.org/#strip-and-collapse-ascii-whitespace
-    pub(crate) fn strip_and_collapse_ascii_whitespace(&self) -> Self {
+    #[must_use]
+    pub fn strip_and_collapse_ascii_whitespace(&self) -> Self {
         let mut units = Vec::new();
         let mut pending_space = false;
         for unit in self.units().iter().copied() {

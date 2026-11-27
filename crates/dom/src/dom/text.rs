@@ -987,7 +987,7 @@ fn collect_details(
     collector.ensure_breaks(1);
 }
 
-pub(crate) fn rendered_text(base: &BaseDocument, id: NodeId) -> String {
+pub fn rendered_text(base: &BaseDocument, id: NodeId) -> String {
     let Some(tree) = base.get_node(id.node) else {
         return String::new();
     };
@@ -1158,7 +1158,7 @@ fn text_content(base: &BaseDocument, id: BlitzId) -> String {
     }
     text
 }
-pub(crate) fn rendered_text_fragment(
+pub fn rendered_text_fragment(
     parsed: &mut crate::Parsed,
     value: &str,
     pad_empty: bool,
@@ -1198,7 +1198,7 @@ pub(crate) fn rendered_text_fragment(
 }
 
 // https://html.spec.whatwg.org/multipage/dom.html#the-innertext-idl-attribute
-pub(crate) fn is_mergeable_text_node(base: &blitz_dom::BaseDocument, id: BlitzId) -> bool {
+pub fn is_mergeable_text_node(base: &blitz_dom::BaseDocument, id: BlitzId) -> bool {
     matches!(
         base.get_node(id).map(|node| &node.data),
         Some(NodeData::Text(_))
@@ -1206,7 +1206,7 @@ pub(crate) fn is_mergeable_text_node(base: &blitz_dom::BaseDocument, id: BlitzId
 }
 
 // https://dom.spec.whatwg.org/#concept-child-text-content
-pub(crate) fn child_text_content(base: &blitz_dom::BaseDocument, id: BlitzId) -> String {
+pub fn child_text_content(base: &blitz_dom::BaseDocument, id: BlitzId) -> String {
     let mut text = String::new();
     let Some(target) = base.get_node(id) else {
         return text;
@@ -1222,7 +1222,8 @@ pub(crate) fn child_text_content(base: &blitz_dom::BaseDocument, id: BlitzId) ->
 }
 
 // https://html.spec.whatwg.org/multipage/form-elements.html#concept-textarea-api-value
-pub(crate) fn normalize_newlines(value: &str) -> String {
+#[must_use]
+pub fn normalize_newlines(value: &str) -> String {
     let mut normalized = String::with_capacity(value.len());
     let mut characters = value.chars().peekable();
     while let Some(character) = characters.next() {

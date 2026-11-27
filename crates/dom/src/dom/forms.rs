@@ -7,17 +7,13 @@ use crate::dom::tree::{
     BlitzId, NodeId, attr, form_owner_of, html_namespace, is_connected, is_html_element,
 };
 
-pub(crate) enum PendingEntry {
+pub enum PendingEntry {
     Text(String, String),
     Files(String, NodeId),
 }
 
 // https://html.spec.whatwg.org/multipage/form-elements.html#the-select-element
-pub(crate) fn descendant_controls(
-    base: &BaseDocument,
-    document: u32,
-    root: BlitzId,
-) -> Vec<NodeId> {
+pub fn descendant_controls(base: &BaseDocument, document: u32, root: BlitzId) -> Vec<NodeId> {
     let mut controls = Vec::new();
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
@@ -39,7 +35,7 @@ pub(crate) fn descendant_controls(
 
 // https://html.spec.whatwg.org/multipage/input.html#the-input-element
 // https://html.spec.whatwg.org/multipage/form-elements.html#selectedness-setting-algorithm
-pub(crate) fn initialize_controls(parsed: &mut Parsed) {
+pub fn initialize_controls(parsed: &mut Parsed) {
     let Some(root) = parsed.document.base.try_root_element() else {
         return;
     };
@@ -79,7 +75,7 @@ pub(crate) fn initialize_controls(parsed: &mut Parsed) {
 }
 
 // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#constructing-form-data-set
-pub(crate) fn collect_pending_entries(
+pub fn collect_pending_entries(
     parsed: &mut Parsed,
     form: NodeId,
     submitter: Option<NodeId>,
@@ -161,7 +157,7 @@ pub(crate) fn collect_pending_entries(
 }
 
 // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#concept-fe-disabled
-pub(crate) fn is_disabled(base: &BaseDocument, node: BlitzId) -> bool {
+pub fn is_disabled(base: &BaseDocument, node: BlitzId) -> bool {
     if attr(base, node, "disabled").is_some() || base.disabled_by_fieldset(node) {
         return true;
     }
@@ -192,7 +188,7 @@ pub(crate) fn is_disabled(base: &BaseDocument, node: BlitzId) -> bool {
 }
 
 // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#constructing-form-data-set
-pub(crate) fn has_datalist_ancestor(base: &BaseDocument, node: BlitzId) -> bool {
+pub fn has_datalist_ancestor(base: &BaseDocument, node: BlitzId) -> bool {
     let mut cursor = base.get_node(node).and_then(|target| target.parent);
     while let Some(current) = cursor {
         if is_html_element(base, current, "datalist") {
@@ -204,7 +200,7 @@ pub(crate) fn has_datalist_ancestor(base: &BaseDocument, node: BlitzId) -> bool 
 }
 
 // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#constructing-form-data-set
-pub(crate) fn pending_entry(
+pub fn pending_entry(
     parsed: &mut Parsed,
     document: u32,
     node: BlitzId,
@@ -372,7 +368,7 @@ fn first_strong_is_rtl(value: &str) -> bool {
 }
 
 // https://html.spec.whatwg.org/multipage/form-elements.html#concept-select-option-list
-pub(crate) fn select_options(base: &BaseDocument, document: u32, select: BlitzId) -> Vec<NodeId> {
+pub fn select_options(base: &BaseDocument, document: u32, select: BlitzId) -> Vec<NodeId> {
     let mut options = Vec::new();
     let mut stack: Vec<BlitzId> = base
         .get_node(select)
@@ -422,7 +418,7 @@ fn has_optgroup_ancestor(base: &BaseDocument, node: BlitzId) -> bool {
 }
 
 // https://html.spec.whatwg.org/multipage/form-elements.html#get-the-nearest-ancestor-select
-pub(crate) fn option_select_owner(base: &BaseDocument, node: BlitzId) -> Option<BlitzId> {
+pub fn option_select_owner(base: &BaseDocument, node: BlitzId) -> Option<BlitzId> {
     let mut ancestor_optgroup = false;
     let mut cursor = base.get_node(node).and_then(|target| target.parent);
     while let Some(current) = cursor {
@@ -468,11 +464,7 @@ fn is_labelable(base: &BaseDocument, node: BlitzId) -> bool {
 }
 
 // https://html.spec.whatwg.org/multipage/forms.html#labeled-control
-pub(crate) fn labeled_control(
-    base: &BaseDocument,
-    document: u32,
-    label: BlitzId,
-) -> Option<NodeId> {
+pub fn labeled_control(base: &BaseDocument, document: u32, label: BlitzId) -> Option<NodeId> {
     if let Some(target) = attr(base, label, "for") {
         let found = crate::dom::tree::first_element_with_id(
             base,
@@ -539,7 +531,7 @@ fn option_selectedness(base: &BaseDocument, option: BlitzId) -> bool {
 }
 
 // https://html.spec.whatwg.org/multipage/form-elements.html#selectedness-setting-algorithm
-pub(crate) fn set_option_selectedness(parsed: &mut Parsed, option: BlitzId, selected: bool) {
+pub fn set_option_selectedness(parsed: &mut Parsed, option: BlitzId, selected: bool) {
     parsed
         .document
         .base
@@ -557,7 +549,7 @@ fn clear_other_options(parsed: &mut Parsed, select: BlitzId, keep: BlitzId) {
 }
 
 // https://html.spec.whatwg.org/multipage/form-elements.html#the-select-element
-pub(crate) fn options_inserted(parsed: &mut Parsed, options: impl IntoIterator<Item = BlitzId>) {
+pub fn options_inserted(parsed: &mut Parsed, options: impl IntoIterator<Item = BlitzId>) {
     // https://html.spec.whatwg.org/multipage/form-elements.html#the-select-element
     let mut inserted = Vec::new();
     let mut selects = Vec::new();
@@ -593,7 +585,7 @@ pub(crate) fn options_inserted(parsed: &mut Parsed, options: impl IntoIterator<I
 }
 
 // https://html.spec.whatwg.org/multipage/form-elements.html#selectedness-setting-algorithm
-pub(crate) fn run_selectedness_setting(parsed: &mut Parsed, select: BlitzId) -> bool {
+pub fn run_selectedness_setting(parsed: &mut Parsed, select: BlitzId) -> bool {
     if parsed.document.selectedness_normalized(select) {
         return false;
     }
@@ -629,7 +621,7 @@ pub(crate) fn run_selectedness_setting(parsed: &mut Parsed, select: BlitzId) -> 
     changed
 }
 
-pub(crate) fn effective_selected_options(parsed: &mut Parsed, select: BlitzId) -> Vec<NodeId> {
+pub fn effective_selected_options(parsed: &mut Parsed, select: BlitzId) -> Vec<NodeId> {
     run_selectedness_setting(parsed, select);
     let base = &parsed.document.base;
     select_options(base, parsed.id, select)
@@ -639,7 +631,7 @@ pub(crate) fn effective_selected_options(parsed: &mut Parsed, select: BlitzId) -
 }
 
 // https://html.spec.whatwg.org/multipage/form-elements.html#ask-for-a-reset
-pub(crate) fn option_effective_selected(parsed: &mut Parsed, option: BlitzId) -> bool {
+pub fn option_effective_selected(parsed: &mut Parsed, option: BlitzId) -> bool {
     let Some(select) = option_select_owner(&parsed.document.base, option) else {
         return option_selectedness(&parsed.document.base, option);
     };
@@ -648,13 +640,13 @@ pub(crate) fn option_effective_selected(parsed: &mut Parsed, option: BlitzId) ->
 }
 
 // https://html.spec.whatwg.org/multipage/form-elements.html#dom-option-value
-pub(crate) fn option_value(base: &BaseDocument, option: BlitzId) -> String {
+pub fn option_value(base: &BaseDocument, option: BlitzId) -> String {
     crate::dom::tree::attr(base, option, "value")
         .map_or_else(|| option_text(base, option), str::to_owned)
 }
 
 // https://html.spec.whatwg.org/multipage/form-elements.html#dom-option-text
-pub(crate) fn option_text(base: &BaseDocument, option: BlitzId) -> String {
+pub fn option_text(base: &BaseDocument, option: BlitzId) -> String {
     let mut text = String::new();
     let mut stack: Vec<BlitzId> = base
         .get_node(option)
@@ -681,7 +673,7 @@ pub(crate) fn option_text(base: &BaseDocument, option: BlitzId) -> String {
 }
 
 // https://html.spec.whatwg.org/multipage/form-elements.html#dom-select-value
-pub(crate) fn select_value(parsed: &mut Parsed, select: BlitzId) -> String {
+pub fn select_value(parsed: &mut Parsed, select: BlitzId) -> String {
     effective_selected_options(parsed, select)
         .first()
         .map_or_else(String::new, |option| {
@@ -690,7 +682,7 @@ pub(crate) fn select_value(parsed: &mut Parsed, select: BlitzId) -> String {
 }
 
 // https://html.spec.whatwg.org/multipage/form-elements.html#dom-select-selectedindex
-pub(crate) fn selected_index_of(parsed: &mut Parsed, select: BlitzId) -> i32 {
+pub fn selected_index_of(parsed: &mut Parsed, select: BlitzId) -> i32 {
     let Some(selected) = effective_selected_options(parsed, select)
         .into_iter()
         .next()
@@ -704,7 +696,7 @@ pub(crate) fn selected_index_of(parsed: &mut Parsed, select: BlitzId) -> i32 {
 }
 
 // https://html.spec.whatwg.org/multipage/form-elements.html#the-select-element
-pub(crate) fn reset_select_selectedness(parsed: &mut Parsed, select: BlitzId) {
+pub fn reset_select_selectedness(parsed: &mut Parsed, select: BlitzId) {
     for option in select_options(&parsed.document.base, parsed.id, select) {
         let selected = attr(&parsed.document.base, option.node, "selected").is_some();
         parsed
@@ -718,7 +710,8 @@ pub(crate) fn reset_select_selectedness(parsed: &mut Parsed, select: BlitzId) {
     update_selectedcontent(parsed, select);
 }
 
-pub(crate) fn collapse_whitespace(text: &str) -> String {
+#[must_use]
+pub fn collapse_whitespace(text: &str) -> String {
     let mut result = String::new();
     let mut pending_space = false;
     for character in text.chars() {
@@ -735,30 +728,35 @@ pub(crate) fn collapse_whitespace(text: &str) -> String {
     result
 }
 
-pub(crate) fn submission_encoding(label: &str) -> &'static encoding_rs::Encoding {
+#[must_use]
+pub fn submission_encoding(label: &str) -> &'static encoding_rs::Encoding {
     encoding_rs::Encoding::for_label(trim_label(label).as_bytes())
         .filter(|encoding| *encoding != encoding_rs::REPLACEMENT)
         .unwrap_or(encoding_rs::UTF_8)
 }
 
 // https://encoding.spec.whatwg.org/#encode
-pub(crate) fn encode_form_bytes(text: &str, label: &str) -> Vec<u8> {
+#[must_use]
+pub fn encode_form_bytes(text: &str, label: &str) -> Vec<u8> {
     submission_encoding(label).encode(text).0.into_owned()
 }
 
 // https://url.spec.whatwg.org/#concept-urlencoded-byte-serializer
-pub(crate) fn urlencode_form(text: &str, label: &str) -> String {
+#[must_use]
+pub fn urlencode_form(text: &str, label: &str) -> String {
     let (bytes, _, _) = submission_encoding(label).encode(text);
     url::form_urlencoded::byte_serialize(bytes.as_ref()).collect()
 }
 
 // https://html.spec.whatwg.org/multipage/form-elements.html#attr-textarea-wrap
-pub(crate) fn wrap_is_hard(wrap: Option<&str>) -> bool {
+#[must_use]
+pub fn wrap_is_hard(wrap: Option<&str>) -> bool {
     wrap.is_some_and(|wrap| wrap.trim().eq_ignore_ascii_case("hard"))
 }
 
 // https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#rules-for-parsing-non-negative-integers
-pub(crate) fn parse_positive(value: Option<&str>) -> Option<usize> {
+#[must_use]
+pub fn parse_positive(value: Option<&str>) -> Option<usize> {
     let parsed = crate::dom::parse::parse_non_negative_integer(value?)?;
     if parsed == 0 {
         return None;
@@ -767,7 +765,8 @@ pub(crate) fn parse_positive(value: Option<&str>) -> Option<usize> {
 }
 
 // https://html.spec.whatwg.org/multipage/form-elements.html#textarea-wrapping-transformation
-pub(crate) fn hard_wrap(value: &str, cols: usize) -> String {
+#[must_use]
+pub fn hard_wrap(value: &str, cols: usize) -> String {
     let cols = cols.max(1);
     let mut out = String::with_capacity(value.len());
     for (index, line) in value.split('\n').enumerate() {
@@ -789,12 +788,13 @@ pub(crate) fn hard_wrap(value: &str, cols: usize) -> String {
 }
 
 // https://encoding.spec.whatwg.org/#concept-encoding-get
-pub(crate) fn trim_label(label: &str) -> &str {
+#[must_use]
+pub fn trim_label(label: &str) -> &str {
     label.trim_matches(['\t', '\n', '\x0C', '\r', ' '])
 }
 
 // https://html.spec.whatwg.org/multipage/input.html#radio-button-group
-pub(crate) fn radio_group_members(
+pub fn radio_group_members(
     base: &blitz_dom::BaseDocument,
     document: u32,
     name: &str,
@@ -835,7 +835,7 @@ pub(crate) fn radio_group_members(
     group
 }
 
-pub(crate) fn control_value_len(parsed: &Parsed, node: BlitzId) -> usize {
+pub fn control_value_len(parsed: &Parsed, node: BlitzId) -> usize {
     let base = &parsed.document.base;
     let Some(element) = base
         .get_node(node)
@@ -856,7 +856,7 @@ pub(crate) fn control_value_len(parsed: &Parsed, node: BlitzId) -> usize {
 }
 
 // https://html.spec.whatwg.org/multipage/form-elements.html#concept-textarea-api-value
-pub(crate) fn textarea_api_value(base: &blitz_dom::BaseDocument, node: BlitzId) -> String {
+pub fn textarea_api_value(base: &blitz_dom::BaseDocument, node: BlitzId) -> String {
     let raw = base
         .get_node(node)
         .and_then(|target| target.data.downcast_element())
@@ -868,7 +868,7 @@ pub(crate) fn textarea_api_value(base: &blitz_dom::BaseDocument, node: BlitzId) 
     crate::dom::text::normalize_newlines(&raw)
 }
 
-pub(crate) fn selection_applies(base: &blitz_dom::BaseDocument, node: BlitzId) -> bool {
+pub fn selection_applies(base: &blitz_dom::BaseDocument, node: BlitzId) -> bool {
     let Some(element) = base
         .get_node(node)
         .and_then(|target| target.data.downcast_element())
@@ -886,7 +886,7 @@ pub(crate) fn selection_applies(base: &blitz_dom::BaseDocument, node: BlitzId) -
     }
 }
 
-pub(crate) fn radios_to_uncheck(base: &BaseDocument, document: u32, input: BlitzId) -> Vec<NodeId> {
+pub fn radios_to_uncheck(base: &BaseDocument, document: u32, input: BlitzId) -> Vec<NodeId> {
     let Some(element) = base
         .get_node(input)
         .and_then(|node| node.data.downcast_element())
@@ -911,7 +911,7 @@ pub(crate) fn radios_to_uncheck(base: &BaseDocument, document: u32, input: Blitz
 }
 
 // https://html.spec.whatwg.org/multipage/form-elements.html#dom-option-selected
-pub(crate) fn set_option_selected(parsed: &mut Parsed, option: BlitzId, selected: bool) {
+pub fn set_option_selected(parsed: &mut Parsed, option: BlitzId, selected: bool) {
     if let Some(select) = option_select_owner(&parsed.document.base, option)
         && selected
         && attr(&parsed.document.base, select, "multiple").is_none()
@@ -932,7 +932,7 @@ pub(crate) fn set_option_selected(parsed: &mut Parsed, option: BlitzId, selected
 }
 
 // https://html.spec.whatwg.org/multipage/form-elements.html#dom-select-selectedindex
-pub(crate) fn set_select_selected_index_value(parsed: &mut Parsed, select: BlitzId, value: i32) {
+pub fn set_select_selected_index_value(parsed: &mut Parsed, select: BlitzId, value: i32) {
     let wanted = usize::try_from(value).ok().and_then(|index| {
         select_options(&parsed.document.base, parsed.id, select)
             .get(index)
@@ -942,7 +942,7 @@ pub(crate) fn set_select_selected_index_value(parsed: &mut Parsed, select: Blitz
 }
 
 // https://html.spec.whatwg.org/multipage/form-elements.html#dom-select-value
-pub(crate) fn set_select_value_selectedness(parsed: &mut Parsed, select: BlitzId, value: &str) {
+pub fn set_select_value_selectedness(parsed: &mut Parsed, select: BlitzId, value: &str) {
     let options = select_options(&parsed.document.base, parsed.id, select);
     let mut first_matching = None;
     for option in &options {
@@ -977,7 +977,7 @@ fn select_only_option(parsed: &mut Parsed, select: BlitzId, keep: Option<BlitzId
 }
 
 // https://html.spec.whatwg.org/multipage/form-elements.html#attr-option-selected
-pub(crate) fn option_selected_attribute_changed(parsed: &mut Parsed, option: BlitzId) {
+pub fn option_selected_attribute_changed(parsed: &mut Parsed, option: BlitzId) {
     let Some(select) = option_select_owner(&parsed.document.base, option) else {
         return;
     };
@@ -998,7 +998,7 @@ pub(crate) fn option_selected_attribute_changed(parsed: &mut Parsed, option: Bli
 }
 
 // https://html.spec.whatwg.org/multipage/form-elements.html#the-select-element
-pub(crate) fn select_attribute_changed(parsed: &mut Parsed, select: BlitzId, attribute: &str) {
+pub fn select_attribute_changed(parsed: &mut Parsed, select: BlitzId, attribute: &str) {
     if attribute == "multiple" && attr(&parsed.document.base, select, "multiple").is_none() {
         let mut seen = false;
         for option in select_options(&parsed.document.base, parsed.id, select) {
@@ -1059,7 +1059,7 @@ fn enabled_selectedcontents(base: &BaseDocument, select: BlitzId) -> Vec<BlitzId
 }
 
 // https://html.spec.whatwg.org/multipage/form-elements.html#the-selectedcontent-element
-pub(crate) fn update_selectedcontent(parsed: &mut Parsed, select: BlitzId) {
+pub fn update_selectedcontent(parsed: &mut Parsed, select: BlitzId) {
     if attr(&parsed.document.base, select, "multiple").is_some() {
         return;
     }

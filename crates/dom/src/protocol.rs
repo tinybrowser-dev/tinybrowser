@@ -9,7 +9,8 @@ pub use webstorage::{STORAGE_QUOTA_BYTES, StorageChange, StorageError};
 use net::cors::CrossOrigin;
 
 // https://html.spec.whatwg.org/multipage/urls-and-fetching.html#cors-settings-attributes
-pub(crate) fn cross_origin(setting: Option<blitz_traits::net::CorsSetting>) -> Option<CrossOrigin> {
+#[must_use]
+pub fn cross_origin(setting: Option<blitz_traits::net::CorsSetting>) -> Option<CrossOrigin> {
     setting.map(|setting| match setting {
         blitz_traits::net::CorsSetting::Anonymous => CrossOrigin::Anonymous,
         blitz_traits::net::CorsSetting::UseCredentials => CrossOrigin::UseCredentials,
@@ -17,7 +18,8 @@ pub(crate) fn cross_origin(setting: Option<blitz_traits::net::CorsSetting>) -> O
 }
 
 // https://html.spec.whatwg.org/multipage/urls-and-fetching.html#referrer-policy-attribute
-pub(crate) fn referrer_policy(policy: blitz_traits::net::ReferrerPolicy) -> net::ReferrerPolicy {
+#[must_use]
+pub fn referrer_policy(policy: blitz_traits::net::ReferrerPolicy) -> net::ReferrerPolicy {
     match policy {
         blitz_traits::net::ReferrerPolicy::NoReferrer => net::ReferrerPolicy::NoReferrer,
         blitz_traits::net::ReferrerPolicy::NoReferrerWhenDowngrade => {
@@ -55,13 +57,13 @@ impl FrameId {
     }
 
     #[must_use]
-    pub(crate) fn worker(id: u64) -> Self {
+    pub fn worker(id: u64) -> Self {
         Self((1u64 << 63) | id)
     }
 
     // https://html.spec.whatwg.org/multipage/workers.html#dedicated-workers-and-the-dedicatedworkerglobalscope-interface
     #[must_use]
-    pub(crate) const fn as_worker(self) -> Option<u64> {
+    pub const fn as_worker(self) -> Option<u64> {
         if self.0 >> 63 == 0 {
             None
         } else {
@@ -208,7 +210,8 @@ pub enum HistoryHandling {
 pub struct TimerId(u64);
 
 impl TimerId {
-    pub(crate) fn take_next(&mut self) -> Self {
+    #[must_use]
+    pub fn take_next(&mut self) -> Self {
         let id = *self;
         self.0 += 1;
         id
@@ -407,7 +410,7 @@ macro_rules! sandbox_flags {
     ($($(#[$doc:meta])* $variant:ident),+ $(,)?) => {
         #[derive(Clone, Copy, PartialEq, Eq, Debug)]
         #[repr(u8)]
-        pub(crate) enum SandboxFlag {
+        pub enum SandboxFlag {
             $($(#[$doc])* $variant),+
         }
 
@@ -506,7 +509,8 @@ impl SandboxFlags {
     ];
 
     // https://dom.spec.whatwg.org/#concept-domtokenlist-validation
-    pub(crate) fn supports(token: &str) -> bool {
+    #[must_use]
+    pub fn supports(token: &str) -> bool {
         Self::TOKENS
             .iter()
             .any(|(keyword, _)| keyword.eq_ignore_ascii_case(token))
@@ -542,7 +546,8 @@ impl SandboxFlags {
         .sandbox_flags()
     }
 
-    pub(crate) fn contains(self, flag: SandboxFlag) -> bool {
+    #[must_use]
+    pub fn contains(self, flag: SandboxFlag) -> bool {
         self.0 & flag.bit() != 0
     }
 
@@ -576,7 +581,8 @@ impl SandboxFlags {
     }
 
     // https://html.spec.whatwg.org/multipage/browsers.html#sandboxed-scripts-browsing-context-flag
-    pub(crate) fn scripts_disabled(self) -> bool {
+    #[must_use]
+    pub fn scripts_disabled(self) -> bool {
         self.contains(SandboxFlag::Scripts)
     }
 
@@ -866,7 +872,7 @@ pub struct HistorySnapshot {
 
 impl HistorySnapshot {
     // https://html.spec.whatwg.org/multipage/browsing-the-web.html#url-and-history-update-steps
-    pub(crate) fn apply(&mut self, state: String, handling: HistoryHandling) {
+    pub fn apply(&mut self, state: String, handling: HistoryHandling) {
         self.state = Some(state);
         match handling {
             HistoryHandling::Push => {
@@ -1375,9 +1381,7 @@ fn potential_cors(crossorigin: Option<CrossOrigin>) -> net::cors::CorsParameters
 }
 
 // https://html.spec.whatwg.org/multipage/urls-and-fetching.html#cors-settings-attributes
-pub(crate) fn cross_origin_credentials(
-    crossorigin: Option<CrossOrigin>,
-) -> net::cors::CredentialsMode {
+pub fn cross_origin_credentials(crossorigin: Option<CrossOrigin>) -> net::cors::CredentialsMode {
     // https://html.spec.whatwg.org/multipage/urls-and-fetching.html#cors-settings-attributes
     crossorigin.map_or(
         net::cors::CredentialsMode::SameOrigin,

@@ -8,7 +8,8 @@ use style::values::Parser;
 use super::{parser_context, url_data};
 
 // https://drafts.csswg.org/cssom/#css-property-to-idl-attribute
-pub(crate) fn property_supported(name: &str) -> bool {
+#[must_use]
+pub fn property_supported(name: &str) -> bool {
     match PropertyId::parse_enabled_for_all_content(name) {
         Ok(id) => id.non_custom_id().is_some(),
         Err(()) => false,
@@ -17,7 +18,8 @@ pub(crate) fn property_supported(name: &str) -> bool {
 
 // https://drafts.csswg.org/css-conditional-3/#dom-css-supports
 // https://drafts.csswg.org/css-variables-1/#defining-variables
-pub(crate) fn supports_declaration(property: &str, value: &str) -> bool {
+#[must_use]
+pub fn supports_declaration(property: &str, value: &str) -> bool {
     let Ok(id) = PropertyId::parse_enabled_for_all_content(property) else {
         return false;
     };
@@ -40,7 +42,8 @@ pub(crate) fn supports_declaration(property: &str, value: &str) -> bool {
 }
 
 // https://drafts.csswg.org/css-conditional-3/#dom-css-supports
-pub(crate) fn supports_condition(text: &str) -> bool {
+#[must_use]
+pub fn supports_condition(text: &str) -> bool {
     parse_condition(text) || parse_condition(&format!("({text})"))
 }
 

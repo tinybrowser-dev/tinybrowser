@@ -8,28 +8,29 @@ use crate::dom::tree::{NodeId, child_ids};
 
 // https://dom.spec.whatwg.org/#concept-range-bp
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct BoundaryPoint {
-    pub(crate) node: NodeId,
-    pub(crate) offset: u32,
+pub struct BoundaryPoint {
+    pub node: NodeId,
+    pub offset: u32,
 }
 
 // https://dom.spec.whatwg.org/#concept-range-bp
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct AttrPoint {
-    pub(crate) scope: NodeId,
-    pub(crate) id: u64,
+pub struct AttrPoint {
+    pub scope: NodeId,
+    pub id: u64,
 }
 
 // https://dom.spec.whatwg.org/#concept-range
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct RangeState {
-    pub(crate) start: BoundaryPoint,
-    pub(crate) end: BoundaryPoint,
-    pub(crate) attr: Option<AttrPoint>,
+pub struct RangeState {
+    pub start: BoundaryPoint,
+    pub end: BoundaryPoint,
+    pub attr: Option<AttrPoint>,
 }
 
 impl RangeState {
-    pub(crate) fn collapsed(point: BoundaryPoint) -> Self {
+    #[must_use]
+    pub fn collapsed(point: BoundaryPoint) -> Self {
         Self {
             start: point,
             end: point,
@@ -37,7 +38,8 @@ impl RangeState {
         }
     }
 
-    pub(crate) fn attribute(attr: AttrPoint) -> Self {
+    #[must_use]
+    pub fn attribute(attr: AttrPoint) -> Self {
         let placeholder = BoundaryPoint {
             node: attr.scope,
             offset: 0,
@@ -49,7 +51,8 @@ impl RangeState {
         }
     }
 
-    pub(crate) fn document(&self) -> u32 {
+    #[must_use]
+    pub fn document(&self) -> u32 {
         match self.attr {
             Some(attr) => attr.scope.document,
             None => self.start.node.document,
@@ -59,14 +62,14 @@ impl RangeState {
 
 // https://dom.spec.whatwg.org/#concept-range
 #[derive(Default)]
-pub(crate) struct RangeTable {
+pub struct RangeTable {
     slots: Vec<Option<RangeState>>,
     free: Vec<usize>,
     live: usize,
 }
 
 impl RangeTable {
-    pub(crate) fn alloc(&mut self, state: RangeState) -> usize {
+    pub fn alloc(&mut self, state: RangeState) -> usize {
         self.live += 1;
         if let Some(slot) = self.free.pop() {
             self.slots[slot] = Some(state);
@@ -77,11 +80,12 @@ impl RangeTable {
         }
     }
 
-    pub(crate) fn get(&self, slot: usize) -> Option<RangeState> {
+    #[must_use]
+    pub fn get(&self, slot: usize) -> Option<RangeState> {
         self.slots.get(slot).copied().flatten()
     }
 
-    pub(crate) fn set(&mut self, slot: usize, state: RangeState) -> bool {
+    pub fn set(&mut self, slot: usize, state: RangeState) -> bool {
         match self.slots.get_mut(slot) {
             Some(entry) if entry.is_some() => {
                 *entry = Some(state);
@@ -91,7 +95,7 @@ impl RangeTable {
         }
     }
 
-    pub(crate) fn free(&mut self, slot: usize) {
+    pub fn free(&mut self, slot: usize) {
         if let Some(entry) = self.slots.get_mut(slot)
             && entry.take().is_some()
         {
@@ -100,11 +104,12 @@ impl RangeTable {
         }
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
         self.live == 0
     }
 
-    pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = &mut RangeState> {
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut RangeState> {
         self.slots.iter_mut().flatten()
     }
 }
@@ -114,7 +119,7 @@ fn utf16_length(text: &str) -> u32 {
 }
 
 // https://dom.spec.whatwg.org/#concept-node-length
-pub(crate) fn node_length(base: &blitz_dom::BaseDocument, id: NodeId) -> u32 {
+pub fn node_length(base: &blitz_dom::BaseDocument, id: NodeId) -> u32 {
     let Some(node) = base.get_node(id.node) else {
         return 0;
     };
@@ -132,7 +137,7 @@ pub(crate) fn node_length(base: &blitz_dom::BaseDocument, id: NodeId) -> u32 {
     }
 }
 
-pub(crate) fn is_text(base: &blitz_dom::BaseDocument, id: NodeId) -> bool {
+pub fn is_text(base: &blitz_dom::BaseDocument, id: NodeId) -> bool {
     matches!(
         base.get_node(id.node).map(|node| &node.data),
         Some(NodeData::Text(_) | NodeData::CDataSection { .. })
@@ -140,7 +145,7 @@ pub(crate) fn is_text(base: &blitz_dom::BaseDocument, id: NodeId) -> bool {
 }
 
 // https://dom.spec.whatwg.org/#interface-characterdata
-pub(crate) fn is_character_data(base: &blitz_dom::BaseDocument, id: NodeId) -> bool {
+pub fn is_character_data(base: &blitz_dom::BaseDocument, id: NodeId) -> bool {
     matches!(
         base.get_node(id.node).map(|node| &node.data),
         Some(
@@ -153,7 +158,7 @@ pub(crate) fn is_character_data(base: &blitz_dom::BaseDocument, id: NodeId) -> b
 }
 
 // https://dom.spec.whatwg.org/#dom-range-stringifier
-pub(crate) fn range_text(
+pub fn range_text(
     document: &crate::documents::BlitzDocument,
     _document_id: u32,
     state: &RangeState,
@@ -200,7 +205,7 @@ fn append_contained_text(
 }
 
 // https://dom.spec.whatwg.org/#concept-range-bp
-pub(crate) fn is_doctype(base: &blitz_dom::BaseDocument, id: NodeId) -> bool {
+pub fn is_doctype(base: &blitz_dom::BaseDocument, id: NodeId) -> bool {
     matches!(
         base.get_node(id.node).map(|node| &node.data),
         Some(NodeData::Doctype { .. })
@@ -216,7 +221,7 @@ fn parent_of(base: &blitz_dom::BaseDocument, id: NodeId) -> Option<NodeId> {
         })
 }
 
-pub(crate) fn is_inclusive_ancestor(
+pub fn is_inclusive_ancestor(
     base: &blitz_dom::BaseDocument,
     possible: NodeId,
     node: NodeId,
@@ -241,7 +246,7 @@ fn is_inclusive_descendant(base: &blitz_dom::BaseDocument, possible: NodeId, nod
 }
 
 // https://dom.spec.whatwg.org/#concept-range-bp-after
-pub(crate) fn position(
+pub fn position(
     base: &blitz_dom::BaseDocument,
     document: u32,
     a: BoundaryPoint,
@@ -274,7 +279,7 @@ pub(crate) fn position(
     Ordering::Less
 }
 
-pub(crate) fn same_root(base: &blitz_dom::BaseDocument, a: NodeId, b: NodeId) -> bool {
+pub fn same_root(base: &blitz_dom::BaseDocument, a: NodeId, b: NodeId) -> bool {
     if a.document != b.document {
         return false;
     }
@@ -285,7 +290,7 @@ pub(crate) fn same_root(base: &blitz_dom::BaseDocument, a: NodeId, b: NodeId) ->
 }
 
 // https://dom.spec.whatwg.org/#concept-range-common-ancestor
-pub(crate) fn common_ancestor(base: &blitz_dom::BaseDocument, a: NodeId, b: NodeId) -> NodeId {
+pub fn common_ancestor(base: &blitz_dom::BaseDocument, a: NodeId, b: NodeId) -> NodeId {
     let mut container = a;
     while !is_inclusive_ancestor(base, container, b) {
         let Some(parent) = parent_of(base, container) else {
@@ -297,7 +302,7 @@ pub(crate) fn common_ancestor(base: &blitz_dom::BaseDocument, a: NodeId, b: Node
 }
 
 // https://dom.spec.whatwg.org/#concept-range-contained
-pub(crate) fn is_contained(
+pub fn is_contained(
     base: &blitz_dom::BaseDocument,
     document: u32,
     state: &RangeState,
@@ -325,7 +330,7 @@ pub(crate) fn is_contained(
 }
 
 // https://dom.spec.whatwg.org/#concept-range-partially-contained
-pub(crate) fn is_partially_contained(
+pub fn is_partially_contained(
     base: &blitz_dom::BaseDocument,
     state: &RangeState,
     node: NodeId,
@@ -334,7 +339,7 @@ pub(crate) fn is_partially_contained(
         != is_inclusive_ancestor(base, node, state.end.node)
 }
 
-pub(crate) fn ancestor_span(
+pub fn ancestor_span(
     base: &blitz_dom::BaseDocument,
     document: u32,
     state: &RangeState,
@@ -366,7 +371,7 @@ pub(crate) fn ancestor_span(
 }
 
 // https://dom.spec.whatwg.org/#concept-node-insert
-pub(crate) fn adjust_for_insert(ranges: &mut RangeTable, parent: NodeId, index: u32, count: u32) {
+pub fn adjust_for_insert(ranges: &mut RangeTable, parent: NodeId, index: u32, count: u32) {
     for range in ranges.iter_mut() {
         for point in [&mut range.start, &mut range.end] {
             if point.node == parent && point.offset > index {
@@ -377,7 +382,7 @@ pub(crate) fn adjust_for_insert(ranges: &mut RangeTable, parent: NodeId, index: 
 }
 
 // https://dom.spec.whatwg.org/#concept-node-remove
-pub(crate) fn adjust_for_remove(
+pub fn adjust_for_remove(
     base: &blitz_dom::BaseDocument,
     ranges: &mut RangeTable,
     parent: NodeId,
@@ -399,7 +404,7 @@ pub(crate) fn adjust_for_remove(
 }
 
 // https://dom.spec.whatwg.org/#concept-cd-replace
-pub(crate) fn adjust_for_replace_data(
+pub fn adjust_for_replace_data(
     ranges: &mut RangeTable,
     node: NodeId,
     offset: u32,
@@ -424,7 +429,7 @@ pub(crate) fn adjust_for_replace_data(
 }
 
 // https://dom.spec.whatwg.org/#dom-node-normalize
-pub(crate) fn adjust_for_normalize(
+pub fn adjust_for_normalize(
     ranges: &mut RangeTable,
     node: NodeId,
     sibling: NodeId,
@@ -446,7 +451,7 @@ pub(crate) fn adjust_for_normalize(
 }
 
 // https://dom.spec.whatwg.org/#concept-text-split
-pub(crate) fn adjust_for_split(
+pub fn adjust_for_split(
     ranges: &mut RangeTable,
     node: NodeId,
     new_node: NodeId,
@@ -468,7 +473,7 @@ pub(crate) fn adjust_for_split(
 }
 
 // https://dom.spec.whatwg.org/#concept-node-replace-all
-pub(crate) fn adjust_for_replace_all(
+pub fn adjust_for_replace_all(
     base: &blitz_dom::BaseDocument,
     ranges: &mut RangeTable,
     parent: NodeId,

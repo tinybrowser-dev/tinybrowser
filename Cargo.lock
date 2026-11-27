@@ -746,6 +746,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "dom"
+version = "0.0.6"
+dependencies = [
+ "base64 0.23.1",
+ "blitz-dom",
+ "blitz-html",
+ "blitz-traits",
+ "encoding_rs",
+ "enumerated",
+ "markup5ever",
+ "net",
+ "parley",
+ "percent-encoding",
+ "secure-context",
+ "serde",
+ "sha2",
+ "stylo",
+ "stylo_traits",
+ "url",
+ "webstorage",
+ "xml5ever",
+]
+
+[[package]]
 name = "dragonbox_ecma"
 version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2761,6 +2785,7 @@ dependencies = [
  "blitz-paint",
  "blitz-traits",
  "data-url",
+ "dom",
  "encoding_rs",
  "enumerated",
  "fixed_decimal",

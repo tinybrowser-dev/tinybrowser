@@ -5,10 +5,7 @@ use blitz_dom::NodeData;
 use crate::dom::tree::{NodeId, is_element};
 
 // https://dom.spec.whatwg.org/#parent-element
-pub(crate) fn parent_element_of(
-    doc: &crate::documents::BlitzDocument,
-    id: NodeId,
-) -> Option<NodeId> {
+pub fn parent_element_of(doc: &crate::documents::BlitzDocument, id: NodeId) -> Option<NodeId> {
     let parent = doc.base.get_node(id.node)?.parent?;
     is_element(&doc.base, parent).then_some(NodeId {
         document: id.document,
@@ -16,10 +13,7 @@ pub(crate) fn parent_element_of(
     })
 }
 
-pub(crate) fn document_element_of(
-    doc: &crate::documents::BlitzDocument,
-    id: NodeId,
-) -> Option<NodeId> {
+pub fn document_element_of(doc: &crate::documents::BlitzDocument, id: NodeId) -> Option<NodeId> {
     doc.base
         .get_node(id.node)?
         .children
@@ -33,7 +27,7 @@ pub(crate) fn document_element_of(
 }
 
 // https://dom.spec.whatwg.org/#locate-a-namespace
-pub(crate) fn locate_namespace(
+pub fn locate_namespace(
     doc: &crate::documents::BlitzDocument,
     node: NodeId,
     prefix: Option<&str>,
@@ -57,7 +51,7 @@ pub(crate) fn locate_namespace(
 }
 
 // https://dom.spec.whatwg.org/#locate-a-namespace
-pub(crate) fn locate_element_namespace(
+pub fn locate_element_namespace(
     doc: &crate::documents::BlitzDocument,
     id: NodeId,
     prefix: Option<&str>,
@@ -100,7 +94,7 @@ pub(crate) fn locate_element_namespace(
 }
 
 // https://dom.spec.whatwg.org/#locate-a-namespace-prefix
-pub(crate) fn locate_prefix(
+pub fn locate_prefix(
     doc: &crate::documents::BlitzDocument,
     node: NodeId,
     namespace: &str,
@@ -124,7 +118,7 @@ pub(crate) fn locate_prefix(
 }
 
 // https://dom.spec.whatwg.org/#locate-a-namespace-prefix
-pub(crate) fn locate_element_prefix(
+pub fn locate_element_prefix(
     doc: &crate::documents::BlitzDocument,
     id: NodeId,
     namespace: &str,

@@ -1,5 +1,5 @@
-pub(crate) mod color;
-pub(crate) mod supports;
+pub mod color;
+pub mod supports;
 
 use style::context::QuirksMode;
 use style::parser::ParserContext;
@@ -7,11 +7,13 @@ use style::stylesheets::{CssRuleType, Namespaces, Origin, UrlExtraData};
 use style::substitution::AttrTaint;
 use style_traits::ParsingMode;
 
-pub(crate) fn url_data() -> UrlExtraData {
+#[must_use]
+pub fn url_data() -> UrlExtraData {
     UrlExtraData(style::servo_arc::Arc::new(net::about_blank()))
 }
 
-pub(crate) fn parser_context(url_data: &UrlExtraData) -> ParserContext<'_> {
+#[must_use]
+pub fn parser_context(url_data: &UrlExtraData) -> ParserContext<'_> {
     ParserContext::new(
         Origin::Author,
         url_data,

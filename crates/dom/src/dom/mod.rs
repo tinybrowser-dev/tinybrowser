@@ -1,22 +1,22 @@
 // https://dom.spec.whatwg.org/#concept-node-adopt
 
-pub(crate) mod accessibility;
-pub(crate) mod adoption;
-pub(crate) mod equality;
-pub(crate) mod forms;
-pub(crate) mod input;
-pub(crate) mod insertion;
-pub(crate) mod microsyntaxes;
-pub(crate) mod namespaces;
-pub(crate) mod parse;
-pub(crate) mod range;
-pub(crate) mod serialization;
-pub(crate) mod text;
-pub(crate) mod tree;
+pub mod accessibility;
+pub mod adoption;
+pub mod equality;
+pub mod forms;
+pub mod input;
+pub mod insertion;
+pub mod microsyntaxes;
+pub mod namespaces;
+pub mod parse;
+pub mod range;
+pub mod serialization;
+pub mod text;
+pub mod tree;
 
 // https://dom.spec.whatwg.org/#dom-domerror
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum TreeError {
+pub enum TreeError {
     Stale,
     Hierarchy,
     NotFound,

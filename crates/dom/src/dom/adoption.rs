@@ -8,7 +8,7 @@ use crate::documents::{BlitzDocument, DocumentStore, JournalEntry};
 use crate::dom::TreeError;
 use crate::dom::tree::NodeId;
 
-pub(crate) enum ImportSnapshot {
+pub enum ImportSnapshot {
     Element {
         name: QualName,
         attributes: Vec<blitz_dom::Attribute>,
@@ -32,7 +32,7 @@ pub(crate) enum ImportSnapshot {
     Fragment(Vec<ImportSnapshot>),
 }
 
-pub(crate) fn snapshot_children(
+pub fn snapshot_children(
     doc: &BlitzDocument,
     document: u32,
     children: impl IntoIterator<Item = blitz_traits::node_id::NodeId>,
@@ -52,11 +52,7 @@ pub(crate) fn snapshot_children(
         .collect()
 }
 
-pub(crate) fn import_snapshot(
-    doc: &BlitzDocument,
-    id: NodeId,
-    deep: bool,
-) -> Option<ImportSnapshot> {
+pub fn import_snapshot(doc: &BlitzDocument, id: NodeId, deep: bool) -> Option<ImportSnapshot> {
     let node = doc.base.get_node(id.node)?;
     match &node.data {
         NodeData::Element(element) => {
@@ -120,7 +116,7 @@ pub(crate) fn import_snapshot(
     }
 }
 
-pub(crate) fn materialize_import(
+pub fn materialize_import(
     doc: &mut BlitzDocument,
     document: u32,
     snapshot: &ImportSnapshot,
@@ -212,7 +208,7 @@ pub(crate) fn materialize_import(
     }
 }
 
-pub(crate) fn materialize_children(
+pub fn materialize_children(
     doc: &mut BlitzDocument,
     document: u32,
     snapshots: &[ImportSnapshot],
@@ -229,7 +225,7 @@ pub(crate) fn materialize_children(
 }
 
 // https://html.spec.whatwg.org/multipage/scripting.html#the-template-element
-pub(crate) fn lockstep_children(
+pub fn lockstep_children(
     from_base: &blitz_dom::BaseDocument,
     from: blitz_traits::node_id::NodeId,
     to_base: &blitz_dom::BaseDocument,
@@ -260,10 +256,7 @@ fn children_for_walk(
     }
 }
 
-pub(crate) fn detach_for_adopt(
-    doc: &mut BlitzDocument,
-    id: NodeId,
-) -> std::result::Result<(), TreeError> {
+pub fn detach_for_adopt(doc: &mut BlitzDocument, id: NodeId) -> std::result::Result<(), TreeError> {
     let Some(parent) = doc.base.get_node(id.node).and_then(|node| node.parent) else {
         return Ok(());
     };
@@ -314,7 +307,7 @@ pub(crate) fn detach_for_adopt(
     Ok(())
 }
 
-pub(crate) fn clone_within_document(
+pub fn clone_within_document(
     doc: &mut BlitzDocument,
     doc_id: u32,
     id: NodeId,
@@ -335,7 +328,7 @@ pub(crate) fn clone_within_document(
     Ok(fresh)
 }
 
-pub(crate) fn adopt_across_store(
+pub fn adopt_across_store(
     store: &mut DocumentStore,
     parent: NodeId,
     node: NodeId,

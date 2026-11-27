@@ -1,13 +1,35 @@
+use std::sync::LazyLock;
+
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use browser::ScreenshotClip;
 
 use crate::dispatch::DispatchError;
 
-pub(crate) fn parse<T: DeserializeOwned>(params: &Value) -> Result<T, DispatchError> {
-    T::deserialize(params).map_err(|error| DispatchError::InvalidParams(error.to_string()))
+#[derive(Clone, Copy)]
+pub(crate) struct RawParams<'a>(&'a Value);
+
+impl<'a> RawParams<'a> {
+    pub(crate) fn from_request(request: &'a Value) -> Self {
+        static EMPTY: LazyLock<Value> = LazyLock::new(|| json!({}));
+        let value = request
+            .get("params")
+            .filter(|value| !value.is_null())
+            .unwrap_or(&EMPTY);
+        Self(value)
+    }
+
+    pub(crate) fn parse<T: DeserializeOwned>(self) -> Result<T, DispatchError> {
+        T::deserialize(self.0).map_err(|error| DispatchError::InvalidParams(error.to_string()))
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ExecutionContext {
+    pub(crate) execution_context_id: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]

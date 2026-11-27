@@ -509,7 +509,7 @@ const __tbEncode = (value, transfer, sourcePort) => {
       // https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal
       if (host.__tbIsOutOfBoundsView(input)) throw __tbCloneFailure();
       const tag = Object.prototype.toString.call(input);
-      const kind = tag.slice(8, -1);
+      const viewKind = tag.slice(8, -1);
       let buffer;
       let byteOffset;
       let byteLength;
@@ -526,9 +526,9 @@ const __tbEncode = (value, transfer, sourcePort) => {
       const tracked = buffer.resizable === true
         && byteOffset === 0 && byteLength === buffer.byteLength;
       const encoded = encode(buffer);
-      const descriptor = kind === 'DataView'
+      const descriptor = viewKind === 'DataView'
         ? ['view', encoded, 'DataView', byteOffset, byteLength, tracked]
-        : ['view', encoded, kind, byteOffset, input.length, tracked];
+        : ['view', encoded, viewKind, byteOffset, input.length, tracked];
       const index = slot(descriptor);
       seen.set(input, index);
       return index;

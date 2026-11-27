@@ -432,7 +432,6 @@
   const apply = __tbApply;
   const PrivateSet = __tbPrivateSet;
   const parseFloatValue = globalThis.parseFloat;
-  const min = Math.min;
   const max = Math.max;
 
   const live = PrivateSet();

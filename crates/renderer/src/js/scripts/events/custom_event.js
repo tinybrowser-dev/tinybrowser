@@ -1,6 +1,6 @@
 (function() {
   const TB_DETAIL = host.slots('tb-custom-event-detail');
-  function CustomEvent(type) {
+  function CustomEvent(_type) {
     if (new.target === undefined) {
       throw new TypeError('Class constructor CustomEvent cannot be invoked without new');
     }

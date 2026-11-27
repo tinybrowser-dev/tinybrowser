@@ -11,6 +11,7 @@ members = [
     "crates/cdp",
     "crates/cookies",
     "crates/dial",
+    "crates/dom",
     "crates/enumerated",
     "crates/logging",
     "crates/net",
@@ -39,6 +40,7 @@ browser = { path = "crates/browser" }
 cdp = { path = "crates/cdp" }
 cookies = { path = "crates/cookies" }
 dial = { path = "crates/dial" }
+dom = { path = "crates/dom" }
 enumerated = { path = "crates/enumerated" }
 logging = { path = "crates/logging" }
 # The fetch core. `native` adds the hyper/native-tls socket transport; only a

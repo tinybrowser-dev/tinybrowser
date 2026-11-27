@@ -17,7 +17,8 @@ use crate::dom::tree::{BlitzId, attr};
     clippy::cast_precision_loss,
     reason = "f64 represents any day, month, or week count the microsyntax allows"
 )]
-pub(crate) fn value_in_units(kind: InputType, text: &str) -> Option<f64> {
+#[must_use]
+pub fn value_in_units(kind: InputType, text: &str) -> Option<f64> {
     match kind {
         InputType::Number | InputType::Range => parse_double(text),
         InputType::Date => date_value(text).map(|days| days as f64),
@@ -48,7 +49,8 @@ pub(crate) fn value_in_units(kind: InputType, text: &str) -> Option<f64> {
     clippy::cast_precision_loss,
     reason = "f64 represents any day, month, or week count the microsyntax allows"
 )]
-pub(crate) fn value_as_number(kind: InputType, text: &str) -> Option<f64> {
+#[must_use]
+pub fn value_as_number(kind: InputType, text: &str) -> Option<f64> {
     match kind {
         InputType::Number | InputType::Range => parse_double(text),
         InputType::Date => date_value(text).map(|days| days as f64 * 86_400_000.0),
@@ -76,7 +78,7 @@ pub(crate) fn value_as_number(kind: InputType, text: &str) -> Option<f64> {
 
 // https://html.spec.whatwg.org/multipage/input.html#attr-input-type
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum InputType {
+pub enum InputType {
     Hidden,
     Text,
     Search,
@@ -103,7 +105,7 @@ pub(crate) enum InputType {
 
 // https://html.spec.whatwg.org/multipage/input.html#dom-input-value
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ValueMode {
+pub enum ValueMode {
     Current,
     Default,
     DefaultOn,
@@ -112,7 +114,8 @@ pub(crate) enum ValueMode {
 
 impl InputType {
     // https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#enumerated-attribute
-    pub(crate) fn from_attribute(value: Option<&str>) -> Self {
+    #[must_use]
+    pub fn from_attribute(value: Option<&str>) -> Self {
         let Some(value) = value else {
             return Self::Text;
         };
@@ -164,14 +167,16 @@ impl InputType {
     }
 
     // https://html.spec.whatwg.org/multipage/input.html#do-not-apply
-    pub(crate) fn selection_applies(self) -> bool {
+    #[must_use]
+    pub fn selection_applies(self) -> bool {
         matches!(
             self,
             Self::Text | Self::Search | Self::Tel | Self::Url | Self::Password
         )
     }
 
-    pub(crate) fn value_mode(self) -> ValueMode {
+    #[must_use]
+    pub fn value_mode(self) -> ValueMode {
         match self {
             Self::Checkbox | Self::Radio => ValueMode::DefaultOn,
             Self::Hidden | Self::Submit | Self::Image | Self::Reset | Self::Button => {
@@ -196,7 +201,7 @@ impl InputType {
     }
 }
 
-pub(crate) fn input_type(base: &BaseDocument, node: BlitzId) -> Option<InputType> {
+pub fn input_type(base: &BaseDocument, node: BlitzId) -> Option<InputType> {
     let element = base.get_node(node)?.data.downcast_element()?;
     if element.name.ns != crate::dom::tree::html_namespace()
         || element.name.local.as_str() != "input"
@@ -207,7 +212,7 @@ pub(crate) fn input_type(base: &BaseDocument, node: BlitzId) -> Option<InputType
 }
 
 // https://html.spec.whatwg.org/multipage/input.html#concept-fe-value
-pub(crate) fn raw_value(parsed: &Parsed, node: BlitzId, kind: InputType) -> String {
+pub fn raw_value(parsed: &Parsed, node: BlitzId, kind: InputType) -> String {
     let base = &parsed.document.base;
     let Some(element) = base
         .get_node(node)
@@ -229,7 +234,7 @@ fn value_slot(base: &BaseDocument, node: BlitzId) -> String {
 }
 
 // https://html.spec.whatwg.org/multipage/input.html#dom-input-value
-pub(crate) fn current_value(parsed: &Parsed, node: BlitzId) -> String {
+pub fn current_value(parsed: &Parsed, node: BlitzId) -> String {
     let base = &parsed.document.base;
     let Some(kind) = input_type(base, node) else {
         return String::new();
@@ -247,7 +252,7 @@ pub(crate) fn current_value(parsed: &Parsed, node: BlitzId) -> String {
 }
 
 // https://html.spec.whatwg.org/multipage/input.html#the-input-element
-pub(crate) fn sanitize(
+pub fn sanitize(
     base: &BaseDocument,
     device: &Device,
     node: BlitzId,
@@ -420,7 +425,8 @@ fn step_base_from_attributes(base: &BaseDocument, node: BlitzId) -> f64 {
 }
 
 // https://html.spec.whatwg.org/multipage/input.html#the-step-attribute
-pub(crate) fn default_step(kind: InputType) -> Option<f64> {
+#[must_use]
+pub fn default_step(kind: InputType) -> Option<f64> {
     match kind {
         InputType::Number
         | InputType::Range
@@ -444,7 +450,7 @@ fn step_mismatch_f64(value: f64, step: f64, step_base: f64) -> bool {
 }
 
 // https://html.spec.whatwg.org/multipage/input.html#the-step-attribute
-pub(crate) fn step_mismatch(base: &BaseDocument, node: BlitzId) -> bool {
+pub fn step_mismatch(base: &BaseDocument, node: BlitzId) -> bool {
     let Some(kind) = input_type(base, node) else {
         return false;
     };
@@ -501,7 +507,7 @@ pub(crate) fn step_mismatch(base: &BaseDocument, node: BlitzId) -> bool {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum NumberBufferState {
+pub enum NumberBufferState {
     Invalid,
     Empty,
     Partial,
@@ -510,7 +516,7 @@ pub(crate) enum NumberBufferState {
 }
 
 // https://html.spec.whatwg.org/multipage/input.html#number-state-(type=number
-pub(crate) fn number_buffer_state(text: &str) -> NumberBufferState {
+pub fn number_buffer_state(text: &str) -> NumberBufferState {
     if text.is_empty() {
         return NumberBufferState::Empty;
     }
@@ -574,7 +580,7 @@ pub(crate) fn number_buffer_state(text: &str) -> NumberBufferState {
     }
 }
 
-pub(crate) fn sanitize_with_device(
+pub fn sanitize_with_device(
     base: &mut BaseDocument,
     node: BlitzId,
     kind: InputType,
@@ -663,7 +669,7 @@ fn serialize_color_function(space: &str, [red, green, blue]: [f32; 3], alpha: f3
 }
 
 // https://html.spec.whatwg.org/multipage/input.html#concept-fe-value
-pub(crate) fn sync_sanitized_value(document: &mut crate::documents::BlitzDocument, node: BlitzId) {
+pub fn sync_sanitized_value(document: &mut crate::documents::BlitzDocument, node: BlitzId) {
     let base = &document.base;
     let Some(kind) = input_type(base, node) else {
         return;

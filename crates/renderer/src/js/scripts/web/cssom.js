@@ -1153,13 +1153,13 @@ let __tbCssomRuleAt;
       __tbDocument: { value: document, writable: false, enumerable: false, configurable: false },
     });
     list = new Proxy(target, {
-      get(list, property, receiver) {
+      get(targetList, property, receiver) {
         if (__tbCanonicalIndex(property)) {
-          const item = list.item(property >>> 0);
+          const item = targetList.item(property >>> 0);
           return item === null ? undefined : item;
         }
-        const value = __tbApply(__tbReflectGet, Reflect, [list, property, receiver]);
-        return typeof value === 'function' ? __tbApply(__tbBind, value, [list]) : value;
+        const value = __tbApply(__tbReflectGet, Reflect, [targetList, property, receiver]);
+        return typeof value === 'function' ? __tbApply(__tbBind, value, [targetList]) : value;
       },
     });
     __tbStyleSheetLists.set(document, list);
@@ -1204,18 +1204,14 @@ let __tbCssomRuleAt;
           const snapshot = list.slice();
           running = true;
           try {
-            return __tbApply(value, list, args);
+            const result = __tbApply(value, list, args);
+            commit();
+            return result;
           } catch (error) {
             restore(snapshot);
             throw error;
           } finally {
             running = false;
-            try {
-              commit();
-            } catch (error) {
-              restore(snapshot);
-              throw error;
-            }
           }
         };
       },
@@ -1827,7 +1823,7 @@ let __tbCssomRuleAt;
   }
   host.__tbReportVisualViewportChanges = __tbReportVisualViewportChanges;
   // https://drafts.csswg.org/cssom-view/#scrolling-events
-  host.__tbVisualViewportScroll = function __tbVisualViewportScroll(type) {
+  host.__tbVisualViewportScroll = function(type) {
     __tbApply(__tbDispatchEvent, __tbVisualViewport, [new __tbEvent(String(type))]);
   };
   Object.defineProperty(globalThis, 'VisualViewport', {

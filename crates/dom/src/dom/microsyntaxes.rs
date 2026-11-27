@@ -2,7 +2,7 @@
 // https://tc39.es/ecma262/#sec-numeric-types-number-tostring
 
 // https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#valid-floating-point-number
-pub(crate) fn valid_float(value: &str) -> Option<f64> {
+pub fn valid_float(value: &str) -> Option<f64> {
     let bytes = value.as_bytes();
     let mut position = 0;
     if bytes.first() == Some(&b'-') {
@@ -57,7 +57,8 @@ pub(crate) fn valid_float(value: &str) -> Option<f64> {
 }
 
 // https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#best-representation-of-the-number-as-a-floating-point-number
-pub(crate) fn format_number(value: f64) -> String {
+#[must_use]
+pub fn format_number(value: f64) -> String {
     if value.is_nan() {
         return "NaN".to_owned();
     }
@@ -138,7 +139,7 @@ fn parse_two_digits(value: &str) -> Option<u64> {
 }
 
 // https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#valid-date-string
-pub(crate) fn valid_date(value: &str) -> bool {
+pub fn valid_date(value: &str) -> bool {
     let mut parts = value.split('-');
     let Some(year) = parts.next().and_then(parse_year) else {
         return false;
@@ -156,7 +157,7 @@ pub(crate) fn valid_date(value: &str) -> bool {
 }
 
 // https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#valid-month-string
-pub(crate) fn valid_month(value: &str) -> bool {
+pub fn valid_month(value: &str) -> bool {
     let mut parts = value.split('-');
     let Some(_year) = parts.next().and_then(parse_year) else {
         return false;
@@ -174,7 +175,7 @@ fn january_first_weekday(year: u64) -> u64 {
 }
 
 // https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#valid-week-string
-pub(crate) fn valid_week(value: &str) -> bool {
+pub fn valid_week(value: &str) -> bool {
     let Some((year, rest)) = value.split_once('-') else {
         return false;
     };
@@ -195,11 +196,11 @@ pub(crate) fn valid_week(value: &str) -> bool {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Time {
-    pub(crate) hour: u64,
-    pub(crate) minute: u64,
-    pub(crate) second: u64,
-    pub(crate) millis: u64,
+pub struct Time {
+    pub hour: u64,
+    pub minute: u64,
+    pub second: u64,
+    pub millis: u64,
 }
 
 fn days_from_civil(year: u64, month: u64, day: u64) -> i128 {
@@ -216,7 +217,7 @@ fn days_from_civil(year: u64, month: u64, day: u64) -> i128 {
 }
 
 // https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#valid-date-string
-pub(crate) fn date_value(value: &str) -> Option<i128> {
+pub fn date_value(value: &str) -> Option<i128> {
     let mut parts = value.split('-');
     let year = parts.next().and_then(parse_year)?;
     let month = parts.next().and_then(parse_two_digits)?;
@@ -231,7 +232,7 @@ pub(crate) fn date_value(value: &str) -> Option<i128> {
 }
 
 // https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#valid-month-string
-pub(crate) fn month_value(value: &str) -> Option<i128> {
+pub fn month_value(value: &str) -> Option<i128> {
     let mut parts = value.split('-');
     let year = parts.next().and_then(parse_year)?;
     let month = parts.next().and_then(parse_two_digits)?;
@@ -248,7 +249,7 @@ fn weekday_from_days(days: i128) -> i128 {
 }
 
 // https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#valid-week-string
-pub(crate) fn week_value(value: &str) -> Option<i128> {
+pub fn week_value(value: &str) -> Option<i128> {
     let (year, rest) = value.split_once('-')?;
     let week = rest.strip_prefix('W').and_then(parse_two_digits)?;
     let year = parse_year(year)?;
@@ -272,7 +273,8 @@ pub(crate) fn week_value(value: &str) -> Option<i128> {
     clippy::cast_precision_loss,
     reason = "all four fields are at most 59 or 999, far below 2^53"
 )]
-pub(crate) fn time_value(value: &str) -> Option<f64> {
+#[must_use]
+pub fn time_value(value: &str) -> Option<f64> {
     let time = valid_time(value)?;
     Some(
         time.hour as f64 * 3600.0
@@ -287,7 +289,8 @@ pub(crate) fn time_value(value: &str) -> Option<f64> {
     clippy::cast_precision_loss,
     reason = "f64 represents any day count the microsyntax allows"
 )]
-pub(crate) fn local_datetime_value(value: &str) -> Option<f64> {
+#[must_use]
+pub fn local_datetime_value(value: &str) -> Option<f64> {
     let separator = value.find(['T', ' '])?;
     let (date, rest) = value.split_at(separator);
     let days = date_value(date)?;
@@ -296,7 +299,8 @@ pub(crate) fn local_datetime_value(value: &str) -> Option<f64> {
 }
 
 // https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#valid-time-string
-pub(crate) fn valid_time(value: &str) -> Option<Time> {
+#[must_use]
+pub fn valid_time(value: &str) -> Option<Time> {
     let (clock, fraction) = match value.split_once('.') {
         Some((clock, fraction)) => (clock, Some(fraction)),
         None => (value, None),
@@ -344,7 +348,8 @@ pub(crate) fn valid_time(value: &str) -> Option<Time> {
 }
 
 // https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#valid-local-date-and-time-string
-pub(crate) fn valid_local_datetime(value: &str) -> Option<(&str, Time)> {
+#[must_use]
+pub fn valid_local_datetime(value: &str) -> Option<(&str, Time)> {
     let separator = value.find(['T', ' '])?;
     let (date, rest) = value.split_at(separator);
     let time = valid_time(&rest[1..])?;
@@ -352,7 +357,8 @@ pub(crate) fn valid_local_datetime(value: &str) -> Option<(&str, Time)> {
 }
 
 // https://html.spec.whatwg.org/multipage/common-microsyntaxes.html#valid-normalized-local-date-and-time-string
-pub(crate) fn normalized_time(time: Time) -> String {
+#[must_use]
+pub fn normalized_time(time: Time) -> String {
     let seconds = if time.second != 0 || time.millis != 0 {
         format!(":{:02}", time.second)
     } else {
@@ -367,7 +373,7 @@ pub(crate) fn normalized_time(time: Time) -> String {
     format!("{:02}:{:02}{seconds}{fraction}", time.hour, time.minute)
 }
 
-pub(crate) fn authored_decimal_scale(text: &str) -> Option<u32> {
+pub fn authored_decimal_scale(text: &str) -> Option<u32> {
     let bytes = text.as_bytes();
     let mut position = 0;
     if bytes
@@ -426,14 +432,15 @@ pub(crate) fn authored_decimal_scale(text: &str) -> Option<u32> {
 
 // https://html.spec.whatwg.org/multipage/input.html#attr-input-step
 #[derive(Clone, Debug)]
-pub(crate) struct Decimal {
+pub struct Decimal {
     negative: bool,
     digits: String,
     scale: u32,
 }
 
 impl Decimal {
-    pub(crate) fn zero() -> Self {
+    #[must_use]
+    pub fn zero() -> Self {
         Self {
             negative: false,
             digits: "0".to_owned(),
@@ -441,7 +448,8 @@ impl Decimal {
         }
     }
 
-    pub(crate) fn from_integer(value: i128) -> Self {
+    #[must_use]
+    pub fn from_integer(value: i128) -> Self {
         let negative = value < 0;
         Self {
             negative,
@@ -450,15 +458,18 @@ impl Decimal {
         }
     }
 
-    pub(crate) fn is_negative(&self) -> bool {
+    #[must_use]
+    pub fn is_negative(&self) -> bool {
         self.negative && self.digits != "0"
     }
 
-    pub(crate) fn is_zero(&self) -> bool {
+    #[must_use]
+    pub fn is_zero(&self) -> bool {
         self.digits == "0"
     }
 
-    pub(crate) fn mantissa_at(&self, scale: u32) -> Option<i128> {
+    #[must_use]
+    pub fn mantissa_at(&self, scale: u32) -> Option<i128> {
         let zeros = scale.checked_sub(self.scale)?;
         let zeros = usize::try_from(zeros).ok()?;
         let mut text = String::with_capacity(self.digits.len() + zeros);
@@ -468,7 +479,8 @@ impl Decimal {
         Some(if self.negative { -magnitude } else { magnitude })
     }
 
-    pub(crate) fn scale(&self) -> u32 {
+    #[must_use]
+    pub fn scale(&self) -> u32 {
         self.scale
     }
 
@@ -497,20 +509,22 @@ impl Decimal {
         }
     }
 
-    pub(crate) fn to_f64(&self) -> f64 {
+    #[must_use]
+    pub fn to_f64(&self) -> f64 {
         let sign = if self.negative { "-" } else { "" };
         format!("{sign}{}e-{}", self.digits, self.scale)
             .parse()
             .unwrap_or(0.0)
     }
 
-    pub(crate) fn compare(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    #[must_use]
+    pub fn compare(&self, other: &Self) -> Option<std::cmp::Ordering> {
         let scale = self.scale.max(other.scale);
         Some(self.mantissa_at(scale)?.cmp(&other.mantissa_at(scale)?))
     }
 }
 
-pub(crate) fn parse_decimal(input: &str) -> Option<Decimal> {
+pub fn parse_decimal(input: &str) -> Option<Decimal> {
     let bytes = input.as_bytes();
     let mut position = 0;
     while bytes.get(position).is_some_and(u8::is_ascii_whitespace) {
@@ -612,7 +626,8 @@ pub(crate) fn parse_decimal(input: &str) -> Option<Decimal> {
 }
 
 // https://html.spec.whatwg.org/multipage/input.html#range-state-(type=range
-pub(crate) fn align_range(
+#[must_use]
+pub fn align_range(
     minimum: &Decimal,
     maximum: &Decimal,
     step: &Decimal,
@@ -668,7 +683,7 @@ pub(crate) fn align_range(
     Some(Decimal::from_mantissa(aligned, scale))
 }
 
-pub(crate) fn range_default(minimum: &Decimal, maximum: &Decimal) -> Decimal {
+pub fn range_default(minimum: &Decimal, maximum: &Decimal) -> Decimal {
     if maximum
         .compare(minimum)
         .is_none_or(std::cmp::Ordering::is_lt)

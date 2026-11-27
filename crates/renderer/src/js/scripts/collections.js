@@ -130,7 +130,7 @@
     });
   }
   installValueIterable(globalThis.DOMTokenList);
-  function values() {
+  const collectionValues = function values() {
     let index = 0;
     const collection = this;
     return {
@@ -140,9 +140,9 @@
       },
       [Symbol.iterator]: function() { return this; }
     };
-  }
+  };
   Object.defineProperty(globalThis.NamedNodeMap.prototype, Symbol.iterator, {
-    value: values,
+    value: collectionValues,
     writable: true,
     configurable: true,
   });
@@ -158,7 +158,7 @@
   const ctor = globalThis.HTMLCollection;
   const proto = ctor.prototype;
   Object.defineProperty(proto, Symbol.iterator, {
-    value: values,
+    value: collectionValues,
     writable: true,
     configurable: true,
   });
@@ -214,8 +214,8 @@
       defineProperty: function() { return false; },
       deleteProperty: function() { return false; },
       preventExtensions: function() { return false; },
-      setPrototypeOf: function(inner, proto) {
-        return proto === Reflect.getPrototypeOf(inner);
+      setPrototypeOf: function(inner, nextProto) {
+        return nextProto === Reflect.getPrototypeOf(inner);
       },
     }));
   }

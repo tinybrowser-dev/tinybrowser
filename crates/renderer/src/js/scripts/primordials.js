@@ -116,10 +116,10 @@ const __tbFreeze = Object.freeze;
 const __tbPrivateMap = function() {
   const map = new __tbMapConstructor();
   const iterator = method => {
-    const iterator = __tbApply(method, map, []);
+    const inner = __tbApply(method, map, []);
     return {
       next() {
-        const result = __tbApply(__tbMapNext, iterator, []);
+        const result = __tbApply(__tbMapNext, inner, []);
         if (!result.done && method === __tbMapEntries) {
           const entry = result.value;
           __tbSetPrototypeOf(entry, null);

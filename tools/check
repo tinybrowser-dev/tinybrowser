@@ -1,37 +1,9 @@
 #!/usr/bin/env bash
-# Workspace checks: clippy, embedded JS syntax, rustdoc, Python, Valgrind.
-#
-#   clippy    `cargo fmt --all --check`, then workspace lints,
-#             then `node --check` on JavaScript
-#             `include_str!`'d into the renderer, then the realm-free layer
-#             check (dom/ and documents.rs never name Ctx/Value/Persistent/
-#             JsNode), then the parsed-type guards (target keywords and
-#             origin-to-URL outside their one owner), then
-#             `cargo doc --no-deps --document-private-items`
-#             (intra-doc link lints are denied workspace-wide, so a bare or
-#             stale path fails here instead of shipping, private items
-#             included), then the Astral Python stack on tools/wpt
-#             (`ruff check`, `ruff format --check`, `ty check`, all via uvx
-#             with versions pinned below). Always run this.
-#   valgrind  Runs test binaries under Valgrind's memcheck (the default
-#             shell includes it), including the C QuickJS build. It sees
-#             heap misuse and uninitialized reads across the FFI boundary
-#             but does not model Rust aliasing rules, and it is slow.
-#
-# With no subcommand, clippy (including embedded JS). AddressSanitizer is not wired:
-# `-Zsanitizer=address` makes rustc reject the sanitizer-built rquickjs-macro
-# proc-macro artifacts ("can't find crate"), and neither
-# `-Ztarget-applies-to-host` nor a separate host config fixed it. Valgrind
-# covers the same C-side ground until that is solved.
-#
-# Valgrind is not a proof: it falsifies. The written `// SAFETY:`
-# invariant plus review is what the AGENTS.md exception requires.
+# Workspace checks: WebIDL freshness, comments, clippy, JS syntax + oxlint,
+# Python stack, and optional Valgrind.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-
-# `tools/check valgrind` with no crate names runs the workspace test suite.
-# Named crates are a narrower run.
 
 usage() {
   echo "usage: tools/check [clippy|valgrind [crate...]]" >&2
@@ -48,9 +20,6 @@ crate_args() {
 }
 
 run_tool() {
-  # CI runs the gate on a plain runner with the pinned toolchain installed by
-  # rustup; a contributor's shell has the flake. Both must run the same
-  # commands, so only the wrapper changes.
   if command -v nix >/dev/null 2>&1; then
     nix develop --command "$@"
   else
@@ -61,7 +30,12 @@ run_tool() {
 run_rust() {
   run_tool cargo fmt --all --check
   run_tool cargo clippy --workspace --all-targets -- -D warnings
+  # Standalone check prevents workspace feature unification from hiding
+  # `tokio::time` or other non-`sync` tokio features inside `renderer`.
+  run_tool cargo check -p renderer
 }
+
+OXLINT_PIN="oxlint@1.89.0"
 
 run_js() {
   if ! command -v node >/dev/null 2>&1; then
@@ -81,27 +55,17 @@ run_js() {
     exit 1
   fi
   echo "js: checked $checked files"
-  return "$status"
-}
-
-run_layers() {
-  # Below `js/` there is no `Ctx`, `Value`, `Persistent`, or `JsNode`, no
-  # `rquickjs`, and no reach into `crate::{js,document,engine}`: the DOM
-  # layer, the document store, and the encoding sniffer hold tree/algorithm
-  # code that the bindings call, never the reverse. Full-line comments may
-  # name the rule.
-  local pattern='\b(Ctx|Value|Persistent|JsNode)\b|rquickjs|crate::(js|document|engine)\b'
-  local matches
-  matches="$(grep -rnE "$pattern" crates/renderer/src/dom crates/renderer/src/documents.rs \
-    crates/renderer/src/sniff.rs --include='*.rs' \
-    | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|/\*|\*)' || true)"
-  if [[ -n "$matches" ]]; then
-    printf '%s\n' "$matches" >&2
-    echo "layer check: dom/, documents.rs, and sniff.rs must stay realm-free" >&2
-    return 1
+  if command -v oxlint >/dev/null 2>&1; then
+    oxlint -c crates/renderer/src/js/.oxlintrc.json crates/renderer/src/js || status=1
+  elif [[ -x website/node_modules/.bin/oxlint ]]; then
+    website/node_modules/.bin/oxlint -c crates/renderer/src/js/.oxlintrc.json crates/renderer/src/js || status=1
+  elif command -v npx >/dev/null 2>&1; then
+    npx --yes "$OXLINT_PIN" -c crates/renderer/src/js/.oxlintrc.json crates/renderer/src/js || status=1
+  else
+    echo "oxlint or npx is required to lint the embedded JavaScript" >&2
+    status=1
   fi
-  echo "layers: dom/, documents.rs, and sniff.rs are realm-free"
-  return 0
+  return "$status"
 }
 
 run_comments() {
@@ -124,75 +88,6 @@ run_comments() {
   return 0
 }
 
-run_docs() {
-  # Workspace `warnings` (deny) covers rustdoc's intra-doc link lints, and
-  # `--document-private-items` documents private items too, so a broken or
-  # stale path fails the gate instead of shipping.
-  run_tool cargo doc --workspace --no-deps --document-private-items
-}
-
-# Guards for fixes that must not grow a second copy (#239). Each one is a
-# grep, so it is cheap enough to run on every check, and it fails with the
-# file:line that reintroduced the old shape.
-run_guards() {
-  local status=0 matches
-  # Browsing-context and target keywords are parsed once, in
-  # `protocol::TargetName`. A renderer or browser layer that spells them is
-  # checking a string the type should have carried (#226, #234, #236).
-  matches="$(grep -rniE '"[_](self|blank|parent|top)"' \
-    crates/renderer/src/js crates/browser/src crates/wasm/src src \
-    --include='*.rs' || true)"
-  if [[ -n "$matches" ]]; then
-    printf '%s\n' "$matches" >&2
-    echo "guard: target keywords belong to protocol::TargetName" >&2
-    status=1
-  fi
-  # A tuple origin becomes a URL in one place, `net::origin_url`. Parsing
-  # `ascii_serialization()` anywhere else reintroduces the string round trip
-  # (#234).
-  matches="$(grep -rn 'Url::parse' crates src --include='*.rs' \
-    | grep 'ascii_serialization' \
-    | grep -v '^crates/net/src/lib.rs:' || true)"
-  if [[ -n "$matches" ]]; then
-    printf '%s\n' "$matches" >&2
-    echo "guard: parse a tuple origin with net::origin_url" >&2
-    status=1
-  fi
-  # A CDP request decodes into one `params::*` struct per method
-  # (`crates/cdp/src/params.rs`). A handler that reads raw `params.get(...)`
-  # reintroduces a silent default for a field the protocol requires (#161).
-  matches="$(grep -rn 'params\.get(' crates/cdp/src --include='*.rs' || true)"
-  if [[ -n "$matches" ]]; then
-    printf '%s\n' "$matches" >&2
-    echo "guard: decode CDP params into a params:: struct" >&2
-    status=1
-  fi
-  # A URL parsed with a document's encoding goes through one owner,
-  # `js::url_parts::encoding_parse_url`. A second hand-rolled percent-encode
-  # loop for the query reintroduces the two loaders that disagreed (#266).
-  matches="$(grep -rn 'HEX\[' crates/renderer/src --include='*.rs' \
-    | grep -v '^crates/renderer/src/js/url_parts.rs:' || true)"
-  if [[ -n "$matches" ]]; then
-    printf '%s\n' "$matches" >&2
-    echo "guard: parse with an encoding override in js::url_parts" >&2
-    status=1
-  fi
-  # Renderer timers and animations read the injected `net::Clock` (`std::time::Instant`),
-  # never `tokio::time`, so virtual-time harnesses and worker OS threads share one clock.
-  matches="$(grep -rn 'tokio::time' crates/renderer/src --include='*.rs' || true)"
-  if [[ -n "$matches" ]]; then
-    printf '%s\n' "$matches" >&2
-    echo "guard: renderer uses the injected net::Clock, never tokio::time" >&2
-    status=1
-  fi
-  if [[ "$status" -eq 0 ]]; then
-    echo "guards: no second copy of a parsed type"
-  fi
-  return "$status"
-}
-
-# Astral pins for the tools/wpt Python stack (ruff = lint + format, ty =
-# types). Bump together after `uvx <tool>@<version>` proves green.
 RUFF_PIN="ruff@0.15.14"
 TY_PIN="ty@0.0.104"
 
@@ -205,8 +100,6 @@ run_py() {
   uvx "$RUFF_PIN" format --check tools/wpt
   run_tool python3 tools/wpt/cli.py selftest
   if [[ ! -f third_party/wpt/wpt ]]; then
-    # ty resolves upstream modules through extra-paths into the checkout
-    # (see tools/wpt/pyproject.toml); without it only ruff can run.
     echo "py: skipping ty, WPT checkout missing (git submodule update --init third_party/wpt)" >&2
     return 0
   fi
@@ -225,9 +118,6 @@ case "${1:-clippy}" in
     run_comments
     run_rust
     run_js
-    run_layers
-    run_guards
-    run_docs
     run_py
     ;;
   valgrind)

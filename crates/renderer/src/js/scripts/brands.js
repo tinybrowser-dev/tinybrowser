@@ -1,5 +1,4 @@
 (function() {
-  const inputFilesSymbol = host.slots('tinybrowser.input.files');
   function illegal() { throw new TypeError('Illegal constructor'); }
   function define(name, parent, constructible) {
     const ctor = constructible

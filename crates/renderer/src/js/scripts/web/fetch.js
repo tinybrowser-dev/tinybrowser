@@ -908,7 +908,7 @@ globalThis.Request = class Request {
       const extracted = __tbExtractBody(options.body === undefined ? null : options.body);
       if (options.body instanceof FormData) {
         let empty = true;
-        for (const entry of options.body) {
+        for (const _entry of options.body) {
           empty = false;
           break;
         }
@@ -1261,7 +1261,7 @@ globalThis.fetch = function(input, init) {
       releaseKeepalive();
       const status = outcome.status;
       const statusText = outcome.statusText;
-      const body = outcome.body;
+      const outcomeBody = outcome.body;
       const finalUrl = outcome.url;
       const type = outcome.contentType;
       const fields = outcome.headers;
@@ -1274,17 +1274,17 @@ globalThis.fetch = function(input, init) {
           return;
         }
         if (status === 204 || status === 205 || status === 304) {
-          if (body.kind === 'stream') host.__tbFetchCancel(body.id);
-          finish(resolve, __tbWithSignal(__tbMakeResponse(body, status, statusText, finalUrl, type, fields, responseType, outcome.redirectCount > 0), signal));
+          if (outcomeBody.kind === 'stream') host.__tbFetchCancel(outcomeBody.id);
+          finish(resolve, __tbWithSignal(__tbMakeResponse(outcomeBody, status, statusText, finalUrl, type, fields, responseType, outcome.redirectCount > 0), signal));
           return;
         }
-        if (body.kind === 'stream') {
-          streamID = body.id;
+        if (outcomeBody.kind === 'stream') {
+          streamID = outcomeBody.id;
           signal.addEventListener('abort', () => host.__tbFetchCancel(streamID), { once: true });
           finish(resolve, __tbMakeStreamingResponse(outcome, signal));
           return;
         }
-        const response = __tbWithSignal(__tbMakeResponse(body, status, statusText, finalUrl, type, fields, responseType, outcome.redirectCount > 0), signal);
+        const response = __tbWithSignal(__tbMakeResponse(outcomeBody, status, statusText, finalUrl, type, fields, responseType, outcome.redirectCount > 0), signal);
         // https://fetch.spec.whatwg.org/#concept-head
         if (method === 'HEAD') __tbBrand(response, __tbResponseData).stream = null;
         finish(resolve, response);

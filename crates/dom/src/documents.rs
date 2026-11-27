@@ -6,7 +6,7 @@ use crate::dom_string::DomString;
 
 use blitz_dom::NodeData;
 
-pub(crate) struct BlitzDocument {
+pub struct BlitzDocument {
     pub base: blitz_dom::BaseDocument,
     pub side: SideTables,
 }
@@ -35,7 +35,7 @@ pub struct SideTables {
 }
 
 // https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes:element
-pub(crate) enum ElementReference {
+pub enum ElementReference {
     Element(NodeId),
     Elements(Vec<NodeId>),
 }
@@ -62,30 +62,31 @@ fn retarget_node(node: NodeId, adopted: &[(NodeId, NodeId)]) -> NodeId {
 }
 
 impl BlitzDocument {
-    pub(crate) fn new(config: blitz_dom::DocumentConfig) -> Self {
+    #[must_use]
+    pub fn new(config: blitz_dom::DocumentConfig) -> Self {
         Self::from_base(blitz_dom::BaseDocument::new(config))
     }
 
-    pub(crate) fn from_base(base: blitz_dom::BaseDocument) -> Self {
+    pub fn from_base(base: blitz_dom::BaseDocument) -> Self {
         Self {
             base,
             side: SideTables::default(),
         }
     }
 
-    pub(crate) fn selectedness_normalized(&self, select: blitz_traits::node_id::NodeId) -> bool {
+    pub fn selectedness_normalized(&self, select: blitz_traits::node_id::NodeId) -> bool {
         self.side.selectedness_normalized.contains(&select)
     }
 
-    pub(crate) fn mark_selectedness_normalized(&mut self, select: blitz_traits::node_id::NodeId) {
+    pub fn mark_selectedness_normalized(&mut self, select: blitz_traits::node_id::NodeId) {
         self.side.selectedness_normalized.insert(select);
     }
 
-    pub(crate) fn invalidate_selectedness(&mut self, select: blitz_traits::node_id::NodeId) {
+    pub fn invalidate_selectedness(&mut self, select: blitz_traits::node_id::NodeId) {
         self.side.selectedness_normalized.remove(&select);
     }
 
-    pub(crate) fn record(&mut self, entry: JournalEntry) {
+    pub fn record(&mut self, entry: JournalEntry) {
         if self.side.recording {
             let position = self.side.next_journal_position;
             self.side.next_journal_position = self.side.next_journal_position.wrapping_add(1);
@@ -93,23 +94,23 @@ impl BlitzDocument {
         }
     }
 
-    pub(crate) fn set_recording(&mut self, recording: bool) {
+    pub fn set_recording(&mut self, recording: bool) {
         self.side.recording = recording;
     }
 
-    pub(crate) fn mark_enumerated_null(&mut self, id: blitz_traits::node_id::NodeId, name: &str) {
+    pub fn mark_enumerated_null(&mut self, id: blitz_traits::node_id::NodeId, name: &str) {
         self.side.enumerated_nulls.insert((id, name.to_owned()));
     }
 
-    pub(crate) fn clear_enumerated_null(&mut self, id: blitz_traits::node_id::NodeId, name: &str) {
+    pub fn clear_enumerated_null(&mut self, id: blitz_traits::node_id::NodeId, name: &str) {
         self.side.enumerated_nulls.remove(&(id, name.to_owned()));
     }
 
-    pub(crate) fn is_enumerated_null(&self, id: blitz_traits::node_id::NodeId, name: &str) -> bool {
+    pub fn is_enumerated_null(&self, id: blitz_traits::node_id::NodeId, name: &str) -> bool {
         self.side.enumerated_nulls.contains(&(id, name.to_owned()))
     }
 
-    pub(crate) fn set_element_reference(
+    pub fn set_element_reference(
         &mut self,
         id: blitz_traits::node_id::NodeId,
         name: &str,
@@ -120,7 +121,7 @@ impl BlitzDocument {
             .insert((id, name.to_owned()), ElementReference::Element(element));
     }
 
-    pub(crate) fn set_element_reference_list(
+    pub fn set_element_reference_list(
         &mut self,
         id: blitz_traits::node_id::NodeId,
         name: &str,
@@ -131,7 +132,7 @@ impl BlitzDocument {
             .insert((id, name.to_owned()), ElementReference::Elements(elements));
     }
 
-    pub(crate) fn element_reference(
+    pub fn element_reference(
         &self,
         id: blitz_traits::node_id::NodeId,
         name: &str,
@@ -140,15 +141,11 @@ impl BlitzDocument {
     }
 
     // https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes:element
-    pub(crate) fn clear_element_reference(
-        &mut self,
-        id: blitz_traits::node_id::NodeId,
-        name: &str,
-    ) {
+    pub fn clear_element_reference(&mut self, id: blitz_traits::node_id::NodeId, name: &str) {
         self.side.element_references.remove(&(id, name.to_owned()));
     }
 
-    pub(crate) fn take_element_references(
+    pub fn take_element_references(
         &mut self,
     ) -> Vec<((blitz_traits::node_id::NodeId, String), ElementReference)> {
         std::mem::take(&mut self.side.element_references)
@@ -156,7 +153,7 @@ impl BlitzDocument {
             .collect()
     }
 
-    pub(crate) fn insert_element_reference(
+    pub fn insert_element_reference(
         &mut self,
         element: blitz_traits::node_id::NodeId,
         name: String,
@@ -169,7 +166,7 @@ impl BlitzDocument {
 
     // https://dom.spec.whatwg.org/#interface-documentfragment
     // https://dom.spec.whatwg.org/#interface-shadowroot
-    pub(crate) fn is_fragment(&self, id: blitz_traits::node_id::NodeId) -> bool {
+    pub fn is_fragment(&self, id: blitz_traits::node_id::NodeId) -> bool {
         self.base.get_node(id).is_some_and(|node| {
             matches!(
                 node.data,
@@ -179,12 +176,12 @@ impl BlitzDocument {
     }
 
     // https://dom.spec.whatwg.org/#dom-document-createdocumentfragment
-    pub(crate) fn create_fragment(&mut self) -> blitz_traits::node_id::NodeId {
+    pub fn create_fragment(&mut self) -> blitz_traits::node_id::NodeId {
         self.base.mutate().create_fragment_node()
     }
 
     // https://dom.spec.whatwg.org/#dom-domimplementation-createdocumenttype
-    pub(crate) fn create_doctype(
+    pub fn create_doctype(
         &mut self,
         name: &str,
         public_id: &str,
@@ -196,7 +193,7 @@ impl BlitzDocument {
     }
 
     // https://dom.spec.whatwg.org/#create-a-processing-instruction-node
-    pub(crate) fn create_processing_instruction(
+    pub fn create_processing_instruction(
         &mut self,
         target: &str,
         data: &str,
@@ -207,7 +204,7 @@ impl BlitzDocument {
     }
 
     // https://dom.spec.whatwg.org/#update-data-from-attributes
-    pub(crate) fn create_processing_instruction_with_attributes(
+    pub fn create_processing_instruction_with_attributes(
         &mut self,
         target: &str,
         data: &str,
@@ -219,19 +216,19 @@ impl BlitzDocument {
     }
 
     // https://dom.spec.whatwg.org/#dom-document-createcdatasection
-    pub(crate) fn create_cdata_section(&mut self, data: &str) -> blitz_traits::node_id::NodeId {
+    pub fn create_cdata_section(&mut self, data: &str) -> blitz_traits::node_id::NodeId {
         self.base.mutate().create_cdata_section_node(data)
     }
 
     // https://dom.spec.whatwg.org/#create-a-text-node
-    pub(crate) fn create_text(&mut self, data: &DomString) -> blitz_traits::node_id::NodeId {
+    pub fn create_text(&mut self, data: &DomString) -> blitz_traits::node_id::NodeId {
         let id = self.base.mutate().create_text_node(&data.to_string_lossy());
         self.remember_character_data(id, data);
         id
     }
 
     // https://dom.spec.whatwg.org/#create-a-comment-node
-    pub(crate) fn create_comment(&mut self, data: &DomString) -> blitz_traits::node_id::NodeId {
+    pub fn create_comment(&mut self, data: &DomString) -> blitz_traits::node_id::NodeId {
         let id = self
             .base
             .mutate()
@@ -240,11 +237,7 @@ impl BlitzDocument {
         id
     }
 
-    pub(crate) fn remember_character_data(
-        &mut self,
-        id: blitz_traits::node_id::NodeId,
-        data: &DomString,
-    ) {
+    pub fn remember_character_data(&mut self, id: blitz_traits::node_id::NodeId, data: &DomString) {
         if data.has_unpaired_surrogate() {
             self.side.exact_text.insert(id, data.clone());
         } else {
@@ -252,7 +245,7 @@ impl BlitzDocument {
         }
     }
 
-    pub(crate) fn remember_attribute(
+    pub fn remember_attribute(
         &mut self,
         id: blitz_traits::node_id::NodeId,
         name: &str,
@@ -266,7 +259,7 @@ impl BlitzDocument {
         }
     }
 
-    pub(crate) fn attribute_units(
+    pub fn attribute_units(
         &self,
         id: blitz_traits::node_id::NodeId,
         name: &str,
@@ -274,7 +267,7 @@ impl BlitzDocument {
         self.side.exact_attrs.get(&(id, name.to_owned()))
     }
 
-    pub(crate) fn set_template_owner(
+    pub fn set_template_owner(
         &mut self,
         template: blitz_traits::node_id::NodeId,
         document: u32,
@@ -285,27 +278,23 @@ impl BlitzDocument {
             .insert(template, (document, fragment));
     }
 
-    pub(crate) fn template_owner(
+    pub fn template_owner(
         &self,
         template: blitz_traits::node_id::NodeId,
     ) -> Option<(u32, blitz_traits::node_id::NodeId)> {
         self.side.template_owners.get(&template).copied()
     }
 
-    pub(crate) fn set_template_host(
-        &mut self,
-        document: u32,
-        template: blitz_traits::node_id::NodeId,
-    ) {
+    pub fn set_template_host(&mut self, document: u32, template: blitz_traits::node_id::NodeId) {
         self.side.template_host = Some((document, template));
     }
 
-    pub(crate) fn template_host(&self) -> Option<(u32, blitz_traits::node_id::NodeId)> {
+    pub fn template_host(&self) -> Option<(u32, blitz_traits::node_id::NodeId)> {
         self.side.template_host
     }
 
     // https://dom.spec.whatwg.org/#characterdata
-    pub(crate) fn character_data(&self, id: blitz_traits::node_id::NodeId) -> DomString {
+    pub fn character_data(&self, id: blitz_traits::node_id::NodeId) -> DomString {
         if let Some(exact) = self.side.exact_text.get(&id) {
             return exact.clone();
         }
@@ -321,7 +310,7 @@ impl BlitzDocument {
     }
 
     // https://dom.spec.whatwg.org/#concept-descendant-text-content
-    pub(crate) fn descendant_dom_text(&self, id: blitz_traits::node_id::NodeId) -> DomString {
+    pub fn descendant_dom_text(&self, id: blitz_traits::node_id::NodeId) -> DomString {
         let mut text = DomString::default();
         let mut stack = self
             .base
@@ -345,16 +334,16 @@ impl BlitzDocument {
     }
 
     // https://html.spec.whatwg.org/multipage/scripting.html#already-started
-    pub(crate) fn script_already_started(&self, id: blitz_traits::node_id::NodeId) -> bool {
+    pub fn script_already_started(&self, id: blitz_traits::node_id::NodeId) -> bool {
         self.side.started_scripts.contains(&id)
     }
 
-    pub(crate) fn mark_script_started(&mut self, id: blitz_traits::node_id::NodeId) -> bool {
+    pub fn mark_script_started(&mut self, id: blitz_traits::node_id::NodeId) -> bool {
         self.side.started_scripts.insert(id)
     }
 
     // https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-document-parsehtmlunsafe
-    pub(crate) fn mark_all_scripts_started(&mut self) {
+    pub fn mark_all_scripts_started(&mut self) {
         let mut stack = vec![self.base.root_node().id];
         let mut scripts = Vec::new();
         while let Some(id) = stack.pop() {
@@ -373,7 +362,7 @@ impl BlitzDocument {
     }
 
     // https://html.spec.whatwg.org/multipage/scripting.html#script-processing-model:cloning-steps
-    pub(crate) fn copy_script_started(
+    pub fn copy_script_started(
         &mut self,
         from: blitz_traits::node_id::NodeId,
         to: blitz_traits::node_id::NodeId,
@@ -394,18 +383,18 @@ impl BlitzDocument {
 }
 
 #[derive(Default)]
-pub(crate) struct DocumentStore {
+pub struct DocumentStore {
     documents: HashMap<u32, Parsed>,
     next_id: u32,
 }
 
 impl DocumentStore {
-    pub(crate) fn values_mut(&mut self) -> impl Iterator<Item = &mut Parsed> {
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut Parsed> {
         self.documents.values_mut()
     }
 
     // https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes:element
-    pub(crate) fn retarget_element_references(&mut self, adopted: &[(NodeId, NodeId)]) {
+    pub fn retarget_element_references(&mut self, adopted: &[(NodeId, NodeId)]) {
         let mut entries = Vec::new();
         for parsed in self.documents.values_mut() {
             let document = parsed.id;
@@ -430,7 +419,7 @@ impl DocumentStore {
         }
     }
 
-    pub(crate) fn insert(&mut self, mut parsed: Parsed) -> u32 {
+    pub fn insert(&mut self, mut parsed: Parsed) -> u32 {
         if parsed.id == 0 {
             self.next_id = self.next_id.wrapping_add(1);
             parsed.id = self.next_id;
@@ -440,19 +429,21 @@ impl DocumentStore {
         id
     }
 
-    pub(crate) fn get(&self, id: u32) -> Option<&Parsed> {
+    #[must_use]
+    pub fn get(&self, id: u32) -> Option<&Parsed> {
         self.documents.get(&id)
     }
 
-    pub(crate) fn get_mut(&mut self, id: u32) -> Option<&mut Parsed> {
+    pub fn get_mut(&mut self, id: u32) -> Option<&mut Parsed> {
         self.documents.get_mut(&id)
     }
 
-    pub(crate) fn remove(&mut self, id: u32) -> Option<Parsed> {
+    pub fn remove(&mut self, id: u32) -> Option<Parsed> {
         self.documents.remove(&id)
     }
 
-    pub(crate) fn contains_node(&self, id: NodeId) -> bool {
+    #[must_use]
+    pub fn contains_node(&self, id: NodeId) -> bool {
         self.documents
             .get(&id.document)
             .is_some_and(|parsed| parsed.document.base.get_node(id.node).is_some())
@@ -460,7 +451,7 @@ impl DocumentStore {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) enum JournalEntry {
+pub enum JournalEntry {
     ChildList {
         target: NodeId,
         added: Vec<NodeId>,

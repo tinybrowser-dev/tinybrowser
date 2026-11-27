@@ -122,7 +122,7 @@
     },
     item: {
       // https://html.spec.whatwg.org/multipage/system-state.html#dom-pluginarray-item
-      value: function item(index) {
+      value: function item(_index) {
         checkBrand(pluginArrayBrand, this);
         return null;
       },
@@ -130,7 +130,7 @@
     },
     namedItem: {
       // https://html.spec.whatwg.org/multipage/system-state.html#dom-pluginarray-nameditem
-      value: function namedItem(name) {
+      value: function namedItem(_name) {
         checkBrand(pluginArrayBrand, this);
         return null;
       },
@@ -162,7 +162,7 @@
     },
     item: {
       // https://html.spec.whatwg.org/multipage/system-state.html#dom-mimetypearray-item
-      value: function item(index) {
+      value: function item(_index) {
         checkBrand(mimeTypeArrayBrand, this);
         return null;
       },
@@ -170,7 +170,7 @@
     },
     namedItem: {
       // https://html.spec.whatwg.org/multipage/system-state.html#dom-mimetypearray-nameditem
-      value: function namedItem(name) {
+      value: function namedItem(_name) {
         checkBrand(mimeTypeArrayBrand, this);
         return null;
       },

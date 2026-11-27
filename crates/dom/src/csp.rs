@@ -14,7 +14,7 @@ enum Source {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum Disposition {
+pub enum Disposition {
     Enforce,
     Report,
 }
@@ -22,7 +22,7 @@ pub(crate) enum Disposition {
 impl Disposition {
     // https://w3c.github.io/webappsec-csp/#deprecated-serialize-violation
     #[must_use]
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Enforce => "enforce",
             Self::Report => "report",
@@ -40,7 +40,7 @@ struct Policy {
 
 // https://w3c.github.io/webappsec-csp/#report-violation
 #[derive(Clone)]
-pub(crate) struct Violation {
+pub struct Violation {
     // https://w3c.github.io/webappsec-csp/#violation-effective-directive
     pub effective_directive: String,
     pub original_policy: String,
@@ -65,13 +65,13 @@ pub(crate) struct Violation {
 impl Violation {
     // https://w3c.github.io/webappsec-csp/#disposition
     #[must_use]
-    pub(crate) fn blocks(&self) -> bool {
+    pub fn blocks(&self) -> bool {
         self.disposition == Disposition::Enforce
     }
 }
 
 #[must_use]
-pub(crate) fn blocks(violations: &[Violation]) -> bool {
+pub fn blocks(violations: &[Violation]) -> bool {
     violations.iter().any(Violation::blocks)
 }
 
@@ -89,7 +89,7 @@ impl List {
     }
 }
 
-pub(crate) struct InlineScript<'a> {
+pub struct InlineScript<'a> {
     pub source: &'a str,
     pub nonce: &'a str,
     // https://w3c.github.io/webappsec-csp/#is-element-nonceable
@@ -99,7 +99,7 @@ pub(crate) struct InlineScript<'a> {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) enum InlineKind {
+pub enum InlineKind {
     Script,
     Navigation,
     ScriptAttribute,
@@ -107,7 +107,7 @@ pub(crate) enum InlineKind {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum Destination {
+pub enum Destination {
     Connect,
     Script,
     StyleSheet,
@@ -118,7 +118,8 @@ pub(crate) enum Destination {
 }
 
 impl Destination {
-    pub(crate) fn is_image(self) -> bool {
+    #[must_use]
+    pub fn is_image(self) -> bool {
         self == Self::Img
     }
 }
@@ -209,7 +210,7 @@ impl InlineScript<'_> {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct ScriptRequest<'a> {
+pub struct ScriptRequest<'a> {
     pub nonce: &'a str,
     pub parser_inserted: bool,
     pub integrity: &'a str,
@@ -245,7 +246,7 @@ fn strip_url(url: &Url) -> String {
 }
 
 #[must_use]
-pub(crate) fn strip_url_for_reports(raw: &str) -> String {
+pub fn strip_url_for_reports(raw: &str) -> String {
     Url::parse(raw).map_or_else(|_| String::new(), |url| strip_url(&url))
 }
 
@@ -266,7 +267,7 @@ fn report_to(policy: &Policy) -> Vec<String> {
 }
 
 #[must_use]
-pub(crate) fn parse_reporting_endpoints_value(combined: &str) -> Vec<(String, String)> {
+pub fn parse_reporting_endpoints_value(combined: &str) -> Vec<(String, String)> {
     let mut endpoints = Vec::new();
     let mut current = String::new();
     let mut quoted = false;
@@ -298,7 +299,7 @@ pub(crate) fn parse_reporting_endpoints_value(combined: &str) -> Vec<(String, St
 impl List {
     // https://w3c.github.io/webappsec-upgrade-insecure-requests/#upgrade-insecure-requests
     #[must_use]
-    pub(crate) fn upgrades_insecure_requests(&self) -> bool {
+    pub fn upgrades_insecure_requests(&self) -> bool {
         self.policies.iter().any(|policy| {
             policy.disposition == Disposition::Enforce
                 && policy
@@ -310,7 +311,7 @@ impl List {
 
     // https://w3c.github.io/webappsec-csp/#sandbox
     #[must_use]
-    pub(crate) fn sandbox_flags(&self) -> crate::protocol::SandboxFlags {
+    pub fn sandbox_flags(&self) -> crate::protocol::SandboxFlags {
         let mut flags = crate::protocol::SandboxFlags::empty();
         for policy in self
             .policies
@@ -325,7 +326,7 @@ impl List {
     }
 
     #[must_use]
-    pub(crate) fn from_headers(enforce: Option<&str>, report_only: Option<&str>) -> Self {
+    pub fn from_headers(enforce: Option<&str>, report_only: Option<&str>) -> Self {
         let mut policies = Vec::new();
         if let Some(header) = enforce {
             policies.extend(parse_policy_list(
@@ -345,12 +346,12 @@ impl List {
     }
 
     // https://html.spec.whatwg.org/multipage/browsers.html#initialize-a-policy-container-from-a-fetch-response
-    pub(crate) fn append(&mut self, other: Self) {
+    pub fn append(&mut self, other: Self) {
         self.policies.extend(other.policies);
     }
 
     // https://w3c.github.io/webappsec-csp/#meta-element
-    pub(crate) fn push_meta(&mut self, content: &str) {
+    pub fn push_meta(&mut self, content: &str) {
         let mut policy = parse_serialized(content, Source::Meta, Disposition::Enforce);
         policy.directives.retain(|(name, _)| {
             !matches!(
@@ -365,7 +366,7 @@ impl List {
 
     // https://w3c.github.io/webappsec-csp/#should-request-be-blocked-by-content-security-policy
     #[must_use]
-    pub(crate) fn check_request(
+    pub fn check_request(
         &self,
         origin: &Origin,
         document_url: &Url,
@@ -379,7 +380,7 @@ impl List {
     // https://w3c.github.io/webappsec-csp/#should-block-response
     // https://w3c.github.io/webappsec-csp/#create-violation-for-request
     #[must_use]
-    pub(crate) fn check_redirected_request(
+    pub fn check_redirected_request(
         &self,
         origin: &Origin,
         document_url: &Url,
@@ -440,12 +441,7 @@ impl List {
 
     // https://w3c.github.io/webappsec-csp/#is-base-allowed-for-document — blockedURI reports the resolved URL, matching Chrome and WPT rather than "inline"
     #[must_use]
-    pub(crate) fn check_base(
-        &self,
-        origin: &Origin,
-        document_url: &Url,
-        base: &Url,
-    ) -> Vec<Violation> {
+    pub fn check_base(&self, origin: &Origin, document_url: &Url, base: &Url) -> Vec<Violation> {
         let mut violations = Vec::new();
         for policy in &self.policies {
             let Some(list) = directive_value(policy, "base-uri") else {
@@ -476,11 +472,7 @@ impl List {
 
     // https://w3c.github.io/webappsec-csp/#should-elements-inline-type-behavior-be-blocked-by-content-security-policy
     #[must_use]
-    pub(crate) fn check_inline(
-        &self,
-        document_url: &Url,
-        inline: &InlineScript<'_>,
-    ) -> Vec<Violation> {
+    pub fn check_inline(&self, document_url: &Url, inline: &InlineScript<'_>) -> Vec<Violation> {
         let effective = inline.effective();
         let mut violations = Vec::new();
         for policy in &self.policies {
@@ -508,11 +500,7 @@ impl List {
 
     // https://w3c.github.io/webappsec-csp/#frame-ancestors-navigation-response
     #[must_use]
-    pub(crate) fn check_frame_ancestors(
-        &self,
-        child_url: &Url,
-        ancestors: &[Url],
-    ) -> Vec<Violation> {
+    pub fn check_frame_ancestors(&self, child_url: &Url, ancestors: &[Url]) -> Vec<Violation> {
         let origin = child_url.origin();
         let mut violations = Vec::new();
         for policy in &self.policies {
@@ -578,7 +566,8 @@ pub struct RedirectGate {
 }
 
 impl RedirectGate {
-    pub(crate) fn new(list: List, origin: &Origin, destination: Destination) -> Self {
+    #[must_use]
+    pub fn new(list: List, origin: &Origin, destination: Destination) -> Self {
         Self {
             list,
             origin: TupleOrigin::from_origin(origin),
@@ -603,7 +592,7 @@ impl RedirectGate {
     }
 
     // https://w3c.github.io/webappsec-csp/#create-violation-for-request
-    pub(crate) fn redirected_violations(
+    pub fn redirected_violations(
         &self,
         document_url: &Url,
         response_url: &Url,
@@ -668,7 +657,7 @@ fn policy_inline_violation<'a>(
 }
 
 #[must_use]
-pub(crate) fn meta_policy(
+pub fn meta_policy(
     base: &blitz_dom::BaseDocument,
     id: blitz_traits::node_id::NodeId,
 ) -> Option<String> {
@@ -701,7 +690,7 @@ fn ancestor_is(
 }
 
 #[must_use]
-pub(crate) fn element_nonce(
+pub fn element_nonce(
     base: &blitz_dom::BaseDocument,
     id: blitz_traits::node_id::NodeId,
     slot: Option<&str>,
