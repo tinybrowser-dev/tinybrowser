@@ -260,8 +260,8 @@ globalThis.KeyboardEvent = class KeyboardEvent extends UIEvent {
         location: init.location || 0,
         ...__tbModifiersFromInit(init),
         repeat: !!init.repeat, isComposing: !!init.isComposing,
-        keyCode: init.keyCode === undefined ? (key.length === 1 ? key.charCodeAt(0) : 0) : init.keyCode,
-        charCode: init.charCode || 0,
+        keyCode: init.keyCode === undefined ? 0 : __tbToLong(init.keyCode),
+        charCode: init.charCode === undefined ? 0 : __tbToLong(init.charCode),
     });
     return event;
   }

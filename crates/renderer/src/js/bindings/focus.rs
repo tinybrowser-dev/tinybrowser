@@ -893,10 +893,6 @@ fn follow_link(ctx: &Ctx<'_>, node: NodeId) -> Result<()> {
 pub(crate) fn install_webdriver_bridge(ctx: &Ctx<'_>) -> Result<()> {
     let globals = crate::js::bridge::object(ctx)?;
     globals.set(
-        "__tb_webdriver_click",
-        rquickjs::prelude::Func::from(webdriver_click),
-    )?;
-    globals.set(
         "__tb_webdriver_element",
         rquickjs::prelude::Func::from(webdriver_element),
     )?;
@@ -1162,28 +1158,5 @@ fn set_native_value<'a>(ctx: Ctx<'a>, element: Value<'a>, value: LegacyNullStrin
         }
         _ => write_attr(&mut parsed, node, "value", Some(&value.0)),
     }
-    Ok(())
-}
-
-fn webdriver_click<'js>(ctx: Ctx<'js>, element: Value<'js>) -> Result<()> {
-    let Some(node) = host_node_id(&ctx, &element) else {
-        return Err(Exception::throw_type(&ctx, "not an element"));
-    };
-    // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#concept-fe-disabled
-    {
-        let world = world_for_node(&ctx, node)?;
-        let world = world.borrow();
-        if let Some(parsed) = world.document(node)
-            && is_actually_disabled(&parsed.document.base, node.node)
-        {
-            return Ok(());
-        }
-    }
-    // https://html.spec.whatwg.org/multipage/interaction.html#activation-notification
-    world_for_node(&ctx, node)?.borrow_mut().activate_user();
-    if is_focusable(&ctx, node)? {
-        focus_node(&ctx, node)?;
-    }
-    events::fire_trusted_click(&ctx, EventTargetKey::Node(node))?;
     Ok(())
 }

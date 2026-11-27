@@ -2240,11 +2240,8 @@ fn validate_pointer_action(action: &str, item: &Map<String, Value>) -> Result<()
         }
         "pointerMove" => {
             for name in ["x", "y"] {
-                if !item
-                    .get(name)
-                    .is_some_and(|value| action_safe_integer(value, false))
-                {
-                    return Err(format!("pointerMove {name} must be an integer"));
+                if !item.get(name).is_some_and(action_number) {
+                    return Err(format!("pointerMove {name} must be a number"));
                 }
             }
             action_duration(item)?;
@@ -2277,9 +2274,9 @@ fn validate_wheel_action(action: &str, item: &Map<String, Value>) -> Result<(), 
 fn pointer_common_properties(item: &Map<String, Value>) -> Result<(), String> {
     for name in ["width", "height"] {
         if let Some(value) = item.get(name)
-            && !action_safe_integer(value, true)
+            && !value.as_f64().is_some_and(|n| n.is_finite() && n >= 0.0)
         {
-            return Err(format!("{name} must be a non-negative integer"));
+            return Err(format!("{name} must be a non-negative number"));
         }
     }
     for name in [

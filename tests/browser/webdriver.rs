@@ -1187,3 +1187,132 @@ fn renderer_death_fails_a_pending_navigation_and_the_session_recovers() {
     );
     assert_eq!(recovered["value"], Value::Null, "{recovered}");
 }
+
+#[test]
+fn element_click_activates_user() {
+    let html = "<!doctype html>\
+        <button id=go style='width:80px;height:30px'>go</button>\
+        <script>\
+        window.activated = null;\
+        document.getElementById('go').addEventListener('click', () => {\
+            window.activated = navigator.userActivation.isActive && navigator.userActivation.hasBeenActive;\
+        });\
+        </script>";
+    let server = TestServer::start(vec![("/page", ok("text/html", html.as_bytes()))], None);
+    let (addr, _fixture) = start(Vec::new());
+    let created = request(&addr, "POST", "/session", Some("{}"));
+    let id = created["value"]["sessionId"]
+        .as_str()
+        .expect("session id")
+        .to_owned();
+    let url = format!("http://{}/page", server.address());
+    let nav = request(
+        &addr,
+        "POST",
+        &format!("/session/{id}/url"),
+        Some(&json!({"url": url}).to_string()),
+    );
+    assert_eq!(nav["value"], Value::Null, "{nav}");
+    let found = request(
+        &addr,
+        "POST",
+        &format!("/session/{id}/element"),
+        Some(r##"{"using":"css selector","value":"#go"}"##),
+    );
+    let elem = found["value"]["element-6066-11e4-a52e-4f735466cecf"]
+        .as_str()
+        .expect("element id")
+        .to_owned();
+    let clicked = request(
+        &addr,
+        "POST",
+        &format!("/session/{id}/element/{elem}/click"),
+        Some("{}"),
+    );
+    assert_eq!(clicked["value"], Value::Null, "{clicked}");
+    let checked = request(
+        &addr,
+        "POST",
+        &format!("/session/{id}/execute/sync"),
+        Some(r#"{"script":"return window.activated","args":[]}"#),
+    );
+    assert_eq!(checked["value"], json!(true), "{checked}");
+}
+
+#[test]
+fn send_keys_preserves_focus_keycode_and_fractional_pointer_move() {
+    let html = "<!doctype html>\
+        <input id=a><input id=b>\
+        <script>\
+        window.codes = [];\
+        window.addEventListener('keydown', e => window.codes.push([e.key, e.keyCode, document.activeElement.id]));\
+        document.getElementById('a').focus();\
+        </script>";
+    let server = TestServer::start(vec![("/page", ok("text/html", html.as_bytes()))], None);
+    let (addr, _fixture) = start(Vec::new());
+    let created = request(&addr, "POST", "/session", Some("{}"));
+    let id = created["value"]["sessionId"]
+        .as_str()
+        .expect("session id")
+        .to_owned();
+    let url = format!("http://{}/page", server.address());
+    let nav = request(
+        &addr,
+        "POST",
+        &format!("/session/{id}/url"),
+        Some(&json!({"url": url}).to_string()),
+    );
+    assert_eq!(nav["value"], Value::Null, "{nav}");
+    let body = request(
+        &addr,
+        "POST",
+        &format!("/session/{id}/element"),
+        Some(r#"{"using":"tag name","value":"body"}"#),
+    );
+    let body_id = body["value"]["element-6066-11e4-a52e-4f735466cecf"]
+        .as_str()
+        .expect("body id")
+        .to_owned();
+    let sent = request(
+        &addr,
+        "POST",
+        &format!("/session/{id}/element/{body_id}/value"),
+        Some(&json!({"text": "\u{E004}x"}).to_string()),
+    );
+    assert_eq!(sent["value"], Value::Null, "{sent}");
+    let res = request(
+        &addr,
+        "POST",
+        &format!("/session/{id}/execute/sync"),
+        Some(
+            r#"{"script":"return [window.codes, document.activeElement.id, document.getElementById('b').value]","args":[]}"#,
+        ),
+    );
+    assert_eq!(res["value"][0][0][0], json!("Tab"), "{res}");
+    assert_eq!(res["value"][0][0][1].as_f64(), Some(9.0), "{res}");
+    assert_eq!(res["value"][0][0][2], json!("a"), "{res}");
+    assert_eq!(res["value"][0][1][0], json!("x"), "{res}");
+    assert_eq!(res["value"][0][1][1].as_f64(), Some(88.0), "{res}");
+    assert_eq!(res["value"][0][1][2], json!("b"), "{res}");
+    assert_eq!(res["value"][1], json!("b"), "{res}");
+    assert_eq!(res["value"][2], json!("x"), "{res}");
+
+    let actions = json!({
+        "actions": [{
+            "type": "pointer",
+            "id": "mouse",
+            "parameters": {"pointerType": "mouse"},
+            "actions": [
+                {"type": "pointerMove", "duration": 0, "x": 12.5, "y": 20.25, "width": 1.5, "height": 2.5}
+            ]
+        }]
+    })
+    .to_string();
+    let moved = request(
+        &addr,
+        "POST",
+        &format!("/session/{id}/actions"),
+        Some(&actions),
+    );
+    assert_eq!(moved["value"], Value::Null, "{moved}");
+}

@@ -141,62 +141,78 @@
     } else throw new TypeError('unknown pointer action type: ' + item.type);
   };
   // https://w3c.github.io/webdriver/#keyboard-actions
+  // https://w3c.github.io/uievents/#legacy-key-models
   const specialKeys = {
-    '\uE000': ['Unidentified', '', 0], '\uE001': ['Cancel', '', 0],
-    '\uE002': ['Help', 'Help', 0], '\uE003': ['Backspace', 'Backspace', 0],
-    '\uE004': ['Tab', 'Tab', 0], '\uE005': ['Clear', '', 0],
-    '\uE006': ['Enter', 'Enter', 0], '\uE007': ['Enter', 'NumpadEnter', 3],
-    '\uE008': ['Shift', 'ShiftLeft', 1], '\uE009': ['Control', 'ControlLeft', 1],
-    '\uE00A': ['Alt', 'AltLeft', 1], '\uE00B': ['Pause', 'Pause', 0],
-    '\uE00C': ['Escape', 'Escape', 0], '\uE00D': [' ', 'Space', 0],
-    '\uE00E': ['PageUp', 'PageUp', 0], '\uE00F': ['PageDown', 'PageDown', 0],
-    '\uE010': ['End', 'End', 0], '\uE011': ['Home', 'Home', 0],
-    '\uE012': ['ArrowLeft', 'ArrowLeft', 0], '\uE013': ['ArrowUp', 'ArrowUp', 0],
-    '\uE014': ['ArrowRight', 'ArrowRight', 0], '\uE015': ['ArrowDown', 'ArrowDown', 0],
-    '\uE016': ['Insert', 'Insert', 0], '\uE017': ['Delete', 'Delete', 0],
-    '\uE018': [';', 'Semicolon', 0], '\uE019': ['=', 'Equal', 0],
-    '\uE01A': ['0', 'Numpad0', 3], '\uE01B': ['1', 'Numpad1', 3],
-    '\uE01C': ['2', 'Numpad2', 3], '\uE01D': ['3', 'Numpad3', 3],
-    '\uE01E': ['4', 'Numpad4', 3], '\uE01F': ['5', 'Numpad5', 3],
-    '\uE020': ['6', 'Numpad6', 3], '\uE021': ['7', 'Numpad7', 3],
-    '\uE022': ['8', 'Numpad8', 3], '\uE023': ['9', 'Numpad9', 3],
-    '\uE024': ['*', 'NumpadMultiply', 3], '\uE025': ['+', 'NumpadAdd', 3],
-    '\uE026': [',', 'NumpadComma', 3], '\uE027': ['-', 'NumpadSubtract', 3],
-    '\uE028': ['.', 'NumpadDecimal', 3], '\uE029': ['/', 'NumpadDivide', 3],
-    '\uE031': ['F1', 'F1', 0], '\uE032': ['F2', 'F2', 0], '\uE033': ['F3', 'F3', 0],
-    '\uE034': ['F4', 'F4', 0], '\uE035': ['F5', 'F5', 0], '\uE036': ['F6', 'F6', 0],
-    '\uE037': ['F7', 'F7', 0], '\uE038': ['F8', 'F8', 0], '\uE039': ['F9', 'F9', 0],
-    '\uE03A': ['F10', 'F10', 0], '\uE03B': ['F11', 'F11', 0], '\uE03C': ['F12', 'F12', 0],
-    '\uE03D': ['Meta', 'MetaLeft', 1], '\uE040': ['ZenkakuHankaku', '', 0],
-    '\uE050': ['Shift', 'ShiftRight', 2], '\uE051': ['Control', 'ControlRight', 2],
-    '\uE052': ['Alt', 'AltRight', 2], '\uE053': ['Meta', 'MetaRight', 2],
-    '\uE054': ['PageUp', 'Numpad9', 3], '\uE055': ['PageDown', 'Numpad3', 3],
-    '\uE056': ['End', 'Numpad1', 3], '\uE057': ['Home', 'Numpad7', 3],
-    '\uE058': ['ArrowLeft', 'Numpad4', 3], '\uE059': ['ArrowUp', 'Numpad8', 3],
-    '\uE05A': ['ArrowRight', 'Numpad6', 3], '\uE05B': ['ArrowDown', 'Numpad2', 3],
-    '\uE05C': ['Insert', 'Numpad0', 3], '\uE05D': ['Delete', 'NumpadDecimal', 3],
+    '\uE000': ['Unidentified', '', 0, 0], '\uE001': ['Cancel', '', 0, 3],
+    '\uE002': ['Help', 'Help', 0, 6], '\uE003': ['Backspace', 'Backspace', 0, 8],
+    '\uE004': ['Tab', 'Tab', 0, 9], '\uE005': ['Clear', '', 0, 12],
+    '\uE006': ['Enter', 'Enter', 0, 13], '\uE007': ['Enter', 'NumpadEnter', 3, 13],
+    '\uE008': ['Shift', 'ShiftLeft', 1, 16], '\uE009': ['Control', 'ControlLeft', 1, 17],
+    '\uE00A': ['Alt', 'AltLeft', 1, 18], '\uE00B': ['Pause', 'Pause', 0, 19],
+    '\uE00C': ['Escape', 'Escape', 0, 27], '\uE00D': [' ', 'Space', 0, 32],
+    '\uE00E': ['PageUp', 'PageUp', 0, 33], '\uE00F': ['PageDown', 'PageDown', 0, 34],
+    '\uE010': ['End', 'End', 0, 35], '\uE011': ['Home', 'Home', 0, 36],
+    '\uE012': ['ArrowLeft', 'ArrowLeft', 0, 37], '\uE013': ['ArrowUp', 'ArrowUp', 0, 38],
+    '\uE014': ['ArrowRight', 'ArrowRight', 0, 39], '\uE015': ['ArrowDown', 'ArrowDown', 0, 40],
+    '\uE016': ['Insert', 'Insert', 0, 45], '\uE017': ['Delete', 'Delete', 0, 46],
+    '\uE018': [';', 'Semicolon', 0, 186], '\uE019': ['=', 'Equal', 0, 187],
+    '\uE01A': ['0', 'Numpad0', 3, 96], '\uE01B': ['1', 'Numpad1', 3, 97],
+    '\uE01C': ['2', 'Numpad2', 3, 98], '\uE01D': ['3', 'Numpad3', 3, 99],
+    '\uE01E': ['4', 'Numpad4', 3, 100], '\uE01F': ['5', 'Numpad5', 3, 101],
+    '\uE020': ['6', 'Numpad6', 3, 102], '\uE021': ['7', 'Numpad7', 3, 103],
+    '\uE022': ['8', 'Numpad8', 3, 104], '\uE023': ['9', 'Numpad9', 3, 105],
+    '\uE024': ['*', 'NumpadMultiply', 3, 106], '\uE025': ['+', 'NumpadAdd', 3, 107],
+    '\uE026': [',', 'NumpadComma', 3, 108], '\uE027': ['-', 'NumpadSubtract', 3, 109],
+    '\uE028': ['.', 'NumpadDecimal', 3, 110], '\uE029': ['/', 'NumpadDivide', 3, 111],
+    '\uE031': ['F1', 'F1', 0, 112], '\uE032': ['F2', 'F2', 0, 113], '\uE033': ['F3', 'F3', 0, 114],
+    '\uE034': ['F4', 'F4', 0, 115], '\uE035': ['F5', 'F5', 0, 116], '\uE036': ['F6', 'F6', 0, 117],
+    '\uE037': ['F7', 'F7', 0, 118], '\uE038': ['F8', 'F8', 0, 119], '\uE039': ['F9', 'F9', 0, 120],
+    '\uE03A': ['F10', 'F10', 0, 121], '\uE03B': ['F11', 'F11', 0, 122], '\uE03C': ['F12', 'F12', 0, 123],
+    '\uE03D': ['Meta', 'MetaLeft', 1, 91], '\uE040': ['ZenkakuHankaku', '', 0, 0],
+    '\uE050': ['Shift', 'ShiftRight', 2, 16], '\uE051': ['Control', 'ControlRight', 2, 17],
+    '\uE052': ['Alt', 'AltRight', 2, 18], '\uE053': ['Meta', 'MetaRight', 2, 93],
+    '\uE054': ['PageUp', 'Numpad9', 3, 33], '\uE055': ['PageDown', 'Numpad3', 3, 34],
+    '\uE056': ['End', 'Numpad1', 3, 35], '\uE057': ['Home', 'Numpad7', 3, 36],
+    '\uE058': ['ArrowLeft', 'Numpad4', 3, 37], '\uE059': ['ArrowUp', 'Numpad8', 3, 38],
+    '\uE05A': ['ArrowRight', 'Numpad6', 3, 39], '\uE05B': ['ArrowDown', 'Numpad2', 3, 40],
+    '\uE05C': ['Insert', 'Numpad0', 3, 45], '\uE05D': ['Delete', 'NumpadDecimal', 3, 46],
   };
   const punctCodes = {
-    '`': 'Backquote', '~': 'Backquote', '!': 'Digit1', '@': 'Digit2', '#': 'Digit3',
-    '$': 'Digit4', '%': 'Digit5', '^': 'Digit6', '&': 'Digit7', '*': 'Digit8',
-    '(': 'Digit9', ')': 'Digit0', '-': 'Minus', '_': 'Minus', '=': 'Equal', '+': 'Equal',
-    '[': 'BracketLeft', '{': 'BracketLeft', ']': 'BracketRight', '}': 'BracketRight',
-    '\\': 'Backslash', '|': 'Backslash', ';': 'Semicolon', ':': 'Semicolon',
-    '\'': 'Quote', '"': 'Quote', ',': 'Comma', '<': 'Comma', '.': 'Period', '>': 'Period',
-    '/': 'Slash', '?': 'Slash', ' ': 'Space', '\n': 'Enter',
+    '`': ['Backquote', 192], '~': ['Backquote', 192], '!': ['Digit1', 49], '@': ['Digit2', 50],
+    '#': ['Digit3', 51], '$': ['Digit4', 52], '%': ['Digit5', 53], '^': ['Digit6', 54],
+    '&': ['Digit7', 55], '*': ['Digit8', 56], '(': ['Digit9', 57], ')': ['Digit0', 48],
+    '-': ['Minus', 189], '_': ['Minus', 189], '=': ['Equal', 187], '+': ['Equal', 187],
+    '[': ['BracketLeft', 219], '{': ['BracketLeft', 219], ']': ['BracketRight', 221],
+    '}': ['BracketRight', 221], '\\': ['Backslash', 220], '|': ['Backslash', 220],
+    ';': ['Semicolon', 186], ':': ['Semicolon', 186], '\'': ['Quote', 222], '"': ['Quote', 222],
+    ',': ['Comma', 188], '<': ['Comma', 188], '.': ['Period', 190], '>': ['Period', 190],
+    '/': ['Slash', 191], '?': ['Slash', 191], ' ': ['Space', 32], '\n': ['Enter', 13],
   };
   const keyOf = value => {
     if (specialKeys[value]) {
-      return { key: specialKeys[value][0], code: specialKeys[value][1], location: specialKeys[value][2] };
+      const entry = specialKeys[value];
+      return { key: entry[0], code: entry[1], location: entry[2], keyCode: entry[3] };
     }
     if (value.length === 1) {
-      const code = value >= 'a' && value <= 'z' ? 'Key' + value.toUpperCase()
-        : value >= 'A' && value <= 'Z' ? 'Key' + value
-        : value >= '0' && value <= '9' ? 'Digit' + value
-        : (punctCodes[value] || '');
-      return { key: value === '\n' ? 'Enter' : value, code: code, location: 0 };
+      if (value >= 'a' && value <= 'z') {
+        const upper = value.toUpperCase();
+        return { key: value, code: 'Key' + upper, location: 0, keyCode: upper.charCodeAt(0) };
+      }
+      if (value >= 'A' && value <= 'Z') {
+        return { key: value, code: 'Key' + value, location: 0, keyCode: value.charCodeAt(0) };
+      }
+      if (value >= '0' && value <= '9') {
+        return { key: value, code: 'Digit' + value, location: 0, keyCode: value.charCodeAt(0) };
+      }
+      const punct = punctCodes[value];
+      return {
+        key: value === '\n' ? 'Enter' : value,
+        code: punct ? punct[0] : '',
+        location: 0,
+        keyCode: punct ? punct[1] : 0,
+      };
     }
-    return { key: value, code: '', location: 0 };
+    return { key: value, code: '', location: 0, keyCode: 0 };
   };
   // https://html.spec.whatwg.org/multipage/input.html#common-input-element-attributes
   const EDITABLE_TYPES = new Set([
@@ -429,9 +445,23 @@
     const resolveKey = () => (shiftDown && info.key.length === 1 && info.key >= 'a' && info.key <= 'z')
       ? info.key.toUpperCase()
       : info.key;
-    const keyEvent = type => new KeyboardEvent(type, Object.assign({
-      bubbles: true, cancelable: true, key: resolveKey(), code: info.code, location: info.location,
-    }, modifierInit(item.modifiers || 0)));
+    const keyEvent = type => {
+      const resolvedKey = resolveKey();
+      const charCode = type === 'keypress'
+        ? (resolvedKey === 'Enter' ? 13 : resolvedKey.charCodeAt(0))
+        : 0;
+      const keyCode = type === 'keypress' ? charCode : info.keyCode;
+      return new KeyboardEvent(type, Object.assign({
+        bubbles: true,
+        cancelable: true,
+        key: resolvedKey,
+        code: info.code,
+        location: info.location,
+        keyCode: keyCode,
+        charCode: charCode,
+        which: keyCode,
+      }, modifierInit(item.modifiers || 0)));
+    };
     if (down) {
       if (!pressedKeys.includes(value)) pressedKeys.push(value);
       if (value === '\uE008' || value === '\uE050') shiftDown = true;
@@ -496,9 +526,7 @@
       else if (value === '\uE009' || value === '\uE051') ctrlDown = false;
       else if (value === '\uE00A' || value === '\uE052') altDown = false;
       else if (value === '\uE03D' || value === '\uE053') metaDown = false;
-      fire(node, new KeyboardEvent('keyup', Object.assign({
-        bubbles: true, cancelable: true, key: resolveKey(), code: info.code, location: info.location,
-      }, mods)));
+      fire(node, keyEvent('keyup'));
     }
   };
   const wheelItem = item => {
@@ -650,18 +678,11 @@
   host.__tbWebDriverSendKeys = function(element, text) {
     if (!element || typeof element.focus !== 'function') return 'not_interactable';
     const doc = element.ownerDocument || document;
-    const style = typeof getComputedStyle === 'function' ? getComputedStyle(element) : null;
-    if (style && (style.visibility === 'hidden' || style.visibility === 'collapse')) {
-      return 'not_interactable';
-    }
-    if (typeof element.checkVisibility === 'function' && !element.checkVisibility()) {
-      return 'not_interactable';
-    }
     const rect = element.getBoundingClientRect();
-    if (!(rect.width > 0) || !(rect.height > 0)) return 'not_interactable';
     const view = doc.defaultView || globalThis;
-    if (rect.bottom <= 0 || rect.right <= 0
-        || rect.top >= (view.innerHeight || 0) || rect.left >= (view.innerWidth || 0)) {
+    if (rect.width > 0 && rect.height > 0
+        && (rect.bottom <= 0 || rect.right <= 0
+            || rect.top >= (view.innerHeight || 0) || rect.left >= (view.innerWidth || 0))) {
       if (typeof element.scrollIntoView === 'function') {
         element.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
       }
@@ -672,11 +693,17 @@
     if (localName === 'iframe' || localName === 'frame') {
       host.__tbWebDriverSetActiveElement(element);
       eventDoc = element.contentDocument || doc;
-      node = eventDoc.activeElement || eventDoc.body || eventDoc.documentElement;
+      node = null;
     } else if (element === doc.body || element === doc.documentElement) {
-      host.__tbWebDriverSetActiveElement(element);
+      node = null;
     } else {
       const alreadyFocused = doc.activeElement === element;
+      const selectionInside = () => {
+        const docView = doc.defaultView;
+        const selection = docView && typeof docView.getSelection === 'function' ? docView.getSelection() : null;
+        const range = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+        return !!(range && element.contains(range.commonAncestorContainer));
+      };
       if (!alreadyFocused) {
         try { element.focus(); } catch (error) {}
         if (doc.activeElement !== element) return 'not_interactable';
@@ -686,18 +713,13 @@
         if (editable) {
           if (element.tagName === 'INPUT' || element.tagName === 'TEXTAREA') {
             try { element.setSelectionRange(element.value.length, element.value.length); } catch (error) {}
-          } else {
+          } else if (!selectionInside()) {
             placeContentEditableCaret(element, false);
           }
         }
       }
-      if (element.isContentEditable) {
-        const docView = doc.defaultView;
-        const selection = docView && typeof docView.getSelection === 'function' ? docView.getSelection() : null;
-        const range = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
-        const inside = range
-          && element.contains(range.commonAncestorContainer);
-        if (!inside) placeContentEditableCaret(element, true);
+      if (element.isContentEditable && !selectionInside()) {
+        placeContentEditableCaret(element, true);
       }
     }
     if (element.tagName === 'INPUT' || element.tagName === 'TEXTAREA') {

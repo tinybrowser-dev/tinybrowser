@@ -486,6 +486,32 @@ fn is_event_bridge<'js>(ctx: Ctx<'js>, value: Value<'js>) -> bool {
     Class::<JsEvent>::from_js(&ctx, value).is_ok()
 }
 
+// https://html.spec.whatwg.org/multipage/interaction.html#activation-triggering-input-event
+fn is_activation_triggering_event(event: &Class<'_, JsEvent>) -> bool {
+    let typ = event.borrow().state().typ.clone();
+    match typ.as_str() {
+        "mousedown" | "touchend" => true,
+        "pointerdown" => {
+            event
+                .as_object()
+                .and_then(|obj| obj.get::<_, String>("pointerType").ok())
+                .as_deref()
+                == Some("mouse")
+        }
+        "pointerup" => event
+            .as_object()
+            .and_then(|obj| obj.get::<_, String>("pointerType").ok())
+            .as_deref()
+            .is_some_and(|kind| kind != "mouse"),
+        "keydown" => event
+            .as_object()
+            .and_then(|obj| obj.get::<_, String>("key").ok())
+            .as_deref()
+            .is_some_and(|key| !matches!(key, "Escape" | "Shift" | "Control" | "Alt" | "Meta")),
+        _ => false,
+    }
+}
+
 fn dispatch_trusted_bridge<'js>(
     ctx: Ctx<'js>,
     target: Object<'js>,
@@ -493,6 +519,12 @@ fn dispatch_trusted_bridge<'js>(
 ) -> Result<bool> {
     // https://dom.spec.whatwg.org/#concept-event-fire
     if let Some(node) = super::bindings::host_node_id(&ctx, target.as_value()) {
+        // https://html.spec.whatwg.org/multipage/interaction.html#activation-notification
+        if is_activation_triggering_event(&event) {
+            super::bindings::world_for_node(&ctx, node)?
+                .borrow_mut()
+                .activate_user();
+        }
         return dispatch_trusted_event(&ctx, EventTargetKey::Node(node), &event);
     }
     let class = Class::<JsEventTarget>::from_js(&ctx, target.clone().into_value())?;
@@ -1133,15 +1165,6 @@ pub(crate) fn fire_trusted_cancelable(
     cancelable: bool,
 ) -> Result<bool> {
     let event = realm_event(ctx, JsEvent::trusted(typ, bubbles, cancelable))?;
-    dispatch(ctx, target, &event, None)
-}
-
-// https://dom.spec.whatwg.org/#concept-event-dispatch
-pub(crate) fn fire_trusted_click(ctx: &Ctx<'_>, target: EventTargetKey) -> Result<bool> {
-    let event = realm_event(ctx, JsEvent::trusted("click", true, true))?;
-    // https://dom.spec.whatwg.org/#concept-event-dispatch
-    // https://html.spec.whatwg.org/multipage/interaction.html#dom-click
-    set_synthetic_click_interface(ctx, &event)?;
     dispatch(ctx, target, &event, None)
 }
 
