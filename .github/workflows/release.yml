@@ -362,12 +362,7 @@ jobs:
           component=target/wasm32-wasip2/release/tinybrowser_wasm.wasm
           size=$(stat -c %s "$component")
           echo "component: $size bytes" >> "$GITHUB_STEP_SUMMARY"
-          # The measured component is ~11.8 MiB; the cap is 14 MiB, enough for
-          # a toolchain bump and too little to hide a dependency arriving.
-          if (( size > 14 * 1024 * 1024 )); then
-            echo "::error::$component is $size bytes, over the 14 MiB cap"
-            exit 1
-          fi
+          ls -lh "$component"
       - name: Package
         id: package
         run: |

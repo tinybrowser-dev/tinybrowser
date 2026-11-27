@@ -1,55 +1,23 @@
-# The full WPT suite on code pushes, in the engine process.
+# Unified CI pipeline:
 #
-# Two lanes partition the manifest exactly:
+#   Stage 1 (parallel):
+#     check       — formatting, clippy (-D warnings), embedded JS syntax,
+#                   realm-free layer check, parsed-type guards, rustdoc, Python
+#                   stack, workspace tests, wasm32-wasip2 check, and the
+#                   Playwright internal bridge spec.
+#     sandbox     — macOS & Windows clippy and sandbox tests.
+#     playwright  — upstream Playwright `tests/page/` specs against tinybrowser
+#                   over CDP, gated by `tools/playwright/pw-expectations.json`.
 #
-#   harness   — testharness, crashtest, and reftest files mounted in the real
-#               engine, with a wptserve sidecar for `.py` handler routes. No
-#               WebDriver, wptserve request path, or renderer child per test.
-#   webdriver — the files `run in-process` cannot run: testdriver tests,
-#               `wdspec` (WebDriver Classic & BiDi), and the non-worker
-#               generated wrappers, driven through the browser.
-#               Worker variants (`--exclude=worker`) stay excluded by default
-#               until the harness runs them without exceeding the chunk budget.
-#
-# `test262` runs natively in QuickJS in one job. The score job folds every
-# report into one table. There is no nightly duplicate: this is the suite of
-# record, and the WebDriver lane covers only the files the in-process lane
-# cannot execute.
-#
-# Cost: measured in run 41974678252 (14/6), the harness lane is ~71
-# chunk-minutes at 4 jobs and the WebDriver lane ~28 (it runs far fewer files
-# but each one costs a browser round trip). The chunk counts below split the
-# repository's 20-job limit in that ratio, so both lanes finish together;
-# re-measure before changing them, because the balance, not the file count,
-# is what sets the wall time.
-name: WPT
+#   Stage 2 (after check + playwright pass, when relevant paths changed):
+#     wpt-*       — full WPT suite (14 in-process harness chunks + 6 WebDriver
+#                   chunks) + test262, merged and published to
+#                   `tinybrowser-dev/tinybrowser-wpt-results`.
+name: CI
 
 on:
   push:
     branches: [main]
-    # Only a change to the browser, the harness, the WPT pin, or the build
-    # environment can move a WPT verdict. Docs and repo plumbing do not spend
-    # 20 runner jobs; the `!` pattern keeps Markdown inside code trees inert.
-    paths:
-      - "crates/**"
-      - "src/**"
-      - "tests/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "build.rs"
-      - ".gitmodules"
-      - ".cargo/**"
-      - "rust-toolchain.toml"
-      - "third_party/**"
-      - "tools/wpt/**"
-      - "tools/wpt-fast/**"
-      - "tools/wpt-harness/**"
-      - "tools/wpt-report/**"
-      - "tools/binary-path"
-      - "flake.nix"
-      - "flake.lock"
-      - ".github/workflows/wpt.yml"
-      - "!**/*.md"
   workflow_dispatch:
     inputs:
       harness-chunks:
@@ -73,10 +41,7 @@ permissions:
   contents: read
 
 concurrency:
-  # Newest run wins: a push supersedes the previous push's run, and a manual
-  # dispatch supersedes whatever is in flight (waiting behind a run that is
-  # itself cancelling left a dispatch idle for minutes).
-  group: wpt-${{ github.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -94,7 +59,211 @@ env:
   WPT_EXCLUDE: ${{ inputs.exclude || 'worker' }}
 
 jobs:
-  plan:
+  changes:
+    name: changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      playwright: ${{ steps.detect.outputs.playwright }}
+      wpt: ${{ steps.detect.outputs.wpt }}
+    steps:
+      - id: detect
+        name: Detect affected suites
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" != "push" || -z "$BEFORE" || "$BEFORE" == "0000000000000000000000000000000000000000" ]]; then
+            echo "playwright=true" >> "$GITHUB_OUTPUT"
+            echo "wpt=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! files="$(gh api "repos/$REPO/compare/$BEFORE...$AFTER" --paginate --jq '.files[].filename')"; then
+            echo "::warning::could not compare $BEFORE...$AFTER; running all suites"
+            echo "playwright=true" >> "$GITHUB_OUTPUT"
+            echo "wpt=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          pw=false
+          wpt=false
+          while IFS= read -r f; do
+            [[ -z "$f" ]] && continue
+            case "$f" in
+              crates/*|src/*|Cargo.toml|Cargo.lock|build.rs|.cargo/*|rust-toolchain.toml|third_party/*|tools/playwright/*|.github/workflows/ci.yml)
+                pw=true
+                ;;
+            esac
+            if [[ "$f" != *.md ]]; then
+              case "$f" in
+                crates/*|src/*|tests/*|Cargo.toml|Cargo.lock|build.rs|.gitmodules|.cargo/*|rust-toolchain.toml|third_party/*|tools/wpt/*|tools/wpt-fast/*|tools/wpt-harness/*|tools/wpt-report/*|tools/binary-path|flake.nix|flake.lock|.github/workflows/ci.yml)
+                  wpt=true
+                  ;;
+              esac
+            fi
+          done <<< "$files"
+          echo "playwright=$pw" >> "$GITHUB_OUTPUT"
+          echo "wpt=$wpt" >> "$GITHUB_OUTPUT"
+          echo "playwright=$pw wpt=$wpt"
+
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - name: System libraries
+        run: >
+          sudo apt-get update -qq &&
+          sudo apt-get install -y -qq --no-install-recommends
+          libssl-dev pkg-config
+      - name: Toolchain
+        run: |
+          rustup toolchain install --profile minimal \
+            --component rust-src --component clippy --component rustfmt
+          # The browser component is a second target of the same workspace, and
+          # it is the one that rots silently: a `net` change that reaches for a
+          # socket still compiles for the host.
+          rustup target add wasm32-wasip2
+          cargo --version
+      - name: Submodules (build inputs and the Python check, shallow)
+        run: |
+          git submodule update --init --depth 1 --jobs 4 \
+            third_party/blitz third_party/rquickjs third_party/html5ever \
+            third_party/wpt
+          git -C third_party/rquickjs submodule update --init --depth 1 sys/quickjs
+      - uses: astral-sh/setup-uv@v10.3.3
+      - name: Cargo cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+      - name: sccache
+        uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          version: "v0.18.0"
+      - name: Workspace gate
+        env:
+          SCCACHE_GHA_ENABLED: "true"
+          RUSTC_WRAPPER: "sccache"
+        run: tools/check clippy
+      - name: Tests
+        env:
+          SCCACHE_GHA_ENABLED: "true"
+          RUSTC_WRAPPER: "sccache"
+        run: cargo test --workspace
+      - name: Wasm component
+        env:
+          SCCACHE_GHA_ENABLED: "true"
+          RUSTC_WRAPPER: "sccache"
+        run: cargo check -p tinybrowser-wasm --target wasm32-wasip2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: tools/playwright/package-lock.json
+      - name: Playwright internal bridge
+        env:
+          SCCACHE_GHA_ENABLED: "true"
+          RUSTC_WRAPPER: "sccache"
+        run: tools/playwright/run internal-bridge.spec.js
+
+  sandbox:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@v7
+      - name: Toolchain
+        shell: bash
+        run: |
+          rustup toolchain install --profile minimal \
+            --component rust-src --component clippy
+          cargo --version
+      - name: Submodules (build inputs only, shallow)
+        shell: bash
+        run: |
+          git submodule update --init --depth 1 --jobs 4 \
+            third_party/blitz third_party/rquickjs third_party/html5ever
+          git -C third_party/rquickjs submodule update --init --depth 1 sys/quickjs
+      - name: Cargo cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+      - name: Clippy and sandbox tests
+        shell: bash
+        run: |
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            export CFLAGS=""
+          fi
+          cargo clippy -p browser --all-targets -- -D warnings
+          cargo test -p browser -- child::sandbox --nocapture
+
+  playwright:
+    name: playwright
+    needs: [changes]
+    if: ${{ needs.changes.outputs.playwright == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - name: System libraries
+        run: >
+          sudo apt-get update -qq &&
+          sudo apt-get install -y -qq --no-install-recommends
+          libssl-dev pkg-config
+      - name: Toolchain
+        run: |
+          rustup toolchain install --profile minimal --component rust-src
+          cargo --version
+      - name: Submodules
+        run: |
+          git submodule update --init --depth 1 --jobs 4 \
+            third_party/blitz third_party/rquickjs third_party/html5ever
+          git -C third_party/rquickjs submodule update --init --depth 1 sys/quickjs
+      - name: Cargo cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+      - name: sccache
+        uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          version: "v0.18.0"
+      - name: Build tinybrowser
+        env:
+          SCCACHE_GHA_ENABLED: "true"
+          RUSTC_WRAPPER: "sccache"
+        run: cargo build --profile wpt -p tinybrowser
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Setup upstream Playwright
+        run: node tools/playwright/upstream-setup.mjs
+      - name: Run upstream Playwright gate
+        run: TINYBROWSER_BINARY="$PWD/target/wpt/tinybrowser" node tools/playwright/upstream-run.mjs
+
+  wpt-plan:
+    name: wpt plan
+    needs: [changes, check, playwright]
+    if: ${{ !cancelled() && needs.changes.outputs.wpt == 'true' && needs.check.result == 'success' && (needs.playwright.result == 'success' || needs.playwright.result == 'skipped') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     outputs:
@@ -127,20 +296,16 @@ jobs:
           path: wpt-manifest/
           retention-days: 3
 
-  build:
-    name: build ${{ matrix.name }}
+  wpt-build:
+    name: wpt build ${{ matrix.name }}
+    needs: [changes, check, playwright]
+    if: ${{ !cancelled() && needs.changes.outputs.wpt == 'true' && needs.check.result == 'success' && (needs.playwright.result == 'success' || needs.playwright.result == 'skipped') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     strategy:
-      # One job per binary so the three links overlap. Linking dominates the
-      # wpt profile (~155 s of the ~236 s build step on one 4-core runner), and
-      # a link cannot be split across cores, so serialising them is the cost.
       fail-fast: false
       matrix:
         include:
-          # `output` is the file name the consuming job downloads;
-          # `artifact` is the upload name, which stays per binary so a chunk
-          # downloads only what it runs.
           - name: browser
             package: tinybrowser
             binary: tinybrowser
@@ -189,8 +354,6 @@ jobs:
           SCCACHE_GHA_ENABLED: "true"
           RUSTC_WRAPPER: "sccache"
         run: |
-          # One package per job: the three links are the build's serial cost,
-          # and each job renders only its own binary.
           cargo build --profile wpt --locked -p "${{ matrix.package }}"
           cp "$(./tools/binary-path --profile wpt "${{ matrix.binary }}")" \
             "${{ matrix.output }}"
@@ -203,23 +366,21 @@ jobs:
             echo "::error::missing runtime libraries in the runner image:"$'\n'"$missing"
             exit 1
           fi
-      # One artifact per binary: a harness chunk needs 228 MB, not the 1.1 GB
-      # bundle, and the WebDriver lane needs only the browser.
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.output }}
           retention-days: 3
 
-  harness:
-    name: harness chunk ${{ matrix.chunk }}
-    needs: [plan, build]
+  wpt-harness:
+    name: wpt harness chunk ${{ matrix.chunk }}
+    needs: [wpt-plan, wpt-build]
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        chunk: ${{ fromJSON(needs.plan.outputs.harness) }}
+        chunk: ${{ fromJSON(needs.wpt-plan.outputs.harness) }}
     steps:
       - uses: actions/checkout@v7
       - name: WPT checkout (pinned, shallow)
@@ -228,9 +389,6 @@ jobs:
       - name: WPT revision
         id: wpt
         run: echo "rev=$(git -C third_party/wpt rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-      # The venv is a tool install, not a verdict: same WPT revision and
-      # Python, same install. `ensure_venv` re-checks its stamp and rebuilds a
-      # stale cache instead of trusting it.
       - uses: actions/cache@v6
         with:
           path: third_party/wpt/_venv3
@@ -279,15 +437,15 @@ jobs:
           if-no-files-found: ignore
           retention-days: 3
 
-  webdriver:
-    name: webdriver chunk ${{ matrix.chunk }}
-    needs: [plan, build]
+  wpt-webdriver:
+    name: wpt webdriver chunk ${{ matrix.chunk }}
+    needs: [wpt-plan, wpt-build]
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        chunk: ${{ fromJSON(needs.plan.outputs.webdriver) }}
+        chunk: ${{ fromJSON(needs.wpt-plan.outputs.webdriver) }}
     steps:
       - uses: actions/checkout@v7
       - name: WPT checkout (pinned, shallow)
@@ -296,9 +454,6 @@ jobs:
       - name: WPT revision
         id: wpt
         run: echo "rev=$(git -C third_party/wpt rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-      # The venv is a tool install, not a verdict: same WPT revision and
-      # Python, same install. `ensure_venv` re-checks its stamp and rebuilds a
-      # stale cache instead of trusting it.
       - uses: actions/cache@v6
         with:
           path: third_party/wpt/_venv3
@@ -361,9 +516,9 @@ jobs:
           if-no-files-found: ignore
           retention-days: 3
 
-  test262:
-    name: test262
-    needs: [build]
+  wpt-test262:
+    name: wpt test262
+    needs: [wpt-build]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -391,10 +546,10 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  score:
-    name: score
-    needs: [plan, harness, webdriver, test262]
-    if: ${{ !cancelled() && needs.harness.result != 'skipped' }}
+  wpt-score:
+    name: wpt score
+    needs: [wpt-plan, wpt-harness, wpt-webdriver, wpt-test262]
+    if: ${{ !cancelled() && needs.wpt-harness.result != 'skipped' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -473,13 +628,6 @@ jobs:
             summary.txt
           if-no-files-found: warn
           retention-days: 7
-      # A GitHub App installation token, scoped to the one repo that holds the
-      # record. The app is `tinybrowser wpt publisher` with Contents: write on
-      # tinybrowser-wpt-results and nothing else; the token lives for one job.
-      # `client-id` is the app's public identifier; the App ID input is
-      # deprecated in this action's v3.
-      # A broken credential must not turn the conformance gate red, so the step
-      # may fail and the publish below then skips with a warning.
       - uses: actions/create-github-app-token@v3
         id: app-token
         if: ${{ !cancelled() && github.ref == 'refs/heads/main' && github.event_name == 'push' }}
@@ -508,13 +656,8 @@ jobs:
             results
           python3 tools/wpt/cli.py publish \
             --record run.json --data results --sha "$GITHUB_SHA"
-          # The review pass reads this instead of diffing two run.json files
-          # by hand: `summary` prints regressions.json, which `publish`
-          # wrote, with `newly_measured` and new timeouts counted separately
-          # because neither is a behavior regression.
           python3 tools/wpt/cli.py summary --data results >> "$GITHUB_STEP_SUMMARY"
           cd results
-          # Untracked files count too: the first publish creates every file.
           if [[ -z "$(git status --porcelain)" ]]; then
             echo "no change to publish"
             exit 0
@@ -522,9 +665,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          # The repo is a snapshot, not a log: failures.jsonl.gz is ~4 MB for a
-          # full run and a new blob on every push would grow the repo without
-          # bound, while the history a reader wants is index.json. Amending
-          # keeps one commit and force-pushing it costs nothing anyone reads.
           git commit --amend -m "wpt: ${GITHUB_SHA:0:8}"
           git push --force origin HEAD:main

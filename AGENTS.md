@@ -81,11 +81,11 @@ Maximize web spec conformance per byte.
 - **Concept owners**: Read `docs/owners.md` before adding a parser, table, or
   second copy of a concept; it names the one module each belongs to.
 - **The gate**: `tools/check clippy` runs on every push
-  (`.github/workflows/check.yml`) and is what a local change must pass.
+  (`.github/workflows/ci.yml`) and is what a local change must pass.
   `tools/check` uses `nix develop` when available and the installed toolchain
   otherwise, so the same script runs in CI.
 - **Architecture decisions**: Read `docs/adr/` for hard-to-reverse architectural invariants (IPC boundary, realm-free DOM layer, Rust/JS state ownership, WebIDL codegen funnels, OS-thread dedicated workers, abort-on-panic release profile).
 - **Engine forks & submodules**: Read `third_party/README.md` for submodule maintenance, fork branches, and update workflows.
 - **Linked worktrees**: Run `tools/worktree-init` after `git worktree add`. It shares submodule objects with the canonical checkout and leaves WPT to the harness's canonical-checkout fallback; see `third_party/README.md`. Do not initialize a linked worktree with a bare `git submodule update --init --recursive`; it clones object stores and unused upstream test fixtures again.
-- **WPT & conformance harness**: Read `tools/wpt/README.md` for test runners, scoring, and failure diffing. Check `.github/workflows/wpt.yml` runs (`gh run list --workflow=wpt.yml`) for regressions.
+- **WPT & conformance harness**: Read `tools/wpt/README.md` for test runners, scoring, and failure diffing. Check `.github/workflows/ci.yml` runs (`gh run list --workflow=ci.yml`) for regressions.
 - **Priorities and gaps**: Read `docs/priorities.md` for ranked tiers. Open engine and feature gaps live in GitHub issues.
