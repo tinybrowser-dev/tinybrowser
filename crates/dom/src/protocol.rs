@@ -8,7 +8,9 @@ pub use net::fetch::{
     DialRequest, FrameId, MAX_RESPONSE_BODY_BYTES, ReferrerRequest, RequestCache, RequestPolicy,
     ResponseBody, SandboxFlag, SandboxFlags, SerializedOrigin, StreamId, cross_origin_credentials,
 };
-pub use webstorage::{STORAGE_QUOTA_BYTES, StorageChange, StorageError, StorageKey, StorageKind};
+pub use webstorage::{
+    BlobRecord, STORAGE_QUOTA_BYTES, StorageChange, StorageError, StorageKey, StorageKind,
+};
 
 use net::cors::CrossOrigin;
 
@@ -915,6 +917,29 @@ pub trait StorageHost: Send + Sync + 'static {
         url: &Url,
         partition_key: Option<&str>,
     );
+
+    // https://w3c.github.io/FileAPI/#dfn-createObjectURL
+    fn create_object_url(
+        &self,
+        scope: u64,
+        origin: &SerializedOrigin,
+        contents: String,
+        content_type: String,
+    ) -> Option<String>;
+
+    // https://w3c.github.io/FileAPI/#blob-url-resolve
+    fn resolve_object_url(
+        &self,
+        scope: u64,
+        origin: &SerializedOrigin,
+        url: &str,
+    ) -> Option<BlobRecord>;
+
+    // https://w3c.github.io/FileAPI/#dfn-revokeObjectURL
+    fn revoke_object_url(&self, scope: u64, origin: &SerializedOrigin, url: &str);
+
+    // https://w3c.github.io/FileAPI/#lifeTime
+    fn unload_object_urls(&self, scope: u64);
 }
 
 // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-open

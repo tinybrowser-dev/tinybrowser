@@ -23,7 +23,7 @@ it (#239).
 | Blocking network dials | `NetworkHost::dial_blocking` | one `start_dial` + timeout wait helper |
 | Fetch policy | `net::Agent` with `net::Transport` | the transport only feeds bytes (#233) |
 | HTTP cache | `crates/browser/src/network.rs` | the browser's response store |
-| Per-origin key/value rows | `crates/webstorage/src/lib.rs` (`StorageService`, `StorageAreas`, `SessionStorage`, `StorageKey`) | `StorageKind` plus authorized `StorageKey` |
+| Per-origin key/value rows and `blob:` object URLs | `crates/webstorage/src/lib.rs` (`StorageService`, `StorageAreas`, `SessionStorage`, `StorageKey`, `ObjectUrlStore`) | `StorageKind` plus authorized `StorageKey`, or `ObjectUrlStore` through `StorageHost` |
 | IndexedDB databases and records | `crates/renderer/src/js/scripts/web/indexeddb.js` | the `indexeddb` area through the storage seam |
 | Carrier dial adapter | `crates/dial` | one conversion from `DialRequest` to `net::Request`, plus the buffered body reader |
 | Wasm host contract | `crates/wasm/wit/browser.wit` | one `WireRequest` per `host.start-fetch`; policy stays in `net` |

@@ -55,6 +55,7 @@ struct ContextState {
     identity: net::ValidIdentity,
     cache: Arc<HttpCache>,
     storage: StorageService<u64>,
+    object_urls: webstorage::ObjectUrlStore<u64>,
 }
 
 impl ContextState {
@@ -75,6 +76,7 @@ impl ContextState {
             identity,
             cache,
             storage: StorageService::default(),
+            object_urls: webstorage::ObjectUrlStore::default(),
         }
     }
 
@@ -1052,6 +1054,51 @@ impl StorageHost for WasmServices {
     ) -> Option<StorageChange> {
         let authorized = self.authorize_storage(origin)?;
         self.context.storage.clear(kind, self.owner, &authorized)
+    }
+
+    fn create_object_url(
+        &self,
+        scope: u64,
+        origin: &renderer::SerializedOrigin,
+        contents: String,
+        content_type: String,
+    ) -> Option<String> {
+        let origin = match origin {
+            renderer::SerializedOrigin::Tuple(origin) => Some(origin.clone()),
+            renderer::SerializedOrigin::Opaque => None,
+        };
+        self.context
+            .object_urls
+            .create(self.owner, scope, origin, contents, content_type)
+    }
+
+    fn resolve_object_url(
+        &self,
+        scope: u64,
+        origin: &renderer::SerializedOrigin,
+        url: &str,
+    ) -> Option<renderer::BlobRecord> {
+        let origin = match origin {
+            renderer::SerializedOrigin::Tuple(origin) => Some(origin),
+            renderer::SerializedOrigin::Opaque => None,
+        };
+        self.context
+            .object_urls
+            .resolve(self.owner, scope, origin, url)
+    }
+
+    fn revoke_object_url(&self, scope: u64, origin: &renderer::SerializedOrigin, url: &str) {
+        let origin = match origin {
+            renderer::SerializedOrigin::Tuple(origin) => Some(origin),
+            renderer::SerializedOrigin::Opaque => None,
+        };
+        self.context
+            .object_urls
+            .revoke(self.owner, scope, origin, url);
+    }
+
+    fn unload_object_urls(&self, scope: u64) {
+        self.context.object_urls.unload_scope(self.owner, scope);
     }
 }
 

@@ -20,6 +20,11 @@ impl Site {
     }
 
     #[must_use]
+    pub(crate) fn for_origin(origin: &url::Origin) -> Option<Self> {
+        net::site_for_origin(origin).map(Self::Tuple)
+    }
+
+    #[must_use]
     pub(crate) fn opaque(tab: TabId) -> Self {
         Self::Opaque(tab)
     }

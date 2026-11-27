@@ -591,6 +591,7 @@ pub struct FsServices {
     clock: net::Clock,
     manual_clock: Option<Arc<HarnessClock>>,
     storage: webstorage::StorageService<u64>,
+    object_urls: webstorage::ObjectUrlStore<()>,
     cookies: Arc<Mutex<Vec<net::CookieRecord>>>,
 }
 
@@ -629,6 +630,7 @@ impl FsServices {
             clock,
             manual_clock,
             storage,
+            object_urls: webstorage::ObjectUrlStore::default(),
             cookies,
         }
     }
@@ -658,6 +660,7 @@ impl FsServices {
         self.publish_cookies();
         self.cache.clear();
         self.storage.clear_all();
+        self.object_urls.unload_owner(());
         self.storage.create_session(0);
     }
 
@@ -896,6 +899,46 @@ impl StorageHost for FsServices {
         _source: FrameId,
     ) -> Option<StorageChange> {
         self.storage.clear(kind, 0, origin)
+    }
+
+    fn create_object_url(
+        &self,
+        scope: u64,
+        origin: &renderer::SerializedOrigin,
+        contents: String,
+        content_type: String,
+    ) -> Option<String> {
+        let origin = match origin {
+            renderer::SerializedOrigin::Tuple(origin) => Some(origin.clone()),
+            renderer::SerializedOrigin::Opaque => None,
+        };
+        self.object_urls
+            .create((), scope, origin, contents, content_type)
+    }
+
+    fn resolve_object_url(
+        &self,
+        scope: u64,
+        origin: &renderer::SerializedOrigin,
+        url: &str,
+    ) -> Option<renderer::BlobRecord> {
+        let origin = match origin {
+            renderer::SerializedOrigin::Tuple(origin) => Some(origin),
+            renderer::SerializedOrigin::Opaque => None,
+        };
+        self.object_urls.resolve((), scope, origin, url)
+    }
+
+    fn revoke_object_url(&self, scope: u64, origin: &renderer::SerializedOrigin, url: &str) {
+        let origin = match origin {
+            renderer::SerializedOrigin::Tuple(origin) => Some(origin),
+            renderer::SerializedOrigin::Opaque => None,
+        };
+        self.object_urls.revoke((), scope, origin, url);
+    }
+
+    fn unload_object_urls(&self, scope: u64) {
+        self.object_urls.unload_scope((), scope);
     }
 }
 

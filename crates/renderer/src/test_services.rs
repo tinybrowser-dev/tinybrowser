@@ -11,6 +11,7 @@ use crate::protocol::{
 #[derive(Default)]
 pub(crate) struct NullServices {
     storage: Mutex<HashMap<(StorageKind, crate::protocol::StorageKey, String), String>>,
+    object_urls: webstorage::ObjectUrlStore<()>,
 }
 
 impl NetworkHost for NullServices {
@@ -138,6 +139,46 @@ impl StorageHost for NullServices {
         _url: &Url,
         _partition_key: Option<&str>,
     ) {
+    }
+
+    fn create_object_url(
+        &self,
+        scope: u64,
+        origin: &crate::protocol::SerializedOrigin,
+        contents: String,
+        content_type: String,
+    ) -> Option<String> {
+        let origin = match origin {
+            crate::protocol::SerializedOrigin::Tuple(origin) => Some(origin.clone()),
+            crate::protocol::SerializedOrigin::Opaque => None,
+        };
+        self.object_urls
+            .create((), scope, origin, contents, content_type)
+    }
+
+    fn resolve_object_url(
+        &self,
+        scope: u64,
+        origin: &crate::protocol::SerializedOrigin,
+        url: &str,
+    ) -> Option<crate::protocol::BlobRecord> {
+        let origin = match origin {
+            crate::protocol::SerializedOrigin::Tuple(origin) => Some(origin),
+            crate::protocol::SerializedOrigin::Opaque => None,
+        };
+        self.object_urls.resolve((), scope, origin, url)
+    }
+
+    fn revoke_object_url(&self, scope: u64, origin: &crate::protocol::SerializedOrigin, url: &str) {
+        let origin = match origin {
+            crate::protocol::SerializedOrigin::Tuple(origin) => Some(origin),
+            crate::protocol::SerializedOrigin::Opaque => None,
+        };
+        self.object_urls.revoke((), scope, origin, url);
+    }
+
+    fn unload_object_urls(&self, scope: u64) {
+        self.object_urls.unload_scope((), scope);
     }
 }
 

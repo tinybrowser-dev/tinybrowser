@@ -75,6 +75,7 @@ pub(crate) struct PartitionServices {
     pub(crate) cookies: Arc<CookieStore>,
     pub(crate) local_storage: Arc<StorageAreas>,
     pub(crate) indexed_db: Arc<StorageAreas>,
+    pub(crate) object_urls: Arc<webstorage::ObjectUrlStore<crate::wire::RendererAssignmentId>>,
     pub(crate) events: Arc<RendererEventHub>,
 }
 
@@ -124,6 +125,7 @@ impl BrowserContext {
                     cookies,
                     local_storage,
                     indexed_db,
+                    object_urls: Arc::new(webstorage::ObjectUrlStore::default()),
                     events: Arc::new(RendererEventHub::default()),
                 },
             }),
@@ -163,6 +165,7 @@ impl BrowserContext {
                         cookies,
                         local_storage: Arc::new(StorageAreas::default()),
                         indexed_db: Arc::new(StorageAreas::default()),
+                        object_urls: Arc::new(webstorage::ObjectUrlStore::default()),
                         events: Arc::new(RendererEventHub::default()),
                     },
                 }),

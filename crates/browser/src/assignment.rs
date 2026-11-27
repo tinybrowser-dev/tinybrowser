@@ -130,6 +130,7 @@ impl Drop for Assignment {
         );
         self.registry.note_released(self.id);
         self.network.release_streams(self.id);
+        self.partition.object_urls.unload_owner(self.id);
         self.registry
             .live
             .lock()

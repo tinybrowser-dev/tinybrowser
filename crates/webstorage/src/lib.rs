@@ -1,6 +1,10 @@
 // https://html.spec.whatwg.org/multipage/webstorage.html#the-localstorage-attribute
 // https://w3c.github.io/IndexedDB/#database
 
+mod blob;
+
+pub use blob::{BlobOrigin, BlobRecord, MAX_OBJECT_URL_BYTES, ObjectUrlStore, object_url_key};
+
 use std::collections::HashMap;
 use std::fmt;
 use std::hash::Hash;

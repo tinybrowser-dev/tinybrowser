@@ -787,6 +787,8 @@ struct Tab {
     document_origin: url::Origin,
     // https://html.spec.whatwg.org/multipage/browsers.html#popup-sandboxing-flag-set
     popup_sandbox: renderer::SandboxFlags,
+    // https://html.spec.whatwg.org/multipage/webappapis.html#secure-contexts
+    creator_secure_context: Option<bool>,
     site: Option<Site>,
     events_rx: Option<mpsc::Receiver<RendererWake>>,
     document_url: Url,
@@ -843,6 +845,7 @@ impl Tab {
             tabs,
             document_origin: tab.document_origin,
             popup_sandbox: tab.popup_sandbox,
+            creator_secure_context: tab.creator_secure_context,
             site: None,
             events_rx: None,
             document_url: net::about_blank(),
@@ -940,7 +943,7 @@ impl Tab {
         let url = Url::parse(spec)
             .or_else(|_| self.document_url.join(spec))
             .map_err(|_| TabError::InvalidUrl { spec: spec.into() })?;
-        if !(matches!(url.scheme(), "http" | "https" | "data")
+        if !(matches!(url.scheme(), "http" | "https" | "data" | "blob")
             || (url.scheme() == "about" && url.path() == "blank"))
         {
             return Err(TabError::InvalidUrl { spec: spec.into() });
@@ -1168,10 +1171,11 @@ impl Tab {
     }
 
     // https://fetch.spec.whatwg.org/#data-url-processor
+    // https://w3c.github.io/FileAPI/#blob-url-resolve
     fn take_data_navigation(&mut self) -> Option<Url> {
         let local = self.nav.as_ref().is_some_and(|nav| {
             !nav.submitted
-                && (nav.url.scheme() == "data"
+                && (matches!(nav.url.scheme(), "data" | "blob")
                     || (nav.url.scheme() == "about" && nav.url.path() == "blank"))
         });
         if !local {
@@ -1181,18 +1185,36 @@ impl Tab {
     }
 
     async fn commit_data_navigation(&mut self, url: Url) -> bool {
-        let (content_type, body) = if url.scheme() == "about" && url.path() == "blank" {
+        let (content_type, body, blob_origin) = if url.scheme() == "about" && url.path() == "blank"
+        {
             (
                 "text/html; charset=utf-8".to_owned(),
                 b"<!doctype html><title></title>".to_vec(),
+                None,
             )
+        } else if url.scheme() == "blob" {
+            let Some((body, content_type, origin)) =
+                self.partition.object_urls.resolve_navigation(url.as_str())
+            else {
+                self.navigation_failed = true;
+                return false;
+            };
+            (content_type, body, origin)
         } else if let Some(decoded) = renderer::decode_data_url_bounded(url.as_str()) {
-            decoded
+            (decoded.0, decoded.1, None)
         } else {
             self.navigation_failed = true;
             return false;
         };
-        let site = Site::for_url(&url).unwrap_or_else(|| Site::opaque(self.id));
+        let site = if self.popup_sandbox.origin_is_opaque() {
+            Site::opaque(self.id)
+        } else {
+            blob_origin
+                .as_ref()
+                .and_then(Site::for_origin)
+                .or_else(|| Site::for_url(&url))
+                .unwrap_or_else(|| Site::opaque(self.id))
+        };
         let previous_csp = self.tabs.main_csp(self.id);
         self.tabs
             .reset_main_sandbox(self.id, renderer::SandboxFlags::empty());
@@ -1254,10 +1276,14 @@ impl Tab {
     }
 
     // https://html.spec.whatwg.org/multipage/browsing-the-web.html#resetBCName
+    // https://html.spec.whatwg.org/multipage/webappapis.html#secure-contexts
     fn tab_state_at(&self, url: &Url) -> renderer::TabState {
         let mut state = self.current_tab_state();
         if !self.keeps_target_name_at(url) {
             state.name = None;
+        }
+        if matches!(url.scheme(), "about" | "blob") {
+            state.secure_context = self.creator_secure_context;
         }
         state
     }

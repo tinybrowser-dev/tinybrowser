@@ -1,6 +1,5 @@
 use std::cell::{Cell, Ref, RefCell, RefMut};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::fmt::Write as _;
 use std::hash::Hash;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
@@ -490,7 +489,6 @@ impl RealmRegistry {
 #[derive(Default)]
 struct ResourceBudget {
     pending_stream_bytes: usize,
-    object_url_bytes: usize,
 }
 
 pub(crate) struct StreamReservation {
@@ -511,23 +509,6 @@ pub(crate) struct HtmlWrite {
 }
 
 const MAX_PENDING_STREAM_BYTES: usize = 8 * 1024 * 1024;
-const MAX_OBJECT_URL_BYTES: usize = 8 * 1024 * 1024;
-
-// https://w3c.github.io/FileAPI/#dfn-createObjectURL
-fn object_url_id() -> Option<String> {
-    let mut bytes = [0u8; 16];
-    getrandom::fill(&mut bytes).ok()?;
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    let mut id = String::with_capacity(36);
-    for (index, byte) in bytes.iter().enumerate() {
-        if matches!(index, 4 | 6 | 8 | 10) {
-            id.push('-');
-        }
-        let _ = write!(id, "{byte:02x}");
-    }
-    Some(id)
-}
 
 impl RealmRegistry {
     pub(crate) fn insert_document(&mut self, id: u32, world: &Rc<RefCell<World>>) {
@@ -922,21 +903,6 @@ impl From<Option<NodeId>> for EventTargetKey {
     }
 }
 
-// https://w3c.github.io/FileAPI/#blob-url
-// https://w3c.github.io/FileAPI/#blob-url-store
-pub(crate) struct ObjectUrlEntry {
-    pub(crate) contents: Arc<str>,
-    pub(crate) content_type: Arc<str>,
-    pub(crate) origin: url::Origin,
-    frame: FrameId,
-    document: Option<u32>,
-}
-
-// https://w3c.github.io/FileAPI/#blob-url-store
-pub(crate) fn object_url_key(url: &str) -> &str {
-    url.split_once('#').map_or(url, |(head, _)| head)
-}
-
 pub(crate) fn same_document_url(document_url: &Url, url: &Url) -> bool {
     let mut own = document_url.clone();
     let mut other = url.clone();
@@ -1153,6 +1119,8 @@ pub(crate) struct DocumentData {
     pub(crate) next_font_registration: u32,
     pub parser_active: bool,
     pub(crate) state: DocumentState,
+    // https://w3c.github.io/FileAPI/#lifeTime
+    pub(crate) blob_scope: u64,
     // https://html.spec.whatwg.org/multipage/iframe-embed-object.html#the-iframe-element:html-element-insertion-steps
     pub(crate) insertion_load_fired: HashSet<NodeId>,
 }
@@ -1566,6 +1534,7 @@ impl World {
             next_font_registration: 1,
             parser_active: false,
             state: DocumentState::default(),
+            blob_scope: runtime.next_blob_scope(),
             insertion_load_fired: HashSet::new(),
         }));
         let win = Rc::new(RefCell::new(WindowData {
@@ -1820,7 +1789,7 @@ impl World {
     }
 
     fn drop_active_document(&mut self) {
-        let old = {
+        let (old, old_blob_scope) = {
             let mut doc = self.doc.borrow_mut();
             let Some(old) = doc.document.take() else {
                 return;
@@ -1830,19 +1799,25 @@ impl World {
             doc.input_file_list
                 .retain(|node, _| node.document_id() != old);
             doc.state.forget_document(old);
-            old
+            let old_blob_scope =
+                std::mem::replace(&mut doc.blob_scope, self.runtime.next_blob_scope());
+            (old, old_blob_scope)
         };
         self.caches.forget_document(old);
-        self.unload_object_urls_for_document(old);
+        self.runtime.services.unload_object_urls(old_blob_scope);
         self.runtime.documents.borrow_mut().remove(old);
         self.runtime.registry.borrow_mut().forget_document(old);
     }
 
     pub(crate) fn forget_owned_documents(&mut self) {
         if self.isolated.is_none() {
+            let old_blob_scope = {
+                let mut doc = self.doc.borrow_mut();
+                std::mem::replace(&mut doc.blob_scope, self.runtime.next_blob_scope())
+            };
+            self.runtime.services.unload_object_urls(old_blob_scope);
             let ids: Vec<u32> = self.doc.borrow_mut().owned.drain().collect();
             for id in ids {
-                self.unload_object_urls_for_document(id);
                 {
                     let mut doc = self.doc.borrow_mut();
                     doc.input_files.retain(|node, _| node.document_id() != id);
@@ -2530,16 +2505,19 @@ impl World {
     }
 
     pub(crate) fn url_matches_origin(&self, url: &Url) -> bool {
-        let doc = self.doc.borrow();
-        match doc.origin {
-            url::Origin::Tuple(..) => url.origin() == doc.origin,
+        let (document_url, origin) = {
+            let doc = self.doc.borrow();
+            (doc.document_url.clone(), doc.origin.clone())
+        };
+        match origin {
+            url::Origin::Tuple(..) => url.origin() == origin,
             url::Origin::Opaque(_) => {
                 let blob_origin = if url.scheme() == "blob" {
-                    self.runtime.stored_object_url_origin(url.as_str())
+                    self.object_url_origin(url.as_str())
                 } else {
                     None
                 };
-                opaque_url_matches(&doc.document_url, &doc.origin, url, blob_origin.as_ref())
+                opaque_url_matches(&document_url, &origin, url, blob_origin.as_ref())
             }
         }
     }
@@ -3134,75 +3112,76 @@ impl World {
         contents: String,
         content_type: String,
     ) -> Option<String> {
-        let length = contents.len() + content_type.len();
-        let mut budget = self.budget.borrow_mut();
-        let total = budget.object_url_bytes.checked_add(length)?;
-        if total > MAX_OBJECT_URL_BYTES {
-            return None;
-        }
-        let id = object_url_id()?;
-        let (origin, document) = {
+        let (scope, origin) = {
             let doc = self.doc.borrow();
-            (doc.origin.clone(), doc.document)
+            (
+                doc.blob_scope,
+                crate::protocol::SerializedOrigin::from(&doc.origin),
+            )
         };
-        let url = format!("blob:{}/{id}", origin.ascii_serialization());
-        self.runtime.insert_object_url(
-            url.clone(),
-            ObjectUrlEntry {
-                contents: Arc::from(contents),
-                content_type: Arc::from(content_type),
-                origin,
-                frame: self.frame(),
-                document,
-            },
-        );
-        budget.object_url_bytes = total;
-        Some(url)
+        self.runtime
+            .services
+            .create_object_url(scope, &origin, contents, content_type)
     }
 
     pub(crate) fn object_url_contents(&self, url: &str) -> Option<Arc<str>> {
-        let origin = self.doc.borrow().origin.clone();
-        self.runtime.object_url_contents(url, &origin)
+        let (scope, origin) = {
+            let doc = self.doc.borrow();
+            (
+                doc.blob_scope,
+                crate::protocol::SerializedOrigin::from(&doc.origin),
+            )
+        };
+        self.runtime
+            .services
+            .resolve_object_url(scope, &origin, url)
+            .map(|record| Arc::from(record.contents))
     }
 
     pub(crate) fn object_url_type(&self, url: &str) -> Option<Arc<str>> {
-        let origin = self.doc.borrow().origin.clone();
-        self.runtime.object_url_type(url, &origin)
+        let (scope, origin) = {
+            let doc = self.doc.borrow();
+            (
+                doc.blob_scope,
+                crate::protocol::SerializedOrigin::from(&doc.origin),
+            )
+        };
+        self.runtime
+            .services
+            .resolve_object_url(scope, &origin, url)
+            .map(|record| Arc::from(record.content_type))
     }
 
     pub(crate) fn object_url_origin(&self, url: &str) -> Option<url::Origin> {
-        let origin = self.doc.borrow().origin.clone();
-        self.runtime.object_url_origin(url, &origin)
-    }
-
-    fn refund_object_url_bytes(&self, bytes: usize) {
-        let mut budget = self.budget.borrow_mut();
-        budget.object_url_bytes = budget.object_url_bytes.saturating_sub(bytes);
-    }
-
-    fn unload_object_urls_for_document(&mut self, document: u32) {
-        let released = self
-            .runtime
-            .take_object_urls(|entry| entry.document == Some(document));
-        self.refund_object_url_bytes(released);
+        let (scope, origin, serialized) = {
+            let doc = self.doc.borrow();
+            (
+                doc.blob_scope,
+                doc.origin.clone(),
+                crate::protocol::SerializedOrigin::from(&doc.origin),
+            )
+        };
+        self.runtime
+            .services
+            .resolve_object_url(scope, &serialized, url)
+            .map(|_| origin)
     }
 
     fn unload_object_urls_for_frame(&mut self) {
-        let frame = self.frame();
-        let released = self.runtime.take_object_urls(|entry| entry.frame == frame);
-        self.refund_object_url_bytes(released);
+        let scope = self.doc.borrow().blob_scope;
+        self.runtime.services.unload_object_urls(scope);
     }
 
     pub(crate) fn revoke_object_url(&mut self, url: &str) {
         // https://w3c.github.io/FileAPI/#dfn-revokeObjectURL
-        let origin = self.doc.borrow().origin.clone();
-        if self.runtime.object_url_origin(url, &origin).is_none() {
-            return;
-        }
-        if let Some(released) = self.runtime.remove_object_url(url) {
-            let mut budget = self.budget.borrow_mut();
-            budget.object_url_bytes = budget.object_url_bytes.saturating_sub(released);
-        }
+        let (scope, origin) = {
+            let doc = self.doc.borrow();
+            (
+                doc.blob_scope,
+                crate::protocol::SerializedOrigin::from(&doc.origin),
+            )
+        };
+        self.runtime.services.revoke_object_url(scope, &origin, url);
     }
 
     pub(crate) fn add_listener(&mut self, target: EventTargetKey, listener: Rc<Listener>) {

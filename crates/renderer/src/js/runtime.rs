@@ -9,7 +9,6 @@ use std::time::Instant;
 use tokio::sync::Notify;
 
 use crate::documents::DocumentStore;
-use crate::js::world::{ObjectUrlEntry, object_url_key};
 use crate::messaging::SharedHandle;
 use crate::protocol::BrowserServices;
 use crate::worker::{WorkerDirectory, WorkerId, WorkerRequest};
@@ -18,9 +17,6 @@ use super::JsRuntimeHandle;
 use super::RealmRegistry;
 
 pub(crate) type WorkerRequests = Arc<Mutex<Vec<WorkerRequest>>>;
-
-// https://w3c.github.io/FileAPI/#blob-url-store
-pub(crate) type ObjectUrlStore = Arc<Mutex<HashMap<String, ObjectUrlEntry>>>;
 
 // https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal
 #[derive(Default)]
@@ -72,7 +68,7 @@ pub(crate) struct SharedRuntime {
     pub(crate) worker_requests: WorkerRequests,
     pub(crate) next_worker: Arc<AtomicU64>,
     pub(crate) next_broadcast: Arc<AtomicU64>,
-    pub(crate) object_urls: ObjectUrlStore,
+    pub(crate) next_blob_scope: Arc<AtomicU64>,
     pub(crate) shared_buffers: Arc<SharedBufferTable>,
     pub(crate) font_ctx: parley::FontContext,
 }
@@ -98,7 +94,7 @@ impl SharedRuntime {
             worker_requests: Arc::new(Mutex::new(Vec::new())),
             next_worker: Arc::new(AtomicU64::new(1)),
             next_broadcast: Arc::new(AtomicU64::new(1)),
-            object_urls: Arc::new(Mutex::new(HashMap::new())),
+            next_blob_scope: Arc::new(AtomicU64::new(1)),
             shared_buffers: Arc::new(SharedBufferTable::default()),
             font_ctx,
         }
@@ -172,63 +168,8 @@ impl FrameRuntime {
         self.next_broadcast.fetch_add(1, Ordering::Relaxed)
     }
 
-    fn object_urls(&self) -> MutexGuard<'_, HashMap<String, ObjectUrlEntry>> {
-        self.object_urls
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-    }
-
-    pub(crate) fn object_url_contents(&self, url: &str, origin: &url::Origin) -> Option<Arc<str>> {
-        let store = self.object_urls();
-        let entry = store.get(object_url_key(url))?;
-        (entry.origin == *origin).then(|| Arc::clone(&entry.contents))
-    }
-
-    pub(crate) fn object_url_type(&self, url: &str, origin: &url::Origin) -> Option<Arc<str>> {
-        let store = self.object_urls();
-        let entry = store.get(object_url_key(url))?;
-        (entry.origin == *origin).then(|| Arc::clone(&entry.content_type))
-    }
-
-    pub(crate) fn object_url_origin(&self, url: &str, origin: &url::Origin) -> Option<url::Origin> {
-        let store = self.object_urls();
-        let entry = store.get(object_url_key(url))?;
-        (entry.origin == *origin).then(|| entry.origin.clone())
-    }
-
-    pub(crate) fn stored_object_url_origin(&self, url: &str) -> Option<url::Origin> {
-        self.object_urls()
-            .get(object_url_key(url))
-            .map(|entry| entry.origin.clone())
-    }
-
-    pub(crate) fn insert_object_url(&self, url: String, entry: ObjectUrlEntry) {
-        self.object_urls().insert(url, entry);
-    }
-
-    // https://w3c.github.io/FileAPI/#lifeTime
-    pub(crate) fn take_object_urls(
-        &self,
-        mut unload: impl FnMut(&ObjectUrlEntry) -> bool,
-    ) -> usize {
-        let mut store = self.object_urls();
-        let mut released = 0usize;
-        store.retain(|_, entry| {
-            if unload(entry) {
-                released = released.saturating_add(entry.contents.len() + entry.content_type.len());
-                false
-            } else {
-                true
-            }
-        });
-        released
-    }
-
-    pub(crate) fn remove_object_url(&self, url: &str) -> Option<usize> {
-        let mut store = self.object_urls();
-        store
-            .remove(object_url_key(url))
-            .map(|entry| entry.contents.len() + entry.content_type.len())
+    pub(crate) fn next_blob_scope(&self) -> u64 {
+        self.next_blob_scope.fetch_add(1, Ordering::Relaxed)
     }
 }
 

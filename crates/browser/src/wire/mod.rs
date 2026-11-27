@@ -265,6 +265,25 @@ pub enum StorageCall {
         url: String,
         partition_key: Option<String>,
     },
+    BlobCreate {
+        scope: u64,
+        origin: SerializedOrigin,
+        contents: String,
+        content_type: String,
+    },
+    BlobResolve {
+        scope: u64,
+        origin: SerializedOrigin,
+        url: String,
+    },
+    BlobRevoke {
+        scope: u64,
+        origin: SerializedOrigin,
+        url: String,
+    },
+    BlobUnload {
+        scope: u64,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -339,6 +358,8 @@ pub enum ServiceReply {
     StorageValue(Option<String>),
     StorageKeys(Vec<String>),
     StorageChanged(Result<Option<StorageChange>, StorageError>),
+    BlobUrl(Option<String>),
+    Blob(Option<renderer::BlobRecord>),
     Window(Option<WindowId>),
     Prompt(renderer::PromptOutcome),
     Unit,
@@ -364,7 +385,10 @@ impl ServiceReply {
                 NetworkCall::CancelDial { .. } | NetworkCall::CancelStream { .. },
             )
             | ServiceCall::Storage(
-                StorageCall::CookieSet { .. } | StorageCall::CookieStoreSet { .. },
+                StorageCall::CookieSet { .. }
+                | StorageCall::CookieStoreSet { .. }
+                | StorageCall::BlobRevoke { .. }
+                | StorageCall::BlobUnload { .. },
             )
             | ServiceCall::Messaging(MessagingCall::BroadcastPost { .. })
             | ServiceCall::BrowsingContext(
@@ -382,6 +406,8 @@ impl ServiceReply {
             ServiceCall::Storage(
                 StorageCall::Set { .. } | StorageCall::Remove { .. } | StorageCall::Clear { .. },
             ) => ServiceReply::StorageChanged(Ok(None)),
+            ServiceCall::Storage(StorageCall::BlobCreate { .. }) => ServiceReply::BlobUrl(None),
+            ServiceCall::Storage(StorageCall::BlobResolve { .. }) => ServiceReply::Blob(None),
             ServiceCall::BrowsingContext(
                 BrowsingContextCall::WindowOpen { .. }
                 | BrowsingContextCall::NavigateNamed { .. }

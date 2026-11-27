@@ -472,6 +472,52 @@ impl StorageHost for HostServices {
             _ => None,
         }
     }
+
+    fn create_object_url(
+        &self,
+        scope: u64,
+        origin: &renderer::SerializedOrigin,
+        contents: String,
+        content_type: String,
+    ) -> Option<String> {
+        match self.call(ServiceCall::Storage(StorageCall::BlobCreate {
+            scope,
+            origin: origin.clone(),
+            contents,
+            content_type,
+        })) {
+            Some(ServiceReply::BlobUrl(url)) => url,
+            _ => None,
+        }
+    }
+
+    fn resolve_object_url(
+        &self,
+        scope: u64,
+        origin: &renderer::SerializedOrigin,
+        url: &str,
+    ) -> Option<renderer::BlobRecord> {
+        match self.call(ServiceCall::Storage(StorageCall::BlobResolve {
+            scope,
+            origin: origin.clone(),
+            url: url.to_owned(),
+        })) {
+            Some(ServiceReply::Blob(record)) => record,
+            _ => None,
+        }
+    }
+
+    fn revoke_object_url(&self, scope: u64, origin: &renderer::SerializedOrigin, url: &str) {
+        let _result = self.call(ServiceCall::Storage(StorageCall::BlobRevoke {
+            scope,
+            origin: origin.clone(),
+            url: url.to_owned(),
+        }));
+    }
+
+    fn unload_object_urls(&self, scope: u64) {
+        let _result = self.call(ServiceCall::Storage(StorageCall::BlobUnload { scope }));
+    }
 }
 
 impl BrowsingContextHost for HostServices {

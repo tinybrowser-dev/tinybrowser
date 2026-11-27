@@ -794,7 +794,7 @@ fn spawn_window_close(
 
 // https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps
 fn navigable_popup_url(url: Url) -> Option<Url> {
-    matches!(url.scheme(), "about" | "http" | "https").then_some(url)
+    matches!(url.scheme(), "about" | "blob" | "http" | "https").then_some(url)
 }
 
 // https://html.spec.whatwg.org/multipage/browsing-the-web.html#check-a-navigation-response's-adherence-to-x-frame-options
@@ -1326,6 +1326,103 @@ impl StorageRouter<'_> {
                 url,
                 partition_key: _,
             } => self.cookie_store_set(&write, &url).await,
+            StorageCall::BlobCreate {
+                scope,
+                origin,
+                contents,
+                content_type,
+            } => {
+                self.blob_create(scope, &origin, contents, content_type)
+                    .await
+            }
+            StorageCall::BlobResolve { scope, origin, url } => {
+                self.blob_resolve(scope, &origin, &url).await
+            }
+            StorageCall::BlobRevoke { scope, origin, url } => {
+                self.blob_revoke(scope, &origin, &url).await
+            }
+            StorageCall::BlobUnload { scope } => self.blob_unload(scope).await,
+        }
+    }
+
+    async fn blob_create(
+        &self,
+        scope: u64,
+        origin: &renderer::SerializedOrigin,
+        contents: String,
+        content_type: String,
+    ) -> Result<(), RendererViolation> {
+        let origin = self.authorize_blob_origin(origin)?;
+        let url = self.authority.partition.object_urls.create(
+            self.assignment,
+            scope,
+            origin,
+            contents,
+            content_type,
+        );
+        send_reply(
+            &self.context.responder,
+            self.request,
+            ServiceReply::BlobUrl(url),
+        )
+        .await
+    }
+
+    async fn blob_resolve(
+        &self,
+        scope: u64,
+        origin: &renderer::SerializedOrigin,
+        url: &str,
+    ) -> Result<(), RendererViolation> {
+        let origin = self.authorize_blob_origin(origin)?;
+        let record = self.authority.partition.object_urls.resolve(
+            self.assignment,
+            scope,
+            origin.as_ref(),
+            url,
+        );
+        send_reply(
+            &self.context.responder,
+            self.request,
+            ServiceReply::Blob(record),
+        )
+        .await
+    }
+
+    async fn blob_revoke(
+        &self,
+        scope: u64,
+        origin: &renderer::SerializedOrigin,
+        url: &str,
+    ) -> Result<(), RendererViolation> {
+        let origin = self.authorize_blob_origin(origin)?;
+        self.authority
+            .partition
+            .object_urls
+            .revoke(self.assignment, scope, origin.as_ref(), url);
+        send_reply(&self.context.responder, self.request, ServiceReply::Unit).await
+    }
+
+    async fn blob_unload(&self, scope: u64) -> Result<(), RendererViolation> {
+        self.authority
+            .partition
+            .object_urls
+            .unload_scope(self.assignment, scope);
+        send_reply(&self.context.responder, self.request, ServiceReply::Unit).await
+    }
+
+    fn authorize_blob_origin(
+        &self,
+        claim: &renderer::SerializedOrigin,
+    ) -> Result<Option<url::Origin>, RendererViolation> {
+        match self
+            .context
+            .tabs
+            .authorize_origin(self.authority.tab, &self.authority.site, claim)
+        {
+            Some(origin) => Ok(Some(origin)),
+            None if claim.is_opaque() => Ok(None),
+            None => Err(RendererViolation),
         }
     }
 

@@ -637,7 +637,7 @@ impl Fonts {
 
 pub use js::{Stop, TURN_SCRIPT_BUDGET};
 pub use protocol::{
-    AxNode, AxProperty, AxPropertyValue, BodyDelivery, BrowserEvent, BrowserServices,
+    AxNode, AxProperty, AxPropertyValue, BlobRecord, BodyDelivery, BrowserEvent, BrowserServices,
     BrowsingContextHost, ConsoleLevel, ContextName, CookiePolicy, CorsMode, CorsRequest,
     DialCancellation, DialCompletion, DialFailure, DialKind, DialOutcome, DialRequest, DomBoxModel,
     DomNode, DomRemoteNode, DomReply, DomRequest, DomStyleSheet, EntryId, FrameId, FrameKind,
