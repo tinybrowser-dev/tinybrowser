@@ -55,21 +55,6 @@ pub(crate) struct RealmRegistry {
     pub(crate) svg_rasters: super::canvas::SvgRasterCache,
     next_bitmap: u64,
     next_decoder: u64,
-    // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#textFieldSelection
-    selections: HashMap<NodeId, (u32, u32, u8)>,
-    // https://w3c.github.io/selection-api/#selection-interface
-    document_selections: HashMap<u32, DocumentSelection>,
-    // https://html.spec.whatwg.org/multipage/interaction.html#focusable-area
-    active_elements: HashMap<u32, NodeId>,
-}
-
-// https://w3c.github.io/selection-api/#selection-interface
-#[derive(Clone, Default)]
-pub(crate) struct DocumentSelection {
-    pub(crate) start: Option<(NodeId, u32)>,
-    pub(crate) end: Option<(NodeId, u32)>,
-    pub(crate) direction: u8,
-    pub(crate) version: u32,
 }
 
 pub(crate) struct PrivateSlots {
@@ -542,27 +527,6 @@ fn object_url_id() -> Option<String> {
 }
 
 impl RealmRegistry {
-    // https://w3c.github.io/selection-api/#selection-interface
-    pub(crate) fn document_selection(&self, document: u32) -> Option<&DocumentSelection> {
-        self.document_selections.get(&document)
-    }
-
-    // https://w3c.github.io/selection-api/#selection-interface
-    pub(crate) fn update_document_selection(
-        &mut self,
-        document: u32,
-        start: Option<(NodeId, u32)>,
-        end: Option<(NodeId, u32)>,
-        direction: u8,
-    ) -> u32 {
-        let selection = self.document_selections.entry(document).or_default();
-        selection.version = selection.version.wrapping_add(1);
-        selection.start = start;
-        selection.end = end;
-        selection.direction = direction;
-        selection.version
-    }
-
     pub(crate) fn insert_document(&mut self, id: u32, world: &Rc<RefCell<World>>) {
         self.documents.insert(id, Rc::downgrade(world));
     }
@@ -607,34 +571,6 @@ impl RealmRegistry {
             .retain(|node, _| node.document_id() != id);
         self.adopted_ids
             .retain(|from, to| from.document_id() != id && to.document_id() != id);
-        self.selections.retain(|node, _| node.document_id() != id);
-        self.document_selections.remove(&id);
-        self.active_elements.remove(&id);
-    }
-
-    // https://html.spec.whatwg.org/multipage/interaction.html#focused-area-of-the-document
-    pub(crate) fn active_element(&self, document: u32) -> Option<NodeId> {
-        self.active_elements.get(&document).copied()
-    }
-
-    pub(crate) fn set_active_element(&mut self, document: u32, node: Option<NodeId>) {
-        match node {
-            Some(node) => {
-                self.active_elements.insert(document, node);
-            }
-            None => {
-                self.active_elements.remove(&document);
-            }
-        }
-    }
-
-    // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#textFieldSelection
-    pub(crate) fn selection_of(&self, id: NodeId) -> (u32, u32, u8) {
-        self.selections.get(&id).copied().unwrap_or((0, 0, 0))
-    }
-
-    pub(crate) fn set_selection(&mut self, id: NodeId, start: u32, end: u32, direction: u8) {
-        self.selections.insert(id, (start, end, direction));
     }
 
     pub(crate) fn prune_dead_wrappers(&mut self, documents: &DocumentStore) {
@@ -701,18 +637,6 @@ impl RealmRegistry {
                 *node = to;
             }
         }
-        for selection in self.document_selections.values_mut() {
-            if let Some((node, _)) = &mut selection.start
-                && *node == from
-            {
-                *node = to;
-            }
-            if let Some((node, _)) = &mut selection.end
-                && *node == from
-            {
-                *node = to;
-            }
-        }
     }
 
     pub(crate) fn stamp_creation_realm(&mut self, id: NodeId, world: &Rc<RefCell<World>>) {
@@ -772,9 +696,6 @@ impl RealmRegistry {
         self.canvases.clear();
         self.canvas_nodes.clear();
         self.bitmaps.clear();
-        self.selections.clear();
-        self.document_selections.clear();
-        self.active_elements.clear();
     }
 
     fn budget(&self) -> Rc<RefCell<ResourceBudget>> {
@@ -1163,6 +1084,8 @@ pub(crate) struct RealmCaches {
     pub(crate) implementations: HashMap<u32, Persistent<Value<'static>>>,
     // https://html.spec.whatwg.org/multipage/forms.html#dom-form-nameditem
     pub(crate) form_named_lists: HashMap<(NodeId, String), Persistent<Value<'static>>>,
+    // https://w3c.github.io/selection-api/#selection-interface
+    pub(crate) selection_range: HashMap<u32, (usize, Persistent<Value<'static>>)>,
 }
 
 impl RealmCaches {
@@ -1171,6 +1094,7 @@ impl RealmCaches {
         self.document_named.clear();
         self.implementations.clear();
         self.form_named_lists.clear();
+        self.selection_range.clear();
     }
 
     pub(crate) fn forget_document(&mut self, document: u32) {
@@ -1181,6 +1105,7 @@ impl RealmCaches {
         self.implementations.remove(&document);
         self.form_named_lists
             .retain(|(node, _), _| node.document != document);
+        self.selection_range.remove(&document);
     }
 }
 
@@ -3489,19 +3414,43 @@ impl World {
             .intern_same_object(id, member, value);
     }
 
+    // https://html.spec.whatwg.org/multipage/interaction.html#focused-area-of-the-document
     pub(crate) fn active_element(&self, document: u32) -> Option<NodeId> {
-        self.runtime.registry.borrow().active_element(document)
-    }
-
-    pub(crate) fn selection_of(&self, id: NodeId) -> (u32, u32, u8) {
-        self.runtime.registry.borrow().selection_of(id)
-    }
-
-    pub(crate) fn set_selection(&mut self, id: NodeId, start: u32, end: u32, direction: u8) {
         self.runtime
-            .registry
-            .borrow_mut()
-            .set_selection(id, start, end, direction);
+            .documents
+            .borrow()
+            .get(document)
+            .and_then(|parsed| parsed.document.active_element())
+            .map(|node| NodeId { document, node })
+    }
+
+    // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#textFieldSelection
+    pub(crate) fn selection_of(&self, id: NodeId) -> crate::documents::TextSelection {
+        self.runtime
+            .documents
+            .borrow()
+            .get(id.document)
+            .map_or_default(|parsed| parsed.document.text_selection(id.node))
+    }
+
+    // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#textFieldSelection
+    pub(crate) fn set_selection(
+        &mut self,
+        id: NodeId,
+        start: u32,
+        end: u32,
+        direction: crate::documents::SelectionDirection,
+    ) {
+        if let Some(parsed) = self.runtime.documents.borrow_mut().get_mut(id.document) {
+            parsed.document.set_text_selection(
+                id.node,
+                crate::documents::TextSelection {
+                    start,
+                    end,
+                    direction,
+                },
+            );
+        }
     }
 
     // https://w3c.github.io/webdriver/#elements
@@ -3616,19 +3565,13 @@ impl World {
             .remove(&(node, name.to_owned()))
     }
 
+    // https://html.spec.whatwg.org/multipage/interaction.html#focused-area-of-the-document
+    // https://drafts.csswg.org/selectors-4/#the-focus-pseudo
     pub(crate) fn set_active_element(&mut self, document: u32, node: Option<NodeId>) {
-        self.runtime
-            .registry
-            .borrow_mut()
-            .set_active_element(document, node);
-        // https://drafts.csswg.org/selectors-4/#the-focus-pseudo
         if let Some(parsed) = self.runtime.documents.borrow_mut().get_mut(document) {
-            match node {
-                Some(focused) => {
-                    parsed.document.base.set_focus_to(focused.node);
-                }
-                None => parsed.document.base.clear_focus(),
-            }
+            parsed
+                .document
+                .set_active_element(node.filter(|id| id.document == document).map(|id| id.node));
         }
     }
 

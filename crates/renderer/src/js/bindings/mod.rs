@@ -3703,4 +3703,84 @@ mod realm_tests {
         drop(main);
         drop(shared);
     }
+
+    // https://w3c.github.io/selection-api/#selection-interface
+    #[test]
+    fn document_selection_is_live_across_dom_mutations_and_realms() {
+        let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
+        let shared = SharedJsRuntime::default();
+        let stop = Arc::new(Stop::new());
+        let documents = Rc::new(RefCell::new(crate::documents::DocumentStore::default()));
+        let registry = Rc::new(RefCell::new(crate::js::RealmRegistry::default()));
+        let main = world_with_document(
+            &shared,
+            &services,
+            &documents,
+            &registry,
+            "https://a.test/start",
+            "<!doctype html><p id='p'>abcdef</p>",
+        );
+        let main_realm =
+            JsRealm::new(&shared.handle(), Rc::clone(&main), Arc::clone(&stop)).expect("main");
+        let isolated = Rc::new(RefCell::new(World::new_isolated(
+            &main.borrow(),
+            "iso".to_owned(),
+        )));
+        let isolated_realm =
+            JsRealm::new(&shared.handle(), Rc::clone(&isolated), stop).expect("isolated");
+
+        let same_range = main_realm
+            .eval(
+                "window.__r = document.createRange();\
+                 const text = document.getElementById('p').firstChild;\
+                 __r.setStart(text, 2);\
+                 __r.setEnd(text, 5);\
+                 getSelection().addRange(__r);\
+                 getSelection().getRangeAt(0) === __r",
+            )
+            .expect("addRange");
+        assert_eq!(same_range, "true");
+        assert_eq!(
+            isolated_realm
+                .eval("getSelection().toString()")
+                .expect("iso read"),
+            "cde",
+            "isolated realm observes live document selection"
+        );
+
+        main_realm
+            .eval("document.getElementById('p').firstChild.deleteData(0, 1);")
+            .expect("deleteData");
+        assert_eq!(
+            isolated_realm
+                .eval("`${getSelection().anchorOffset}:${getSelection().focusOffset}:${getSelection().toString()}`")
+                .expect("after deleteData"),
+            "1:4:cde",
+            "DOM mutation updates selection range synchronously in SideTables"
+        );
+
+        main_realm
+            .eval("window.__r.setStart(document.getElementById('p').firstChild, 2);")
+            .expect("mutate range");
+        assert_eq!(
+            isolated_realm
+                .eval("getSelection().toString()")
+                .expect("after range mutate"),
+            "de",
+            "mutating the added Range updates selection in all realms"
+        );
+
+        assert_eq!(
+            main_realm
+                .eval("getSelection().removeRange(window.__r); getSelection().rangeCount")
+                .expect("removeRange"),
+            "0"
+        );
+
+        drop(isolated_realm);
+        drop(isolated);
+        drop(main_realm);
+        drop(main);
+        drop(shared);
+    }
 }

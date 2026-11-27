@@ -61,9 +61,16 @@ impl RangeState {
 }
 
 // https://dom.spec.whatwg.org/#concept-range
+#[derive(Clone, Copy, Debug)]
+struct RangeSlot {
+    state: RangeState,
+    refs: u32,
+}
+
+// https://dom.spec.whatwg.org/#concept-range
 #[derive(Default)]
 pub struct RangeTable {
-    slots: Vec<Option<RangeState>>,
+    slots: Vec<Option<RangeSlot>>,
     free: Vec<usize>,
     live: usize,
 }
@@ -71,24 +78,37 @@ pub struct RangeTable {
 impl RangeTable {
     pub fn alloc(&mut self, state: RangeState) -> usize {
         self.live += 1;
+        let entry = Some(RangeSlot { state, refs: 1 });
         if let Some(slot) = self.free.pop() {
-            self.slots[slot] = Some(state);
+            self.slots[slot] = entry;
             slot
         } else {
-            self.slots.push(Some(state));
+            self.slots.push(entry);
             self.slots.len() - 1
         }
     }
 
+    pub fn retain(&mut self, slot: usize) -> bool {
+        let Some(Some(entry)) = self.slots.get_mut(slot) else {
+            return false;
+        };
+        entry.refs = entry.refs.saturating_add(1);
+        true
+    }
+
     #[must_use]
     pub fn get(&self, slot: usize) -> Option<RangeState> {
-        self.slots.get(slot).copied().flatten()
+        self.slots
+            .get(slot)
+            .copied()
+            .flatten()
+            .map(|entry| entry.state)
     }
 
     pub fn set(&mut self, slot: usize, state: RangeState) -> bool {
         match self.slots.get_mut(slot) {
-            Some(entry) if entry.is_some() => {
-                *entry = Some(state);
+            Some(Some(entry)) => {
+                entry.state = state;
                 true
             }
             _ => false,
@@ -97,10 +117,14 @@ impl RangeTable {
 
     pub fn free(&mut self, slot: usize) {
         if let Some(entry) = self.slots.get_mut(slot)
-            && entry.take().is_some()
+            && let Some(slot_entry) = entry.as_mut()
         {
-            self.free.push(slot);
-            self.live -= 1;
+            slot_entry.refs = slot_entry.refs.saturating_sub(1);
+            if slot_entry.refs == 0 {
+                *entry = None;
+                self.free.push(slot);
+                self.live -= 1;
+            }
         }
     }
 
@@ -110,7 +134,10 @@ impl RangeTable {
     }
 
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut RangeState> {
-        self.slots.iter_mut().flatten()
+        self.slots
+            .iter_mut()
+            .flatten()
+            .map(|entry| &mut entry.state)
     }
 }
 
@@ -254,6 +281,9 @@ pub fn position(
 ) -> Ordering {
     if a.node == b.node {
         return a.offset.cmp(&b.offset);
+    }
+    if !same_root(base, a.node, b.node) {
+        return a.node.node.cmp(&b.node.node);
     }
     if crate::dom::tree::tree_order(base, document, b.node.node, a.node.node) == Ordering::Less {
         return position(base, document, b, a).reverse();

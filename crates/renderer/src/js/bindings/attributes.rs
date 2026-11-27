@@ -1842,7 +1842,12 @@ fn apply_input_selection(
     new: crate::dom::input::InputType,
 ) {
     if !old.selection_applies() && new.selection_applies() {
-        world.borrow_mut().set_selection(element, 0, 0, 0);
+        world.borrow_mut().set_selection(
+            element,
+            0,
+            0,
+            crate::documents::SelectionDirection::Directionless,
+        );
     }
 }
 

@@ -32,6 +32,57 @@ pub struct SideTables {
     element_references: HashMap<(blitz_traits::node_id::NodeId, String), ElementReference>,
     // https://html.spec.whatwg.org/multipage/scripting.html#template-contents
     template_host: Option<(u32, blitz_traits::node_id::NodeId)>,
+    // https://html.spec.whatwg.org/multipage/interaction.html#focused-area-of-the-document
+    active_element: Option<blitz_traits::node_id::NodeId>,
+    // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#textFieldSelection
+    text_selections: HashMap<blitz_traits::node_id::NodeId, TextSelection>,
+    // https://w3c.github.io/selection-api/#selection-interface
+    selection: Option<DocumentSelection>,
+}
+
+// https://w3c.github.io/selection-api/#dfn-directionless
+// https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#selection-direction
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SelectionDirection {
+    #[default]
+    Directionless,
+    Forward,
+    Backward,
+}
+
+impl SelectionDirection {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Directionless => "none",
+            Self::Forward => "forward",
+            Self::Backward => "backward",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(value: &str) -> Self {
+        match value {
+            "forward" => Self::Forward,
+            "backward" => Self::Backward,
+            _ => Self::Directionless,
+        }
+    }
+}
+
+// https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#textFieldSelection
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TextSelection {
+    pub start: u32,
+    pub end: u32,
+    pub direction: SelectionDirection,
+}
+
+// https://w3c.github.io/selection-api/#selection-interface
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DocumentSelection {
+    pub range_slot: usize,
+    pub direction: SelectionDirection,
 }
 
 // https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes:element
@@ -291,6 +342,99 @@ impl BlitzDocument {
 
     pub fn template_host(&self) -> Option<(u32, blitz_traits::node_id::NodeId)> {
         self.side.template_host
+    }
+
+    // https://html.spec.whatwg.org/multipage/interaction.html#focused-area-of-the-document
+    #[must_use]
+    pub fn active_element(&self) -> Option<blitz_traits::node_id::NodeId> {
+        self.side.active_element
+    }
+
+    // https://html.spec.whatwg.org/multipage/interaction.html#focused-area-of-the-document
+    // https://drafts.csswg.org/selectors-4/#the-focus-pseudo
+    pub fn set_active_element(&mut self, node: Option<blitz_traits::node_id::NodeId>) {
+        self.side.active_element = node;
+        match node {
+            Some(focused) => {
+                self.base.set_focus_to(focused);
+            }
+            None => self.base.clear_focus(),
+        }
+    }
+
+    // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#textFieldSelection
+    #[must_use]
+    pub fn text_selection(&self, id: blitz_traits::node_id::NodeId) -> TextSelection {
+        self.side
+            .text_selections
+            .get(&id)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#textFieldSelection
+    pub fn set_text_selection(
+        &mut self,
+        id: blitz_traits::node_id::NodeId,
+        selection: TextSelection,
+    ) {
+        self.side.text_selections.insert(id, selection);
+    }
+
+    // https://w3c.github.io/selection-api/#selection-interface
+    #[must_use]
+    pub fn document_selection(&self) -> Option<DocumentSelection> {
+        self.side.selection
+    }
+
+    // https://w3c.github.io/selection-api/#selection-interface
+    pub fn set_document_selection_slot(
+        &mut self,
+        range_slot: usize,
+        direction: SelectionDirection,
+    ) -> bool {
+        if let Some(current) = self.side.selection
+            && current.range_slot == range_slot
+        {
+            self.side.selection = Some(DocumentSelection {
+                range_slot,
+                direction,
+            });
+            return true;
+        }
+        if !self.side.ranges.retain(range_slot) {
+            return false;
+        }
+        if let Some(previous) = self.side.selection.replace(DocumentSelection {
+            range_slot,
+            direction,
+        }) {
+            self.side.ranges.free(previous.range_slot);
+        }
+        true
+    }
+
+    // https://w3c.github.io/selection-api/#selection-interface
+    pub fn set_document_selection_range(
+        &mut self,
+        state: crate::dom::range::RangeState,
+        direction: SelectionDirection,
+    ) -> usize {
+        let range_slot = self.side.ranges.alloc(state);
+        if let Some(previous) = self.side.selection.replace(DocumentSelection {
+            range_slot,
+            direction,
+        }) {
+            self.side.ranges.free(previous.range_slot);
+        }
+        range_slot
+    }
+
+    // https://w3c.github.io/selection-api/#selection-interface
+    pub fn clear_document_selection(&mut self) {
+        if let Some(previous) = self.side.selection.take() {
+            self.side.ranges.free(previous.range_slot);
+        }
     }
 
     // https://dom.spec.whatwg.org/#characterdata

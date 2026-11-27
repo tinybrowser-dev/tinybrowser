@@ -504,6 +504,13 @@ pub(crate) fn wrap_range<'js>(ctx: &Ctx<'js>, document: u32, slot: usize) -> Res
 }
 
 impl JsRange {
+    pub(crate) fn registration(&self) -> (u32, usize) {
+        (
+            self.registration.document.get(),
+            self.registration.slot.get(),
+        )
+    }
+
     fn load(&self, ctx: &Ctx<'_>) -> Result<RangeState> {
         let world_rc = world(ctx)?;
         let world = world_rc.borrow();
@@ -540,6 +547,13 @@ impl JsRange {
             let Some(mut parsed) = world.document_mut_by_id(owner) else {
                 return Err(Exception::throw_type(ctx, "stale range"));
             };
+            if parsed
+                .document
+                .document_selection()
+                .is_some_and(|selection| selection.range_slot == slot)
+            {
+                parsed.document.clear_document_selection();
+            }
             parsed.document.side.ranges.free(slot);
         }
         let fresh = {

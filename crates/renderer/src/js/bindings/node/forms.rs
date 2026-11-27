@@ -200,7 +200,7 @@ impl<'js> html_input_element_generated::HTMLInputElement<'js> for JsNode {
         }
         drop(parsed);
         let direction = selection_direction_of(ctx, self.handle.get().0)?;
-        rquickjs::String::from_str(ctx.clone(), direction_name(direction)).map(Some)
+        rquickjs::String::from_str(ctx.clone(), direction.as_str()).map(Some)
     }
 
     // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#dom-textarea/input-selectiondirection
@@ -270,7 +270,7 @@ impl<'js> html_text_area_element_generated::HTMLTextAreaElement<'js> for JsNode 
     // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#dom-textarea/input-selectiondirection
     fn get_selection_direction(&self, ctx: &Ctx<'js>) -> Result<rquickjs::String<'js>> {
         let direction = selection_direction_of(ctx, self.handle.get().0)?;
-        rquickjs::String::from_str(ctx.clone(), direction_name(direction))
+        rquickjs::String::from_str(ctx.clone(), direction.as_str())
     }
 
     // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#dom-textarea/input-selectiondirection
@@ -597,9 +597,12 @@ impl JsNode {
             );
         }
         if changed && applies {
-            world_rc
-                .borrow_mut()
-                .set_selection(self.handle.get().0, collapsed, collapsed, 0);
+            world_rc.borrow_mut().set_selection(
+                self.handle.get().0,
+                collapsed,
+                collapsed,
+                crate::documents::SelectionDirection::Directionless,
+            );
         }
         Ok(())
     }
@@ -682,24 +685,36 @@ impl JsNode {
     ) -> Result<()> {
         let id = self.handle.get().0;
         require_selection(&ctx, self.handle.get().0, "selectionStart")?;
-        let (_, end, direction) = world(&ctx)?.borrow().selection_of(id);
+        let current = world(&ctx)?.borrow().selection_of(id);
         // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#dom-textarea/input-selectionstart
-        set_selection_range(&ctx, id, value.0, end.max(value.0), direction)
+        set_selection_range(
+            &ctx,
+            id,
+            value.0,
+            current.end.max(value.0),
+            current.direction,
+        )
     }
 
     // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#dom-textarea/input-selectionend
     pub(super) fn set_selection_end(&self, ctx: Ctx<'_>, value: WebIdlUnsignedLong) -> Result<()> {
         let id = self.handle.get().0;
         require_selection(&ctx, self.handle.get().0, "selectionEnd")?;
-        let (start, _, direction) = world(&ctx)?.borrow().selection_of(id);
-        set_selection_range(&ctx, id, start, value.0, direction)
+        let current = world(&ctx)?.borrow().selection_of(id);
+        set_selection_range(&ctx, id, current.start, value.0, current.direction)
     }
 
     pub(super) fn set_selection_direction(&self, ctx: Ctx<'_>, value: WebIdlString) -> Result<()> {
         let id = self.handle.get().0;
         require_selection(&ctx, self.handle.get().0, "selectionDirection")?;
-        let (start, end, _) = world(&ctx)?.borrow().selection_of(id);
-        set_selection_range(&ctx, id, start, end, direction_code(&value.0))
+        let current = world(&ctx)?.borrow().selection_of(id);
+        set_selection_range(
+            &ctx,
+            id,
+            current.start,
+            current.end,
+            crate::documents::SelectionDirection::parse(&value.0),
+        )
     }
 
     // https://html.spec.whatwg.org/multipage/forms.html#dom-form-reset
@@ -1195,12 +1210,11 @@ pub(super) fn fixup_controls_on_insert(
 pub(super) fn selection_start_of(ctx: &rquickjs::Ctx<'_>, id: NodeId) -> rquickjs::Result<u32> {
     let world_rc = world(ctx)?;
     let world = world_rc.borrow();
-    let parsed = world.document(id);
-    let Some(parsed) = parsed else {
+    let Some(parsed) = world.document(id) else {
         return Ok(0);
     };
-    let (start, _, _) = world.selection_of(id);
-    Ok(start.min(
+    let current = parsed.document.text_selection(id.node);
+    Ok(current.start.min(
         u32::try_from(crate::dom::forms::control_value_len(&parsed, id.node)).unwrap_or(u32::MAX),
     ))
 }
@@ -1211,22 +1225,25 @@ pub(super) fn selection_end_of(ctx: &rquickjs::Ctx<'_>, id: NodeId) -> rquickjs:
     let Some(parsed) = world.document(id) else {
         return Ok(0);
     };
-    let (_, end, _) = world.selection_of(id);
-    Ok(end.min(
+    let current = parsed.document.text_selection(id.node);
+    Ok(current.end.min(
         u32::try_from(crate::dom::forms::control_value_len(&parsed, id.node)).unwrap_or(u32::MAX),
     ))
 }
 
-pub(super) fn selection_direction_of(ctx: &rquickjs::Ctx<'_>, id: NodeId) -> rquickjs::Result<u8> {
+pub(super) fn selection_direction_of(
+    ctx: &rquickjs::Ctx<'_>,
+    id: NodeId,
+) -> rquickjs::Result<crate::documents::SelectionDirection> {
     let world_rc = world(ctx)?;
     let world = world_rc.borrow();
     let Some(parsed) = world.document(id) else {
-        return Ok(0);
+        return Ok(crate::documents::SelectionDirection::Directionless);
     };
     if !crate::dom::forms::selection_applies(&parsed.document.base, id.node) {
-        return Ok(0);
+        return Ok(crate::documents::SelectionDirection::Directionless);
     }
-    Ok(world.selection_of(id).2)
+    Ok(parsed.document.text_selection(id.node).direction)
 }
 
 // https://html.spec.whatwg.org/multipage/input.html#do-not-apply
@@ -1252,7 +1269,7 @@ fn set_selection_range(
     node: NodeId,
     start: u32,
     end: u32,
-    direction: u8,
+    direction: crate::documents::SelectionDirection,
 ) -> Result<()> {
     let world_rc = world(ctx)?;
     let length = {
@@ -1271,12 +1288,24 @@ fn set_selection_range(
     };
     let previous = world_rc.borrow().selection_of(node);
     // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#set-the-selection-range
-    let clamped = (previous.0.min(length), previous.1.min(length), previous.2);
-    if clamped == (start, end, direction) {
+    let clamped = crate::documents::TextSelection {
+        start: previous.start.min(length),
+        end: previous.end.min(length),
+        direction: previous.direction,
+    };
+    let next = crate::documents::TextSelection {
+        start,
+        end,
+        direction,
+    };
+    if clamped == next {
         if clamped != previous {
-            world_rc
-                .borrow_mut()
-                .set_selection(node, clamped.0, clamped.1, clamped.2);
+            world_rc.borrow_mut().set_selection(
+                node,
+                clamped.start,
+                clamped.end,
+                clamped.direction,
+            );
         }
         return Ok(());
     }
@@ -1301,25 +1330,11 @@ pub(crate) fn set_selection_range_host<'js>(
         id,
         start,
         end,
-        direction.as_deref().map_or(0, direction_code),
+        direction.as_deref().map_or(
+            crate::documents::SelectionDirection::Directionless,
+            crate::documents::SelectionDirection::parse,
+        ),
     )
-}
-
-// https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#selection-direction
-pub(super) fn direction_name(direction: u8) -> &'static str {
-    match direction {
-        1 => "forward",
-        2 => "backward",
-        _ => "none",
-    }
-}
-
-pub(super) fn direction_code(direction: &str) -> u8 {
-    match direction {
-        "forward" => 1,
-        "backward" => 2,
-        _ => 0,
-    }
 }
 
 // https://html.spec.whatwg.org/multipage/form-elements.html#the-output-element
