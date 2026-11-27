@@ -3769,4 +3769,53 @@ mod realm_tests {
         drop(main);
         drop(shared);
     }
+
+    #[test]
+    fn shadow_scoped_css_applies_style_host_slotted_part_and_adopted_sheets() {
+        let shared = SharedJsRuntime::default();
+        let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
+        let documents = Rc::new(RefCell::new(crate::documents::DocumentStore::default()));
+        let registry = Rc::new(RefCell::new(crate::js::RealmRegistry::default()));
+        let main = world_with_document(
+            &shared,
+            &services,
+            &documents,
+            &registry,
+            "https://example.test/",
+            "<!doctype html><style>p { color: rgb(1, 2, 3); } #host::part(inner) { border-top-width: 7px; border-top-style: solid; }</style><p id=light>L</p><div id=host><span>S</span></div>",
+        );
+        let stop = Arc::clone(&main.borrow().runtime.stop);
+        let main_realm =
+            JsRealm::new(&shared.handle(), Rc::clone(&main), stop).expect("main realm");
+
+        let result = main_realm
+            .eval(
+                "const host = document.getElementById('host');\
+                 const root = host.attachShadow({ mode: 'open' });\
+                 root.innerHTML = '<style>:host { color: rgb(255, 0, 0); } p { color: rgb(0, 0, 255); } ::slotted(span) { color: rgb(0, 128, 0); }</style><p part=\"inner\">P</p><slot></slot>';\
+                 const sheet = new CSSStyleSheet();\
+                 sheet.replaceSync('p { background-color: rgb(10, 20, 30); }');\
+                 root.adoptedStyleSheets.push(sheet);\
+                 const lightColor = getComputedStyle(document.getElementById('light')).color;\
+                 const hostColor = getComputedStyle(host).color;\
+                 const shadowP = root.querySelector('p');\
+                 const shadowPColor = getComputedStyle(shadowP).color;\
+                 const shadowPBg = getComputedStyle(shadowP).backgroundColor;\
+                 const shadowPBorder = getComputedStyle(shadowP).borderTopWidth;\
+                 const slottedColor = getComputedStyle(host.querySelector('span')).color;\
+                 const childCount = root.children.length;\
+                 sheet.replaceSync('p { background-color: rgb(40, 50, 60); }');\
+                 const updatedBg = getComputedStyle(shadowP).backgroundColor;\
+                 [lightColor, hostColor, shadowPColor, shadowPBg, updatedBg, shadowPBorder, slottedColor, childCount].join('|')",
+            )
+            .expect("eval shadow css");
+        assert_eq!(
+            result,
+            "rgb(1, 2, 3)|rgb(255, 0, 0)|rgb(0, 0, 255)|rgb(10, 20, 30)|rgb(40, 50, 60)|7px|rgb(0, 128, 0)|3"
+        );
+
+        drop(main_realm);
+        drop(main);
+        drop(shared);
+    }
 }

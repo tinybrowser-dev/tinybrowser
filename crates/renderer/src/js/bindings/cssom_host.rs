@@ -219,15 +219,33 @@ fn sheet_owner_nodes<'js>(ctx: Ctx<'js>, document: Value<'js>) -> Result<Array<'
         return Ok(array);
     };
     let document_id = parsed.id;
-    let owners: Vec<NodeId> = parsed
+    let is_shadow = parsed
         .document
         .base
-        .stylesheet_owner_nodes()
-        .map(|node| NodeId {
-            document: document_id,
-            node,
-        })
-        .collect();
+        .get_node(id.node)
+        .is_some_and(|node| matches!(node.data, blitz_dom::NodeData::ShadowRoot { .. }));
+    let owners: Vec<NodeId> = if is_shadow {
+        parsed
+            .document
+            .base
+            .shadow_stylesheet_owner_nodes(id.node)
+            .into_iter()
+            .map(|node| NodeId {
+                document: document_id,
+                node,
+            })
+            .collect()
+    } else {
+        parsed
+            .document
+            .base
+            .stylesheet_owner_nodes()
+            .map(|node| NodeId {
+                document: document_id,
+                node,
+            })
+            .collect()
+    };
     drop(parsed);
     for (index, id) in owners.into_iter().enumerate() {
         array.set(index, super::wrap_node(&ctx, id)?)?;
@@ -764,7 +782,19 @@ fn set_adopted_sheets<'js>(ctx: Ctx<'js>, address: Value<'js>, ids: Array<'js>) 
     let Some(mut parsed) = world.document_mut(node) else {
         return false;
     };
-    parsed.document.base.set_adopted_stylesheets(&sheets)
+    let is_shadow = parsed
+        .document
+        .base
+        .get_node(node.node)
+        .is_some_and(|entry| matches!(entry.data, blitz_dom::NodeData::ShadowRoot { .. }));
+    if is_shadow {
+        parsed
+            .document
+            .base
+            .set_shadow_adopted_stylesheets(node.node, &sheets)
+    } else {
+        parsed.document.base.set_adopted_stylesheets(&sheets)
+    }
 }
 
 // https://drafts.csswg.org/cssom/#dom-cssstylesheet-cssstylesheet

@@ -1270,32 +1270,42 @@ let __tbCssomRuleAt;
     configurable: true,
   });
   if (typeof globalThis.ShadowRoot === 'function') {
-    const __tbShadowAdoptedStyleNodes = new WeakMap();
+    const __tbShadowStyleSheetList = shadow => {
+      if (!(shadow instanceof globalThis.ShadowRoot)) {
+        throw new TypeError('Illegal invocation');
+      }
+      let list = __tbStyleSheetLists.get(shadow);
+      if (list !== undefined) return list;
+      const target = Object.create(StyleSheetList.prototype, {
+        __tbDocument: { value: shadow, writable: false, enumerable: false, configurable: false },
+      });
+      list = new Proxy(target, {
+        get(targetList, property, receiver) {
+          if (__tbCanonicalIndex(property)) {
+            const item = targetList.item(property >>> 0);
+            return item === null ? undefined : item;
+          }
+          const value = __tbApply(__tbReflectGet, Reflect, [targetList, property, receiver]);
+          return typeof value === 'function' ? __tbApply(__tbBind, value, [targetList]) : value;
+        },
+      });
+      __tbStyleSheetLists.set(shadow, list);
+      return list;
+    };
+    Object.defineProperty(globalThis.ShadowRoot.prototype, 'styleSheets', {
+      get() { return __tbShadowStyleSheetList(this); },
+      enumerable: true,
+      configurable: true,
+    });
     const __tbShadowAdoptedStyleSheets = shadow => {
       if (!(shadow instanceof globalThis.ShadowRoot)) {
         throw new TypeError('Illegal invocation');
       }
       let list = __tbAdoptedSheetArrays.get(shadow);
       if (list !== undefined) return list;
-      list = __tbObservableSheetArray(sheets => {
-        const css = sheets.map(sheet => {
-          const rules = sheet && sheet.cssRules ? sheet.cssRules : [];
-          let text = '';
-          for (let i = 0; i < rules.length; i++) text += `${rules[i].cssText}\n`;
-          return text;
-        }).join('\n');
-        let style = __tbShadowAdoptedStyleNodes.get(shadow);
-        if (!css) {
-          if (style && style.parentNode === shadow) shadow.removeChild(style);
-          return;
-        }
-        if (!style) {
-          style = (shadow.ownerDocument || document).createElement('style');
-          __tbShadowAdoptedStyleNodes.set(shadow, style);
-        }
-        style.textContent = css;
-        if (style.parentNode !== shadow) shadow.appendChild(style);
-      });
+      list = __tbObservableSheetArray(sheets => host.__tb_set_adopted_sheets(
+        shadow, sheets.map(sheet => sheet.__tbId),
+      ));
       __tbAdoptedSheetArrays.set(shadow, list);
       return list;
     };
