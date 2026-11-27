@@ -3,7 +3,7 @@
 // https://html.spec.whatwg.org/multipage/workers.html#dom-worker
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
@@ -693,6 +693,8 @@ enum WorkerTask {
         source: Option<u64>,
     },
     Timer(TimerId),
+    // https://html.spec.whatwg.org/multipage/webappapis.html#notify-about-rejected-promises
+    RejectionTasks,
 }
 
 // https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model
@@ -718,7 +720,7 @@ struct Worker {
     world: Rc<RefCell<World>>,
     js: JsRealm,
     script: Option<WorkerScript>,
-    tasks: VecDeque<WorkerTask>,
+    tasks: crate::task_queue::TaskQueue<WorkerTask>,
     timers: TimerQueue<PageTimerId>,
     js_timers: HashMap<PageTimerId, TimerId>,
     commands: Sender<WorkerCommand>,
@@ -726,6 +728,19 @@ struct Worker {
     pending_fetches: Arc<AtomicUsize>,
     fetches: HashMap<JsFetchId, DialCancellation>,
     closed: bool,
+}
+
+fn worker_task_sink(
+    tasks: crate::task_queue::TaskQueue<WorkerTask>,
+) -> crate::task_queue::TaskSink {
+    crate::task_queue::TaskSink::new(move |source, task| match task {
+        crate::task_queue::RealmTask::RejectionTasks(_) => {
+            tasks.push(source, WorkerTask::RejectionTasks);
+        }
+        crate::task_queue::RealmTask::SelectionChanged(_)
+        | crate::task_queue::RealmTask::ToggleEvent { .. }
+        | crate::task_queue::RealmTask::DialogClose(_) => {}
+    })
 }
 
 impl Worker {
@@ -815,6 +830,10 @@ impl Worker {
                 doc.state.module_credentials = Some(created.credentials);
             }
         }
+        let tasks = crate::task_queue::TaskQueue::default();
+        world
+            .borrow_mut()
+            .set_task_sink(worker_task_sink(tasks.clone()));
         let js = JsRealm::new_worker(
             &js_runtime.handle(),
             Rc::clone(&world),
@@ -830,7 +849,7 @@ impl Worker {
             world,
             js,
             script: Some(script),
-            tasks: VecDeque::new(),
+            tasks,
             timers: TimerQueue::default(),
             js_timers: HashMap::new(),
             commands,
@@ -874,7 +893,10 @@ impl Worker {
     fn queue_message(&mut self, payload: String, ports: Vec<u64>) {
         // https://html.spec.whatwg.org/multipage/workers.html#terminate-a-worker
         if !self.closed {
-            self.tasks.push_back(WorkerTask::Message { payload, ports });
+            self.tasks.push(
+                crate::task_queue::TaskSource::PostedMessage,
+                WorkerTask::Message { payload, ports },
+            );
         }
     }
 
@@ -884,16 +906,22 @@ impl Worker {
             self.forget_endpoints(&ports);
             return;
         }
-        self.tasks.push_back(WorkerTask::PortMessage {
-            endpoint,
-            payload,
-            ports,
-        });
+        self.tasks.push(
+            crate::task_queue::TaskSource::PostedMessage,
+            WorkerTask::PortMessage {
+                endpoint,
+                payload,
+                ports,
+            },
+        );
     }
 
     fn queue_port_closed(&mut self, endpoint: u64) {
         if !self.closed {
-            self.tasks.push_back(WorkerTask::PortClosed { endpoint });
+            self.tasks.push(
+                crate::task_queue::TaskSource::PostedMessage,
+                WorkerTask::PortClosed { endpoint },
+            );
         }
     }
 
@@ -903,7 +931,10 @@ impl Worker {
             self.forget_endpoints(&[endpoint]);
             return;
         }
-        self.tasks.push_back(WorkerTask::Connect { endpoint });
+        self.tasks.push(
+            crate::task_queue::TaskSource::PostedMessage,
+            WorkerTask::Connect { endpoint },
+        );
     }
 
     fn queue_broadcast(
@@ -914,12 +945,15 @@ impl Worker {
         source: Option<u64>,
     ) {
         if !self.closed {
-            self.tasks.push_back(WorkerTask::Broadcast {
-                origin,
-                name,
-                payload,
-                source,
-            });
+            self.tasks.push(
+                crate::task_queue::TaskSource::PostedMessage,
+                WorkerTask::Broadcast {
+                    origin,
+                    name,
+                    payload,
+                    source,
+                },
+            );
         }
     }
 
@@ -1038,7 +1072,8 @@ impl Worker {
         self.adopt_js_work();
         let now = self.now();
         while let Some(id) = self.timers.take_due(now) {
-            self.tasks.push_back(WorkerTask::Timer(id));
+            self.tasks
+                .push(crate::task_queue::TaskSource::Timer, WorkerTask::Timer(id));
         }
         let Some(task) = self.tasks.pop_front() else {
             return false;
@@ -1085,6 +1120,9 @@ impl Worker {
                     }
                 }
             }
+            WorkerTask::RejectionTasks => {
+                self.js.fire_rejection_tasks();
+            }
         }
         !self.closed
     }
@@ -1122,7 +1160,8 @@ impl Worker {
                 WorkerTask::Connect { endpoint } => self.forget_endpoints(&[endpoint]),
                 WorkerTask::PortClosed { .. }
                 | WorkerTask::Broadcast { .. }
-                | WorkerTask::Timer(_) => {}
+                | WorkerTask::Timer(_)
+                | WorkerTask::RejectionTasks => {}
             }
         }
     }
@@ -1227,16 +1266,11 @@ impl Worker {
                     },
                 );
             }
-            RealmRequest::RejectionTasks => self.js.fire_rejection_tasks(),
             RealmRequest::Script(_)
             | RealmRequest::HistoryPush { .. }
             | RealmRequest::HistoryTraverse { .. }
             | RealmRequest::FragmentNavigation { .. }
             | RealmRequest::CookieChanges
-            // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#textFieldSelection
-            | RealmRequest::SelectionChanged(_)
-            | RealmRequest::ToggleEvent { .. }
-            | RealmRequest::DialogClose(_)
             | RealmRequest::WorkerBlocked(_, _)
             | RealmRequest::DeclarativeRefresh(_)
             | RealmRequest::HtmlWrite(_)

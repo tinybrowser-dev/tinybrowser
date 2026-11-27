@@ -151,23 +151,23 @@ pub(crate) struct PageTimerId(i32);
 pub(crate) struct TimeoutRequest {
     pub delay: Duration,
     pub js_id: PageTimerId,
-    pub realm: u64,
+    pub realm: crate::task_queue::RealmId,
 }
 
 pub(crate) struct ClearTimeoutRequest {
     pub js_id: PageTimerId,
-    pub realm: u64,
+    pub realm: crate::task_queue::RealmId,
 }
 
 pub(crate) struct AbortFetchRequest {
     pub js_id: JsFetchId,
-    pub realm: u64,
+    pub realm: crate::task_queue::RealmId,
 }
 
 pub(crate) struct JsFetchRequest {
     pub url: String,
     pub js_id: JsFetchId,
-    pub realm: u64,
+    pub realm: crate::task_queue::RealmId,
     pub method: net::Method,
     pub body: Vec<u8>,
     pub content_type: Option<String>,
@@ -1543,7 +1543,7 @@ impl JsRealm {
     fn install_timer_host_functions(
         ctx: &Ctx<'_>,
         outbox: &crate::js::world::Outbox,
-        realm: u64,
+        realm: crate::task_queue::RealmId,
     ) -> Result<(), JsError> {
         let schedule_outbox = Rc::clone(outbox);
         bridge::object(ctx)?.set(

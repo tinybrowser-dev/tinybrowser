@@ -13,6 +13,7 @@ mod messaging;
 mod remote;
 mod render;
 mod storage;
+pub(crate) mod task_queue;
 #[cfg(test)]
 mod test_services;
 mod timers;

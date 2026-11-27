@@ -310,8 +310,8 @@ impl Document {
             self.ensure_isolated(name)?;
         }
         let realm = match world {
-            Some(name) => match self.isolated_js.get(name) {
-                Some((_, realm)) => realm,
+            Some(name) => match self.isolated_realm(name) {
+                Some(realm) => realm,
                 None => return Ok(DomReply::Resolved { object: None }),
             },
             None => match self.js.as_ref() {

@@ -4,8 +4,8 @@ use std::time::Duration;
 use url::Url;
 
 use super::Task;
-use crate::dom::tree::NodeId;
 use crate::protocol::{FrameId, PolicyContainer, ResponseHead, ResponseSource, TimerId};
+use crate::task_queue::TaskSource;
 
 // https://html.spec.whatwg.org/multipage/semantics.html#attr-meta-http-equiv-refresh
 #[derive(Default)]
@@ -69,7 +69,6 @@ pub(super) struct UiEventQueue {
     scroll_queued: bool,
     animation: Vec<blitz_dom::animation_events::PendingAnimationEvent>,
     animation_queued: bool,
-    toggles: Vec<(NodeId, String, String)>,
 }
 
 impl UiEventQueue {
@@ -113,31 +112,11 @@ impl UiEventQueue {
         self.animation_queued = false;
         std::mem::take(&mut self.animation)
     }
-
-    pub(super) fn push_toggle(
-        &mut self,
-        node: NodeId,
-        old_state: String,
-        new_state: String,
-    ) -> bool {
-        if let Some(pending) = self.toggles.iter_mut().find(|(id, _, _)| *id == node) {
-            pending.2 = new_state;
-            return false;
-        }
-        self.toggles.push((node, old_state, new_state));
-        true
-    }
-
-    pub(super) fn take_toggle(&mut self, node: NodeId) -> Option<(String, String)> {
-        let index = self.toggles.iter().position(|(id, _, _)| *id == node)?;
-        let (_, old_state, new_state) = self.toggles.remove(index);
-        Some((old_state, new_state))
-    }
 }
 
 #[derive(Default)]
 pub(super) struct CspState {
-    pub(super) pending_events: VecDeque<Task>,
+    pub(super) pending_events: VecDeque<(TaskSource, Task)>,
     pub(super) reporting_endpoints: Vec<(String, String)>,
     pub(super) http_status: u16,
     pub(super) embedder_reports: Vec<(FrameId, Vec<crate::csp::Violation>)>,

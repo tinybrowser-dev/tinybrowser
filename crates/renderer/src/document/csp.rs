@@ -61,11 +61,15 @@ impl Document {
     // https://w3c.github.io/webappsec-csp/#report-violation
     pub(super) fn queue_csp_events(&mut self, violations: Vec<crate::csp::Violation>) {
         if self.world.borrow().doc().parser_active {
-            self.csp
-                .pending_events
-                .push_back(Task::CspViolation(violations));
+            self.csp.pending_events.push_back((
+                crate::task_queue::TaskSource::DomManipulation,
+                Task::CspViolation(violations),
+            ));
         } else {
-            self.tasks.push_back(Task::CspViolation(violations));
+            self.tasks.push(
+                crate::task_queue::TaskSource::DomManipulation,
+                Task::CspViolation(violations),
+            );
         }
     }
 

@@ -2435,7 +2435,7 @@ fn handler_listener(name: &str) -> Rc<Listener> {
         signal: None,
         removed: Cell::new(false),
         handler_name: Some(name.to_owned()),
-        realm: 0,
+        realm: crate::task_queue::RealmId::NONE,
     })
 }
 

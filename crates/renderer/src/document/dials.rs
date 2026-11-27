@@ -169,7 +169,7 @@ impl DialLedger {
             .any(|context| matches!(context, DialContext::FrameLoad { .. }))
     }
 
-    pub(crate) fn cancel_fetch(&mut self, realm: u64, id: JsFetchId) {
+    pub(crate) fn cancel_fetch(&mut self, realm: crate::task_queue::RealmId, id: JsFetchId) {
         self.cancel_where(|context| {
             matches!(
                 context,

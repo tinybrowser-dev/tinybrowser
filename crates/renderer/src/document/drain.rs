@@ -5,6 +5,7 @@ use crate::document::dials::AdoptedDials;
 use crate::dom::tree::NodeId;
 use crate::js::{JsFetchId, RealmRequest};
 use crate::protocol::{BrowserEvent, RendererEvent, TimerId};
+use crate::task_queue::{RealmId, TaskSource};
 
 const MAX_REALM_REQUESTS_PER_TURN: usize = 1024;
 
@@ -15,7 +16,7 @@ impl Document {
     pub(crate) fn drain_step(&mut self) -> bool {
         self.adopt_dial_completions();
         while let Some(id) = self.due_timer() {
-            self.tasks.push_back(Task::Timer(id));
+            self.tasks.push(TaskSource::Timer, Task::Timer(id));
         }
         self.adopt_js_work();
         self.adopt_scroll_events();
@@ -73,8 +74,13 @@ impl Document {
         let AdoptedDials { settled, abandoned } = self.dials.adopt();
         for (id, completed) in settled {
             match completed {
-                Ok(done) => self.tasks.push_back(Task::DialFinished(id, Box::new(done))),
-                Err(fail) => self.tasks.push_back(Task::DialFailed(id, fail)),
+                Ok(done) => self.tasks.push(
+                    TaskSource::Networking,
+                    Task::DialFinished(id, Box::new(done)),
+                ),
+                Err(fail) => self
+                    .tasks
+                    .push(TaskSource::Networking, Task::DialFailed(id, fail)),
             }
         }
         for completed in abandoned {
@@ -279,10 +285,11 @@ impl Document {
                 self.fire_js(|js| js.fire_animation_events(&events));
                 self.adopt_js_work();
             }
-            Task::RejectionTasks => {
-                if let Some(js) = self.js.as_ref() {
+            Task::RejectionTasks(realm) => {
+                self.fire_realm(realm, |js| {
                     js.fire_rejection_tasks();
-                }
+                    Ok(())
+                });
                 self.adopt_js_work();
             }
         }
@@ -291,7 +298,7 @@ impl Document {
     // https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-details-toggle-event-task
     // https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-dialog-toggle-event-task
     fn run_toggle_task(&mut self, node: NodeId) {
-        if let Some((old_state, new_state)) = self.ui_events.take_toggle(node) {
+        if let Some((old_state, new_state)) = self.toggles.take(node) {
             self.fire_js(|js| js.fire_toggle_task(node, &old_state, &new_state));
         }
         self.adopt_js_work();
@@ -347,13 +354,6 @@ impl Document {
                 // https://html.spec.whatwg.org/multipage/browsing-the-web.html#traverse-the-history-by-a-delta
                 self.frame_traversals.push(delta);
             }
-            RealmRequest::SelectionChanged(node) => self.push_selection_changed(node),
-            RealmRequest::ToggleEvent {
-                id,
-                old_state,
-                new_state,
-            } => self.push_toggle_task(id, old_state, new_state),
-            RealmRequest::DialogClose(id) => self.push_dialog_close(id),
             RealmRequest::CspViolation(Some(target), violations) => {
                 self.fire_csp_violations(target, &violations);
             }
@@ -400,7 +400,6 @@ impl Document {
                 self.apply_document_stream(command);
                 self.stream_publish = Some(self.stream_publish.unwrap_or(false) || closed);
             }
-            RealmRequest::RejectionTasks => self.tasks.push_back(Task::RejectionTasks),
         }
     }
 
@@ -471,42 +470,23 @@ impl Document {
             parsed.document.mark_script_started(element.node);
         }
         if let crate::js::Script::ImportMap(source) = script {
-            // https://html.spec.whatwg.org/multipage/scripting.html#prepare-the-script-element
-            match source {
-                crate::js::ScriptElementSource::Inline { source, .. } => {
-                    let violations = self.inline_script_violations(&source, element);
-                    if !violations.is_empty() {
-                        self.fire_csp_violations(element, &violations);
-                    }
-                    if !crate::csp::blocks(&violations) {
-                        let base = self
-                            .world
-                            .borrow()
-                            .doc()
-                            .base_url
-                            .clone()
-                            .unwrap_or_else(|| self.url.clone());
-                        if let Ok(map) = crate::js::modules::ImportMap::parse(&source, &base) {
-                            self.world.borrow().doc_mut().import_map.merge(map);
-                        }
-                    }
-                }
-                crate::js::ScriptElementSource::Src(_) => {
-                    self.tasks.push_back(Task::NodeError(element));
-                }
-            }
+            self.queue_dynamic_import_map(element, source);
             return;
         }
         if let crate::js::Script::Module(source) = script {
             // https://html.spec.whatwg.org/multipage/scripting.html#attr-script-type-module
             match self.run_module_body(element, source) {
-                None => self.tasks.push_back(Task::NodeError(element)),
+                None => self
+                    .tasks
+                    .push(TaskSource::DomManipulation, Task::NodeError(element)),
                 Some(result) => {
                     if result.is_err() {
                         self.record_event(RendererEvent::ScriptFailed);
-                        self.tasks.push_back(Task::NodeError(element));
+                        self.tasks
+                            .push(TaskSource::DomManipulation, Task::NodeError(element));
                     } else {
-                        self.tasks.push_back(Task::NodeLoad(element));
+                        self.tasks
+                            .push(TaskSource::DomManipulation, Task::NodeLoad(element));
                     }
                     self.adopt_js_work();
                 }
@@ -517,7 +497,8 @@ impl Document {
             return;
         };
         let Ok(url) = self.resolve_dial_url(&src) else {
-            self.tasks.push_back(Task::NodeError(element));
+            self.tasks
+                .push(TaskSource::DomManipulation, Task::NodeError(element));
             return;
         };
         let violations = self.script_url_violations(&url, element);
@@ -525,7 +506,8 @@ impl Document {
             self.fire_csp_violations(element, &violations);
         }
         if crate::csp::blocks(&violations) {
-            self.tasks.push_back(Task::NodeError(element));
+            self.tasks
+                .push(TaskSource::DomManipulation, Task::NodeError(element));
             return;
         }
         let options = self.world.borrow().subresource_options(element);
@@ -551,6 +533,38 @@ impl Document {
         dial.integrity = self.script_integrity(element);
         // https://html.spec.whatwg.org/multipage/parsing.html#the-end
         self.queue_dial(dial);
+    }
+
+    // https://html.spec.whatwg.org/multipage/scripting.html#prepare-the-script-element
+    fn queue_dynamic_import_map(
+        &mut self,
+        element: NodeId,
+        source: crate::js::ScriptElementSource,
+    ) {
+        match source {
+            crate::js::ScriptElementSource::Inline { source, .. } => {
+                let violations = self.inline_script_violations(&source, element);
+                if !violations.is_empty() {
+                    self.fire_csp_violations(element, &violations);
+                }
+                if !crate::csp::blocks(&violations) {
+                    let base = self
+                        .world
+                        .borrow()
+                        .doc()
+                        .base_url
+                        .clone()
+                        .unwrap_or_else(|| self.url.clone());
+                    if let Ok(map) = crate::js::modules::ImportMap::parse(&source, &base) {
+                        self.world.borrow().doc_mut().import_map.merge(map);
+                    }
+                }
+            }
+            crate::js::ScriptElementSource::Src(_) => {
+                self.tasks
+                    .push(TaskSource::DomManipulation, Task::NodeError(element));
+            }
+        }
     }
 
     // https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script
@@ -630,7 +644,7 @@ impl Document {
         }
     }
 
-    fn fail_js_fetch(&mut self, js_id: JsFetchId, realm: u64) {
+    fn fail_js_fetch(&mut self, js_id: JsFetchId, realm: RealmId) {
         self.record_event(RendererEvent::FetchFailed);
         self.settle_js_fetch(js_id, realm, None);
     }

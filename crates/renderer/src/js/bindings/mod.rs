@@ -232,11 +232,7 @@ fn queue_rejection_task(ctx: &Ctx<'_>) {
     let Ok(world) = world(ctx) else {
         return;
     };
-    world
-        .borrow()
-        .outbox
-        .borrow_mut()
-        .push_back(crate::js::world::RealmRequest::RejectionTasks);
+    world.borrow().queue_rejection_tasks();
 }
 
 // https://html.spec.whatwg.org/multipage/webappapis.html#hostpromiserejectiontracker
@@ -3405,7 +3401,7 @@ mod realm_tests {
             .push_back(crate::js::RealmRequest::ClearTimer(
                 crate::js::ClearTimeoutRequest {
                     js_id: crate::js::PageTimerId(7),
-                    realm: 1,
+                    realm: crate::task_queue::RealmId(1),
                 },
             ));
         world
@@ -3421,7 +3417,7 @@ mod realm_tests {
             Some(crate::js::RealmRequest::ClearTimer(
                 crate::js::ClearTimeoutRequest {
                     js_id: crate::js::PageTimerId(7),
-                    realm: 1,
+                    realm: crate::task_queue::RealmId(1),
                 }
             ))
         ));

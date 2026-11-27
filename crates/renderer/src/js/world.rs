@@ -162,7 +162,10 @@ pub(crate) struct BitmapPixels {
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum CanvasOwner {
     Element(NodeId),
-    Offscreen { realm: u64, document: Option<u32> },
+    Offscreen {
+        realm: crate::task_queue::RealmId,
+        document: Option<u32>,
+    },
 }
 
 // https://html.spec.whatwg.org/multipage/canvas.html#concept-canvas-context-mode
@@ -234,9 +237,9 @@ impl RealmRegistry {
         CanvasId(self.next_canvas)
     }
 
-    pub(crate) fn allocate_realm(&mut self) -> u64 {
+    pub(crate) fn allocate_realm(&mut self) -> crate::task_queue::RealmId {
         self.next_realm = self.next_realm.saturating_add(1);
-        self.next_realm
+        crate::task_queue::RealmId(self.next_realm)
     }
 
     // https://html.spec.whatwg.org/multipage/canvas.html#dom-canvas-getcontext
@@ -262,7 +265,7 @@ impl RealmRegistry {
     // https://html.spec.whatwg.org/multipage/canvas.html#offscreencanvas
     pub(crate) fn offscreen_canvas(
         &mut self,
-        realm: u64,
+        realm: crate::task_queue::RealmId,
         document: Option<u32>,
         width: u32,
         height: u32,
@@ -316,7 +319,7 @@ impl RealmRegistry {
         self.canvases.get(id).map(|slot| slot.mode)
     }
 
-    pub(crate) fn forget_realm(&mut self, realm: u64) {
+    pub(crate) fn forget_realm(&mut self, realm: crate::task_queue::RealmId) {
         self.canvases.retain(|_, slot| {
             !matches!(slot.owner, CanvasOwner::Offscreen { realm: owner, .. } if owner == realm)
         });
@@ -902,7 +905,7 @@ pub(crate) struct Listener {
     // https://html.spec.whatwg.org/multipage/webappapis.html#the-event-handler-processing-algorithm
     pub handler_name: Option<String>,
     // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-createIsolatedWorld
-    pub realm: u64,
+    pub realm: crate::task_queue::RealmId,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -1189,7 +1192,7 @@ pub(crate) struct WindowData {
 pub(crate) struct World {
     pub(crate) runtime: FrameRuntime,
     pub(crate) kind: GlobalKind,
-    realm: u64,
+    realm: crate::task_queue::RealmId,
     pub(crate) doc: Rc<RefCell<DocumentData>>,
     pub(crate) win: Rc<RefCell<WindowData>>,
     pub(crate) realm_context: Option<rquickjs::Context>,
@@ -1205,6 +1208,8 @@ pub(crate) struct World {
     // https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#timer-initialisation-steps
     pub(crate) timer_string: Cell<bool>,
     pub(crate) outbox: Outbox,
+    // https://html.spec.whatwg.org/multipage/webappapis.html#queue-a-task
+    task_sink: crate::task_queue::TaskSink,
     budget: Rc<RefCell<ResourceBudget>>,
     window_object: Option<Persistent<Object<'static>>>,
     standalone_targets: HashMap<u64, Persistent<Object<'static>>>,
@@ -1273,7 +1278,7 @@ impl EventTargetState {
             .retain(|(node, _), _| node.is_none_or(|node| node.document_id() != document));
     }
 
-    fn forget_realm(&mut self, realm: u64) {
+    fn forget_realm(&mut self, realm: crate::task_queue::RealmId) {
         for list in self.listeners.values_mut() {
             list.retain(|listener| listener.realm != realm);
         }
@@ -1308,16 +1313,6 @@ pub(crate) enum RealmRequest {
     },
     // https://cookiestore.spec.whatwg.org/#process-cookie-changes
     CookieChanges,
-    SelectionChanged(NodeId),
-    // https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-details-toggle-event-task
-    // https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-dialog-toggle-event-task
-    ToggleEvent {
-        id: NodeId,
-        old_state: String,
-        new_state: String,
-    },
-    // https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:close-event
-    DialogClose(NodeId),
     // https://w3c.github.io/webappsec-csp/#report-violation
     CspViolation(Option<NodeId>, Vec<crate::csp::Violation>),
     // https://w3c.github.io/webappsec-csp/#should-block-request
@@ -1344,8 +1339,6 @@ pub(crate) enum RealmRequest {
         line: u32,
         column: u32,
     },
-    // https://html.spec.whatwg.org/multipage/webappapis.html#notify-about-rejected-promises
-    RejectionTasks,
 }
 
 pub(crate) type Outbox = Rc<RefCell<VecDeque<RealmRequest>>>;
@@ -1603,6 +1596,7 @@ impl World {
             isolated_wrappers: RefCell::new(HashMap::new()),
             timer_string: Cell::new(false),
             outbox: Rc::new(RefCell::new(VecDeque::new())),
+            task_sink: crate::task_queue::TaskSink::noop(),
             budget: runtime.registry.borrow().budget(),
             window_object: None,
             standalone_targets: HashMap::new(),
@@ -1644,6 +1638,7 @@ impl World {
             isolated_wrappers: RefCell::new(HashMap::new()),
             timer_string: Cell::new(false),
             outbox: Rc::clone(&main.outbox),
+            task_sink: main.task_sink.clone(),
             budget: Rc::clone(&main.budget),
             window_object: None,
             standalone_targets: HashMap::new(),
@@ -2000,8 +1995,12 @@ impl World {
         self.runtime.registry.borrow().frame_document(container)
     }
 
-    pub(crate) fn realm_id(&self) -> u64 {
+    pub(crate) fn realm_id(&self) -> crate::task_queue::RealmId {
         self.realm
+    }
+
+    pub(crate) fn set_task_sink(&mut self, sink: crate::task_queue::TaskSink) {
+        self.task_sink = sink;
     }
 
     // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-createIsolatedWorld
@@ -2010,7 +2009,7 @@ impl World {
         let pid = std::process::id();
         #[cfg(target_family = "wasm")]
         let pid = 0u32;
-        let scoped = format!("r{pid}-{}-{handle}", self.realm);
+        let scoped = format!("r{pid}-{}-{handle}", self.realm.0);
         match &self.isolated {
             Some(isolated) => format!("iw:{}:{scoped}", isolated.name),
             None => scoped,
@@ -2865,29 +2864,41 @@ impl World {
             .push_back(RealmRequest::DeclarativeRefresh(value));
     }
 
+    // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#set-the-selection-range
     pub(crate) fn queue_selection_changed(&mut self, id: NodeId) {
-        self.outbox
-            .borrow_mut()
-            .push_back(RealmRequest::SelectionChanged(id));
+        self.task_sink.push(
+            crate::task_queue::TaskSource::UserInteraction,
+            crate::task_queue::RealmTask::SelectionChanged(id),
+        );
     }
 
     // https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-details-toggle-event-task
     // https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-dialog-toggle-event-task
     pub(crate) fn queue_toggle_task(&mut self, id: NodeId, old_state: &str, new_state: &str) {
-        self.outbox
-            .borrow_mut()
-            .push_back(RealmRequest::ToggleEvent {
+        self.task_sink.push(
+            crate::task_queue::TaskSource::DomManipulation,
+            crate::task_queue::RealmTask::ToggleEvent {
                 id,
                 old_state: old_state.to_owned(),
                 new_state: new_state.to_owned(),
-            });
+            },
+        );
     }
 
     // https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:close-event
     pub(crate) fn queue_dialog_close(&mut self, id: NodeId) {
-        self.outbox
-            .borrow_mut()
-            .push_back(RealmRequest::DialogClose(id));
+        self.task_sink.push(
+            crate::task_queue::TaskSource::UserInteraction,
+            crate::task_queue::RealmTask::DialogClose(id),
+        );
+    }
+
+    // https://html.spec.whatwg.org/multipage/webappapis.html#notify-about-rejected-promises
+    pub(crate) fn queue_rejection_tasks(&self) {
+        self.task_sink.push(
+            crate::task_queue::TaskSource::DomManipulation,
+            crate::task_queue::RealmTask::RejectionTasks(self.realm),
+        );
     }
 
     pub(crate) fn queue_csp_violations(

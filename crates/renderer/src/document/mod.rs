@@ -129,7 +129,7 @@ enum Task {
     // https://drafts.csswg.org/css-animations-1/#events
     AnimationEvents,
     // https://html.spec.whatwg.org/multipage/webappapis.html#notify-about-rejected-promises
-    RejectionTasks,
+    RejectionTasks(crate::task_queue::RealmId),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -160,7 +160,7 @@ pub(crate) enum DialContext {
     JsFetch {
         id: JsFetchId,
         // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-createIsolatedWorld
-        realm: u64,
+        realm: crate::task_queue::RealmId,
     },
     ClassicScript {
         element: crate::dom::tree::NodeId,
@@ -469,12 +469,13 @@ pub(crate) struct Document {
     pub(crate) viewport_size: (u32, u32),
     shared: SharedHandle,
     url: Url,
-    tasks: VecDeque<Task>,
+    tasks: crate::task_queue::TaskQueue<Task>,
+    toggles: crate::task_queue::ToggleCoalescer,
     ui_events: UiEventQueue,
-    timers: crate::timers::TimerQueue<Option<(u64, PageTimerId)>>,
+    timers: crate::timers::TimerQueue<Option<(crate::task_queue::RealmId, PageTimerId)>>,
     dials: DialLedger,
     // https://html.spec.whatwg.org/multipage/images.html#update-the-image-data
-    deferred_image_events: VecDeque<Task>,
+    deferred_image_events: VecDeque<(crate::task_queue::TaskSource, Task)>,
     // https://html.spec.whatwg.org/multipage/images.html#update-the-image-data
     // https://html.spec.whatwg.org/multipage/parsing.html#delay-the-load-event
     image_load_delays: HashMap<crate::dom::tree::NodeId, LoadDelayGuard>,
@@ -497,8 +498,9 @@ pub(crate) struct Document {
     events_overflowed: bool,
     js: Option<crate::js::JsRealm>,
     // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-createIsolatedWorld
-    isolated_js: HashMap<String, (Rc<RefCell<World>>, crate::js::JsRealm)>,
-    js_timers: HashMap<(u64, PageTimerId), TimerId>,
+    isolated_js: HashMap<crate::task_queue::RealmId, (Rc<RefCell<World>>, crate::js::JsRealm)>,
+    isolated_names: HashMap<String, crate::task_queue::RealmId>,
+    js_timers: HashMap<(crate::task_queue::RealmId, PageTimerId), TimerId>,
     load_delay: LoadDelay,
     init_scripts_deferred: bool,
     defer_js: bool,
@@ -619,6 +621,32 @@ pub(crate) struct InheritedOrigin {
     pub(crate) domain: Rc<RefCell<Option<String>>>,
 }
 
+fn document_task_sink(
+    tasks: crate::task_queue::TaskQueue<Task>,
+    toggles: crate::task_queue::ToggleCoalescer,
+) -> crate::task_queue::TaskSink {
+    crate::task_queue::TaskSink::new(move |source, task| match task {
+        crate::task_queue::RealmTask::SelectionChanged(id) => {
+            tasks.push(source, Task::SelectionChanged(id));
+        }
+        crate::task_queue::RealmTask::ToggleEvent {
+            id,
+            old_state,
+            new_state,
+        } => {
+            if toggles.push(id, old_state, new_state) {
+                tasks.push(source, Task::ToggleEvent(id));
+            }
+        }
+        crate::task_queue::RealmTask::DialogClose(id) => {
+            tasks.push(source, Task::DialogClose(id));
+        }
+        crate::task_queue::RealmTask::RejectionTasks(realm) => {
+            tasks.push(source, Task::RejectionTasks(realm));
+        }
+    })
+}
+
 impl Document {
     pub(crate) fn with_shared(
         frame: FrameId,
@@ -636,6 +664,11 @@ impl Document {
             Rc::clone(bindings),
         )));
         runtime.registry.borrow_mut().insert_frame(frame, &world);
+        let tasks = crate::task_queue::TaskQueue::default();
+        let toggles = crate::task_queue::ToggleCoalescer::default();
+        world
+            .borrow_mut()
+            .set_task_sink(document_task_sink(tasks.clone(), toggles.clone()));
         let new_frames: Rc<RefCell<Vec<CreatedFrame>>> = Rc::new(RefCell::new(Vec::new()));
         world.borrow_mut().set_frame_host(frame_host(&new_frames));
         let (blitz_tx, blitz_rx) = std::sync::mpsc::channel();
@@ -663,7 +696,8 @@ impl Document {
             viewport_size: crate::engine::DEFAULT_VIEWPORT,
             shared: runtime.shared.clone(),
             url: document_url,
-            tasks: VecDeque::new(),
+            tasks,
+            toggles,
             ui_events: UiEventQueue::default(),
             timers: crate::timers::TimerQueue::default(),
             dials: DialLedger::new(Arc::clone(&runtime.stop), Arc::clone(&runtime.wake)),
@@ -683,6 +717,7 @@ impl Document {
             events_overflowed: false,
             js: None,
             isolated_js: HashMap::new(),
+            isolated_names: HashMap::new(),
             js_timers: HashMap::new(),
             load_delay: LoadDelay::default(),
             init_scripts_deferred: false,
@@ -1428,7 +1463,10 @@ impl Document {
 
     // https://html.spec.whatwg.org/multipage/web-messaging.html#posted-message-task-source
     pub(crate) fn push_window_message(&mut self, message: WindowMessage) {
-        self.tasks.push_back(Task::WindowMessage(message));
+        self.tasks.push(
+            crate::task_queue::TaskSource::PostedMessage,
+            Task::WindowMessage(message),
+        );
     }
 
     pub(crate) fn matches_document(&self, id: DocumentId) -> bool {
@@ -1437,12 +1475,18 @@ impl Document {
 
     // https://html.spec.whatwg.org/multipage/webstorage.html#concept-storage-broadcast
     pub(crate) fn push_storage_event(&mut self, event: crate::storage::PendingStorageEvent) {
-        self.tasks.push_back(Task::StorageEvent(event));
+        self.tasks.push(
+            crate::task_queue::TaskSource::DomManipulation,
+            Task::StorageEvent(event),
+        );
     }
 
     // https://html.spec.whatwg.org/multipage/web-messaging.html#posted-message-task-source
     pub(crate) fn push_remote_message(&mut self, message: crate::protocol::PostedMessage) {
-        self.tasks.push_back(Task::RemoteMessage(message));
+        self.tasks.push(
+            crate::task_queue::TaskSource::PostedMessage,
+            Task::RemoteMessage(message),
+        );
     }
 
     // https://html.spec.whatwg.org/multipage/web-messaging.html#broadcasting-to-other-browsing-contexts
@@ -1453,24 +1497,33 @@ impl Document {
         payload: String,
         source: Option<u64>,
     ) {
-        self.tasks.push_back(Task::BroadcastMessage {
-            origin,
-            name,
-            payload,
-            source,
-        });
+        self.tasks.push(
+            crate::task_queue::TaskSource::PostedMessage,
+            Task::BroadcastMessage {
+                origin,
+                name,
+                payload,
+                source,
+            },
+        );
     }
 
     pub(crate) fn push_port_message(&mut self, endpoint: u64, payload: String, ports: Vec<u64>) {
-        self.tasks.push_back(Task::PortMessage {
-            endpoint,
-            payload,
-            ports,
-        });
+        self.tasks.push(
+            crate::task_queue::TaskSource::PostedMessage,
+            Task::PortMessage {
+                endpoint,
+                payload,
+                ports,
+            },
+        );
     }
 
     pub(crate) fn push_port_closed(&mut self, endpoint: u64) {
-        self.tasks.push_back(Task::PortClosed { endpoint });
+        self.tasks.push(
+            crate::task_queue::TaskSource::PostedMessage,
+            Task::PortClosed { endpoint },
+        );
     }
 
     pub(crate) fn push_worker_message(
@@ -1479,46 +1532,36 @@ impl Document {
         payload: String,
         ports: Vec<u64>,
     ) {
-        self.tasks.push_back(Task::WorkerMessage {
-            worker,
-            payload,
-            ports,
-        });
+        self.tasks.push(
+            crate::task_queue::TaskSource::PostedMessage,
+            Task::WorkerMessage {
+                worker,
+                payload,
+                ports,
+            },
+        );
     }
 
     pub(crate) fn push_worker_error(&mut self, error: crate::worker::WorkerError) {
-        self.tasks.push_back(Task::WorkerError(error));
+        self.tasks.push(
+            crate::task_queue::TaskSource::DomManipulation,
+            Task::WorkerError(error),
+        );
     }
 
     pub(crate) fn push_worker_load_failed(&mut self, worker: crate::worker::WorkerId) {
-        self.tasks.push_back(Task::WorkerLoadFailed(worker));
-    }
-
-    pub(crate) fn push_selection_changed(&mut self, id: crate::dom::tree::NodeId) {
-        self.tasks.push_back(Task::SelectionChanged(id));
-    }
-
-    // https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-details-toggle-event-task
-    // https://html.spec.whatwg.org/multipage/interactive-elements.html#queue-a-dialog-toggle-event-task
-    pub(crate) fn push_toggle_task(
-        &mut self,
-        id: crate::dom::tree::NodeId,
-        old_state: String,
-        new_state: String,
-    ) {
-        if self.ui_events.push_toggle(id, old_state, new_state) {
-            self.tasks.push_back(Task::ToggleEvent(id));
-        }
-    }
-
-    // https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:close-event
-    pub(crate) fn push_dialog_close(&mut self, id: crate::dom::tree::NodeId) {
-        self.tasks.push_back(Task::DialogClose(id));
+        self.tasks.push(
+            crate::task_queue::TaskSource::DomManipulation,
+            Task::WorkerLoadFailed(worker),
+        );
     }
 
     // https://w3c.github.io/webappsec-csp/#report-violation
     pub(crate) fn push_csp_violations(&mut self, violations: Vec<crate::csp::Violation>) {
-        self.tasks.push_back(Task::CspViolation(violations));
+        self.tasks.push(
+            crate::task_queue::TaskSource::DomManipulation,
+            Task::CspViolation(violations),
+        );
     }
 
     fn deliver_remote_message(&mut self, message: &crate::protocol::PostedMessage) {
@@ -1653,22 +1696,29 @@ impl Document {
     }
 
     // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-createIsolatedWorld
+    pub(in crate::document) fn isolated_realm(&self, name: &str) -> Option<&crate::js::JsRealm> {
+        let realm_id = self.isolated_names.get(name)?;
+        self.isolated_js.get(realm_id).map(|(_, realm)| realm)
+    }
+
+    // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-createIsolatedWorld
     fn ensure_isolated(&mut self, name: &str) -> Result<(), TabError> {
-        if self.isolated_js.contains_key(name) {
+        if self.isolated_names.contains_key(name) {
             return Ok(());
         }
         let isolated_world = Rc::new(RefCell::new(World::new_isolated(
             &self.world.borrow(),
             name.to_owned(),
         )));
+        let realm_id = isolated_world.borrow().realm_id();
         let realm = crate::js::JsRealm::new(
             &self.js_runtime,
             Rc::clone(&isolated_world),
             Arc::clone(&self.stop),
         )
         .map_err(TabError::from)?;
-        self.isolated_js
-            .insert(name.to_owned(), (isolated_world, realm));
+        self.isolated_names.insert(name.to_owned(), realm_id);
+        self.isolated_js.insert(realm_id, (isolated_world, realm));
         Ok(())
     }
 
@@ -1684,7 +1734,7 @@ impl Document {
         } = source
         {
             self.ensure_isolated(name)?;
-            let Some((_, isolated_realm)) = self.isolated_js.get(name) else {
+            let Some(isolated_realm) = self.isolated_realm(name) else {
                 return Err(TabError::Script(ScriptFailure::HostMissing));
             };
             let out = isolated_realm
@@ -1907,7 +1957,7 @@ impl Document {
     // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-createIsolatedWorld
     fn fire_realm(
         &mut self,
-        realm: u64,
+        realm: crate::task_queue::RealmId,
         operation: impl FnOnce(&crate::js::JsRealm) -> Result<(), crate::js::JsError>,
     ) {
         let main_realm = self.world.borrow().realm_id();
@@ -1915,8 +1965,7 @@ impl Document {
             self.js.as_ref().is_some_and(|js| operation(js).is_err())
         } else {
             self.isolated_js
-                .values()
-                .find(|(world, _)| world.borrow().realm_id() == realm)
+                .get(&realm)
                 .is_some_and(|(_, js)| operation(js).is_err())
         };
         if failed {
@@ -2023,7 +2072,7 @@ impl Document {
 
     fn reset_js_realm(&mut self, reason: RealmReset) {
         // https://html.spec.whatwg.org/multipage/webappapis.html#concept-task-runnable
-        for task in std::mem::take(&mut self.tasks) {
+        for task in self.tasks.take_all() {
             match task {
                 Task::WindowMessage(message) => {
                     self.shared.borrow_mut().forget_endpoints(&message.ports);
@@ -2084,8 +2133,10 @@ impl Document {
         self.connected_images.clear();
         self.timers.retain(|_, handle| handle.is_none());
         self.js_timers.clear();
+        self.toggles.clear();
         self.js = None;
         self.isolated_js.clear();
+        self.isolated_names.clear();
         // https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-set
         self.world.borrow_mut().await_proxy_sets_replay();
         self.world.borrow_mut().realm_context = None;
@@ -2695,7 +2746,10 @@ impl Document {
                 }
                 Some(crate::js::Script::ImportMap(crate::js::ScriptElementSource::Src(_))) => {
                     // https://html.spec.whatwg.org/multipage/scripting.html#prepare-the-script-element
-                    self.tasks.push_back(Task::NodeError(id));
+                    self.tasks.push(
+                        crate::task_queue::TaskSource::DomManipulation,
+                        Task::NodeError(id),
+                    );
                 }
                 None => {}
             }
@@ -2894,7 +2948,7 @@ impl Document {
     fn finish_js_fetch_dial(
         &mut self,
         id: crate::js::JsFetchId,
-        realm: u64,
+        realm: crate::task_queue::RealmId,
         redirected: bool,
         request_url: &Url,
         outcome: DialOutcome,
@@ -3192,7 +3246,10 @@ impl Document {
             }
         };
         if self.ui_events.push_scroll(events) {
-            self.tasks.push_back(Task::ScrollEvents);
+            self.tasks.push(
+                crate::task_queue::TaskSource::UserInteraction,
+                Task::ScrollEvents,
+            );
         }
     }
 
@@ -3206,7 +3263,10 @@ impl Document {
             }
         };
         if self.ui_events.push_animation(events) {
-            self.tasks.push_back(Task::AnimationEvents);
+            self.tasks.push(
+                crate::task_queue::TaskSource::DomManipulation,
+                Task::AnimationEvents,
+            );
         }
     }
 
@@ -3338,14 +3398,17 @@ impl Document {
                 continue;
             }
             self.linked_sheets.insert(element, url);
-            self.tasks.push_back(Task::NodeLoad(element));
+            self.tasks.push(
+                crate::task_queue::TaskSource::Networking,
+                Task::NodeLoad(element),
+            );
         }
     }
 
     pub(in crate::document) fn settle_js_fetch(
         &mut self,
         id: JsFetchId,
-        realm: u64,
+        realm: crate::task_queue::RealmId,
         outcome: Option<DialOutcome>,
     ) {
         self.fire_realm(realm, |js| js.finish_js_fetch(id, outcome));
@@ -3386,9 +3449,10 @@ impl Document {
         let modules = std::mem::take(&mut self.deferred_modules);
         for (element, source) in modules {
             match self.run_module_body(element, source) {
-                None => self
-                    .tasks
-                    .push_back(crate::document::Task::NodeError(element)),
+                None => self.tasks.push(
+                    crate::task_queue::TaskSource::DomManipulation,
+                    crate::document::Task::NodeError(element),
+                ),
                 Some(result) => {
                     if result.is_err() {
                         self.record_event(RendererEvent::ScriptFailed);
@@ -3584,7 +3648,10 @@ impl Document {
         if !destination.is_some_and(crate::csp::Destination::is_image)
             && let Some(node) = node
         {
-            self.tasks.push_back(Task::NodeError(node));
+            self.tasks.push(
+                crate::task_queue::TaskSource::Networking,
+                Task::NodeError(node),
+            );
         }
     }
 
@@ -3698,9 +3765,11 @@ impl Document {
 
     fn queue_image_event(&mut self, event: Task) {
         if self.world.borrow().doc().parser_active {
-            self.deferred_image_events.push_back(event);
+            self.deferred_image_events
+                .push_back((crate::task_queue::TaskSource::DomManipulation, event));
         } else {
-            self.tasks.push_back(event);
+            self.tasks
+                .push(crate::task_queue::TaskSource::DomManipulation, event);
         }
     }
 
