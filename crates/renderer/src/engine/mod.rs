@@ -1,6 +1,6 @@
 mod history;
 
-use self::history::{FrameHistory, FrameHistoryEntry, SameDocumentEntry, StandaloneHistory};
+use self::history::{FrameHistoryEntry, SameDocumentEntry, StandaloneHistory};
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
@@ -26,7 +26,7 @@ use crate::js::{
 };
 use crate::messaging::{Delivery, SharedHandle};
 use crate::protocol::{
-    BrowserEvent, BrowserServices, FrameId, Mount, RendererEvent, ResponseHead, TabError,
+    BrowserEvent, BrowserServices, EntryId, FrameId, Mount, RendererEvent, ResponseHead, TabError,
 };
 use crate::storage::PendingStorageEvent;
 use crate::worker::{
@@ -60,7 +60,9 @@ pub struct Engine {
     init_scripts: Rc<RefCell<Vec<(u64, String)>>>,
     // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-addBinding
     bindings: Rc<RefCell<Vec<String>>>,
-    frame_history: HashMap<FrameId, FrameHistory>,
+    entry_cache: HashMap<EntryId, FrameHistoryEntry>,
+    pending_entries: HashMap<FrameId, (EntryId, FrameHistoryEntry)>,
+    next_history_entry: u64,
     pending_events: Vec<(FrameId, BrowserEvent)>,
     // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-history-back
     deferred_events: Vec<(FrameId, BrowserEvent)>,
@@ -134,7 +136,9 @@ impl Engine {
             js_runtime,
             init_scripts,
             bindings,
-            frame_history: HashMap::new(),
+            entry_cache: HashMap::new(),
+            pending_entries: HashMap::new(),
+            next_history_entry: 1,
             pending_events: Vec::new(),
             deferred_events: Vec::new(),
             joint_history: None,
@@ -613,6 +617,18 @@ impl Engine {
         );
     }
 
+    fn next_history_entry_id(&mut self) -> EntryId {
+        let raw = self.next_history_entry;
+        self.next_history_entry = self.next_history_entry.saturating_add(1);
+        EntryId::new((1u64 << 63) | raw)
+    }
+
+    pub fn evict_history_entries(&mut self, entries: &[EntryId]) {
+        for id in entries {
+            self.entry_cache.remove(id);
+        }
+    }
+
     fn record_frame_history(
         &mut self,
         frame: FrameId,
@@ -638,24 +654,18 @@ impl Engine {
             && url
                 .as_ref()
                 .is_some_and(|url| matches!(url.scheme(), "http" | "https"));
-        let history = self.frame_history.entry(frame).or_default();
-        let local_index = if pending {
-            history.stage(entry, replace);
-            history.index
+        let entry_id = self.next_history_entry_id();
+        if pending {
+            self.pending_entries.insert(frame, (entry_id, entry));
         } else {
-            history.discard_pending();
-            if replace {
-                history.replace(entry);
-            } else {
-                history.push(entry);
-            }
-            history.index
-        };
+            self.pending_entries.remove(&frame);
+            self.entry_cache.insert(entry_id, entry);
+        }
         let event = match url {
             Some(url) => BrowserEvent::NavigationStarted {
                 url: url.to_string(),
                 replace,
-                local_index,
+                entry: entry_id,
                 pending,
             },
             None => BrowserEvent::FrameAdded {
@@ -663,18 +673,23 @@ impl Engine {
                     || about_blank().to_string(),
                     |document| document.url().to_string(),
                 ),
+                entry: entry_id,
             },
         };
         if standalone {
-            if let Some(joint) = self.joint_history.as_mut() {
+            let evicted = if let Some(joint) = self.joint_history.as_mut() {
                 if initial {
-                    joint.join(frame, local_index);
+                    joint.join(frame, entry_id);
+                    Vec::new()
                 } else if replace {
-                    joint.replace(frame, local_index);
+                    joint.replace(frame, entry_id)
                 } else {
-                    joint.push(frame, local_index);
+                    joint.push(frame, entry_id)
                 }
-            }
+            } else {
+                Vec::new()
+            };
+            self.evict_history_entries(&evicted);
             self.standalone_navigated(frame);
         } else {
             self.pending_events.push((frame, event));
@@ -683,7 +698,7 @@ impl Engine {
 
     // https://html.spec.whatwg.org/multipage/browsing-the-web.html#getting-the-history-object-length-and-index
     fn standalone_navigated(&mut self, frame: FrameId) {
-        let Some(snapshot) = self.standalone_snapshot(frame, None) else {
+        let Some(snapshot) = self.standalone_snapshot(None) else {
             return;
         };
         if let Some(document) = self.frames.get_mut(&frame) {
@@ -708,7 +723,7 @@ impl Engine {
             if current.length == joint.steps.len() && current.index == joint.index {
                 continue;
             }
-            let Some(snapshot) = self.standalone_snapshot(frame, current.state) else {
+            let Some(snapshot) = self.standalone_snapshot(current.state) else {
                 continue;
             };
             if let Some(document) = self.frames.get_mut(&frame) {
@@ -719,42 +734,17 @@ impl Engine {
 
     fn standalone_snapshot(
         &self,
-        frame: FrameId,
         state: Option<String>,
     ) -> Option<crate::protocol::HistorySnapshot> {
         let joint = self.joint_history.as_ref()?;
-        let index = joint.index;
-        let (local_length, local_index) = self.frame_history.get(&frame).map_or_else(
-            || {
-                (
-                    joint.local_at(index, frame).saturating_add(1),
-                    joint.local_at(index, frame),
-                )
-            },
-            |history| (history.entries.len(), history.index),
-        );
         Some(crate::protocol::HistorySnapshot {
             length: joint.steps.len(),
-            index,
-            local_length,
-            local_index,
+            index: joint.index,
             state,
         })
     }
 
     fn set_frame_history(&mut self, frame: FrameId, history: &crate::protocol::HistorySnapshot) {
-        if frame != FrameId::MAIN
-            && let Some(replay) = self.frame_history.get_mut(&frame)
-        {
-            if history.local_length < replay.entries.len() {
-                replay.entries.truncate(history.local_length);
-            }
-            replay.index = if replay.entries.is_empty() {
-                0
-            } else {
-                history.local_index.min(replay.entries.len() - 1)
-            };
-        }
         if let Some(document) = self.frames.get_mut(&frame) {
             document.update_history_mirror(history);
         }
@@ -764,7 +754,7 @@ impl Engine {
     fn install_frame_history(
         &mut self,
         frame: FrameId,
-        index: usize,
+        entry: EntryId,
         url: &str,
         history: &crate::protocol::HistorySnapshot,
         same_document: bool,
@@ -773,9 +763,7 @@ impl Engine {
         if frame == FrameId::MAIN {
             return;
         }
-        if let Some(replay) = self.frame_history.get_mut(&frame) {
-            replay.discard_pending();
-        }
+        self.pending_entries.remove(&frame);
         if let Some(document) = self.frames.get_mut(&frame) {
             document.cancel_frame_navigation();
         }
@@ -783,30 +771,30 @@ impl Engine {
             let Some(document) = self.frames.get_mut(&frame) else {
                 return;
             };
-            if let Some(replay) = self.frame_history.get_mut(&frame) {
-                replay.index = index;
-            }
             let _ = document.traverse_history(url, history);
             return;
         }
-        let Some((navigation, state)) = self
-            .frame_history
-            .get(&frame)
-            .and_then(|history| history.at(index))
-            .map(|entry| (entry.navigation.clone(), entry.state.clone()))
-        else {
-            let Some(document) = self.frames.get_mut(&frame) else {
-                return;
-            };
-            let _ = document.traverse_history(url, history);
-            return;
-        };
-        if let Some(replay) = self.frame_history.get_mut(&frame) {
-            replay.index = index;
-        }
+        let cached = self
+            .entry_cache
+            .get(&entry)
+            .map(|entry| (entry.navigation.clone(), entry.state.clone()));
         let (embedder, container) = {
             let shared = self.runtime.shared.borrow();
             (shared.tree.parent(frame), shared.tree.container(frame))
+        };
+        let Some((navigation, state)) = cached else {
+            if !url.is_empty()
+                && let Ok(parsed) = Url::parse(url)
+                && matches!(parsed.scheme(), "http" | "https" | "about")
+            {
+                let navigation = FrameNavigation::get(NavigationTarget::Frame(frame), url.into());
+                self.navigate_frame(frame, embedder.unwrap_or(frame), &navigation);
+                return;
+            }
+            if let Some(document) = self.frames.get_mut(&frame) {
+                let _ = document.traverse_history(url, history);
+            }
+            return;
         };
         if let Some(state) = state {
             let Some(document) = self.frames.get_mut(&frame) else {
@@ -849,9 +837,11 @@ impl Engine {
         }
         let mut mounted = None;
         if frame == FrameId::MAIN && self.joint_history.is_some() {
+            self.entry_cache.clear();
+            self.pending_entries.clear();
             self.joint_history = Some(StandaloneHistory::seed());
             let mut copy = mount.clone();
-            copy.head.history = self.standalone_snapshot(frame, None).unwrap_or_default();
+            copy.head.history = self.standalone_snapshot(None).unwrap_or_default();
             mounted = Some(copy);
         }
         let mount = mounted.as_ref().unwrap_or(mount);
@@ -1090,24 +1080,9 @@ impl Engine {
                     &event,
                     RendererEvent::Browser(BrowserEvent::Navigated { .. })
                 )
-                && let Some(history) = self.frame_history.get_mut(&frame)
+                && let Some((entry_id, entry)) = self.pending_entries.remove(&frame)
             {
-                history.commit_pending();
-            }
-            if frame != FrameId::MAIN
-                && let RendererEvent::Browser(BrowserEvent::HistoryUpdated {
-                    url,
-                    state,
-                    handling: crate::protocol::HistoryHandling::Push,
-                }) = &event
-            {
-                self.frame_history
-                    .entry(frame)
-                    .or_default()
-                    .push_same_document(SameDocumentEntry {
-                        url: url.clone(),
-                        state: state.clone(),
-                    });
+                self.entry_cache.insert(entry_id, entry);
             }
             if let Some(event) = event.into_browser() {
                 out.push((frame, event));
@@ -1273,27 +1248,21 @@ impl Engine {
 
     // https://html.spec.whatwg.org/multipage/browsing-the-web.html#traverse-the-history-by-a-delta
     pub fn traverse_embedded_history(&mut self, frame: FrameId, delta: i32) {
-        // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-history-go
-        if delta == 0 {
-            let Some((index, url, same_document, state, length)) = self.embedded_entry(frame, None)
-            else {
-                return;
-            };
-            let snapshot = self.standalone_snapshot(frame, state).unwrap_or(
-                crate::protocol::HistorySnapshot {
-                    length,
-                    index,
-                    local_length: length,
-                    local_index: index,
-                    state: None,
-                },
-            );
-            self.install_frame_history(frame, index, &url, &snapshot, same_document, true);
-            return;
-        }
         let Some(joint) = self.joint_history.as_ref() else {
             return;
         };
+        // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-history-go
+        if delta == 0 {
+            let Some(entry_id) = joint.entry_at(joint.index, frame) else {
+                return;
+            };
+            let Some((url, same_document, state)) = self.embedded_entry(entry_id) else {
+                return;
+            };
+            let snapshot = self.standalone_snapshot(state).unwrap_or_default();
+            self.install_frame_history(frame, entry_id, &url, &snapshot, same_document, true);
+            return;
+        }
         let Some(target) = joint.target(delta) else {
             return;
         };
@@ -1301,29 +1270,29 @@ impl Engine {
         let current_step = joint.index;
         let target_entries = joint.steps[target].clone();
         let current_entries = joint.steps[current_step].clone();
-        let moves: Vec<(FrameId, usize)> = self
+        let moves: Vec<(FrameId, EntryId)> = self
             .frames
             .keys()
             .copied()
             .filter_map(|id| {
-                let current = self.frame_history.get(&id).map_or_else(
-                    || current_entries.get(&id).copied().unwrap_or(0),
-                    |history| history.index,
-                );
-                let target = target_entries.get(&id).copied().unwrap_or(0);
-                (target != current).then_some((id, target))
+                let current = current_entries.get(&id).copied();
+                let target_entry = target_entries.get(&id).copied()?;
+                (Some(target_entry) != current).then_some((id, target_entry))
             })
             .collect();
         if moves.iter().any(|(frame, _)| *frame == FrameId::MAIN) {
             return;
         }
-        for (frame, index) in moves {
-            let Some((_, url, same_document, state, _)) = self.embedded_entry(frame, Some(index))
-            else {
+        for (frame, entry_id) in moves {
+            let Some((url, same_document, state)) = self.embedded_entry(entry_id) else {
                 continue;
             };
-            let snapshot = self.standalone_snapshot_at(frame, target, length, index, state);
-            self.install_frame_history(frame, index, &url, &snapshot, same_document, false);
+            let snapshot = crate::protocol::HistorySnapshot {
+                length,
+                index: target,
+                state,
+            };
+            self.install_frame_history(frame, entry_id, &url, &snapshot, same_document, false);
         }
         if let Some(joint) = self.joint_history.as_mut() {
             joint.index = target;
@@ -1331,49 +1300,16 @@ impl Engine {
         self.sync_standalone_histories();
     }
 
-    fn embedded_entry(
-        &self,
-        frame: FrameId,
-        index: Option<usize>,
-    ) -> Option<(usize, String, bool, Option<String>, usize)> {
-        let history = self.frame_history.get(&frame)?;
-        let index = index.unwrap_or(history.index);
-        let entry = history.at(index)?;
+    fn embedded_entry(&self, entry_id: EntryId) -> Option<(String, bool, Option<String>)> {
+        let entry = self.entry_cache.get(&entry_id)?;
         if let Some(entry) = &entry.same_document {
-            return Some((
-                index,
-                entry.url.clone(),
-                true,
-                Some(entry.state.clone()),
-                history.entries.len(),
-            ));
+            return Some((entry.url.clone(), true, Some(entry.state.clone())));
         }
         let url = entry
             .navigation
             .as_ref()
             .map_or_else(String::new, |navigation| navigation.spec.clone());
-        Some((index, url, false, None, history.entries.len()))
-    }
-
-    fn standalone_snapshot_at(
-        &self,
-        frame: FrameId,
-        step: usize,
-        length: usize,
-        index: usize,
-        state: Option<String>,
-    ) -> crate::protocol::HistorySnapshot {
-        let local_length = self
-            .frame_history
-            .get(&frame)
-            .map_or(1, |history| history.entries.len());
-        crate::protocol::HistorySnapshot {
-            length,
-            index: step,
-            local_length,
-            local_index: index,
-            state,
-        }
+        Some((url, false, None))
     }
 
     fn apply_standalone_history_update(
@@ -1382,47 +1318,50 @@ impl Engine {
         update: crate::document::HistoryUpdate,
     ) {
         use crate::protocol::HistoryHandling;
-        let Some(joint) = self.joint_history.as_mut() else {
+        if self.joint_history.is_none() {
             return;
+        }
+        let entry_id = self.next_history_entry_id();
+        let same_doc = SameDocumentEntry {
+            url: update.url,
+            state: update.state,
         };
-        match update.handling {
+        let evicted = match update.handling {
             HistoryHandling::Push => {
-                let entry = SameDocumentEntry {
-                    url: update.url,
-                    state: update.state,
-                };
-                let local_index = if frame == FrameId::MAIN {
-                    joint
-                        .active()
-                        .get(&frame)
-                        .copied()
-                        .unwrap_or(0)
-                        .saturating_add(1)
-                } else {
-                    let history = self.frame_history.entry(frame).or_default();
-                    history.push_same_document(entry);
-                    history.index
-                };
-                joint.push(frame, local_index);
+                if frame != FrameId::MAIN {
+                    self.entry_cache.insert(
+                        entry_id,
+                        FrameHistoryEntry {
+                            same_document: Some(same_doc),
+                            ..FrameHistoryEntry::default()
+                        },
+                    );
+                }
+                self.joint_history
+                    .as_mut()
+                    .map_or_default(|joint| joint.push(frame, entry_id))
             }
             HistoryHandling::Replace => {
                 if frame != FrameId::MAIN
-                    && let Some(history) = self.frame_history.get_mut(&frame)
+                    && let Some(active) = self
+                        .joint_history
+                        .as_ref()
+                        .and_then(|joint| joint.entry_at(joint.index, frame))
+                    && let Some(slot) = self.entry_cache.get_mut(&active)
                 {
-                    history.replace_same_document(SameDocumentEntry {
-                        url: update.url,
-                        state: update.state,
-                    });
+                    slot.same_document = Some(same_doc);
                 }
+                Vec::new()
             }
-        }
+        };
+        self.evict_history_entries(&evicted);
         self.sync_standalone_histories();
     }
 
     pub fn traverse_frame_history(
         &mut self,
         frame: FrameId,
-        index: usize,
+        entry: EntryId,
         url: &str,
         history: &crate::protocol::HistorySnapshot,
         same_document: bool,
@@ -1431,7 +1370,7 @@ impl Engine {
         if !self.frames.contains_key(&frame) {
             return Err(TabError::UnknownFrame { frame: frame.get() });
         }
-        self.install_frame_history(frame, index, url, history, same_document, reload);
+        self.install_frame_history(frame, entry, url, history, same_document, reload);
         Ok(())
     }
 
@@ -1565,9 +1504,10 @@ impl Engine {
                     .borrow_mut()
                     .forget_frame_world(*frame);
                 self.drop_frame_document(*frame);
-                self.frame_history.remove(frame);
+                self.pending_entries.remove(frame);
                 if let Some(joint) = self.joint_history.as_mut() {
-                    joint.leave(*frame);
+                    let evicted = joint.leave(*frame);
+                    self.evict_history_entries(&evicted);
                 }
                 if !standalone {
                     self.pending_events
@@ -1740,9 +1680,10 @@ impl Engine {
             shared.forget_document(child);
         }
         self.drop_frame_document(child);
-        self.frame_history.remove(&child);
+        self.pending_entries.remove(&child);
         if let Some(joint) = self.joint_history.as_mut() {
-            joint.leave(child);
+            let evicted = joint.leave(child);
+            self.evict_history_entries(&evicted);
         }
         if self.joint_history.is_none() {
             self.pending_events
@@ -2696,132 +2637,6 @@ impl Drop for Engine {
 }
 
 #[cfg(test)]
-mod frame_history_tests {
-    use super::{
-        FrameHistory, FrameHistoryEntry, FrameId, FrameNavigation, NavigationTarget,
-        SameDocumentEntry,
-    };
-
-    fn marker(spec: &str) -> FrameHistoryEntry {
-        FrameHistoryEntry {
-            navigation: Some(FrameNavigation::get(
-                NavigationTarget::Frame(FrameId::MAIN),
-                spec.to_owned(),
-            )),
-            state: None,
-            same_document: None,
-        }
-    }
-
-    fn active_spec(history: &FrameHistory) -> String {
-        history
-            .at(history.index)
-            .and_then(|entry| entry.navigation.as_ref())
-            .expect("active navigation")
-            .spec
-            .clone()
-    }
-
-    #[test]
-    fn replace_overwrites_only_the_active_entry() {
-        let mut history = FrameHistory::default();
-        for spec in [
-            "http://marker.test/zero",
-            "http://marker.test/one",
-            "http://marker.test/two",
-        ] {
-            history.push(marker(spec));
-        }
-        history.index = 1;
-        history.replace(marker("http://marker.test/replaced"));
-        assert_eq!(active_spec(&history), "http://marker.test/replaced");
-        assert_eq!(
-            history
-                .at(0)
-                .and_then(|entry| entry.navigation.as_ref())
-                .expect("left neighbour")
-                .spec,
-            "http://marker.test/zero"
-        );
-        assert_eq!(
-            history
-                .at(2)
-                .and_then(|entry| entry.navigation.as_ref())
-                .expect("right neighbour")
-                .spec,
-            "http://marker.test/two"
-        );
-    }
-
-    #[test]
-    fn replace_pushes_when_the_history_is_empty() {
-        let mut history = FrameHistory::default();
-        history.replace(marker("http://marker.test/pushed"));
-        assert_eq!(active_spec(&history), "http://marker.test/pushed");
-        assert_eq!(history.index, 0);
-        assert!(
-            history.at(1).is_none(),
-            "the replacement is the first and only entry"
-        );
-    }
-
-    #[test]
-    fn a_same_document_push_keeps_positions_aligned() {
-        let mut history = FrameHistory::default();
-        history.push(marker("http://marker.test/one"));
-        history.push_same_document(SameDocumentEntry {
-            url: "http://marker.test/one#pushed".to_owned(),
-            state: "null".to_owned(),
-        });
-        history.push(marker("http://marker.test/two"));
-        assert_eq!(history.index, 2);
-        assert!(history.at(1).expect("placeholder").navigation.is_none());
-        assert_eq!(
-            history
-                .at(1)
-                .and_then(|entry| entry.same_document.as_ref())
-                .expect("same-document entry")
-                .url,
-            "http://marker.test/one#pushed"
-        );
-        assert_eq!(
-            history
-                .at(2)
-                .and_then(|entry| entry.navigation.as_ref())
-                .expect("navigation")
-                .spec,
-            "http://marker.test/two"
-        );
-    }
-
-    // https://html.spec.whatwg.org/multipage/browsing-the-web.html#finalize-a-cross-document-navigation
-    #[test]
-    fn a_staged_navigation_is_invisible_until_commit() {
-        let mut history = FrameHistory::default();
-        history.push(marker("http://marker.test/zero"));
-        history.stage(marker("http://marker.test/one"), false);
-        assert!(history.at(0).is_some());
-        assert!(history.at(1).is_none(), "the stage is not an entry yet");
-        assert_eq!(history.entries.len(), 1);
-
-        history.commit_pending();
-        assert_eq!(history.entries.len(), 2);
-        assert_eq!(active_spec(&history), "http://marker.test/one");
-    }
-
-    #[test]
-    fn a_discarded_stage_leaves_the_active_entry() {
-        let mut history = FrameHistory::default();
-        history.push(marker("http://marker.test/zero"));
-        history.stage(marker("http://marker.test/never"), true);
-        history.discard_pending();
-        assert_eq!(history.entries.len(), 1);
-        assert_eq!(active_spec(&history), "http://marker.test/zero");
-        assert!(history.pending.is_none());
-    }
-}
-
-#[cfg(test)]
 mod navigator_tests {
     use super::{Engine, FrameId, Mount, ResponseHead};
     use crate::test_services::NullServices;
@@ -3649,21 +3464,25 @@ mod messaging_tests {
             .copied()
             .find(|frame| *frame != FrameId::MAIN)
             .expect("child frame");
+        let events = engine.take_browser_events().expect("events");
+        let child_entries: Vec<crate::protocol::EntryId> = events
+            .iter()
+            .filter(|(frame, _)| *frame == child)
+            .filter_map(|(_, event)| match event {
+                crate::protocol::BrowserEvent::FrameAdded { entry, .. }
+                | crate::protocol::BrowserEvent::NavigationStarted { entry, .. } => Some(*entry),
+                _ => None,
+            })
+            .collect();
         assert_eq!(
-            engine
-                .frame_history
-                .get(&child)
-                .expect("child history")
-                .entries
-                .len(),
-            3,
-            "the first srcdoc load, the blank navigation, and the second srcdoc load are three replay entries"
+            child_entries.len(),
+            4,
+            "initial about:blank, first srcdoc, blank navigation, and second srcdoc each allocate a distinct EntryId"
         );
+        assert_eq!(engine.entry_cache.len(), 4);
         let active = crate::protocol::HistorySnapshot {
             length: 4,
             index: 2,
-            local_length: 3,
-            local_index: 2,
             state: None,
         };
         engine.set_history(child, &active);
@@ -3678,12 +3497,10 @@ mod messaging_tests {
         let blank = crate::protocol::HistorySnapshot {
             length: 4,
             index: 1,
-            local_length: 3,
-            local_index: 1,
             state: None,
         };
         engine
-            .traverse_frame_history(child, 1, "about:blank", &blank, false, false)
+            .traverse_frame_history(child, child_entries[2], "about:blank", &blank, false, false)
             .expect("traverse");
         let _ready = engine.drain_ready();
         assert_eq!(
@@ -3790,29 +3607,24 @@ mod messaging_tests {
             )
             .expect("second load");
         let _ready = engine.drain_ready();
-        assert_eq!(
-            engine
-                .frame_history
-                .get(&child)
-                .expect("history")
-                .entries
-                .len(),
-            2
-        );
+        let events = engine.take_browser_events().expect("events");
+        let child_entries: Vec<crate::protocol::EntryId> = events
+            .iter()
+            .filter(|(frame, _)| *frame == child)
+            .filter_map(|(_, event)| match event {
+                crate::protocol::BrowserEvent::FrameAdded { entry, .. }
+                | crate::protocol::BrowserEvent::NavigationStarted { entry, .. } => Some(*entry),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(child_entries.len(), 3);
+        assert_eq!(engine.entry_cache.len(), 3);
 
-        engine.set_history(
-            child,
-            &crate::protocol::HistorySnapshot {
-                length: 2,
-                index: 0,
-                local_length: 1,
-                local_index: 0,
-                state: None,
-            },
-        );
-        let history = engine.frame_history.get(&child).expect("history");
-        assert_eq!(history.entries.len(), 1, "the cleared entry is gone");
-        assert_eq!(history.index, 0);
+        engine.evict_history_entries(&[child_entries[0], child_entries[2]]);
+        assert_eq!(engine.entry_cache.len(), 1, "the evicted entries are gone");
+        assert!(!engine.entry_cache.contains_key(&child_entries[0]));
+        assert!(engine.entry_cache.contains_key(&child_entries[1]));
+        assert!(!engine.entry_cache.contains_key(&child_entries[2]));
     }
 
     #[test]

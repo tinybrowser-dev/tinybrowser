@@ -232,6 +232,7 @@ fn handle_request(
             | Command::WindowMessage(..)
             | Command::HistoryTraverse { .. }
             | Command::HistoryTraverseFrame { .. }
+            | Command::HistoryEvicted { .. }
             | Command::SetHistory { .. } => Reply::Unit(Err(stream_error("unknown assignment"))),
         };
         return send_to_browser(
@@ -639,19 +640,23 @@ fn handle_command(engine: &mut Engine, command: Command) -> Handled {
         }
         Command::HistoryTraverseFrame {
             frame,
-            index,
+            entry,
             url,
             history,
             same_document,
             reload,
         } => Handled::Reply(Reply::Unit(engine.traverse_frame_history(
             frame,
-            index,
+            entry,
             &url,
             &history,
             same_document,
             reload,
         ))),
+        Command::HistoryEvicted { entries } => {
+            engine.evict_history_entries(&entries);
+            Handled::Reply(Reply::Unit(Ok(())))
+        }
         Command::SetHistory { frame, history } => {
             engine.set_history(frame, &history);
             Handled::Reply(Reply::Unit(Ok(())))

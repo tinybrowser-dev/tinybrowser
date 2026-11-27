@@ -594,14 +594,15 @@ pub use protocol::{
     AxNode, AxProperty, AxPropertyValue, BodyDelivery, BrowserEvent, BrowserServices,
     BrowsingContextHost, ConsoleLevel, ContextName, CookiePolicy, CorsMode, CorsRequest,
     DialCancellation, DialCompletion, DialFailure, DialKind, DialOutcome, DialRequest, DomBoxModel,
-    DomNode, DomRemoteNode, DomReply, DomRequest, DomStyleSheet, FrameId, FrameKind,
-    HistoryHandling, HistorySnapshot, HttpHead, MAX_RESPONSE_BODY_BYTES, MessagingHost, Mount,
-    NameChange, NavigationSource, NetworkHost, OpenerPolicy, PolicyContainer, PostedMessage,
-    PromptKind, PromptOutcome, ReferrerRequest, RendererEvent, RequestCache, RequestPolicy,
-    ResourceLimit, ResponseBody, ResponseHead, ResponseSource, STORAGE_QUOTA_BYTES, SandboxFlags,
-    ScreenshotClip, ScreenshotFormat, ScreenshotRequest, ScriptCookie, ScriptFailure, ScriptSource,
-    SerializedOrigin, StorageChange, StorageError, StorageHost, StorageKey, StorageKind, StreamId,
-    TabError, TabState, TargetName, TargetOrigin, TimerId, WindowId,
+    DomNode, DomRemoteNode, DomReply, DomRequest, DomStyleSheet, EntryId, FrameId, FrameKind,
+    HistoryHandling, HistorySnapshot, HttpHead, MAX_HISTORY_STATE_BYTES, MAX_HISTORY_URL_BYTES,
+    MAX_RESPONSE_BODY_BYTES, MessagingHost, Mount, NameChange, NavigationSource, NetworkHost,
+    OpenerPolicy, PolicyContainer, PostedMessage, PromptKind, PromptOutcome, ReferrerRequest,
+    RendererEvent, RequestCache, RequestPolicy, ResourceLimit, ResponseBody, ResponseHead,
+    ResponseSource, STORAGE_QUOTA_BYTES, SandboxFlags, ScreenshotClip, ScreenshotFormat,
+    ScreenshotRequest, ScriptCookie, ScriptFailure, ScriptSource, SerializedOrigin, StorageChange,
+    StorageError, StorageHost, StorageKey, StorageKind, StreamId, TabError, TabState, TargetName,
+    TargetOrigin, TimerId, WindowId,
 };
 pub use remote::RemoteValue;
 pub use storage::PendingStorageEvent;

@@ -1570,18 +1570,20 @@ impl Tab {
             BrowserEvent::NavigationStarted {
                 url,
                 replace,
-                local_index,
+                entry,
                 pending,
             } => {
                 if let Ok(url) = Url::parse(url) {
                     self.history
-                        .begin(frame, url, *replace, *local_index, None, *pending);
+                        .begin(frame, url, *replace, *entry, None, *pending);
                     if !*pending {
                         self.sync_histories().await;
                     }
                 }
             }
-            BrowserEvent::FrameAdded { url } => self.handle_frame_added(frame, url).await,
+            BrowserEvent::FrameAdded { url, entry } => {
+                self.handle_frame_added(frame, url, *entry).await;
+            }
             BrowserEvent::FrameRemoved => {
                 let parent = self
                     .tabs
@@ -1700,12 +1702,12 @@ impl Tab {
         self.record_event(TabEvent::Load).await;
     }
 
-    async fn handle_frame_added(&mut self, frame: FrameId, url: &str) {
+    async fn handle_frame_added(&mut self, frame: FrameId, url: &str, entry: EntryId) {
         let parsed = Url::parse(url).unwrap_or_else(|_| net::about_blank());
         let url_str = parsed.to_string();
         self.tabs
             .set_child_frame_url(self.id, frame, url_str.clone());
-        self.history.add_frame(frame, parsed, None);
+        self.history.add_frame(frame, parsed, entry, None);
         self.sync_histories().await;
         let parent = self
             .tabs
@@ -1756,6 +1758,12 @@ impl Tab {
     async fn sync_histories(&mut self) {
         if self.renderer.is_none() {
             return;
+        }
+        let evicted = self.history.take_evicted();
+        if !evicted.is_empty() {
+            let _result = self
+                .renderer_request(RendererCommand::HistoryEvicted { entries: evicted })
+                .await;
         }
         let snapshots: Vec<(FrameId, renderer::HistorySnapshot)> = self
             .history
@@ -1863,9 +1871,6 @@ impl Tab {
             let Some(url) = self.history.entry_url(entry).cloned() else {
                 continue;
             };
-            let Some(index) = self.history.local_index(entry) else {
-                continue;
-            };
             let Some(history) = self.history.renderer_snapshot_for_entry(entry) else {
                 continue;
             };
@@ -1873,7 +1878,7 @@ impl Tab {
             let _result = self
                 .renderer_request(RendererCommand::HistoryTraverseFrame {
                     frame,
-                    index,
+                    entry,
                     url: url.to_string(),
                     history,
                     same_document,
@@ -1904,9 +1909,6 @@ impl Tab {
         let Some(url) = self.history.entry_url(entry).cloned() else {
             return Ok(());
         };
-        let Some(index) = self.history.local_index(entry) else {
-            return Ok(());
-        };
         let Some(history) = self.history.renderer_snapshot_for_entry(entry) else {
             return Ok(());
         };
@@ -1914,7 +1916,7 @@ impl Tab {
         let _result = self
             .renderer_request(RendererCommand::HistoryTraverseFrame {
                 frame,
-                index,
+                entry,
                 url: url.to_string(),
                 history,
                 same_document: false,

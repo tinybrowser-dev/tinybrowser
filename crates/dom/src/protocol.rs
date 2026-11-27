@@ -42,6 +42,27 @@ pub fn referrer_policy(policy: blitz_traits::net::ReferrerPolicy) -> net::Referr
     }
 }
 
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#shared-history-push/replace-state-steps — UA-defined limits (640 KiB state, 64 KiB URL).
+pub const MAX_HISTORY_STATE_BYTES: usize = 640 * 1024;
+pub const MAX_HISTORY_URL_BYTES: usize = 64 * 1024;
+
+// https://html.spec.whatwg.org/multipage/browsing-the-web.html#session-history
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct EntryId(u64);
+
+impl EntryId {
+    #[must_use]
+    pub const fn new(raw: u64) -> Self {
+        Self(raw)
+    }
+
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
 // https://html.spec.whatwg.org/multipage/browsers.html#determining-the-creation-sandboxing-flags
 // https://html.spec.whatwg.org/multipage/browsers.html#popup-sandboxing-flag-set
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -229,13 +250,14 @@ pub enum BrowserEvent {
     NavigationStarted {
         url: String,
         replace: bool,
-        local_index: usize,
+        entry: EntryId,
         // https://html.spec.whatwg.org/multipage/browsing-the-web.html#finalize-a-cross-document-navigation
         pending: bool,
     },
     // https://html.spec.whatwg.org/multipage/browsing-the-web.html#session-history-entry
     FrameAdded {
         url: String,
+        entry: EntryId,
     },
     // https://html.spec.whatwg.org/multipage/history.html#joint-session-history
     FrameRemoved,
@@ -610,8 +632,6 @@ impl ResponseHead {
 pub struct HistorySnapshot {
     pub length: usize,
     pub index: usize,
-    pub local_length: usize,
-    pub local_index: usize,
     pub state: Option<String>,
 }
 
@@ -1545,8 +1565,6 @@ mod history_snapshot_tests {
         let mut snapshot = HistorySnapshot {
             length: 3,
             index: 1,
-            local_length: 1,
-            local_index: 1,
             state: None,
         };
         snapshot.apply("{}".to_owned(), HistoryHandling::Push);
@@ -1555,8 +1573,6 @@ mod history_snapshot_tests {
         let mut snapshot = HistorySnapshot {
             length: 3,
             index: 2,
-            local_length: 2,
-            local_index: 2,
             state: None,
         };
         snapshot.apply("{}".to_owned(), HistoryHandling::Push);
@@ -1568,8 +1584,6 @@ mod history_snapshot_tests {
         let mut snapshot = HistorySnapshot {
             length: 4,
             index: 2,
-            local_length: 2,
-            local_index: 2,
             state: None,
         };
         snapshot.apply("{}".to_owned(), HistoryHandling::Replace);

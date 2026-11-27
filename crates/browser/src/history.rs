@@ -3,14 +3,13 @@
 
 use std::collections::HashMap;
 
+pub use renderer::EntryId;
 use renderer::HistorySnapshot as RendererHistorySnapshot;
-use renderer::{FrameId, HistoryHandling};
+use renderer::{FrameId, HistoryHandling, MAX_HISTORY_STATE_BYTES, MAX_HISTORY_URL_BYTES};
 use url::Url;
 
-// https://html.spec.whatwg.org/multipage/nav-history-apis.html#shared-history-push/replace-state-steps — UA-defined session history limits (128 entries, 640 KiB state, 64 KiB URL, 4 KiB title, 8 MiB total).
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#shared-history-push/replace-state-steps — UA-defined session history limits (128 entries, 4 KiB title, 8 MiB total).
 const MAX_HISTORY_ENTRIES: usize = 128;
-const MAX_HISTORY_STATE_BYTES: usize = 640 * 1024;
-const MAX_HISTORY_URL_BYTES: usize = 64 * 1024;
 const MAX_HISTORY_TITLE_BYTES: usize = 4 * 1024;
 const MAX_HISTORY_TOTAL_BYTES: usize = 8 * 1024 * 1024;
 
@@ -23,22 +22,6 @@ fn truncate_utf8(mut text: String, max_bytes: usize) -> String {
         text.truncate(end);
     }
     text
-}
-
-// https://html.spec.whatwg.org/multipage/browsing-the-web.html#session-history
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct EntryId(u64);
-
-impl EntryId {
-    #[must_use]
-    pub fn new(raw: u64) -> Self {
-        Self(raw)
-    }
-
-    #[must_use]
-    pub fn get(self) -> u64 {
-        self.0
-    }
 }
 
 // https://html.spec.whatwg.org/multipage/browsing-the-web.html#traverse-the-history
@@ -110,7 +93,6 @@ struct Entry {
     id: EntryId,
     // https://html.spec.whatwg.org/multipage/browsing-the-web.html#getting-all-used-history-steps
     step: u64,
-    local_index: usize,
     url: Url,
     title: String,
     state: Option<String>,
@@ -122,10 +104,12 @@ struct Entry {
 #[derive(Clone)]
 enum PendingChange {
     Push {
+        id: EntryId,
         name: Option<renderer::ContextName>,
     },
     Replace {
         entry: EntryId,
+        replacement: EntryId,
         name: Option<renderer::ContextName>,
     },
 }
@@ -135,6 +119,7 @@ pub(crate) struct SessionHistory {
     entries: Vec<Entry>,
     frames: HashMap<FrameId, Vec<EntryId>>,
     pending: HashMap<FrameId, PendingChange>,
+    evicted: Vec<EntryId>,
     // https://html.spec.whatwg.org/multipage/browsing-the-web.html#tn-current-session-history-step
     current_step: u64,
     next_document: u64,
@@ -150,29 +135,33 @@ impl SessionHistory {
             entries: Vec::new(),
             frames: HashMap::new(),
             pending: HashMap::new(),
+            evicted: Vec::new(),
             current_step: 0,
             next_document: 1,
             next_entry: 1,
             names: name.map_or_default(|name| HashMap::from([(0, name)])),
         };
         history.entries.push(Entry {
-            id: EntryId(0),
+            id: EntryId::new(0),
             step: 0,
-            local_index: 0,
             url: blank,
             title: String::new(),
             state: None,
             document: 0,
         });
-        history.frames.insert(FrameId::MAIN, vec![EntryId(0)]);
+        history.frames.insert(FrameId::MAIN, vec![EntryId::new(0)]);
         history
+    }
+
+    pub(crate) fn take_evicted(&mut self) -> Vec<EntryId> {
+        std::mem::take(&mut self.evicted)
     }
 
     // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-history-length
     // https://html.spec.whatwg.org/multipage/browsing-the-web.html#getting-the-history-object-length-and-index
     pub(crate) fn renderer_snapshot_for(&self, frame: FrameId) -> Option<RendererHistorySnapshot> {
         self.frames.get(&frame)?;
-        Some(self.build_snapshot(frame, self.active_entry(frame), None))
+        Some(self.build_snapshot(self.active_entry(frame), None))
     }
 
     // https://html.spec.whatwg.org/multipage/browsing-the-web.html#getting-the-history-object-length-and-index
@@ -181,19 +170,17 @@ impl SessionHistory {
         entry: EntryId,
     ) -> Option<RendererHistorySnapshot> {
         let found = self.locate(entry)?;
-        let frame = self.frame_of(entry)?;
         let steps = self.used_steps();
         let index = steps.iter().position(|step| *step == found.step)?;
-        Some(self.build_snapshot(frame, Some(entry), Some((steps.len(), index))))
+        Some(self.build_snapshot(Some(entry), Some((steps.len(), index))))
     }
 
     pub(crate) fn renderer_snapshot(&self) -> RendererHistorySnapshot {
-        self.build_snapshot(FrameId::MAIN, self.active_entry(FrameId::MAIN), None)
+        self.build_snapshot(self.active_entry(FrameId::MAIN), None)
     }
 
     fn build_snapshot(
         &self,
-        frame: FrameId,
         entry: Option<EntryId>,
         joint: Option<(usize, usize)>,
     ) -> RendererHistorySnapshot {
@@ -202,15 +189,9 @@ impl SessionHistory {
             (steps.len(), self.current_step_index(&steps))
         });
         let located = entry.and_then(|id| self.locate(id));
-        let local_index = entry
-            .and_then(|id| self.frame_position(frame, id))
-            .or_else(|| located.map(|found| found.local_index))
-            .unwrap_or(0);
         RendererHistorySnapshot {
             length,
             index,
-            local_length: self.frame_len(frame),
-            local_index,
             state: located.and_then(|found| found.state.clone()),
         }
     }
@@ -248,8 +229,8 @@ impl SessionHistory {
             .collect();
         let current_index = self
             .active_entry(FrameId::MAIN)
-            .and_then(|id| self.locate(id))
-            .map_or(0, |entry| entry.local_index);
+            .and_then(|id| entries.iter().position(|entry| entry.id == id))
+            .unwrap_or(0);
         HistorySnapshot {
             entries,
             current_index,
@@ -275,6 +256,7 @@ impl SessionHistory {
         &mut self,
         frame: FrameId,
         url: Url,
+        requested: EntryId,
         name: Option<renderer::ContextName>,
     ) {
         if frame == FrameId::MAIN
@@ -287,12 +269,10 @@ impl SessionHistory {
         if let Some(name) = name {
             self.names.insert(document, name);
         }
-        let id = EntryId(self.next_entry);
-        self.next_entry = self.next_entry.saturating_add(1);
+        let id = self.allocate_id(Some(requested));
         self.entries.push(Entry {
             id,
             step: self.current_step,
-            local_index: 0,
             url,
             title: String::new(),
             state: None,
@@ -308,7 +288,7 @@ impl SessionHistory {
         frame: FrameId,
         url: Url,
         replace: bool,
-        local_index: usize,
+        requested: EntryId,
         name: Option<renderer::ContextName>,
         pending: bool,
     ) -> Option<EntryId> {
@@ -316,38 +296,35 @@ impl SessionHistory {
             return None;
         }
         if !self.frames.contains_key(&frame) {
-            self.add_frame(frame, url.clone(), None);
+            self.add_frame(frame, url, requested, None);
+            return self.active_entry(frame);
         }
         let current = self.active_entry(frame);
         if pending {
             let change = if replace {
-                let entry = match current {
-                    Some(_) if local_index < self.frame_len(frame) => {
-                        self.frame_id_at(frame, local_index)?
-                    }
-                    Some(current) => current,
-                    None => return None,
-                };
-                PendingChange::Replace { entry, name }
+                let entry = current?;
+                PendingChange::Replace {
+                    entry,
+                    replacement: requested,
+                    name,
+                }
             } else {
-                PendingChange::Push { name }
+                PendingChange::Push {
+                    id: requested,
+                    name,
+                }
             };
             self.pending.insert(frame, change);
             return current;
         }
         self.pending.remove(&frame);
         if replace && let Some(current) = current {
-            let target = if local_index < self.frame_len(frame) {
-                self.frame_id_at(frame, local_index)?
-            } else {
-                current
-            };
-            self.replace_entry(target, url, name);
-            return Some(target);
+            let id = self.replace_entry(frame, current, Some(requested), url, name);
+            return Some(id);
         }
         self.truncate_forward();
         let step = self.current_step.saturating_add(1);
-        let id = self.insert_entry(frame, step, local_index, url, name, None);
+        let id = self.insert_entry(frame, step, Some(requested), url, name, None);
         self.current_step = step;
         Some(id)
     }
@@ -356,16 +333,19 @@ impl SessionHistory {
     pub(crate) fn commit_url(&mut self, frame: FrameId, url: Url) {
         if let Some(change) = self.pending.remove(&frame) {
             match change {
-                PendingChange::Push { name, .. } => {
+                PendingChange::Push { id, name } => {
                     // https://html.spec.whatwg.org/multipage/browsing-the-web.html#finalize-a-cross-document-navigation
                     self.truncate_forward();
                     let step = self.current_step.saturating_add(1);
-                    let local_index = self.frame_len(frame);
-                    self.insert_entry(frame, step, local_index, url, name, None);
+                    self.insert_entry(frame, step, Some(id), url, name, None);
                     self.current_step = step;
                 }
-                PendingChange::Replace { entry, name, .. } => {
-                    self.replace_entry(entry, url, name);
+                PendingChange::Replace {
+                    entry,
+                    replacement,
+                    name,
+                } => {
+                    self.replace_entry(frame, entry, Some(replacement), url, name);
                 }
             }
             return;
@@ -439,8 +419,7 @@ impl SessionHistory {
                 };
                 self.truncate_forward();
                 let step = self.current_step.saturating_add(1);
-                let local_index = self.frame_len(frame);
-                let id = self.insert_entry(frame, step, local_index, url, None, Some(state));
+                let id = self.insert_entry(frame, step, None, url, None, Some(state));
                 if let Some(entry) = self.entries.iter_mut().find(|entry| entry.id == id) {
                     entry.document = document;
                     entry.title = title;
@@ -479,8 +458,7 @@ impl SessionHistory {
             Commit::Push { url, name } => {
                 self.truncate_forward();
                 let step = self.current_step.saturating_add(1);
-                let local_index = self.frame_len(FrameId::MAIN);
-                self.insert_entry(FrameId::MAIN, step, local_index, url, name, None);
+                self.insert_entry(FrameId::MAIN, step, None, url, name, None);
                 self.current_step = step;
                 true
             }
@@ -522,15 +500,11 @@ impl SessionHistory {
     }
 
     pub(crate) fn current_entry(&self) -> EntryId {
-        self.active_entry(FrameId::MAIN).unwrap_or(EntryId(0))
+        self.active_entry(FrameId::MAIN).unwrap_or(EntryId::new(0))
     }
 
     pub(crate) fn entry_url(&self, entry: EntryId) -> Option<&Url> {
         self.locate(entry).map(|entry| &entry.url)
-    }
-
-    pub(crate) fn local_index(&self, entry: EntryId) -> Option<usize> {
-        self.locate(entry).map(|entry| entry.local_index)
     }
 
     // https://html.spec.whatwg.org/multipage/browsing-the-web.html#document-state
@@ -563,6 +537,7 @@ impl SessionHistory {
             .filter_map(|id| self.locate(*id).map(|entry| entry.document))
             .collect();
         self.entries.retain(|entry| !ids.contains(&entry.id));
+        self.evicted.extend(ids);
         for document in documents {
             if !self.entries.iter().any(|entry| entry.document == document) {
                 self.names.remove(&document);
@@ -585,18 +560,21 @@ impl SessionHistory {
 
     // https://html.spec.whatwg.org/multipage/browsing-the-web.html#clear-the-forward-session-history
     fn truncate_forward(&mut self) {
-        let removed: Vec<u64> = self
-            .entries
-            .iter()
-            .filter(|entry| entry.step > self.current_step)
-            .map(|entry| entry.document)
-            .collect();
+        let mut removed_docs = Vec::new();
+        let mut removed_ids = Vec::new();
+        for entry in &self.entries {
+            if entry.step > self.current_step {
+                removed_docs.push(entry.document);
+                removed_ids.push(entry.id);
+            }
+        }
         self.entries.retain(|entry| entry.step <= self.current_step);
+        self.evicted.extend(removed_ids);
         let live: Vec<EntryId> = self.entries.iter().map(|entry| entry.id).collect();
         for ids in self.frames.values_mut() {
             ids.retain(|id| live.contains(id));
         }
-        for document in removed {
+        for document in removed_docs {
             if !self.entries.iter().any(|entry| entry.document == document) {
                 self.names.remove(&document);
             }
@@ -617,26 +595,11 @@ impl SessionHistory {
         }
     }
 
-    fn frame_len(&self, frame: FrameId) -> usize {
-        self.frames.get(&frame).map_or(0, Vec::len)
-    }
-
-    fn frame_id_at(&self, frame: FrameId, local_index: usize) -> Option<EntryId> {
-        self.frames.get(&frame)?.get(local_index).copied()
-    }
-
     fn frame_of(&self, entry: EntryId) -> Option<FrameId> {
         self.frames
             .iter()
             .find(|(_, ids)| ids.contains(&entry))
             .map(|(frame, _)| *frame)
-    }
-
-    fn frame_position(&self, frame: FrameId, entry: EntryId) -> Option<usize> {
-        self.frames
-            .get(&frame)?
-            .iter()
-            .position(|candidate| *candidate == entry)
     }
 
     fn take_document(&mut self) -> u64 {
@@ -645,11 +608,26 @@ impl SessionHistory {
         document
     }
 
+    fn allocate_id(&mut self, requested: Option<EntryId>) -> EntryId {
+        if let Some(id) = requested
+            && !self.entries.iter().any(|entry| entry.id == id)
+        {
+            return id;
+        }
+        loop {
+            let id = EntryId::new(self.next_entry);
+            self.next_entry = self.next_entry.saturating_add(1);
+            if !self.entries.iter().any(|entry| entry.id == id) {
+                return id;
+            }
+        }
+    }
+
     fn insert_entry(
         &mut self,
         frame: FrameId,
         step: u64,
-        local_index: usize,
+        requested: Option<EntryId>,
         url: Url,
         name: Option<renderer::ContextName>,
         state: Option<String>,
@@ -658,23 +636,16 @@ impl SessionHistory {
         if let Some(name) = name {
             self.names.insert(document, name);
         }
-        let id = EntryId(self.next_entry);
-        self.next_entry = self.next_entry.saturating_add(1);
+        let id = self.allocate_id(requested);
         self.entries.push(Entry {
             id,
             step,
-            local_index,
             url,
             title: String::new(),
             state,
             document,
         });
-        let ids = self.frames.entry(frame).or_default();
-        if local_index < ids.len() {
-            ids.insert(local_index, id);
-        } else {
-            ids.push(id);
-        }
+        self.frames.entry(frame).or_default().push(id);
         self.evict_excess_entries(id);
         id
     }
@@ -698,15 +669,11 @@ impl SessionHistory {
                 break;
             };
             let evicted = self.entries.remove(evict_index);
+            self.evicted.push(evicted.id);
             if let Some(evicted_frame) = self.frame_of(evicted.id)
                 && let Some(ids) = self.frames.get_mut(&evicted_frame)
             {
                 ids.retain(|candidate| *candidate != evicted.id);
-                for (index, entry_id) in ids.iter().enumerate() {
-                    if let Some(entry) = self.entries.iter_mut().find(|e| e.id == *entry_id) {
-                        entry.local_index = index;
-                    }
-                }
             }
             if !self
                 .entries
@@ -718,12 +685,36 @@ impl SessionHistory {
         }
     }
 
-    fn replace_entry(&mut self, id: EntryId, url: Url, name: Option<renderer::ContextName>) {
+    fn replace_entry(
+        &mut self,
+        frame: FrameId,
+        id: EntryId,
+        requested: Option<EntryId>,
+        url: Url,
+        name: Option<renderer::ContextName>,
+    ) -> EntryId {
         if url.as_str().len() > MAX_HISTORY_URL_BYTES {
-            return;
+            return id;
         }
         let Some(index) = self.locate_index(id) else {
-            return;
+            return id;
+        };
+        let new_id = if let Some(requested) = requested
+            && requested != id
+            && !self.entries.iter().any(|entry| entry.id == requested)
+        {
+            self.evicted.push(id);
+            if let Some(ids) = self.frames.get_mut(&frame) {
+                for slot in ids.iter_mut() {
+                    if *slot == id {
+                        *slot = requested;
+                    }
+                }
+            }
+            self.entries[index].id = requested;
+            requested
+        } else {
+            id
         };
         let old_document = self.entries[index].document;
         let document = self.take_document();
@@ -741,7 +732,8 @@ impl SessionHistory {
         {
             self.names.remove(&old_document);
         }
-        self.evict_excess_entries(id);
+        self.evict_excess_entries(new_id);
+        new_id
     }
 
     fn locate(&self, entry: EntryId) -> Option<&Entry> {
@@ -757,7 +749,7 @@ impl SessionHistory {
 
 #[cfg(test)]
 mod tests {
-    use super::{Commit, HistoryStep, SessionHistory};
+    use super::{Commit, EntryId, HistoryStep, SessionHistory};
     use renderer::FrameId;
     use url::Url;
 
@@ -770,6 +762,10 @@ mod tests {
             url: url(text),
             name,
         }
+    }
+
+    fn child_id(raw: u64) -> EntryId {
+        EntryId::new((1u64 << 63) | raw)
     }
 
     #[test]
@@ -905,7 +901,7 @@ mod tests {
     fn a_child_length_is_the_joint_step_count() {
         let child = FrameId::new(1);
         let mut history = SessionHistory::new(url("about:blank"), None);
-        history.add_frame(child, url("about:blank"), None);
+        history.add_frame(child, url("about:blank"), child_id(1), None);
         assert_eq!(history.renderer_snapshot_for(child).unwrap().length, 1);
 
         history
@@ -913,7 +909,7 @@ mod tests {
                 child,
                 url("https://example.com/child"),
                 true,
-                0,
+                child_id(2),
                 None,
                 false,
             )
@@ -941,9 +937,23 @@ mod tests {
     fn a_child_push_adds_one_joint_step() {
         let child = FrameId::new(1);
         let mut history = SessionHistory::new(url("about:blank"), None);
-        history.add_frame(child, url("about:blank"), None);
-        history.begin(child, url("https://example.com/one"), true, 0, None, false);
-        history.begin(child, url("https://example.com/two"), false, 1, None, false);
+        history.add_frame(child, url("about:blank"), child_id(1), None);
+        history.begin(
+            child,
+            url("https://example.com/one"),
+            true,
+            child_id(2),
+            None,
+            false,
+        );
+        history.begin(
+            child,
+            url("https://example.com/two"),
+            false,
+            child_id(3),
+            None,
+            false,
+        );
         assert_eq!(
             history.renderer_snapshot_for(FrameId::MAIN).unwrap().length,
             2
@@ -953,6 +963,7 @@ mod tests {
             .expect("back");
         assert_eq!(back, 0);
         let child_entry = history.active_entry_at(child, back).expect("child entry");
+        assert_eq!(child_entry, child_id(2));
         assert_eq!(
             history.entry_url(child_entry).map(Url::as_str),
             Some("https://example.com/one")
@@ -960,20 +971,31 @@ mod tests {
     }
 
     #[test]
-    fn removing_a_frame_drops_its_steps_from_the_joint_length() {
+    fn removing_a_frame_drops_its_steps_and_reports_evicted_ids() {
         let child = FrameId::new(1);
         let mut history = SessionHistory::new(url("about:blank"), None);
-        history.add_frame(child, url("about:blank"), None);
-        history.begin(child, url("https://example.com/one"), false, 1, None, false);
+        history.add_frame(child, url("about:blank"), child_id(1), None);
+        history.begin(
+            child,
+            url("https://example.com/one"),
+            false,
+            child_id(2),
+            None,
+            false,
+        );
         assert_eq!(
             history.renderer_snapshot_for(FrameId::MAIN).unwrap().length,
             2
         );
+        let _ = history.take_evicted();
         history.remove_frame(child);
         assert_eq!(
             history.renderer_snapshot_for(FrameId::MAIN).unwrap().length,
             1
         );
+        let evicted = history.take_evicted();
+        assert!(evicted.contains(&child_id(1)));
+        assert!(evicted.contains(&child_id(2)));
     }
 
     // https://html.spec.whatwg.org/multipage/browsing-the-web.html#finalize-a-cross-document-navigation
@@ -981,7 +1003,7 @@ mod tests {
     fn a_pending_navigation_takes_its_step_at_commit() {
         let child = FrameId::new(1);
         let mut history = SessionHistory::new(url("about:blank"), None);
-        history.add_frame(child, url("about:blank"), None);
+        history.add_frame(child, url("about:blank"), child_id(1), None);
         assert_eq!(
             history.renderer_snapshot_for(FrameId::MAIN).unwrap().length,
             1
@@ -991,7 +1013,7 @@ mod tests {
             child,
             url("https://example.com/start"),
             false,
-            1,
+            child_id(2),
             None,
             true,
         );
@@ -1007,6 +1029,7 @@ mod tests {
             2
         );
         let active = history.active_entry(child).expect("child entry");
+        assert_eq!(active, child_id(2));
         assert_eq!(
             history.entry_url(active).map(Url::as_str),
             Some("https://example.com/final"),
@@ -1018,9 +1041,17 @@ mod tests {
     fn an_uncommitted_replace_changes_nothing() {
         let child = FrameId::new(1);
         let mut history = SessionHistory::new(url("about:blank"), None);
-        history.add_frame(child, url("about:blank"), None);
-        history.begin(child, url("https://example.com/never"), true, 0, None, true);
+        history.add_frame(child, url("about:blank"), child_id(1), None);
+        history.begin(
+            child,
+            url("https://example.com/never"),
+            true,
+            child_id(2),
+            None,
+            true,
+        );
         let active = history.active_entry(child).expect("child entry");
+        assert_eq!(active, child_id(1));
         assert_eq!(
             history.entry_url(active).map(Url::as_str),
             Some("about:blank")
@@ -1037,12 +1068,12 @@ mod tests {
         let child = FrameId::new(1);
         let mut history = SessionHistory::new(url("about:blank"), None);
         history.commit(push("https://example.com/main", None));
-        history.add_frame(child, url("about:blank"), None);
+        history.add_frame(child, url("about:blank"), child_id(1), None);
         history.begin(
             child,
             url("https://example.com/child"),
             false,
-            1,
+            child_id(2),
             None,
             false,
         );
@@ -1059,7 +1090,7 @@ mod tests {
             child,
             url("https://example.com/again"),
             false,
-            0,
+            child_id(3),
             None,
             false,
         );
@@ -1097,6 +1128,34 @@ mod tests {
         history.commit(push("https://example.com/c", None));
         snapshot = history.renderer_snapshot();
         assert_eq!((snapshot.length, snapshot.index), (3, 2));
+    }
+
+    #[test]
+    fn eviction_reports_evicted_entry_ids_and_preserves_surviving_identities() {
+        let child = FrameId::new(1);
+        let mut history = SessionHistory::new(url("https://example.com/0"), None);
+        history.add_frame(child, url("https://example.com/c0"), child_id(1), None);
+        for i in 2..=(super::MAX_HISTORY_ENTRIES as u64 + 10) {
+            history.begin(
+                child,
+                url(&format!("https://example.com/c{i}")),
+                false,
+                child_id(i),
+                None,
+                false,
+            );
+        }
+        let evicted = history.take_evicted();
+        assert!(
+            evicted.contains(&child_id(1)),
+            "oldest child entry must be reported evicted: {evicted:?}"
+        );
+        let newest = child_id(super::MAX_HISTORY_ENTRIES as u64 + 10);
+        assert_eq!(history.active_entry(child), Some(newest));
+        assert_eq!(
+            history.entry_url(newest).map(Url::as_str),
+            Some(format!("https://example.com/c{}", super::MAX_HISTORY_ENTRIES + 10).as_str())
+        );
     }
 
     #[test]

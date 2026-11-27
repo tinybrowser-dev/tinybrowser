@@ -2058,16 +2058,13 @@ fn install_history_host_functions(
     let update = |handling: crate::protocol::HistoryHandling| {
         let update_world = world.clone();
         move |ctx: Ctx<'_>, url: String, state: String| {
-            // https://html.spec.whatwg.org/multipage/nav-history-apis.html#shared-history-push/replace-state-steps — UA-defined limits (640 KiB state, 64 KiB URL).
-            const MAX_HISTORY_STATE_BYTES: usize = 640 * 1024;
-            const MAX_HISTORY_URL_BYTES: usize = 64 * 1024;
-            if state.len() > MAX_HISTORY_STATE_BYTES {
+            if state.len() > crate::protocol::MAX_HISTORY_STATE_BYTES {
                 return Err(Exception::throw_range(
                     &ctx,
                     "History state exceeds size limit",
                 ));
             }
-            if url.len() > MAX_HISTORY_URL_BYTES {
+            if url.len() > crate::protocol::MAX_HISTORY_URL_BYTES {
                 return Err(Exception::throw_range(
                     &ctx,
                     "History URL exceeds size limit",

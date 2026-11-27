@@ -5,9 +5,9 @@ use url::Url;
 
 use crate::exchange::{Frame, RequestId};
 use renderer::{
-    BrowserEvent, DialFailure, DialOutcome, DialRequest, FrameId, NavigationSource, OpenerPolicy,
-    PostedMessage, RemoteValue, SerializedOrigin, StorageChange, StorageError, StorageKey,
-    StorageKind, StreamId, TabError, TargetName, WindowId,
+    BrowserEvent, DialFailure, DialOutcome, DialRequest, EntryId, FrameId, NavigationSource,
+    OpenerPolicy, PostedMessage, RemoteValue, SerializedOrigin, StorageChange, StorageError,
+    StorageKey, StorageKind, StreamId, TabError, TargetName, WindowId,
 };
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -51,11 +51,14 @@ pub enum Command {
     },
     HistoryTraverseFrame {
         frame: FrameId,
-        index: usize,
+        entry: EntryId,
         url: String,
         history: renderer::HistorySnapshot,
         same_document: bool,
         reload: bool,
+    },
+    HistoryEvicted {
+        entries: Vec<EntryId>,
     },
     SetHistory {
         frame: FrameId,

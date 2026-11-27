@@ -2962,7 +2962,6 @@ mod realm_tests {
         );
         world.borrow().doc_mut().history = crate::protocol::HistorySnapshot {
             length: 1,
-            local_length: 1,
             ..crate::protocol::HistorySnapshot::default()
         };
         let realm = JsRealm::new(&shared.handle(), world.clone(), stop).expect("realm");
