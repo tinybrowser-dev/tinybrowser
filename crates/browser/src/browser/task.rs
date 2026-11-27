@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use tokio::sync::{broadcast, mpsc, watch};
+use url::Url;
 
 use crate::actor::{NewTab, RemoteWindowMessage, TabHandle, TabId, TabTask};
 use crate::context::{BrowserContext, UserContextId};
@@ -542,7 +543,7 @@ impl BrowserTask {
                     let _ = reply.send(self.remove_user_context(&id));
                 }
                 Command::OpenWindow { options, reply } => {
-                    let _ = reply.send(self.open_window(*options));
+                    let _ = reply.send(self.open_window(*options).await);
                 }
                 Command::Close { reply } => {
                     let result = self.shutdown().await;
@@ -626,7 +627,10 @@ impl BrowserTask {
         }
     }
 
-    fn open_window(&mut self, request: OpenWindowOptions) -> Result<TabId, BrowserError> {
+    async fn open_window(
+        &mut self,
+        request: OpenWindowOptions,
+    ) -> Result<crate::browser::OpenedTab, BrowserError> {
         if self.tabs.script_created_count() >= MAX_SCRIPT_CREATED_TABS {
             return Err(BrowserError::TooManyTabs);
         }
@@ -638,6 +642,7 @@ impl BrowserTask {
             opener,
             initiator,
             popup_sandbox,
+            opener_assignment,
         } = request;
         let user_context = source.map_or_else(UserContextId::default_context, |tab| {
             self.tabs.user_context(tab)
@@ -645,7 +650,7 @@ impl BrowserTask {
         // https://html.spec.whatwg.org/multipage/browsing-the-web.html#resetBCName
         let opener_tab = source.filter(|_| opener == renderer::OpenerPolicy::Keep);
         let handle = self.create_tab(NewTab {
-            user_context,
+            user_context: user_context.clone(),
             name: target.new_context_name().cloned(),
             opener: opener_tab,
             opener_frame: opener_tab.map(|_| source_frame),
@@ -660,12 +665,69 @@ impl BrowserTask {
         if let Some(opener_tab) = opener_tab {
             self.context.copy_session(opener_tab, id);
         }
-        if let Some(url) = url.filter(|url| url.as_str() != "about:blank") {
+        // https://html.spec.whatwg.org/multipage/browsers.html#process-isolation
+        let local = self
+            .adopt_local_popup(&handle, url.as_ref(), opener_assignment)
+            .await;
+        // https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps
+        if let Some(url) = url
+            && url.as_str() != "about:blank"
+        {
+            let handle = handle.clone();
             tokio::spawn(async move {
                 let _result = handle.goto_from(url.as_str(), initiator).await;
             });
         }
-        Ok(id)
+        Ok(crate::browser::OpenedTab { handle, local })
+    }
+
+    // https://html.spec.whatwg.org/multipage/browsers.html#process-isolation
+    async fn adopt_local_popup(
+        &self,
+        handle: &TabHandle,
+        url: Option<&Url>,
+        opener: Option<Arc<crate::assignment::Assignment>>,
+    ) -> Option<renderer::LocalWindowInit> {
+        let opener = opener?;
+        if !opener
+            .process()
+            .alive
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return None;
+        }
+        let local = match url {
+            None => true,
+            Some(url) if url.as_str() == "about:blank" => true,
+            Some(url) => opener.site.allows_url(url),
+        };
+        if !local {
+            return None;
+        }
+        let id = handle.id();
+        let network = self
+            .context
+            .tab_network(handle.user_context())?
+            .with_tab(id);
+        let partition = self.context.partition_services(handle.user_context())?;
+        let assignment = self.renderers.registry().reserve(
+            Arc::clone(opener.process()),
+            id,
+            opener.site.clone(),
+            network,
+            partition,
+        );
+        let navigates = url.is_some_and(|url| url.as_str() != "about:blank");
+        let tab = handle
+            .adopt_renderer(Arc::clone(&assignment), navigates)
+            .await
+            .ok()
+            .flatten()?;
+        Some(renderer::LocalWindowInit {
+            assignment: assignment.id().get(),
+            tab,
+            navigates,
+        })
     }
 
     async fn shutdown(&mut self) -> std::io::Result<()> {

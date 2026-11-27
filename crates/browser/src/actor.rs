@@ -218,6 +218,11 @@ enum Command {
         reply: ReplySender<bool>,
     },
     Inspect(InspectionCommand),
+    AdoptRenderer {
+        assignment: Arc<Assignment>,
+        navigates: bool,
+        reply: ReplySender<Option<renderer::TabState>>,
+    },
     Shutdown {
         reply: ReplySender<()>,
     },
@@ -414,6 +419,20 @@ impl TabHandle {
 
     pub async fn viewport_size(&self) -> Result<(u32, u32), TabError> {
         self.ask(|reply| Command::ViewportSize { reply }).await
+    }
+
+    // https://html.spec.whatwg.org/multipage/document-sequences.html#creating-a-new-auxiliary-browsing-context
+    pub(crate) async fn adopt_renderer(
+        &self,
+        assignment: Arc<Assignment>,
+        navigates: bool,
+    ) -> Result<Option<renderer::TabState>, TabError> {
+        self.ask(|reply| Command::AdoptRenderer {
+            assignment,
+            navigates,
+            reply,
+        })
+        .await
     }
 
     pub async fn content_size(&self) -> Result<(f32, f32), TabError> {
@@ -972,6 +991,27 @@ impl Tab {
         self.site = Some(site.clone());
         self.renderer = Some(handle);
         Ok(())
+    }
+
+    // https://html.spec.whatwg.org/multipage/document-sequences.html#creating-a-new-auxiliary-browsing-context
+    fn adopt_renderer(
+        &mut self,
+        assignment: Arc<Assignment>,
+        navigates: bool,
+    ) -> Option<renderer::TabState> {
+        if self.renderer.is_some() {
+            return None;
+        }
+        let mount = self.pending_mount.take()?;
+        self.site = Some(assignment.site.clone());
+        self.events_rx = Some(assignment.subscribe());
+        self.renderer = Some(assignment);
+        self.crashed = false;
+        // https://html.spec.whatwg.org/multipage/browsing-the-web.html#creating-a-new-browsing-context
+        if navigates {
+            self.document_loaded = false;
+        }
+        Some(mount.tab)
     }
 
     async fn mount(&mut self, site: &Site, mount: Mount) -> Result<(), TabError> {
@@ -2155,6 +2195,7 @@ impl Command {
             | Command::SetIdentity { reply, .. }
             | Command::SetExtraHeaders { reply, .. }
             | Command::AddBinding { reply, .. } => reply.is_closed(),
+            Command::AdoptRenderer { reply, .. } => reply.is_closed(),
             Command::Execute { reply, .. } => reply.is_closed(),
             Command::AddInitScript { reply, .. } => reply.is_closed(),
             Command::ViewportSize { reply } => reply.is_closed(),
@@ -2240,6 +2281,13 @@ impl Command {
                 }
             }
             Command::Inspect(inspect) => inspect.serve(tab).await,
+            Command::AdoptRenderer {
+                assignment,
+                navigates,
+                reply,
+            } => {
+                answer(reply, Ok(tab.adopt_renderer(assignment, navigates)));
+            }
             Command::Shutdown { reply } => {
                 tab.stop_renderer();
                 let _result = reply.send(Ok(()));

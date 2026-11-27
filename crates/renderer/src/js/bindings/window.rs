@@ -149,6 +149,63 @@ fn protocol_scheme(value: &str) -> Option<String> {
     Some(normalized)
 }
 
+// https://html.spec.whatwg.org/multipage/browsing-the-web.html#allowed-to-navigate
+fn sandbox_allows_cross_window_navigation(
+    caller: &Rc<RefCell<World>>,
+    owner: &Rc<RefCell<World>>,
+) -> bool {
+    let caller = caller.borrow();
+    let owner = owner.borrow();
+    if caller.runtime.engine_id == owner.runtime.engine_id {
+        return true;
+    }
+    let flags = caller.doc().sandbox;
+    if flags.is_empty() {
+        return true;
+    }
+    let owner_is_popup_of_caller = caller
+        .win()
+        .own_window
+        .is_some_and(|caller_win| owner.runtime.services.window_opener() == Some(caller_win));
+    if owner_is_popup_of_caller {
+        return true;
+    }
+    if owner.frame() == FrameId::MAIN {
+        let top_flag = if caller.user_activation_active() {
+            crate::protocol::SandboxFlag::TopLevelNavigationWithUserActivation
+        } else {
+            crate::protocol::SandboxFlag::TopLevelNavigationWithoutUserActivation
+        };
+        if flags.contains(top_flag) {
+            return false;
+        }
+    }
+    !flags.contains(crate::protocol::SandboxFlag::Navigation)
+}
+
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-href
+fn navigate_location_from(
+    ctx: &Ctx<'_>,
+    caller: &Rc<RefCell<World>>,
+    owner: &Rc<RefCell<World>>,
+    spec: String,
+) -> Result<()> {
+    if !sandbox_allows_cross_window_navigation(caller, owner) {
+        return Err(super::throw_dom(
+            ctx,
+            "SecurityError",
+            "sandboxed document is not allowed to navigate this browsing context",
+        ));
+    }
+    let same_engine = caller.borrow().runtime.engine_id == owner.borrow().runtime.engine_id;
+    let source = same_engine.then(|| caller.borrow().frame());
+    navigate_location(owner, spec, source);
+    if !same_engine {
+        owner.borrow().runtime.wake.notify_one();
+    }
+    Ok(())
+}
+
 // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-href
 fn navigate_location(owner: &Rc<RefCell<World>>, spec: String, source: Option<FrameId>) {
     let mut navigation = crate::js::world::FrameNavigation::get(
@@ -182,13 +239,12 @@ fn set_component(owner: &Rc<RefCell<World>>, component: Component, value: Value<
     }
     // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-href
     let caller = world(&ctx)?;
-    let source = caller.borrow().frame();
     if matches!(component, Component::Href) {
         let url = parse_location(&ctx, &caller, &value)?;
         if only_fragment_changed(owner, &url) {
             navigate_to_fragment(&ctx, &caller, owner, &url, false);
         } else {
-            navigate_location(owner, url.as_str().to_owned(), Some(source));
+            navigate_location_from(&ctx, &caller, owner, url.as_str().to_owned())?;
         }
         return Ok(());
     }
@@ -200,7 +256,7 @@ fn set_component(owner: &Rc<RefCell<World>>, component: Component, value: Value<
         if only_fragment_changed(owner, &url) {
             navigate_to_fragment(&ctx, &caller, owner, &url, false);
         } else {
-            navigate_location(owner, url.as_str().to_owned(), Some(source));
+            navigate_location_from(&ctx, &caller, owner, url.as_str().to_owned())?;
         }
     }
     Ok(())

@@ -956,7 +956,7 @@ fn window_initiator(
 #[derive(Clone, Copy)]
 struct WindowRouter<'a> {
     context: &'a ServiceContext,
-    assignment: &'a Assignment,
+    assignment: &'a Arc<Assignment>,
     request: RequestId,
 }
 
@@ -1006,7 +1006,7 @@ impl WindowRouter<'_> {
         let initiator = window_initiator(&context.tabs, assignment, source, opener)?;
         // https://html.spec.whatwg.org/multipage/browsers.html#sandbox-propagates-to-auxiliary-browsing-contexts-flag
         let popup_sandbox = active.auxiliary_flags();
-        let tab = context
+        let window = context
             .browser
             .open_window(crate::browser::OpenWindowOptions {
                 url,
@@ -1016,11 +1016,15 @@ impl WindowRouter<'_> {
                 opener,
                 initiator,
                 popup_sandbox,
+                opener_assignment: Some(Arc::clone(assignment)),
             })
             .await
             .ok()
-            .map(|tab| renderer::WindowId::new(tab.get()));
-        send_reply(&context.responder, id, ServiceReply::Window(tab)).await
+            .map(|opened| renderer::OpenedWindow {
+                id: renderer::WindowId::new(opened.handle.id().get()),
+                local: opened.local,
+            });
+        send_reply(&context.responder, id, ServiceReply::OpenedWindow(window)).await
     }
 
     async fn navigate(
@@ -1066,7 +1070,7 @@ impl WindowRouter<'_> {
 
 async fn route_window_call(
     context: &ServiceContext,
-    assignment: &Assignment,
+    assignment: &Arc<Assignment>,
     id: RequestId,
     call: BrowsingContextCall,
 ) -> Result<(), RendererViolation> {

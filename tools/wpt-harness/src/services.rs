@@ -949,7 +949,7 @@ impl BrowsingContextHost for FsServices {
         _target: &TargetName,
         _opener: OpenerPolicy,
         _source: &renderer::NavigationSource,
-    ) -> Option<WindowId> {
+    ) -> Option<renderer::OpenedWindow> {
         None
     }
 

@@ -1109,7 +1109,7 @@ impl BrowsingContextHost for WasmServices {
         _target: &renderer::TargetName,
         _opener: renderer::OpenerPolicy,
         _source: &renderer::NavigationSource,
-    ) -> Option<renderer::WindowId> {
+    ) -> Option<renderer::OpenedWindow> {
         None
     }
 

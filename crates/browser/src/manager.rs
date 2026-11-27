@@ -98,6 +98,10 @@ impl Default for ManagerState {
 }
 
 impl RendererProcessManager {
+    pub(crate) fn registry(&self) -> &Arc<AssignmentRegistry> {
+        &self.inner.registry
+    }
+
     pub(crate) fn new(
         sessions: Arc<SessionStorage>,
         browser: crate::browser::BrowserHandle,

@@ -1,7 +1,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ops::Deref;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Instant;
@@ -116,11 +116,13 @@ impl SharedRuntime {
 #[derive(Clone)]
 pub(crate) struct FrameRuntime {
     pub(crate) common: Arc<SharedRuntime>,
+    pub(crate) engine_id: u64,
     // https://wicg.github.io/ua-client-hints/#http-ua-hints
     pub(crate) identity: Rc<RefCell<net::ValidIdentity>>,
     pub(crate) js_runtime: JsRuntimeHandle,
     pub(crate) documents: Rc<RefCell<DocumentStore>>,
     pub(crate) registry: Rc<RefCell<RealmRegistry>>,
+    pub(crate) pending_windows: Weak<RefCell<Vec<(u64, crate::Engine)>>>,
     pub(crate) pending_storage: Rc<RefCell<Vec<crate::storage::PendingStorageEvent>>>,
     pub(crate) turn_deadline: Rc<Cell<Option<Instant>>>,
     pub(crate) event_seq: Rc<Cell<u64>>,

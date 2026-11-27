@@ -38,6 +38,11 @@ impl Assignment {
     }
 
     #[must_use]
+    pub(crate) fn process(&self) -> &Arc<RendererHandle> {
+        &self.process
+    }
+
+    #[must_use]
     pub(crate) fn hosted_by(&self, renderer: crate::manager::RendererId) -> bool {
         self.process.id == renderer
     }

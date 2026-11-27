@@ -527,7 +527,7 @@ impl BrowsingContextHost for HostServices {
         target: &renderer::TargetName,
         opener: OpenerPolicy,
         source: &renderer::NavigationSource,
-    ) -> Option<WindowId> {
+    ) -> Option<renderer::OpenedWindow> {
         match self.call(ServiceCall::BrowsingContext(
             BrowsingContextCall::WindowOpen {
                 url: url.cloned(),
@@ -536,9 +536,16 @@ impl BrowsingContextHost for HostServices {
                 source: source.clone(),
             },
         )) {
-            Some(ServiceReply::Window(tab)) => tab,
+            Some(ServiceReply::OpenedWindow(window)) => window,
             _ => None,
         }
+    }
+
+    fn for_assignment(&self, assignment: u64) -> Option<Arc<dyn renderer::BrowserServices>> {
+        Some(Arc::new(HostServices::new(
+            RendererAssignmentId::new(assignment),
+            Arc::clone(&self.client),
+        )))
     }
 
     fn navigate_named(

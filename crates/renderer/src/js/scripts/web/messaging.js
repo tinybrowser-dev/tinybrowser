@@ -1596,48 +1596,102 @@ Object.defineProperty(globalThis, 'name', {
   const remoteWindows = new __tbPrivateMap();
   const remoteSessions = new __tbPrivateMap();
   const closedTabs = new __tbPrivateSet();
+  const __tbReflectGetOwnPropertyDescriptor = Reflect.getOwnPropertyDescriptor;
+  const __tbReflectOwnKeys = Reflect.ownKeys;
+  const __tbReflectDefineProperty = Reflect.defineProperty;
+  const __tbReflectDeleteProperty = Reflect.deleteProperty;
 
   function remoteWindow(tab) {
     const existing = remoteWindows.get(tab);
     if (existing !== undefined) return existing;
+    const postMessage = function(message, targetOrigin, transfer) {
+      // https://html.spec.whatwg.org/multipage/web-messaging.html#dom-window-postmessage
+      if (arguments.length === 0) {
+        throw new TypeError(`Failed to execute 'postMessage' on 'Window': 1 argument required, but only 0 present.`);
+      }
+      if (targetOrigin !== null && typeof targetOrigin === 'object') {
+        transfer = targetOrigin.transfer;
+        targetOrigin = targetOrigin.targetOrigin;
+      }
+      const checkedOrigin = __tbNormalizeTargetOrigin(targetOrigin);
+      host.__tbValidateTargetOrigin(checkedOrigin);
+      const encoded = __tbEncode(message, transfer, null);
+      host.__tbWindowPostMessage(tab, checkedOrigin, encoded.payload);
+    };
+    const close = () => {
+      host.__tbWindowClose(tab);
+      closedTabs.add(tab);
+    };
     const handler = {
       get(target, property) {
         switch (property) {
-          case 'close': return () => {
-            host.__tbWindowClose(tab);
-            closedTabs.add(tab);
-          };
+          case 'close': return close;
           case 'closed': return closedTabs.has(tab);
-          case 'postMessage': return function(message, targetOrigin, transfer) {
-            // https://html.spec.whatwg.org/multipage/web-messaging.html#dom-window-postmessage
-            if (arguments.length === 0) {
-              throw new TypeError(`Failed to execute 'postMessage' on 'Window': 1 argument required, but only 0 present.`);
-            }
-            if (targetOrigin !== null && typeof targetOrigin === 'object') {
-              transfer = targetOrigin.transfer;
-              targetOrigin = targetOrigin.targetOrigin;
-            }
-            const checkedOrigin = __tbNormalizeTargetOrigin(targetOrigin);
-            host.__tbValidateTargetOrigin(checkedOrigin);
-            const encoded = __tbEncode(message, transfer, null);
-            host.__tbWindowPostMessage(tab, checkedOrigin, encoded.payload);
-          };
+          case 'postMessage': return postMessage;
+          case 'opener': {
+            const opener = host.__tbWindowOpenerId(tab);
+            if (opener === null || opener === undefined) return null;
+            return opener === host.__tbOwnWindow() ? globalThis : remoteWindow(opener);
+          }
+          case 'window': case 'self': case 'frames': case 'top': case 'parent': return proxy;
+          case Symbol.toStringTag: return 'Window';
+        }
+        // https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-get
+        const sameOrigin = host.__tbWindowGlobal(tab);
+        if (sameOrigin != null) {
+          if (property === 'document') return host.__tbWindowDocument(tab);
+          if (property === 'name') return host.__tbWindowName(tab);
+          return sameOrigin[property];
+        }
+        switch (property) {
           case 'localStorage': return host.__tbStorageArea('local');
           case 'sessionStorage': return remoteSession(tab);
-          case Symbol.toStringTag: return 'Window';
           default: return undefined;
         }
+      },
+      set(target, property, value) {
+        const sameOrigin = host.__tbWindowGlobal(tab);
+        if (sameOrigin == null) return false;
+        if (property === 'name') {
+          host.__tbSetWindowName(tab, __tbStringCtor(value));
+          return true;
+        }
+        sameOrigin[property] = value;
+        return true;
       },
       has(target, property) {
         switch (property) {
           case 'close': case 'closed': case 'postMessage':
-          case 'localStorage': case 'sessionStorage':
+          case 'window': case 'self': case 'frames': case 'top': case 'parent':
             return true;
         }
-        return false;
+        const sameOrigin = host.__tbWindowGlobal(tab);
+        if (sameOrigin != null) {
+          if (property === 'document' || property === 'name') return true;
+          return property in sameOrigin;
+        }
+        return property === 'localStorage' || property === 'sessionStorage';
       },
-      getOwnPropertyDescriptor() { return undefined; },
-      ownKeys() { return []; },
+      getOwnPropertyDescriptor(target, property) {
+        const sameOrigin = host.__tbWindowGlobal(tab);
+        if (sameOrigin == null) return undefined;
+        return __tbReflectGetOwnPropertyDescriptor(sameOrigin, property);
+      },
+      ownKeys() {
+        const sameOrigin = host.__tbWindowGlobal(tab);
+        if (sameOrigin == null) return [];
+        return __tbReflectOwnKeys(sameOrigin);
+      },
+      defineProperty(target, property, descriptor) {
+        const sameOrigin = host.__tbWindowGlobal(tab);
+        if (sameOrigin == null) return false;
+        return __tbReflectDefineProperty(sameOrigin, property, descriptor);
+      },
+      deleteProperty(target, property) {
+        const sameOrigin = host.__tbWindowGlobal(tab);
+        if (sameOrigin == null) return false;
+        return __tbReflectDeleteProperty(sameOrigin, property);
+      },
     };
     const proxy = new Proxy({}, handler);
     remoteWindows.set(tab, proxy);

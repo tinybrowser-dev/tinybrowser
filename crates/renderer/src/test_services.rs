@@ -12,6 +12,27 @@ use crate::protocol::{
 pub(crate) struct NullServices {
     storage: Mutex<HashMap<(StorageKind, crate::protocol::StorageKey, String), String>>,
     object_urls: webstorage::ObjectUrlStore<()>,
+    // https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps
+    local_window: Mutex<Option<crate::protocol::LocalWindowInit>>,
+}
+
+impl NullServices {
+    pub(crate) fn opening_local_window(
+        assignment: u64,
+        tab: crate::protocol::TabState,
+        navigates: bool,
+    ) -> Self {
+        let services = Self::default();
+        *services
+            .local_window
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(crate::protocol::LocalWindowInit {
+            assignment,
+            tab,
+            navigates,
+        });
+        services
+    }
 }
 
 impl NetworkHost for NullServices {
@@ -189,8 +210,23 @@ impl BrowsingContextHost for NullServices {
         _target: &crate::protocol::TargetName,
         _opener: crate::protocol::OpenerPolicy,
         _source: &crate::protocol::NavigationSource,
-    ) -> Option<crate::protocol::WindowId> {
-        None
+    ) -> Option<crate::protocol::OpenedWindow> {
+        let local = self
+            .local_window
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()?;
+        Some(crate::protocol::OpenedWindow {
+            id: local.tab.id?,
+            local: Some(local),
+        })
+    }
+
+    fn for_assignment(
+        &self,
+        _assignment: u64,
+    ) -> Option<std::sync::Arc<dyn crate::protocol::BrowserServices>> {
+        Some(std::sync::Arc::new(Self::default()))
     }
 
     fn navigate_named(

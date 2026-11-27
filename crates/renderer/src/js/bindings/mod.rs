@@ -2170,10 +2170,12 @@ mod realm_tests {
         let worker_dir = Arc::new(crate::worker::WorkerDirectory::new(Arc::clone(&common)));
         let runtime = crate::js::FrameRuntime {
             common,
+            engine_id: 0,
             identity: Rc::new(RefCell::new(identity)),
             js_runtime: js_runtime.handle(),
             documents: Rc::clone(documents),
             registry: Rc::clone(registry),
+            pending_windows: std::rc::Weak::new(),
             pending_storage: Rc::new(RefCell::new(Vec::new())),
             turn_deadline: Rc::new(std::cell::Cell::new(None)),
             event_seq: Rc::new(std::cell::Cell::new(0)),
@@ -2196,7 +2198,7 @@ mod realm_tests {
         ));
         let world = Rc::new(RefCell::new(world));
         registry.borrow_mut().insert_document(id, &world);
-        registry.borrow_mut().insert_frame(FrameId::MAIN, &world);
+        registry.borrow_mut().insert_frame(0, FrameId::MAIN, &world);
         world
     }
 
@@ -2926,7 +2928,7 @@ mod realm_tests {
             Rc::new(RefCell::new(Vec::new())),
             Rc::new(RefCell::new(Vec::new())),
         )));
-        registry.borrow_mut().insert_frame(child_frame, &child);
+        registry.borrow_mut().insert_frame(0, child_frame, &child);
         let _realm =
             JsRealm::new(&shared.handle(), main.clone(), Arc::clone(&stop)).expect("realm");
 

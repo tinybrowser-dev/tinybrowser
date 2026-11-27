@@ -3,7 +3,9 @@ use std::future::ready;
 use std::sync::Arc;
 use std::time::Duration;
 
-use renderer::{Engine, FrameId, MAX_RESPONSE_BODY_BYTES, Stop, TURN_SCRIPT_BUDGET, TabError};
+use renderer::{
+    Engine, EngineGroup, FrameId, MAX_RESPONSE_BODY_BYTES, Stop, TURN_SCRIPT_BUDGET, TabError,
+};
 use tokio::sync::Notify;
 
 use super::{HostServices, ServiceClient};
@@ -30,6 +32,7 @@ pub(super) async fn run(
 ) {
     let mut engines = HashMap::<RendererAssignmentId, Engine>::new();
     let mut responses = ResponseStreams::default();
+    let group = EngineGroup::new(&renderer::Fonts::default());
     let mut session = Session {
         identity: net::ValidIdentity::default(),
         generations: HashMap::new(),
@@ -41,6 +44,7 @@ pub(super) async fn run(
             stop.request();
             break;
         }
+        drain_pending_windows(&group, &mut engines);
         match drain_engines(&mut engines, &session.generations, outbox) {
             Drained::Failed => {
                 stop.request();
@@ -51,6 +55,7 @@ pub(super) async fn run(
                 Polled::Received(received) => {
                     if !handle_host(
                         *received,
+                        &group,
                         &mut engines,
                         &mut responses,
                         outbox,
@@ -68,6 +73,7 @@ pub(super) async fn run(
                     received = inbox.recv() => {
                         if !handle_host(
                             received,
+                            &group,
                             &mut engines,
                             &mut responses,
                             outbox,
@@ -98,6 +104,7 @@ struct Session {
 
 fn handle_host(
     received: Option<ToRenderer>,
+    group: &EngineGroup,
     engines: &mut HashMap<RendererAssignmentId, Engine>,
     responses: &mut ResponseStreams,
     outbox: &exchange::BlockingSender<FromRenderer>,
@@ -111,7 +118,7 @@ fn handle_host(
         }
         Some(Frame::Notify(HostNotice::Assign { assignment })) => {
             session.generations.insert(assignment, 0);
-            assign_engine(engines, assignment, client, session)
+            assign_engine(engines, group, assignment, client, session)
         }
         Some(Frame::Notify(HostNotice::Release { assignment })) => {
             responses.release(assignment, engines);
@@ -293,17 +300,19 @@ fn reply_result(
 
 fn assign_engine(
     engines: &mut HashMap<RendererAssignmentId, Engine>,
+    group: &EngineGroup,
     assignment: RendererAssignmentId,
     client: &Arc<ServiceClient>,
     session: &Session,
 ) -> bool {
     if engines.contains_key(&assignment) {
-        return false;
+        return true;
     }
     let assignment_services = Arc::new(HostServices::new(assignment, Arc::clone(client)));
     engines.insert(
         assignment,
-        Engine::new(
+        Engine::in_group(
+            group,
             assignment_services,
             Arc::clone(&session.stop),
             Arc::clone(&session.wake),
@@ -311,6 +320,14 @@ fn assign_engine(
         ),
     );
     true
+}
+
+fn drain_pending_windows(group: &EngineGroup, engines: &mut HashMap<RendererAssignmentId, Engine>) {
+    for (assignment, engine) in group.take_pending_windows() {
+        engines
+            .entry(RendererAssignmentId::new(assignment))
+            .or_insert(engine);
+    }
 }
 
 fn queue_broadcast_message(

@@ -1103,6 +1103,22 @@ pub enum PromptOutcome {
     Dismissed,
 }
 
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalWindowInit {
+    pub assignment: u64,
+    pub tab: TabState,
+    // https://html.spec.whatwg.org/multipage/browsing-the-web.html#creating-a-new-browsing-context
+    pub navigates: bool,
+}
+
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenedWindow {
+    pub id: WindowId,
+    pub local: Option<LocalWindowInit>,
+}
+
 pub trait BrowsingContextHost: Send + Sync + 'static {
     // https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#simple-dialogs
     fn user_prompt(
@@ -1123,7 +1139,11 @@ pub trait BrowsingContextHost: Send + Sync + 'static {
         target: &TargetName,
         opener: OpenerPolicy,
         source: &NavigationSource,
-    ) -> Option<WindowId>;
+    ) -> Option<OpenedWindow>;
+
+    fn for_assignment(&self, _assignment: u64) -> Option<std::sync::Arc<dyn BrowserServices>> {
+        None
+    }
 
     // https://html.spec.whatwg.org/multipage/document-sequences.html#creating-a-new-auxiliary-browsing-context
     fn opens_window_as_tab(&self) -> bool {

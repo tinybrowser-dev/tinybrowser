@@ -21,7 +21,7 @@ mod window_features;
 mod worker;
 
 pub use embedded::EmbeddedRenderer;
-pub use engine::{DEFAULT_VIEWPORT, Engine, decode_data_url, decode_data_url_bounded};
+pub use engine::{DEFAULT_VIEWPORT, Engine, EngineGroup, decode_data_url, decode_data_url_bounded};
 pub use render::RgbaImage;
 
 #[derive(Clone)]
@@ -641,14 +641,14 @@ pub use protocol::{
     BrowsingContextHost, ConsoleLevel, ContextName, CookiePolicy, CorsMode, CorsRequest,
     DialCancellation, DialCompletion, DialFailure, DialKind, DialOutcome, DialRequest, DomBoxModel,
     DomNode, DomRemoteNode, DomReply, DomRequest, DomStyleSheet, EntryId, FrameId, FrameKind,
-    HistoryHandling, HistorySnapshot, HttpHead, MAX_HISTORY_STATE_BYTES, MAX_HISTORY_URL_BYTES,
-    MAX_RESPONSE_BODY_BYTES, MessagingHost, Mount, NameChange, NavigationSource, NetworkHost,
-    OpenerPolicy, PolicyContainer, PostedMessage, PromptKind, PromptOutcome, ReferrerRequest,
-    RendererEvent, RequestCache, RequestPolicy, ResourceLimit, ResponseBody, ResponseHead,
-    ResponseSource, STORAGE_QUOTA_BYTES, SandboxFlags, ScreenshotClip, ScreenshotFormat,
-    ScreenshotRequest, ScriptCookie, ScriptFailure, ScriptSource, SerializedOrigin, StorageChange,
-    StorageError, StorageHost, StorageKey, StorageKind, StreamId, TabError, TabState, TargetName,
-    TargetOrigin, TimerId, WindowId,
+    HistoryHandling, HistorySnapshot, HttpHead, LocalWindowInit, MAX_HISTORY_STATE_BYTES,
+    MAX_HISTORY_URL_BYTES, MAX_RESPONSE_BODY_BYTES, MessagingHost, Mount, NameChange,
+    NavigationSource, NetworkHost, OpenedWindow, OpenerPolicy, PolicyContainer, PostedMessage,
+    PromptKind, PromptOutcome, ReferrerRequest, RendererEvent, RequestCache, RequestPolicy,
+    ResourceLimit, ResponseBody, ResponseHead, ResponseSource, STORAGE_QUOTA_BYTES, SandboxFlags,
+    ScreenshotClip, ScreenshotFormat, ScreenshotRequest, ScriptCookie, ScriptFailure, ScriptSource,
+    SerializedOrigin, StorageChange, StorageError, StorageHost, StorageKey, StorageKind, StreamId,
+    TabError, TabState, TargetName, TargetOrigin, TimerId, WindowId,
 };
 pub use remote::RemoteValue;
 pub use storage::PendingStorageEvent;

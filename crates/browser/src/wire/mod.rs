@@ -361,6 +361,8 @@ pub enum ServiceReply {
     BlobUrl(Option<String>),
     Blob(Option<renderer::BlobRecord>),
     Window(Option<WindowId>),
+    // https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps
+    OpenedWindow(Option<renderer::OpenedWindow>),
     Prompt(renderer::PromptOutcome),
     Unit,
 }
@@ -409,10 +411,11 @@ impl ServiceReply {
             ServiceCall::Storage(StorageCall::BlobCreate { .. }) => ServiceReply::BlobUrl(None),
             ServiceCall::Storage(StorageCall::BlobResolve { .. }) => ServiceReply::Blob(None),
             ServiceCall::BrowsingContext(
-                BrowsingContextCall::WindowOpen { .. }
-                | BrowsingContextCall::NavigateNamed { .. }
-                | BrowsingContextCall::Opener,
+                BrowsingContextCall::NavigateNamed { .. } | BrowsingContextCall::Opener,
             ) => ServiceReply::Window(None),
+            ServiceCall::BrowsingContext(BrowsingContextCall::WindowOpen { .. }) => {
+                ServiceReply::OpenedWindow(None)
+            }
             ServiceCall::BrowsingContext(BrowsingContextCall::UserPrompt { .. }) => {
                 ServiceReply::Prompt(renderer::PromptOutcome::Dismissed)
             }

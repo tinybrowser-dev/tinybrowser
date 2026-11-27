@@ -36,7 +36,9 @@ pub(crate) struct RealmRegistry {
     pub(crate) private_slots: Option<PrivateSlots>,
     budget: Rc<RefCell<ResourceBudget>>,
     documents: HashMap<u32, Weak<RefCell<World>>>,
-    frames: HashMap<FrameId, Weak<RefCell<World>>>,
+    frames: HashMap<(u64, FrameId), Weak<RefCell<World>>>,
+    windows: HashMap<crate::protocol::WindowId, Weak<RefCell<World>>>,
+    next_engine: u64,
     wrappers: WrapperCache<NodeId>,
     same_object: WrapperCache<(NodeId, SameObject)>,
     frame_documents: HashMap<NodeId, NodeId>,
@@ -511,20 +513,48 @@ pub(crate) struct HtmlWrite {
 const MAX_PENDING_STREAM_BYTES: usize = 8 * 1024 * 1024;
 
 impl RealmRegistry {
+    pub(crate) fn allocate_engine(&mut self) -> u64 {
+        self.next_engine = self.next_engine.saturating_add(1);
+        self.next_engine
+    }
+
     pub(crate) fn insert_document(&mut self, id: u32, world: &Rc<RefCell<World>>) {
         self.documents.insert(id, Rc::downgrade(world));
     }
 
-    pub(crate) fn insert_frame(&mut self, frame: FrameId, world: &Rc<RefCell<World>>) {
-        self.frames.insert(frame, Rc::downgrade(world));
+    pub(crate) fn insert_frame(&mut self, engine: u64, frame: FrameId, world: &Rc<RefCell<World>>) {
+        self.frames.insert((engine, frame), Rc::downgrade(world));
     }
 
-    pub(crate) fn frame_world(&self, frame: FrameId) -> Option<Rc<RefCell<World>>> {
-        self.frames.get(&frame).and_then(Weak::upgrade)
+    pub(crate) fn frame_world(&self, engine: u64, frame: FrameId) -> Option<Rc<RefCell<World>>> {
+        self.frames.get(&(engine, frame)).and_then(Weak::upgrade)
     }
 
-    pub(crate) fn forget_frame_world(&mut self, frame: FrameId) {
-        self.frames.remove(&frame);
+    pub(crate) fn forget_frame_world(&mut self, engine: u64, frame: FrameId) {
+        self.frames.remove(&(engine, frame));
+    }
+
+    pub(crate) fn forget_engine_frames(&mut self, engine: u64) {
+        self.frames.retain(|&(owner, _), _| owner != engine);
+    }
+
+    pub(crate) fn insert_window(
+        &mut self,
+        window: crate::protocol::WindowId,
+        world: &Rc<RefCell<World>>,
+    ) {
+        self.windows.insert(window, Rc::downgrade(world));
+    }
+
+    pub(crate) fn window_world(
+        &self,
+        window: crate::protocol::WindowId,
+    ) -> Option<Rc<RefCell<World>>> {
+        self.windows.get(&window).and_then(Weak::upgrade)
+    }
+
+    pub(crate) fn forget_window(&mut self, window: crate::protocol::WindowId) {
+        self.windows.remove(&window);
     }
 
     // https://cookiestore.spec.whatwg.org/#process-cookie-changes
@@ -2376,7 +2406,17 @@ impl World {
     }
 
     pub(crate) fn frame_world(&self, frame: FrameId) -> Option<Rc<RefCell<World>>> {
-        self.runtime.registry.borrow().frame_world(frame)
+        self.runtime
+            .registry
+            .borrow()
+            .frame_world(self.runtime.engine_id, frame)
+    }
+
+    pub(crate) fn window_world(
+        &self,
+        window: crate::protocol::WindowId,
+    ) -> Option<Rc<RefCell<World>>> {
+        self.runtime.registry.borrow().window_world(window)
     }
 
     // https://html.spec.whatwg.org/multipage/iframe-embed-object.html#dom-iframe-contentwindow
@@ -2426,7 +2466,7 @@ impl World {
 
     // https://html.spec.whatwg.org/multipage/browsing-the-web.html#unload
     pub(crate) fn fire_frame_unload(&self, frame: FrameId) {
-        let Some(world) = self.runtime.registry.borrow().frame_world(frame) else {
+        let Some(world) = self.frame_world(frame) else {
             return;
         };
         let Some(context) = world.borrow().realm_context.clone() else {

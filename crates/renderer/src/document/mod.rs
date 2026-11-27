@@ -673,7 +673,10 @@ impl Document {
             Rc::clone(init_scripts),
             Rc::clone(bindings),
         )));
-        runtime.registry.borrow_mut().insert_frame(frame, &world);
+        runtime
+            .registry
+            .borrow_mut()
+            .insert_frame(runtime.engine_id, frame, &world);
         let tasks = crate::task_queue::TaskQueue::default();
         let toggles = crate::task_queue::ToggleCoalescer::default();
         world
@@ -1807,7 +1810,55 @@ impl Document {
         }
         self.world.borrow_mut().install_sandbox(tab.popup_sandbox);
         self.world.borrow().win_mut().own_window = tab.id;
+        if let Some(window_id) = tab.id {
+            self.world
+                .borrow()
+                .runtime
+                .registry
+                .borrow_mut()
+                .insert_window(window_id, &self.world);
+        }
         self.set_creator_secure_context(tab.secure_context);
+    }
+
+    // https://html.spec.whatwg.org/multipage/document-sequences.html#creating-a-new-auxiliary-browsing-context
+    pub(crate) fn install_local_popup(
+        &mut self,
+        opener_world: &Rc<RefCell<World>>,
+        tab: &crate::protocol::TabState,
+        opener: crate::protocol::OpenerPolicy,
+    ) {
+        let (opener_url, opener_cookie_url, opener_origin, opener_domain, opener_policy, viewport) = {
+            let world = opener_world.borrow();
+            let doc = world.doc();
+            (
+                doc.document_url.clone(),
+                world.cookie_url(),
+                doc.origin.clone(),
+                Rc::clone(&doc.domain),
+                doc.policy.clone(),
+                world.win().viewport_size.get(),
+            )
+        };
+        self.set_viewport_size(viewport);
+        self.world.borrow().doc_mut().policy = opener_policy;
+        self.install_tab_state(tab);
+        let origin = if tab.popup_sandbox.origin_is_opaque() {
+            url::Origin::new_opaque()
+        } else {
+            opener_origin
+        };
+        self.load_about_blank(
+            Some(&opener_url),
+            &opener_cookie_url,
+            Some(InheritedOrigin {
+                origin,
+                domain: opener_domain,
+            }),
+        );
+        if opener == crate::protocol::OpenerPolicy::NoReferrer {
+            self.set_document_referrer(None);
+        }
     }
 
     fn start_parser(

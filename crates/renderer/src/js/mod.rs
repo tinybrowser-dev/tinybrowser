@@ -261,34 +261,82 @@ impl DialOptions {
 
 // https://bellard.org/quickjs/quickjs.html
 #[derive(Clone, Default)]
-pub(crate) struct SharedJsRuntime(Rc<OnceCell<Result<Runtime, Box<str>>>>);
+pub(crate) struct SharedJsRuntime {
+    slot: Rc<OnceCell<Result<Runtime, Box<str>>>>,
+    // https://html.spec.whatwg.org/multipage/webappapis.html#the-javascript-agent
+    limits: Rc<Cell<Option<(usize, usize)>>>,
+}
 
 #[derive(Clone)]
-pub(crate) struct JsRuntimeHandle(Weak<OnceCell<Result<Runtime, Box<str>>>>);
+pub(crate) struct JsRuntimeHandle {
+    slot: Weak<OnceCell<Result<Runtime, Box<str>>>>,
+    limits: Weak<Cell<Option<(usize, usize)>>>,
+}
 
 impl JsRuntimeHandle {
+    pub(crate) fn shared(&self) -> Option<SharedJsRuntime> {
+        Some(SharedJsRuntime {
+            slot: self.slot.upgrade()?,
+            limits: self.limits.upgrade()?,
+        })
+    }
+
+    fn set_limits(&self, worker: bool) {
+        if let Some(shared) = self.shared() {
+            shared.set_limits(worker);
+        }
+    }
+
     fn get(&self) -> Result<Runtime, JsError> {
         let owner = self
-            .0
+            .slot
             .upgrade()
             .ok_or_else(|| JsError::Engine("renderer JS runtime has been released".into()))?;
-        SharedJsRuntime(owner).get().cloned()
+        SharedJsRuntime {
+            slot: owner,
+            limits: self
+                .limits
+                .upgrade()
+                .ok_or_else(|| JsError::Engine("renderer JS runtime has been released".into()))?,
+        }
+        .get()
+        .cloned()
     }
 }
 
 impl SharedJsRuntime {
     pub(crate) fn handle(&self) -> JsRuntimeHandle {
-        JsRuntimeHandle(Rc::downgrade(&self.0))
+        JsRuntimeHandle {
+            slot: Rc::downgrade(&self.slot),
+            limits: Rc::downgrade(&self.limits),
+        }
     }
 
     pub(crate) fn collect(&self) {
-        if let Some(Ok(runtime)) = self.0.get() {
+        if let Some(Ok(runtime)) = self.slot.get() {
             runtime.run_gc();
         }
     }
 
+    // https://tc39.es/ecma262/#sec-agents
+    pub(crate) fn set_limits(&self, worker: bool) {
+        let limits = if worker {
+            (MAX_WORKER_RUNTIME_MEMORY, MAX_RUNTIME_STACK)
+        } else {
+            (MAX_RUNTIME_MEMORY, MAX_RUNTIME_STACK)
+        };
+        if self.limits.get() == Some(limits) {
+            return;
+        }
+        if let Ok(runtime) = self.get() {
+            runtime.set_memory_limit(limits.0);
+            runtime.set_max_stack_size(limits.1);
+            self.limits.set(Some(limits));
+        }
+    }
+
     pub(crate) fn get(&self) -> Result<&Runtime, JsError> {
-        let slot = self.0.get_or_init(|| {
+        let slot = self.slot.get_or_init(|| {
             let runtime = Runtime::new().map_err(|err| err.to_string().into_boxed_str())?;
             // https://tc39.es/ecma262/#sec-abstract-operations-for-sharedarraybuffer-objects
             runtime.install_shared_array_buffer_hooks();
@@ -342,6 +390,31 @@ pub(crate) struct JsRealm {
     turn_deadline: Rc<Cell<Option<Instant>>>,
 }
 
+// https://html.spec.whatwg.org/multipage/webappapis.html#perform-a-microtask-checkpoint
+thread_local! {
+    static JS_TURN_DEPTH: Cell<usize> = const { Cell::new(0) };
+}
+
+struct JsTurn {
+    outer: bool,
+}
+
+impl JsTurn {
+    fn enter() -> Self {
+        JS_TURN_DEPTH.with(|depth| {
+            let outer = depth.get() == 0;
+            depth.set(depth.get().saturating_add(1));
+            Self { outer }
+        })
+    }
+}
+
+impl Drop for JsTurn {
+    fn drop(&mut self) {
+        JS_TURN_DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
+    }
+}
+
 impl JsRealm {
     // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-addBinding
     pub(crate) fn add_binding(&self, name: &str) -> Result<(), JsError> {
@@ -374,13 +447,8 @@ impl JsRealm {
         terminate: Option<Arc<AtomicBool>>,
         worker: bool,
     ) -> Result<Self, JsError> {
+        shared.set_limits(worker);
         let runtime = shared.get()?;
-        runtime.set_memory_limit(if worker {
-            MAX_WORKER_RUNTIME_MEMORY
-        } else {
-            MAX_RUNTIME_MEMORY
-        });
-        runtime.set_max_stack_size(MAX_RUNTIME_STACK);
         let context = Context::full(&runtime)?;
         let turn_deadline = Rc::clone(&world.borrow().runtime.turn_deadline);
         let host = Self {
@@ -1311,6 +1379,11 @@ impl JsRealm {
         checkpoint: MicrotaskCheckpoint,
         operation: impl FnOnce() -> Result<T, JsError>,
     ) -> Result<T, JsError> {
+        // https://html.spec.whatwg.org/multipage/webappapis.html#perform-a-microtask-checkpoint
+        let turn = JsTurn::enter();
+        if !turn.outer {
+            return operation();
+        }
         let entry = deadline.unwrap_or_else(|| Instant::now() + DEFAULT_SCRIPT_BUDGET);
         let deadline = self
             .turn_deadline
@@ -2162,6 +2235,14 @@ fn install_window_host_functions(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> R
         }),
     )?;
 
+    // https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-get
+    bridge::object(ctx)?.set("__tbWindowGlobal", Func::from(window_global))?;
+    bridge::object(ctx)?.set("__tbWindowDocument", Func::from(window_document))?;
+    bridge::object(ctx)?.set("__tbWindowName", Func::from(window_name))?;
+    bridge::object(ctx)?.set("__tbSetWindowName", Func::from(set_window_name))?;
+    bridge::object(ctx)?.set("__tbOwnWindow", Func::from(window_own_id))?;
+    bridge::object(ctx)?.set("__tbWindowOpenerId", Func::from(window_opener_id))?;
+
     // https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#simple-dialogs
     let prompt_world = world.clone();
     bridge::object(ctx)?.set(
@@ -2350,16 +2431,6 @@ fn open_window(
     if !world.borrow().allows_auxiliary_navigation() {
         return None;
     }
-    // https://html.spec.whatwg.org/multipage/window-object.html#dom-open
-    if plan.url.as_ref().is_some_and(|url| url.scheme() == "blob")
-        && let Some(frame) =
-            World::create_auxiliary(world, plan.url.as_ref(), &target, plan.opener, false)
-    {
-        return Some(WindowOpenAnswer {
-            context: OpenedContext::Frame(frame),
-            withholds: plan.withholds,
-        });
-    }
     if !services.opens_window_as_tab()
         && let Some(frame) =
             World::create_auxiliary(world, plan.url.as_ref(), &target, plan.opener, true)
@@ -2369,11 +2440,103 @@ fn open_window(
             withholds: plan.withholds,
         });
     }
-    let tab = services.window_open(plan.url.as_ref(), &target, plan.opener, &plan.source)?;
+    let opened = services.window_open(plan.url.as_ref(), &target, plan.opener, &plan.source)?;
+    if let Some(local) = opened.local
+        && let Some(popup_services) = services.for_assignment(local.assignment)
+        && let Some(pending) = world.borrow().runtime.pending_windows.upgrade()
+    {
+        let popup = crate::Engine::for_local_popup(world, popup_services, &local, plan.opener);
+        pending.borrow_mut().push((local.assignment, popup));
+    }
     Some(WindowOpenAnswer {
-        context: OpenedContext::Tab(tab),
+        context: OpenedContext::Tab(opened.id),
         withholds: plan.withholds,
     })
+}
+
+// https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-get
+fn same_origin_window(ctx: &Ctx<'_>, window: u64) -> rquickjs::Result<Option<Rc<RefCell<World>>>> {
+    let current = bindings::world(ctx)?;
+    let Some(target) = current
+        .borrow()
+        .window_world(crate::protocol::WindowId::new(window))
+    else {
+        return Ok(None);
+    };
+    let same_origin = target.borrow().same_origin_domain_with(&current.borrow());
+    Ok(same_origin.then_some(target))
+}
+
+fn window_global(ctx: Ctx<'_>, window: u64) -> rquickjs::Result<Option<rquickjs::Object<'_>>> {
+    let Some(target) = same_origin_window(&ctx, window)? else {
+        return Ok(None);
+    };
+    let Some(global) = target.borrow().window_object() else {
+        return Ok(None);
+    };
+    Ok(Some(global.restore(&ctx)?))
+}
+
+fn window_document(ctx: Ctx<'_>, window: u64) -> rquickjs::Result<rquickjs::Value<'_>> {
+    let Some(target) = same_origin_window(&ctx, window)? else {
+        return Ok(rquickjs::Value::new_null(ctx));
+    };
+    let root = target.borrow().main_document_root();
+    match root {
+        Some(node) => bindings::wrap_node(&ctx, node),
+        None => Ok(rquickjs::Value::new_null(ctx)),
+    }
+}
+
+// https://html.spec.whatwg.org/multipage/window-object.html#dom-window
+fn window_own_id(ctx: Ctx<'_>) -> rquickjs::Result<Option<u64>> {
+    Ok(bindings::world(&ctx)?
+        .borrow()
+        .win()
+        .own_window
+        .map(crate::protocol::WindowId::get))
+}
+
+// https://html.spec.whatwg.org/multipage/window-object.html#dom-opener
+fn window_opener_id(ctx: Ctx<'_>, window: u64) -> rquickjs::Result<Option<u64>> {
+    let world = bindings::world(&ctx)?;
+    let Some(target) = world
+        .borrow()
+        .window_world(crate::protocol::WindowId::new(window))
+    else {
+        return Ok(None);
+    };
+    let services = target.borrow().runtime.services.clone();
+    Ok(services.window_opener().map(crate::protocol::WindowId::get))
+}
+
+fn window_name(ctx: Ctx<'_>, window: u64) -> rquickjs::Result<String> {
+    let Some(target) = same_origin_window(&ctx, window)? else {
+        return Ok(String::new());
+    };
+    let shared = target.borrow().shared();
+    Ok(shared.borrow().tree.name(FrameId::MAIN).to_owned())
+}
+
+fn set_window_name(ctx: Ctx<'_>, window: u64, name: String) -> rquickjs::Result<()> {
+    let Some(target) = same_origin_window(&ctx, window)? else {
+        return Ok(());
+    };
+    let (services, changed) = {
+        let target = target.borrow();
+        let services = target.runtime.services.clone();
+        let shared = target.shared();
+        let mut shared = shared.borrow_mut();
+        let changed = shared.tree.name(FrameId::MAIN) != name;
+        shared.tree.set_name(FrameId::MAIN, name.clone());
+        (services, changed)
+    };
+    if changed {
+        services.set_window_name(crate::protocol::NameChange::Assigned(
+            crate::protocol::ContextName::parse(&name),
+        ));
+    }
+    Ok(())
 }
 
 fn install_auxiliary_host_functions(

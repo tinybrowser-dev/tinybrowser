@@ -52,10 +52,45 @@ struct PendingWork {
     ran_scripts: bool,
 }
 
+pub struct EngineGroup {
+    js_runtime: Rc<SharedJsRuntime>,
+    documents: Rc<RefCell<DocumentStore>>,
+    registry: Rc<RefCell<RealmRegistry>>,
+    pending_windows: Rc<RefCell<Vec<(u64, Engine)>>>,
+    fonts: crate::Fonts,
+}
+
+impl EngineGroup {
+    #[must_use]
+    pub fn new(fonts: &crate::Fonts) -> Self {
+        Self {
+            js_runtime: Rc::new(SharedJsRuntime::default()),
+            documents: Rc::new(RefCell::new(DocumentStore::default())),
+            registry: Rc::new(RefCell::new(RealmRegistry::default())),
+            pending_windows: Rc::new(RefCell::new(Vec::new())),
+            fonts: fonts.clone(),
+        }
+    }
+
+    #[must_use]
+    pub fn take_pending_windows(&self) -> Vec<(u64, Engine)> {
+        std::mem::take(&mut *self.pending_windows.borrow_mut())
+    }
+}
+
+impl Drop for EngineGroup {
+    fn drop(&mut self) {
+        if Rc::strong_count(&self.registry) == 1 {
+            self.registry.borrow_mut().clear();
+            self.js_runtime.collect();
+        }
+    }
+}
+
 pub struct Engine {
     runtime: FrameRuntime,
     frames: BTreeMap<FrameId, Document>,
-    js_runtime: SharedJsRuntime,
+    js_runtime: Rc<SharedJsRuntime>,
     // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-addScriptToEvaluateOnNewDocument
     init_scripts: Rc<RefCell<Vec<(u64, String)>>>,
     // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-addBinding
@@ -105,7 +140,18 @@ impl Engine {
         identity: net::ValidIdentity,
         fonts: &crate::Fonts,
     ) -> Self {
-        let js_runtime = SharedJsRuntime::default();
+        let group = EngineGroup::new(fonts);
+        Self::in_group(&group, services, stop, wake, identity)
+    }
+
+    #[must_use]
+    pub fn in_group(
+        group: &EngineGroup,
+        services: Arc<dyn BrowserServices>,
+        stop: Arc<Stop>,
+        wake: Arc<Notify>,
+        identity: net::ValidIdentity,
+    ) -> Self {
         let init_scripts: Rc<RefCell<Vec<(u64, String)>>> = Rc::new(RefCell::new(Vec::new()));
         let bindings: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
         let common = Arc::new(crate::js::SharedRuntime::new(
@@ -113,20 +159,23 @@ impl Engine {
             identity.clone(),
             wake,
             stop,
-            fonts.0.clone(),
+            group.fonts.0.clone(),
         ));
         let worker_dir = Arc::new(WorkerDirectory::new(Arc::clone(&common)));
+        let engine_id = group.registry.borrow_mut().allocate_engine();
         let runtime = FrameRuntime {
             common,
+            engine_id,
             identity: Rc::new(RefCell::new(identity)),
-            js_runtime: js_runtime.handle(),
-            documents: Rc::new(RefCell::new(DocumentStore::default())),
-            registry: Rc::new(RefCell::new(RealmRegistry::default())),
+            js_runtime: group.js_runtime.handle(),
+            documents: Rc::clone(&group.documents),
+            registry: Rc::clone(&group.registry),
+            pending_windows: Rc::downgrade(&group.pending_windows),
             pending_storage: Rc::new(RefCell::new(Vec::new())),
             turn_deadline: Rc::new(std::cell::Cell::new(None)),
             event_seq: Rc::new(std::cell::Cell::new(0)),
             worker_dir,
-            font_ctx: fonts.0.clone(),
+            font_ctx: group.fonts.0.clone(),
         };
         let main = Document::with_shared(FrameId::MAIN, &runtime, &init_scripts, &bindings);
         let mut frames = BTreeMap::new();
@@ -134,7 +183,93 @@ impl Engine {
         Self {
             runtime,
             frames,
+            js_runtime: Rc::clone(&group.js_runtime),
+            init_scripts,
+            bindings,
+            entry_cache: HashMap::new(),
+            pending_entries: HashMap::new(),
+            next_history_entry: 1,
+            pending_events: Vec::new(),
+            deferred_events: Vec::new(),
+            joint_history: None,
+            js_waiters: Vec::new(),
+            shared_workers: HashMap::new(),
+        }
+    }
+
+    // https://html.spec.whatwg.org/multipage/document-sequences.html#creating-a-new-auxiliary-browsing-context
+    pub(crate) fn for_local_popup(
+        opener_world: &Rc<RefCell<crate::js::World>>,
+        services: Arc<dyn BrowserServices>,
+        init: &crate::protocol::LocalWindowInit,
+        opener: crate::protocol::OpenerPolicy,
+    ) -> Self {
+        let (
+            identity,
+            wake,
+            stop,
             js_runtime,
+            shared_js,
+            documents,
+            registry,
+            pending_windows,
+            font_ctx,
+        ) = {
+            let world = opener_world.borrow();
+            let rt = &world.runtime;
+            let js_runtime = rt.js_runtime.clone();
+            let shared_js = js_runtime
+                .shared()
+                .expect("a live opener keeps its JavaScript runtime");
+            (
+                rt.identity.borrow().clone(),
+                Arc::clone(&rt.wake),
+                Arc::clone(&rt.stop),
+                js_runtime,
+                shared_js,
+                Rc::clone(&rt.documents),
+                Rc::clone(&rt.registry),
+                rt.pending_windows.clone(),
+                rt.font_ctx.clone(),
+            )
+        };
+        let init_scripts: Rc<RefCell<Vec<(u64, String)>>> = Rc::new(RefCell::new(Vec::new()));
+        let bindings: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let common = Arc::new(crate::js::SharedRuntime::new(
+            services,
+            identity.clone(),
+            wake,
+            stop,
+            font_ctx.clone(),
+        ));
+        let worker_dir = Arc::new(WorkerDirectory::new(Arc::clone(&common)));
+        let engine_id = registry.borrow_mut().allocate_engine();
+        let runtime = FrameRuntime {
+            common,
+            engine_id,
+            identity: Rc::new(RefCell::new(identity)),
+            js_runtime,
+            documents,
+            registry,
+            pending_windows,
+            pending_storage: Rc::new(RefCell::new(Vec::new())),
+            turn_deadline: Rc::new(std::cell::Cell::new(None)),
+            event_seq: Rc::new(std::cell::Cell::new(0)),
+            worker_dir,
+            font_ctx,
+        };
+        let mut main = Document::with_shared(FrameId::MAIN, &runtime, &init_scripts, &bindings);
+        main.install_local_popup(opener_world, &init.tab, opener);
+        if init.navigates {
+            // https://html.spec.whatwg.org/multipage/browsers.html#creating-a-new-browsing-context
+            let _ = main.take_events();
+        }
+        let mut frames = BTreeMap::new();
+        frames.insert(FrameId::MAIN, main);
+        Self {
+            runtime,
+            frames,
+            js_runtime: Rc::new(shared_js),
             init_scripts,
             bindings,
             entry_cache: HashMap::new(),
@@ -1507,7 +1642,7 @@ impl Engine {
                 self.runtime
                     .registry
                     .borrow_mut()
-                    .forget_frame_world(*frame);
+                    .forget_frame_world(self.runtime.engine_id, *frame);
                 self.drop_frame_document(*frame);
                 self.pending_entries.remove(frame);
                 if let Some(joint) = self.joint_history.as_mut() {
@@ -1678,7 +1813,10 @@ impl Engine {
             document.cancel_frame_load(container);
         }
         self.runtime.registry.borrow_mut().forget_frame(container);
-        self.runtime.registry.borrow_mut().forget_frame_world(child);
+        self.runtime
+            .registry
+            .borrow_mut()
+            .forget_frame_world(self.runtime.engine_id, child);
         {
             let mut shared = self.runtime.shared.borrow_mut();
             shared.tree.remove(child);
@@ -2545,9 +2683,22 @@ impl Engine {
         fired
     }
 
+    fn forget_window_registration(&self) {
+        let own_window = self
+            .frames
+            .get(&FrameId::MAIN)
+            .and_then(|document| document.world().borrow().win().own_window);
+        let mut registry = self.runtime.registry.borrow_mut();
+        if let Some(window_id) = own_window {
+            registry.forget_window(window_id);
+        }
+        registry.forget_engine_frames(self.runtime.engine_id);
+    }
+
     pub fn shutdown(&mut self) {
         self.runtime.worker_dir.terminate_all();
         self.shared_workers.clear();
+        self.forget_window_registration();
         for document in self.frames.values_mut() {
             document.shutdown();
         }
@@ -2556,6 +2707,7 @@ impl Engine {
     pub fn release(&mut self) {
         self.runtime.worker_dir.terminate_all();
         self.shared_workers.clear();
+        self.forget_window_registration();
         for document in self.frames.values_mut() {
             document.release();
         }
@@ -2635,8 +2787,8 @@ impl Drop for Engine {
     fn drop(&mut self) {
         self.runtime.worker_dir.terminate_all();
         self.shared_workers.clear();
+        self.forget_window_registration();
         self.frames.clear();
-        self.runtime.registry.borrow_mut().clear();
         self.js_runtime.collect();
     }
 }
@@ -4055,6 +4207,64 @@ mod messaging_tests {
         assert_eq!(
             probe,
             r#"{"maximumBelowInitial":"RangeError","tooManyPages":"RangeError","negative":"TypeError","missingInitial":"TypeError","sharedWithoutMaximum":"TypeError","nonObject":"TypeError","fraction":65536,"numberForI64":"TypeError","grown":"1","i64ByteLength":131072,"tag":"[object WebAssembly.Memory]"}"#
+        );
+    }
+}
+
+#[cfg(test)]
+mod local_popup_tests {
+    use super::{Engine, EngineGroup, FrameId, Mount, ResponseHead};
+    use crate::test_services::NullServices;
+    use std::sync::Arc;
+    use url::Url;
+
+    // https://html.spec.whatwg.org/multipage/document-sequences.html#creating-a-new-auxiliary-browsing-context
+    #[test]
+    fn a_same_site_popup_shares_the_openers_javascript_runtime() {
+        let group = EngineGroup::new(&crate::Fonts::default());
+        let tab = crate::protocol::TabState {
+            id: Some(crate::protocol::WindowId::new(2)),
+            name: crate::protocol::ContextName::parse("peer"),
+            auxiliary_with_opener: true,
+            popup_sandbox: crate::protocol::SandboxFlags::empty(),
+            secure_context: Some(false),
+        };
+        let services = Arc::new(NullServices::opening_local_window(2, tab, false));
+        let mut engine = Engine::in_group(
+            &group,
+            services,
+            Arc::new(crate::js::Stop::new()),
+            Arc::new(tokio::sync::Notify::new()),
+            net::ValidIdentity::default(),
+        );
+        engine
+            .mount_frame(
+                FrameId::MAIN,
+                &Mount {
+                    head: ResponseHead::local(
+                        Url::parse("https://example.test/").expect("URL"),
+                        Some("text/html".to_owned()),
+                        None,
+                    ),
+                    tab: crate::protocol::TabState::default(),
+                    body: b"<!doctype html><script>window.__popup = window.open('about:blank', 'peer');</script>"
+                        .to_vec(),
+                },
+            )
+            .expect("mount");
+        let _ready = engine.drain_ready();
+        let mut pending = group.take_pending_windows();
+        assert_eq!(pending.len(), 1, "the opener created one local engine");
+        let mut popup = pending.pop().expect("popup").1;
+        let _ready = popup.drain_ready();
+        assert_eq!(
+            engine
+                .eval_in(
+                    FrameId::MAIN,
+                    "[window.__popup.document.URL, window.__popup.document.body !== null, window.__popup.name].join(',')"
+                )
+                .expect("evaluate"),
+            "about:blank,true,peer"
         );
     }
 }

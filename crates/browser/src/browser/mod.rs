@@ -76,6 +76,13 @@ pub(crate) struct OpenWindowOptions {
     pub(crate) initiator: NavigationInitiator,
     // https://html.spec.whatwg.org/multipage/browsers.html#popup-sandboxing-flag-set
     pub(crate) popup_sandbox: renderer::SandboxFlags,
+    // https://html.spec.whatwg.org/multipage/browsers.html#process-isolation
+    pub(crate) opener_assignment: Option<Arc<crate::assignment::Assignment>>,
+}
+
+pub(crate) struct OpenedTab {
+    pub(crate) handle: TabHandle,
+    pub(crate) local: Option<renderer::LocalWindowInit>,
 }
 
 pub(super) enum Command {
@@ -96,7 +103,7 @@ pub(super) enum Command {
     },
     OpenWindow {
         options: Box<OpenWindowOptions>,
-        reply: oneshot::Sender<Result<TabId, BrowserError>>,
+        reply: oneshot::Sender<Result<OpenedTab, BrowserError>>,
     },
     Close {
         reply: oneshot::Sender<io::Result<()>>,
@@ -414,7 +421,7 @@ impl BrowserHandle {
     pub(crate) async fn open_window(
         &self,
         options: OpenWindowOptions,
-    ) -> Result<TabId, BrowserError> {
+    ) -> Result<OpenedTab, BrowserError> {
         self.call(|reply| Command::OpenWindow {
             options: Box::new(options),
             reply,

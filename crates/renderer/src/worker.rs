@@ -337,10 +337,12 @@ impl WorkerDirectory {
     fn thread_runtime(self: &Arc<Self>, js_runtime: JsRuntimeHandle) -> FrameRuntime {
         FrameRuntime {
             common: Arc::clone(&self.runtime),
+            engine_id: 0,
             identity: Rc::new(RefCell::new(self.runtime.initial_identity.clone())),
             js_runtime,
             documents: Rc::new(RefCell::new(crate::documents::DocumentStore::default())),
             registry: Rc::new(RefCell::new(crate::js::RealmRegistry::default())),
+            pending_windows: std::rc::Weak::new(),
             pending_storage: Rc::new(RefCell::new(Vec::new())),
             turn_deadline: Rc::new(std::cell::Cell::new(None)),
             event_seq: Rc::new(std::cell::Cell::new(0)),

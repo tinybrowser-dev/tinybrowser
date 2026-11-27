@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::json;
 
-use crate::fixture::{Fixture, TestServer, evaluate, ok, open_page, server};
+use crate::fixture::{Fixture, TestServer, attach, evaluate, ok, open_page, server};
 
 fn open_popup(
     page_host: &str,
@@ -1194,4 +1194,87 @@ fn an_opener_closes_its_popup_through_the_proxy() {
     evaluate(&mut client, &session, "window.__popup.close()");
     wait_for_targets(&mut client, baseline);
     wait_for_value(&mut client, &session, "window.__popup.closed", &json!(true));
+}
+
+// https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-get
+#[test]
+fn a_same_origin_popup_exposes_the_full_window_surface() {
+    let (listener, address) = server();
+    let port = address.port();
+    let page = "<!doctype html><script>\
+        window.__marker = 'opener';\
+        window.__popup = window.open('/peer', 'peer');\
+        </script>";
+    TestServer::serve_on(
+        listener,
+        vec![
+            ("/start", ok("text/html", page.as_bytes())),
+            (
+                "/peer",
+                ok(
+                    "text/html",
+                    b"<!doctype html><title>peer</title><script>window.__peer = 'ready';</script>",
+                ),
+            ),
+        ],
+    );
+    let (_fixture, mut client, session) = open_page(
+        "tinybrowser-same-origin-popup",
+        &format!("http://127.0.0.1:{port}/start"),
+    );
+    wait_for_value(
+        &mut client,
+        &session,
+        "window.__popup !== null && window.__popup.document.readyState === 'complete' && window.__popup.document.title === 'peer'",
+        &json!(true),
+    );
+    let surface = evaluate(
+        &mut client,
+        &session,
+        r"(() => {
+          const popup = window.__popup;
+          popup.document.title = 'changed';
+          popup.name = 'renamed';
+          return [
+            popup !== window,
+            popup.document !== document,
+            popup.document.title,
+            typeof popup.document.body,
+            popup.opener === window,
+            popup.top === popup,
+            popup.window === popup,
+            'document' in popup,
+            popup.name,
+          ].join('|');
+        })()",
+    );
+    assert_eq!(
+        surface,
+        json!("true|true|changed|object|true|true|true|true|renamed"),
+        "a same-origin popup exposes the real document and window identity"
+    );
+    let peer = client
+        .call("Target.getTargets", &json!({}), None)
+        .expect("targets")["targetInfos"]
+        .as_array()
+        .expect("targetInfos")
+        .iter()
+        .find(|info| {
+            info["url"]
+                .as_str()
+                .is_some_and(|url| url.ends_with("/peer"))
+        })
+        .and_then(|info| info["targetId"].as_str())
+        .expect("the popup target")
+        .to_owned();
+    let peer_session = attach(&mut client, &peer);
+    assert_eq!(
+        evaluate(
+            &mut client,
+            &peer_session,
+            "[window.__peer, document.title, window.name, window.opener !== null, window.opener.__marker, window.top === window, window.parent === window].join('|')",
+        ),
+        json!("ready|changed|renamed|true|opener|true|true"),
+        "the popup sees the opener and the browser-visible name"
+    );
 }
