@@ -100,7 +100,9 @@ async function startDaemon(binary) {
   let info = null;
   while (Date.now() < deadline) {
     if (child.exitCode !== null) {
-      rmSync(runtimeDir, { recursive: true, force: true });
+      try {
+        rmSync(runtimeDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+      } catch {}
       throw new Error(`tinybrowser exited early (${child.exitCode}):\n${stderr}`);
     }
     if (existsSync(daemonJson)) {
@@ -124,7 +126,9 @@ async function startDaemon(binary) {
     origin,
     stop() {
       child.kill();
-      rmSync(runtimeDir, { recursive: true, force: true });
+      try {
+        rmSync(runtimeDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+      } catch {}
     },
   };
 }

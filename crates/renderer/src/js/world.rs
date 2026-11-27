@@ -2013,9 +2013,14 @@ impl World {
 
     // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-createIsolatedWorld
     pub(crate) fn scoped_handle(&self, handle: String) -> String {
+        #[cfg(not(target_family = "wasm"))]
+        let pid = std::process::id();
+        #[cfg(target_family = "wasm")]
+        let pid = 0u32;
+        let scoped = format!("r{pid}-{}-{handle}", self.realm);
         match &self.isolated_name {
-            Some(name) => format!("iw:{name}:{handle}"),
-            None => handle,
+            Some(name) => format!("iw:{name}:{scoped}"),
+            None => scoped,
         }
     }
 
