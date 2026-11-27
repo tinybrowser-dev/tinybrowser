@@ -11,7 +11,9 @@ pub mod referrer;
 mod resolve;
 mod transport;
 
-pub use client::{Agent, AgentOptions, Body, Clock, ClockSource, Request, Response};
+pub use client::{
+    Agent, AgentOptions, Body, Clock, ClockSource, Request, RequestOverrides, Response,
+};
 pub use cookies::{
     CookieFilter, CookieJar, CookieOp, CookieRecord, CookieSameSite, DirectCookie, InitiatorKind,
     RetrievalKind, SameSiteCookiePolicy, ScriptCookieWrite, is_public_suffix, origins_same_site,

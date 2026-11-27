@@ -112,7 +112,7 @@ impl Dialer {
         request: &DialRequest,
         initiator: &url::Origin,
         partition: u64,
-        client: Option<u64>,
+        overrides: net::RequestOverrides,
         admission: &A,
         sink: &S,
     ) -> Result<DialOutcome, DialFailure>
@@ -121,7 +121,7 @@ impl Dialer {
         S: BodySink<A::Permit>,
     {
         let outcome = self
-            .dial_unfiltered(request, initiator, partition, client, admission, sink)
+            .dial_unfiltered(request, initiator, partition, overrides, admission, sink)
             .await?;
         Ok(orb_filter(request, outcome))
     }
@@ -131,7 +131,7 @@ impl Dialer {
         request: &DialRequest,
         initiator: &url::Origin,
         partition: u64,
-        client: Option<u64>,
+        overrides: net::RequestOverrides,
         admission: &A,
         sink: &S,
     ) -> Result<DialOutcome, DialFailure>
@@ -141,7 +141,7 @@ impl Dialer {
     {
         let deadline = Instant::now() + crate::budget(request);
         let mut outbound = self.build_outbound(request, initiator, deadline)?;
-        outbound.client = client;
+        outbound.overrides = overrides;
         // https://www.rfc-editor.org/rfc/rfc9111#section-4.1
         let mut sent = sent_headers(&outbound);
         if let Some(cookie) = self.agent.outbound_cookie_header(&outbound) {
@@ -362,7 +362,7 @@ mod tests {
 
     struct RecordingTransport {
         calls: AtomicUsize,
-        last_client: Mutex<Option<u64>>,
+        last_extra: Mutex<Option<String>>,
         last_referer: Mutex<Option<String>>,
     }
 
@@ -370,7 +370,7 @@ mod tests {
         fn new() -> Self {
             Self {
                 calls: AtomicUsize::new(0),
-                last_client: Mutex::new(None),
+                last_extra: Mutex::new(None),
                 last_referer: Mutex::new(None),
             }
         }
@@ -383,7 +383,11 @@ mod tests {
             _budget: HopBudget,
         ) -> Pin<Box<dyn Future<Output = Result<WireResponse, NetError>> + Send + '_>> {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            *self.last_client.lock().unwrap() = request.client;
+            *self.last_extra.lock().unwrap() = request
+                .headers
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case("x-tab"))
+                .map(|(_, value)| net::isomorphic_decode(value));
             *self.last_referer.lock().unwrap() = request
                 .headers
                 .iter()
@@ -393,6 +397,7 @@ mod tests {
                 let mut headers = HeaderMap::new();
                 headers.insert("cache-control", "max-age=60").unwrap();
                 headers.insert("access-control-allow-origin", "*").unwrap();
+                headers.insert("access-control-allow-headers", "x-tab").unwrap();
                 headers.insert("content-type", "text/css").unwrap();
                 Ok(WireResponse {
                     status: 200,
@@ -414,13 +419,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dialer_caches_responses_forwards_client_and_authorizes_sheet_referrer() {
+    async fn dialer_caches_responses_forwards_overrides_and_authorizes_sheet_referrer() {
         let transport = Arc::new(RecordingTransport::new());
         let options = AgentOptions::default();
         let cache = Arc::new(HttpCache::new(options.clock.clone()));
         let agent = Agent::with_transport(options, Arc::clone(&transport) as Arc<dyn Transport>);
         let dialer = Dialer::new(agent, cache);
         let origin = Url::parse("https://page.test/").unwrap().origin();
+        let overrides = net::RequestOverrides {
+            identity: None,
+            extra_headers: net::RequestOverrides::parse_extra_headers(&[(
+                "X-Tab".to_owned(),
+                "99".to_owned(),
+            )])
+            .unwrap(),
+        };
 
         let fetch_req = test_request(
             "https://page.test/data",
@@ -434,15 +447,29 @@ mod tests {
             },
         );
         let first = dialer
-            .dial(&fetch_req, &origin, 1, Some(99), &Unlimited, &BufferedOnly)
+            .dial(
+                &fetch_req,
+                &origin,
+                1,
+                overrides.clone(),
+                &Unlimited,
+                &BufferedOnly,
+            )
             .await
             .expect("first dial");
         assert_eq!(first.status, 200);
         assert_eq!(transport.calls.load(Ordering::SeqCst), 1);
-        assert_eq!(*transport.last_client.lock().unwrap(), Some(99));
+        assert_eq!(transport.last_extra.lock().unwrap().as_deref(), Some("99"));
 
         let cached = dialer
-            .dial(&fetch_req, &origin, 1, Some(99), &Unlimited, &BufferedOnly)
+            .dial(
+                &fetch_req,
+                &origin,
+                1,
+                overrides.clone(),
+                &Unlimited,
+                &BufferedOnly,
+            )
             .await
             .expect("cached dial");
         assert_eq!(cached.status, 200);
@@ -458,7 +485,14 @@ mod tests {
             },
         );
         let _sheet = dialer
-            .dial(&sheet_req, &origin, 1, Some(99), &Unlimited, &BufferedOnly)
+            .dial(
+                &sheet_req,
+                &origin,
+                1,
+                overrides.clone(),
+                &Unlimited,
+                &BufferedOnly,
+            )
             .await
             .expect("sheet dial");
 
@@ -468,7 +502,7 @@ mod tests {
             ReferrerRequest::Url(Url::parse("https://cdn.test/style.css").unwrap()),
         );
         let _font = dialer
-            .dial(&font_req, &origin, 1, Some(99), &Unlimited, &BufferedOnly)
+            .dial(&font_req, &origin, 1, overrides, &Unlimited, &BufferedOnly)
             .await
             .expect("font dial");
         assert_eq!(

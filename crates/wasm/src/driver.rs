@@ -8,7 +8,11 @@ use net::{Agent, InitiatorKind, Method, Request};
 use renderer::{Mount, TabState};
 use url::Url;
 
-pub(crate) async fn navigate(agent: Agent, url: Url, client: u64) -> Result<Mount, String> {
+pub(crate) async fn navigate(
+    agent: Agent,
+    url: Url,
+    overrides: net::RequestOverrides,
+) -> Result<Mount, String> {
     let deadline = Instant::now() + dial::PAGE_FETCH_TIMEOUT;
     let mut request = Request::new(Method::GET, url.clone());
     dial::apply_navigation_headers(&mut request, &url);
@@ -20,7 +24,7 @@ pub(crate) async fn navigate(agent: Agent, url: Url, client: u64) -> Result<Moun
         origin: url::Origin::new_opaque(),
     };
     request.deadline = Some(deadline);
-    request.client = Some(client);
+    request.overrides = overrides;
     let response = agent
         .send(request)
         .await

@@ -460,7 +460,6 @@ impl Transport for HttpEngine {
                 url: wire_url,
                 headers,
                 body,
-                client: _,
                 initiator,
                 initiator_kind,
             } = request;

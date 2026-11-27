@@ -1,5 +1,4 @@
 use std::borrow::Cow;
-use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -149,14 +148,33 @@ impl Default for AgentOptions {
     }
 }
 
-type ClientExtraHeaders = HashMap<u64, Vec<(HeaderName, HeaderValue)>>;
+// https://chromedevtools.github.io/devtools-protocol/tot/Network/#method-setExtraHTTPHeaders
+#[derive(Clone, Debug, Default)]
+pub struct RequestOverrides {
+    pub identity: Option<crate::ValidIdentity>,
+    pub extra_headers: Vec<(HeaderName, HeaderValue)>,
+}
+
+impl RequestOverrides {
+    pub fn parse_extra_headers(
+        headers: &[(String, String)],
+    ) -> Result<Vec<(HeaderName, HeaderValue)>, crate::HeaderError> {
+        let mut parsed = Vec::with_capacity(headers.len());
+        for (name, value) in headers {
+            let header_name = HeaderName::from_bytes(name.as_bytes())
+                .map_err(|_| crate::HeaderError::InvalidName(name.as_str().into()))?;
+            let header_value = HeaderValue::from_str(value)
+                .map_err(|_| crate::HeaderError::InvalidValue(value.as_str().into()))?;
+            parsed.push((header_name, header_value));
+        }
+        Ok(parsed)
+    }
+}
 
 #[derive(Clone)]
 pub struct Agent {
     transport: Arc<dyn Transport>,
     identity: crate::ValidIdentity,
-    client_identities: Arc<Mutex<HashMap<u64, crate::ValidIdentity>>>,
-    client_extra_headers: Arc<Mutex<ClientExtraHeaders>>,
     preflight_cache: Arc<Mutex<crate::cors::PreflightCache>>,
     max_redirects: u32,
     jar: Arc<Mutex<CookieJar>>,
@@ -195,8 +213,6 @@ impl Agent {
         Agent {
             transport,
             identity,
-            client_identities: Arc::new(Mutex::new(HashMap::new())),
-            client_extra_headers: Arc::new(Mutex::new(HashMap::new())),
             preflight_cache: Arc::new(Mutex::new(crate::cors::PreflightCache::default())),
             max_redirects,
             jar: cookie_jar.unwrap_or_else(|| Arc::new(Mutex::new(CookieJar::default()))),
@@ -213,8 +229,6 @@ impl Agent {
         Agent {
             transport,
             identity: options.identity,
-            client_identities: Arc::new(Mutex::new(HashMap::new())),
-            client_extra_headers: Arc::new(Mutex::new(HashMap::new())),
             preflight_cache: Arc::new(Mutex::new(crate::cors::PreflightCache::default())),
             max_redirects: options.max_redirects,
             jar: options
@@ -237,72 +251,6 @@ impl Agent {
     #[must_use]
     pub fn identity(&self) -> &crate::ValidIdentity {
         &self.identity
-    }
-
-    pub fn set_client_identity(&self, client: u64, identity: Option<crate::ValidIdentity>) {
-        let mut overrides = self
-            .client_identities
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        match identity {
-            Some(identity) => {
-                overrides.insert(client, identity);
-            }
-            None => {
-                overrides.remove(&client);
-            }
-        }
-    }
-
-    #[must_use]
-    pub fn identity_for(&self, client: Option<u64>) -> crate::ValidIdentity {
-        let Some(client) = client else {
-            return self.identity.clone();
-        };
-        self.client_identities
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(&client)
-            .cloned()
-            .unwrap_or_else(|| self.identity.clone())
-    }
-
-    // https://chromedevtools.github.io/devtools-protocol/tot/Network/#method-setExtraHTTPHeaders
-    pub fn set_client_extra_headers(
-        &self,
-        client: u64,
-        headers: &[(String, String)],
-    ) -> Result<(), crate::HeaderError> {
-        let mut parsed = Vec::with_capacity(headers.len());
-        for (name, value) in headers {
-            let header_name = HeaderName::from_bytes(name.as_bytes())
-                .map_err(|_| crate::HeaderError::InvalidName(name.as_str().into()))?;
-            let header_value = HeaderValue::from_str(value)
-                .map_err(|_| crate::HeaderError::InvalidValue(value.as_str().into()))?;
-            parsed.push((header_name, header_value));
-        }
-        let mut map = self
-            .client_extra_headers
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        if parsed.is_empty() {
-            map.remove(&client);
-        } else {
-            map.insert(client, parsed);
-        }
-        Ok(())
-    }
-
-    fn extra_headers_for(&self, client: Option<u64>) -> Vec<(HeaderName, HeaderValue)> {
-        let Some(client) = client else {
-            return Vec::new();
-        };
-        self.client_extra_headers
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(&client)
-            .cloned()
-            .unwrap_or_default()
     }
 
     fn jar(&self) -> MutexGuard<'_, CookieJar> {
@@ -527,7 +475,6 @@ impl Agent {
                     url: wire.clone(),
                     headers: preflight,
                     body: None,
-                    client: dial.client,
                     initiator: wire_initiator(dial.initiator, dial.partition_key),
                     initiator_kind: dial.initiator_kind,
                 },
@@ -607,16 +554,19 @@ impl Agent {
         if !matches!(request.url.scheme(), "http" | "https") {
             return Err(NetError::RejectedRequest);
         }
-        let identity = self.identity_for(request.client);
+        let identity = request
+            .overrides
+            .identity
+            .as_ref()
+            .unwrap_or(&self.identity);
         let dial = Dial {
             cors: &request.cors,
-            identity: &identity,
+            identity,
             initiator_kind: request.initiator_kind,
             initiator: request.initiator.as_ref(),
             on_redirect: request.on_redirect.as_ref(),
             same_site_cookie_policy: request.same_site_cookie_policy,
             partition_key: request.partition_key.as_deref(),
-            client: request.client,
         };
         let mut hop = Hop {
             method: request.method,
@@ -630,7 +580,7 @@ impl Agent {
             referrer_policy: request.referrer_policy,
         };
         // https://chromedevtools.github.io/devtools-protocol/tot/Network/#method-setExtraHTTPHeaders
-        for (name, value) in self.extra_headers_for(request.client) {
+        for (name, value) in request.overrides.extra_headers {
             hop.headers.set(name, value);
         }
         if hop.headers.value("accept").is_none() {
@@ -787,7 +737,6 @@ impl Agent {
                     url: wire,
                     headers: hop_headers,
                     body: hop.body.clone(),
-                    client: dial.client,
                     initiator: wire_initiator(dial.initiator, dial.partition_key),
                     initiator_kind: dial.initiator_kind,
                 },
@@ -882,8 +831,7 @@ pub struct Request {
     pub same_site_cookie_policy: SameSiteCookiePolicy,
     // https://github.com/privacycg/CHIPS#computing-the-cookie-partition-key
     pub partition_key: Option<String>,
-    // https://fetch.spec.whatwg.org/#concept-request-client
-    pub client: Option<u64>,
+    pub overrides: RequestOverrides,
 }
 
 impl std::fmt::Debug for Request {
@@ -903,7 +851,7 @@ impl std::fmt::Debug for Request {
             .field("referrer_policy", &self.referrer_policy)
             .field("same_site_cookie_policy", &self.same_site_cookie_policy)
             .field("partition_key", &self.partition_key)
-            .field("client", &self.client)
+            .field("overrides", &self.overrides)
             .finish()
     }
 }
@@ -931,7 +879,7 @@ impl Request {
             referrer_policy: ReferrerPolicy::default(),
             same_site_cookie_policy: SameSiteCookiePolicy::All,
             partition_key: None,
-            client: None,
+            overrides: RequestOverrides::default(),
         }
     }
 }
@@ -1126,7 +1074,6 @@ struct Dial<'a> {
     on_redirect: Option<&'a RedirectGate>,
     same_site_cookie_policy: SameSiteCookiePolicy,
     partition_key: Option<&'a str>,
-    client: Option<u64>,
 }
 
 impl Dial<'_> {
@@ -2127,7 +2074,7 @@ mod transport_port_tests {
 
     // https://chromedevtools.github.io/devtools-protocol/tot/Network/#method-setExtraHTTPHeaders
     #[tokio::test]
-    async fn client_extra_headers_are_sent_on_outbound_requests() {
+    async fn request_override_extra_headers_are_sent_on_outbound_requests() {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let agent = Agent::with_transport(
             AgentOptions::default(),
@@ -2136,17 +2083,19 @@ mod transport_port_tests {
                 seen: Arc::clone(&seen),
             }),
         );
-        agent
-            .set_client_extra_headers(
-                42,
-                &[("X-Test-Header".to_owned(), "tinybrowser".to_owned())],
-            )
-            .expect("valid header");
+        let extra_headers = super::RequestOverrides::parse_extra_headers(&[(
+            "X-Test-Header".to_owned(),
+            "tinybrowser".to_owned(),
+        )])
+        .expect("valid header");
         let mut request = Request::new(
             Method::GET,
             Url::parse("http://a.test/headers").expect("url"),
         );
-        request.client = Some(42);
+        request.overrides = super::RequestOverrides {
+            identity: None,
+            extra_headers,
+        };
         let response = agent.send(request).await.expect("request succeeds");
         assert_eq!(response.status(), 200);
         let seen = seen.lock().unwrap_or_else(PoisonError::into_inner);

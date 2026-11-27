@@ -2249,7 +2249,7 @@ impl InspectionCommand {
 
 fn set_extra_headers(tab: &mut Tab, headers: &[(String, String)]) -> Result<(), TabError> {
     tab.network
-        .set_extra_headers(tab.id, headers)
+        .set_extra_headers(headers)
         .map_err(|error| TabError::Dom {
             message: error.to_string(),
         })
@@ -2344,8 +2344,8 @@ async fn set_viewport(
 }
 
 async fn set_identity(tab: &mut Tab, identity: Option<net::ValidIdentity>) -> Result<(), TabError> {
-    tab.network.set_identity(tab.id, identity);
-    let effective = tab.network.identity(tab.id);
+    tab.network.set_identity(identity);
+    let effective = tab.network.identity();
     if tab.renderer.is_some() {
         tab.renderer_request(RendererCommand::SetIdentity {
             identity: Box::new(effective),

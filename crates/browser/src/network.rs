@@ -198,7 +198,8 @@ impl NetworkContext {
             streams: Arc::clone(&self.streams),
             next_stream: Arc::clone(&self.next_stream),
             broker: Arc::clone(&self.broker),
-            client: None,
+            tab_id: None,
+            overrides: Arc::new(Mutex::new(net::RequestOverrides::default())),
         }
     }
 
@@ -243,13 +244,14 @@ pub(crate) struct TabNetworkHandle {
     streams: StreamMap,
     next_stream: Arc<AtomicU64>,
     broker: Arc<NetworkBroker>,
-    client: Option<u64>,
+    tab_id: Option<TabId>,
+    overrides: Arc<Mutex<net::RequestOverrides>>,
 }
 
 impl TabNetworkHandle {
     #[must_use]
     pub(crate) fn with_tab(mut self, tab: crate::TabId) -> Self {
-        self.client = Some(tab.get());
+        self.tab_id = Some(tab);
         self
     }
 
@@ -259,27 +261,44 @@ impl TabNetworkHandle {
     }
 
     fn tab_id(&self) -> Option<TabId> {
-        self.client.map(TabId::new)
+        self.tab_id
     }
 
-    pub(crate) fn set_identity(&self, tab: crate::TabId, identity: Option<net::ValidIdentity>) {
-        self.dialer.agent().set_client_identity(tab.get(), identity);
+    fn current_overrides(&self) -> net::RequestOverrides {
+        self.overrides
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    pub(crate) fn set_identity(&self, identity: Option<net::ValidIdentity>) {
+        self.overrides
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .identity = identity;
     }
 
     // https://chromedevtools.github.io/devtools-protocol/tot/Network/#method-setExtraHTTPHeaders
     pub(crate) fn set_extra_headers(
         &self,
-        tab: crate::TabId,
         headers: &[(String, String)],
     ) -> Result<(), net::HeaderError> {
-        self.dialer
-            .agent()
-            .set_client_extra_headers(tab.get(), headers)
+        let parsed = net::RequestOverrides::parse_extra_headers(headers)?;
+        self.overrides
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extra_headers = parsed;
+        Ok(())
     }
 
     #[must_use]
-    pub(crate) fn identity(&self, tab: crate::TabId) -> net::ValidIdentity {
-        self.dialer.agent().identity_for(Some(tab.get()))
+    pub(crate) fn identity(&self) -> net::ValidIdentity {
+        self.overrides
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .identity
+            .clone()
+            .unwrap_or_else(|| self.dialer.agent().identity().clone())
     }
 
     pub(crate) fn dial_navigation(
@@ -440,7 +459,7 @@ impl TabNetworkHandle {
         deadline: Instant,
     ) -> Request {
         let mut request = Request::new(prepared.method, prepared.url.clone());
-        request.client = self.client;
+        request.overrides = self.current_overrides();
         dial::apply_navigation_headers(&mut request, &prepared.url);
         if let Some(headers) = prepared.headers {
             for (name, value) in headers {
@@ -642,7 +661,7 @@ impl TabNetworkHandle {
                 effective,
                 initiator,
                 owner.get(),
-                self.client,
+                self.current_overrides(),
                 &admission,
                 &sink,
             )

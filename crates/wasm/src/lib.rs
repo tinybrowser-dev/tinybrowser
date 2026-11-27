@@ -51,6 +51,8 @@ fn shared_transport() -> &'static Arc<HostTransport> {
 
 struct ContextState {
     agent: Agent,
+    jar: Arc<Mutex<net::CookieJar>>,
+    identity: net::ValidIdentity,
     cache: Arc<HttpCache>,
     local_storage: Mutex<HashMap<StorageKey, StorageArea>>,
     indexed_db: Mutex<HashMap<StorageKey, StorageArea>>,
@@ -60,20 +62,38 @@ struct ContextState {
 impl ContextState {
     fn new(identity: net::ValidIdentity) -> Self {
         let transport = Arc::clone(shared_transport());
+        let jar = Arc::new(Mutex::new(net::CookieJar::default()));
         let options = AgentOptions {
-            identity,
+            identity: identity.clone(),
             timeout_per_call: Some(dial::PAGE_FETCH_TIMEOUT),
+            cookie_jar: Some(Arc::clone(&jar)),
             ..AgentOptions::default()
         };
         let cache = Arc::new(HttpCache::new(options.clock.clone()));
         let agent = Agent::with_transport(options, transport as Arc<dyn Transport>);
         Self {
             agent,
+            jar,
+            identity,
             cache,
             local_storage: Mutex::new(HashMap::new()),
             indexed_db: Mutex::new(HashMap::new()),
             session_storage: Mutex::new(HashMap::new()),
         }
+    }
+
+    fn agent_for_owner(&self, owner: u64) -> Agent {
+        let transport = Arc::new(host_transport::OwnerTransport::new(
+            Arc::clone(shared_transport()),
+            owner,
+        ));
+        let options = AgentOptions {
+            identity: self.identity.clone(),
+            timeout_per_call: Some(dial::PAGE_FETCH_TIMEOUT),
+            cookie_jar: Some(Arc::clone(&self.jar)),
+            ..AgentOptions::default()
+        };
+        Agent::with_transport(options, transport as Arc<dyn Transport>)
     }
 }
 
@@ -338,21 +358,14 @@ impl GuestTab for Tab {
             }
             None => None,
         };
-        self.context
-            .agent
-            .set_client_identity(self.owner, override_identity);
-        let effective = self.context.agent.identity_for(Some(self.owner));
+        self.services.set_identity(override_identity);
+        let effective = self.services.identity();
         self.renderer.borrow_mut().set_identity(effective);
         Ok(())
     }
 
     fn user_agent(&self) -> String {
-        self.context
-            .agent
-            .identity_for(Some(self.owner))
-            .user_agent
-            .as_str()
-            .to_owned()
+        self.services.identity().user_agent.as_str().to_owned()
     }
 
     fn set_viewport(&self, width: u32, height: u32) -> Result<(), String> {
@@ -550,9 +563,9 @@ impl Tab {
         let dial = Dial {
             task: DialTask::Navigation {
                 future: Box::pin(driver::navigate(
-                    self.context.agent.clone(),
+                    self.services.agent.clone(),
                     parsed,
-                    self.owner,
+                    self.services.overrides(),
                 )),
                 slot: Arc::clone(&self.pending_navigation),
             },
@@ -879,19 +892,40 @@ static NEXT_DIAL: AtomicU64 = AtomicU64::new(1);
 struct WasmServices {
     owner: u64,
     context: Arc<ContextState>,
+    agent: Agent,
     dialer: Dialer,
+    overrides: Mutex<net::RequestOverrides>,
     registry: Arc<DialRegistry>,
 }
 
 impl WasmServices {
     fn new(context: Arc<ContextState>) -> Self {
-        let dialer = Dialer::new(context.agent.clone(), Arc::clone(&context.cache));
+        let owner = NEXT_OWNER.fetch_add(1, Ordering::Relaxed);
+        let agent = context.agent_for_owner(owner);
+        let dialer = Dialer::new(agent.clone(), Arc::clone(&context.cache));
         Self {
-            owner: NEXT_OWNER.fetch_add(1, Ordering::Relaxed),
+            owner,
             context,
+            agent,
             dialer,
+            overrides: Mutex::new(net::RequestOverrides::default()),
             registry: Arc::new(DialRegistry::new()),
         }
+    }
+
+    fn set_identity(&self, identity: Option<net::ValidIdentity>) {
+        lock(&self.overrides).identity = identity;
+    }
+
+    fn identity(&self) -> net::ValidIdentity {
+        lock(&self.overrides)
+            .identity
+            .clone()
+            .unwrap_or_else(|| self.context.identity.clone())
+    }
+
+    fn overrides(&self) -> net::RequestOverrides {
+        lock(&self.overrides).clone()
     }
 }
 
@@ -904,6 +938,7 @@ impl NetworkHost for WasmServices {
         let id = NEXT_DIAL.fetch_add(1, Ordering::Relaxed);
         let dialer = self.dialer.clone();
         let owner = self.owner;
+        let overrides = self.overrides();
         let dial = Dial {
             task: DialTask::Subresource {
                 future: Box::pin(async move {
@@ -912,7 +947,7 @@ impl NetworkHost for WasmServices {
                             &request,
                             &initiator,
                             owner,
-                            Some(owner),
+                            overrides,
                             &Unlimited,
                             &BufferedOnly,
                         )

@@ -74,18 +74,14 @@ impl HostTransport {
     pub(crate) fn abandon(&self, id: u64) -> bool {
         lock(&self.exchanges).remove(&id).is_some()
     }
-}
 
-impl Transport for HostTransport {
-    fn exchange(
+    pub(crate) fn exchange_for(
         &self,
+        owner: u64,
         request: WireRequest,
         budget: HopBudget,
     ) -> Pin<Box<dyn Future<Output = Result<WireResponse, NetError>> + Send + '_>> {
         Box::pin(async move {
-            let Some(owner) = request.client else {
-                return Err(refused("the fetch request has no client"));
-            };
             let id = self.next_id.fetch_add(1, Ordering::Relaxed);
             let host_request = FetchRequest {
                 id,
@@ -146,6 +142,37 @@ impl Transport for HostTransport {
                 http2,
             })
         })
+    }
+}
+
+pub(crate) struct OwnerTransport {
+    inner: Arc<HostTransport>,
+    owner: u64,
+}
+
+impl OwnerTransport {
+    pub(crate) fn new(inner: Arc<HostTransport>, owner: u64) -> Self {
+        Self { inner, owner }
+    }
+}
+
+impl Transport for OwnerTransport {
+    fn exchange(
+        &self,
+        request: WireRequest,
+        budget: HopBudget,
+    ) -> Pin<Box<dyn Future<Output = Result<WireResponse, NetError>> + Send + '_>> {
+        self.inner.exchange_for(self.owner, request, budget)
+    }
+}
+
+impl Transport for HostTransport {
+    fn exchange(
+        &self,
+        _request: WireRequest,
+        _budget: HopBudget,
+    ) -> Pin<Box<dyn Future<Output = Result<WireResponse, NetError>> + Send + '_>> {
+        Box::pin(async { Err(refused("the fetch request has no owner")) })
     }
 }
 
