@@ -1260,20 +1260,16 @@ struct StorageRouter<'a> {
 }
 
 impl StorageRouter<'_> {
-    async fn reply(&self, reply: ServiceReply) -> Result<(), RendererViolation> {
-        send_reply(&self.context.responder, self.request, reply).await
-    }
-
     async fn route(&self, call: StorageCall) -> Result<(), RendererViolation> {
         match call {
-            StorageCall::Get { kind, origin, key } => match self.key(&origin) {
-                Some(origin) => self.get(kind, &origin, &key).await,
-                None => self.reply(ServiceReply::StorageValue(None)).await,
-            },
-            StorageCall::Keys { kind, origin } => match self.key(&origin) {
-                Some(origin) => self.keys(kind, &origin).await,
-                None => self.reply(ServiceReply::StorageKeys(Vec::new())).await,
-            },
+            StorageCall::Get { kind, origin, key } => {
+                let origin = self.key(&origin)?;
+                self.get(kind, &origin, &key).await
+            }
+            StorageCall::Keys { kind, origin } => {
+                let origin = self.key(&origin)?;
+                self.keys(kind, &origin).await
+            }
             StorageCall::Set {
                 kind,
                 origin,
@@ -1281,42 +1277,37 @@ impl StorageRouter<'_> {
                 key,
                 value,
                 source,
-            } => match self.key(&origin) {
-                Some(origin) => self.set(kind, &origin, &url, &key, &value, source).await,
-                None => {
-                    self.reply(ServiceReply::StorageChanged(Err(
-                        renderer::StorageError::QuotaExceeded,
-                    )))
-                    .await
-                }
-            },
+            } => {
+                let origin = self.key(&origin)?;
+                self.set(kind, &origin, &url, &key, &value, source).await
+            }
             StorageCall::Remove {
                 kind,
                 origin,
                 url,
                 key,
                 source,
-            } => match self.key(&origin) {
-                Some(origin) => self.remove(kind, &origin, &url, &key, source).await,
-                None => self.reply(ServiceReply::StorageChanged(Ok(None))).await,
-            },
+            } => {
+                let origin = self.key(&origin)?;
+                self.remove(kind, &origin, &url, &key, source).await
+            }
             StorageCall::Clear {
                 kind,
                 origin,
                 url,
                 source,
-            } => match self.key(&origin) {
-                Some(origin) => self.clear(kind, &origin, &url, source).await,
-                None => self.reply(ServiceReply::StorageChanged(Ok(None))).await,
-            },
+            } => {
+                let origin = self.key(&origin)?;
+                self.clear(kind, &origin, &url, source).await
+            }
             StorageCall::RemoteSessionGet {
                 window,
                 origin,
                 key,
-            } => match self.key(&origin) {
-                Some(origin) => self.remote_session_get(window, &origin, &key).await,
-                None => self.reply(ServiceReply::StorageValue(None)).await,
-            },
+            } => {
+                let origin = self.key(&origin)?;
+                self.remote_session_get(window, &origin, &key).await
+            }
             StorageCall::CookieGet {
                 url,
                 partition_key: _,
@@ -1359,17 +1350,13 @@ impl StorageRouter<'_> {
     // https://chromium.googlesource.com/chromium/src/+/main/docs/process_model_and_site_isolation.md#process-locks
     // https://privacycg.github.io/CHIPS/
     async fn cookie_get(&self, url: &str) -> Result<(), RendererViolation> {
+        let url = self.authorize_cookie_url(url)?;
         let partition_key = self.authority.site.as_partition_key();
         let cookies = self
             .authority
-            .site
-            .authorize_url(url)
-            .map_or_default(|url| {
-                self.authority
-                    .partition
-                    .cookies
-                    .cookies_for(&url, partition_key)
-            });
+            .partition
+            .cookies
+            .cookies_for(&url, partition_key);
         send_reply(
             &self.context.responder,
             self.request,
@@ -1379,28 +1366,23 @@ impl StorageRouter<'_> {
     }
 
     async fn cookie_set(&self, value: &str, url: &str) -> Result<(), RendererViolation> {
+        let url = self.authorize_cookie_url(url)?;
         let partition_key = self.authority.site.as_partition_key();
-        if let Some(url) = self.authority.site.authorize_url(url) {
-            self.authority
-                .partition
-                .cookies
-                .set_cookie(value, &url, partition_key);
-        }
+        self.authority
+            .partition
+            .cookies
+            .set_cookie(value, &url, partition_key);
         send_reply(&self.context.responder, self.request, ServiceReply::Unit).await
     }
 
     async fn cookie_store_get(&self, url: &str) -> Result<(), RendererViolation> {
+        let url = self.authorize_cookie_url(url)?;
         let partition_key = self.authority.site.as_partition_key();
         let records = self
             .authority
-            .site
-            .authorize_url(url)
-            .map_or_default(|url| {
-                self.authority
-                    .partition
-                    .cookies
-                    .cookie_store_records(&url, partition_key)
-            });
+            .partition
+            .cookies
+            .cookie_store_records(&url, partition_key);
         send_reply(
             &self.context.responder,
             self.request,
@@ -1414,21 +1396,46 @@ impl StorageRouter<'_> {
         write: &net::ScriptCookieWrite,
         url: &str,
     ) -> Result<(), RendererViolation> {
+        let url = self.authorize_cookie_url(url)?;
         let partition_key = self.authority.site.as_partition_key();
-        if let Some(url) = self.authority.site.authorize_url(url) {
-            self.authority
-                .partition
-                .cookies
-                .cookie_store_store(write, &url, partition_key);
-        }
+        self.authority
+            .partition
+            .cookies
+            .cookie_store_store(write, &url, partition_key);
         send_reply(&self.context.responder, self.request, ServiceReply::Unit).await
     }
 
-    fn key(&self, origin: &renderer::SerializedOrigin) -> Option<StorageKey> {
-        self.authority
-            .site
-            .authorize_origin(origin)
-            .and_then(|origin| StorageKey::from_origin(&origin))
+    fn key(&self, origin: &renderer::SerializedOrigin) -> Result<StorageKey, RendererViolation> {
+        self.context
+            .tabs
+            .storage_key(self.authority.tab, &self.authority.site, origin)
+            .ok_or(RendererViolation)
+    }
+
+    fn authorize_cookie_url(&self, url: &str) -> Result<Url, RendererViolation> {
+        Url::parse(url)
+            .ok()
+            .filter(|parsed| {
+                self.context
+                    .tabs
+                    .allows_url(self.authority.tab, &self.authority.site, parsed)
+            })
+            .ok_or(RendererViolation)
+    }
+
+    fn authorize_storage_event_url(&self, url: &str) -> Result<(), RendererViolation> {
+        Url::parse(url)
+            .ok()
+            .filter(|parsed| {
+                matches!(parsed.scheme(), "about" | "data")
+                    || self.context.tabs.allows_url(
+                        self.authority.tab,
+                        &self.authority.site,
+                        parsed,
+                    )
+            })
+            .map(|_| ())
+            .ok_or(RendererViolation)
     }
 
     async fn get(
@@ -1473,14 +1480,7 @@ impl StorageRouter<'_> {
         value: &str,
         source: FrameId,
     ) -> Result<(), RendererViolation> {
-        if !self.authorize_url(url) {
-            return send_reply(
-                &self.context.responder,
-                self.request,
-                ServiceReply::StorageChanged(Err(renderer::StorageError::QuotaExceeded)),
-            )
-            .await;
-        }
+        self.authorize_storage_event_url(url)?;
         let change = match kind {
             StorageKind::Local => self
                 .authority
@@ -1517,14 +1517,7 @@ impl StorageRouter<'_> {
         key: &str,
         source: FrameId,
     ) -> Result<(), RendererViolation> {
-        if !self.authorize_url(url) {
-            return send_reply(
-                &self.context.responder,
-                self.request,
-                ServiceReply::StorageChanged(Ok(None)),
-            )
-            .await;
-        }
+        self.authorize_storage_event_url(url)?;
         let change = match kind {
             StorageKind::Local => self.authority.partition.local_storage.remove(origin, key),
             StorageKind::Session => self
@@ -1549,14 +1542,7 @@ impl StorageRouter<'_> {
         url: &str,
         source: FrameId,
     ) -> Result<(), RendererViolation> {
-        if !self.authorize_url(url) {
-            return send_reply(
-                &self.context.responder,
-                self.request,
-                ServiceReply::StorageChanged(Ok(None)),
-            )
-            .await;
-        }
+        self.authorize_storage_event_url(url)?;
         let change = match kind {
             StorageKind::Local => self.authority.partition.local_storage.clear(origin),
             StorageKind::Session => self.context.sessions.clear(self.authority.tab, origin),
@@ -1569,10 +1555,6 @@ impl StorageRouter<'_> {
             ServiceReply::StorageChanged(Ok(change)),
         )
         .await
-    }
-
-    fn authorize_url(&self, url: &str) -> bool {
-        self.authority.site.authorize_url(url).is_some()
     }
 
     fn publish(

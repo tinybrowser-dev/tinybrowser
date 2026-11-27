@@ -292,7 +292,7 @@
   }
 
   // https://cookiestore.spec.whatwg.org/#process-cookie-changes
-  let observed = snapshotCookies();
+  let observed = kOpaqueOrigin ? new Map() : snapshotCookies();
 
   // https://cookiestore.spec.whatwg.org/#prepare-lists
   function cookieChangeLists(before, after) {

@@ -44,10 +44,6 @@ impl Site {
         }
     }
 
-    pub(crate) fn authorize_url(&self, spec: &str) -> Option<Url> {
-        Url::parse(spec).ok().filter(|url| self.allows_url(url))
-    }
-
     // https://chromium.googlesource.com/chromium/src/+/main/docs/process_model_and_site_isolation.md#process-locks
     #[must_use]
     pub(crate) fn authorize_origin(&self, claim: &SerializedOrigin) -> Option<url::Origin> {

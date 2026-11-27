@@ -136,10 +136,18 @@ if (globalThis.document && globalThis.Document) {
   Object.defineProperty(globalThis.Document.prototype, 'cookie', {
     get() {
       if (host.__tbCookieAverse(this)) return '';
+      if (host.__tbOpaqueOrigin === true) {
+        throw new DOMException(
+            'Access to cookie is denied for opaque origin.', 'SecurityError');
+      }
       return host.__cookieGet();
     },
     set(v) {
       if (host.__tbCookieAverse(this)) return;
+      if (host.__tbOpaqueOrigin === true) {
+        throw new DOMException(
+            'Access to cookie is denied for opaque origin.', 'SecurityError');
+      }
       // https://cookiestore.spec.whatwg.org/#process-cookie-changes
       host.__cookieSet(String(v));
     },
