@@ -46,9 +46,10 @@ pub(crate) fn get_element_reference_list<'js>(
     let Some(nodes) = nodes else {
         return Ok(Value::new_null(ctx.clone()));
     };
-    let cached = world
+    let caller = crate::js::bindings::world(ctx)?;
+    let cached = caller
         .borrow()
-        .state
+        .caches
         .element_reference_cache
         .get(&(element, content.to_owned()))
         .map(|entry| (entry.nodes.clone(), entry.object.clone()));
@@ -62,7 +63,7 @@ pub(crate) fn get_element_reference_list<'js>(
         array.set(index, wrap_node(ctx, *node)?)?;
     }
     let value = freeze(ctx, array.into_value())?;
-    world.borrow_mut().state.element_reference_cache.insert(
+    caller.borrow_mut().caches.element_reference_cache.insert(
         (element, content.to_owned()),
         ElementReferenceCache {
             nodes,

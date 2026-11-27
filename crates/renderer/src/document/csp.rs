@@ -38,11 +38,12 @@ impl Document {
         let mut enriched: Vec<crate::csp::Violation> = violations.to_vec();
         {
             let world = self.world.borrow();
+            let doc = world.doc();
             for violation in &mut enriched {
                 if violation.source_file.is_none()
                     && violation.blocked_uri != "inline"
                     && violation.blocked_uri != "eval"
-                    && let Some(creator) = world.state.creator_stacks.get(&target)
+                    && let Some(creator) = doc.state.creator_stacks.get(&target)
                 {
                     violation.source_file = Some(creator.url.clone());
                     violation.line_number = creator.line;
@@ -59,7 +60,7 @@ impl Document {
 
     // https://w3c.github.io/webappsec-csp/#report-violation
     pub(super) fn queue_csp_events(&mut self, violations: Vec<crate::csp::Violation>) {
-        if self.world.borrow().parser_active {
+        if self.world.borrow().doc().parser_active {
             self.csp
                 .pending_events
                 .push_back(Task::CspViolation(violations));

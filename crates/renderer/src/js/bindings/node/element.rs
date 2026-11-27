@@ -1846,7 +1846,7 @@ impl JsNode {
             return Ok(0);
         }
         let edge = if viewport_client {
-            let (width, height) = world.viewport_size.get();
+            let (width, height) = world.win().viewport_size.get();
             f64::from(if vertical { height } else { width })
         } else if let Some(table) = table_offset_edge(base, id, vertical) {
             table
@@ -1913,7 +1913,7 @@ impl JsNode {
             return Ok(0);
         };
         if super::scrolling::scroll_area_is_viewport(&parsed, id, vertical) {
-            let (width, height) = world.viewport_size.get();
+            let (width, height) = world.win().viewport_size.get();
             let viewport = f64::from(if vertical { height } else { width });
             return Ok(cssom_round(super::zoom::unscaled(
                 node,
@@ -3127,7 +3127,7 @@ pub(super) fn tab_index_default(base: &blitz_dom::BaseDocument, node: BlitzId) -
 // https://html.spec.whatwg.org/multipage/urls-and-fetching.html#nonce-attributes
 pub(in crate::js::bindings) fn nonce_of(ctx: &Ctx<'_>, id: NodeId) -> Result<String> {
     let owner = world_for_node(ctx, id)?;
-    if let Some(slot) = owner.borrow().state.nonce_slots.get(&id) {
+    if let Some(slot) = owner.borrow().doc().state.nonce_slots.get(&id) {
         return Ok(slot.clone());
     }
     Ok(content_attr(ctx, id, "nonce").unwrap_or_default())
@@ -3137,7 +3137,8 @@ pub(in crate::js::bindings) fn nonce_of(ctx: &Ctx<'_>, id: NodeId) -> Result<Str
 pub(super) fn set_nonce_slot(ctx: &Ctx<'_>, id: NodeId, value: &str) -> Result<()> {
     let owner = world_for_node(ctx, id)?;
     owner
-        .borrow_mut()
+        .borrow()
+        .doc_mut()
         .state
         .nonce_slots
         .insert(id, value.to_owned());

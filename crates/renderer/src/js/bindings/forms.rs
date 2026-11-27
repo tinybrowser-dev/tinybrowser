@@ -159,14 +159,16 @@ fn user_edited<'js>(ctx: Ctx<'js>, element: Value<'js>) -> bool {
     control_of(&ctx, &element).is_some_and(|(node, world)| {
         world
             .borrow()
-            .control_state(node)
-            .is_some_and(|control| control.user_edited)
+            .with_control_state(node, |control| control.user_edited)
+            .unwrap_or(false)
     })
 }
 
 fn mark_user_edited<'js>(ctx: Ctx<'js>, element: Value<'js>) {
     if let Some((node, world)) = control_of(&ctx, &element) {
-        world.borrow_mut().control(node).user_edited = true;
+        world.borrow().with_control_mut(node, |control| {
+            control.user_edited = true;
+        });
     }
 }
 
@@ -174,24 +176,27 @@ fn bad_input<'js>(ctx: Ctx<'js>, element: Value<'js>) -> bool {
     control_of(&ctx, &element).is_some_and(|(node, world)| {
         world
             .borrow()
-            .control_state(node)
-            .is_some_and(|control| control.bad_input)
+            .with_control_state(node, |control| control.bad_input)
+            .unwrap_or(false)
     })
 }
 
 fn set_bad_input<'js>(ctx: Ctx<'js>, element: Value<'js>, value: bool) {
     if let Some((node, world)) = control_of(&ctx, &element) {
-        world.borrow_mut().control(node).bad_input = value;
+        world.borrow().with_control_mut(node, |control| {
+            control.bad_input = value;
+        });
     }
 }
 
 fn custom_validity<'js>(ctx: Ctx<'js>, element: Value<'js>) -> Result<Value<'js>> {
-    let units = control_of(&ctx, &element).map_or_else(Vec::new, |(node, world)| {
-        world
-            .borrow()
-            .control_state(node)
-            .map_or_else(Vec::new, |control| control.custom_validity.clone())
-    });
+    let units = control_of(&ctx, &element)
+        .and_then(|(node, world)| {
+            world
+                .borrow()
+                .with_control_state(node, |control| control.custom_validity.clone())
+        })
+        .unwrap_or_default();
     Ok(rquickjs::String::from_utf16(ctx, &units)?.into_value())
 }
 
@@ -213,7 +218,9 @@ fn set_custom_validity<'js>(ctx: Ctx<'js>, element: Value<'js>, message: rquickj
         index += 1;
     }
     if let Some((node, world)) = control_of(&ctx, &element) {
-        world.borrow_mut().control(node).custom_validity = normalized;
+        world.borrow().with_control_mut(node, |control| {
+            control.custom_validity = normalized;
+        });
     }
 }
 
@@ -221,15 +228,17 @@ fn number_buffer<'js>(ctx: Ctx<'js>, element: Value<'js>) -> Result<Value<'js>> 
     let buffer = control_of(&ctx, &element).and_then(|(node, world)| {
         world
             .borrow()
-            .control_state(node)
-            .and_then(|control| control.number_buffer.clone())
+            .with_control_state(node, |control| control.number_buffer.clone())
+            .flatten()
     });
     optional(buffer, &ctx)
 }
 
 fn set_number_buffer<'js>(ctx: Ctx<'js>, element: Value<'js>, value: String) {
     if let Some((node, world)) = control_of(&ctx, &element) {
-        world.borrow_mut().control(node).number_buffer = Some(value);
+        world.borrow().with_control_mut(node, |control| {
+            control.number_buffer = Some(value);
+        });
     }
 }
 
@@ -237,15 +246,17 @@ fn caret<'js>(ctx: Ctx<'js>, element: Value<'js>) -> Result<Value<'js>> {
     let caret = control_of(&ctx, &element).and_then(|(node, world)| {
         world
             .borrow()
-            .control_state(node)
-            .and_then(|control| control.caret)
+            .with_control_state(node, |control| control.caret)
+            .flatten()
     });
     optional(caret, &ctx)
 }
 
 fn set_caret<'js>(ctx: Ctx<'js>, element: Value<'js>, position: u32) {
     if let Some((node, world)) = control_of(&ctx, &element) {
-        world.borrow_mut().control(node).caret = Some(position);
+        world.borrow().with_control_mut(node, |control| {
+            control.caret = Some(position);
+        });
     }
 }
 
@@ -253,14 +264,16 @@ fn output_value_mode<'js>(ctx: Ctx<'js>, element: Value<'js>) -> bool {
     control_of(&ctx, &element).is_some_and(|(node, world)| {
         world
             .borrow()
-            .control_state(node)
-            .is_some_and(|control| control.output_value_mode)
+            .with_control_state(node, |control| control.output_value_mode)
+            .unwrap_or(false)
     })
 }
 
 fn set_output_value_mode<'js>(ctx: Ctx<'js>, element: Value<'js>, value: bool) {
     if let Some((node, world)) = control_of(&ctx, &element) {
-        world.borrow_mut().control(node).output_value_mode = value;
+        world.borrow().with_control_mut(node, |control| {
+            control.output_value_mode = value;
+        });
     }
 }
 
@@ -268,8 +281,8 @@ fn output_default_value<'js>(ctx: Ctx<'js>, element: Value<'js>) -> Result<Value
     let units = control_of(&ctx, &element).and_then(|(node, world)| {
         world
             .borrow()
-            .control_state(node)
-            .and_then(|control| control.output_default_value.clone())
+            .with_control_state(node, |control| control.output_default_value.clone())
+            .flatten()
     });
     match units {
         Some(units) => Ok(rquickjs::String::from_utf16(ctx, &units)?.into_value()),
@@ -282,7 +295,9 @@ fn set_output_default_value<'js>(ctx: Ctx<'js>, element: Value<'js>, value: rqui
         return;
     };
     if let Some((node, world)) = control_of(&ctx, &element) {
-        world.borrow_mut().control(node).output_default_value = Some(units);
+        world.borrow().with_control_mut(node, |control| {
+            control.output_default_value = Some(units);
+        });
     }
 }
 
@@ -364,7 +379,7 @@ fn same_origin_with_top(ctx: Ctx<'_>) -> Result<bool> {
     let Some(top_world) = current.borrow().frame_world(top) else {
         return Ok(false);
     };
-    let same = current.borrow().origin == top_world.borrow().origin;
+    let same = current.borrow().doc().origin == top_world.borrow().doc().origin;
     Ok(same)
 }
 
@@ -525,7 +540,6 @@ fn input_file_list<'js>(ctx: Ctx<'js>, element: Value<'js>) -> Result<Value<'js>
     let saved = world(&ctx)?
         .borrow()
         .input_file_list(node)
-        .cloned()
         .and_then(|saved| saved.restore(&ctx).ok());
     Ok(saved.unwrap_or_else(|| Value::new_null(ctx)))
 }
@@ -622,6 +636,7 @@ pub(super) fn form_navigate<'js>(
     // https://html.spec.whatwg.org/multipage/browsers.html#sandboxed-forms-browsing-context-flag
     if world_rc
         .borrow()
+        .doc()
         .sandbox
         .contains(crate::protocol::SandboxFlag::Forms)
     {

@@ -1,7 +1,6 @@
 // https://chromedevtools.github.io/devtools-protocol/tot/DOM/
 
 use std::collections::HashMap;
-use std::rc::Rc;
 
 use blitz_dom::NodeData;
 use markup5ever::interface::QuirksMode;
@@ -309,12 +308,6 @@ impl Document {
         };
         if let Some(name) = world {
             self.ensure_isolated(name)?;
-            let main_world = Rc::clone(&self.world);
-            if let Some((isolated_world, _)) = self.isolated_js.get(name) {
-                isolated_world
-                    .borrow_mut()
-                    .sync_isolated_from(&main_world.borrow());
-            }
         }
         let realm = match world {
             Some(name) => match self.isolated_js.get(name) {
@@ -507,7 +500,7 @@ impl Document {
 
     // https://chromedevtools.github.io/devtools-protocol/tot/Storage/#method-getStorageKey
     fn dom_storage_key(&self) -> DomReply {
-        let key = self.world.borrow().origin.ascii_serialization();
+        let key = self.world.borrow().doc().origin.ascii_serialization();
         DomReply::StorageKey { key }
     }
 

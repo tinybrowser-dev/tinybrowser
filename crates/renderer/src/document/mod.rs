@@ -292,12 +292,14 @@ fn materialize_iframe_document(
     let base_url = world_rc.borrow().main_base_url();
     let (runtime, referrer_url, init_scripts, bindings, viewport) = {
         let world = world_rc.borrow();
+        let doc = world.doc();
+        let win = world.win();
         (
             world.runtime.clone(),
-            world.referrer_url.clone(),
-            Rc::clone(&world.init_scripts),
-            Rc::clone(&world.bindings),
-            world.viewport_size.get(),
+            doc.referrer_url.clone(),
+            Rc::clone(&win.init_scripts),
+            Rc::clone(&win.bindings),
+            win.viewport_size.get(),
         )
     };
     // https://html.spec.whatwg.org/multipage/browsers.html#determining-the-creation-sandboxing-flags
@@ -305,16 +307,19 @@ fn materialize_iframe_document(
     let origin = if sandbox.origin_is_opaque() {
         url::Origin::new_opaque()
     } else {
-        world_rc.borrow().origin.clone()
+        world_rc.borrow().doc().origin.clone()
     };
     let mut document = Document::with_shared(frame, &runtime, &init_scripts, &bindings);
     document.set_viewport_size(viewport);
     {
         let world_handle = document.world();
         let mut world = world_handle.borrow_mut();
-        world.policy = world_rc.borrow().policy.clone();
-        world.sandbox = sandbox;
-        world.top_level = Some(world_rc.borrow().top_level_origin());
+        {
+            let mut doc = world.doc_mut();
+            doc.policy = world_rc.borrow().doc().policy.clone();
+            doc.sandbox = sandbox;
+            doc.top_level = Some(world_rc.borrow().top_level_origin());
+        }
         world.set_parent_context(&world_rc.borrow());
     }
     document.load_about_blank_tree(
@@ -322,7 +327,7 @@ fn materialize_iframe_document(
         &world_rc.borrow().cookie_url(),
         Some(InheritedOrigin {
             origin,
-            domain: Rc::clone(&world_rc.borrow().domain),
+            domain: Rc::clone(&world_rc.borrow().doc().domain),
         }),
     );
     // https://html.spec.whatwg.org/multipage/browsers.html#creating-a-new-browsing-context
@@ -350,15 +355,17 @@ fn materialize_auxiliary_document(
 ) {
     let (runtime, url, origin, policy, sandbox, init_scripts, bindings, viewport) = {
         let world = world_rc.borrow();
+        let doc = world.doc();
+        let win = world.win();
         (
             world.runtime.clone(),
-            world.document_url.clone(),
-            world.origin.clone(),
-            world.policy.clone(),
-            world.sandbox.auxiliary_flags(),
-            Rc::clone(&world.init_scripts),
-            Rc::clone(&world.bindings),
-            world.viewport_size.get(),
+            doc.document_url.clone(),
+            doc.origin.clone(),
+            doc.policy.clone(),
+            doc.sandbox.auxiliary_flags(),
+            Rc::clone(&win.init_scripts),
+            Rc::clone(&win.bindings),
+            win.viewport_size.get(),
         )
     };
     let mut document = Document::with_shared(frame, &runtime, &init_scripts, &bindings);
@@ -367,7 +374,7 @@ fn materialize_auxiliary_document(
     {
         let world_handle = document.world();
         let mut world = world_handle.borrow_mut();
-        world.policy = policy;
+        world.doc_mut().policy = policy;
         world.install_sandbox(sandbox);
     }
     let origin = if sandbox.origin_is_opaque() {
@@ -380,7 +387,7 @@ fn materialize_auxiliary_document(
         &world_rc.borrow().cookie_url(),
         Some(InheritedOrigin {
             origin,
-            domain: Rc::clone(&world_rc.borrow().domain),
+            domain: Rc::clone(&world_rc.borrow().doc().domain),
         }),
     );
     if opener == crate::protocol::OpenerPolicy::NoReferrer {
@@ -397,15 +404,16 @@ pub(crate) fn sandboxing_flags(
     container: crate::dom::tree::NodeId,
 ) -> crate::protocol::SandboxFlags {
     let world = world_rc.borrow();
+    let sandbox = world.doc().sandbox;
     let Some(parsed) = world.document(container) else {
-        return world.sandbox;
+        return sandbox;
     };
     let base = &parsed.document.base;
     if !crate::dom::tree::is_html_element(base, container.node, "iframe") {
-        return world.sandbox;
+        return sandbox;
     }
     let attribute = crate::dom::tree::attr(base, container.node, "sandbox");
-    crate::protocol::SandboxFlags::parse(attribute).union(world.sandbox)
+    crate::protocol::SandboxFlags::parse(attribute).union(sandbox)
 }
 
 enum ParseStep {
@@ -791,17 +799,19 @@ impl Document {
         let base_url = self.base_url();
         let (runtime, referrer_url, origin, init_scripts, bindings, viewport) = {
             let world = self.world.borrow();
+            let doc = world.doc();
+            let win = world.win();
             (
                 world.runtime.clone(),
-                world.referrer_url.clone(),
-                world.origin.clone(),
-                Rc::clone(&world.init_scripts),
-                Rc::clone(&world.bindings),
-                world.viewport_size.get(),
+                doc.referrer_url.clone(),
+                doc.origin.clone(),
+                Rc::clone(&win.init_scripts),
+                Rc::clone(&win.bindings),
+                win.viewport_size.get(),
             )
         };
         let mut loaded = Vec::with_capacity(pending.len());
-        let inherited = self.world.borrow().policy.clone();
+        let inherited = self.world.borrow().doc().policy.clone();
         let top_level = self.world.borrow().top_level_origin();
         for (frame, container) in pending {
             // https://html.spec.whatwg.org/multipage/browsers.html#determining-the-creation-sandboxing-flags
@@ -817,9 +827,12 @@ impl Document {
             {
                 let world_handle = document.world();
                 let mut world = world_handle.borrow_mut();
-                world.policy = inherited.clone();
-                world.sandbox = sandbox;
-                world.top_level = Some(top_level.clone());
+                {
+                    let mut doc = world.doc_mut();
+                    doc.policy = inherited.clone();
+                    doc.sandbox = sandbox;
+                    doc.top_level = Some(top_level.clone());
+                }
                 world.set_parent_context(&self.world.borrow());
             }
             // https://html.spec.whatwg.org/multipage/iframe-embed-object.html#the-iframe-element:html-element-insertion-steps
@@ -829,7 +842,7 @@ impl Document {
                 &cookie_url,
                 Some(InheritedOrigin {
                     origin,
-                    domain: Rc::clone(&self.world.borrow().domain),
+                    domain: Rc::clone(&self.world.borrow().doc().domain),
                 }),
             );
             document.set_document_referrer(Some(referrer_url.clone()));
@@ -892,20 +905,21 @@ impl Document {
 
     // https://html.spec.whatwg.org/multipage/browsers.html#creating-a-new-browsing-context
     pub(crate) fn set_document_referrer(&mut self, referrer: Option<Url>) {
-        self.world.borrow_mut().document_referrer = referrer;
+        self.world.borrow().doc_mut().document_referrer = referrer;
     }
 
     pub(crate) fn local_document_state(&self) -> LocalDocumentState {
         let world = self.world.borrow();
+        let doc = world.doc();
         LocalDocumentState {
             url: self.url.clone(),
-            base_url: world.base_url.clone(),
-            cookie_url: world.inherited_cookie_url.clone(),
-            referrer: world.document_referrer.clone(),
-            referrer_url: world.referrer_url.clone(),
-            origin: world.origin.clone(),
-            policy: world.policy.clone(),
-            sandbox: world.sandbox,
+            base_url: doc.base_url.clone(),
+            cookie_url: doc.inherited_cookie_url.clone(),
+            referrer: doc.document_referrer.clone(),
+            referrer_url: doc.referrer_url.clone(),
+            origin: doc.origin.clone(),
+            policy: doc.policy.clone(),
+            sandbox: doc.sandbox,
         }
     }
 
@@ -949,7 +963,7 @@ impl Document {
             }),
         );
         self.set_document_referrer(state.referrer.clone());
-        self.world.borrow_mut().policy = state.policy.clone();
+        self.world.borrow().doc_mut().policy = state.policy.clone();
     }
 
     pub(crate) fn take_removed_containers(&mut self) -> Vec<crate::dom::tree::NodeId> {
@@ -1030,7 +1044,8 @@ impl Document {
     // https://html.spec.whatwg.org/multipage/images.html#update-the-image-data
     fn disconnect_image(&mut self, element: crate::dom::tree::NodeId) {
         self.world
-            .borrow_mut()
+            .borrow()
+            .doc_mut()
             .state
             .creator_stacks
             .remove(&element);
@@ -1040,7 +1055,14 @@ impl Document {
     fn queue_dial(&mut self, mut dial: QueuedDial) {
         // https://github.com/privacycg/CHIPS#computing-the-cookie-partition-key
         dial.req.partition_key = self.world.borrow().partition_key();
-        if self.world.borrow().policy.csp.upgrades_insecure_requests() {
+        if self
+            .world
+            .borrow()
+            .doc()
+            .policy
+            .csp
+            .upgrades_insecure_requests()
+        {
             let nested = matches!(
                 dial.context,
                 DialContext::FrameLoad {
@@ -1129,7 +1151,8 @@ impl Document {
         };
         let blank = about_blank();
         // https://html.spec.whatwg.org/multipage/browsers.html#relaxing-the-same-origin-restriction
-        let shares_domain = inherited.is_some() && !self.world.borrow().sandbox.origin_is_opaque();
+        let shares_domain =
+            inherited.is_some() && !self.world.borrow().doc().sandbox.origin_is_opaque();
         let (origin, domain) = match inherited {
             Some(inherited) => (
                 self.sandboxed_origin(Some(inherited.origin)),
@@ -1139,12 +1162,13 @@ impl Document {
         };
         self.commit_document_url(blank, origin);
         if shares_domain {
-            self.world.borrow_mut().domain = domain;
+            self.world.borrow().doc_mut().domain = domain;
         }
-        let mut world = self.world.borrow_mut();
-        world.base_url = Some(base.clone());
+        let world = self.world.borrow();
+        let mut doc = world.doc_mut();
+        doc.base_url = Some(base.clone());
         // https://html.spec.whatwg.org/multipage/dom.html#dom-document-cookie
-        world.inherited_cookie_url = Some(cookie_url.clone());
+        doc.inherited_cookie_url = Some(cookie_url.clone());
     }
 
     // https://html.spec.whatwg.org/multipage/iframe-embed-object.html#process-the-iframe-attributes
@@ -1159,7 +1183,7 @@ impl Document {
     ) {
         self.apply_blank_url(inherited_url, cookie_url, inherited);
         // https://html.spec.whatwg.org/multipage/browsers.html#creating-a-new-browsing-context
-        self.world.borrow_mut().document_referrer = inherited_url.cloned();
+        self.world.borrow().doc_mut().document_referrer = inherited_url.cloned();
         self.csp.http_status = 0;
         self.load_html("");
         self.ensure_js_ok();
@@ -1179,21 +1203,22 @@ impl Document {
         let url = Url::parse("about:srcdoc").expect("about:srcdoc parses");
         self.csp.http_status = 0;
         // https://html.spec.whatwg.org/multipage/browsers.html#relaxing-the-same-origin-restriction
-        let shares_domain = !self.world.borrow().sandbox.origin_is_opaque();
+        let shares_domain = !self.world.borrow().doc().sandbox.origin_is_opaque();
         let domain = inherited.domain;
         let origin = self.sandboxed_origin(Some(inherited.origin));
         self.commit_document_url(url, origin);
         if shares_domain {
-            self.world.borrow_mut().domain = domain;
+            self.world.borrow().doc_mut().domain = domain;
         }
         {
-            let mut world = self.world.borrow_mut();
-            world.base_url = Some(base.clone());
+            let world = self.world.borrow();
+            let mut doc = world.doc_mut();
+            doc.base_url = Some(base.clone());
             // https://html.spec.whatwg.org/multipage/dom.html#dom-document-cookie
-            world.inherited_cookie_url = Some(cookie_url.clone());
-            world.referrer_url = referrer_url.clone();
+            doc.inherited_cookie_url = Some(cookie_url.clone());
+            doc.referrer_url = referrer_url.clone();
             // https://html.spec.whatwg.org/multipage/browsers.html#creating-a-new-browsing-context
-            world.document_referrer = Some(referrer_url.clone());
+            doc.document_referrer = Some(referrer_url.clone());
         }
         self.response.inherited_policy = Some(policy.clone());
         self.initial_blank = false;
@@ -1209,7 +1234,7 @@ impl Document {
     ) {
         self.apply_blank_url(inherited_url, cookie_url, inherited);
         // https://html.spec.whatwg.org/multipage/browsers.html#creating-a-new-browsing-context
-        self.world.borrow_mut().document_referrer = inherited_url.cloned();
+        self.world.borrow().doc_mut().document_referrer = inherited_url.cloned();
         self.defer_js = true;
         self.load_html("");
         self.defer_js = false;
@@ -1234,13 +1259,13 @@ impl Document {
     #[must_use]
     pub(crate) fn javascript_url_violations(&self, source: &str) -> Vec<crate::csp::Violation> {
         let world = self.world.borrow();
-        Self::navigation_script_violations(&world.policy.csp, &self.url, source)
+        Self::navigation_script_violations(&world.doc().policy.csp, &self.url, source)
     }
 
     // https://html.spec.whatwg.org/multipage/browsing-the-web.html#javascript-protocol
     pub(crate) fn eval_frame_script(&mut self, script: &str, blocked: bool) {
         // https://html.spec.whatwg.org/multipage/browsing-the-web.html#javascript-protocol
-        if script.is_empty() || self.world.borrow().sandbox.scripts_disabled() || blocked {
+        if script.is_empty() || self.world.borrow().doc().sandbox.scripts_disabled() || blocked {
             return;
         }
         match self.eval(script) {
@@ -1252,7 +1277,7 @@ impl Document {
 
     // https://html.spec.whatwg.org/multipage/browsers.html#sandboxed-origin-browsing-context-flag
     fn sandboxed_origin(&self, origin: Option<url::Origin>) -> Option<url::Origin> {
-        if self.world.borrow().sandbox.origin_is_opaque() {
+        if self.world.borrow().doc().sandbox.origin_is_opaque() {
             Some(url::Origin::new_opaque())
         } else {
             origin
@@ -1274,14 +1299,14 @@ impl Document {
     fn commit_document_url(&mut self, url: Url, origin: Option<url::Origin>) {
         let new_origin = origin.clone().unwrap_or_else(|| url.origin());
         let frame = self.frame;
-        let previous = self.world.borrow().origin.clone();
+        let previous = self.world.borrow().doc().origin.clone();
         let first_document = !self.committed;
         let resolved_by_browser = std::mem::take(&mut self.name_resolved);
         self.committed = true;
         let creation_url = url.clone();
         self.set_document_url(url, origin);
         // https://html.spec.whatwg.org/multipage/document-lifecycle.html#concept-document-creation-url
-        self.world.borrow_mut().creation_url = creation_url;
+        self.world.borrow().doc_mut().creation_url = creation_url;
         if first_document || resolved_by_browser {
             return;
         }
@@ -1301,16 +1326,20 @@ impl Document {
 
     // https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate-to-a-fragment
     pub(crate) fn queue_fragment_navigation(&self, url: Url) {
-        let mut world = self.world.borrow_mut();
-        let old_url = world.document_url.as_str().to_owned();
-        // https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate-to-a-fragment
-        let handling = if world.document_url == url {
-            crate::protocol::HistoryHandling::Replace
-        } else {
-            crate::protocol::HistoryHandling::Push
+        let world = self.world.borrow();
+        let (old_url, handling) = {
+            let mut doc = world.doc_mut();
+            let old_url = doc.document_url.as_str().to_owned();
+            // https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate-to-a-fragment
+            let handling = if doc.document_url == url {
+                crate::protocol::HistoryHandling::Replace
+            } else {
+                crate::protocol::HistoryHandling::Push
+            };
+            doc.document_url = url.clone();
+            doc.history.apply("null".to_owned(), handling);
+            (old_url, handling)
         };
-        world.document_url = url.clone();
-        world.history.apply("null".to_owned(), handling);
         world
             .outbox
             .borrow_mut()
@@ -1343,16 +1372,17 @@ impl Document {
         if let Ok(url) = Url::parse(url) {
             let (origin, domain) = {
                 let world = self.world.borrow();
-                (world.origin.clone(), Rc::clone(&world.domain))
+                let doc = world.doc();
+                (doc.origin.clone(), Rc::clone(&doc.domain))
             };
             self.set_document_url(url, Some(origin));
             // https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate-to-a-fragment
-            self.world.borrow_mut().domain = domain;
+            self.world.borrow().doc_mut().domain = domain;
         }
     }
 
     pub(crate) fn set_history(&mut self, history: &crate::protocol::HistorySnapshot) {
-        self.world.borrow_mut().history = history.clone();
+        self.world.borrow().doc_mut().history = history.clone();
     }
 
     // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-history-length
@@ -1376,9 +1406,9 @@ impl Document {
             return Err(TabError::InvalidUrl { spec: url.into() });
         }
         let previous_url = self.url.clone();
-        let previous_history = self.world.borrow().history.clone();
+        let previous_history = self.world.borrow().doc().history.clone();
         self.apply_document_url_same_origin(url.as_str());
-        self.world.borrow_mut().history = history.clone();
+        self.world.borrow().doc_mut().history = history.clone();
         let restored_state = self
             .js
             .as_ref()
@@ -1389,7 +1419,7 @@ impl Document {
             Ok(None) => {}
             Err(error) => {
                 self.apply_document_url_same_origin(previous_url.as_str());
-                self.world.borrow_mut().history = previous_history;
+                self.world.borrow().doc_mut().history = previous_history;
                 return Err(TabError::from(error));
             }
         }
@@ -1493,7 +1523,10 @@ impl Document {
 
     fn deliver_remote_message(&mut self, message: &crate::protocol::PostedMessage) {
         // https://html.spec.whatwg.org/multipage/web-messaging.html#window-post-message-steps
-        if !message.target_origin.admits(&self.world.borrow().origin) {
+        if !message
+            .target_origin
+            .admits(&self.world.borrow().doc().origin)
+        {
             return;
         }
         if !self.ensure_js_ok() {
@@ -1529,7 +1562,10 @@ impl Document {
 
     fn deliver_window_message(&mut self, message: &WindowMessage) {
         // https://html.spec.whatwg.org/multipage/web-messaging.html#window-post-message-steps
-        if !message.target_origin.admits(&self.world.borrow().origin) {
+        if !message
+            .target_origin
+            .admits(&self.world.borrow().doc().origin)
+        {
             self.shared.borrow_mut().forget_endpoints(&message.ports);
             return;
         }
@@ -1604,7 +1640,7 @@ impl Document {
 
     pub(crate) fn eval(&mut self, source: &str) -> Result<String, TabError> {
         // https://html.spec.whatwg.org/multipage/iframe-embed-object.html#the-iframe-element:html-element-insertion-steps
-        if !self.world.borrow().parser_active {
+        if !self.world.borrow().doc().parser_active {
             self.adopt_pending_frames();
         }
         self.ensure_js()?;
@@ -1648,12 +1684,9 @@ impl Document {
         } = source
         {
             self.ensure_isolated(name)?;
-            let Some((isolated_world, isolated_realm)) = self.isolated_js.get(name) else {
+            let Some((_, isolated_realm)) = self.isolated_js.get(name) else {
                 return Err(TabError::Script(ScriptFailure::HostMissing));
             };
-            isolated_world
-                .borrow_mut()
-                .sync_isolated_from(&self.world.borrow());
             let out = isolated_realm
                 .eval_value_deadline(crate::ScriptSource::Browser(source), deadline)
                 .map_err(TabError::from);
@@ -1712,7 +1745,7 @@ impl Document {
             shared.tree.set_popup_sandbox(frame, tab.popup_sandbox);
         }
         self.world.borrow_mut().install_sandbox(tab.popup_sandbox);
-        self.world.borrow_mut().own_window = tab.id;
+        self.world.borrow().win_mut().own_window = tab.id;
         self.set_creator_secure_context(tab.secure_context);
     }
 
@@ -1723,7 +1756,7 @@ impl Document {
         owner: ParserOwner,
         decoder: Option<dial::ResponseDecoder>,
     ) {
-        self.world.borrow_mut().parser_active = true;
+        self.world.borrow().doc_mut().parser_active = true;
         self.parser_eof = eof;
         self.decoder = decoder;
         self.parser_owner = owner;
@@ -1745,14 +1778,17 @@ impl Document {
         let policy = head.source.policy();
         // https://w3c.github.io/webappsec-csp/#sandbox
         if !policy.sandbox.is_empty() {
-            let mut world = self.world.borrow_mut();
-            world.sandbox = world.sandbox.union(policy.sandbox);
+            let world = self.world.borrow();
+            let mut doc = world.doc_mut();
+            doc.sandbox = doc.sandbox.union(policy.sandbox);
         }
         self.install_response_url(head, origin);
-        let mut world = self.world.borrow_mut();
-        world.base_url = None;
-        world.inherited_cookie_url = None;
-        drop(world);
+        {
+            let world = self.world.borrow();
+            let mut doc = world.doc_mut();
+            doc.base_url = None;
+            doc.inherited_cookie_url = None;
+        }
         self.start_parser(
             "",
             false,
@@ -1941,6 +1977,7 @@ impl Document {
         let scripts: Vec<String> = self
             .world
             .borrow()
+            .win()
             .init_scripts
             .borrow()
             .iter()
@@ -2001,7 +2038,8 @@ impl Document {
             self.shared.borrow_mut().begin_document(self.frame);
             // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-evaluate
             self.world
-                .borrow_mut()
+                .borrow()
+                .win()
                 .evaluation_replies
                 .borrow_mut()
                 .clear();
@@ -2056,8 +2094,13 @@ impl Document {
         self.stream_publish = None;
         self.executed_scripts.clear();
         self.parser_eof = true;
-        self.world.borrow_mut().parser_active = false;
-        self.world.borrow_mut().state.current_script = None;
+        {
+            let world = self.world.borrow();
+            let mut doc = world.doc_mut();
+            doc.parser_active = false;
+            doc.state.current_script = None;
+            doc.import_map.clear();
+        }
         if reason == RealmReset::Reopen {
             self.world.borrow().clear_outbox_for_open();
         } else {
@@ -2065,7 +2108,6 @@ impl Document {
         }
         self.parser_blocked_script = None;
         self.deferred_modules.clear();
-        self.world.borrow_mut().import_map.clear();
     }
 
     pub(crate) fn apply_document_stream(&mut self, command: DocumentStreamCommand) {
@@ -2088,13 +2130,13 @@ impl Document {
         filename: &str,
     ) {
         // https://html.spec.whatwg.org/multipage/webappapis.html#run-a-classic-script
-        let previous = self.world.borrow().state.current_script;
-        self.world.borrow_mut().state.current_script = element;
+        let previous = self.world.borrow().doc().state.current_script;
+        self.world.borrow().doc_mut().state.current_script = element;
         if !self.ensure_js_ok() {
             return;
         }
         self.fire_js(|js| js.eval_classic_script(source, base_line, filename));
-        self.world.borrow_mut().state.current_script = previous;
+        self.world.borrow().doc_mut().state.current_script = previous;
         self.adopt_js_work();
     }
 
@@ -2132,7 +2174,7 @@ impl Document {
         if parsed.xml_document || html_needs_realm(parsed) {
             return false;
         }
-        if !self.world.borrow().init_scripts.borrow().is_empty() {
+        if !self.world.borrow().win().init_scripts.borrow().is_empty() {
             return false;
         }
         self.shared.borrow().tree.parent(self.frame).is_some()
@@ -2191,11 +2233,11 @@ impl Document {
 
     fn install_policy(&mut self) {
         if let Some(policy) = self.response.policy.clone() {
-            self.world.borrow_mut().policy = policy;
+            self.world.borrow().doc_mut().policy = policy;
             return;
         }
         if let Some(policy) = self.response.inherited_policy.take() {
-            self.world.borrow_mut().policy = policy;
+            self.world.borrow().doc_mut().policy = policy;
         }
     }
 
@@ -2212,7 +2254,7 @@ impl Document {
 
     fn apply_viewport(&self) {
         let (width, height) = self.viewport_size;
-        self.world.borrow().viewport_size.set((width, height));
+        self.world.borrow().win().viewport_size.set((width, height));
         let world = self.world.borrow();
         let Some(mut parsed) = world.main_document_mut() else {
             return;
@@ -2248,7 +2290,7 @@ impl Document {
 
     pub(crate) fn set_viewport_size(&mut self, size: (u32, u32)) {
         self.viewport_size = size;
-        self.world.borrow().viewport_size.set(size);
+        self.world.borrow().win().viewport_size.set(size);
     }
 
     // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-getLayoutMetrics
@@ -2329,7 +2371,7 @@ impl Document {
             parsed
         };
         if !self.install_parsed(parsed) {
-            self.world.borrow_mut().parser_active = false;
+            self.world.borrow().doc_mut().parser_active = false;
             self.record_event(RendererEvent::ScriptFailed);
             return;
         }
@@ -2390,7 +2432,8 @@ impl Document {
             }
             let repeated = self
                 .world
-                .borrow_mut()
+                .borrow()
+                .doc_mut()
                 .state
                 .reported_handlers
                 .insert((id, source.clone()), source.clone())
@@ -2407,7 +2450,7 @@ impl Document {
         if self.run_scripts() {
             return;
         }
-        self.world.borrow_mut().parser_active = false;
+        self.world.borrow().doc_mut().parser_active = false;
         // https://html.spec.whatwg.org/multipage/browsing-the-web.html#scroll-to-fragid
         self.update_url_target();
         self.check_parser_handler_attributes();
@@ -2433,7 +2476,7 @@ impl Document {
             net::ReferrerPolicy::from_meta(content)
         });
         if let Some(policy) = policy {
-            self.world.borrow_mut().policy.referrer_policy = Some(policy);
+            self.world.borrow().doc_mut().policy.referrer_policy = Some(policy);
         }
     }
 
@@ -2443,13 +2486,14 @@ impl Document {
         id: crate::dom::tree::NodeId,
     ) -> Vec<crate::csp::Violation> {
         let world = self.world.borrow();
-        let slot = world.state.nonce_slots.get(&id).map(String::as_str);
-        let parser_inserted = world.is_parser_inserted(id);
+        let doc = world.doc();
+        let slot = doc.state.nonce_slots.get(&id).map(String::as_str);
+        let parser_inserted = doc.state.parser_inserted.contains(&id);
         let (nonce, nonceable) = world.document(id).map_or_else(
             || (String::new(), false),
             |parsed| crate::csp::element_nonce(&parsed.document.base, id.node, slot),
         );
-        let mut violations = world.policy.csp.check_inline(
+        let mut violations = doc.policy.csp.check_inline(
             &self.url,
             &crate::csp::InlineScript {
                 source,
@@ -2489,8 +2533,9 @@ impl Document {
         id: crate::dom::tree::NodeId,
     ) -> Vec<crate::csp::Violation> {
         let world = self.world.borrow();
-        let slot = world.state.nonce_slots.get(&id).map(String::as_str);
-        let parser_inserted = world.is_parser_inserted(id);
+        let doc = world.doc();
+        let slot = doc.state.nonce_slots.get(&id).map(String::as_str);
+        let parser_inserted = doc.state.parser_inserted.contains(&id);
         let (nonce, integrity) = world.document(id).map_or_else(
             || (String::new(), String::new()),
             |parsed| {
@@ -2501,9 +2546,9 @@ impl Document {
                 (nonce, integrity)
             },
         );
-        world.policy.csp.check_request(
-            &world.origin,
-            &world.document_url,
+        doc.policy.csp.check_request(
+            &doc.origin,
+            &doc.document_url,
             url,
             crate::csp::Destination::Script,
             Some(crate::csp::ScriptRequest {
@@ -2553,7 +2598,7 @@ impl Document {
             }
             // https://html.spec.whatwg.org/multipage/scripting.html#parser-inserted
             if crate::dom::tree::is_html_element(base, id, "script")
-                && !world.sandbox.scripts_disabled()
+                && !world.doc().sandbox.scripts_disabled()
                 && world.is_parser_inserted(node_id)
             {
                 steps.push(ParseStep::Script(node_id));
@@ -2645,7 +2690,7 @@ impl Document {
                         continue;
                     }
                     if let Ok(map) = crate::js::modules::ImportMap::parse(&source, &parse_base) {
-                        self.world.borrow_mut().import_map.merge(map);
+                        self.world.borrow().doc_mut().import_map.merge(map);
                     }
                 }
                 Some(crate::js::Script::ImportMap(crate::js::ScriptElementSource::Src(_))) => {
@@ -2705,7 +2750,7 @@ impl Document {
         dial.req.referrer_policy = options
             .referrer_policy
             .map(crate::protocol::referrer_policy)
-            .or(self.world.borrow().policy.referrer_policy)
+            .or(self.world.borrow().doc().policy.referrer_policy)
             .unwrap_or_default();
         dial.req.csp = Some(Box::new(
             self.redirect_gate(crate::csp::Destination::Script),
@@ -2737,13 +2782,13 @@ impl Document {
     // https://html.spec.whatwg.org/multipage/browsers.html#concept-origin
     // https://fetch.spec.whatwg.org/#concept-request-origin
     pub(crate) fn dial_initiator(&self) -> url::Origin {
-        self.world.borrow().origin.clone()
+        self.world.borrow().doc().origin.clone()
     }
 
     // https://w3c.github.io/hr-time/#dom-performance-now
     fn performance_now(&self) -> f64 {
         let world = self.world.borrow();
-        let (sampled, origin) = world.event_clock;
+        let (sampled, origin) = world.win().event_clock;
         origin + sampled.elapsed().as_secs_f64() * 1000.0
     }
 
@@ -2752,7 +2797,7 @@ impl Document {
         if !outcome.crossed_origin {
             return true;
         }
-        let origin = self.world.borrow().origin.ascii_serialization();
+        let origin = self.world.borrow().doc().origin.ascii_serialization();
         outcome.headers.iter().any(|(name, value)| {
             name.eq_ignore_ascii_case("timing-allow-origin")
                 && value.split(',').any(|part| {
@@ -2819,7 +2864,7 @@ impl Document {
 
     // https://w3c.github.io/webappsec-referrer-policy/#determine-requests-referrer
     pub(crate) fn referrer_url(&self) -> Url {
-        self.world.borrow().referrer_url.clone()
+        self.world.borrow().doc().referrer_url.clone()
     }
 
     // https://html.spec.whatwg.org/multipage/urls-and-fetching.html#document-base-url
@@ -2831,7 +2876,8 @@ impl Document {
     // https://html.spec.whatwg.org/multipage/urls-and-fetching.html#fallback-base-url
     fn fallback_base_url(&self) -> Url {
         let world = self.world.borrow();
-        world.base_url.clone().unwrap_or_else(|| self.url.clone())
+        let base_url = world.doc().base_url.clone();
+        base_url.unwrap_or_else(|| self.url.clone())
     }
 
     // https://html.spec.whatwg.org/multipage/scripting.html#prepare-the-script-element
@@ -3059,6 +3105,7 @@ impl Document {
             let inherited = self
                 .world
                 .borrow()
+                .doc()
                 .policy
                 .referrer_policy
                 .unwrap_or_default();
@@ -3328,10 +3375,10 @@ impl Document {
         element: Option<crate::dom::tree::NodeId>,
         body: impl FnOnce(&mut Self) -> R,
     ) -> R {
-        let previous = self.world.borrow().state.module_fetch_root;
-        self.world.borrow_mut().state.module_fetch_root = element;
+        let previous = self.world.borrow().doc().state.module_fetch_root;
+        self.world.borrow().doc_mut().state.module_fetch_root = element;
         let result = body(self);
-        self.world.borrow_mut().state.module_fetch_root = previous;
+        self.world.borrow().doc_mut().state.module_fetch_root = previous;
         result
     }
 
@@ -3360,12 +3407,13 @@ impl Document {
             || self
                 .world
                 .borrow()
+                .doc()
                 .sandbox
                 .contains(crate::protocol::SandboxFlag::AutomaticFeatures)
         {
             return;
         }
-        let document_url = self.world.borrow().document_url.clone();
+        let document_url = self.world.borrow().doc().document_url.clone();
         let Some((target, delay)) = parse_declarative_refresh(value, &document_url) else {
             return;
         };
@@ -3399,7 +3447,7 @@ impl Document {
         self.blitz_shell.take_redraw();
         self.drain_image_settlements();
         self.drain_blitz_fetches();
-        if !self.world.borrow().parser_active {
+        if !self.world.borrow().doc().parser_active {
             self.tasks.append(&mut self.deferred_image_events);
             self.tasks.append(&mut self.csp.pending_events);
         }
@@ -3490,7 +3538,7 @@ impl Document {
                     .style_policies
                     .get(sheet.as_str())
                     .copied()
-                    .or(self.world.borrow().policy.referrer_policy)
+                    .or(self.world.borrow().doc().policy.referrer_policy)
                     .unwrap_or_default();
                 (crate::protocol::ReferrerRequest::Url(sheet), policy)
             } else {
@@ -3498,7 +3546,7 @@ impl Document {
                 let policy = request
                     .referrer_policy
                     .map(crate::protocol::referrer_policy)
-                    .or(self.world.borrow().policy.referrer_policy)
+                    .or(self.world.borrow().doc().policy.referrer_policy)
                     .unwrap_or_default();
                 (
                     crate::protocol::ReferrerRequest::Client {
@@ -3545,7 +3593,8 @@ impl Document {
         destination: crate::csp::Destination,
     ) -> crate::RedirectGate {
         let world = self.world.borrow();
-        crate::RedirectGate::new(world.policy.csp.clone(), &world.origin, destination)
+        let doc = world.doc();
+        crate::RedirectGate::new(doc.policy.csp.clone(), &doc.origin, destination)
     }
 
     fn note_frame_redirect(
@@ -3608,9 +3657,10 @@ impl Document {
     ) -> bool {
         let violations = {
             let world = self.world.borrow();
-            world.policy.csp.check_redirected_request(
-                &world.origin,
-                &world.document_url,
+            let doc = world.doc();
+            doc.policy.csp.check_redirected_request(
+                &doc.origin,
+                &doc.document_url,
                 final_url,
                 request_url,
                 destination,
@@ -3630,10 +3680,10 @@ impl Document {
         destination: crate::csp::Destination,
     ) -> Vec<crate::csp::Violation> {
         let world = self.world.borrow();
-        world
-            .policy
+        let doc = world.doc();
+        doc.policy
             .csp
-            .check_request(&world.origin, &world.document_url, url, destination, None)
+            .check_request(&doc.origin, &doc.document_url, url, destination, None)
     }
 
     fn subresource_element(
@@ -3647,7 +3697,7 @@ impl Document {
     }
 
     fn queue_image_event(&mut self, event: Task) {
-        if self.world.borrow().parser_active {
+        if self.world.borrow().doc().parser_active {
             self.deferred_image_events.push_back(event);
         } else {
             self.tasks.push_back(event);
@@ -3701,7 +3751,8 @@ impl Document {
         // https://html.spec.whatwg.org/multipage/iframe-embed-object.html#the-iframe-element:html-element-insertion-steps
         let already_fired = self
             .world
-            .borrow_mut()
+            .borrow()
+            .doc_mut()
             .insertion_load_fired
             .remove(&container);
         if !already_fired {
@@ -3713,7 +3764,8 @@ impl Document {
     pub(crate) fn cancel_frame_load(&mut self, container: crate::dom::tree::NodeId) {
         let _ = self
             .world
-            .borrow_mut()
+            .borrow()
+            .doc_mut()
             .insertion_load_fired
             .remove(&container);
         self.pending_frame_loads.remove(&container);

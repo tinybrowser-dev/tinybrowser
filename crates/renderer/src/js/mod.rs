@@ -446,13 +446,14 @@ impl JsRealm {
     // https://tc39.es/ecma262/#sec-hostresolveimportedmodule
     fn enter_script_url<T>(&self, url: &str, run: impl FnOnce() -> T) -> T {
         let previous = {
-            let mut world = self.world.borrow_mut();
-            let previous = world.state.current_script_url.take();
-            world.state.current_script_url = url::Url::parse(url).ok();
+            let world = self.world.borrow();
+            let mut doc = world.doc_mut();
+            let previous = doc.state.current_script_url.take();
+            doc.state.current_script_url = url::Url::parse(url).ok();
             previous
         };
         let result = run();
-        self.world.borrow_mut().state.current_script_url = previous;
+        self.world.borrow().doc_mut().state.current_script_url = previous;
         result
     }
 
@@ -570,7 +571,7 @@ impl JsRealm {
                         return Ok(Some(WorkerScriptError::Parse));
                     };
                     // https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model
-                    self.world.borrow_mut().state.module_client_origin = None;
+                    self.world.borrow().doc_mut().state.module_client_origin = None;
                     match promise.finish::<()>() {
                         Ok(()) => Ok(None),
                         Err(error) => {
@@ -582,7 +583,7 @@ impl JsRealm {
             })
         });
         // https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model
-        self.world.borrow_mut().state.module_client_origin = None;
+        self.world.borrow().doc_mut().state.module_client_origin = None;
         match outcome {
             Ok(None) => Ok(()),
             Ok(Some(error)) => Err(error),
@@ -1462,16 +1463,19 @@ impl JsRealm {
                         return None;
                     }
                     let world = import_world.borrow();
+                    let partition_key = world.partition_key();
+                    let doc = world.doc();
                     let mut dial = DialRequest::new(
                         RequestPolicy::ClassicScript { crossorigin: None },
                         &parsed,
-                        &world.origin,
+                        &doc.origin,
                     );
-                    dial.partition_key = world.partition_key();
+                    dial.partition_key = partition_key;
                     dial.referrer = ReferrerRequest::Client {
-                        url: world.referrer_url.clone(),
+                        url: doc.referrer_url.clone(),
                     };
-                    dial.referrer_policy = world.policy.referrer_policy.unwrap_or_default();
+                    dial.referrer_policy = doc.policy.referrer_policy.unwrap_or_default();
+                    drop(doc);
                     dial.timeout_ms = 30_000;
                     let Ok(outcome) = world
                         .runtime
@@ -1607,7 +1611,7 @@ impl JsRealm {
 
     // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-addBinding
     fn install_binding_globals(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<(), JsError> {
-        let names: Vec<String> = world.borrow().bindings.borrow().clone();
+        let names: Vec<String> = world.borrow().win().bindings.borrow().clone();
         for name in names {
             install_binding_global(ctx, world, &name)?;
         }
@@ -1624,7 +1628,8 @@ impl JsRealm {
             "__tbCompleteEvaluation",
             Func::from(move |id: String, text: String| {
                 complete_world
-                    .borrow_mut()
+                    .borrow()
+                    .win()
                     .evaluation_replies
                     .borrow_mut()
                     .insert(id, text);
@@ -1637,6 +1642,7 @@ impl JsRealm {
             Func::from(move |id: String| {
                 has_world
                     .borrow()
+                    .win()
                     .evaluation_replies
                     .borrow()
                     .contains_key(&id)
@@ -1648,7 +1654,8 @@ impl JsRealm {
             "__tbTakeEvaluation",
             Func::from(move |id: String| -> Option<String> {
                 take_world
-                    .borrow_mut()
+                    .borrow()
+                    .win()
                     .evaluation_replies
                     .borrow_mut()
                     .remove(&id)
@@ -1688,7 +1695,7 @@ impl JsRealm {
                     let headers = header_pairs(headers)?;
                     let method = net::Method::parse(&method)
                         .map_err(|_| rquickjs::Error::new_from_js("method", "HTTP method"))?;
-                    let client_url = fetch_world.borrow().referrer_url.clone();
+                    let client_url = fetch_world.borrow().doc().referrer_url.clone();
                     let options = DialOptions::from_js(&options, &client_url)?;
                     fetch_outbox
                         .borrow_mut()
@@ -1758,13 +1765,17 @@ impl JsRealm {
                     return false;
                 };
                 let world = csp_world.borrow();
-                let violations = world.policy.csp.check_request(
-                    &world.origin,
-                    &world.document_url,
-                    &url,
-                    crate::csp::Destination::Connect,
-                    None,
-                );
+                let csp = world.effective_csp();
+                let violations = {
+                    let doc = world.doc();
+                    csp.check_request(
+                        &doc.origin,
+                        &doc.document_url,
+                        &url,
+                        crate::csp::Destination::Connect,
+                        None,
+                    )
+                };
                 let blocked = crate::csp::blocks(&violations);
                 if blocked {
                     let target = world.with_main_document(|parsed| crate::dom::tree::NodeId {
@@ -1796,7 +1807,7 @@ impl JsRealm {
                     let world = cookie_get.borrow();
                     (
                         world.runtime.services.clone(),
-                        world.document_url.clone(),
+                        world.doc().document_url.clone(),
                         world.partition_key(),
                     )
                 };
@@ -1813,7 +1824,7 @@ impl JsRealm {
                     let world = cookie_set.borrow();
                     (
                         world.runtime.services.clone(),
-                        world.document_url.clone(),
+                        world.doc().document_url.clone(),
                         world.partition_key(),
                     )
                 };
@@ -2023,7 +2034,7 @@ fn install_history_host_functions(
     ctx: &Ctx<'_>,
     world: &Rc<RefCell<World>>,
 ) -> Result<(), JsError> {
-    let snapshot = world.borrow().history.clone();
+    let snapshot = world.borrow().doc().history.clone();
     bridge::object(ctx)?.set("__tbHistoryLength", snapshot.length.max(1))?;
     bridge::object(ctx)?.set("__tbHistoryState", snapshot.state)?;
     let update = |handling: crate::protocol::HistoryHandling| {
@@ -2046,13 +2057,17 @@ fn install_history_host_functions(
             }
             let next =
                 Url::parse(&url).map_err(|_| Exception::throw_type(&ctx, "Invalid history URL"))?;
-            let mut world = update_world.borrow_mut();
+            let world = update_world.borrow();
             if !world.url_matches_origin(&next) {
                 return Err(Exception::throw_type(&ctx, "Cross-origin history URL"));
             }
-            world.document_url = next;
-            // https://html.spec.whatwg.org/multipage/browsing-the-web.html#url-and-history-update-steps
-            world.history.apply(state.clone(), handling);
+            let length = {
+                let mut doc = world.doc_mut();
+                doc.document_url = next;
+                // https://html.spec.whatwg.org/multipage/browsing-the-web.html#url-and-history-update-steps
+                doc.history.apply(state.clone(), handling);
+                doc.history.length
+            };
             world
                 .outbox
                 .borrow_mut()
@@ -2061,7 +2076,7 @@ fn install_history_host_functions(
                     state,
                     handling,
                 });
-            Ok::<usize, rquickjs::Error>(world.history.length)
+            Ok::<usize, rquickjs::Error>(length)
         }
     };
     bridge::object(ctx)?.set(
@@ -2148,7 +2163,10 @@ fn install_window_host_functions(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> R
                     let world = prompt_world.borrow();
                     (
                         world.frame(),
-                        world.sandbox.contains(crate::protocol::SandboxFlag::Modals),
+                        world
+                            .doc()
+                            .sandbox
+                            .contains(crate::protocol::SandboxFlag::Modals),
                         world.runtime.services.clone(),
                     )
                 };
@@ -2176,9 +2194,10 @@ fn install_window_messaging_functions(
         Func::from(
             move |ctx: Ctx<'_>, window: u64, target_origin: String, payload: String| {
                 let world = post_message.borrow();
+                let origin = world.doc().origin.clone();
                 // https://html.spec.whatwg.org/multipage/web-messaging.html#window-post-message-steps
                 let Some(target) =
-                    crate::protocol::TargetOrigin::parse(&target_origin, Some(&world.origin))
+                    crate::protocol::TargetOrigin::parse(&target_origin, Some(&origin))
                 else {
                     return Err(crate::js::bindings::throw_dom(
                         &ctx,
@@ -2195,7 +2214,7 @@ fn install_window_messaging_functions(
                 world.runtime.services.window_post_message(
                     crate::protocol::WindowId::new(window),
                     crate::protocol::PostedMessage {
-                        origin: crate::protocol::SerializedOrigin::from(&world.origin),
+                        origin: crate::protocol::SerializedOrigin::from(&origin),
                         target_origin: target,
                         payload,
                     },
@@ -2372,7 +2391,7 @@ fn install_auxiliary_host_functions(
             let world = close.borrow();
             // https://html.spec.whatwg.org/multipage/window-object.html#dom-window-close
             if world.frame() == FrameId::MAIN
-                && let Some(window) = world.own_window
+                && let Some(window) = world.win().own_window
             {
                 world.runtime.services.window_close(window);
                 return;
@@ -2703,7 +2722,7 @@ fn install_sync_fetch(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<(), J
                     .map_err(|_| rquickjs::Error::new_from_js("method", "HTTP method"))?;
                 // https://fetch.spec.whatwg.org/#concept-request-referrer
                 // https://xhr.spec.whatwg.org/#the-withcredentials-attribute
-                let client_url = sync_world.borrow().referrer_url.clone();
+                let client_url = sync_world.borrow().doc().referrer_url.clone();
                 let referrer = match options.get::<_, Option<String>>("referrer")? {
                     Some(value) => crate::protocol::ReferrerRequest::from_idl(&value, &client_url)
                         .ok_or_else(|| {
@@ -2760,6 +2779,13 @@ fn sync_page_fetch(world: &World, request: SyncPageFetch) -> Option<SyncFetchLis
     if parsed.scheme() != "http" && parsed.scheme() != "https" {
         return None;
     }
+    let (origin, referrer_policy) = {
+        let doc = world.doc();
+        (
+            doc.origin.clone(),
+            doc.policy.referrer_policy.unwrap_or_default(),
+        )
+    };
     let mut dial = crate::protocol::DialRequest::new(
         crate::protocol::RequestPolicy::Fetch(crate::protocol::CorsRequest {
             mode: crate::protocol::CorsMode::Cors,
@@ -2772,7 +2798,7 @@ fn sync_page_fetch(world: &World, request: SyncPageFetch) -> Option<SyncFetchLis
             redirect: net::cors::RedirectMode::Follow,
         }),
         &parsed,
-        &world.origin,
+        &origin,
     );
     dial.partition_key = world.partition_key();
     dial.method = request.method;
@@ -2781,7 +2807,7 @@ fn sync_page_fetch(world: &World, request: SyncPageFetch) -> Option<SyncFetchLis
     dial.headers = request.headers;
     dial.referrer = request.referrer;
     dial.timeout_ms = u64::from(millis(request.timeout));
-    dial.referrer_policy = world.policy.referrer_policy.unwrap_or_default();
+    dial.referrer_policy = referrer_policy;
     let outcome = world.runtime.services.dial_sync(dial);
     match outcome {
         // https://fetch.spec.whatwg.org/#concept-response-header-list
@@ -2829,8 +2855,10 @@ fn csp_eval_violations(
     let caller = error_stack_top(ctx);
     let mut violations = {
         let world = world.borrow();
-        world.policy.csp.check_inline(
-            &world.document_url,
+        let csp = world.effective_csp();
+        let doc = world.doc();
+        csp.check_inline(
+            &doc.document_url,
             &crate::csp::InlineScript {
                 source,
                 nonce: "",

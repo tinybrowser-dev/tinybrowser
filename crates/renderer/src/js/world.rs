@@ -980,6 +980,8 @@ pub(crate) struct Listener {
     pub removed: Cell<bool>,
     // https://html.spec.whatwg.org/multipage/webappapis.html#the-event-handler-processing-algorithm
     pub handler_name: Option<String>,
+    // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-createIsolatedWorld
+    pub realm: u64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -1145,36 +1147,49 @@ enum ProxyReplay {
     Done,
 }
 
-pub(crate) struct World {
-    pub(crate) runtime: FrameRuntime,
-    frame: FrameId,
-    pub(crate) kind: GlobalKind,
-    pub(crate) own_window: Option<crate::protocol::WindowId>,
-    realm: u64,
-    // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-addScriptToEvaluateOnNewDocument
-    pub(crate) init_scripts: Rc<RefCell<Vec<(u64, String)>>>,
-    // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-addBinding
-    pub(crate) bindings: Rc<RefCell<Vec<String>>>,
-    pub(crate) viewport_size: Cell<(u32, u32)>,
-    pending_frames: Vec<(FrameId, NodeId)>,
-    deferred_scripts: Vec<NodeId>,
-    frame_host: Option<FrameHost>,
-    document: Option<u32>,
-    pub(crate) realm_context: Option<rquickjs::Context>,
-    // https://html.spec.whatwg.org/multipage/workers.html#dom-dedicatedworkerglobalscope-close
-    pub(crate) worker_close_requested: Rc<Cell<bool>>,
-    // https://w3c.github.io/webappsec-csp/#can-compile-strings
-    pub(crate) compiling_handler: Cell<bool>,
-    // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-evaluate
-    pub(crate) browser_eval_depth: Cell<usize>,
-    // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-createIsolatedWorld
-    pub(crate) isolated_name: Option<String>,
-    isolated_wrappers: RefCell<HashMap<NodeId, Persistent<Value<'static>>>>,
-    // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-evaluate — replies live outside the realm: a document.open() step replaces it mid-evaluation.
-    pub(crate) evaluation_replies: Rc<RefCell<HashMap<String, String>>>,
-    // https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#timer-initialisation-steps
-    pub(crate) timer_string: Cell<bool>,
-    owned: HashSet<u32>,
+// https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-createIsolatedWorld
+pub(crate) struct IsolatedRealm {
+    pub(crate) name: String,
+    // https://w3c.github.io/webappsec-csp/#csp-list
+    pub(crate) csp: Option<crate::csp::List>,
+}
+
+#[derive(Default)]
+pub(crate) struct RealmCaches {
+    // https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes:element
+    pub(crate) element_reference_cache: HashMap<(NodeId, String), ElementReferenceCache>,
+    // https://html.spec.whatwg.org/multipage/dom.html#dom-document-nameditem
+    pub(crate) document_named: HashMap<(NodeId, String), Persistent<Value<'static>>>,
+    pub(crate) implementations: HashMap<u32, Persistent<Value<'static>>>,
+    // https://html.spec.whatwg.org/multipage/forms.html#dom-form-nameditem
+    pub(crate) form_named_lists: HashMap<(NodeId, String), Persistent<Value<'static>>>,
+}
+
+impl RealmCaches {
+    pub(crate) fn clear(&mut self) {
+        self.element_reference_cache.clear();
+        self.document_named.clear();
+        self.implementations.clear();
+        self.form_named_lists.clear();
+    }
+
+    pub(crate) fn forget_document(&mut self, document: u32) {
+        self.element_reference_cache
+            .retain(|(node, _), _| node.document != document);
+        self.document_named
+            .retain(|(node, _), _| node.document != document);
+        self.implementations.remove(&document);
+        self.form_named_lists
+            .retain(|(node, _), _| node.document != document);
+    }
+}
+
+// https://html.spec.whatwg.org/multipage/dom.html#document
+pub(crate) struct DocumentData {
+    pub(crate) document: Option<u32>,
+    pub(crate) owned: HashSet<u32>,
+    pub(crate) pending_frames: Vec<(FrameId, NodeId)>,
+    pub(crate) deferred_scripts: Vec<NodeId>,
     pub document_url: Url,
     // https://cookiestore.spec.whatwg.org/#dom-cookiestore-get
     pub(crate) creation_url: Url,
@@ -1194,7 +1209,7 @@ pub(crate) struct World {
     pub(crate) top_level: Option<url::Origin>,
     // https://privacycg.github.io/storage-access/#first-party-site-context
     pub(crate) first_party: bool,
-    parent_context: Option<ParentContext>,
+    pub(crate) parent_context: Option<ParentContext>,
     // https://privacycg.github.io/saa-non-cookie-storage/#shared-worker
     pub(crate) same_site_cookie_policy: net::SameSiteCookiePolicy,
     pub(crate) policy: PolicyContainer,
@@ -1203,33 +1218,81 @@ pub(crate) struct World {
     // https://html.spec.whatwg.org/multipage/browsers.html#sandboxing-flag-set
     pub(crate) sandbox: SandboxFlags,
     pub(crate) history: crate::protocol::HistorySnapshot,
-    pub(crate) outbox: Outbox,
     // https://html.spec.whatwg.org/multipage/input.html#dom-input-files
-    input_files: HashMap<NodeId, Vec<Persistent<Value<'static>>>>,
-    input_file_list: HashMap<NodeId, Persistent<Value<'static>>>,
+    pub(crate) input_files: HashMap<NodeId, Vec<Persistent<Value<'static>>>>,
+    pub(crate) input_file_list: HashMap<NodeId, Persistent<Value<'static>>>,
     pub(crate) font_registrations: HashMap<u32, FontRegistration>,
     pub(crate) next_font_registration: u32,
-    budget: Rc<RefCell<ResourceBudget>>,
     pub parser_active: bool,
-    events: EventTargetState,
     pub(crate) state: DocumentState,
+    // https://html.spec.whatwg.org/multipage/iframe-embed-object.html#the-iframe-element:html-element-insertion-steps
+    pub(crate) insertion_load_fired: HashSet<NodeId>,
+}
+
+impl DocumentData {
+    // https://privacycg.github.io/storage-access/#first-party-site-context
+    fn refresh_first_party(&mut self) {
+        self.first_party = self.parent_context.as_ref().is_none_or(|parent| {
+            parent.first_party && net::origins_same_site(&self.origin, &parent.origin)
+        });
+    }
+}
+
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#window
+pub(crate) struct WindowData {
+    pub(crate) frame: FrameId,
+    pub(crate) own_window: Option<crate::protocol::WindowId>,
+    // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-addScriptToEvaluateOnNewDocument
+    pub(crate) init_scripts: Rc<RefCell<Vec<(u64, String)>>>,
+    // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-addBinding
+    pub(crate) bindings: Rc<RefCell<Vec<String>>>,
+    pub(crate) viewport_size: Cell<(u32, u32)>,
+    pub(crate) frame_host: Option<FrameHost>,
+    // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-evaluate — replies live outside the realm: a document.open() step replaces it mid-evaluation.
+    pub(crate) evaluation_replies: Rc<RefCell<HashMap<String, String>>>,
+    pub(crate) events: EventTargetState,
     // https://html.spec.whatwg.org/multipage/interaction.html#dom-click
-    clicks_in_progress: HashSet<NodeId>,
+    pub(crate) clicks_in_progress: HashSet<NodeId>,
     // https://html.spec.whatwg.org/multipage/interaction.html#transient-activation
-    transient_activation: Option<Instant>,
+    pub(crate) transient_activation: Option<Instant>,
     // https://html.spec.whatwg.org/multipage/interaction.html#dom-useractivation-hasbeenactive
-    sticky_activation: bool,
+    pub(crate) sticky_activation: bool,
+    // https://dom.spec.whatwg.org/#dom-event-timestamp
+    pub(crate) event_clock: (Instant, f64),
+}
+
+pub(crate) struct World {
+    pub(crate) runtime: FrameRuntime,
+    pub(crate) kind: GlobalKind,
+    realm: u64,
+    pub(crate) doc: Rc<RefCell<DocumentData>>,
+    pub(crate) win: Rc<RefCell<WindowData>>,
+    pub(crate) realm_context: Option<rquickjs::Context>,
+    // https://html.spec.whatwg.org/multipage/workers.html#dom-dedicatedworkerglobalscope-close
+    pub(crate) worker_close_requested: Rc<Cell<bool>>,
+    // https://w3c.github.io/webappsec-csp/#can-compile-strings
+    pub(crate) compiling_handler: Cell<bool>,
+    // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-evaluate
+    pub(crate) browser_eval_depth: Cell<usize>,
+    // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-createIsolatedWorld
+    pub(crate) isolated: Option<IsolatedRealm>,
+    isolated_wrappers: RefCell<HashMap<NodeId, Persistent<Value<'static>>>>,
+    // https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#timer-initialisation-steps
+    pub(crate) timer_string: Cell<bool>,
+    pub(crate) outbox: Outbox,
+    budget: Rc<RefCell<ResourceBudget>>,
+    window_object: Option<Persistent<Object<'static>>>,
+    standalone_targets: HashMap<u64, Persistent<Object<'static>>>,
+    standalone_listeners: HashMap<u64, Vec<Rc<Listener>>>,
+    next_standalone_target: u64,
     // https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-set
     proxy_replay: ProxyReplay,
+    pub(crate) caches: RealmCaches,
     brands: HashMap<String, Persistent<Object<'static>>>,
     pub(crate) bridge: Option<Persistent<Object<'static>>>,
     pub(crate) location_object: Option<Persistent<Object<'static>>>,
     // https://dom.spec.whatwg.org/#concept-event-listener-inner-invoke
     pub(crate) current_event: Option<Persistent<Value<'static>>>,
-    // https://dom.spec.whatwg.org/#dom-event-timestamp
-    pub(crate) event_clock: (Instant, f64),
-    // https://html.spec.whatwg.org/multipage/iframe-embed-object.html#the-iframe-element:html-element-insertion-steps
-    pub(crate) insertion_load_fired: HashSet<NodeId>,
     pub(crate) pristine_number: Option<Persistent<Function<'static>>>,
     pub(crate) pristine_boolean: Option<Persistent<Function<'static>>>,
     pub(crate) pristine_reflect_set: Option<Persistent<Function<'static>>>,
@@ -1261,10 +1324,7 @@ pub(crate) struct EventHandlerSlot {
 // https://html.spec.whatwg.org/multipage/webappapis.html#event-handlers
 #[derive(Default)]
 pub(crate) struct EventTargetState {
-    window: Option<Persistent<Object<'static>>>,
     listeners: HashMap<EventTargetKey, Vec<Rc<Listener>>>,
-    standalone_targets: HashMap<u64, Persistent<Object<'static>>>,
-    next_standalone_target: u64,
     // https://html.spec.whatwg.org/multipage/webappapis.html#event-handlers
     handlers: HashMap<(Option<NodeId>, String), EventHandlerSlot>,
 }
@@ -1288,11 +1348,15 @@ impl EventTargetState {
             .retain(|(node, _), _| node.is_none_or(|node| node.document_id() != document));
     }
 
+    fn forget_realm(&mut self, realm: u64) {
+        for list in self.listeners.values_mut() {
+            list.retain(|listener| listener.realm != realm);
+        }
+        self.listeners.retain(|_, list| !list.is_empty());
+    }
+
     fn clear_realm(&mut self) {
         self.listeners.clear();
-        self.standalone_targets.clear();
-        self.window = None;
-        self.next_standalone_target = 0;
         self.handlers.clear();
     }
 }
@@ -1374,10 +1438,6 @@ pub(crate) struct DocumentState {
     pub(crate) blocked_bases: HashSet<NodeId>,
     // https://html.spec.whatwg.org/multipage/semantics.html#the-base-element
     pub(crate) base_href_seen: HashMap<NodeId, Option<String>>,
-    // https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflecting-content-attributes-in-idl-attributes:element
-    pub(crate) element_reference_cache: HashMap<(NodeId, String), ElementReferenceCache>,
-    // https://html.spec.whatwg.org/multipage/dom.html#dom-document-nameditem
-    pub(crate) document_named: HashMap<(NodeId, String), Persistent<Value<'static>>>,
     base_results: HashMap<NodeId, Option<Url>>,
     frame_navigations: Vec<FrameNavigation>,
     // https://html.spec.whatwg.org/multipage/scripting.html#parser-inserted
@@ -1407,7 +1467,6 @@ pub(crate) struct DocumentState {
     pub(crate) worker_owner_csp: Option<crate::csp::List>,
 
     pub(crate) custom_construction: Vec<NodeId>,
-    implementations: HashMap<u32, Persistent<Value<'static>>>,
     remote_ids: HashMap<NodeId, u64>,
     remote_nodes: HashMap<u64, NodeId>,
     // https://html.spec.whatwg.org/multipage/urls-and-fetching.html#nonce-attributes
@@ -1418,8 +1477,6 @@ pub(crate) struct DocumentState {
     pub(crate) dialog_previously_focused: HashMap<NodeId, Option<NodeId>>,
     // https://html.spec.whatwg.org/multipage/forms.html#past-names-map
     pub(crate) form_past_names: std::cell::RefCell<HashMap<NodeId, Vec<(String, NodeId)>>>,
-    // https://html.spec.whatwg.org/multipage/forms.html#dom-form-nameditem
-    pub(crate) form_named_lists: HashMap<(NodeId, String), Persistent<Value<'static>>>,
     // https://w3c.github.io/webappsec-csp/#create-violation-for-global
     pub(crate) creator_stacks: HashMap<NodeId, CreatorInfo>,
     // https://w3c.github.io/webappsec-csp/#report-violation
@@ -1459,8 +1516,6 @@ impl DocumentState {
         self.blocked_bases.clear();
         self.base_href_seen.clear();
         self.base_results.clear();
-        self.element_reference_cache.clear();
-        self.document_named.clear();
         self.frame_navigations.clear();
         self.parser_inserted.clear();
         self.script_force_async_cleared.clear();
@@ -1475,13 +1530,11 @@ impl DocumentState {
         self.worker_module_csp = None;
         self.worker_owner_csp = None;
         self.custom_construction.clear();
-        self.implementations.clear();
         self.remote_ids.clear();
         self.remote_nodes.clear();
         self.dialog_return_values.clear();
         self.dialog_previously_focused.clear();
         self.form_past_names.borrow_mut().clear();
-        self.form_named_lists.clear();
     }
 
     fn forget_document(&mut self, document: u32) {
@@ -1490,10 +1543,6 @@ impl DocumentState {
             .retain(|node, _| node.document != document);
         self.base_results
             .retain(|node, _| node.document != document);
-        self.element_reference_cache
-            .retain(|(node, _), _| node.document != document);
-        self.document_named
-            .retain(|(node, _), _| node.document != document);
         self.nonce_slots.retain(|node, _| node.document != document);
         self.creator_stacks
             .retain(|node, _| node.document != document);
@@ -1507,8 +1556,6 @@ impl DocumentState {
         self.form_past_names
             .borrow_mut()
             .retain(|node, _| node.document != document);
-        self.form_named_lists
-            .retain(|(node, _), _| node.document != document);
     }
 }
 
@@ -1544,8 +1591,10 @@ impl DecoderSession {
 
 impl Drop for World {
     fn drop(&mut self) {
-        self.unload_object_urls_for_frame();
-        self.clear_outbox();
+        if self.isolated.is_none() {
+            self.unload_object_urls_for_frame();
+            self.clear_outbox();
+        }
     }
 }
 
@@ -1568,40 +1617,24 @@ impl World {
     ) -> Self {
         let secure_context = secure_context::is_secure_environment(&document_url, None);
         let realm = runtime.registry.borrow_mut().allocate_realm();
-        Self {
-            runtime: runtime.clone(),
-            frame,
-            kind: GlobalKind::Document,
-            own_window: None,
-            realm,
-            init_scripts,
-            viewport_size: Cell::new(crate::engine::DEFAULT_VIEWPORT),
+        let origin = document_url.origin();
+        let doc = Rc::new(RefCell::new(DocumentData {
+            document: None,
+            owned: HashSet::new(),
             pending_frames: Vec::new(),
             deferred_scripts: Vec::new(),
-            frame_host: None,
-            document: None,
-            realm_context: None,
-            worker_close_requested: Rc::new(Cell::new(false)),
-            compiling_handler: Cell::new(false),
-            browser_eval_depth: Cell::new(0),
-            isolated_name: None,
-            isolated_wrappers: RefCell::new(HashMap::new()),
-            evaluation_replies: Rc::new(RefCell::new(HashMap::new())),
-            bindings,
-            timer_string: Cell::new(false),
-            owned: HashSet::new(),
-            origin: document_url.origin(),
-            domain: Rc::new(RefCell::new(None)),
-            top_level: None,
-            first_party: true,
-            parent_context: None,
-            same_site_cookie_policy: net::SameSiteCookiePolicy::All,
             referrer_url: document_url.clone(),
             document_referrer: None,
             creation_url: document_url.clone(),
             inherited_cookie_url: None,
             document_url,
             base_url: None,
+            origin,
+            domain: Rc::new(RefCell::new(None)),
+            top_level: None,
+            first_party: true,
+            parent_context: None,
+            same_site_cookie_policy: net::SameSiteCookiePolicy::All,
             policy: PolicyContainer {
                 secure_context,
                 ..PolicyContainer::default()
@@ -1609,25 +1642,53 @@ impl World {
             import_map: crate::js::modules::ImportMap::default(),
             sandbox: SandboxFlags::default(),
             history: crate::protocol::HistorySnapshot::default(),
-            outbox: Rc::new(RefCell::new(VecDeque::new())),
             input_files: HashMap::new(),
             input_file_list: HashMap::new(),
             font_registrations: HashMap::new(),
             next_font_registration: 1,
-            budget: runtime.registry.borrow().budget(),
             parser_active: false,
-            events: EventTargetState::default(),
             state: DocumentState::default(),
+            insertion_load_fired: HashSet::new(),
+        }));
+        let win = Rc::new(RefCell::new(WindowData {
+            frame,
+            own_window: None,
+            init_scripts,
+            bindings,
+            viewport_size: Cell::new(crate::engine::DEFAULT_VIEWPORT),
+            frame_host: None,
+            evaluation_replies: Rc::new(RefCell::new(HashMap::new())),
+            events: EventTargetState::default(),
             clicks_in_progress: HashSet::new(),
             transient_activation: None,
             sticky_activation: false,
+            event_clock: (Instant::now(), 0.0),
+        }));
+        Self {
+            runtime: runtime.clone(),
+            kind: GlobalKind::Document,
+            realm,
+            doc,
+            win,
+            realm_context: None,
+            worker_close_requested: Rc::new(Cell::new(false)),
+            compiling_handler: Cell::new(false),
+            browser_eval_depth: Cell::new(0),
+            isolated: None,
+            isolated_wrappers: RefCell::new(HashMap::new()),
+            timer_string: Cell::new(false),
+            outbox: Rc::new(RefCell::new(VecDeque::new())),
+            budget: runtime.registry.borrow().budget(),
+            window_object: None,
+            standalone_targets: HashMap::new(),
+            standalone_listeners: HashMap::new(),
+            next_standalone_target: 0,
             proxy_replay: ProxyReplay::Owed,
+            caches: RealmCaches::default(),
             brands: HashMap::new(),
             bridge: None,
             location_object: None,
             current_event: None,
-            event_clock: (Instant::now(), 0.0),
-            insertion_load_fired: HashSet::new(),
             pristine_number: None,
             pristine_boolean: None,
             pristine_reflect_set: None,
@@ -1646,61 +1707,29 @@ impl World {
         let realm = main.runtime.registry.borrow_mut().allocate_realm();
         Self {
             runtime: main.runtime.clone(),
-            frame: main.frame,
             kind: GlobalKind::Document,
-            own_window: main.own_window,
             realm,
-            init_scripts: Rc::clone(&main.init_scripts),
-            bindings: Rc::clone(&main.bindings),
-            viewport_size: Cell::new(main.viewport_size.get()),
-            pending_frames: Vec::new(),
-            deferred_scripts: Vec::new(),
-            frame_host: None,
-            document: main.document,
+            doc: Rc::clone(&main.doc),
+            win: Rc::clone(&main.win),
             realm_context: None,
             worker_close_requested: Rc::new(Cell::new(false)),
             compiling_handler: Cell::new(false),
             browser_eval_depth: Cell::new(0),
-            isolated_name: Some(name),
+            isolated: Some(IsolatedRealm { name, csp: None }),
             isolated_wrappers: RefCell::new(HashMap::new()),
-            evaluation_replies: Rc::clone(&main.evaluation_replies),
             timer_string: Cell::new(false),
-            owned: HashSet::new(),
-            document_url: main.document_url.clone(),
-            creation_url: main.creation_url.clone(),
-            inherited_cookie_url: main.inherited_cookie_url.clone(),
-            referrer_url: main.referrer_url.clone(),
-            document_referrer: main.document_referrer.clone(),
-            base_url: main.base_url.clone(),
-            origin: main.origin.clone(),
-            domain: Rc::clone(&main.domain),
-            top_level: main.top_level.clone(),
-            first_party: main.first_party,
-            parent_context: None,
-            same_site_cookie_policy: main.same_site_cookie_policy,
-            policy: main.policy.clone(),
-            import_map: main.import_map.clone(),
-            sandbox: main.sandbox,
-            history: main.history.clone(),
             outbox: Rc::clone(&main.outbox),
-            input_files: HashMap::new(),
-            input_file_list: HashMap::new(),
-            font_registrations: HashMap::new(),
-            next_font_registration: 1,
             budget: Rc::clone(&main.budget),
-            parser_active: false,
-            events: EventTargetState::default(),
-            state: DocumentState::default(),
-            clicks_in_progress: HashSet::new(),
-            transient_activation: None,
-            sticky_activation: false,
+            window_object: None,
+            standalone_targets: HashMap::new(),
+            standalone_listeners: HashMap::new(),
+            next_standalone_target: 0,
             proxy_replay: ProxyReplay::Done,
+            caches: RealmCaches::default(),
             brands: HashMap::new(),
             bridge: None,
             location_object: None,
             current_event: None,
-            event_clock: main.event_clock,
-            insertion_load_fired: HashSet::new(),
             pristine_number: None,
             pristine_boolean: None,
             pristine_reflect_set: None,
@@ -1714,13 +1743,33 @@ impl World {
         }
     }
 
-    pub(crate) fn sync_isolated_from(&mut self, main: &Self) {
-        self.document = main.document;
-        self.document_url.clone_from(&main.document_url);
-        self.base_url.clone_from(&main.base_url);
-        self.origin.clone_from(&main.origin);
-        self.viewport_size.set(main.viewport_size.get());
-        self.history.clone_from(&main.history);
+    pub(crate) fn doc(&self) -> Ref<'_, DocumentData> {
+        self.doc.borrow()
+    }
+
+    pub(crate) fn doc_mut(&self) -> RefMut<'_, DocumentData> {
+        self.doc.borrow_mut()
+    }
+
+    pub(crate) fn win(&self) -> Ref<'_, WindowData> {
+        self.win.borrow()
+    }
+
+    pub(crate) fn win_mut(&self) -> RefMut<'_, WindowData> {
+        self.win.borrow_mut()
+    }
+
+    pub(crate) fn is_isolated(&self) -> bool {
+        self.isolated.is_some()
+    }
+
+    // https://w3c.github.io/webappsec-csp/#csp-list
+    // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-createIsolatedWorld
+    pub(crate) fn effective_csp(&self) -> crate::csp::List {
+        match &self.isolated {
+            Some(isolated) => isolated.csp.clone().unwrap_or_default(),
+            None => self.doc.borrow().policy.csp.clone(),
+        }
     }
 
     // https://html.spec.whatwg.org/multipage/workers.html#dedicated-workers-and-the-dedicatedworkerglobalscope-interface
@@ -1807,22 +1856,27 @@ impl World {
     }
 
     pub(crate) fn clear_observers(&mut self) {
+        let frame = self.frame();
         self.runtime
             .registry
             .borrow_mut()
             .observers
-            .forget_frame(self.frame, &mut self.runtime.documents.borrow_mut());
+            .forget_frame(frame, &mut self.runtime.documents.borrow_mut());
     }
 
     pub(crate) fn replace_document(&mut self, parsed: Parsed) -> u32 {
         self.drop_active_document();
         let id = self.runtime.documents.borrow_mut().insert(parsed);
-        self.document = Some(id);
-        self.owned.insert(id);
+        {
+            let mut doc = self.doc.borrow_mut();
+            doc.document = Some(id);
+            doc.owned.insert(id);
+            doc.state.reset();
+        }
+        self.caches.clear();
         self.clear_outbox();
-        self.state.reset();
         // https://html.spec.whatwg.org/multipage/webappapis.html#event-handlers
-        self.events.reset_for_navigation();
+        self.win.borrow_mut().events.reset_for_navigation();
         // https://html.spec.whatwg.org/multipage/webappapis.html#event-handlers
         crate::js::events::reactivate_window_handlers(self);
         self.clear_observers();
@@ -1831,48 +1885,62 @@ impl World {
 
     pub(crate) fn set_document(&mut self, parsed: Parsed) -> u32 {
         let id = self.runtime.documents.borrow_mut().insert(parsed);
-        if self.document != Some(id) {
+        if self.doc.borrow().document != Some(id) {
             self.drop_active_document();
-            self.document = Some(id);
-            self.owned.insert(id);
+            let mut doc = self.doc.borrow_mut();
+            doc.document = Some(id);
+            doc.owned.insert(id);
         }
-        self.state.current_script = None;
-        self.state.module_fetch_root = None;
-        self.state.current_script_url = None;
-        self.state.declaring_module = false;
+        let mut doc = self.doc.borrow_mut();
+        doc.state.current_script = None;
+        doc.state.module_fetch_root = None;
+        doc.state.current_script_url = None;
+        doc.state.declaring_module = false;
         id
     }
 
     fn drop_active_document(&mut self) {
-        if let Some(old) = self.document.take() {
-            self.owned.remove(&old);
-            self.unload_object_urls_for_document(old);
-            self.input_files.retain(|node, _| node.document_id() != old);
-            self.input_file_list
+        let old = {
+            let mut doc = self.doc.borrow_mut();
+            let Some(old) = doc.document.take() else {
+                return;
+            };
+            doc.owned.remove(&old);
+            doc.input_files.retain(|node, _| node.document_id() != old);
+            doc.input_file_list
                 .retain(|node, _| node.document_id() != old);
-            self.state.forget_document(old);
-            self.runtime.documents.borrow_mut().remove(old);
-            self.runtime.registry.borrow_mut().forget_document(old);
-        }
+            doc.state.forget_document(old);
+            old
+        };
+        self.caches.forget_document(old);
+        self.unload_object_urls_for_document(old);
+        self.runtime.documents.borrow_mut().remove(old);
+        self.runtime.registry.borrow_mut().forget_document(old);
     }
 
     pub(crate) fn forget_owned_documents(&mut self) {
-        let ids: Vec<u32> = self.owned.drain().collect();
-        for id in ids {
-            self.unload_object_urls_for_document(id);
-            self.input_files.retain(|node, _| node.document_id() != id);
-            self.input_file_list
-                .retain(|node, _| node.document_id() != id);
-            self.runtime.documents.borrow_mut().remove(id);
-            self.runtime.registry.borrow_mut().forget_document(id);
-            self.state.forget_document(id);
-            self.events.forget_document(id);
+        if self.isolated.is_none() {
+            let ids: Vec<u32> = self.doc.borrow_mut().owned.drain().collect();
+            for id in ids {
+                self.unload_object_urls_for_document(id);
+                {
+                    let mut doc = self.doc.borrow_mut();
+                    doc.input_files.retain(|node, _| node.document_id() != id);
+                    doc.input_file_list
+                        .retain(|node, _| node.document_id() != id);
+                    doc.state.forget_document(id);
+                }
+                self.caches.forget_document(id);
+                self.runtime.documents.borrow_mut().remove(id);
+                self.runtime.registry.borrow_mut().forget_document(id);
+                self.win.borrow_mut().events.forget_document(id);
+            }
+            self.doc.borrow_mut().document = None;
         }
         self.runtime
             .registry
             .borrow_mut()
             .forget_realm(self.realm_id());
-        self.document = None;
     }
 
     pub(crate) fn prune_dead_wrappers(&self) {
@@ -1892,14 +1960,14 @@ impl World {
     }
 
     pub(crate) fn shared_wrapper(&self, id: NodeId) -> Option<Persistent<Value<'static>>> {
-        if self.isolated_name.is_some() {
+        if self.isolated.is_some() {
             return self.isolated_wrappers.borrow().get(&id).cloned();
         }
         self.runtime.registry.borrow().wrapper(id)
     }
 
     pub(crate) fn intern_shared_wrapper(&self, id: NodeId, value: Persistent<Value<'static>>) {
-        if self.isolated_name.is_some() {
+        if self.isolated.is_some() {
             self.isolated_wrappers.borrow_mut().insert(id, value);
             return;
         }
@@ -1907,12 +1975,12 @@ impl World {
     }
 
     pub(crate) fn main_document(&self) -> Option<Ref<'_, Parsed>> {
-        let id = self.document?;
+        let id = self.doc.borrow().document?;
         Ref::filter_map(self.runtime.documents.borrow(), |store| store.get(id)).ok()
     }
 
     pub(crate) fn main_document_mut(&self) -> Option<RefMut<'_, Parsed>> {
-        let id = self.document?;
+        let id = self.doc.borrow().document?;
         RefMut::filter_map(self.runtime.documents.borrow_mut(), |store| {
             store.get_mut(id)
         })
@@ -1920,11 +1988,11 @@ impl World {
     }
 
     pub(crate) fn implementation(&self, id: NodeId) -> Option<Persistent<Value<'static>>> {
-        self.state.implementations.get(&id.document_id()).cloned()
+        self.caches.implementations.get(&id.document_id()).cloned()
     }
 
     pub(crate) fn intern_implementation(&mut self, id: NodeId, value: Persistent<Value<'static>>) {
-        self.state.implementations.insert(id.document_id(), value);
+        self.caches.implementations.insert(id.document_id(), value);
     }
 
     pub(crate) fn document(&self, id: NodeId) -> Option<Ref<'_, Parsed>> {
@@ -1954,7 +2022,7 @@ impl World {
     }
 
     pub(crate) fn owns_node(&self, id: NodeId) -> bool {
-        self.owned.contains(&id.document)
+        self.doc.borrow().owned.contains(&id.document)
     }
 
     pub(crate) fn with_document<R>(
@@ -1967,7 +2035,7 @@ impl World {
     }
 
     pub(crate) fn with_main_document<R>(&self, reader: impl FnOnce(&Parsed) -> R) -> Option<R> {
-        let id = self.document?;
+        let id = self.doc.borrow().document?;
         let store = self.runtime.documents.borrow();
         store.get(id).map(reader)
     }
@@ -1999,7 +2067,7 @@ impl World {
     pub(crate) fn add_document(&mut self, parsed: Parsed) -> NodeId {
         let node = parsed.document.base.root_node().id;
         let document = self.runtime.documents.borrow_mut().insert(parsed);
-        self.owned.insert(document);
+        self.doc.borrow_mut().owned.insert(document);
         NodeId { document, node }
     }
 
@@ -2018,50 +2086,48 @@ impl World {
         #[cfg(target_family = "wasm")]
         let pid = 0u32;
         let scoped = format!("r{pid}-{}-{handle}", self.realm);
-        match &self.isolated_name {
-            Some(name) => format!("iw:{name}:{scoped}"),
+        match &self.isolated {
+            Some(isolated) => format!("iw:{}:{scoped}", isolated.name),
             None => scoped,
         }
     }
 
     pub(crate) fn main_document_id(&self) -> Option<u32> {
-        self.document
+        self.doc.borrow().document
     }
 
     pub(crate) fn frame(&self) -> FrameId {
-        self.frame
+        self.win.borrow().frame
     }
 
     // https://html.spec.whatwg.org/multipage/document-sequences.html#nav-container
     pub(crate) fn container(&self) -> Option<NodeId> {
-        self.runtime.shared.borrow().tree.container(self.frame)
+        self.runtime.shared.borrow().tree.container(self.frame())
     }
 
     // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-href
     pub(crate) fn has_browsing_context(&self) -> bool {
-        self.runtime.shared.borrow().tree.is_alive(self.frame)
+        self.runtime.shared.borrow().tree.is_alive(self.frame())
     }
 
     // https://html.spec.whatwg.org/multipage/webappapis.html#concept-environment-top-level-origin
     pub(crate) fn top_level_origin(&self) -> url::Origin {
-        self.top_level
-            .clone()
-            .unwrap_or_else(|| self.origin.clone())
+        let doc = self.doc.borrow();
+        doc.top_level.clone().unwrap_or_else(|| doc.origin.clone())
     }
 
     // https://privacycg.github.io/storage-access/#first-party-site-context
     pub(crate) fn set_parent_context(&mut self, parent: &Self) {
-        self.parent_context = Some(ParentContext {
-            origin: parent.origin.clone(),
-            first_party: parent.first_party,
+        let (origin, first_party) = {
+            let parent_doc = parent.doc.borrow();
+            (parent_doc.origin.clone(), parent_doc.first_party)
+        };
+        let mut doc = self.doc.borrow_mut();
+        doc.parent_context = Some(ParentContext {
+            origin,
+            first_party,
         });
-        self.refresh_first_party();
-    }
-
-    fn refresh_first_party(&mut self) {
-        self.first_party = self.parent_context.as_ref().is_none_or(|parent| {
-            parent.first_party && net::origins_same_site(&self.origin, &parent.origin)
-        });
+        doc.refresh_first_party();
     }
 
     // https://github.com/privacycg/CHIPS#computing-the-cookie-partition-key
@@ -2070,12 +2136,12 @@ impl World {
     }
 
     pub(crate) fn is_secure_context(&self) -> bool {
-        self.policy.secure_context
+        self.doc.borrow().policy.secure_context
     }
 
     // https://html.spec.whatwg.org/multipage/webappapis.html#concept-settings-object-cross-origin-isolated-capability
     pub(crate) fn is_cross_origin_isolated(&self) -> bool {
-        self.policy.cross_origin_isolated
+        self.doc.borrow().policy.cross_origin_isolated
     }
 
     // https://w3c.github.io/hr-time/#dfn-current-high-resolution-time
@@ -2088,12 +2154,13 @@ impl World {
     }
 
     pub(crate) fn is_attached(&self) -> bool {
-        if self.frame == FrameId::MAIN {
+        let frame = self.frame();
+        if frame == FrameId::MAIN {
             return true;
         }
-        let container = self.runtime.shared.borrow().tree.container(self.frame);
+        let container = self.runtime.shared.borrow().tree.container(frame);
         let Some(container) = container else {
-            return self.runtime.shared.borrow().tree.contains(self.frame);
+            return self.runtime.shared.borrow().tree.contains(frame);
         };
         self.owner_world(container).is_some_and(|owner| {
             owner
@@ -2153,13 +2220,16 @@ impl World {
             let frame = shared.allocate_frame();
             shared
                 .tree
-                .add_container(self.frame, frame, container, before);
+                .add_container(self.frame(), frame, container, before);
             if !name.is_empty() {
                 shared.tree.set_name(frame, name);
             }
             frame
         };
-        self.pending_frames.push((frame, container));
+        self.doc
+            .borrow_mut()
+            .pending_frames
+            .push((frame, container));
         true
     }
 
@@ -2196,12 +2266,12 @@ impl World {
             .borrow_mut()
             .register_frame_for_container(container);
         let pending = {
-            let mut world = world_rc.borrow_mut();
-            world
-                .pending_frames
+            let world = world_rc.borrow();
+            let mut doc = world.doc.borrow_mut();
+            doc.pending_frames
                 .iter()
                 .position(|(_, existing)| *existing == container)
-                .map(|index| world.pending_frames.remove(index))
+                .map(|index| doc.pending_frames.remove(index))
         };
         let Some((frame, container)) = pending else {
             return world_rc
@@ -2212,9 +2282,11 @@ impl World {
                 .frame_document(container)
                 .is_some();
         };
-        let host = world_rc.borrow().frame_host.clone();
+        let host = world_rc.borrow().win.borrow().frame_host.clone();
         let Some(host) = host else {
             world_rc
+                .borrow()
+                .doc
                 .borrow_mut()
                 .pending_frames
                 .push((frame, container));
@@ -2225,19 +2297,28 @@ impl World {
     }
 
     pub(crate) fn set_frame_host(&mut self, host: FrameHost) {
-        self.frame_host = Some(host);
+        self.win.borrow_mut().frame_host = Some(host);
     }
 
     // https://html.spec.whatwg.org/multipage/browsers.html#determining-the-creation-sandboxing-flags
     // https://html.spec.whatwg.org/multipage/browsers.html#popup-sandboxing-flag-set
     pub(crate) fn install_sandbox(&mut self, created: SandboxFlags) {
-        let popup = self.runtime.shared.borrow().tree.popup_sandbox(self.frame);
-        self.sandbox = created.union(popup);
+        let popup = self
+            .runtime
+            .shared
+            .borrow()
+            .tree
+            .popup_sandbox(self.frame());
+        self.doc.borrow_mut().sandbox = created.union(popup);
     }
 
     // https://html.spec.whatwg.org/multipage/browsers.html#sandboxed-auxiliary-navigation-browsing-context-flag
     pub(crate) fn allows_auxiliary_navigation(&self) -> bool {
-        !self.sandbox.contains(SandboxFlag::AuxiliaryNavigation)
+        !self
+            .doc
+            .borrow()
+            .sandbox
+            .contains(SandboxFlag::AuxiliaryNavigation)
     }
 
     // https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps
@@ -2259,16 +2340,17 @@ impl World {
             .and_then(|url| self.object_url_origin(url.as_str()));
         let opener = crate::window_features::WindowFeatures::parse(features)
             .opener_policy(blob_origin.as_ref(), &self.top_level_origin());
+        let doc = self.doc.borrow();
         Some(WindowOpenPlan {
             url,
             opener,
             withholds: opener != crate::protocol::OpenerPolicy::Keep && target.noopener_withholds(),
             source: crate::protocol::NavigationSource {
-                origin: crate::protocol::SerializedOrigin::from(&self.origin),
-                referrer: self.referrer_url.clone(),
-                referrer_policy: self.policy.referrer_policy.unwrap_or_default(),
-                frame: self.frame,
-                secure_context: self.is_secure_context(),
+                origin: crate::protocol::SerializedOrigin::from(&doc.origin),
+                referrer: doc.referrer_url.clone(),
+                referrer_policy: doc.policy.referrer_policy.unwrap_or_default(),
+                frame: self.frame(),
+                secure_context: doc.policy.secure_context,
             },
         })
     }
@@ -2298,7 +2380,7 @@ impl World {
         opener: crate::protocol::OpenerPolicy,
         allow_cross_origin: bool,
     ) -> Option<FrameId> {
-        let current = world_rc.borrow().frame;
+        let current = world_rc.borrow().frame();
         if !world_rc.borrow().allows_auxiliary_navigation()
             || !world_rc
                 .borrow()
@@ -2314,7 +2396,7 @@ impl World {
                 return None;
             }
             let frame = shared.allocate_frame();
-            let sandbox = world.sandbox.auxiliary_flags();
+            let sandbox = world.doc.borrow().sandbox.auxiliary_flags();
             shared.tree.add_auxiliary(
                 current,
                 frame,
@@ -2324,7 +2406,7 @@ impl World {
             if let Some(name) = target.new_context_name() {
                 shared.tree.set_name(frame, name.as_str().to_owned());
             }
-            (frame, world.frame_host.clone())
+            (frame, world.win.borrow().frame_host.clone())
         };
         let Some(host) = host else {
             world_rc
@@ -2353,20 +2435,20 @@ impl World {
             if url.scheme() == "blob" {
                 return self.object_url_origin(url.as_str()).is_some();
             }
-            url.origin() == self.origin
+            url.origin() == self.doc.borrow().origin
         })
     }
 
     pub(crate) fn queue_deferred_script(&mut self, id: NodeId) {
-        self.deferred_scripts.push(id);
+        self.doc.borrow_mut().deferred_scripts.push(id);
     }
 
     pub(crate) fn take_deferred_scripts(&mut self) -> Vec<NodeId> {
-        std::mem::take(&mut self.deferred_scripts)
+        std::mem::take(&mut self.doc.borrow_mut().deferred_scripts)
     }
 
     pub(crate) fn take_pending_frames(&mut self) -> Vec<(FrameId, NodeId)> {
-        std::mem::take(&mut self.pending_frames)
+        std::mem::take(&mut self.doc.borrow_mut().pending_frames)
     }
 
     fn iframe_containers_before(&self, before: Option<NodeId>) -> Vec<NodeId> {
@@ -2460,7 +2542,7 @@ impl World {
 
     // https://html.spec.whatwg.org/multipage/browsers.html#concept-origin
     pub(crate) fn origin_string(&self) -> String {
-        self.origin.ascii_serialization()
+        self.doc.borrow().origin.ascii_serialization()
     }
 
     pub(crate) fn set_url(&mut self, url: Url) {
@@ -2470,19 +2552,21 @@ impl World {
 
     // https://html.spec.whatwg.org/multipage/browsers.html#determining-the-origin
     pub(crate) fn set_url_with_origin(&mut self, url: Url, origin: url::Origin) {
-        self.referrer_url = url.clone();
-        self.document_url = url;
-        self.origin = origin;
+        let mut doc = self.doc.borrow_mut();
+        doc.referrer_url = url.clone();
+        doc.document_url = url;
+        doc.origin = origin;
         // https://html.spec.whatwg.org/multipage/browsers.html#relaxing-the-same-origin-restriction
-        self.domain = Rc::new(RefCell::new(None));
-        self.refresh_first_party();
+        doc.domain = Rc::new(RefCell::new(None));
+        doc.refresh_first_party();
     }
 
     // https://html.spec.whatwg.org/multipage/browsers.html#concept-origin-effective-domain
     pub(crate) fn effective_domain(&self) -> Option<String> {
-        match &self.origin {
+        let doc = self.doc.borrow();
+        match &doc.origin {
             url::Origin::Tuple(_, host, _) => Some(
-                self.domain
+                doc.domain
                     .borrow()
                     .clone()
                     .unwrap_or_else(|| host.to_string()),
@@ -2493,48 +2577,52 @@ impl World {
 
     // https://html.spec.whatwg.org/multipage/browsers.html#same-origin-domain
     pub(crate) fn same_origin_domain_with(&self, other: &Self) -> bool {
-        match (&self.origin, &other.origin) {
+        let left_doc = self.doc.borrow();
+        let right_doc = other.doc.borrow();
+        match (&left_doc.origin, &right_doc.origin) {
             (url::Origin::Tuple(left_scheme, _, _), url::Origin::Tuple(right_scheme, _, _)) => {
-                match (&*self.domain.borrow(), &*other.domain.borrow()) {
+                match (&*left_doc.domain.borrow(), &*right_doc.domain.borrow()) {
                     (Some(left), Some(right)) => left_scheme == right_scheme && left == right,
                     _ => {
-                        self.domain.borrow().is_none()
-                            && other.domain.borrow().is_none()
-                            && self.origin == other.origin
+                        left_doc.domain.borrow().is_none()
+                            && right_doc.domain.borrow().is_none()
+                            && left_doc.origin == right_doc.origin
                     }
                 }
             }
-            _ => self.origin == other.origin,
+            _ => left_doc.origin == right_doc.origin,
         }
     }
 
     // https://html.spec.whatwg.org/multipage/urls-and-fetching.html#fallback-base-url
     pub(crate) fn resolve_relative(&self, spec: &str) -> Option<Url> {
+        let doc = self.doc.borrow();
         Url::parse(spec).ok().or_else(|| {
-            self.document_url
+            doc.document_url
                 .join(spec)
                 .ok()
-                .or_else(|| self.base_url.as_ref().and_then(|base| base.join(spec).ok()))
+                .or_else(|| doc.base_url.as_ref().and_then(|base| base.join(spec).ok()))
         })
     }
 
     pub(crate) fn url_matches_origin(&self, url: &Url) -> bool {
-        match self.origin {
-            url::Origin::Tuple(..) => url.origin() == self.origin,
+        let doc = self.doc.borrow();
+        match doc.origin {
+            url::Origin::Tuple(..) => url.origin() == doc.origin,
             url::Origin::Opaque(_) => {
                 let blob_origin = if url.scheme() == "blob" {
                     self.runtime.stored_object_url_origin(url.as_str())
                 } else {
                     None
                 };
-                opaque_url_matches(&self.document_url, &self.origin, url, blob_origin.as_ref())
+                opaque_url_matches(&doc.document_url, &doc.origin, url, blob_origin.as_ref())
             }
         }
     }
 
     // https://html.spec.whatwg.org/multipage/webstorage.html#the-localstorage-attribute
     pub(crate) fn storage_origin(&self) -> Option<StorageKey> {
-        StorageKey::from_origin(&self.origin)
+        StorageKey::from_origin(&self.doc.borrow().origin)
     }
 
     pub(crate) fn storage_get(&self, kind: StorageKind, key: &str) -> Option<String> {
@@ -2559,13 +2647,14 @@ impl World {
         let Some(origin) = self.storage_origin() else {
             return Ok(None);
         };
+        let document_url = self.doc.borrow().document_url.to_string();
         let change = self.runtime.services.storage_set(
             kind,
             &origin,
-            self.document_url.as_str(),
+            &document_url,
             key,
             value,
-            self.frame,
+            self.frame(),
         )?;
         if let Some(change) = &change {
             self.queue_storage_event(kind, &origin, change);
@@ -2575,13 +2664,11 @@ impl World {
 
     pub(crate) fn storage_remove(&self, kind: StorageKind, key: &str) -> Option<StorageChange> {
         let origin = self.storage_origin()?;
-        let change = self.runtime.services.storage_remove(
-            kind,
-            &origin,
-            self.document_url.as_str(),
-            key,
-            self.frame,
-        );
+        let document_url = self.doc.borrow().document_url.to_string();
+        let change =
+            self.runtime
+                .services
+                .storage_remove(kind, &origin, &document_url, key, self.frame());
         if let Some(change) = &change {
             self.queue_storage_event(kind, &origin, change);
         }
@@ -2590,12 +2677,11 @@ impl World {
 
     pub(crate) fn storage_clear(&self, kind: StorageKind) -> Option<StorageChange> {
         let origin = self.storage_origin()?;
-        let change = self.runtime.services.storage_clear(
-            kind,
-            &origin,
-            self.document_url.as_str(),
-            self.frame,
-        );
+        let document_url = self.doc.borrow().document_url.to_string();
+        let change =
+            self.runtime
+                .services
+                .storage_clear(kind, &origin, &document_url, self.frame());
         if let Some(change) = &change {
             self.queue_storage_event(kind, &origin, change);
         }
@@ -2606,22 +2692,23 @@ impl World {
         if kind != StorageKind::Session {
             return;
         }
+        let url = self.doc.borrow().document_url.to_string();
         self.runtime
             .pending_storage
             .borrow_mut()
             .push(PendingStorageEvent {
-                source: Some(self.frame),
+                source: Some(self.frame()),
                 origin: origin.clone(),
                 kind,
                 key: change.key.clone(),
                 old_value: change.old_value.clone(),
                 new_value: change.new_value.clone(),
-                url: self.document_url.to_string(),
+                url,
             });
     }
 
     pub(crate) fn main_document_root(&self) -> Option<NodeId> {
-        let document = self.document?;
+        let document = self.doc.borrow().document?;
         self.main_document().map(|parsed| NodeId {
             document,
             node: parsed.document.base.root_node().id,
@@ -2634,7 +2721,7 @@ impl World {
             return url;
         }
         if self.is_main_document(id) {
-            return self.document_url.as_str().to_owned();
+            return self.doc.borrow().document_url.as_str().to_owned();
         }
         "about:blank".to_owned()
     }
@@ -2645,15 +2732,19 @@ impl World {
         let href = self.document(id).and_then(|parsed| {
             crate::dom::tree::attr(&parsed.document.base, id.node, "href").map(str::to_owned)
         });
-        if self.state.base_href_seen.get(&id) == Some(&href) {
-            return self.state.base_results.get(&id).cloned().flatten();
+        {
+            let mut doc = self.doc.borrow_mut();
+            if doc.state.base_href_seen.get(&id) == Some(&href) {
+                return doc.state.base_results.get(&id).cloned().flatten();
+            }
+            doc.state.base_href_seen.insert(id, href.clone());
+            if href.is_none() {
+                doc.state.blocked_bases.remove(&id);
+                doc.state.base_results.insert(id, None);
+                return None;
+            }
         }
-        self.state.base_href_seen.insert(id, href.clone());
-        let Some(href) = href else {
-            self.state.blocked_bases.remove(&id);
-            self.state.base_results.insert(id, None);
-            return None;
-        };
+        let href = href?;
         let fallback = self.document_base_url(id);
         // https://html.spec.whatwg.org/multipage/semantics.html#the-base-element
         let Some(url) = fallback
@@ -2661,26 +2752,28 @@ impl World {
             .ok()
             .filter(|url| !matches!(url.scheme(), "data" | "javascript"))
         else {
-            self.state.blocked_bases.remove(&id);
-            self.state.base_results.insert(id, None);
+            let mut doc = self.doc.borrow_mut();
+            doc.state.blocked_bases.remove(&id);
+            doc.state.base_results.insert(id, None);
             return None;
         };
-        let document_url =
-            Url::parse(&self.document_url_of(id)).unwrap_or_else(|_| self.document_url.clone());
-        let violations = self
-            .policy
-            .csp
-            .check_base(&self.origin, &document_url, &url);
+        let document_url = Url::parse(&self.document_url_of(id))
+            .unwrap_or_else(|_| self.doc.borrow().document_url.clone());
+        let violations = {
+            let doc = self.doc.borrow();
+            doc.policy.csp.check_base(&doc.origin, &document_url, &url)
+        };
         if !violations.is_empty() {
             self.queue_csp_violations(Some(id), violations.clone());
         }
+        let mut doc = self.doc.borrow_mut();
         if crate::csp::blocks(&violations) {
-            self.state.blocked_bases.insert(id);
-            self.state.base_results.insert(id, None);
+            doc.state.blocked_bases.insert(id);
+            doc.state.base_results.insert(id, None);
             None
         } else {
-            self.state.blocked_bases.remove(&id);
-            self.state.base_results.insert(id, Some(url.clone()));
+            doc.state.blocked_bases.remove(&id);
+            doc.state.base_results.insert(id, Some(url.clone()));
             Some(url)
         }
     }
@@ -2697,7 +2790,7 @@ impl World {
         // https://html.spec.whatwg.org/multipage/urls-and-fetching.html#fallback-base-url
         let fallback = self
             .is_main_document(id)
-            .then(|| self.base_url.clone())
+            .then(|| self.doc.borrow().base_url.clone())
             .flatten()
             .or(parsed)
             .unwrap_or_else(|| Url::parse("about:blank").expect("static URL parses"));
@@ -2717,16 +2810,19 @@ impl World {
 
     // https://html.spec.whatwg.org/multipage/dom.html#dom-document-cookie
     pub(crate) fn cookie_url(&self) -> Url {
-        self.inherited_cookie_url
+        let doc = self.doc.borrow();
+        doc.inherited_cookie_url
             .clone()
-            .unwrap_or_else(|| self.creation_url.clone())
+            .unwrap_or_else(|| doc.creation_url.clone())
     }
 
     pub(crate) fn main_base_url(&self) -> Url {
-        let fallback = self
-            .base_url
-            .clone()
-            .unwrap_or_else(|| self.document_url.clone());
+        let fallback = {
+            let doc = self.doc.borrow();
+            doc.base_url
+                .clone()
+                .unwrap_or_else(|| doc.document_url.clone())
+        };
         let Some(parsed) = self.main_document() else {
             return fallback;
         };
@@ -2744,6 +2840,7 @@ impl World {
     // https://w3c.github.io/webappsec-csp/#is-base-allowed-for-document
     pub(crate) fn frozen_base_href(&self, parsed: &Parsed) -> Option<String> {
         let base = &parsed.document.base;
+        let doc = self.doc.borrow();
         let mut stack = vec![base.root_node().id];
         while let Some(current) = stack.pop() {
             let Some(node) = base.get_node(current) else {
@@ -2758,7 +2855,7 @@ impl World {
                     document: parsed.id,
                     node: current,
                 };
-                if self.state.blocked_bases.contains(&id) {
+                if doc.state.blocked_bases.contains(&id) {
                     return None;
                 }
                 return Some(value.to_owned());
@@ -2776,16 +2873,20 @@ impl World {
             NavigationTarget::Target(_) => None,
         };
         if let Some(frame) = target
-            && frame != self.frame
+            && frame != self.frame()
             && let Some(world) = self.frame_world(frame)
         {
             world.borrow_mut().await_proxy_sets_replay();
         }
-        self.state.frame_navigations.push(navigation);
+        self.doc
+            .borrow_mut()
+            .state
+            .frame_navigations
+            .push(navigation);
     }
 
     pub(crate) fn take_frame_navigations(&mut self) -> Vec<FrameNavigation> {
-        std::mem::take(&mut self.state.frame_navigations)
+        std::mem::take(&mut self.doc.borrow_mut().state.frame_navigations)
     }
 
     // https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-set
@@ -2803,7 +2904,7 @@ impl World {
     }
 
     pub(crate) fn has_frame_navigations(&self) -> bool {
-        !self.state.frame_navigations.is_empty()
+        !self.doc.borrow().state.frame_navigations.is_empty()
     }
 
     // https://cookiestore.spec.whatwg.org/#process-cookie-changes
@@ -2817,9 +2918,10 @@ impl World {
 
     // https://cookiestore.spec.whatwg.org/#process-cookie-changes
     pub(crate) fn notify_cookie_changes(&self) {
+        let frame = self.frame();
         let worlds = self.runtime.registry.borrow().live_worlds();
         for world in worlds {
-            if world.borrow().frame() == self.frame {
+            if world.borrow().frame() == frame {
                 continue;
             }
             world.borrow().queue_cookie_changes();
@@ -2959,77 +3061,100 @@ impl World {
 
     // https://w3c.github.io/webappsec-csp/#meta-element
     pub(crate) fn apply_meta_policy(&mut self, id: NodeId) {
-        if self.state.applied_csp_metas.contains(&id) {
+        if self.doc.borrow().state.applied_csp_metas.contains(&id) {
             return;
         }
         let content = self
             .document(id)
             .and_then(|parsed| crate::csp::meta_policy(&parsed.document.base, id.node));
-        if let Some(content) = content
-            && self.state.applied_csp_metas.insert(id)
-        {
-            self.policy.csp.push_meta(&content);
+        if let Some(content) = content {
+            let mut doc = self.doc.borrow_mut();
+            if doc.state.applied_csp_metas.insert(id) {
+                doc.policy.csp.push_meta(&content);
+            }
         }
     }
 
     // https://html.spec.whatwg.org/multipage/scripting.html#parser-inserted
     pub(crate) fn mark_parser_inserted(&mut self, id: NodeId) {
-        self.state.parser_inserted.insert(id);
-        self.state.script_force_async_cleared.insert(id);
+        let mut doc = self.doc.borrow_mut();
+        doc.state.parser_inserted.insert(id);
+        doc.state.script_force_async_cleared.insert(id);
     }
 
     // https://html.spec.whatwg.org/multipage/scripting.html#script-force-async
     pub(crate) fn clear_script_force_async(&mut self, id: NodeId) {
-        self.state.script_force_async_cleared.insert(id);
+        self.doc
+            .borrow_mut()
+            .state
+            .script_force_async_cleared
+            .insert(id);
     }
 
     pub(crate) fn script_force_async(&self, id: NodeId) -> bool {
-        !self.state.script_force_async_cleared.contains(&id)
+        !self
+            .doc
+            .borrow()
+            .state
+            .script_force_async_cleared
+            .contains(&id)
     }
 
     pub(crate) fn clear_parser_inserted(&mut self, id: NodeId) {
-        self.state.parser_inserted.remove(&id);
+        self.doc.borrow_mut().state.parser_inserted.remove(&id);
     }
 
     pub(crate) fn is_parser_inserted(&self, id: NodeId) -> bool {
-        self.state.parser_inserted.contains(&id)
+        self.doc.borrow().state.parser_inserted.contains(&id)
     }
 
     pub(crate) fn set_input_files(&mut self, id: NodeId, files: Vec<Persistent<Value<'static>>>) {
-        self.input_files.insert(id, files);
+        self.doc.borrow_mut().input_files.insert(id, files);
     }
 
-    pub(crate) fn input_files(&self, id: NodeId) -> Option<&[Persistent<Value<'static>>]> {
-        self.input_files.get(&id).map(Vec::as_slice)
+    pub(crate) fn input_files(&self, id: NodeId) -> Option<Vec<Persistent<Value<'static>>>> {
+        self.doc.borrow().input_files.get(&id).cloned()
     }
 
     pub(crate) fn rekey_input_files(&mut self, from: NodeId, to: NodeId) {
-        if let Some(files) = self.input_files.remove(&from) {
-            self.input_files.insert(to, files);
+        let mut doc = self.doc.borrow_mut();
+        if let Some(files) = doc.input_files.remove(&from) {
+            doc.input_files.insert(to, files);
         }
-        if let Some(list) = self.input_file_list.remove(&from) {
-            self.input_file_list.insert(to, list);
+        if let Some(list) = doc.input_file_list.remove(&from) {
+            doc.input_file_list.insert(to, list);
         }
     }
 
     pub(crate) fn set_input_file_list(&mut self, id: NodeId, list: Persistent<Value<'static>>) {
-        self.input_file_list.insert(id, list);
+        self.doc.borrow_mut().input_file_list.insert(id, list);
     }
 
-    pub(crate) fn input_file_list(&self, id: NodeId) -> Option<&Persistent<Value<'static>>> {
-        self.input_file_list.get(&id)
+    pub(crate) fn input_file_list(&self, id: NodeId) -> Option<Persistent<Value<'static>>> {
+        self.doc.borrow().input_file_list.get(&id).cloned()
     }
 
-    pub(crate) fn control(&mut self, id: NodeId) -> &mut ControlState {
-        self.state.controls.entry(id).or_default()
+    pub(crate) fn with_control_mut<R>(
+        &self,
+        id: NodeId,
+        f: impl FnOnce(&mut ControlState) -> R,
+    ) -> R {
+        let mut doc = self.doc.borrow_mut();
+        let control = doc.state.controls.entry(id).or_default();
+        f(control)
     }
 
-    pub(crate) fn control_state(&self, id: NodeId) -> Option<&ControlState> {
-        self.state.controls.get(&id)
+    pub(crate) fn with_control_state<R>(
+        &self,
+        id: NodeId,
+        f: impl FnOnce(&ControlState) -> R,
+    ) -> Option<R> {
+        let doc = self.doc.borrow();
+        doc.state.controls.get(&id).map(f)
     }
 
     pub(crate) fn clear_control_edit_state(&mut self, id: NodeId) {
-        if let Some(control) = self.state.controls.get_mut(&id) {
+        if let Some(control) = self.doc.borrow_mut().state.controls.get_mut(&id) {
             control.clear_edit_state();
         }
     }
@@ -3080,15 +3205,19 @@ impl World {
             return None;
         }
         let id = object_url_id()?;
-        let url = format!("blob:{}/{id}", self.origin.ascii_serialization());
+        let (origin, document) = {
+            let doc = self.doc.borrow();
+            (doc.origin.clone(), doc.document)
+        };
+        let url = format!("blob:{}/{id}", origin.ascii_serialization());
         self.runtime.insert_object_url(
             url.clone(),
             ObjectUrlEntry {
                 contents: Arc::from(contents),
                 content_type: Arc::from(content_type),
-                origin: self.origin.clone(),
-                frame: self.frame,
-                document: self.document,
+                origin,
+                frame: self.frame(),
+                document,
             },
         );
         budget.object_url_bytes = total;
@@ -3096,15 +3225,18 @@ impl World {
     }
 
     pub(crate) fn object_url_contents(&self, url: &str) -> Option<Arc<str>> {
-        self.runtime.object_url_contents(url, &self.origin)
+        let origin = self.doc.borrow().origin.clone();
+        self.runtime.object_url_contents(url, &origin)
     }
 
     pub(crate) fn object_url_type(&self, url: &str) -> Option<Arc<str>> {
-        self.runtime.object_url_type(url, &self.origin)
+        let origin = self.doc.borrow().origin.clone();
+        self.runtime.object_url_type(url, &origin)
     }
 
     pub(crate) fn object_url_origin(&self, url: &str) -> Option<url::Origin> {
-        self.runtime.object_url_origin(url, &self.origin)
+        let origin = self.doc.borrow().origin.clone();
+        self.runtime.object_url_origin(url, &origin)
     }
 
     fn refund_object_url_bytes(&self, bytes: usize) {
@@ -3120,14 +3252,15 @@ impl World {
     }
 
     fn unload_object_urls_for_frame(&mut self) {
-        let frame = self.frame;
+        let frame = self.frame();
         let released = self.runtime.take_object_urls(|entry| entry.frame == frame);
         self.refund_object_url_bytes(released);
     }
 
     pub(crate) fn revoke_object_url(&mut self, url: &str) {
         // https://w3c.github.io/FileAPI/#dfn-revokeObjectURL
-        if self.runtime.object_url_origin(url, &self.origin).is_none() {
+        let origin = self.doc.borrow().origin.clone();
+        if self.runtime.object_url_origin(url, &origin).is_none() {
             return;
         }
         if let Some(released) = self.runtime.remove_object_url(url) {
@@ -3137,69 +3270,96 @@ impl World {
     }
 
     pub(crate) fn add_listener(&mut self, target: EventTargetKey, listener: Rc<Listener>) {
-        if let EventTargetKey::Attribute { id, .. } = target {
-            if let Some(entry) = self
-                .runtime
-                .registry
-                .borrow_mut()
-                .attributes
-                .entries
-                .get_mut(&id)
-            {
-                entry.listeners.push(listener);
+        match target {
+            EventTargetKey::Attribute { id, .. } => {
+                if let Some(entry) = self
+                    .runtime
+                    .registry
+                    .borrow_mut()
+                    .attributes
+                    .entries
+                    .get_mut(&id)
+                {
+                    entry.listeners.push(listener);
+                }
             }
-            return;
+            EventTargetKey::Standalone(id) => {
+                self.standalone_listeners
+                    .entry(id)
+                    .or_default()
+                    .push(listener);
+            }
+            EventTargetKey::Window | EventTargetKey::Node(_) => {
+                self.win
+                    .borrow_mut()
+                    .events
+                    .listeners
+                    .entry(target)
+                    .or_default()
+                    .push(listener);
+            }
         }
-        self.events
-            .listeners
-            .entry(target)
-            .or_default()
-            .push(listener);
     }
 
     // https://dom.spec.whatwg.org/#concept-event-listener-invoke
     pub(crate) fn listener_snapshot(&self, target: EventTargetKey) -> Vec<Rc<Listener>> {
-        if let EventTargetKey::Attribute { id, .. } = target {
-            return self
+        match target {
+            EventTargetKey::Attribute { id, .. } => self
                 .runtime
                 .registry
                 .borrow()
                 .attributes
                 .entries
                 .get(&id)
-                .map_or_default(|entry| entry.listeners.clone());
+                .map_or_default(|entry| entry.listeners.clone()),
+            EventTargetKey::Standalone(id) => self
+                .standalone_listeners
+                .get(&id)
+                .cloned()
+                .unwrap_or_default(),
+            EventTargetKey::Window | EventTargetKey::Node(_) => self
+                .win
+                .borrow()
+                .events
+                .listeners
+                .get(&target)
+                .cloned()
+                .unwrap_or_default(),
         }
-        self.events
-            .listeners
-            .get(&target)
-            .cloned()
-            .unwrap_or_default()
     }
 
     pub(crate) fn remove_listener(&mut self, target: EventTargetKey, listener: &Rc<Listener>) {
-        if let EventTargetKey::Attribute { id, .. } = target {
-            if let Some(entry) = self
-                .runtime
-                .registry
-                .borrow_mut()
-                .attributes
-                .entries
-                .get_mut(&id)
-            {
-                entry
-                    .listeners
-                    .retain(|existing| !Rc::ptr_eq(existing, listener));
+        match target {
+            EventTargetKey::Attribute { id, .. } => {
+                if let Some(entry) = self
+                    .runtime
+                    .registry
+                    .borrow_mut()
+                    .attributes
+                    .entries
+                    .get_mut(&id)
+                {
+                    entry
+                        .listeners
+                        .retain(|existing| !Rc::ptr_eq(existing, listener));
+                }
             }
-            return;
-        }
-        if let Some(list) = self.events.listeners.get_mut(&target) {
-            list.retain(|existing| !Rc::ptr_eq(existing, listener));
+            EventTargetKey::Standalone(id) => {
+                if let Some(list) = self.standalone_listeners.get_mut(&id) {
+                    list.retain(|existing| !Rc::ptr_eq(existing, listener));
+                }
+            }
+            EventTargetKey::Window | EventTargetKey::Node(_) => {
+                if let Some(list) = self.win.borrow_mut().events.listeners.get_mut(&target) {
+                    list.retain(|existing| !Rc::ptr_eq(existing, listener));
+                }
+            }
         }
     }
 
     pub(crate) fn next_standalone_target(&mut self) -> u64 {
-        let id = self.events.next_standalone_target;
-        self.events.next_standalone_target = self.events.next_standalone_target.wrapping_add(1);
+        let id = self.next_standalone_target;
+        self.next_standalone_target = self.next_standalone_target.wrapping_add(1);
         id
     }
 
@@ -3208,19 +3368,19 @@ impl World {
         id: u64,
         target: Persistent<Object<'static>>,
     ) {
-        self.events.standalone_targets.insert(id, target);
+        self.standalone_targets.insert(id, target);
     }
 
     pub(crate) fn standalone_target(&self, id: u64) -> Option<Persistent<Object<'static>>> {
-        self.events.standalone_targets.get(&id).cloned()
+        self.standalone_targets.get(&id).cloned()
     }
 
     pub(crate) fn set_window(&mut self, window: Persistent<Object<'static>>) {
-        self.events.window = Some(window);
+        self.window_object = Some(window);
     }
 
     pub(crate) fn window_object(&self) -> Option<Persistent<Object<'static>>> {
-        self.events.window.clone()
+        self.window_object.clone()
     }
 
     // https://html.spec.whatwg.org/multipage/dom.html#current-document-readiness
@@ -3265,22 +3425,35 @@ impl World {
     }
 
     pub(crate) fn clear_listeners(&mut self) {
-        self.events.clear_realm();
-        self.state.implementations.clear();
+        if self.isolated.is_some() {
+            self.win.borrow_mut().events.forget_realm(self.realm);
+        } else {
+            self.win.borrow_mut().events.clear_realm();
+            self.clear_observers();
+            // https://w3c.github.io/FileAPI/#file
+            let mut doc = self.doc.borrow_mut();
+            doc.input_files.clear();
+            doc.input_file_list.clear();
+        }
+        self.window_object = None;
+        self.standalone_targets.clear();
+        self.standalone_listeners.clear();
+        self.next_standalone_target = 0;
+        self.isolated_wrappers.borrow_mut().clear();
+        self.caches.clear();
         self.brands.clear();
-        self.clear_observers();
         self.current_event = None;
-        // https://w3c.github.io/FileAPI/#file
-        self.input_files.clear();
-        self.input_file_list.clear();
     }
 
     pub(crate) fn release_host_primitives(&mut self) {
-        self.runtime
-            .registry
-            .borrow_mut()
-            .reactions
-            .forget_frame(self.frame);
+        if self.isolated.is_none() {
+            let frame = self.frame();
+            self.runtime
+                .registry
+                .borrow_mut()
+                .reactions
+                .forget_frame(frame);
+        }
         self.pristine_number = None;
         self.pristine_boolean = None;
         self.pristine_reflect_set = None;
@@ -3333,22 +3506,23 @@ impl World {
 
     // https://w3c.github.io/webdriver/#elements
     pub(crate) fn remote_id(&mut self, node: NodeId) -> u64 {
-        if let Some(&remote) = self.state.remote_ids.get(&node) {
+        if let Some(&remote) = self.doc.borrow().state.remote_ids.get(&node) {
             return remote;
         }
         let remote = self.runtime.registry.borrow_mut().allocate_remote();
-        self.state.remote_ids.insert(node, remote);
-        self.state.remote_nodes.insert(remote, node);
+        let mut doc = self.doc.borrow_mut();
+        doc.state.remote_ids.insert(node, remote);
+        doc.state.remote_nodes.insert(remote, node);
         remote
     }
 
     pub(crate) fn node_for_remote(&self, remote: u64) -> Option<NodeId> {
-        self.state.remote_nodes.get(&remote).copied()
+        self.doc.borrow().state.remote_nodes.get(&remote).copied()
     }
 
     // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-document-defaultview
     pub(crate) fn is_main_document(&self, node: NodeId) -> bool {
-        self.document == Some(node.document_id())
+        self.doc.borrow().document == Some(node.document_id())
     }
 
     // https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-map
@@ -3357,7 +3531,12 @@ impl World {
         node: Option<NodeId>,
         name: &str,
     ) -> Option<EventHandlerSlot> {
-        self.events.handlers.get(&(node, name.to_owned())).cloned()
+        self.win
+            .borrow()
+            .events
+            .handlers
+            .get(&(node, name.to_owned()))
+            .cloned()
     }
 
     pub(crate) fn set_handler_value(
@@ -3366,7 +3545,8 @@ impl World {
         name: &str,
         value: HandlerValue,
     ) {
-        let entry = self
+        let mut win = self.win.borrow_mut();
+        let entry = win
             .events
             .handlers
             .entry((node, name.to_owned()))
@@ -3384,7 +3564,8 @@ impl World {
         name: &str,
         listener: Option<Rc<Listener>>,
     ) {
-        let entry = self
+        let mut win = self.win.borrow_mut();
+        let entry = win
             .events
             .handlers
             .entry((node, name.to_owned()))
@@ -3396,7 +3577,9 @@ impl World {
     }
 
     pub(crate) fn handler_names(&self, node: Option<NodeId>) -> Vec<String> {
-        self.events
+        self.win
+            .borrow()
+            .events
             .handlers
             .keys()
             .filter(|(key, _)| *key == node)
@@ -3406,11 +3589,12 @@ impl World {
 
     // https://html.spec.whatwg.org/multipage/webappapis.html#deactivate-an-event-handler
     pub(crate) fn deactivate_handler_slot(&mut self, node: Option<NodeId>, name: &str) {
-        if let Some(entry) = self.events.handlers.get_mut(&(node, name.to_owned())) {
+        let mut win = self.win.borrow_mut();
+        if let Some(entry) = win.events.handlers.get_mut(&(node, name.to_owned())) {
             entry.value = HandlerValue::Null;
             entry.listener = None;
         } else {
-            self.events.handlers.insert(
+            win.events.handlers.insert(
                 (node, name.to_owned()),
                 EventHandlerSlot {
                     value: HandlerValue::Null,
@@ -3425,7 +3609,11 @@ impl World {
         node: Option<NodeId>,
         name: &str,
     ) -> Option<EventHandlerSlot> {
-        self.events.handlers.remove(&(node, name.to_owned()))
+        self.win
+            .borrow_mut()
+            .events
+            .handlers
+            .remove(&(node, name.to_owned()))
     }
 
     pub(crate) fn set_active_element(&mut self, document: u32, node: Option<NodeId>) {
@@ -3445,36 +3633,40 @@ impl World {
     }
 
     pub(crate) fn click_in_progress(&self, node: NodeId) -> bool {
-        self.clicks_in_progress.contains(&node)
+        self.win.borrow().clicks_in_progress.contains(&node)
     }
 
     pub(crate) fn set_click_in_progress(&mut self, node: NodeId, running: bool) {
+        let mut win = self.win.borrow_mut();
         if running {
-            self.clicks_in_progress.insert(node);
+            win.clicks_in_progress.insert(node);
         } else {
-            self.clicks_in_progress.remove(&node);
+            win.clicks_in_progress.remove(&node);
         }
     }
 
     // https://html.spec.whatwg.org/multipage/interaction.html#activation-notification
     pub(crate) fn activate_user(&mut self) {
-        self.transient_activation = Some(Instant::now() + Duration::from_secs(5));
-        self.sticky_activation = true;
+        let mut win = self.win.borrow_mut();
+        win.transient_activation = Some(Instant::now() + Duration::from_secs(5));
+        win.sticky_activation = true;
     }
 
     pub(crate) fn user_activation_active(&self) -> bool {
-        self.transient_activation
+        self.win
+            .borrow()
+            .transient_activation
             .is_some_and(|expires| Instant::now() < expires)
     }
 
     pub(crate) fn user_activation_sticky(&self) -> bool {
-        self.sticky_activation
+        self.win.borrow().sticky_activation
     }
 
     // https://html.spec.whatwg.org/multipage/interaction.html#consume-user-activation
     pub(crate) fn consume_user_activation(&mut self) -> bool {
         if self.user_activation_active() {
-            self.transient_activation = None;
+            self.win.borrow_mut().transient_activation = None;
             true
         } else {
             false

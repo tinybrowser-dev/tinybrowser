@@ -254,11 +254,11 @@ impl Resolver for WebModuleResolver {
             Ok(base) => base,
             Err(_) => world
                 .as_ref()
-                .map(|world| world.borrow().document_url.clone())
+                .map(|world| world.borrow().doc().document_url.clone())
                 .ok_or_else(|| Error::new_resolving(base, name))?,
         };
         let resolved = match world {
-            Some(world) => world.borrow().import_map.resolve(name, &base),
+            Some(world) => world.borrow().doc().import_map.resolve(name, &base),
             None => resolve_url_like_module_specifier(name, &base).ok_or(()),
         }
         .map_err(|()| Error::new_resolving(base.as_str(), name))?;
@@ -306,7 +306,8 @@ fn module_request_blocked(
     };
     let violations = {
         let world = world_rc.borrow();
-        csp.check_request(origin, &world.document_url, &url, destination, None)
+        let doc = world.doc();
+        csp.check_request(origin, &doc.document_url, &url, destination, None)
     };
     if violations.is_empty() {
         return Ok(());
@@ -331,20 +332,22 @@ fn declare_module<'js>(
     // https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script
     let world = super::bindings::world(ctx).ok();
     let previous = world.as_ref().map(|world| {
-        let mut world = world.borrow_mut();
+        let world = world.borrow();
+        let mut doc = world.doc_mut();
         let previous = (
-            world.state.declaring_module,
-            world.state.current_script_url.take(),
+            doc.state.declaring_module,
+            doc.state.current_script_url.take(),
         );
-        world.state.declaring_module = true;
-        world.state.current_script_url = Url::parse(name).ok();
+        doc.state.declaring_module = true;
+        doc.state.current_script_url = Url::parse(name).ok();
         previous
     });
     let module = Module::declare(ctx.clone(), name, source);
     if let (Some(world), Some(previous)) = (world, previous) {
-        let mut world = world.borrow_mut();
-        world.state.declaring_module = previous.0;
-        world.state.current_script_url = previous.1;
+        let world = world.borrow();
+        let mut doc = world.doc_mut();
+        doc.state.declaring_module = previous.0;
+        doc.state.current_script_url = previous.1;
     }
     let module = module?;
     module.meta()?.set("url", name)?;
@@ -372,22 +375,24 @@ struct ModuleFetchInputs {
 }
 
 fn module_fetch_inputs(world: &crate::js::World, name: &str) -> ModuleFetchInputs {
+    let effective_csp = world.effective_csp();
+    let partition_key = world.partition_key();
+    let doc = world.doc();
     // https://html.spec.whatwg.org/multipage/webappapis.html#fetch-the-descendants-of-and-link-a-module-script
-    let options = world
+    let options = doc
         .state
         .module_fetch_root
-        .or(world.state.current_script)
+        .or(doc.state.current_script)
         .map_or_default(|element| world.subresource_options(element));
     // https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script
-    let worker_root =
-        world.state.module_client_origin.is_some() && name == world.document_url.as_str();
-    let initiator = world
+    let worker_root = doc.state.module_client_origin.is_some() && name == doc.document_url.as_str();
+    let initiator = doc
         .state
         .module_client_origin
         .clone()
-        .unwrap_or_else(|| world.origin.clone());
+        .unwrap_or_else(|| doc.origin.clone());
     // https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script
-    let credentials = world.state.module_credentials.unwrap_or_else(|| {
+    let credentials = doc.state.module_credentials.unwrap_or_else(|| {
         crate::protocol::cross_origin_credentials(crate::protocol::cross_origin(
             options.crossorigin,
         ))
@@ -405,28 +410,26 @@ fn module_fetch_inputs(world: &crate::js::World, name: &str) -> ModuleFetchInput
     );
     // https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script
     let referrer_url = if worker && !worker_root {
-        if world.state.declaring_module {
-            world
-                .state
+        if doc.state.declaring_module {
+            doc.state
                 .current_script_url
                 .clone()
-                .unwrap_or_else(|| world.document_url.clone())
+                .unwrap_or_else(|| doc.document_url.clone())
         } else {
-            world.document_url.clone()
+            doc.document_url.clone()
         }
     } else {
-        world.referrer_url.clone()
+        doc.referrer_url.clone()
     };
     // https://w3c.github.io/webappsec-referrer-policy/#integration-with-html
     let (referrer_policy, csp, destination) =
-        if worker && !worker_root && !world.state.declaring_module {
+        if worker && !worker_root && !doc.state.declaring_module {
             (
-                world.state.worker_referrer_policy.unwrap_or_default(),
-                world
-                    .state
+                doc.state.worker_referrer_policy.unwrap_or_default(),
+                doc.state
                     .worker_module_csp
                     .clone()
-                    .unwrap_or_else(|| world.policy.csp.clone()),
+                    .unwrap_or_else(|| doc.policy.csp.clone()),
                 crate::csp::Destination::Script,
             )
         } else {
@@ -434,17 +437,16 @@ fn module_fetch_inputs(world: &crate::js::World, name: &str) -> ModuleFetchInput
                 options
                     .referrer_policy
                     .map(crate::protocol::referrer_policy)
-                    .or(world.policy.referrer_policy)
+                    .or(doc.policy.referrer_policy)
                     .unwrap_or_default(),
                 // https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script
                 if worker {
-                    world
-                        .state
+                    doc.state
                         .worker_owner_csp
                         .clone()
-                        .unwrap_or_else(|| world.policy.csp.clone())
+                        .unwrap_or_else(|| doc.policy.csp.clone())
                 } else {
-                    world.policy.csp.clone()
+                    effective_csp
                 },
                 // https://w3c.github.io/webappsec-csp/#effective-directive-for-a-request
                 if worker && !worker_root {
@@ -462,7 +464,7 @@ fn module_fetch_inputs(world: &crate::js::World, name: &str) -> ModuleFetchInput
         request_policy: policy,
         csp,
         destination,
-        partition_key: world.partition_key(),
+        partition_key,
     }
 }
 
@@ -475,7 +477,8 @@ fn record_worker_script_response(
 ) {
     let worker_root = {
         let world = world_rc.borrow();
-        world.state.module_client_origin.is_some() && name == world.document_url.as_str()
+        let doc = world.doc();
+        doc.state.module_client_origin.is_some() && name == doc.document_url.as_str()
     };
     if !worker_root {
         return;
@@ -486,14 +489,15 @@ fn record_worker_script_response(
             .filter(|(header, _)| header.eq_ignore_ascii_case("referrer-policy"))
             .map(|(_, value)| value.as_str()),
     );
-    let mut world = world_rc.borrow_mut();
-    world.state.worker_referrer_policy = policy;
-    let mut csp = world.policy.csp.clone();
+    let world = world_rc.borrow();
+    let mut doc = world.doc_mut();
+    doc.state.worker_referrer_policy = policy;
+    let mut csp = doc.policy.csp.clone();
     csp.append(crate::csp::List::from_headers(
         net::combined_header_in(headers, "content-security-policy").as_deref(),
         net::combined_header_in(headers, "content-security-policy-report-only").as_deref(),
     ));
-    world.state.worker_module_csp = Some(csp);
+    doc.state.worker_module_csp = Some(csp);
 }
 
 pub(super) fn load_module<'js>(ctx: &Ctx<'js>, name: &str) -> Result<Module<'js, Declared>> {
@@ -533,7 +537,7 @@ pub(super) fn load_module<'js>(ctx: &Ctx<'js>, name: &str) -> Result<Module<'js,
     )?;
 
     let mut request = DialRequest::new(inputs.request_policy, &url, &inputs.initiator);
-    request.cookie_policy = world_rc.borrow().same_site_cookie_policy.into();
+    request.cookie_policy = world_rc.borrow().doc().same_site_cookie_policy.into();
     request.partition_key.clone_from(&inputs.partition_key);
     request.referrer = crate::protocol::ReferrerRequest::Client {
         url: inputs.referrer,
@@ -553,9 +557,10 @@ pub(super) fn load_module<'js>(ctx: &Ctx<'js>, name: &str) -> Result<Module<'js,
     if final_url != &url {
         let violations = {
             let world = world_rc.borrow();
+            let doc = world.doc();
             inputs.csp.check_redirected_request(
-                &world.origin,
-                &world.document_url,
+                &doc.origin,
+                &doc.document_url,
                 final_url,
                 &url,
                 inputs.destination,

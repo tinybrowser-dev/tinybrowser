@@ -64,7 +64,7 @@ pub(crate) fn install(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
         world.borrow().time_resolution_micros(),
     )?;
     // https://cookiestore.spec.whatwg.org/#dom-cookiestore-get
-    let opaque_origin = matches!(world.borrow().origin, url::Origin::Opaque(_));
+    let opaque_origin = matches!(world.borrow().doc().origin, url::Origin::Opaque(_));
     bridge.set("__tbOpaqueOrigin", opaque_origin)?;
     let install: Function = ctx.eval(format!(
         "(function(host) {{ 'use strict';\n{}\n{}\n}})",

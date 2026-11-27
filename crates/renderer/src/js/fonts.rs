@@ -161,9 +161,10 @@ fn register_font(
         parley::fontique::Blob::new(Arc::new(data)),
         Some(override_font),
     ));
-    let token = world.next_font_registration;
-    world.next_font_registration = world.next_font_registration.wrapping_add(1);
-    world.font_registrations.insert(
+    let mut doc = world.doc_mut();
+    let token = doc.next_font_registration;
+    doc.next_font_registration = doc.next_font_registration.wrapping_add(1);
+    doc.font_registrations.insert(
         token,
         FontRegistration {
             document,
@@ -177,7 +178,7 @@ fn register_font(
 fn unregister_font(ctx: Ctx<'_>, token: u32) -> Result<()> {
     let world = world(&ctx)?;
     let mut world = world.borrow_mut();
-    let Some(registration) = world.font_registrations.remove(&token) else {
+    let Some(registration) = world.doc_mut().font_registrations.remove(&token) else {
         return Ok(());
     };
     if let Some(document) = registration.document

@@ -418,7 +418,7 @@ fn is_same_origin_navigable(
     frame: crate::protocol::FrameId,
 ) -> bool {
     match world.frame_world(frame) {
-        Some(child) => child.borrow().origin == world.origin,
+        Some(child) => child.borrow().doc().origin == world.doc().origin,
         None => true,
     }
 }

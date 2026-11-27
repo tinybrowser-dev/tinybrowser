@@ -33,7 +33,7 @@ fn stamp_event(ctx: &Ctx<'_>, event: &JsEvent) {
     };
     let (now, resolution) = {
         let world = world.borrow();
-        let (sampled, origin) = world.event_clock;
+        let (sampled, origin) = world.win().event_clock;
         let now = origin + sampled.elapsed().as_secs_f64() * 1000.0;
         (now, world.time_resolution_micros())
     };
@@ -781,8 +781,7 @@ pub(crate) fn add_listener_in<'js>(
     let typ = bindings::webidl_to_string(ctx, typ)?;
     let callback = listener_callback(ctx, callback)?;
     let options = ListenerOptions::read(ctx, options)?;
-    let world = listener_world(ctx, world, target)?;
-    add_listener_parsed_in(ctx, &world, target, typ, callback, options)
+    add_listener_parsed_in(ctx, world, target, typ, callback, options)
 }
 
 pub(crate) fn add_listener_parsed(
@@ -843,6 +842,7 @@ fn add_listener_parsed_in(
             return Ok(());
         }
     }
+    let realm = bindings::world(ctx)?.borrow().realm_id();
     world.borrow_mut().add_listener(
         target,
         Rc::new(Listener {
@@ -854,6 +854,7 @@ fn add_listener_parsed_in(
             signal: options.signal,
             removed: Cell::new(false),
             handler_name: None,
+            realm,
         }),
     );
     Ok(())
@@ -871,8 +872,7 @@ pub(crate) fn remove_listener_in<'js>(
     let typ = bindings::webidl_to_string(ctx, typ)?;
     let callback = listener_callback(ctx, callback)?;
     let capture = ListenerOptions::read_capture(ctx, options)?;
-    let world = listener_world(ctx, world, target)?;
-    remove_listener_parsed_in(ctx, &world, target, &typ, callback.as_ref(), capture)
+    remove_listener_parsed_in(ctx, world, target, &typ, callback.as_ref(), capture)
 }
 
 pub(crate) fn remove_listener_parsed(
@@ -1559,8 +1559,8 @@ fn target_reference(
 ) -> Result<EventTargetRef> {
     let world = match target {
         EventTargetKey::Window => match window {
-            Some(world) => frame_main_world(ctx, Rc::clone(world))?,
-            None => frame_main_world(ctx, bindings::world(ctx)?)?,
+            Some(world) => Rc::clone(world),
+            None => bindings::world(ctx)?,
         },
         _ => target_world(ctx, target)?,
     };
@@ -2076,29 +2076,7 @@ fn target_world(ctx: &Ctx<'_>, target: EventTargetKey) -> Result<Rc<RefCell<Worl
             let state = bindings::attr_state(ctx, scope, id)?;
             bindings::world_for_node(ctx, state.document)
         }
-        EventTargetKey::Window => frame_main_world(ctx, bindings::world(ctx)?),
-        EventTargetKey::Standalone(_) => bindings::world(ctx),
-    }
-}
-
-// https://dom.spec.whatwg.org/#concept-event-target
-// https://html.spec.whatwg.org/multipage/window-object.html#window
-fn frame_main_world(ctx: &Ctx<'_>, world: Rc<RefCell<World>>) -> Result<Rc<RefCell<World>>> {
-    let frame = world.borrow().frame();
-    let main = bindings::realm_registry(ctx)?.borrow().frame_world(frame);
-    Ok(main.unwrap_or(world))
-}
-
-// https://dom.spec.whatwg.org/#concept-event-target
-// https://html.spec.whatwg.org/multipage/window-object.html#window
-fn listener_world(
-    ctx: &Ctx<'_>,
-    world: &Rc<RefCell<World>>,
-    target: EventTargetKey,
-) -> Result<Rc<RefCell<World>>> {
-    match target {
-        EventTargetKey::Window => frame_main_world(ctx, Rc::clone(world)),
-        _ => Ok(Rc::clone(world)),
+        EventTargetKey::Window | EventTargetKey::Standalone(_) => bindings::world(ctx),
     }
 }
 
@@ -2132,9 +2110,9 @@ pub(crate) fn handler_attribute_violations(
     id: crate::dom::tree::NodeId,
     source: &str,
 ) -> Vec<crate::csp::Violation> {
-    let document_url =
-        url::Url::parse(&world.document_url_of(id)).unwrap_or_else(|_| world.document_url.clone());
-    let mut violations = world.policy.csp.check_inline(
+    let document_url = url::Url::parse(&world.document_url_of(id))
+        .unwrap_or_else(|_| world.doc().document_url.clone());
+    let mut violations = world.doc().policy.csp.check_inline(
         &document_url,
         &crate::csp::InlineScript {
             source,
@@ -2173,7 +2151,8 @@ pub(crate) fn handler_attribute_allowed(
     if !violations.is_empty() {
         // https://w3c.github.io/webappsec-csp/#report-violation
         let repeated = owner
-            .borrow_mut()
+            .borrow()
+            .doc_mut()
             .state
             .reported_handlers
             .insert((id, source.to_owned()), source.to_owned())
@@ -2265,7 +2244,12 @@ fn call_handler_attribute<'js>(
         return Ok(());
     };
     // https://html.spec.whatwg.org/multipage/browsers.html#sandboxed-scripts-browsing-context-flag
-    if bindings::world(ctx)?.borrow().sandbox.scripts_disabled() {
+    if bindings::world(ctx)?
+        .borrow()
+        .doc()
+        .sandbox
+        .scripts_disabled()
+    {
         return Ok(());
     }
     let name = handler_attribute_name(typ);
@@ -2348,7 +2332,7 @@ pub(crate) fn current_handler_value<'js>(
                 let document =
                     target.map_or_else(|| world.main_document_id(), |id| Some(id.document_id()));
                 document.is_some_and(|document| world.main_document_id() == Some(document))
-                    && !world.sandbox.scripts_disabled()
+                    && !world.doc().sandbox.scripts_disabled()
             };
             if !has_context {
                 return Ok(Value::new_null(ctx.clone()));
@@ -2451,6 +2435,7 @@ fn handler_listener(name: &str) -> Rc<Listener> {
         signal: None,
         removed: Cell::new(false),
         handler_name: Some(name.to_owned()),
+        realm: 0,
     })
 }
 

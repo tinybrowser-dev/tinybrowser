@@ -311,7 +311,7 @@ fn broadcast_post(ctx: Ctx<'_>, name: String, payload: String, channel: u64) {
             world
                 .runtime
                 .push_worker_request_waking(crate::worker::WorkerRequest::BroadcastPost {
-                    origin: world.origin.clone(),
+                    origin: world.doc().origin.clone(),
                     name,
                     payload,
                     channel,
@@ -322,7 +322,7 @@ fn broadcast_post(ctx: Ctx<'_>, name: String, payload: String, channel: u64) {
 
 // https://html.spec.whatwg.org/multipage/web-messaging.html#window-post-message-steps
 fn validate_target_origin(ctx: Ctx<'_>, target_origin: String) -> Result<()> {
-    let origin = world(&ctx)?.borrow().origin.clone();
+    let origin = world(&ctx)?.borrow().doc().origin.clone();
     TargetOrigin::parse(&target_origin, Some(&origin))
         .map(|_| ())
         .ok_or_else(|| throw_dom(&ctx, "SyntaxError", "Invalid target origin"))
@@ -351,7 +351,7 @@ fn post_window_message(
         (
             world.frame(),
             world.origin_string(),
-            world.origin.clone(),
+            world.doc().origin.clone(),
             world.shared(),
         )
     };
@@ -745,7 +745,7 @@ fn frame_viewport_size(ctx: Ctx<'_>, frame: f64) -> Vec<f64> {
     let Ok(Some(target)) = same_origin_frame(&ctx, frame) else {
         return vec![0.0, 0.0];
     };
-    let (width, height) = target.borrow().viewport_size.get();
+    let (width, height) = target.borrow().win().viewport_size.get();
     vec![f64::from(width), f64::from(height)]
 }
 

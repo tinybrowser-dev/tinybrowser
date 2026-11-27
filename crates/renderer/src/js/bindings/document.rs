@@ -43,6 +43,7 @@ pub(crate) fn document_referrer_string(ctx: &Ctx<'_>, id: NodeId) -> String {
         return String::new();
     }
     world
+        .doc()
         .document_referrer
         .as_ref()
         .map_or_else(String::new, ToString::to_string)

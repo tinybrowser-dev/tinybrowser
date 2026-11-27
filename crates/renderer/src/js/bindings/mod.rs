@@ -439,9 +439,10 @@ pub(crate) fn install_worker(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Resul
 // https://w3c.github.io/webappsec-csp/#script-pre-request
 // https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model
 fn worker_script_blocked(creator: &World, worker: crate::worker::WorkerId, url: &url::Url) -> bool {
-    let violations = creator.policy.csp.check_request(
-        &creator.origin,
-        &creator.document_url,
+    let doc = creator.doc();
+    let violations = creator.effective_csp().check_request(
+        &doc.origin,
+        &doc.document_url,
         url,
         crate::csp::Destination::Worker,
         // https://w3c.github.io/webappsec-csp/#script-src-strict-dynamic
@@ -451,6 +452,7 @@ fn worker_script_blocked(creator: &World, worker: crate::worker::WorkerId, url: 
             integrity: "",
         }),
     );
+    drop(doc);
     if violations.is_empty() {
         return false;
     }
@@ -579,11 +581,10 @@ fn install_shared_worker_constructor_host(ctx: &Ctx<'_>, world: &Rc<RefCell<Worl
                     ),
                 };
                 let current = shared_world.borrow();
+                let first_party = current.doc().first_party;
                 // https://privacycg.github.io/saa-non-cookie-storage/#shared-worker
                 let same_site_cookies = match requested {
-                    Some(crate::worker::SharedWorkerSameSiteCookies::All)
-                        if !current.first_party =>
-                    {
+                    Some(crate::worker::SharedWorkerSameSiteCookies::All) if !first_party => {
                         return Err(throw_dom(
                             &ctx,
                             "InvalidStateError",
@@ -591,9 +592,7 @@ fn install_shared_worker_constructor_host(ctx: &Ctx<'_>, world: &Rc<RefCell<Worl
                         ));
                     }
                     Some(value) => value,
-                    None if current.first_party => {
-                        crate::worker::SharedWorkerSameSiteCookies::All
-                    }
+                    None if first_party => crate::worker::SharedWorkerSameSiteCookies::All,
                     None => crate::worker::SharedWorkerSameSiteCookies::None,
                 };
                 let id = current.runtime.next_worker_id();
@@ -654,7 +653,7 @@ fn worker_script_url(world: &World, href: &str, base: &str) -> Option<String> {
 fn install_worker_global_hosts(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
     let host = crate::js::bridge::object(ctx)?;
     let name = world.borrow().worker_name().unwrap_or_default().to_owned();
-    let url = world.borrow().document_url.to_string();
+    let url = world.borrow().doc().document_url.to_string();
     host.set("__tbIsWorker", true)?;
     host.set("__tbIsSharedWorker", world.borrow().is_shared_worker())?;
     host.set("__tbWorkerName", name)?;
@@ -740,7 +739,7 @@ fn install_common(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Result<()> {
         .and_then(|performance| performance.get::<_, Function>("now"))
         .and_then(|now| now.call::<_, f64>(()))
         .unwrap_or(0.0);
-    world.borrow_mut().event_clock = (std::time::Instant::now(), performance_now);
+    world.borrow().win_mut().event_clock = (std::time::Instant::now(), performance_now);
     Class::<JsEvent>::define(&globals)?;
     crate::js::bridge::evaluate(ctx, events::install_event_ctor_js(ctx)?)?;
     crate::js::bridge::object(ctx)?.set(
@@ -1064,7 +1063,7 @@ fn viewport_size(ctx: Ctx<'_>) -> Vec<f64> {
     let (width, height) = world(&ctx)
         .ok()
         .map_or(crate::engine::DEFAULT_VIEWPORT, |world| {
-            world.borrow().viewport_size.get()
+            world.borrow().win().viewport_size.get()
         });
     vec![f64::from(width), f64::from(height)]
 }
@@ -1356,7 +1355,7 @@ fn node_wrapper_prototype<'js>(
     brand: &str,
 ) -> Result<Option<Object<'js>>> {
     let world_rc = world(ctx)?;
-    if world_rc.borrow().isolated_name.is_some() {
+    if world_rc.borrow().is_isolated() {
         return world_rc
             .borrow()
             .brand(brand)
@@ -2722,7 +2721,7 @@ mod realm_tests {
         let policy = Rc::clone(&world);
         let realm = JsRealm::new(&shared.handle(), world, stop).expect("realm");
 
-        policy.borrow_mut().policy.csp =
+        policy.borrow().doc_mut().policy.csp =
             crate::csp::List::from_headers(Some("script-src 'self'"), None);
         let denied = realm
             .eval(
@@ -2753,7 +2752,7 @@ mod realm_tests {
             .expect("eval");
         assert_eq!(spoofed, "EvalError,false");
 
-        policy.borrow_mut().policy.csp =
+        policy.borrow().doc_mut().policy.csp =
             crate::csp::List::from_headers(Some("script-src 'self' 'unsafe-eval'"), None);
         let allowed = realm
             .eval(r#"[eval("1 + 1"), Function("return 2")()].join(",");"#)
@@ -2901,10 +2900,11 @@ mod realm_tests {
             "<!doctype html><base href='https://other.example/'>",
         );
         {
-            let mut world = world.borrow_mut();
-            world.base_url = Some(Url::parse("https://other.example/").expect("base URL"));
+            let world = world.borrow();
+            world.doc_mut().base_url =
+                Some(Url::parse("https://other.example/").expect("base URL"));
             assert_eq!(world.cookie_url().as_str(), "https://a.test/dir/page");
-            world.inherited_cookie_url =
+            world.doc_mut().inherited_cookie_url =
                 Some(Url::parse("https://creator.test/dir/page").expect("creator URL"));
             assert_eq!(world.cookie_url().as_str(), "https://creator.test/dir/page");
         }
@@ -2969,13 +2969,13 @@ mod realm_tests {
             "https://a.test/dir/page",
             "<!doctype html><p>hello</p>",
         );
-        world.borrow_mut().history = crate::protocol::HistorySnapshot {
+        world.borrow().doc_mut().history = crate::protocol::HistorySnapshot {
             length: 1,
             local_length: 1,
             ..crate::protocol::HistorySnapshot::default()
         };
         let realm = JsRealm::new(&shared.handle(), world.clone(), stop).expect("realm");
-        let before = world.borrow().history.length;
+        let before = world.borrow().doc().history.length;
 
         let observed = realm
             .eval(
@@ -2991,8 +2991,11 @@ mod realm_tests {
         );
         {
             let world = world.borrow();
-            assert_eq!(world.document_url.as_str(), "https://a.test/dir/page#frag");
-            assert_eq!(world.history.length, before.saturating_add(1));
+            assert_eq!(
+                world.doc().document_url.as_str(),
+                "https://a.test/dir/page#frag"
+            );
+            assert_eq!(world.doc().history.length, before.saturating_add(1));
             assert!(
                 !world.has_frame_navigations(),
                 "a fragment assignment must not load a document"
@@ -3545,5 +3548,159 @@ mod realm_tests {
             .expect("input");
         let log = embedded.eval("window.__log.join(',')").expect("eval");
         assert_eq!(log, "pd:true,ck:true");
+    }
+
+    // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-createIsolatedWorld
+    #[test]
+    fn isolated_realm_shares_live_document_and_bypasses_page_csp() {
+        let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
+        let shared = SharedJsRuntime::default();
+        let stop = Arc::new(Stop::new());
+        let documents = Rc::new(RefCell::new(crate::documents::DocumentStore::default()));
+        let registry = Rc::new(RefCell::new(crate::js::RealmRegistry::default()));
+        let main = world_with_document(
+            &shared,
+            &services,
+            &documents,
+            &registry,
+            "https://a.test/start",
+            "<!doctype html><div id='target'></div>",
+        );
+        let main_realm =
+            JsRealm::new(&shared.handle(), Rc::clone(&main), Arc::clone(&stop)).expect("main");
+        let isolated = Rc::new(RefCell::new(World::new_isolated(
+            &main.borrow(),
+            "iso".to_owned(),
+        )));
+        let isolated_realm =
+            JsRealm::new(&shared.handle(), Rc::clone(&isolated), stop).expect("isolated");
+
+        main.borrow().doc_mut().policy.csp =
+            crate::csp::List::from_headers(Some("script-src 'self'"), None);
+        main.borrow().doc_mut().document_url =
+            Url::parse("https://a.test/updated#hash").expect("url");
+        assert_eq!(
+            isolated_realm.eval("location.href").expect("isolated url"),
+            "https://a.test/updated#hash",
+            "isolated realm reads live DocumentData updates without sync"
+        );
+        assert_eq!(
+            main_realm
+                .eval("try { eval('1+1'); 'ok' } catch (e) { e.name }")
+                .expect("main csp"),
+            "EvalError",
+            "main realm enforces page CSP"
+        );
+        assert_eq!(
+            isolated_realm.eval("eval('1 + 1')").expect("isolated csp"),
+            "2",
+            "isolated realm is not blocked by page CSP by default"
+        );
+
+        drop(isolated_realm);
+        drop(isolated);
+        drop(main_realm);
+        drop(main);
+        drop(shared);
+    }
+
+    // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-createIsolatedWorld
+    #[test]
+    fn isolated_realm_drop_preserves_main_listeners_and_document() {
+        let services: Arc<dyn BrowserServices> = Arc::new(NullServices::default());
+        let shared = SharedJsRuntime::default();
+        let stop = Arc::new(Stop::new());
+        let documents = Rc::new(RefCell::new(crate::documents::DocumentStore::default()));
+        let registry = Rc::new(RefCell::new(crate::js::RealmRegistry::default()));
+        let main = world_with_document(
+            &shared,
+            &services,
+            &documents,
+            &registry,
+            "https://a.test/start",
+            "<!doctype html><div id='target'></div>",
+        );
+        let main_realm =
+            JsRealm::new(&shared.handle(), Rc::clone(&main), Arc::clone(&stop)).expect("main");
+        let isolated = Rc::new(RefCell::new(World::new_isolated(
+            &main.borrow(),
+            "iso".to_owned(),
+        )));
+        let isolated_realm =
+            JsRealm::new(&shared.handle(), Rc::clone(&isolated), stop).expect("isolated");
+
+        main_realm
+            .eval(
+                "window.__hits = [];\
+                 window.addEventListener('ping', () => window.__hits.push('main'));\
+                 document.getElementById('target').addEventListener('ping', () => window.__hits.push('main-el'));",
+            )
+            .expect("main listeners");
+        isolated_realm
+            .eval(
+                "window.__isoHits = 0;\
+                 window.addEventListener('ping', () => { window.__isoHits++; });\
+                 document.getElementById('target').addEventListener('ping', () => { window.__isoHits += 10; });",
+            )
+            .expect("isolated listeners");
+        main_realm
+            .eval(
+                "window.dispatchEvent(new Event('ping'));\
+                 document.getElementById('target').dispatchEvent(new Event('ping'));",
+            )
+            .expect("dispatch before drop");
+        assert_eq!(
+            main_realm
+                .eval("window.__hits.join(',')")
+                .expect("main hits"),
+            "main,main-el"
+        );
+        assert_eq!(
+            isolated_realm.eval("window.__isoHits").expect("iso hits"),
+            "11",
+            "isolated realm shares WindowData event listeners"
+        );
+
+        let object_url = main_realm
+            .eval("URL.createObjectURL(new Blob(['ok']))")
+            .expect("blob url");
+        main.borrow()
+            .outbox
+            .borrow_mut()
+            .push_back(crate::js::RealmRequest::CookieChanges);
+
+        drop(isolated_realm);
+        drop(isolated);
+
+        assert!(
+            main.borrow().has_outbox_work(),
+            "dropping an isolated realm must not clear the main outbox"
+        );
+        assert!(
+            main.borrow().main_document().is_some(),
+            "dropping an isolated realm must not remove the frame's documents"
+        );
+        assert!(
+            object_url.starts_with("blob:"),
+            "object URL must be a blob URL: {object_url}"
+        );
+        main_realm
+            .eval(
+                "window.__hits = [];\
+                 window.dispatchEvent(new Event('ping'));\
+                 document.getElementById('target').dispatchEvent(new Event('ping'));",
+            )
+            .expect("dispatch after drop");
+        assert_eq!(
+            main_realm
+                .eval("window.__hits.join(',')")
+                .expect("main hits after drop"),
+            "main,main-el",
+            "dropping an isolated realm removes only its listeners, keeping main listeners intact"
+        );
+
+        drop(main_realm);
+        drop(main);
+        drop(shared);
     }
 }

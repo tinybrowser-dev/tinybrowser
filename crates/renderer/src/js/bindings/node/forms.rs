@@ -767,9 +767,13 @@ impl JsNode {
                         node: *control,
                     };
                     let frozen = world
-                        .control_state(id)
-                        .filter(|state| state.output_value_mode)
-                        .and_then(|state| state.output_default_value.clone());
+                        .with_control_state(id, |state| {
+                            state
+                                .output_value_mode
+                                .then(|| state.output_default_value.clone())
+                                .flatten()
+                        })
+                        .flatten();
                     let text = frozen.map_or_else(
                         || parsed.document.descendant_dom_text(*control),
                         |units| crate::dom_string::DomString::from(units.as_slice()),
@@ -790,9 +794,10 @@ impl JsNode {
                 world.clear_control_edit_state(id);
                 if outputs.iter().any(|(output, _)| *output == control) {
                     // https://html.spec.whatwg.org/multipage/form-elements.html#the-output-element
-                    let state = world.control(id);
-                    state.output_value_mode = false;
-                    state.output_default_value = None;
+                    world.with_control_mut(id, |state| {
+                        state.output_value_mode = false;
+                        state.output_default_value = None;
+                    });
                 }
             }
         }

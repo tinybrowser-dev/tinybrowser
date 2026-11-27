@@ -38,7 +38,7 @@ impl Document {
         let _turn = self.js.as_ref().map(crate::js::JsRealm::enter_turn);
         self.run_task(task);
         self.pump_blitz_messages();
-        if !self.load_fired && !self.world.borrow().parser_active {
+        if !self.load_fired && !self.world.borrow().doc().parser_active {
             let _ = self.check_load();
         }
         self.world.borrow().prune_dead_wrappers();
@@ -439,7 +439,7 @@ impl Document {
             state: "null".to_owned(),
             handling,
         });
-        let length = self.world.borrow().history.length;
+        let length = self.world.borrow().doc().history.length;
         self.fire_js(|js| {
             js.restore_history(None, length)?;
             js.fire_hash_change(old_url, &url)
@@ -453,7 +453,7 @@ impl Document {
 
     fn queue_dynamic_script(&mut self, element: NodeId) {
         // https://html.spec.whatwg.org/multipage/browsers.html#sandboxed-scripts-browsing-context-flag
-        if self.world.borrow().sandbox.scripts_disabled() {
+        if self.world.borrow().doc().sandbox.scripts_disabled() {
             return;
         }
         let Some(script) = crate::js::script_at(&self.world.borrow(), element) else {
@@ -482,11 +482,12 @@ impl Document {
                         let base = self
                             .world
                             .borrow()
+                            .doc()
                             .base_url
                             .clone()
                             .unwrap_or_else(|| self.url.clone());
                         if let Ok(map) = crate::js::modules::ImportMap::parse(&source, &base) {
-                            self.world.borrow_mut().import_map.merge(map);
+                            self.world.borrow().doc_mut().import_map.merge(map);
                         }
                     }
                 }
@@ -542,7 +543,7 @@ impl Document {
         dial.req.referrer_policy = options
             .referrer_policy
             .map(crate::protocol::referrer_policy)
-            .or(self.world.borrow().policy.referrer_policy)
+            .or(self.world.borrow().doc().policy.referrer_policy)
             .unwrap_or_default();
         dial.req.csp = Some(Box::new(
             self.redirect_gate(crate::csp::Destination::Script),
@@ -681,7 +682,7 @@ impl Document {
         dial.req.referrer_policy = fetch
             .options
             .referrer_policy
-            .or(self.world.borrow().policy.referrer_policy)
+            .or(self.world.borrow().doc().policy.referrer_policy)
             .unwrap_or_default();
         dial.req.keepalive = fetch.options.keepalive;
         dial.req.body_len = fetch.options.body_len;

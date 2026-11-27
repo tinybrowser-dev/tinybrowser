@@ -54,7 +54,8 @@ enum Component {
 
 impl Component {
     fn read(self, world: &World) -> String {
-        let url = &world.document_url;
+        let doc = world.doc();
+        let url = &doc.document_url;
         match self {
             Self::Pathname => url.path().to_owned(),
             Self::Href => url.as_str().to_owned(),
@@ -163,10 +164,11 @@ fn navigate_location(owner: &Rc<RefCell<World>>, spec: String, source: Option<Fr
 // https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-href
 fn parse_location(ctx: &Ctx<'_>, caller: &Rc<RefCell<World>>, value: &str) -> Result<url::Url> {
     let caller = caller.borrow();
-    let base = caller
+    let doc = caller.doc();
+    let base = doc
         .base_url
         .clone()
-        .unwrap_or_else(|| caller.document_url.clone());
+        .unwrap_or_else(|| doc.document_url.clone());
     base.join(value)
         .map_err(|_| super::throw_dom(ctx, "SyntaxError", "invalid URL"))
 }
@@ -190,7 +192,7 @@ fn set_component(owner: &Rc<RefCell<World>>, component: Component, value: Value<
         }
         return Ok(());
     }
-    let mut url = owner.borrow().document_url.clone();
+    let mut url = owner.borrow().doc().document_url.clone();
     let changed = component
         .replace(&mut url, &value)
         .map_err(|()| super::throw_dom(&ctx, "SyntaxError", "invalid scheme"))?;
@@ -208,7 +210,7 @@ fn set_component(owner: &Rc<RefCell<World>>, component: Component, value: Value<
 fn only_fragment_changed(owner: &Rc<RefCell<World>>, url: &url::Url) -> bool {
     url.fragment().is_some() && {
         let world = owner.borrow();
-        crate::js::world::same_document_url(&world.document_url, url)
+        crate::js::world::same_document_url(&world.doc().document_url, url)
     }
 }
 
@@ -221,15 +223,16 @@ fn navigate_to_fragment(
     force_replace: bool,
 ) {
     let (old_url, handling) = {
-        let mut world = owner.borrow_mut();
-        let old_url = world.document_url.as_str().to_owned();
-        let handling = if force_replace || world.document_url == *url {
+        let world = owner.borrow();
+        let mut doc = world.doc_mut();
+        let old_url = doc.document_url.as_str().to_owned();
+        let handling = if force_replace || doc.document_url == *url {
             crate::protocol::HistoryHandling::Replace
         } else {
             crate::protocol::HistoryHandling::Push
         };
-        world.document_url = url.clone();
-        world.history.apply("null".to_owned(), handling);
+        doc.document_url = url.clone();
+        doc.history.apply("null".to_owned(), handling);
         (old_url, handling)
     };
     sync_fragment_state(ctx, caller, owner);
@@ -246,7 +249,7 @@ fn navigate_to_fragment(
 // https://html.spec.whatwg.org/multipage/browsing-the-web.html#update-document-for-history-step-application
 fn sync_fragment_state(ctx: &Ctx<'_>, caller: &Rc<RefCell<World>>, owner: &Rc<RefCell<World>>) {
     let update = |ctx: &Ctx<'_>| -> Result<()> {
-        let length = owner.borrow().history.length;
+        let length = owner.borrow().doc().history.length;
         let restore: rquickjs::Function =
             crate::js::bridge::object(ctx)?.get("__tbHistoryRestore")?;
         let _: Value = restore.call((Option::<String>::None, length))?;
@@ -399,7 +402,7 @@ pub(crate) fn build_location<'js>(
             }
             let caller = super::world(&ctx)?;
             let source = caller.borrow().frame();
-            let current = reload_owner.borrow().document_url.as_str().to_owned();
+            let current = reload_owner.borrow().doc().document_url.as_str().to_owned();
             navigate_location(&reload_owner, current, Some(source));
             Ok(())
         }),

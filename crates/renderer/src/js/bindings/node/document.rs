@@ -710,10 +710,11 @@ impl JsNode {
         let id = self.handle.get().0;
         let owner = world_for_node(ctx, id)?;
         let rejection = {
-            let world = owner.borrow_mut();
+            let world = owner.borrow();
             if !world.is_main_document(id) || !world.has_browsing_context() {
                 Some("document.domain is not available on a document without a browsing context.")
             } else if world
+                .doc()
                 .sandbox
                 .contains(crate::protocol::SandboxFlag::DocumentDomain)
             {
@@ -726,7 +727,7 @@ impl JsNode {
                             "The value is not a registrable domain suffix of the document's domain.",
                         ),
                         Some(domain) => {
-                            *world.domain.borrow_mut() = Some(domain);
+                            *world.doc().domain.borrow_mut() = Some(domain);
                             None
                         }
                     },
@@ -1231,7 +1232,7 @@ impl JsNode {
     // https://html.spec.whatwg.org/multipage/dom.html#dom-document-currentscript
     pub(super) fn current_script<'js>(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
         let world = world(ctx)?;
-        let current = world.borrow().state.current_script;
+        let current = world.borrow().doc().state.current_script;
         match current {
             Some(id) if id.document_id() == self.handle.get().0.document_id() => wrap_node(ctx, id),
             _ => Ok(Value::new_null(ctx.clone())),
@@ -1613,7 +1614,8 @@ pub(super) fn construct_node_in_owner<'js>(
         "HTMLElement" => {
             // https://html.spec.whatwg.org/multipage/custom-elements.html#html-element-constructors
             let id = world(ctx)?
-                .borrow_mut()
+                .borrow()
+                .doc_mut()
                 .state
                 .custom_construction
                 .pop()
@@ -1645,7 +1647,12 @@ pub(in crate::js::bindings) fn install_custom_construction(ctx: &Ctx<'_>) -> Res
 }
 
 fn has_custom_construction(ctx: Ctx<'_>) -> Result<bool> {
-    Ok(!world(&ctx)?.borrow().state.custom_construction.is_empty())
+    Ok(!world(&ctx)?
+        .borrow()
+        .doc()
+        .state
+        .custom_construction
+        .is_empty())
 }
 
 pub(super) fn push_custom_construction<'js>(ctx: Ctx<'js>, value: Value<'js>) -> Result<()> {
@@ -1658,7 +1665,12 @@ pub(super) fn push_custom_construction<'js>(ctx: Ctx<'js>, value: Value<'js>) ->
             "custom element candidate is not an element",
         ));
     }
-    world(&ctx)?.borrow_mut().state.custom_construction.push(id);
+    world(&ctx)?
+        .borrow()
+        .doc_mut()
+        .state
+        .custom_construction
+        .push(id);
     Ok(())
 }
 
@@ -1667,9 +1679,10 @@ pub(super) fn discard_custom_construction<'js>(ctx: Ctx<'js>, value: Value<'js>)
         return Ok(());
     };
     let world = world(&ctx)?;
-    let mut world = world.borrow_mut();
-    if world.state.custom_construction.last() == Some(&id) {
-        world.state.custom_construction.pop();
+    let world = world.borrow();
+    let mut doc = world.doc_mut();
+    if doc.state.custom_construction.last() == Some(&id) {
+        doc.state.custom_construction.pop();
     }
     Ok(())
 }
@@ -2092,7 +2105,7 @@ pub(crate) fn apply_meta_referrer(ctx: &Ctx<'_>, id: NodeId) {
     let Ok(world) = world(ctx) else {
         return;
     };
-    world.borrow_mut().policy.referrer_policy = Some(policy);
+    world.borrow().doc_mut().policy.referrer_policy = Some(policy);
 }
 
 // https://html.spec.whatwg.org/multipage/semantics.html#attr-meta-http-equiv-refresh
@@ -2196,37 +2209,20 @@ pub(crate) fn prepare_classic_script(ctx: &Ctx<'_>, id: NodeId) -> Result<()> {
             parsed.document.mark_script_started(id.node);
         }
     }
-    let violations = {
-        let world = world(ctx)?;
-        let world = world.borrow();
-        let slot = world.state.nonce_slots.get(&id).map(String::as_str);
-        let (nonce, nonceable) = world.document(id).map_or_else(
-            || (String::new(), false),
-            |parsed| crate::csp::element_nonce(&parsed.document.base, id.node, slot),
-        );
-        world.policy.csp.check_inline(
-            &world.document_url,
-            &crate::csp::InlineScript {
-                source: &source,
-                nonce: &nonce,
-                nonceable,
-                parser_inserted: false,
-                kind: crate::csp::InlineKind::Script,
-            },
-        )
-    };
+    let violations = check_inline_script_csp(ctx, id, &source)?;
     if !violations.is_empty() {
         super::super::fire_csp_violations(ctx, id, &violations)?;
     }
     if crate::csp::blocks(&violations) {
         return Ok(());
     }
-    let previous = world(ctx)?.borrow().state.current_script;
-    world(ctx)?.borrow_mut().state.current_script = Some(id);
+    let previous = world(ctx)?.borrow().doc().state.current_script;
+    world(ctx)?.borrow().doc_mut().state.current_script = Some(id);
     let mut options = EvalOptions::default();
     options.strict = false;
     let filename = world_for_node(ctx, id)?
         .borrow()
+        .doc()
         .document_url
         .as_str()
         .to_owned();
@@ -2235,8 +2231,33 @@ pub(crate) fn prepare_classic_script(ctx: &Ctx<'_>, id: NodeId) -> Result<()> {
         // https://html.spec.whatwg.org/multipage/webappapis.html#run-a-classic-script
         crate::js::report_script_error(ctx, &error, base_line, &filename);
     }
-    world(ctx)?.borrow_mut().state.current_script = previous;
+    world(ctx)?.borrow().doc_mut().state.current_script = previous;
     Ok(())
+}
+
+fn check_inline_script_csp(
+    ctx: &Ctx<'_>,
+    id: NodeId,
+    source: &str,
+) -> Result<Vec<crate::csp::Violation>> {
+    let world = world(ctx)?;
+    let world = world.borrow();
+    let doc = world.doc();
+    let slot = doc.state.nonce_slots.get(&id).map(String::as_str);
+    let (nonce, nonceable) = world.document(id).map_or_else(
+        || (String::new(), false),
+        |parsed| crate::csp::element_nonce(&parsed.document.base, id.node, slot),
+    );
+    Ok(doc.policy.csp.check_inline(
+        &doc.document_url,
+        &crate::csp::InlineScript {
+            source,
+            nonce: &nonce,
+            nonceable,
+            parser_inserted: false,
+            kind: crate::csp::InlineKind::Script,
+        },
+    ))
 }
 
 pub(super) fn clear_nonce_on_connect(ctx: &Ctx<'_>, inserted: &[NodeId]) -> Result<()> {
@@ -2255,6 +2276,7 @@ pub(super) fn clear_nonce_on_connect(ctx: &Ctx<'_>, inserted: &[NodeId]) -> Resu
         let owner = world_for_node(ctx, id)?;
         let saved = owner
             .borrow()
+            .doc()
             .state
             .nonce_slots
             .get(&id)
@@ -2267,7 +2289,7 @@ pub(super) fn clear_nonce_on_connect(ctx: &Ctx<'_>, inserted: &[NodeId]) -> Resu
             });
         set_attribute_sync(ctx, id, "nonce", "")?;
         if let Some(slot) = saved {
-            owner.borrow_mut().state.nonce_slots.insert(id, slot);
+            owner.borrow().doc_mut().state.nonce_slots.insert(id, slot);
         }
     }
     Ok(())

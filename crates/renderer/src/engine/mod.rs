@@ -446,7 +446,7 @@ impl Engine {
                             frame,
                             parent,
                             crate::FrameKind::Auxiliary,
-                            document.world().borrow().sandbox,
+                            document.world().borrow().doc().sandbox,
                         );
                         self.frames.insert(frame, document);
                         if let Some(document) = self.frames.get_mut(&frame) {
@@ -698,7 +698,7 @@ impl Engine {
             let Some(current) = self
                 .frames
                 .get(&frame)
-                .map(|document| document.world().borrow().history.clone())
+                .map(|document| document.world().borrow().doc().history.clone())
             else {
                 continue;
             };
@@ -990,7 +990,7 @@ impl Engine {
         let world = world.borrow();
         Ok(crate::DocumentLoadState {
             ready_state: world.main_ready_state(),
-            url: world.document_url.as_str().to_owned(),
+            url: world.doc().document_url.as_str().to_owned(),
         })
     }
 
@@ -1479,7 +1479,7 @@ impl Engine {
         let origin_string = origin.unicode_serialization();
         for document in self.frames.values_mut() {
             let world = document.world();
-            if world.borrow().origin != *origin || !world.borrow().is_attached() {
+            if world.borrow().doc().origin != *origin || !world.borrow().is_attached() {
                 continue;
             }
             document.push_broadcast_message(
@@ -1810,7 +1810,7 @@ impl Engine {
         // https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate-to-a-fragment
         if url.fragment().is_some()
             && let Some(document) = self.frames.get(&child)
-            && same_document_url(&document.world().borrow().document_url, &url)
+            && same_document_url(&document.world().borrow().doc().document_url, &url)
         {
             document.queue_fragment_navigation(url);
             return NavOutcome::Fragment;
@@ -1835,7 +1835,7 @@ impl Engine {
         let (flags, activated) = {
             let world = source.world();
             let world = world.borrow();
-            (world.sandbox, world.user_activation_active())
+            (world.doc().sandbox, world.user_activation_active())
         };
         let shared = self.runtime.shared.borrow();
         let tree = &shared.tree;
@@ -1884,11 +1884,12 @@ impl Engine {
             Some(document) => {
                 let world = document.world();
                 let world = world.borrow();
+                let doc = world.doc();
                 (
                     crate::protocol::ReferrerRequest::Client {
-                        url: world.referrer_url.clone(),
+                        url: doc.referrer_url.clone(),
                     },
-                    policy.or(world.policy.referrer_policy).unwrap_or_default(),
+                    policy.or(doc.policy.referrer_policy).unwrap_or_default(),
                 )
             }
             None => (
@@ -1914,7 +1915,7 @@ impl Engine {
                     let world = document.world();
                     let world = world.borrow();
                     net::Referrer::Client(net::ReferrerClient {
-                        origin: world.origin.clone(),
+                        origin: world.doc().origin.clone(),
                         url,
                     })
                 }
@@ -1928,13 +1929,13 @@ impl Engine {
     fn inherited_policy(&self, parent: FrameId) -> PolicyContainer {
         self.frames
             .get(&parent)
-            .map_or_default(|document| document.world().borrow().policy.clone())
+            .map_or_default(|document| document.world().borrow().doc().policy.clone())
     }
 
     fn inherit_policy(&self, child: FrameId, parent: FrameId) {
         let policy = self.inherited_policy(parent);
         if let Some(document) = self.frames.get(&child) {
-            document.world().borrow_mut().policy = policy;
+            document.world().borrow().doc_mut().policy = policy;
         }
     }
 
@@ -1942,13 +1943,14 @@ impl Engine {
         let inherited = self.frames.get(&parent).map(|document| {
             let world = document.world();
             let world = world.borrow();
+            let doc = world.doc();
             (
                 document.inherited_url(),
                 world.cookie_url(),
                 document.referrer_url(),
                 crate::document::InheritedOrigin {
-                    origin: world.origin.clone(),
-                    domain: Rc::clone(&world.domain),
+                    origin: doc.origin.clone(),
+                    domain: Rc::clone(&doc.domain),
                 },
             )
         });
@@ -2014,9 +2016,10 @@ impl Engine {
             };
             let world = document.world();
             let world = world.borrow();
-            world.policy.csp.check_request(
-                &world.origin,
-                &world.document_url,
+            let doc = world.doc();
+            doc.policy.csp.check_request(
+                &doc.origin,
+                &doc.document_url,
                 url,
                 crate::csp::Destination::Frame,
                 None,
@@ -2127,12 +2130,12 @@ impl Engine {
                 let creator_secure = self
                     .frames
                     .get(&initiator)
-                    .map(|document| document.world().borrow().policy.secure_context);
+                    .map(|document| document.world().borrow().doc().policy.secure_context);
                 // https://html.spec.whatwg.org/multipage/webappapis.html#concept-settings-object-cross-origin-isolated-capability
                 let creator_isolated = self
                     .frames
                     .get(&initiator)
-                    .map(|document| document.world().borrow().policy.cross_origin_isolated);
+                    .map(|document| document.world().borrow().doc().policy.cross_origin_isolated);
                 let partition_key = if top_level_navigation {
                     net::site_for_origin(&url.origin())
                 } else {
@@ -2193,12 +2196,13 @@ impl Engine {
         };
         let world = document.world();
         let world = world.borrow();
+        let doc = world.doc();
         let source = crate::protocol::NavigationSource {
-            origin: crate::protocol::SerializedOrigin::from(&world.origin),
-            referrer: world.referrer_url.clone(),
+            origin: crate::protocol::SerializedOrigin::from(&doc.origin),
+            referrer: doc.referrer_url.clone(),
             referrer_policy,
             frame: initiator,
-            secure_context: world.is_secure_context(),
+            secure_context: doc.policy.secure_context,
         };
         self.runtime.services.navigate_top_level(url, &source)
     }
@@ -2207,7 +2211,7 @@ impl Engine {
     fn load_javascript_frame_url(&mut self, child: FrameId, initiator: FrameId, url: &Url) {
         let same_origin = match (self.frames.get(&initiator), self.frames.get(&child)) {
             (Some(source), Some(target)) => {
-                source.world().borrow().origin == target.world().borrow().origin
+                source.world().borrow().doc().origin == target.world().borrow().doc().origin
             }
             _ => false,
         };
@@ -2256,15 +2260,16 @@ impl Engine {
         let inherited = self.frames.get(&parent).map(|document| {
             let world = document.world();
             let world = world.borrow();
+            let doc = world.doc();
             (
                 document.base_url(),
                 world.cookie_url(),
-                world.referrer_url.clone(),
+                doc.referrer_url.clone(),
                 crate::document::InheritedOrigin {
-                    origin: world.origin.clone(),
-                    domain: Rc::clone(&world.domain),
+                    origin: doc.origin.clone(),
+                    domain: Rc::clone(&doc.domain),
                 },
-                world.policy.clone(),
+                doc.policy.clone(),
             )
         });
         let Some(document) = self.frames.get_mut(&child) else {
@@ -2362,7 +2367,8 @@ impl Engine {
             document.mark_frame_load_pending(container);
             let _ = document
                 .world()
-                .borrow_mut()
+                .borrow()
+                .doc_mut()
                 .insertion_load_fired
                 .remove(&container);
         }

@@ -2367,7 +2367,8 @@ fn note_inserted_creators(ctx: &Ctx<'_>, inserted: &[NodeId]) {
             continue;
         };
         owner_rc
-            .borrow_mut()
+            .borrow()
+            .doc_mut()
             .state
             .creator_stacks
             .entry(target)

@@ -74,30 +74,40 @@ fn retarget_adopted_subtree(ctx: &Ctx<'_>, from: NodeId, to: NodeId) -> Result<(
         if let (Ok(from_owner), Ok(to_owner)) = (world_for_node(ctx, from), world_for_node(ctx, to))
         {
             if std::rc::Rc::ptr_eq(&from_owner, &to_owner) {
-                let mut world = from_owner.borrow_mut();
-                if let Some(slot) = world.state.nonce_slots.remove(&from) {
-                    world.state.nonce_slots.insert(to, slot);
+                let world = from_owner.borrow();
+                let mut doc = world.doc_mut();
+                if let Some(slot) = doc.state.nonce_slots.remove(&from) {
+                    doc.state.nonce_slots.insert(to, slot);
                 }
-                if let Some(control) = world.state.controls.remove(&from) {
-                    world.state.controls.insert(to, control);
+                if let Some(control) = doc.state.controls.remove(&from) {
+                    doc.state.controls.insert(to, control);
                     // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#the-constraint-validation-api
-                    if let Some(control) = world.state.controls.get_mut(&to) {
+                    if let Some(control) = doc.state.controls.get_mut(&to) {
                         control.clear_edit_position();
                     }
                 }
             } else {
-                let slot = from_owner.borrow().state.nonce_slots.get(&from).cloned();
+                let slot = from_owner
+                    .borrow()
+                    .doc_mut()
+                    .state
+                    .nonce_slots
+                    .remove(&from);
                 if let Some(slot) = slot {
-                    from_owner.borrow_mut().state.nonce_slots.remove(&from);
-                    to_owner.borrow_mut().state.nonce_slots.insert(to, slot);
+                    to_owner
+                        .borrow()
+                        .doc_mut()
+                        .state
+                        .nonce_slots
+                        .insert(to, slot);
                 }
-                let control = from_owner.borrow().state.controls.get(&from).cloned();
+                let control = from_owner.borrow().doc_mut().state.controls.remove(&from);
                 if let Some(control) = control {
-                    from_owner.borrow_mut().state.controls.remove(&from);
-                    let mut target = to_owner.borrow_mut();
-                    target.state.controls.insert(to, control);
+                    let target = to_owner.borrow();
+                    let mut doc = target.doc_mut();
+                    doc.state.controls.insert(to, control);
                     // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#the-constraint-validation-api
-                    if let Some(control) = target.state.controls.get_mut(&to) {
+                    if let Some(control) = doc.state.controls.get_mut(&to) {
                         control.clear_edit_position();
                     }
                 }
@@ -204,10 +214,11 @@ pub(crate) fn copy_nonce_subtree(
         }
         pairs
     };
-    let mut world = owner.borrow_mut();
+    let world = owner.borrow();
+    let mut doc = world.doc_mut();
     for (from_id, to_id) in pairs {
-        if let Some(slot) = world.state.nonce_slots.get(&from_id).cloned() {
-            world.state.nonce_slots.insert(to_id, slot);
+        if let Some(slot) = doc.state.nonce_slots.get(&from_id).cloned() {
+            doc.state.nonce_slots.insert(to_id, slot);
         }
     }
 }

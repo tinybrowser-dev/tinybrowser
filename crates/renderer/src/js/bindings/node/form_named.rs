@@ -55,13 +55,14 @@ pub(super) fn named_property_names<'js>(
     let Some(world) = owning_world(ctx, form) else {
         return Ok(Vec::new());
     };
-    let world = world.borrow_mut();
+    let world = world.borrow();
     let Some(parsed) = world.document(form) else {
         return Ok(Vec::new());
     };
     let base = &parsed.document.base;
     let count = listed_elements(base, form).len();
-    let mut past = world.state.form_past_names.borrow_mut();
+    let doc = world.doc();
+    let mut past = doc.state.form_past_names.borrow_mut();
     let names = supported_names(base, form, &mut past);
     let object = object
         .as_object()
@@ -141,13 +142,14 @@ fn supports_property(ctx: &Ctx<'_>, form: NodeId, name: &str) -> Result<bool> {
     let Some(world) = owning_world(ctx, form) else {
         return Ok(false);
     };
-    let world = world.borrow_mut();
+    let world = world.borrow();
     let Some(parsed) = world.document(form) else {
         return Ok(false);
     };
     let base = &parsed.document.base;
+    let doc = world.doc();
     Ok(
-        supported_names(base, form, &mut world.state.form_past_names.borrow_mut())
+        supported_names(base, form, &mut doc.state.form_past_names.borrow_mut())
             .contains(&name.to_owned()),
     )
 }
@@ -190,11 +192,10 @@ fn named_value<'js>(ctx: &Ctx<'js>, form: NodeId, name: &str) -> Result<Option<V
             wrap_node(ctx, *element).map(Some)
         }
         _ => {
-            let world_rc =
-                owning_world(ctx, form).ok_or_else(|| Exception::throw_type(ctx, "stale node"))?;
-            let cached = world_rc
+            let caller = super::super::world(ctx)?;
+            let cached = caller
                 .borrow()
-                .state
+                .caches
                 .form_named_lists
                 .get(&(form, name.to_owned()))
                 .cloned();
@@ -207,7 +208,7 @@ fn named_value<'js>(ctx: &Ctx<'js>, form: NodeId, name: &str) -> Result<Option<V
                 crate::js::bridge::object(ctx)?.get("__tbFormRadioNodeList")?;
             let list: Value = function.call((wrap_node(ctx, form)?, name))?;
             let weak = super::super::make_weak(ctx, list.clone())?;
-            world_rc.borrow_mut().state.form_named_lists.insert(
+            caller.borrow_mut().caches.form_named_lists.insert(
                 (form, name.to_owned()),
                 rquickjs::Persistent::save(ctx, weak),
             );
@@ -357,8 +358,9 @@ fn record_past_name(ctx: &Ctx<'_>, form: NodeId, name: &str, element: NodeId) {
     let Some(world) = owning_world(ctx, form) else {
         return;
     };
-    let world = world.borrow_mut();
-    let mut map = world.state.form_past_names.borrow_mut();
+    let world = world.borrow();
+    let doc = world.doc();
+    let mut map = doc.state.form_past_names.borrow_mut();
     let past = map.entry(form).or_default();
     past.retain(|(existing, _)| existing != name);
     past.push((name.to_owned(), element));
@@ -367,10 +369,11 @@ fn record_past_name(ctx: &Ctx<'_>, form: NodeId, name: &str, element: NodeId) {
 // https://html.spec.whatwg.org/multipage/forms.html#past-names-map
 fn past_name(ctx: &Ctx<'_>, form: NodeId, name: &str) -> Option<NodeId> {
     let world = owning_world(ctx, form)?;
-    let world = world.borrow_mut();
+    let world = world.borrow();
     let parsed = world.document(form)?;
     let base = &parsed.document.base;
-    let mut map = world.state.form_past_names.borrow_mut();
+    let doc = world.doc();
+    let mut map = doc.state.form_past_names.borrow_mut();
     let past = map.get_mut(&form)?;
     let mut found = None;
     past.retain(|(existing, element)| {

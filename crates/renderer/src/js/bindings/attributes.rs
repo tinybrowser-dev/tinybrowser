@@ -1589,7 +1589,8 @@ fn note_src_creator(ctx: &Ctx<'_>, element: NodeId) {
         return;
     };
     owner
-        .borrow_mut()
+        .borrow()
+        .doc_mut()
         .state
         .creator_stacks
         .insert(element, crate::js::CreatorInfo { url, line, column });
@@ -2119,7 +2120,12 @@ pub(crate) fn remove_attribute_sync(
             let changed = name.local.as_str().to_owned();
             // https://html.spec.whatwg.org/multipage/urls-and-fetching.html#nonce-attributes
             if changed == "nonce" && namespace.is_empty() {
-                world_rc.borrow_mut().state.nonce_slots.remove(&element);
+                world_rc
+                    .borrow()
+                    .doc_mut()
+                    .state
+                    .nonce_slots
+                    .remove(&element);
             }
             let registry = world_rc.borrow().registry();
             registry
@@ -2248,7 +2254,8 @@ pub(crate) fn set_attribute_sync(
     if local == "nonce" && namespace.is_empty() {
         // https://html.spec.whatwg.org/multipage/urls-and-fetching.html#nonce-attributes
         world_rc
-            .borrow_mut()
+            .borrow()
+            .doc_mut()
             .state
             .nonce_slots
             .insert(element, value.to_owned());

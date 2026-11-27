@@ -238,7 +238,7 @@ impl<'js> dom_parser_generated::DOMParser<'js> for JsDomParser {
     // https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-domparser-domparser
     fn constructor(ctx: &Ctx<'js>) -> Result<Self> {
         Ok(Self {
-            url: world(ctx)?.borrow().document_url.as_str().to_owned(),
+            url: world(ctx)?.borrow().doc().document_url.as_str().to_owned(),
         })
     }
 

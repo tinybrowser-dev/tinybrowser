@@ -135,9 +135,10 @@ fn named_value<'js>(ctx: &Ctx<'js>, document: NodeId, name: &str) -> Result<Opti
             None => wrap_node(ctx, *element).map(Some),
         },
         _ => {
-            let cached = world
+            let caller = super::super::world(ctx)?;
+            let cached = caller
                 .borrow()
-                .state
+                .caches
                 .document_named
                 .get(&(document, name.to_owned()))
                 .cloned();
@@ -153,9 +154,9 @@ fn named_value<'js>(ctx: &Ctx<'js>, document: NodeId, name: &str) -> Result<Opti
                 Some("HTMLCollection"),
             )?;
             let weak = make_weak(ctx, value.clone())?;
-            world
+            caller
                 .borrow_mut()
-                .state
+                .caches
                 .document_named
                 .insert((document, name.to_owned()), Persistent::save(ctx, weak));
             Ok(Some(value))

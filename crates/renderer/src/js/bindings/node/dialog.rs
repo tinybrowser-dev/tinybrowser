@@ -14,13 +14,20 @@ use crate::js::world::EventTargetKey;
 // https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:dom-dialog-returnvalue
 pub(super) fn return_value(ctx: &Ctx<'_>, id: NodeId) -> Result<DomString> {
     let owner = world_for_node(ctx, id)?;
-    let value = owner.borrow().state.dialog_return_values.get(&id).cloned();
+    let value = owner
+        .borrow()
+        .doc()
+        .state
+        .dialog_return_values
+        .get(&id)
+        .cloned();
     Ok(value.unwrap_or_default())
 }
 
 pub(super) fn set_return_value(ctx: &Ctx<'_>, id: NodeId, value: DomString) -> Result<()> {
     world_for_node(ctx, id)?
-        .borrow_mut()
+        .borrow()
+        .doc_mut()
         .state
         .dialog_return_values
         .insert(id, value);
@@ -88,7 +95,8 @@ pub(super) fn close(ctx: &Ctx<'_>, id: NodeId, result: Option<DomString>) -> Res
         set_return_value(ctx, id, result)?;
     }
     let previous = world_for_node(ctx, id)?
-        .borrow_mut()
+        .borrow()
+        .doc_mut()
         .state
         .dialog_previously_focused
         .remove(&id)
@@ -142,9 +150,13 @@ fn is_fully_active(ctx: &Ctx<'_>, id: NodeId) -> Result<bool> {
 // https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element:previously-focused-element
 fn capture_previously_focused(ctx: &Ctx<'_>, id: NodeId) -> Result<()> {
     let owner = world_for_node(ctx, id)?;
-    let mut world = owner.borrow_mut();
+    let world = owner.borrow();
     let focused = world.active_element(id.document);
-    world.state.dialog_previously_focused.insert(id, focused);
+    world
+        .doc_mut()
+        .state
+        .dialog_previously_focused
+        .insert(id, focused);
     Ok(())
 }
 

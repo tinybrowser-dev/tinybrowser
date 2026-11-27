@@ -133,19 +133,17 @@ impl CreatedWorker {
         name: String,
         options: CreatedWorkerOptions,
     ) -> Self {
+        let doc = world.doc();
         let worker_origin = if url.scheme() == "data" {
             url::Origin::new_opaque()
         } else {
-            world.origin.clone()
+            doc.origin.clone()
         };
         let local_script = (url.scheme() == "blob")
             .then(|| world.object_url_contents(url.as_str()))
             .flatten()
             .map(|contents| contents.to_string());
-        let top_level = world
-            .top_level
-            .clone()
-            .unwrap_or_else(|| world.origin.clone());
+        let top_level = doc.top_level.clone().unwrap_or_else(|| doc.origin.clone());
         let partition_key = net::site_for_origin(&top_level);
         Self {
             id,
@@ -157,13 +155,13 @@ impl CreatedWorker {
             credentials: options.credentials,
             extended_lifetime: options.extended_lifetime,
             same_site_cookies: options.same_site_cookies,
-            origin: world.origin.clone(),
+            origin: doc.origin.clone(),
             worker_origin,
             top_level,
             partition_key,
-            policy: world.policy.clone(),
-            sandbox: world.sandbox,
-            referrer_url: world.document_url.clone(),
+            policy: doc.policy.clone(),
+            sandbox: doc.sandbox,
+            referrer_url: doc.document_url.clone(),
             local_script,
         }
     }
@@ -788,32 +786,33 @@ impl Worker {
         };
         let world = Rc::new(RefCell::new(world));
         {
-            let mut state = world.borrow_mut();
+            let world = world.borrow();
+            let mut doc = world.doc_mut();
             // https://html.spec.whatwg.org/multipage/workers.html#dom-worker
-            state.origin = created.worker_origin.clone();
-            state.top_level = Some(if created.url.scheme() == "data" {
+            doc.origin = created.worker_origin.clone();
+            doc.top_level = Some(if created.url.scheme() == "data" {
                 created.worker_origin.clone()
             } else {
                 created.top_level.clone()
             });
-            state.policy = created.policy.clone();
+            doc.policy = created.policy.clone();
             // https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model
-            state.policy.csp = response_csp;
-            state.state.worker_owner_csp = Some(created.policy.csp.clone());
+            doc.policy.csp = response_csp;
+            doc.state.worker_owner_csp = Some(created.policy.csp.clone());
             if let Some(compatible) = own_embedder_policy {
-                state.policy.cross_origin_embedder_policy = compatible;
+                doc.policy.cross_origin_embedder_policy = compatible;
             }
             // https://html.spec.whatwg.org/multipage/webappapis.html#concept-settings-object-cross-origin-isolated-capability
-            state.policy.cross_origin_isolated = state.policy.cross_origin_isolated
-                && state.policy.cross_origin_embedder_policy.compatible();
-            state.sandbox = created.sandbox;
-            state.referrer_url = created.referrer_url.clone();
-            state.document_referrer = Some(created.referrer_url.clone());
-            state.same_site_cookie_policy = created.same_site_cookies.cookie_policy();
+            doc.policy.cross_origin_isolated = doc.policy.cross_origin_isolated
+                && doc.policy.cross_origin_embedder_policy.compatible();
+            doc.sandbox = created.sandbox;
+            doc.referrer_url = created.referrer_url.clone();
+            doc.document_referrer = Some(created.referrer_url.clone());
+            doc.same_site_cookie_policy = created.same_site_cookies.cookie_policy();
             // https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model
             if created.module {
-                state.state.module_client_origin = Some(created.origin.clone());
-                state.state.module_credentials = Some(created.credentials);
+                doc.state.module_client_origin = Some(created.origin.clone());
+                doc.state.module_credentials = Some(created.credentials);
             }
         }
         let js = JsRealm::new_worker(
@@ -1261,15 +1260,17 @@ impl Worker {
         };
         let (origin, referrer_url, referrer_policy, cookie_policy, partition_key, gate) = {
             let world = self.world.borrow();
+            let partition_key = world.partition_key();
+            let doc = world.doc();
             (
-                world.origin.clone(),
-                world.referrer_url.clone(),
-                world.policy.referrer_policy,
-                world.same_site_cookie_policy,
-                world.partition_key(),
+                doc.origin.clone(),
+                doc.referrer_url.clone(),
+                doc.policy.referrer_policy,
+                doc.same_site_cookie_policy,
+                partition_key,
                 crate::RedirectGate::new(
-                    world.policy.csp.clone(),
-                    &world.origin,
+                    doc.policy.csp.clone(),
+                    &doc.origin,
                     crate::csp::Destination::Connect,
                 ),
             )
