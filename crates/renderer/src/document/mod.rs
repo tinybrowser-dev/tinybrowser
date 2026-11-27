@@ -2565,7 +2565,7 @@ impl Document {
         );
         for violation in &mut violations {
             // https://w3c.github.io/webappsec-csp/#report-violation
-            violation.element = Some(id);
+            violation.element = Some(id.to_raw());
         }
         violations
     }

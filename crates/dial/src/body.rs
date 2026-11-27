@@ -1,7 +1,7 @@
 // https://fetch.spec.whatwg.org/#concept-response-body
 
 use crate::dial_failure;
-use renderer::DialFailure;
+use net::{DialFailure, MAX_RESPONSE_BODY_BYTES, integrity_verifies};
 
 pub enum BodyEvent {
     Chunk(Vec<u8>),
@@ -34,7 +34,7 @@ impl BodyReader {
         match self.body.read_chunk().await {
             Ok(Some(chunk)) => {
                 self.total = self.total.saturating_add(chunk.len());
-                if self.total > renderer::MAX_RESPONSE_BODY_BYTES {
+                if self.total > MAX_RESPONSE_BODY_BYTES {
                     return BodyEvent::Failed(DialFailure::Limit);
                 }
                 if self.collect {
@@ -44,7 +44,7 @@ impl BodyReader {
             }
             Ok(None) => {
                 if let Some(integrity) = self.integrity.as_deref()
-                    && !renderer::integrity_verifies(integrity, &self.collected)
+                    && !integrity_verifies(integrity, &self.collected)
                 {
                     return BodyEvent::Failed(DialFailure::Connect);
                 }
@@ -127,7 +127,7 @@ mod tests {
         let bad_sri = read_all(Bytes::from_static(b"hi"), Some(sha256_sri(b"ho"))).await;
         assert!(matches!(bad_sri, BodyEvent::Failed(DialFailure::Connect)));
 
-        let oversized = Bytes::from(vec![0u8; renderer::MAX_RESPONSE_BODY_BYTES + 1]);
+        let oversized = Bytes::from(vec![0u8; MAX_RESPONSE_BODY_BYTES + 1]);
         let capped = read_all(oversized, None).await;
         assert!(matches!(capped, BodyEvent::Failed(DialFailure::Limit)));
     }

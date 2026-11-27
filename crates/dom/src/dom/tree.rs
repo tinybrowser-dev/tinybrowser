@@ -13,6 +13,19 @@ impl NodeId {
     pub fn document_id(self) -> u32 {
         self.document
     }
+
+    #[must_use]
+    pub fn to_raw(self) -> (u32, u64) {
+        (self.document, self.node.as_u64())
+    }
+
+    #[must_use]
+    pub fn from_raw((document, node): (u32, u64)) -> Self {
+        Self {
+            document,
+            node: BlitzNodeId::from_u64(node),
+        }
+    }
 }
 
 impl std::fmt::Debug for NodeId {

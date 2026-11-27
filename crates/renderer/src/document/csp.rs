@@ -81,6 +81,7 @@ impl Document {
         for violation in violations {
             let target = violation
                 .element
+                .map(crate::dom::tree::NodeId::from_raw)
                 .filter(|element| self.csp_element_target(*element, document))
                 .unwrap_or(document);
             self.fire_js(|js| js.fire_csp_violations(target, std::slice::from_ref(violation)));

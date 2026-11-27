@@ -2126,7 +2126,7 @@ pub(crate) fn handler_attribute_violations(
         },
     );
     for violation in &mut violations {
-        violation.element = Some(id);
+        violation.element = Some(id.to_raw());
     }
     violations
 }

@@ -2,7 +2,9 @@
 
 mod client;
 pub mod cors;
+pub mod csp;
 mod error;
+pub mod fetch;
 mod identity;
 pub mod orb;
 mod protocol;
@@ -19,7 +21,13 @@ pub use cookies::{
     RetrievalKind, SameSiteCookiePolicy, ScriptCookieWrite, is_public_suffix, origins_same_site,
     site, site_for_origin,
 };
+pub use csp::{RedirectGate, integrity_verifies};
 pub use error::{NetError, TimeoutKind, TransportError};
+pub use fetch::{
+    BodyDelivery, CookiePolicy, CorsMode, CorsRequest, DialFailure, DialKind, DialOutcome,
+    DialRequest, FrameId, MAX_RESPONSE_BODY_BYTES, ReferrerRequest, RequestCache, RequestPolicy,
+    ResponseBody, SandboxFlag, SandboxFlags, SerializedOrigin, StreamId, cross_origin_credentials,
+};
 pub use identity::{
     Brand, CHROME_USER_AGENT, ClientHints, DEFAULT_USER_AGENT, Identity, InvalidIdentity,
     UserAgent, ValidIdentity,

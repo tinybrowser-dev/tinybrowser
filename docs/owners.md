@@ -8,13 +8,14 @@ it (#239).
 | --- | --- | --- |
 | Browsing-context names | `renderer::protocol::ContextName` | `Option<ContextName>`; `""` is not a name |
 | Target names and keywords | `renderer::protocol::TargetName` | the type; never a `_self`/`_blank` spelling |
-| Serialized origins | `renderer::protocol::SerializedOrigin` | `Origin`/`Site` after parsing |
+| Serialized origins | `net::SerializedOrigin` | `Origin`/`Site` after parsing |
 | Origin to URL | `net::origin_url` (`crates/net/src/lib.rs`) | the `Url`, not a string |
 | URL parse with a document encoding | `js::url_parts::encoding_parse_url` | the encoding label, never a second percent-encode loop |
 | Site for an origin | `net::site_for_origin`, `cookies::site_for_origin` | the site string |
 | Referrer policy | `net::referrer` | the enum |
 | Header grammar and request methods | `net::protocol`, `net::cors` | `http`/`net` types |
-| Sandbox flags | `renderer::protocol::SandboxFlags` | the bit set |
+| Sandbox flags | `net::SandboxFlags` | the bit set |
+| Fetch vocabulary, CSP & SRI | `net::fetch`, `net::csp` | `DialRequest`, `DialOutcome`, `RedirectGate`, `integrity_verifies` (`dial` never depends on `renderer`/`dom`) |
 | Enumerated attributes | `enumerated!` (`crates/enumerated`) | generated `parse`/`Deserialize` |
 | Secure context | `net::secure_context` | the computed bit |
 | Wall/monotonic time | `net::Clock`/`ClockSource` | an injected clock (`NetworkHost::clock()`) |

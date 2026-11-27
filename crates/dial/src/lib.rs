@@ -63,8 +63,11 @@ use std::hash::BuildHasher;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use net::{InitiatorKind, Request, isomorphic_decode, isomorphic_encode};
-use renderer::{DialFailure, DialKind, DialOutcome, DialRequest, ResponseBody, ResponseHead};
+use net::{
+    CookiePolicy, DialFailure, DialKind, DialOutcome, DialRequest, FrameId, InitiatorKind,
+    ReferrerRequest, Request, RequestCache, ResponseBody, integrity_verifies, isomorphic_decode,
+    isomorphic_encode,
+};
 use url::Url;
 
 // https://fetch.spec.whatwg.org/#concept-response
@@ -166,15 +169,14 @@ impl DialHead {
         &self.headers
     }
 
-    // https://html.spec.whatwg.org/multipage/document-lifecycle.html#initialise-the-document-object
     #[must_use]
-    pub fn into_document_head(self) -> ResponseHead {
-        ResponseHead::http(
-            self.status,
-            self.final_url,
-            self.content_type,
-            &self.headers,
-        )
+    pub fn content_type(&self) -> Option<&str> {
+        self.content_type.as_deref()
+    }
+
+    #[must_use]
+    pub fn into_http_parts(self) -> (u16, Url, Option<String>, Vec<(String, String)>) {
+        (self.status, self.final_url, self.content_type, self.headers)
     }
 
     #[must_use]
@@ -246,8 +248,7 @@ pub fn outbound_request<S: BuildHasher>(
     }
     // https://fetch.spec.whatwg.org/#http-network-or-cache-fetch
     cache_mode_headers(request, &mut outbound);
-    let top_level_document =
-        kind == DialKind::FrameLoad && request.frame == Some(renderer::FrameId::MAIN);
+    let top_level_document = kind == DialKind::FrameLoad && request.frame == Some(FrameId::MAIN);
     // https://w3c.github.io/webappsec-fetch-metadata/#sec-fetch-dest-header
     let destination = match kind {
         DialKind::JsFetch => "empty",
@@ -278,23 +279,23 @@ pub fn outbound_request<S: BuildHasher>(
     // https://fetch.spec.whatwg.org/#concept-request-referrer
     // https://w3c.github.io/webappsec-referrer-policy/#integration-with-css
     outbound.referrer = match &request.referrer {
-        renderer::ReferrerRequest::Client { url } if url.origin() == *initiator => {
+        ReferrerRequest::Client { url } if url.origin() == *initiator => {
             net::Referrer::Client(net::ReferrerClient {
                 origin: initiator.clone(),
                 url: url.clone(),
             })
         }
-        renderer::ReferrerRequest::Url(url) if referrer_authorized(url, initiator, sheets) => {
+        ReferrerRequest::Url(url) if referrer_authorized(url, initiator, sheets) => {
             net::Referrer::Url(url.clone())
         }
-        renderer::ReferrerRequest::NoReferrer
-        | renderer::ReferrerRequest::Client { .. }
-        | renderer::ReferrerRequest::Url(_) => net::Referrer::NoReferrer,
+        ReferrerRequest::NoReferrer | ReferrerRequest::Client { .. } | ReferrerRequest::Url(_) => {
+            net::Referrer::NoReferrer
+        }
     };
     outbound.referrer_policy = request.referrer_policy;
     outbound.same_site_cookie_policy = match request.cookie_policy {
-        renderer::CookiePolicy::All => net::SameSiteCookiePolicy::All,
-        renderer::CookiePolicy::NoneOnly => net::SameSiteCookiePolicy::NoneOnly,
+        CookiePolicy::All => net::SameSiteCookiePolicy::All,
+        CookiePolicy::NoneOnly => net::SameSiteCookiePolicy::NoneOnly,
     };
     outbound.partition_key.clone_from(&request.partition_key);
     Ok(outbound)
@@ -355,14 +356,12 @@ fn cache_mode_headers(request: &DialRequest, outbound: &mut Request) {
         }
     };
     match request.cache {
-        renderer::RequestCache::NoCache => add(outbound, "Cache-Control", "max-age=0"),
-        renderer::RequestCache::NoStore | renderer::RequestCache::Reload => {
+        RequestCache::NoCache => add(outbound, "Cache-Control", "max-age=0"),
+        RequestCache::NoStore | RequestCache::Reload => {
             add(outbound, "Pragma", "no-cache");
             add(outbound, "Cache-Control", "no-cache");
         }
-        renderer::RequestCache::Default
-        | renderer::RequestCache::ForceCache
-        | renderer::RequestCache::OnlyIfCached => {}
+        RequestCache::Default | RequestCache::ForceCache | RequestCache::OnlyIfCached => {}
     }
 }
 
@@ -399,7 +398,7 @@ pub fn integrity_ok(request: &DialRequest, outcome: &DialOutcome) -> bool {
     };
     match &outcome.body {
         ResponseBody::Bytes(body) => {
-            !outcome.response_type.is_opaque() && renderer::integrity_verifies(integrity, body)
+            !outcome.response_type.is_opaque() && integrity_verifies(integrity, body)
         }
         ResponseBody::Undecodable | ResponseBody::Streamed(_) => false,
     }

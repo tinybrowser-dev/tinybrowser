@@ -29,7 +29,10 @@ pub(crate) async fn navigate(
         .send(request)
         .await
         .map_err(|error| format!("{:?}", dial::dial_failure(&error)))?;
-    let head = DialHead::internal(&response).into_document_head();
+    let (head_status, head_url, head_content_type, head_headers) =
+        DialHead::internal(&response).into_http_parts();
+    let head =
+        renderer::ResponseHead::http(head_status, head_url, head_content_type, &head_headers);
     let mut reader = BodyReader::new(response, None, true).await;
     let body = loop {
         match reader.next().await {

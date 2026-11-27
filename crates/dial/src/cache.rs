@@ -6,8 +6,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Instant, SystemTime};
 
-use net::{Clock, Method, Request, Response, isomorphic_decode, isomorphic_encode};
-use renderer::{DialFailure, DialOutcome, DialRequest, RequestCache, RequestPolicy, ResponseBody};
+use net::{
+    Clock, CorsMode, DialFailure, DialOutcome, DialRequest, MAX_RESPONSE_BODY_BYTES, Method,
+    Request, RequestCache, RequestPolicy, Response, ResponseBody, isomorphic_decode,
+    isomorphic_encode,
+};
 use url::Url;
 
 pub const NO_PARTITION: u64 = 0;
@@ -786,13 +789,11 @@ fn cache_usable(request: &DialRequest, initiator: &url::Origin, entry: &CachedRe
     };
     match cors.mode {
         // https://fetch.spec.whatwg.org/#concept-request-mode
-        renderer::CorsMode::SameOrigin => {
+        CorsMode::SameOrigin => {
             request.url.origin() == *initiator && entry.outcome.final_url.origin() == *initiator
         }
-        renderer::CorsMode::NoCors => {
-            !matches!(entry.outcome.response_type, net::cors::ResponseType::Cors)
-        }
-        renderer::CorsMode::Cors => true,
+        CorsMode::NoCors => !matches!(entry.outcome.response_type, net::cors::ResponseType::Cors),
+        CorsMode::Cors => true,
     }
 }
 
@@ -966,7 +967,7 @@ fn parse_range(value: &str, total: u64) -> Option<(u64, u64)> {
 
 fn insert_cached(entries: &mut Entries, key: CacheKey, entry: CachedResponse) {
     let body_len = stored_bytes(&entry.outcome);
-    if body_len > renderer::MAX_RESPONSE_BODY_BYTES {
+    if body_len > MAX_RESPONSE_BODY_BYTES {
         return;
     }
     // https://www.rfc-editor.org/rfc/rfc9111#section-4.1
@@ -1208,8 +1209,8 @@ mod tests {
     fn request(mode: RequestCache, url: &str) -> DialRequest {
         let url = Url::parse(url).expect("request URL");
         let mut request = DialRequest::new(
-            RequestPolicy::Fetch(renderer::CorsRequest {
-                mode: renderer::CorsMode::Cors,
+            RequestPolicy::Fetch(net::CorsRequest {
+                mode: CorsMode::Cors,
                 credentials: net::cors::CredentialsMode::Include,
                 redirect: net::cors::RedirectMode::Follow,
             }),
@@ -1602,8 +1603,8 @@ mod tests {
         store(&cache, &first, &redirected);
         let mut same_origin = request(RequestCache::Default, "http://a.test/data");
         same_origin.method = Method::GET;
-        same_origin.policy = RequestPolicy::Fetch(renderer::CorsRequest {
-            mode: renderer::CorsMode::SameOrigin,
+        same_origin.policy = RequestPolicy::Fetch(net::CorsRequest {
+            mode: CorsMode::SameOrigin,
             credentials: net::cors::CredentialsMode::SameOrigin,
             redirect: net::cors::RedirectMode::Follow,
         });

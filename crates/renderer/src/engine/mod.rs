@@ -2242,7 +2242,7 @@ impl Engine {
         {
             let mut violations = violations;
             for violation in &mut violations {
-                violation.element = container;
+                violation.element = container.map(crate::dom::tree::NodeId::to_raw);
             }
             document.fire_csp_violations(target, &violations);
         }

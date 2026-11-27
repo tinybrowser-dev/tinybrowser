@@ -112,9 +112,23 @@ valgrind_test() {
     cargo test --target x86_64-unknown-linux-gnu "$@"
 }
 
+run_crate_boundaries() {
+  local status=0
+  if grep -qE '^\s*(renderer|dom)\s*=' crates/dial/Cargo.toml crates/net/Cargo.toml; then
+    echo "boundaries: crates/dial and crates/net must never depend on renderer or dom" >&2
+    status=1
+  fi
+  if grep -qE '^\s*(renderer|rquickjs)\s*=' crates/dom/Cargo.toml; then
+    echo "boundaries: crates/dom must never depend on renderer or rquickjs (ADR 0002)" >&2
+    status=1
+  fi
+  return "$status"
+}
+
 case "${1:-clippy}" in
   clippy)
     tools/webidl/import --check
+    run_crate_boundaries
     run_comments
     run_rust
     run_js

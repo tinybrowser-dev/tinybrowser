@@ -514,7 +514,9 @@ impl TabNetworkHandle {
         let final_url = net_head.final_url().clone();
         let mut status_text = net_head.status_text().to_owned();
         let mut headers = net_head.headers().to_vec();
-        let mut head = net_head.into_document_head();
+        let (head_status, head_url, head_content_type, head_headers) = net_head.into_http_parts();
+        let mut head =
+            renderer::ResponseHead::http(head_status, head_url, head_content_type, &head_headers);
         let mime_type = mime_from_headers(&headers);
         if let Some(ref meta) = request_meta {
             let resp_meta = ResponseMeta {

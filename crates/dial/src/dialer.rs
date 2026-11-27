@@ -6,8 +6,9 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use net::{Agent, Request};
-use renderer::{BodyDelivery, DialFailure, DialKind, DialOutcome, DialRequest, ResponseBody};
+use net::{
+    Agent, BodyDelivery, DialFailure, DialKind, DialOutcome, DialRequest, Request, ResponseBody,
+};
 use url::Url;
 
 use crate::body::{BodyEvent, BodyReader};
@@ -353,10 +354,9 @@ mod tests {
 
     use bytes::Bytes;
     use net::{
-        AgentOptions, HeaderMap, HopBudget, NetError, Transport, WireRequest, WireResponse,
-        buffered_body,
+        AgentOptions, CorsMode, CorsRequest, DialRequest, HeaderMap, HopBudget, NetError,
+        ReferrerRequest, RequestPolicy, Transport, WireRequest, WireResponse, buffered_body,
     };
-    use renderer::{DialRequest, ReferrerRequest, RequestPolicy};
 
     use super::*;
 
@@ -439,8 +439,8 @@ mod tests {
 
         let fetch_req = test_request(
             "https://page.test/data",
-            RequestPolicy::Fetch(renderer::CorsRequest {
-                mode: renderer::CorsMode::Cors,
+            RequestPolicy::Fetch(CorsRequest {
+                mode: CorsMode::Cors,
                 credentials: net::cors::CredentialsMode::Include,
                 redirect: net::cors::RedirectMode::Follow,
             }),
