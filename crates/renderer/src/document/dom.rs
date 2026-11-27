@@ -421,7 +421,7 @@ impl Document {
         parsed
             .document
             .base
-            .resolve_if_needed(crate::animation_seconds());
+            .resolve_if_needed(world.runtime.animation_seconds());
         if parsed
             .document
             .base
@@ -455,7 +455,7 @@ impl Document {
         parsed
             .document
             .base
-            .resolve_if_needed(crate::animation_seconds());
+            .resolve_if_needed(world.runtime.animation_seconds());
         let names = parsed
             .document
             .base
@@ -525,7 +525,7 @@ impl Document {
                 parsed
                     .document
                     .base
-                    .resolve_if_needed(crate::animation_seconds());
+                    .resolve_if_needed(world.runtime.animation_seconds());
             }
             world
                 .with_document(root, |parsed| collect_nodes(parsed, root, &mut nodes))

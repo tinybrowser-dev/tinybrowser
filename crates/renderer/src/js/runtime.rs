@@ -62,6 +62,8 @@ impl SharedBufferTable {
 #[derive(Clone)]
 pub(crate) struct SharedRuntime {
     pub(crate) services: Arc<dyn BrowserServices>,
+    pub(crate) clock: net::Clock,
+    pub(crate) animation_epoch: Instant,
     // https://wicg.github.io/ua-client-hints/#http-ua-hints
     pub(crate) initial_identity: net::ValidIdentity,
     pub(crate) wake: Arc<Notify>,
@@ -83,8 +85,12 @@ impl SharedRuntime {
         stop: Arc<Stop>,
         font_ctx: parley::FontContext,
     ) -> Self {
+        let clock = services.clock();
+        let animation_epoch = clock.monotonic();
         Self {
             services,
+            clock,
+            animation_epoch,
             initial_identity,
             wake,
             stop,
@@ -96,6 +102,18 @@ impl SharedRuntime {
             shared_buffers: Arc::new(SharedBufferTable::default()),
             font_ctx,
         }
+    }
+
+    pub(crate) fn now(&self) -> Instant {
+        self.clock.monotonic()
+    }
+
+    // https://drafts.csswg.org/cssom-view/#scroll-an-element
+    pub(crate) fn animation_seconds(&self) -> f64 {
+        self.clock
+            .monotonic()
+            .saturating_duration_since(self.animation_epoch)
+            .as_secs_f64()
     }
 }
 
@@ -130,10 +148,6 @@ impl FrameRuntime {
         self.worker_requests
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-    }
-
-    pub(crate) fn push_worker_request(&self, request: WorkerRequest) {
-        self.requests().push(request);
     }
 
     pub(crate) fn push_worker_request_waking(&self, request: WorkerRequest) {

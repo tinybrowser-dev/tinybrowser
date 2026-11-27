@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::sync::mpsc;
 use std::time::Duration;
 
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
@@ -533,7 +532,6 @@ pub(super) fn load_module<'js>(ctx: &Ctx<'js>, name: &str) -> Result<Module<'js,
         inputs.destination,
     )?;
 
-    let (send, receive) = mpsc::sync_channel(1);
     let mut request = DialRequest::new(inputs.request_policy, &url, &inputs.initiator);
     request.cookie_policy = world_rc.borrow().same_site_cookie_policy.into();
     request.partition_key.clone_from(&inputs.partition_key);
@@ -546,18 +544,10 @@ pub(super) fn load_module<'js>(ctx: &Ctx<'js>, name: &str) -> Result<Module<'js,
         inputs.destination,
     )));
     request.referrer_policy = inputs.referrer_policy;
-    let cancel = inputs.services.start_dial(
-        request,
-        Box::new(move |outcome| {
-            let _result = send.send(outcome);
-        }),
-    );
-    let outcome = if let Ok(outcome) = receive.recv_timeout(Duration::from_secs(30)) {
-        outcome.map_err(|_| Error::new_loading(name))?
-    } else {
-        cancel();
-        return Err(Error::new_loading(name));
-    };
+    let outcome = inputs
+        .services
+        .dial_blocking(request, Duration::from_secs(30))
+        .map_err(|_| Error::new_loading(name))?;
     record_worker_script_response(&world_rc, name, &outcome.headers);
     let final_url = &outcome.final_url;
     if final_url != &url {

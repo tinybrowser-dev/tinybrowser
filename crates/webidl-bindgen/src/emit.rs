@@ -25,7 +25,6 @@ pub(crate) fn interface(interface: &Interface) -> TokenStream {
     let unscopables = unscopables(interface);
     let (routes, groups) = dispatch_groups(interface, &payload, "dispatch");
     let (alternate_dispatch, alternate_groups) = alternate_dispatch(interface);
-    let definition = definition(interface, &payload, required);
     let constructor_dispatch = match interface.kind {
         InterfaceKind::Complete => quote! {
             if operation.index() == 0 {
@@ -34,6 +33,9 @@ pub(crate) fn interface(interface: &Interface) -> TokenStream {
         },
         InterfaceKind::Partial => quote! {},
     };
+    let has_dispatch =
+        !routes.is_empty() || !constructor_dispatch.is_empty() || !alternate_dispatch.is_empty();
+    let definition = definition(interface, &payload, required, has_dispatch);
     let receiver_check = receiver_check(interface, &interface.rust);
     let unknown_operation =
         quote! { Err(rquickjs::Exception::throw_internal(&ctx, "unknown native operation")) };
@@ -47,29 +49,10 @@ pub(crate) fn interface(interface: &Interface) -> TokenStream {
             }
         }
     };
-    let operation =
-        if routes.is_empty() && constructor_dispatch.is_empty() && alternate_dispatch.is_empty() {
-            format_ident!("_operation")
-        } else {
-            format_ident!("operation")
-        };
-    quote! {
-        pub(crate) mod #module {
-            use super::#rust;
-            use crate::js::bindings::host;
-            use rquickjs::{Ctx, Result, Value};
-            use rquickjs::function::Params;
-
-            #tables
-            #contract
-            #definition
-            #(#dictionaries)*
-            #(#enumerations)*
-            #(#unions)*
-            #unscopables
-
+    let dispatch_fn = if has_dispatch {
+        quote! {
             // https://webidl.spec.whatwg.org/#es-interface-call
-            fn dispatch<'js>(#operation: host::Operation, params: &Params<'_, 'js>) -> Result<Value<'js>> {
+            fn dispatch<'js>(operation: host::Operation, params: &Params<'_, 'js>) -> Result<Value<'js>> {
                 let ctx = params.ctx().clone();
                 #constructor_dispatch
                 #alternate_dispatch
@@ -84,10 +67,131 @@ pub(crate) fn interface(interface: &Interface) -> TokenStream {
             #(#groups)*
             #(#alternate_groups)*
         }
+    } else {
+        quote! {}
+    };
+    let imports = if has_dispatch {
+        quote! {
+            use super::#rust;
+            use crate::js::bindings::host;
+            use rquickjs::{Ctx, Result, Value};
+            use rquickjs::function::Params;
+        }
+    } else {
+        quote! {
+            use crate::js::bindings::host;
+            use rquickjs::{Ctx, Result};
+        }
+    };
+    quote! {
+        pub(crate) mod #module {
+            #imports
+
+            #tables
+            #contract
+            #definition
+            #(#dictionaries)*
+            #(#enumerations)*
+            #(#unions)*
+            #unscopables
+            #dispatch_fn
+        }
     }
 }
 
+fn optional_keyword(path: Option<&syn::Path>) -> TokenStream {
+    if let Some(path) = path {
+        quote! { Some(#path.as_keyword()) }
+    } else {
+        quote! { None }
+    }
+}
+
+fn reflect_getter_target(interface: &str, attribute: &Attribute) -> Option<TokenStream> {
+    let (content, kind) = match &attribute.mapping {
+        GetterMapping::Method => return None,
+        GetterMapping::Reflect { content } => {
+            let kind = match attribute.return_type {
+                ReturnType::String | ReturnType::UsvString => {
+                    quote! { host::ReflectKind::GetString }
+                }
+                ReturnType::Boolean => quote! { host::ReflectKind::GetBool },
+                _ => unreachable!("validated reflect mapping"),
+            };
+            (content.as_str(), kind)
+        }
+        GetterMapping::ReflectUrl { content } => {
+            (content.as_str(), quote! { host::ReflectKind::GetUrl })
+        }
+        GetterMapping::ReflectEnumerated {
+            content,
+            type_path,
+            missing,
+            invalid,
+        } => {
+            let missing = optional_keyword(missing.as_ref());
+            let invalid = optional_keyword(invalid.as_ref());
+            let nullable = matches!(attribute.return_type, ReturnType::NullableString);
+            let kind = quote! {
+                host::ReflectKind::GetEnumerated {
+                    keywords: <#type_path as crate::js::bindings::enumerated::Enumerated>::KEYWORD_STRS,
+                    missing: #missing,
+                    invalid: #invalid,
+                    nullable: #nullable,
+                }
+            };
+            (content.as_str(), kind)
+        }
+    };
+    Some(quote! {
+        host::AccessorTarget::Reflect(&host::ReflectBinding {
+            interface: #interface,
+            content: #content,
+            kind: #kind,
+        })
+    })
+}
+
+fn reflect_setter_target(interface: &str, attribute: &Attribute) -> Option<TokenStream> {
+    let Some(Setter::Reflect { content }) = &attribute.setter else {
+        return None;
+    };
+    let reactions = attribute.reactions;
+    let kind = match attribute.return_type {
+        ReturnType::String => {
+            let legacy_null = attribute.legacy_null_to_empty;
+            quote! { host::ReflectKind::SetString { legacy_null: #legacy_null, reactions: #reactions } }
+        }
+        ReturnType::UsvString => {
+            quote! { host::ReflectKind::SetUsvString { reactions: #reactions } }
+        }
+        ReturnType::NullableString => {
+            quote! { host::ReflectKind::SetEnumeratedNullable { reactions: #reactions } }
+        }
+        ReturnType::Boolean => quote! { host::ReflectKind::SetBool { reactions: #reactions } },
+        ReturnType::Long => quote! { host::ReflectKind::SetLong { reactions: #reactions } },
+        ReturnType::UnsignedLong => {
+            quote! { host::ReflectKind::SetUlong { reactions: #reactions } }
+        }
+        ReturnType::Double => {
+            quote! { host::ReflectKind::SetDouble { restricted: false, reactions: #reactions } }
+        }
+        ReturnType::RestrictedDouble => {
+            quote! { host::ReflectKind::SetDouble { restricted: true, reactions: #reactions } }
+        }
+        _ => unreachable!("validated reflect mapping"),
+    };
+    Some(quote! {
+        host::AccessorTarget::Reflect(&host::ReflectBinding {
+            interface: #interface,
+            content: #content,
+            kind: #kind,
+        })
+    })
+}
+
 fn member_tables(interface: &Interface) -> TokenStream {
+    let interface_name = interface.name.as_str();
     let attributes_members = interface
         .attributes
         .iter()
@@ -95,15 +199,19 @@ fn member_tables(interface: &Interface) -> TokenStream {
         .map(|(index, attribute)| {
             let id = index * 2 + 1;
             let name = &attribute.name;
-            let setter = if attribute.setter.is_some() {
+            let getter = reflect_getter_target(interface_name, attribute)
+                .unwrap_or_else(|| quote! { host::AccessorTarget::Operation(host::Operation::new(#id)) });
+            let setter = if let Some(reflect) = reflect_setter_target(interface_name, attribute) {
+                quote! { Some(#reflect) }
+            } else if attribute.setter.is_some() {
                 let id = id + 1;
-                quote! { Some(host::Operation::new(#id)) }
+                quote! { Some(host::AccessorTarget::Operation(host::Operation::new(#id))) }
             } else {
                 quote! { None }
             };
             let secure_context = attribute.exposure.secure_context;
             quote! { host::Member { name: #name, secure_context: #secure_context, kind: host::MemberKind::Attribute {
-                getter: host::Operation::new(#id), setter: #setter,
+                getter: #getter, setter: #setter,
             } } }
         });
     let operation_members = interface.operations.iter().enumerate().map(|(index, operation)| {
@@ -192,7 +300,9 @@ fn dispatch_groups(
 ) -> (Vec<TokenStream>, Vec<TokenStream>) {
     let mut arms = Vec::new();
     for (index, attribute) in interface.attributes.iter().enumerate() {
-        arms.push((index * 2 + 1, false, getter_dispatch(attribute, interface)));
+        if matches!(attribute.mapping, GetterMapping::Method) {
+            arms.push((index * 2 + 1, false, getter_dispatch(attribute, interface)));
+        }
         if let Some(setter) = setter_dispatch(attribute, interface) {
             arms.push((index * 2 + 2, true, setter));
         }
@@ -326,7 +436,12 @@ fn group_function(
     }
 }
 
-fn definition(interface: &Interface, payload: &TokenStream, required: usize) -> TokenStream {
+fn definition(
+    interface: &Interface,
+    payload: &TokenStream,
+    required: usize,
+    has_dispatch: bool,
+) -> TokenStream {
     let name = &interface.name;
     let property_hooks = indexed_property_hooks(interface);
     let parent = match &interface.parent {
@@ -360,7 +475,7 @@ fn definition(interface: &Interface, payload: &TokenStream, required: usize) -> 
 
                 fn prototype(ctx: &Ctx<'js>) -> Result<Option<rquickjs::Object<'js>>> {
                     #prototype_gate
-                    let prototype = host::prototype(ctx, #name, #parent, MEMBERS, CONSTANTS, dispatch)?;
+                    let prototype = host::prototype(ctx, #name, #parent, MEMBERS, CONSTANTS, Some(dispatch))?;
                     host::install_unscopables(&prototype, UNSCOPABLES)?;
                     Ok(Some(prototype))
                 }
@@ -378,6 +493,11 @@ fn definition(interface: &Interface, payload: &TokenStream, required: usize) -> 
             }
         },
         InterfaceKind::Partial => {
+            let dispatcher = if has_dispatch {
+                quote! { Some(dispatch) }
+            } else {
+                quote! { None }
+            };
             let targets: Vec<&str> = if interface.install_targets.is_empty() {
                 vec![name.as_str()]
             } else {
@@ -396,7 +516,7 @@ fn definition(interface: &Interface, payload: &TokenStream, required: usize) -> 
                             MEMBERS,
                             CONSTANTS,
                             UNSCOPABLES,
-                            dispatch,
+                            #dispatcher,
                         )?;
                     )*
                     Ok(())
@@ -590,19 +710,23 @@ impl SetterTokens {
             };
         };
         let method = &setter.rust;
-        let call = quote! {
-            let receiver = this.borrow();
-            receiver.#method(ctx.clone(), index, value)?;
-        };
         let call = if setter.reactions {
             quote! {
-                crate::js::reactions::with_reactions(ctx, || {
-                    #call
-                    Ok(Value::new_undefined(ctx.clone()))
-                })?;
+                crate::js::reactions::enter(ctx)?;
+                let result = {
+                    let receiver = this.borrow();
+                    match receiver.#method(ctx.clone(), index, value) {
+                        Ok(()) => Ok(Value::new_undefined(ctx.clone())),
+                        Err(error) => Err(error),
+                    }
+                };
+                crate::js::reactions::finish(ctx, result)?;
             }
         } else {
-            quote! { #call }
+            quote! {
+                let receiver = this.borrow();
+                receiver.#method(ctx.clone(), index, value)?;
+            }
         };
         Self {
             define_descriptor: format_ident!("descriptor"),
@@ -765,138 +889,55 @@ fn method_call(interface: &Interface, method: &syn::Ident, arguments: &TokenStre
     }
 }
 
-fn optional_default(path: Option<&syn::Path>) -> TokenStream {
-    if let Some(path) = path {
-        quote! { Some(#path) }
-    } else {
-        quote! { None }
-    }
-}
-
-// https://w3c.github.io/aria/#enumerated-attribute-values-html
-fn reflected_enumerated_getter(
-    getter: &Attribute,
-    content: &str,
-    type_path: &syn::Path,
-    missing: &TokenStream,
-    invalid: &TokenStream,
-) -> TokenStream {
-    if matches!(getter.return_type, ReturnType::NullableString) {
-        quote! {
-            host::ret_nullable(
-                host::reflect_enumerated_attribute_nullable::<#type_path>(
-                    &ctx,
-                    receiver.node_id(),
-                    #content,
-                    crate::js::bindings::enumerated::Defaults {
-                        missing: #missing,
-                        invalid: #invalid,
-                    },
-                )?,
-                &ctx,
-            )
-        }
-    } else {
-        quote! {
-            host::ret(
-                host::reflect_enumerated_attribute::<#type_path>(
-                    &ctx,
-                    receiver.node_id(),
-                    #content,
-                    crate::js::bindings::enumerated::Defaults {
-                        missing: #missing,
-                        invalid: #invalid,
-                    },
-                )?,
-                &ctx,
-            )
-        }
-    }
-}
-
 fn getter_dispatch(getter: &Attribute, interface: &Interface) -> TokenStream {
     let method = &getter.rust;
     let ctx_arg = quote! { &ctx };
     let call = method_call(interface, method, &ctx_arg);
-    let body = match &getter.mapping {
-        GetterMapping::Reflect { content } => match getter.return_type {
-            ReturnType::String | ReturnType::UsvString => quote! {
-                host::ret(
-                    host::reflect_string(&ctx, receiver.node_id(), #content)?,
-                    &ctx,
-                )
-            },
-            ReturnType::Boolean => quote! {
-                host::ret(host::reflect_bool(&ctx, receiver.node_id(), #content)?, &ctx)
-            },
-            _ => unreachable!("validated reflect mapping"),
-        },
-        GetterMapping::ReflectUrl { content } => {
+    match getter.return_type {
+        ReturnType::String
+        | ReturnType::Boolean
+        | ReturnType::UnsignedShort
+        | ReturnType::UnsignedLong
+        | ReturnType::Long
+        | ReturnType::Double
+        | ReturnType::RestrictedDouble => {
+            quote! { host::ret(#call?, &ctx) }
+        }
+        ReturnType::UsvString => {
             quote! {
-                let result: crate::dom_string::DomString =
-                    host::reflect_url_string(&ctx, receiver.node_id(), #content)?;
+                let result = #call?;
                 host::ret_usv(&result, &ctx)
             }
         }
-        GetterMapping::ReflectEnumerated {
-            content,
-            type_path,
-            missing,
-            invalid,
-        } => reflected_enumerated_getter(
-            getter,
-            content,
-            type_path,
-            &optional_default(missing.as_ref()),
-            &optional_default(invalid.as_ref()),
-        ),
-        GetterMapping::Method => match getter.return_type {
-            ReturnType::String
-            | ReturnType::Boolean
-            | ReturnType::UnsignedShort
-            | ReturnType::UnsignedLong
-            | ReturnType::Long
-            | ReturnType::Double
-            | ReturnType::RestrictedDouble => {
-                quote! { host::ret(#call?, &ctx) }
-            }
-            ReturnType::UsvString => {
-                quote! {
-                    let result = #call?;
-                    host::ret_usv(&result, &ctx)
-                }
-            }
-            ReturnType::NullableString | ReturnType::NullableUnsignedLong => {
-                quote! { host::ret_nullable(#call?, &ctx) }
-            }
-            ReturnType::NullableNode | ReturnType::PlatformObject => {
-                quote! { #call }
-            }
-            ReturnType::Union(..) | ReturnType::NullableUnion(..) => {
-                unreachable!("attribute unions collapse to platform objects at lowering")
-            }
-            ReturnType::PromiseUndefined => {
-                unreachable!("promise attributes are rejected at lowering")
-            }
-            ReturnType::Enumeration(_) => quote! {
-                let result = #call?;
-                host::ret_enum(result.as_str(), &ctx)
-            },
-            ReturnType::Node
-            | ReturnType::Callback
-            | ReturnType::Dictionary(_)
-            | ReturnType::InterfaceSequence
-            | ReturnType::StringSequence
-            | ReturnType::NullableDocumentType
-            | ReturnType::Uint8Array
-            | ReturnType::UnsignedLongLong
-            | ReturnType::Short
-            | ReturnType::Any => {
-                unreachable!("validated field mapping")
-            }
+        ReturnType::NullableString | ReturnType::NullableUnsignedLong => {
+            quote! { host::ret_nullable(#call?, &ctx) }
+        }
+        ReturnType::NullableNode | ReturnType::PlatformObject => {
+            quote! { #call }
+        }
+        ReturnType::Union(..) | ReturnType::NullableUnion(..) => {
+            unreachable!("attribute unions collapse to platform objects at lowering")
+        }
+        ReturnType::PromiseUndefined => {
+            unreachable!("promise attributes are rejected at lowering")
+        }
+        ReturnType::Enumeration(_) => quote! {
+            let result = #call?;
+            host::ret_enum(result.as_str(), &ctx)
         },
-    };
-    quote! { #body }
+        ReturnType::Node
+        | ReturnType::Callback
+        | ReturnType::Dictionary(_)
+        | ReturnType::InterfaceSequence
+        | ReturnType::StringSequence
+        | ReturnType::NullableDocumentType
+        | ReturnType::Uint8Array
+        | ReturnType::UnsignedLongLong
+        | ReturnType::Short
+        | ReturnType::Any => {
+            unreachable!("validated field mapping")
+        }
+    }
 }
 
 fn setter_value_conversion(return_type: &ReturnType, legacy_null_to_empty: bool) -> TokenStream {
@@ -943,9 +984,7 @@ fn setter_dispatch(attribute: &Attribute, interface: &Interface) -> Option<Token
     let ctx_arg = quote! { &ctx };
     let method = match setter {
         Setter::Method { rust } => rust,
-        Setter::Reflect { content } => {
-            return Some(reflect_setter(attribute, content));
-        }
+        Setter::Reflect { .. } => return None,
         Setter::PutForwards { target, nullable } => {
             let name = &attribute.name;
             return Some(quote! {
@@ -956,92 +995,26 @@ fn setter_dispatch(attribute: &Attribute, interface: &Interface) -> Option<Token
     };
     let convert = setter_value_conversion(&attribute.return_type, attribute.legacy_null_to_empty);
     let call = method_call(interface, method, &quote! { #ctx_arg, value });
-    let body = quote! {
-        #call?;
-        Ok(Value::new_undefined(ctx.clone()))
-    };
     let body = if attribute.reactions {
-        quote! { crate::js::reactions::with_reactions(&ctx, || { #body }) }
+        quote! {
+            crate::js::reactions::enter(&ctx)?;
+            let result = match #call {
+                Ok(()) => Ok(host::ret_undefined(&ctx)),
+                Err(error) => Err(error),
+            };
+            crate::js::reactions::finish(&ctx, result)
+        }
     } else {
-        body
+        quote! {
+            #call?;
+            Ok(host::ret_undefined(&ctx))
+        }
     };
     Some(quote! {
         // https://webidl.spec.whatwg.org/#es-attributes — omitted setter argument converts undefined per WebIDL rather than throwing like Chromium and Firefox
         let value = #convert;
         #body
     })
-}
-
-fn reflect_setter(attribute: &Attribute, content: &str) -> TokenStream {
-    let convert = match attribute.return_type {
-        ReturnType::String if attribute.legacy_null_to_empty => {
-            quote! { host::legacy_null_string_argument(params, 0)? }
-        }
-        ReturnType::String => {
-            quote! { host::string_argument(params, 0, None)? }
-        }
-        ReturnType::NullableString => {
-            quote! { host::nullable_string_argument(params, 0)? }
-        }
-        // https://webidl.spec.whatwg.org/#es-USVString
-        ReturnType::UsvString => {
-            quote! { host::usv_string_argument(params, 0)? }
-        }
-        // https://webidl.spec.whatwg.org/#es-boolean
-        ReturnType::Boolean => quote! { host::boolean_argument(params, 0)? },
-        // https://webidl.spec.whatwg.org/#es-long
-        ReturnType::Long => quote! { host::long_argument(params, 0)? },
-        // https://webidl.spec.whatwg.org/#es-unsigned-long
-        ReturnType::UnsignedLong => quote! { host::ulong_argument(params, 0)? },
-        // https://webidl.spec.whatwg.org/#es-double
-        ReturnType::Double => quote! { host::double_argument(params, 0)? },
-        ReturnType::RestrictedDouble => {
-            quote! { host::restricted_double_argument(params, 0)? }
-        }
-        _ => unreachable!("validated reflect mapping"),
-    };
-    let write = match attribute.return_type {
-        ReturnType::String | ReturnType::UsvString => quote! {
-            host::reflect_set_string(&ctx, receiver.node_id(), #content, &value)?;
-        },
-        ReturnType::NullableString
-            if matches!(attribute.mapping, GetterMapping::ReflectEnumerated { .. }) =>
-        {
-            quote! {
-                host::reflect_set_enumerated_nullable(&ctx, receiver.node_id(), #content, value)?;
-            }
-        }
-        ReturnType::NullableString => quote! {
-            host::reflect_set_nullable_string(&ctx, receiver.node_id(), #content, value)?;
-        },
-        ReturnType::Boolean => quote! {
-            host::reflect_set_bool(&ctx, receiver.node_id(), #content, value)?;
-        },
-        ReturnType::Long => quote! {
-            host::reflect_set_long(&ctx, receiver.node_id(), #content, value)?;
-        },
-        ReturnType::UnsignedLong => quote! {
-            host::reflect_set_ulong(&ctx, receiver.node_id(), #content, value)?;
-        },
-        ReturnType::Double | ReturnType::RestrictedDouble => quote! {
-            host::reflect_set_double(&ctx, receiver.node_id(), #content, value)?;
-        },
-        _ => unreachable!("validated reflect mapping"),
-    };
-    let body = quote! {
-        #write
-        Ok(Value::new_undefined(ctx.clone()))
-    };
-    let body = if attribute.reactions {
-        quote! { crate::js::reactions::with_reactions(&ctx, || { #body }) }
-    } else {
-        body
-    };
-    quote! {
-        // https://webidl.spec.whatwg.org/#es-attributes — omitted setter argument converts undefined per WebIDL rather than throwing like Chromium and Firefox
-        let value = #convert;
-        #body
-    }
 }
 
 fn operation_dispatch(operation: &Operation, interface: &Interface) -> TokenStream {
@@ -1077,29 +1050,48 @@ fn operation_dispatch(operation: &Operation, interface: &Interface) -> TokenStre
         | OperationResult::UnsignedShort
         | OperationResult::Short
         | OperationResult::Long => quote! {
-            host::ret(#call?, &ctx)
+            match #call {
+                Ok(value) => host::ret(value, &ctx),
+                Err(error) => Err(error),
+            }
         },
         OperationResult::NullableUnion | OperationResult::NullableString => quote! {
-            host::ret_nullable(#call?, &ctx)
+            match #call {
+                Ok(value) => host::ret_nullable(value, &ctx),
+                Err(error) => Err(error),
+            }
         },
         OperationResult::Undefined => quote! {
-            #call?;
-            Ok(host::ret_undefined(&ctx))
+            match #call {
+                Ok(()) => Ok(host::ret_undefined(&ctx)),
+                Err(error) => Err(error),
+            }
         },
         OperationResult::PromiseUndefined => quote! {
-            #call?;
-            host::resolved_promise(&ctx)
+            match #call {
+                Ok(()) => host::resolved_promise(&ctx),
+                Err(error) => Err(error),
+            }
         },
         OperationResult::Sequence => quote! {
-            let result: Vec<Value> = #call?;
-            host::sequence(&ctx, result)
+            match #call {
+                Ok(result) => host::sequence(&ctx, result),
+                Err(error) => Err(error),
+            }
         },
         OperationResult::StringSequence => quote! {
-            host::ret_string_sequence(#call?, &ctx)
+            match #call {
+                Ok(result) => host::ret_string_sequence(result, &ctx),
+                Err(error) => Err(error),
+            }
         },
     };
     let body = if operation.reactions {
-        quote! { crate::js::reactions::with_reactions(&ctx, || { #body }) }
+        quote! {
+            crate::js::reactions::enter(&ctx)?;
+            let result = #body;
+            crate::js::reactions::finish(&ctx, result)
+        }
     } else {
         body
     };
@@ -1610,19 +1602,9 @@ fn dictionary_conversion(field: &DictionaryField) -> TokenStream {
                 }
             }
         },
-        DictionaryFieldType::Interface { nullable: true } => quote! {
-            #rust: host::dict_object(ctx, &object, #key)?
-        },
-        DictionaryFieldType::Interface { nullable: false } => quote! {
+        DictionaryFieldType::Interface { nullable } => quote! {
             // https://webidl.spec.whatwg.org/#es-dictionary
-            #rust: {
-                let value: Value = object.get(#key)?;
-                if value.is_undefined() {
-                    None
-                } else {
-                    Some(host::dict_required_object(ctx, &object, #key)?)
-                }
-            }
+            #rust: host::dict_object(ctx, &object, #key, #nullable)?
         },
     }
 }

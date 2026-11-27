@@ -46,9 +46,9 @@ icu_provider = { version = "2.3.1", default-features = false }
 icu_provider_adapters = { version = "2.3.0", features = ["serde"] }
 icu_provider_blob = { version = "2.3.0", features = ["alloc"] }
 writeable = "0.6"
-# The engine waits on nothing itself: `time` for timer deadlines, `sync` for
-# the wake handle, `macros` for `select!`. A carrier brings its own runtime.
-tokio = { version = "1.53", default-features = false, features = ["time", "sync", "macros"] }
+# The engine waits on nothing itself: `sync` for the wake handle. A carrier
+# brings its own runtime.
+tokio = { version = "1.53", default-features = false, features = ["sync"] }
 url = { version = "2", features = ["serde"] }
 # QuickJS-ng via rquickjs; `std` uses shipped linux bindings (no bindgen).
 rquickjs = { version = "0.14.0", default-features = false, features = ["std", "loader", "macro"] }

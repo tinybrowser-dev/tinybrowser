@@ -27,9 +27,7 @@ http-body-util = "0.1"
 percent-encoding = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# `test-util` is the virtual clock: when a test has nothing ready but a timer,
-# jump straight to it instead of spending the harness budget.
-tokio = { version = "1.53", default-features = false, features = ["rt", "time", "sync", "macros", "test-util"] }
+tokio = { version = "1.53", default-features = false, features = ["rt", "time"] }
 url = "2"
 # `uuid()` in `.sub.headers`: wptserve substitutes a fresh UUID v4.
 uuid = { version = "1", features = ["v4"] }

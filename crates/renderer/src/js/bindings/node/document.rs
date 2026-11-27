@@ -36,7 +36,9 @@ use crate::js::world::{DocumentStreamCommand, NodeReference, SameObject};
 
 use crate::ReadyState;
 
-use crate::js::bindings::enumerated::{Defaults, Dir, reflect_enumerated};
+use enumerated::Enumerated as _;
+
+use crate::js::bindings::enumerated::{Dir, reflect_enumerated_keywords};
 
 use super::JsNode;
 use super::core::{adopt_node, document_value};
@@ -220,7 +222,8 @@ impl<'js> document_generated::Document<'js> for JsNode {
             .and_then(|element| content_attr(ctx, element, "dir"));
         rquickjs::String::from_str(
             ctx.clone(),
-            reflect_enumerated::<Dir>(value.as_deref(), Defaults::NONE),
+            reflect_enumerated_keywords(value.as_deref(), Dir::KEYWORD_STRS, None, None)
+                .unwrap_or(""),
         )
     }
 
@@ -1247,7 +1250,9 @@ impl JsNode {
         let world = world.borrow();
         let found = world
             .document_mut(self.handle.get().0)
-            .and_then(|mut parsed| super::scrolling::scrolling_element(&mut parsed));
+            .and_then(|mut parsed| {
+                super::scrolling::scrolling_element(&mut parsed, world.runtime.animation_seconds())
+            });
         child_value(ctx, found)
     }
 

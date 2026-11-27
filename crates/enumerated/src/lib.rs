@@ -1,5 +1,6 @@
 pub trait Enumerated: Copy + 'static {
     const KEYWORDS: &'static [Self];
+    const KEYWORD_STRS: &'static [&'static str];
 
     fn keyword(self) -> &'static str;
 
@@ -49,13 +50,21 @@ macro_rules! enumerated {
             )+
         }
 
-        impl $crate::Enumerated for $name {
-            const KEYWORDS: &'static [Self] = &[$(Self::$variant),+];
-
-            fn keyword(self) -> &'static str {
+        impl $name {
+            #[must_use]
+            pub const fn as_keyword(self) -> &'static str {
                 match self {
                     $(Self::$variant => $keyword),+
                 }
+            }
+        }
+
+        impl $crate::Enumerated for $name {
+            const KEYWORDS: &'static [Self] = &[$(Self::$variant),+];
+            const KEYWORD_STRS: &'static [&'static str] = &[$($keyword),+];
+
+            fn keyword(self) -> &'static str {
+                self.as_keyword()
             }
         }
 

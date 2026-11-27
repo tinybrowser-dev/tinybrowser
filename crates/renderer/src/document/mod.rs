@@ -9,7 +9,6 @@ use tokio::sync::Notify;
 
 use blitz_traits::net::NetHandler;
 use net::cors::CrossOrigin;
-use tokio::time::Instant;
 use url::Url;
 
 use crate::Parsed;
@@ -239,14 +238,6 @@ pub(crate) struct LocalDocumentState {
     pub(crate) sandbox: crate::protocol::SandboxFlags,
 }
 
-struct Timer {
-    // https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#dom-settimeout
-    when: Option<Instant>,
-    fired: bool,
-    // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-createIsolatedWorld
-    realm_handle: Option<(u64, PageTimerId)>,
-}
-
 // https://html.spec.whatwg.org/multipage/iframe-embed-object.html#the-iframe-element:html-element-insertion-steps
 fn subresource_request(
     kind: blitz_traits::net::RequestKind,
@@ -472,8 +463,7 @@ pub(crate) struct Document {
     url: Url,
     tasks: VecDeque<Task>,
     ui_events: UiEventQueue,
-    timers: HashMap<TimerId, Timer>,
-    next_timer_id: TimerId,
+    timers: crate::timers::TimerQueue<Option<(u64, PageTimerId)>>,
     dials: DialLedger,
     // https://html.spec.whatwg.org/multipage/images.html#update-the-image-data
     deferred_image_events: VecDeque<Task>,
@@ -667,8 +657,7 @@ impl Document {
             url: document_url,
             tasks: VecDeque::new(),
             ui_events: UiEventQueue::default(),
-            timers: HashMap::new(),
-            next_timer_id: TimerId::default(),
+            timers: crate::timers::TimerQueue::default(),
             dials: DialLedger::new(Arc::clone(&runtime.stop), Arc::clone(&runtime.wake)),
             deferred_image_events: VecDeque::new(),
             image_load_delays: HashMap::new(),
@@ -2040,7 +2029,7 @@ impl Document {
         }
         self.load_fired = false;
         if let Some(id) = self.refresh.reset() {
-            self.timers.remove(&id);
+            self.timers.remove(id);
         }
         self.pending_frame_loads.clear();
         for (_, request) in self.blitz_requests.drain() {
@@ -2055,7 +2044,7 @@ impl Document {
         self.csp.clear_pending_events();
         self.image_load_delays.clear();
         self.connected_images.clear();
-        self.timers.retain(|_, timer| timer.realm_handle.is_none());
+        self.timers.retain(|_, handle| handle.is_none());
         self.js_timers.clear();
         self.js = None;
         self.isolated_js.clear();
@@ -2245,7 +2234,10 @@ impl Document {
         {
             let world = self.world.borrow();
             if let Some(mut parsed) = world.main_document_mut() {
-                crate::render::resolve_until_settled(&mut parsed.document.base);
+                crate::render::resolve_until_settled(
+                    &mut parsed.document.base,
+                    world.runtime.animation_seconds(),
+                );
             }
         }
         // https://drafts.csswg.org/cssom-view/#evaluate-media-queries-and-report-changes
@@ -2272,7 +2264,7 @@ impl Document {
             return content;
         };
         let base = &mut parsed.document.base;
-        crate::render::resolve_until_settled(base);
+        crate::render::resolve_until_settled(base, world.runtime.animation_seconds());
         // https://drafts.csswg.org/cssom-view/#scrolling-element
         let root = base.root_element();
         content.0 = content.0.max(root.scroll_width());
@@ -3177,7 +3169,10 @@ impl Document {
             let Some(mut parsed) = world.main_document_mut() else {
                 return;
             };
-            crate::render::resolve_until_settled(&mut parsed.document.base)
+            crate::render::resolve_until_settled(
+                &mut parsed.document.base,
+                world.runtime.animation_seconds(),
+            )
         };
         #[cfg(test)]
         {

@@ -46,7 +46,7 @@ resource is `/resources/testharnessreport.js` (a small reporter the host
 polls; it also drops a repeated remote result, because a child frame's
 messages can reach the parent both live and through testharness's
 `getmessages` replay, and a second result would break its pending count),
-and a paused Tokio clock jumps over timer waits, so a hung file costs
+and an injected manual clock (`net::Clock`) jumps over timer waits, so a hung file costs
 its harness budget instead of a browser round trip. Budgets match the
 WebDriver lane's: 5 s, or 7 s for `<meta name=timeout content=long>`; both
 lanes read the policy in `tools/wpt/timeouts.py`, and cli.py passes it to the

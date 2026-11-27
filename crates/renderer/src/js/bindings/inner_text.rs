@@ -12,6 +12,6 @@ pub(crate) fn rendered_text(ctx: &Ctx<'_>, id: NodeId) -> Result<String> {
     parsed
         .document
         .base
-        .resolve_if_needed(crate::animation_seconds());
+        .resolve_if_needed(owner.runtime.animation_seconds());
     Ok(crate::dom::text::rendered_text(&parsed.document.base, id))
 }

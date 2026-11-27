@@ -764,7 +764,7 @@ fn frame_viewport_scroll(ctx: Ctx<'_>, frame: f64) -> Vec<f64> {
     parsed
         .document
         .base
-        .resolve_if_needed(crate::animation_seconds());
+        .resolve_if_needed(world.runtime.animation_seconds());
     let scroll = parsed.document.base.viewport_scroll();
     vec![scroll.x, scroll.y]
 }
@@ -789,7 +789,7 @@ fn frame_scroll_viewport(ctx: Ctx<'_>, frame: f64, x: f64, y: f64, behavior: Str
     parsed
         .document
         .base
-        .resolve_if_needed(crate::animation_seconds());
+        .resolve_if_needed(world.runtime.animation_seconds());
     let Some(root) = super::node::scrolling::root_element(&parsed) else {
         return;
     };

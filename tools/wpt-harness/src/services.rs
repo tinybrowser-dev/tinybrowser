@@ -576,6 +576,10 @@ impl net::ClockSource for HarnessClock {
     fn monotonic(&self) -> std::time::Instant {
         self.monotonic_base + self.elapsed()
     }
+
+    fn is_manual(&self) -> bool {
+        true
+    }
 }
 
 pub struct FsServices {
@@ -584,7 +588,8 @@ pub struct FsServices {
     agent: net::Agent,
     // https://fetch.spec.whatwg.org/#http-cache
     cache: Arc<HttpCache>,
-    clock: Arc<HarnessClock>,
+    clock: net::Clock,
+    manual_clock: Option<Arc<HarnessClock>>,
     storage: Mutex<HashMap<(StorageKind, StorageKey, String), String>>,
     cookies: Arc<Mutex<Vec<net::CookieRecord>>>,
 }
@@ -595,6 +600,7 @@ impl FsServices {
         root: PathBuf,
         content_types: HashMap<String, String>,
         sidecar: Option<Sidecar>,
+        virtual_time: bool,
     ) -> Self {
         let cookies = Arc::new(Mutex::new(Vec::new()));
         let origin = Arc::new(Origin::new(root, content_types, Arc::clone(&cookies)));
@@ -602,25 +608,33 @@ impl FsServices {
             origin: Arc::clone(&origin),
             sidecar,
         });
-        let clock = Arc::new(HarnessClock::new());
+        let (clock, manual_clock) = if virtual_time {
+            let manual = Arc::new(HarnessClock::new());
+            (net::Clock::new(Arc::clone(&manual)), Some(manual))
+        } else {
+            (net::Clock::default(), None)
+        };
         let options = net::AgentOptions {
-            clock: net::Clock::new(Arc::clone(&clock)),
+            clock: clock.clone(),
             ..net::AgentOptions::default()
         };
-        let cache = Arc::new(HttpCache::new(options.clock.clone()));
+        let cache = Arc::new(HttpCache::new(clock.clone()));
         Self {
             #[cfg(test)]
             origin,
             agent: net::Agent::with_transport(options, transport),
             cache,
             clock,
+            manual_clock,
             storage: Mutex::new(HashMap::new()),
             cookies,
         }
     }
 
     pub fn advance_clock(&self, delay: std::time::Duration) {
-        self.clock.advance(delay);
+        if let Some(clock) = &self.manual_clock {
+            clock.advance(delay);
+        }
     }
 
     // https://fetch.spec.whatwg.org/#http-network-or-cache-fetch
@@ -752,6 +766,10 @@ fn set_header(list: &mut Vec<(String, String)>, name: &str, value: &str) {
 }
 
 impl NetworkHost for FsServices {
+    fn clock(&self) -> net::Clock {
+        self.clock.clone()
+    }
+
     fn dial_sync(&self, request: DialRequest) -> Result<DialOutcome, DialFailure> {
         // https://xhr.spec.whatwg.org/#the-send(
         let agent = self.agent.clone();
@@ -978,6 +996,7 @@ mod tests {
             root(name),
             HashMap::from([("html".to_owned(), "text/html".to_owned())]),
             None,
+            true,
         )
     }
 

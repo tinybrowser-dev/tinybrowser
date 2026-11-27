@@ -59,11 +59,13 @@ impl Session {
         budgets: Budgets,
         fonts: &renderer::Fonts,
         sidecar: Option<crate::sidecar::Sidecar>,
+        virtual_time: bool,
     ) -> Self {
         let services = Arc::new(FsServices::new(
             root.to_path_buf(),
             content_types.clone(),
             sidecar,
+            virtual_time,
         ));
         let renderer = EmbeddedRenderer::with_fonts(
             Arc::clone(&services) as Arc<dyn renderer::BrowserServices>,
@@ -79,12 +81,12 @@ impl Session {
         }
     }
 
-    pub async fn run(&mut self, case: &TestCase, virtual_time: bool) -> Outcome {
+    pub fn run(&mut self, case: &TestCase, virtual_time: bool) -> Outcome {
         let started = Instant::now();
         let outcome = match case.kind {
-            Kind::Testharness => run_testharness(self, case, virtual_time).await,
-            Kind::Crashtest => run_crashtest(self, case, virtual_time).await,
-            Kind::Reftest => run_reftest(self, case, virtual_time).await,
+            Kind::Testharness => run_testharness(self, case, virtual_time),
+            Kind::Crashtest => run_crashtest(self, case, virtual_time),
+            Kind::Reftest => run_reftest(self, case, virtual_time),
             Kind::Testdriver => Err(Failure::Skip(
                 "testdriver requires a WebDriver session".into(),
             )),
@@ -207,7 +209,7 @@ impl Failure {
     }
 }
 
-async fn run_testharness(
+fn run_testharness(
     session: &mut Session,
     case: &TestCase,
     virtual_time: bool,
@@ -236,9 +238,8 @@ async fn run_testharness(
         if !delay.is_zero() {
             if virtual_time {
                 session.services.advance_clock(delay);
-                tokio::time::advance(delay).await;
             } else {
-                tokio::time::sleep(delay.min(Duration::from_millis(50))).await;
+                std::thread::sleep(delay.min(Duration::from_millis(50)));
             }
         }
     }
@@ -257,7 +258,7 @@ fn timeout_failure(renderer: &mut EmbeddedRenderer) -> Failure {
     }
 }
 
-async fn run_crashtest(
+fn run_crashtest(
     session: &mut Session,
     case: &TestCase,
     virtual_time: bool,
@@ -280,9 +281,8 @@ async fn run_crashtest(
             Some(delay) if !delay.is_zero() => {
                 if virtual_time {
                     session.services.advance_clock(delay);
-                    tokio::time::advance(delay).await;
                 } else {
-                    tokio::time::sleep(delay.min(Duration::from_millis(50))).await;
+                    std::thread::sleep(delay.min(Duration::from_millis(50)));
                 }
             }
             Some(_) => {}
@@ -301,7 +301,7 @@ async fn run_crashtest(
     }
 }
 
-async fn run_reftest(
+fn run_reftest(
     session: &mut Session,
     case: &TestCase,
     virtual_time: bool,
@@ -310,7 +310,7 @@ async fn run_reftest(
     let limit = session.budgets.for_case(case);
     let deadline = started + limit;
     session.mount(case, deadline)?;
-    settle_reftest(session, deadline, virtual_time, true).await?;
+    settle_reftest(session, deadline, virtual_time, true)?;
     let request = screenshot_request();
     let test = session
         .renderer
@@ -333,7 +333,7 @@ async fn run_reftest(
             content_type,
             deadline,
         )?;
-        settle_reftest(session, deadline, virtual_time, false).await?;
+        settle_reftest(session, deadline, virtual_time, false)?;
         let image = session
             .renderer
             .render(&request)
@@ -378,17 +378,16 @@ fn has_pending_frame_callbacks(session: &mut Session) -> bool {
     )
 }
 
-async fn advance(session: &mut Session, virtual_time: bool, delay: Duration) {
+fn advance(session: &Session, virtual_time: bool, delay: Duration) {
     if virtual_time {
         session.services.advance_clock(delay);
-        tokio::time::advance(delay).await;
     } else {
-        tokio::time::sleep(delay.min(Duration::from_millis(50))).await;
+        std::thread::sleep(delay.min(Duration::from_millis(50)));
     }
 }
 
 // https://web-platform-tests.org/writing-tests/reftests.html#reftest-wait
-async fn settle_reftest(
+fn settle_reftest(
     session: &mut Session,
     deadline: Instant,
     virtual_time: bool,
@@ -421,7 +420,7 @@ async fn settle_reftest(
             if frames_left > 0 && has_pending_frame_callbacks(session) {
                 frames_left -= 1;
                 if let Some(delay) = session.renderer.time_until_deadline() {
-                    advance(session, virtual_time, delay).await;
+                    advance(session, virtual_time, delay);
                     continue;
                 }
             }
@@ -434,7 +433,7 @@ async fn settle_reftest(
             return Err(Failure::Timeout);
         };
         if !delay.is_zero() {
-            advance(session, virtual_time, delay).await;
+            advance(session, virtual_time, delay);
         }
     }
 }

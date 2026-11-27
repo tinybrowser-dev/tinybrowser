@@ -5,12 +5,11 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use tokio::time::Instant;
 use url::Url;
 
 use crate::js::world::World;
@@ -22,8 +21,25 @@ use crate::protocol::{
     DialCancellation, DialOutcome, DialRequest, FrameId, PolicyContainer, ReferrerRequest,
     RequestPolicy, SandboxFlags, TimerId,
 };
+use crate::timers::TimerQueue;
 
 const MAX_PENDING_FETCHES: usize = 256;
+const NO_DEADLINE: u64 = u64::MAX;
+
+fn encode_deadline(deadline: Option<Instant>, epoch: Instant) -> u64 {
+    deadline.map_or(NO_DEADLINE, |when| {
+        let nanos = when.saturating_duration_since(epoch).as_nanos();
+        u64::try_from(nanos)
+            .unwrap_or(NO_DEADLINE - 1)
+            .min(NO_DEADLINE - 1)
+    })
+}
+
+fn decode_deadline(raw: u64, epoch: Instant) -> Option<Instant> {
+    (raw != NO_DEADLINE)
+        .then(|| epoch.checked_add(Duration::from_nanos(raw)))
+        .flatten()
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub(crate) struct WorkerId(u64);
@@ -210,19 +226,6 @@ pub(crate) enum WorkerRequest {
         payload: String,
         ports: Vec<u64>,
     },
-    SetTimer {
-        worker: WorkerId,
-        js_id: PageTimerId,
-        delay: Duration,
-    },
-    ClearTimer {
-        worker: WorkerId,
-        js_id: PageTimerId,
-    },
-    // https://html.spec.whatwg.org/multipage/workers.html#dom-sharedworkerglobalscope-close
-    Close {
-        id: WorkerId,
-    },
     // https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model
     LoadFailed {
         worker: WorkerId,
@@ -275,14 +278,20 @@ pub(crate) enum WorkerCommand {
     PortClosed {
         endpoint: u64,
     },
+    // https://html.spec.whatwg.org/multipage/workers.html#dom-sharedworkerglobalscope-onconnect
+    Connect {
+        endpoint: u64,
+    },
     Broadcast {
         origin: String,
         name: String,
         payload: String,
         source: Option<u64>,
     },
-    FireTimer {
-        js_id: PageTimerId,
+    // https://fetch.spec.whatwg.org/#fetch-processresponse
+    FetchDone {
+        js_id: JsFetchId,
+        outcome: Option<Box<DialOutcome>>,
     },
     NestedMessage {
         worker: u64,
@@ -296,15 +305,17 @@ pub(crate) enum WorkerCommand {
     CspViolation {
         violations: Vec<crate::csp::Violation>,
     },
+    Wake,
     Terminate,
 }
 
-pub(crate) struct WorkerThreadState {
+struct WorkerThreadState {
     // https://html.spec.whatwg.org/multipage/workers.html#terminate-a-worker
     terminate: Arc<AtomicBool>,
     active: Arc<AtomicUsize>,
     closed: Arc<AtomicBool>,
     pending_fetches: Arc<AtomicUsize>,
+    next_deadline_nanos: Arc<AtomicU64>,
 }
 
 pub(crate) struct WorkerDirectory {
@@ -339,17 +350,36 @@ impl WorkerDirectory {
         }
     }
 
+    fn report_spawn_failure(&self, id: WorkerId, parent: FrameId, shared: bool) {
+        let request = if shared {
+            WorkerRequest::SharedLoadFailed { worker: id }
+        } else {
+            WorkerRequest::LoadFailed { worker: id, parent }
+        };
+        self.runtime
+            .worker_requests
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(request);
+        self.runtime.wake.notify_one();
+    }
+
     // https://html.spec.whatwg.org/multipage/workers.html#dom-worker
-    pub(crate) fn spawn_dedicated(self: &Arc<Self>, created: CreatedWorker) -> WorkerId {
+    // https://html.spec.whatwg.org/multipage/workers.html#dom-sharedworker
+    pub(crate) fn spawn_worker(self: &Arc<Self>, created: CreatedWorker) -> WorkerId {
         // https://html.spec.whatwg.org/multipage/workers.html#dom-worker — UA cap matching Firefox dom.workers.maxPerDomain
-        const MAX_DEDICATED_WORKERS: usize = 512;
+        const MAX_WORKERS: usize = 512;
         let id = created.id;
+        let parent = created.parent;
+        let shared = created.shared;
         let (commands, received) = std::sync::mpsc::channel();
+        let commands_tx = commands.clone();
         let state = WorkerThreadState {
             terminate: Arc::new(AtomicBool::new(false)),
             active: Arc::new(AtomicUsize::new(1)),
             closed: Arc::new(AtomicBool::new(false)),
             pending_fetches: Arc::new(AtomicUsize::new(0)),
+            next_deadline_nanos: Arc::new(AtomicU64::new(NO_DEADLINE)),
         };
         let handle = WorkerHandle {
             origin: created.worker_origin.clone(),
@@ -358,26 +388,16 @@ impl WorkerDirectory {
             active: Arc::clone(&state.active),
             closed: Arc::clone(&state.closed),
             pending_fetches: Arc::clone(&state.pending_fetches),
-            timers: HashMap::new(),
-            js_timers: HashMap::new(),
-            next_timer: TimerId::default(),
+            next_deadline_nanos: Arc::clone(&state.next_deadline_nanos),
             closed_local: false,
         };
         {
             let mut workers = self.workers();
             workers.retain(|_, worker| !worker.is_closed());
-            if workers.len() >= MAX_DEDICATED_WORKERS {
+            if workers.len() >= MAX_WORKERS {
                 state.closed.store(true, Ordering::Release);
                 state.active.store(0, Ordering::Release);
-                self.runtime
-                    .worker_requests
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .push(WorkerRequest::LoadFailed {
-                        worker: id,
-                        parent: created.parent,
-                    });
-                self.runtime.wake.notify_one();
+                self.report_spawn_failure(id, parent, shared);
                 return id;
             }
             workers.insert(id, handle);
@@ -389,24 +409,25 @@ impl WorkerDirectory {
             active: Arc::clone(&state.active),
             closed: Arc::clone(&state.closed),
             pending_fetches: Arc::clone(&state.pending_fetches),
+            next_deadline_nanos: Arc::clone(&state.next_deadline_nanos),
         };
-        let parent = created.parent;
         let spawned = std::thread::Builder::new()
             .name(format!("tinybrowser-worker-{}", id.get()))
-            .spawn(move || run_worker(&created, &directory, &received, &thread_state));
+            .spawn(move || run_worker(&created, &directory, commands_tx, &received, &thread_state));
         if let Err(error) = spawned {
             // https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model
             let _ = error;
             state.closed.store(true, Ordering::Release);
             state.active.store(0, Ordering::Release);
-            self.runtime
-                .worker_requests
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .push(WorkerRequest::LoadFailed { worker: id, parent });
-            self.runtime.wake.notify_one();
+            self.report_spawn_failure(id, parent, shared);
         }
         id
+    }
+
+    pub(crate) fn is_live(&self, id: WorkerId) -> bool {
+        self.workers()
+            .get(&id)
+            .is_some_and(|worker| !worker.is_closed())
     }
 
     pub(crate) fn send(&self, id: WorkerId, command: WorkerCommand) -> bool {
@@ -450,9 +471,7 @@ pub(crate) struct WorkerHandle {
     active: Arc<AtomicUsize>,
     closed: Arc<AtomicBool>,
     pending_fetches: Arc<AtomicUsize>,
-    timers: HashMap<TimerId, WorkerTimer>,
-    js_timers: HashMap<PageTimerId, TimerId>,
-    next_timer: TimerId,
+    next_deadline_nanos: Arc<AtomicU64>,
     closed_local: bool,
 }
 
@@ -462,7 +481,7 @@ impl WorkerHandle {
     }
 
     fn send(&mut self, command: WorkerCommand) -> bool {
-        if self.closed_local {
+        if self.is_closed() {
             return false;
         }
         self.active.fetch_add(1, Ordering::AcqRel);
@@ -488,11 +507,15 @@ impl WorkerHandle {
         });
     }
 
-    pub(crate) fn drain_step(&mut self) -> bool {
-        if self.closed_local {
+    pub(crate) fn drain_step(&mut self, now: Instant, epoch: Instant) -> bool {
+        if self.is_closed() {
             return false;
         }
-        self.fire_due_timers();
+        if self.next_deadline(epoch).is_some_and(|when| when <= now)
+            && self.next_deadline_nanos.swap(NO_DEADLINE, Ordering::AcqRel) != NO_DEADLINE
+        {
+            self.send(WorkerCommand::Wake);
+        }
         if self.active.load(Ordering::Acquire) == 0 {
             return false;
         }
@@ -500,92 +523,60 @@ impl WorkerHandle {
         true
     }
 
-    pub(crate) fn has_ready_work(&self) -> bool {
-        if self.closed_local {
+    pub(crate) fn has_ready_work(&self, now: Instant, epoch: Instant) -> bool {
+        if self.is_closed() {
             return false;
         }
-        if self.active.load(Ordering::Acquire) > 0 {
-            return true;
-        }
-        let now = Instant::now();
-        self.timers
-            .values()
-            .any(|timer| !timer.fired && timer.when.is_some_and(|when| when <= now))
+        self.active.load(Ordering::Acquire) > 0
+            || self.next_deadline(epoch).is_some_and(|when| when <= now)
     }
 
-    pub(crate) fn next_deadline(&self) -> Option<Instant> {
-        self.timers
-            .values()
-            .filter(|timer| !timer.fired)
-            .filter_map(|timer| timer.when)
-            .min()
+    pub(crate) fn next_deadline(&self, epoch: Instant) -> Option<Instant> {
+        if self.is_closed() {
+            return None;
+        }
+        decode_deadline(self.next_deadline_nanos.load(Ordering::Acquire), epoch)
     }
 
     pub(crate) fn has_pending_dials(&self) -> bool {
-        self.pending_fetches.load(Ordering::Acquire) > 0
+        !self.is_closed() && self.pending_fetches.load(Ordering::Acquire) > 0
     }
 
     pub(crate) fn is_closed(&self) -> bool {
         self.closed_local || self.closed.load(Ordering::Acquire)
     }
 
-    pub(crate) fn schedule_timer(&mut self, delay: Duration, js_id: PageTimerId) {
-        let id = self.next_timer.take_next();
-        self.timers.insert(
-            id,
-            WorkerTimer {
-                when: Instant::now().checked_add(delay),
-                fired: false,
-                js_id,
-            },
-        );
-        self.js_timers.insert(js_id, id);
-    }
-
-    pub(crate) fn clear_timer(&mut self, js_id: PageTimerId) {
-        if let Some(id) = self.js_timers.remove(&js_id) {
-            self.timers.remove(&id);
-        }
-    }
-
     pub(crate) fn terminate(&mut self) {
+        if self.closed_local {
+            return;
+        }
         self.closed_local = true;
         self.terminate.store(true, Ordering::Release);
-        self.timers.clear();
-        self.js_timers.clear();
-        self.active.fetch_add(1, Ordering::AcqRel);
-        if self.commands.send(WorkerCommand::Terminate).is_err() {
-            self.active.fetch_sub(1, Ordering::AcqRel);
-        }
+        self.next_deadline_nanos
+            .store(NO_DEADLINE, Ordering::Release);
+        let _ = self.commands.send(WorkerCommand::Terminate);
     }
+}
 
-    fn fire_due_timers(&mut self) {
-        while let Some(id) = self.due_timer() {
-            let Some(timer) = self.timers.get(&id) else {
-                continue;
-            };
-            let js_id = timer.js_id;
-            self.send(WorkerCommand::FireTimer { js_id });
-        }
+impl Drop for WorkerHandle {
+    fn drop(&mut self) {
+        self.terminate();
     }
+}
 
-    fn due_timer(&mut self) -> Option<TimerId> {
-        let now = Instant::now();
-        let id = self
-            .timers
-            .iter()
-            .find(|(_, timer)| !timer.fired && timer.when.is_some_and(|when| when <= now))
-            .map(|(&id, _)| id)?;
-        if let Some(timer) = self.timers.get_mut(&id) {
-            timer.fired = true;
-        }
-        Some(id)
-    }
+fn finish_worker_thread(directory: &WorkerDirectory, state: &WorkerThreadState) {
+    state
+        .next_deadline_nanos
+        .store(NO_DEADLINE, Ordering::Release);
+    state.closed.store(true, Ordering::Release);
+    state.active.store(0, Ordering::Release);
+    directory.runtime.wake.notify_one();
 }
 
 fn run_worker(
     created: &CreatedWorker,
     directory: &Arc<WorkerDirectory>,
+    commands_tx: Sender<WorkerCommand>,
     commands: &Receiver<WorkerCommand>,
     state: &WorkerThreadState,
 ) {
@@ -596,6 +587,8 @@ fn run_worker(
         created.id,
         &runtime,
         &js_runtime,
+        commands_tx,
+        Arc::clone(&state.active),
         Arc::clone(&state.terminate),
         Arc::clone(&state.pending_fetches),
     );
@@ -603,35 +596,52 @@ fn run_worker(
         Ok(worker) => worker,
         Err(failure) => {
             // https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model
-            runtime.push_worker_request_waking(WorkerRequest::LoadFailed {
-                worker: failure.worker,
-                parent: failure.parent,
-            });
-            state.active.fetch_sub(1, Ordering::AcqRel);
-            state.closed.store(true, Ordering::Release);
+            let request = if created.shared {
+                WorkerRequest::SharedLoadFailed {
+                    worker: failure.worker,
+                }
+            } else {
+                WorkerRequest::LoadFailed {
+                    worker: failure.worker,
+                    parent: failure.parent,
+                }
+            };
+            runtime.push_worker_request_waking(request);
+            finish_worker_thread(directory, state);
             return;
         }
     };
+    let epoch = runtime.common.animation_epoch;
     // https://html.spec.whatwg.org/multipage/workers.html#dom-worker
     worker.drain_until_idle(&state.terminate);
-    state.active.fetch_sub(1, Ordering::AcqRel);
     if worker.is_closed() || state.terminate.load(Ordering::Acquire) {
-        state.closed.store(true, Ordering::Release);
+        finish_worker_thread(directory, state);
         return;
     }
+    let mut next_deadline = worker.timers.next_deadline();
+    state
+        .next_deadline_nanos
+        .store(encode_deadline(next_deadline, epoch), Ordering::Release);
+    state.active.fetch_sub(1, Ordering::AcqRel);
     loop {
-        // https://fetch.spec.whatwg.org/#fetch-processresponse
-        let received = if state.pending_fetches.load(Ordering::Acquire) > 0 {
-            match commands.recv_timeout(Duration::from_millis(2)) {
+        let received = if !runtime.common.clock.is_manual()
+            && let Some(deadline) = next_deadline
+        {
+            let wait = deadline.saturating_duration_since(runtime.common.now());
+            match commands.recv_timeout(wait) {
                 Ok(command) => Ok(command),
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                     state.active.fetch_add(1, Ordering::AcqRel);
                     worker.drain_until_idle(&state.terminate);
-                    state.active.fetch_sub(1, Ordering::AcqRel);
                     if worker.is_closed() || state.terminate.load(Ordering::Acquire) {
-                        state.closed.store(true, Ordering::Release);
+                        finish_worker_thread(directory, state);
                         return;
                     }
+                    next_deadline = worker.timers.next_deadline();
+                    state
+                        .next_deadline_nanos
+                        .store(encode_deadline(next_deadline, epoch), Ordering::Release);
+                    state.active.fetch_sub(1, Ordering::AcqRel);
                     continue;
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
@@ -642,19 +652,22 @@ fn run_worker(
         let Ok(command) = received else {
             break;
         };
-        let terminate = matches!(command, WorkerCommand::Terminate);
-        if !terminate {
-            worker.apply_command(command);
-            worker.drain_until_idle(&state.terminate);
+        if matches!(command, WorkerCommand::Terminate) {
+            break;
         }
-        state.active.fetch_sub(1, Ordering::AcqRel);
-        if terminate || worker.is_closed() || state.terminate.load(Ordering::Acquire) {
-            state.closed.store(true, Ordering::Release);
+        worker.apply_command(command);
+        worker.drain_until_idle(&state.terminate);
+        if worker.is_closed() || state.terminate.load(Ordering::Acquire) {
+            finish_worker_thread(directory, state);
             return;
         }
+        next_deadline = worker.timers.next_deadline();
+        state
+            .next_deadline_nanos
+            .store(encode_deadline(next_deadline, epoch), Ordering::Release);
+        state.active.fetch_sub(1, Ordering::AcqRel);
     }
-    state.active.fetch_sub(1, Ordering::AcqRel);
-    state.closed.store(true, Ordering::Release);
+    finish_worker_thread(directory, state);
 }
 
 enum WorkerTask {
@@ -686,15 +699,9 @@ enum WorkerTask {
 
 // https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model
 #[derive(Clone, Copy)]
-pub(crate) struct WorkerLoadFailure {
-    pub(crate) worker: WorkerId,
-    pub(crate) parent: FrameId,
-}
-
-struct WorkerTimer {
-    when: Option<Instant>,
-    fired: bool,
-    js_id: PageTimerId,
+struct WorkerLoadFailure {
+    worker: WorkerId,
+    parent: FrameId,
 }
 
 // https://html.spec.whatwg.org/multipage/workers.html#dom-worker
@@ -703,7 +710,7 @@ enum WorkerScript {
     Module,
 }
 
-pub(crate) struct Worker {
+struct Worker {
     id: WorkerId,
     parent: FrameId,
     // https://html.spec.whatwg.org/multipage/workers.html#shared-workers-and-the-sharedworkerglobalscope-interface
@@ -714,12 +721,10 @@ pub(crate) struct Worker {
     js: JsRealm,
     script: Option<WorkerScript>,
     tasks: VecDeque<WorkerTask>,
-    timers: HashMap<TimerId, WorkerTimer>,
+    timers: TimerQueue<PageTimerId>,
     js_timers: HashMap<PageTimerId, TimerId>,
-    next_timer: TimerId,
-    // https://fetch.spec.whatwg.org/#fetch-processresponse
-    fetch_tx: Sender<(JsFetchId, Option<DialOutcome>)>,
-    fetch_rx: Receiver<(JsFetchId, Option<DialOutcome>)>,
+    commands: Sender<WorkerCommand>,
+    active: Arc<AtomicUsize>,
     pending_fetches: Arc<AtomicUsize>,
     fetches: HashMap<JsFetchId, DialCancellation>,
     closed: bool,
@@ -727,11 +732,17 @@ pub(crate) struct Worker {
 
 impl Worker {
     // https://html.spec.whatwg.org/multipage/workers.html#dom-worker
-    pub(crate) fn create(
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "worker startup binds thread channels and shared atomics once"
+    )]
+    fn create(
         created: &CreatedWorker,
         id: WorkerId,
         runtime: &FrameRuntime,
         js_runtime: &SharedJsRuntime,
+        commands: Sender<WorkerCommand>,
+        active: Arc<AtomicUsize>,
         terminate: Arc<AtomicBool>,
         pending_fetches: Arc<AtomicUsize>,
     ) -> Result<Self, WorkerLoadFailure> {
@@ -812,7 +823,6 @@ impl Worker {
             terminate,
         )
         .map_err(|_| failure)?;
-        let (fetch_tx, fetch_rx) = std::sync::mpsc::channel();
         Ok(Self {
             id,
             parent: created.parent,
@@ -822,23 +832,22 @@ impl Worker {
             js,
             script: Some(script),
             tasks: VecDeque::new(),
-            timers: HashMap::new(),
+            timers: TimerQueue::default(),
             js_timers: HashMap::new(),
-            next_timer: TimerId::default(),
-            fetch_tx,
-            fetch_rx,
+            commands,
+            active,
             pending_fetches,
             fetches: HashMap::new(),
             closed: false,
         })
     }
 
-    pub(crate) const fn id(&self) -> WorkerId {
-        self.id
+    fn now(&self) -> Instant {
+        self.world.borrow().runtime.now()
     }
 
     // https://html.spec.whatwg.org/multipage/workers.html#dom-worker-postmessage
-    pub(crate) fn deliver_message(
+    fn deliver_message(
         &self,
         worker: WorkerId,
         payload: &str,
@@ -848,7 +857,7 @@ impl Worker {
     }
 
     // https://html.spec.whatwg.org/multipage/workers.html#runtime-script-errors-in-workers
-    pub(crate) fn deliver_error(&self, error: &WorkerError) -> Result<(), JsError> {
+    fn deliver_error(&self, error: &WorkerError) -> Result<(), JsError> {
         self.js.deliver_worker_error(
             error.worker.get(),
             &error.message,
@@ -859,21 +868,11 @@ impl Worker {
     }
 
     // https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model
-    pub(crate) fn deliver_load_failure(&self, worker: WorkerId) -> Result<(), JsError> {
+    fn deliver_load_failure(&self, worker: WorkerId) -> Result<(), JsError> {
         self.js.deliver_worker_load_error(worker.get())
     }
 
-    pub(crate) fn deliver_csp_violations(&self, violations: Vec<crate::csp::Violation>) {
-        self.world
-            .borrow()
-            .runtime
-            .push_worker_request_waking(WorkerRequest::CspViolation {
-                parent: self.parent,
-                violations,
-            });
-    }
-
-    pub(crate) fn queue_message(&mut self, payload: String, ports: Vec<u64>) {
+    fn queue_message(&mut self, payload: String, ports: Vec<u64>) {
         // https://html.spec.whatwg.org/multipage/workers.html#terminate-a-worker
         if !self.closed {
             self.tasks.push_back(WorkerTask::Message { payload, ports });
@@ -881,7 +880,7 @@ impl Worker {
     }
 
     // https://html.spec.whatwg.org/multipage/web-messaging.html#message-port-post-message-steps
-    pub(crate) fn queue_port_message(&mut self, endpoint: u64, payload: String, ports: Vec<u64>) {
+    fn queue_port_message(&mut self, endpoint: u64, payload: String, ports: Vec<u64>) {
         if self.closed {
             self.forget_endpoints(&ports);
             return;
@@ -893,14 +892,14 @@ impl Worker {
         });
     }
 
-    pub(crate) fn queue_port_closed(&mut self, endpoint: u64) {
+    fn queue_port_closed(&mut self, endpoint: u64) {
         if !self.closed {
             self.tasks.push_back(WorkerTask::PortClosed { endpoint });
         }
     }
 
     // https://html.spec.whatwg.org/multipage/workers.html#dom-sharedworkerglobalscope-onconnect
-    pub(crate) fn queue_connect(&mut self, endpoint: u64) {
+    fn queue_connect(&mut self, endpoint: u64) {
         if self.closed {
             self.forget_endpoints(&[endpoint]);
             return;
@@ -908,7 +907,7 @@ impl Worker {
         self.tasks.push_back(WorkerTask::Connect { endpoint });
     }
 
-    pub(crate) fn queue_broadcast(
+    fn queue_broadcast(
         &mut self,
         origin: String,
         name: String,
@@ -923,10 +922,6 @@ impl Worker {
                 source,
             });
         }
-    }
-
-    pub(crate) fn has_origin(&self, origin: &url::Origin) -> bool {
-        self.world.borrow().origin == *origin
     }
 
     fn forget_endpoints(&self, endpoints: &[u64]) {
@@ -957,16 +952,15 @@ impl Worker {
                 ports,
             } => self.queue_port_message(endpoint, payload, ports),
             WorkerCommand::PortClosed { endpoint } => self.queue_port_closed(endpoint),
+            WorkerCommand::Connect { endpoint } => self.queue_connect(endpoint),
             WorkerCommand::Broadcast {
                 origin,
                 name,
                 payload,
                 source,
             } => self.queue_broadcast(origin, name, payload, source),
-            WorkerCommand::FireTimer { js_id } => {
-                if let Err(error) = self.js.fire_timer(js_id) {
-                    self.report_error(&error);
-                }
+            WorkerCommand::FetchDone { js_id, outcome } => {
+                self.finish_fetch(js_id, outcome.map(|outcome| *outcome));
             }
             WorkerCommand::NestedMessage {
                 worker,
@@ -989,18 +983,17 @@ impl Worker {
             WorkerCommand::NestedLoadFailure { worker } => {
                 let _ = self.deliver_load_failure(WorkerId::new(worker));
             }
-            WorkerCommand::Terminate => {}
+            WorkerCommand::Wake | WorkerCommand::Terminate => {}
         }
     }
 
-    pub(crate) fn drain_step(&mut self) -> bool {
+    fn drain_step(&mut self) -> bool {
         if self.world.borrow().worker_close_requested.get() {
             self.close();
         }
         if self.closed {
             return false;
         }
-        self.adopt_fetches();
         if let Some(script) = self.script.take() {
             {
                 let _turn = self.js.enter_turn();
@@ -1044,7 +1037,8 @@ impl Worker {
             return !self.closed;
         }
         self.adopt_js_work();
-        while let Some(id) = self.due_timer() {
+        let now = self.now();
+        while let Some(id) = self.timers.take_due(now) {
             self.tasks.push_back(WorkerTask::Timer(id));
         }
         let Some(task) = self.tasks.pop_front() else {
@@ -1085,9 +1079,9 @@ impl Worker {
                 }
             }
             WorkerTask::Timer(id) => {
-                if let Some(timer) = self.timers.remove(&id) {
-                    self.js_timers.remove(&timer.js_id);
-                    if let Err(error) = self.js.fire_timer(timer.js_id) {
+                if let Some(js_id) = self.timers.remove(id) {
+                    self.js_timers.remove(&js_id);
+                    if let Err(error) = self.js.fire_timer(js_id) {
                         self.report_error(&error);
                     }
                 }
@@ -1096,35 +1090,15 @@ impl Worker {
         !self.closed
     }
 
-    pub(crate) fn has_ready_work(&self) -> bool {
-        if self.closed {
-            return false;
-        }
-        if self.script.is_some() || !self.tasks.is_empty() || self.world.borrow().has_outbox_work()
-        {
-            return true;
-        }
-        let now = Instant::now();
-        self.timers
-            .values()
-            .any(|timer| !timer.fired && timer.when.is_some_and(|when| when <= now))
-    }
-
-    pub(crate) fn next_deadline(&self) -> Option<Instant> {
-        self.timers
-            .values()
-            .filter(|timer| !timer.fired)
-            .filter_map(|timer| timer.when)
-            .min()
-    }
-
-    pub(crate) const fn is_closed(&self) -> bool {
+    const fn is_closed(&self) -> bool {
         self.closed
     }
 
     // https://html.spec.whatwg.org/multipage/workers.html#close-a-worker
-    pub(crate) fn close(&mut self) {
+    fn close(&mut self) {
         self.closed = true;
+        self.timers.clear();
+        self.js_timers.clear();
         // https://fetch.spec.whatwg.org/#keepalive-flag
         self.start_queued_keepalive_fetches();
         self.discard_queued_tasks();
@@ -1230,34 +1204,13 @@ impl Worker {
     fn apply_realm_request(&mut self, request: RealmRequest) {
         match request {
             RealmRequest::Timer(timeout) => {
-                if self.shared {
-                    let id = self.schedule_timer(timeout.delay, timeout.js_id);
-                    self.js_timers.insert(timeout.js_id, id);
-                } else {
-                    self.world
-                        .borrow()
-                        .runtime
-                        .push_worker_request(WorkerRequest::SetTimer {
-                            worker: self.id,
-                            js_id: timeout.js_id,
-                            delay: timeout.delay,
-                        });
-                }
+                let now = self.now();
+                let id = self.timers.schedule(now, timeout.delay, timeout.js_id);
+                self.js_timers.insert(timeout.js_id, id);
             }
             RealmRequest::ClearTimer(timeout) => {
-                let js_id = timeout.js_id;
-                if self.shared {
-                    if let Some(id) = self.js_timers.remove(&js_id) {
-                        self.timers.remove(&id);
-                    }
-                } else {
-                    self.world
-                        .borrow()
-                        .runtime
-                        .push_worker_request(WorkerRequest::ClearTimer {
-                            worker: self.id,
-                            js_id,
-                        });
+                if let Some(id) = self.js_timers.remove(&timeout.js_id) {
+                    self.timers.remove(id);
                 }
             }
             RealmRequest::Fetch(fetch) => self.start_fetch(*fetch),
@@ -1343,71 +1296,54 @@ impl Worker {
         dial.cache = fetch.options.cache;
         dial.delivery = fetch.options.delivery;
         dial.csp = Some(Box::new(gate));
-        let tx = self.fetch_tx.clone();
-        self.pending_fetches.fetch_add(1, Ordering::Release);
+        let commands = self.commands.clone();
+        let active = Arc::clone(&self.active);
+        let pending_fetches = Arc::clone(&self.pending_fetches);
+        pending_fetches.fetch_add(1, Ordering::Release);
         let cancel = self.world.borrow().runtime.services.start_dial(
             dial,
             Box::new(move |outcome| {
                 // https://fetch.spec.whatwg.org/#concept-network-error
-                let _ = tx.send((js_id, outcome.ok()));
+                active.fetch_add(1, Ordering::AcqRel);
+                if commands
+                    .send(WorkerCommand::FetchDone {
+                        js_id,
+                        outcome: outcome.ok().map(Box::new),
+                    })
+                    .is_err()
+                {
+                    active.fetch_sub(1, Ordering::AcqRel);
+                    pending_fetches.fetch_sub(1, Ordering::Release);
+                }
             }),
         );
         self.fetches.insert(js_id, cancel);
     }
 
-    fn adopt_fetches(&mut self) {
-        let _turn = self.js.enter_turn();
-        while let Ok((js_id, outcome)) = self.fetch_rx.try_recv() {
-            self.pending_fetches.fetch_sub(1, Ordering::Release);
-            self.fetches.remove(&js_id);
-            // https://cookiestore.spec.whatwg.org/#process-cookie-changes
-            let cookies_stored = outcome
-                .as_ref()
-                .is_some_and(|outcome| outcome.cookies_stored);
-            if let Err(error) = self.js.finish_js_fetch(js_id, outcome) {
-                self.report_error(&error);
-            }
-            if cookies_stored {
-                self.world.borrow().notify_cookie_changes();
-            }
-            self.adopt_js_work();
+    fn finish_fetch(&mut self, js_id: JsFetchId, outcome: Option<DialOutcome>) {
+        self.pending_fetches.fetch_sub(1, Ordering::Release);
+        self.fetches.remove(&js_id);
+        if self.closed {
+            return;
         }
+        let _turn = self.js.enter_turn();
+        // https://cookiestore.spec.whatwg.org/#process-cookie-changes
+        let cookies_stored = outcome
+            .as_ref()
+            .is_some_and(|outcome| outcome.cookies_stored);
+        if let Err(error) = self.js.finish_js_fetch(js_id, outcome) {
+            self.report_error(&error);
+        }
+        if cookies_stored {
+            self.world.borrow().notify_cookie_changes();
+        }
+        self.adopt_js_work();
     }
 
     fn fail_fetch(&mut self, js_id: JsFetchId) {
         if let Err(error) = self.js.finish_js_fetch(js_id, None) {
             self.report_error(&error);
         }
-    }
-
-    pub(crate) fn has_pending_dials(&self) -> bool {
-        self.pending_fetches.load(Ordering::Acquire) > 0
-    }
-
-    fn schedule_timer(&mut self, delay: Duration, js_id: PageTimerId) -> TimerId {
-        let id = self.next_timer.take_next();
-        self.timers.insert(
-            id,
-            WorkerTimer {
-                when: Instant::now().checked_add(delay),
-                fired: false,
-                js_id,
-            },
-        );
-        id
-    }
-
-    fn due_timer(&mut self) -> Option<TimerId> {
-        let now = Instant::now();
-        let id = self
-            .timers
-            .iter()
-            .find(|(_, timer)| !timer.fired && timer.when.is_some_and(|when| when <= now))
-            .map(|(&id, _)| id)?;
-        if let Some(timer) = self.timers.get_mut(&id) {
-            timer.fired = true;
-        }
-        Some(id)
     }
 }
 
@@ -1444,21 +1380,10 @@ fn fetch_module_url(
     dial.cookie_policy = created.same_site_cookies.cookie_policy().into();
     dial.partition_key.clone_from(&created.partition_key);
     dial.timeout_ms = 30_000;
-    let (send, receive) = std::sync::mpsc::sync_channel(1);
-    let cancel = runtime.services.start_dial(
-        dial,
-        Box::new(move |outcome| {
-            let _ = send.send(outcome);
-        }),
-    );
-    let outcome = match receive.recv_timeout(Duration::from_secs(30)) {
-        Ok(Ok(outcome)) => outcome,
-        Ok(Err(_)) => return Err(()),
-        Err(_) => {
-            cancel();
-            return Err(());
-        }
-    };
+    let outcome = runtime
+        .services
+        .dial_blocking(dial, Duration::from_secs(30))
+        .map_err(|_| ())?;
     if !(200..300).contains(&outcome.status) {
         return Err(());
     }
@@ -1519,21 +1444,10 @@ fn fetch_worker_source(
     dial.cookie_policy = created.same_site_cookies.cookie_policy().into();
     dial.partition_key.clone_from(&created.partition_key);
     dial.timeout_ms = 30_000;
-    let (send, receive) = std::sync::mpsc::sync_channel(1);
-    let cancel = runtime.services.start_dial(
-        dial,
-        Box::new(move |outcome| {
-            let _ = send.send(outcome);
-        }),
-    );
-    let outcome = match receive.recv_timeout(Duration::from_secs(30)) {
-        Ok(Ok(outcome)) => outcome,
-        Ok(Err(_)) => return Err(()),
-        Err(_) => {
-            cancel();
-            return Err(());
-        }
-    };
+    let outcome = runtime
+        .services
+        .dial_blocking(dial, Duration::from_secs(30))
+        .map_err(|_| ())?;
     if !(200..300).contains(&outcome.status) {
         return Err(());
     }
@@ -1563,4 +1477,23 @@ fn fetch_worker_source(
 
 fn content_type_essence(value: &str) -> &str {
     value.split(';').next().unwrap_or_default().trim()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use super::{NO_DEADLINE, decode_deadline, encode_deadline};
+
+    #[test]
+    fn deadline_encoding_round_trips_and_reserves_sentinel() {
+        let epoch = Instant::now();
+        assert_eq!(encode_deadline(None, epoch), NO_DEADLINE);
+        assert_eq!(decode_deadline(NO_DEADLINE, epoch), None);
+
+        let target = epoch + Duration::from_millis(250);
+        let raw = encode_deadline(Some(target), epoch);
+        assert_ne!(raw, NO_DEADLINE);
+        assert_eq!(decode_deadline(raw, epoch), Some(target));
+    }
 }

@@ -315,16 +315,9 @@ fn run_pending(
             let next = &next;
             let watchdog = &watchdog;
             scope.spawn(move || {
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_time()
-                    .start_paused(options.clock == Clock::Paused)
-                    .build()
-                    .unwrap_or_else(|error| {
-                        eprintln!("wpt-harness: cannot create runtime: {error}");
-                        std::process::exit(2);
-                    });
                 let mut fonts = renderer::Fonts::default();
                 fonts.register_font(ahem.clone());
+                let virtual_time = options.clock == Clock::Paused;
                 while let Some(&index) = pending.get(next.fetch_add(1, Ordering::Relaxed)) {
                     let case = &cases[index];
                     if let Some(journal) = journal {
@@ -338,9 +331,10 @@ fn run_pending(
                         options.budgets,
                         &fonts,
                         options.sidecar,
+                        virtual_time,
                     );
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        runtime.block_on(session.run(case, options.clock == Clock::Paused))
+                        session.run(case, virtual_time)
                     }));
                     let outcome = result.unwrap_or_else(|_| {
                         Box::leak(Box::new(session));

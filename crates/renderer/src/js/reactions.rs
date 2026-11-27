@@ -46,24 +46,13 @@ impl CustomElementReactions {
 
 // https://html.spec.whatwg.org/multipage/custom-elements.html#cereactions
 #[inline(never)]
-pub(crate) fn with_reactions<'js>(
-    ctx: &Ctx<'js>,
-    operation: impl FnOnce() -> Result<Value<'js>>,
-) -> Result<Value<'js>> {
-    let mut operation = Some(operation);
-    with_reactions_core(ctx, &mut || {
-        let operation = operation.take().expect("reactions closure reused");
-        operation()
-    })
+pub(crate) fn enter(ctx: &Ctx<'_>) -> Result<()> {
+    push(ctx)
 }
 
+// https://html.spec.whatwg.org/multipage/custom-elements.html#cereactions
 #[inline(never)]
-fn with_reactions_core<'js>(
-    ctx: &Ctx<'js>,
-    operation: &mut dyn FnMut() -> Result<Value<'js>>,
-) -> Result<Value<'js>> {
-    push(ctx)?;
-    let result = operation();
+pub(crate) fn finish<'js>(ctx: &Ctx<'js>, result: Result<Value<'js>>) -> Result<Value<'js>> {
     let exception = result
         .as_ref()
         .err()

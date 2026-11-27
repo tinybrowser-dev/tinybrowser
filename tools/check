@@ -177,6 +177,14 @@ run_guards() {
     echo "guard: parse with an encoding override in js::url_parts" >&2
     status=1
   fi
+  # Renderer timers and animations read the injected `net::Clock` (`std::time::Instant`),
+  # never `tokio::time`, so virtual-time harnesses and worker OS threads share one clock.
+  matches="$(grep -rn 'tokio::time' crates/renderer/src --include='*.rs' || true)"
+  if [[ -n "$matches" ]]; then
+    printf '%s\n' "$matches" >&2
+    echo "guard: renderer uses the injected net::Clock, never tokio::time" >&2
+    status=1
+  fi
   if [[ "$status" -eq 0 ]]; then
     echo "guards: no second copy of a parsed type"
   fi

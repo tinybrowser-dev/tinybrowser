@@ -533,18 +533,15 @@ fn reflect_attributes_install_without_implementation() {
         text: "#[rquickjs::class] struct Payload; impl<'js> group_generated::Group<'js> for Payload {}",
     }];
     let bindings = compile_contracts(&idl, &rust).expect("compile reflect");
-    let source = bindings[0].rust.replace(' ', "");
+    let source = squash(&bindings[0].rust);
     for fragment in [
-        "reflect_bool",
-        "reflect_string",
-        "reflect_set_bool",
+        "ReflectKind::GetBool",
+        "ReflectKind::GetString",
+        "ReflectKind::SetBool{reactions:true,}",
         "\"disabled\"",
         "\"label\"",
     ] {
-        assert!(
-            source.contains(&fragment.replace(' ', "")),
-            "missing {fragment}"
-        );
+        assert!(source.contains(&squash(fragment)), "missing {fragment}");
     }
 }
 
@@ -574,7 +571,7 @@ fn reflect_conflicts_and_unsupported_shapes() {
         }];
         let bindings = compile_contracts(&idl, &empty).expect("unsupported reflect stays absent");
         assert!(
-            !bindings[0].rust.contains("reflect_"),
+            !bindings[0].rust.contains("ReflectBinding"),
             "unexpected reflection for {text}"
         );
     }
@@ -599,7 +596,7 @@ fn reflect_numeric_falls_through_to_hand_implementation() {
         );
     }
     assert!(
-        !source.contains("reflect_set_ulong"),
+        !source.contains("ReflectKind::SetUlong"),
         "numeric reflect must not use the generated setter"
     );
     let trait_source = bindings[0].rust.clone();
@@ -755,10 +752,8 @@ fn reflect_legacy_null_generates() {
     }];
     let bindings = compile_contracts(&idl, &rust).expect("legacy reflect");
     assert!(
-        bindings[0]
-            .rust
-            .replace(' ', "")
-            .contains("legacy_null_string_argument"),
+        squash(&bindings[0].rust)
+            .contains("ReflectKind::SetString{legacy_null:true,reactions:true,}"),
         "missing legacy-null setter conversion"
     );
 }
@@ -775,10 +770,7 @@ fn reflect_usv_string_generates() {
     }];
     let bindings = compile_contracts(&idl, &rust).expect("usv reflect");
     assert!(
-        bindings[0]
-            .rust
-            .replace(' ', "")
-            .contains("usv_string_argument"),
+        squash(&bindings[0].rust).contains("ReflectKind::SetUsvString{reactions:true,}"),
         "missing USVString setter conversion"
     );
 }
@@ -794,12 +786,14 @@ fn reflect_setter_numeric_types() {
         text: "#[rquickjs::class] struct Payload; impl<'js> group_generated::Group<'js> for Payload { fn get_index(&self, ctx: &Ctx<'js>) -> Result<i32> { Ok(0) } fn get_score(&self, ctx: &Ctx<'js>) -> Result<f64> { Ok(0.0) } }",
     }];
     let bindings = compile_contracts(&idl, &rust).expect("numeric reflect setter");
-    let source = bindings[0].rust.replace(' ', "");
-    for fragment in ["i32", "f64", "reflect_set_long", "reflect_set_double"] {
-        assert!(
-            source.contains(&fragment.replace(' ', "")),
-            "missing {fragment}"
-        );
+    let source = squash(&bindings[0].rust);
+    for fragment in [
+        "i32",
+        "f64",
+        "ReflectKind::SetLong{reactions:true,}",
+        "ReflectKind::SetDouble{restricted:true,reactions:true,}",
+    ] {
+        assert!(source.contains(&squash(fragment)), "missing {fragment}");
     }
 }
 
@@ -831,9 +825,9 @@ fn reflect_setter_splits_getter_and_generated_setter() {
         text: "#[rquickjs::class] struct Payload; impl<'js> button_generated::Button<'js> for Payload { fn get_form_action(&self, ctx: &Ctx<'js>) -> Result<dom::DomString> { Ok(\"x\".into()) } }",
     }];
     let bindings = compile_contracts(&idl, &rust).expect("compile reflect setter");
-    let source = bindings[0].rust.replace(' ', "");
+    let source = squash(&bindings[0].rust);
     assert!(
-        source.contains("reflect_set_string"),
+        source.contains("ReflectKind::SetUsvString{reactions:true,}"),
         "missing generated setter"
     );
     assert!(
@@ -1226,10 +1220,11 @@ fn reflected_enumerated_members_are_generated_from_the_table() {
         "a generated reflected getter is not a trait method"
     );
     for fragment in [
-        "reflect_enumerated_attribute::<crate::js::bindings::enumerated::Mood",
+        "ReflectKind::GetEnumerated",
+        "<crate::js::bindings::enumerated::Mood as crate::js::bindings::enumerated::Enumerated>::KEYWORD_STRS",
         "\"mood\"",
-        "missing:Some(crate::js::bindings::enumerated::Mood::Happy)",
-        "invalid:Some(crate::js::bindings::enumerated::Mood::Sad)",
+        "missing:Some(crate::js::bindings::enumerated::Mood::Happy.as_keyword(),)",
+        "invalid:Some(crate::js::bindings::enumerated::Mood::Sad.as_keyword(),)",
     ] {
         assert!(
             source.contains(&squash(fragment)),
@@ -1248,7 +1243,7 @@ fn reflected_enumerated_members_are_generated_from_the_table() {
     let swapped = squash(&swapped[0].rust);
     assert!(
         swapped.contains(&squash(
-            "missing:Some(crate::js::bindings::enumerated::Mood::Sad)"
+            "missing:Some(crate::js::bindings::enumerated::Mood::Sad.as_keyword(),)"
         )),
         "the table's missing default is the one emitted: {swapped}"
     );

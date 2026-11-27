@@ -17,7 +17,9 @@ it (#239).
 | Sandbox flags | `renderer::protocol::SandboxFlags` | the bit set |
 | Enumerated attributes | `enumerated!` (`crates/enumerated`) | generated `parse`/`Deserialize` |
 | Secure context | `net::secure_context` | the computed bit |
-| Wall/monotonic time | `net::Clock`/`ClockSource` | an injected clock |
+| Wall/monotonic time | `net::Clock`/`ClockSource` | an injected clock (`NetworkHost::clock()`) |
+| Timer queues | `crates/renderer/src/timers.rs` (`TimerQueue`) | schedule/cancel/drain against `runtime.now()` |
+| Blocking network dials | `NetworkHost::dial_blocking` | one `start_dial` + timeout wait helper |
 | Fetch policy | `net::Agent` with `net::Transport` | the transport only feeds bytes (#233) |
 | HTTP cache | `crates/browser/src/network.rs` | the browser's response store |
 | Per-origin key/value rows | `crates/browser/src/storage.rs` (`StorageAreas`) | `StorageKind` plus opaque encoded values |

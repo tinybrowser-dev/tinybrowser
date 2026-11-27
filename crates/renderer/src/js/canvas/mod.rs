@@ -4374,10 +4374,14 @@ fn with_canvas_document<T>(
 
 // https://drafts.csswg.org/css-color-4/#currentcolor-color
 fn current_color(ctx: &Ctx<'_>, object: &Object<'_>) -> Result<style::color::AbsoluteColor> {
+    let animation_seconds = crate::js::bindings::world(ctx)?
+        .borrow()
+        .runtime
+        .animation_seconds();
     let Some(current) = with_canvas_document(ctx, object, |node, parsed| {
         let node = node?;
         let base = &mut parsed.document.base;
-        base.resolve_if_needed(crate::animation_seconds());
+        base.resolve_if_needed(animation_seconds);
         let styles = base
             .get_node(node.node)
             .and_then(|node| node.primary_styles())?;

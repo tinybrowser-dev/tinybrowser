@@ -1706,7 +1706,7 @@ impl JsNode {
             return false;
         };
         let base = &mut parsed.document.base;
-        base.resolve_if_needed(crate::animation_seconds());
+        base.resolve_if_needed(world.runtime.animation_seconds());
         let Some(node) = base.get_node(id.node) else {
             return false;
         };
@@ -1753,7 +1753,7 @@ impl JsNode {
         parsed
             .document
             .base
-            .resolve_if_needed(crate::animation_seconds());
+            .resolve_if_needed(world.runtime.animation_seconds());
         // https://drafts.csswg.org/cssom-view/#dom-element-scrollintoview
         if !parsed
             .document
@@ -1817,7 +1817,7 @@ impl JsNode {
             return Ok(0.0);
         };
         let base = &mut parsed.document.base;
-        base.resolve_if_needed(crate::animation_seconds());
+        base.resolve_if_needed(world.runtime.animation_seconds());
         let Some(node) = base.get_node(self.handle.get().0.node) else {
             return Ok(0.0);
         };
@@ -1836,7 +1836,7 @@ impl JsNode {
         parsed
             .document
             .base
-            .resolve_if_needed(crate::animation_seconds());
+            .resolve_if_needed(world.runtime.animation_seconds());
         let viewport_client = super::scrolling::client_area_is_viewport(&parsed, id);
         let base = &parsed.document.base;
         let Some(node) = base.get_node(id.node) else {
@@ -1908,7 +1908,7 @@ impl JsNode {
         parsed
             .document
             .base
-            .resolve_if_needed(crate::animation_seconds());
+            .resolve_if_needed(world.runtime.animation_seconds());
         let Some(node) = parsed.document.base.get_node(id.node) else {
             return Ok(0);
         };
@@ -3413,7 +3413,7 @@ pub(crate) fn element_client_rects(world: &World, id: NodeId) -> Vec<(f64, f64, 
         return Vec::new();
     };
     let base = &mut parsed.document.base;
-    base.resolve_if_needed(crate::animation_seconds());
+    base.resolve_if_needed(world.runtime.animation_seconds());
     let Some(node) = base.get_node(id.node) else {
         return Vec::new();
     };

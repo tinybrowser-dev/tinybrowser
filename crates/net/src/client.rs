@@ -29,6 +29,10 @@ const DEFAULT_MAX_REDIRECTS: u32 = 20;
 pub trait ClockSource: Send + Sync {
     fn wall(&self) -> SystemTime;
     fn monotonic(&self) -> Instant;
+
+    fn is_manual(&self) -> bool {
+        false
+    }
 }
 
 impl<T: ClockSource + ?Sized> ClockSource for std::sync::Arc<T> {
@@ -38,6 +42,10 @@ impl<T: ClockSource + ?Sized> ClockSource for std::sync::Arc<T> {
 
     fn monotonic(&self) -> Instant {
         (**self).monotonic()
+    }
+
+    fn is_manual(&self) -> bool {
+        (**self).is_manual()
     }
 }
 
@@ -58,6 +66,11 @@ impl Clock {
     #[must_use]
     pub fn monotonic(&self) -> Instant {
         self.0.monotonic()
+    }
+
+    #[must_use]
+    pub fn is_manual(&self) -> bool {
+        self.0.is_manual()
     }
 }
 

@@ -16,7 +16,7 @@ pub(super) fn offset_parent<'js>(ctx: &Ctx<'js>, id: NodeId) -> Result<Value<'js
     let found = active_world(ctx, id).and_then(|world| {
         let world = world.borrow();
         let mut parsed = world.document_mut(id)?;
-        offset_parent_id(&mut parsed, id)
+        offset_parent_id(&mut parsed, id, world.runtime.animation_seconds())
     });
     child_value(ctx, found)
 }
@@ -102,16 +102,16 @@ fn measure<T>(
     let world = world.borrow();
     let mut parsed = world.document_mut(id)?;
     let base = &mut parsed.document.base;
-    base.resolve_if_needed(crate::animation_seconds());
+    base.resolve_if_needed(world.runtime.animation_seconds());
     let node = base.get_node(id.node)?;
     read(base, node)
 }
 
 // https://drafts.csswg.org/cssom-view/#dom-htmlelement-offsetparent — fixed-positioned element stops at the nearest fixed-position containing block per spec (unlike Chrome), and every HTML body element uses the body offset rule (matching Chrome)
-fn offset_parent_id(parsed: &mut Parsed, id: NodeId) -> Option<NodeId> {
+fn offset_parent_id(parsed: &mut Parsed, id: NodeId, animation_seconds: f64) -> Option<NodeId> {
     let root = scrolling::root_element(parsed)?;
     let base = &mut parsed.document.base;
-    base.resolve_if_needed(crate::animation_seconds());
+    base.resolve_if_needed(animation_seconds);
     let node = base.get_node(id.node)?;
     if !has_associated_box(base, node) || root == id || is_html_body(node) {
         return None;

@@ -6,10 +6,9 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::sync::Notify;
-use tokio::time::Instant;
 use url::Url;
 
 use crate::RemoteValue;
@@ -31,7 +30,7 @@ use crate::protocol::{
 };
 use crate::storage::PendingStorageEvent;
 use crate::worker::{
-    CreatedWorker, SharedWorkerKey, SharedWorkerOptions, Worker, WorkerCommand, WorkerDirectory,
+    CreatedWorker, SharedWorkerKey, SharedWorkerOptions, WorkerCommand, WorkerDirectory,
     WorkerError, WorkerHandle, WorkerId, WorkerRequest,
 };
 
@@ -68,8 +67,6 @@ pub struct Engine {
     // https://html.spec.whatwg.org/multipage/browsing-the-web.html#joint-session-history
     joint_history: Option<StandaloneHistory>,
     js_waiters: Vec<JsWaiter>,
-    // https://html.spec.whatwg.org/multipage/workers.html#shared-worker-creation-steps
-    workers: BTreeMap<WorkerId, Worker>,
     // https://html.spec.whatwg.org/multipage/workers.html#shared-worker-creation-steps
     shared_workers: HashMap<SharedWorkerKey, SharedRealm>,
 }
@@ -142,9 +139,13 @@ impl Engine {
             deferred_events: Vec::new(),
             joint_history: None,
             js_waiters: Vec::new(),
-            workers: BTreeMap::new(),
             shared_workers: HashMap::new(),
         }
+    }
+
+    #[must_use]
+    pub fn now(&self) -> Instant {
+        self.runtime.now()
     }
 
     pub fn use_standalone_history(&mut self) {
@@ -158,7 +159,7 @@ impl Engine {
             applied = true;
             match request {
                 WorkerRequest::CreateShared { created, endpoint } => {
-                    self.adopt_shared_create(&created, endpoint);
+                    self.adopt_shared_create(*created, endpoint);
                 }
                 WorkerRequest::BroadcastPost {
                     origin,
@@ -167,29 +168,6 @@ impl Engine {
                     channel,
                 } => {
                     self.broadcast_local(&origin, &name, &payload, channel);
-                }
-                WorkerRequest::SetTimer {
-                    worker,
-                    js_id,
-                    delay,
-                } => {
-                    self.runtime.worker_dir.with_workers(|workers| {
-                        if let Some(handle) = workers.get_mut(&worker) {
-                            handle.schedule_timer(delay, js_id);
-                        }
-                    });
-                }
-                WorkerRequest::ClearTimer { worker, js_id } => {
-                    self.runtime.worker_dir.with_workers(|workers| {
-                        if let Some(handle) = workers.get_mut(&worker) {
-                            handle.clear_timer(js_id);
-                        }
-                    });
-                }
-                WorkerRequest::Close { id } => {
-                    if let Some(worker) = self.workers.get_mut(&id) {
-                        worker.close();
-                    }
                 }
                 WorkerRequest::Error(error) => {
                     self.push_worker_error(*error);
@@ -218,7 +196,7 @@ impl Engine {
     }
 
     // https://html.spec.whatwg.org/multipage/workers.html#dom-sharedworker
-    fn adopt_shared_create(&mut self, created: &CreatedWorker, endpoint: u64) {
+    fn adopt_shared_create(&mut self, created: CreatedWorker, endpoint: u64) {
         let key = SharedWorkerKey::new(
             created.origin.clone(),
             created.partition_key.clone(),
@@ -237,7 +215,7 @@ impl Engine {
             .get(&key)
             .map(|realm| (realm.id, realm.options));
         match existing {
-            Some((id, existing)) if self.workers.contains_key(&id) => {
+            Some((id, existing)) if self.runtime.worker_dir.is_live(id) => {
                 if existing != options {
                     self.runtime
                         .shared
@@ -251,42 +229,40 @@ impl Engine {
                 }
                 // https://html.spec.whatwg.org/multipage/web-messaging.html#transfer-receiving-steps
                 Self::route_endpoints(&self.runtime.shared, &[endpoint], FrameId::worker(id.get()));
-                if let Some(worker) = self.workers.get_mut(&id) {
-                    worker.queue_connect(endpoint);
-                }
-            }
-            Some(_) | None => {
-                self.shared_workers.remove(&key);
-                if let Ok(mut worker) = Worker::create(
-                    created,
-                    created.id,
-                    &self.runtime,
-                    &self.js_runtime,
-                    Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                    Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-                ) {
-                    let id = worker.id();
-                    Self::route_endpoints(
-                        &self.runtime.shared,
-                        &[endpoint],
-                        FrameId::worker(id.get()),
-                    );
-                    worker.queue_connect(endpoint);
-                    self.workers.insert(id, worker);
-                    self.shared_workers.insert(
-                        key,
-                        SharedRealm {
-                            id,
-                            options,
-                            owners: vec![(created.parent, created.id)],
-                        },
-                    );
-                } else {
+                if !self
+                    .runtime
+                    .worker_dir
+                    .send(id, WorkerCommand::Connect { endpoint })
+                {
                     self.runtime
                         .shared
                         .borrow_mut()
                         .forget_endpoints(&[endpoint]);
-                    self.push_worker_load_failed(created.parent, created.id);
+                }
+            }
+            Some(_) | None => {
+                self.shared_workers.remove(&key);
+                let id = created.id;
+                let parent = created.parent;
+                Self::route_endpoints(&self.runtime.shared, &[endpoint], FrameId::worker(id.get()));
+                self.shared_workers.insert(
+                    key,
+                    SharedRealm {
+                        id,
+                        options,
+                        owners: vec![(parent, id)],
+                    },
+                );
+                self.runtime.worker_dir.spawn_worker(created);
+                if !self
+                    .runtime
+                    .worker_dir
+                    .send(id, WorkerCommand::Connect { endpoint })
+                {
+                    self.runtime
+                        .shared
+                        .borrow_mut()
+                        .forget_endpoints(&[endpoint]);
                 }
             }
         }
@@ -304,6 +280,10 @@ impl Engine {
         let Some(realm) = self.shared_workers.remove(&key) else {
             return;
         };
+        self.runtime
+            .shared
+            .borrow_mut()
+            .close_frame_ports(FrameId::worker(id.get()));
         for (owner, worker) in realm.owners {
             self.push_worker_load_failed(owner, worker);
         }
@@ -313,7 +293,7 @@ impl Engine {
         let dead: Vec<WorkerId> = self
             .shared_workers
             .values()
-            .filter(|realm| !self.workers.contains_key(&realm.id))
+            .filter(|realm| !self.runtime.worker_dir.is_live(realm.id))
             .map(|realm| realm.id)
             .collect();
         for id in dead {
@@ -338,26 +318,22 @@ impl Engine {
         frame: FrameId,
         endpoint: u64,
         payload: String,
-        ports: Vec<u64>,
+        ports: &[u64],
     ) -> bool {
         let Some(raw) = frame.as_worker() else {
             return false;
         };
         let id = WorkerId::new(raw);
-        if let Some(worker) = self.workers.get_mut(&id) {
-            worker.queue_port_message(endpoint, payload, ports);
-            return true;
-        }
         let sent = self.runtime.worker_dir.send(
             id,
             WorkerCommand::PortMessage {
                 endpoint,
                 payload,
-                ports: ports.clone(),
+                ports: ports.to_vec(),
             },
         );
         if !sent {
-            self.runtime.shared.borrow_mut().forget_endpoints(&ports);
+            self.runtime.shared.borrow_mut().forget_endpoints(ports);
         }
         sent
     }
@@ -366,14 +342,9 @@ impl Engine {
         let Some(raw) = frame.as_worker() else {
             return false;
         };
-        let id = WorkerId::new(raw);
-        if let Some(worker) = self.workers.get_mut(&id) {
-            worker.queue_port_closed(endpoint);
-            return true;
-        }
         self.runtime
             .worker_dir
-            .send(id, WorkerCommand::PortClosed { endpoint })
+            .send(WorkerId::new(raw), WorkerCommand::PortClosed { endpoint })
     }
 
     // https://html.spec.whatwg.org/multipage/workers.html#the-worker
@@ -393,13 +364,8 @@ impl Engine {
         }
         if let Some(raw) = owner.as_worker() {
             Self::route_endpoints(&self.runtime.shared, &ports, owner);
-            let id = WorkerId::new(raw);
-            if let Some(parent) = self.workers.get_mut(&id) {
-                let _ = parent.deliver_message(worker, &payload, &ports);
-                return;
-            }
             if self.runtime.worker_dir.send(
-                id,
+                WorkerId::new(raw),
                 WorkerCommand::NestedMessage {
                     worker: worker.get(),
                     payload,
@@ -417,16 +383,11 @@ impl Engine {
             document.push_worker_error(error);
             return;
         }
-        let parent = error.parent;
-        if let Some(raw) = parent.as_worker() {
-            let id = WorkerId::new(raw);
-            if let Some(worker) = self.workers.get_mut(&id) {
-                let _ = worker.deliver_error(&error);
-                return;
-            }
-            self.runtime
-                .worker_dir
-                .send(id, WorkerCommand::NestedError(Box::new(error)));
+        if let Some(raw) = error.parent.as_worker() {
+            self.runtime.worker_dir.send(
+                WorkerId::new(raw),
+                WorkerCommand::NestedError(Box::new(error)),
+            );
         }
     }
 
@@ -437,14 +398,10 @@ impl Engine {
             return;
         }
         if let Some(raw) = owner.as_worker() {
-            let id = WorkerId::new(raw);
-            if let Some(parent) = self.workers.get_mut(&id) {
-                parent.deliver_csp_violations(violations);
-                return;
-            }
-            self.runtime
-                .worker_dir
-                .send(id, WorkerCommand::CspViolation { violations });
+            self.runtime.worker_dir.send(
+                WorkerId::new(raw),
+                WorkerCommand::CspViolation { violations },
+            );
         }
     }
 
@@ -454,13 +411,8 @@ impl Engine {
             return;
         }
         if let Some(raw) = owner.as_worker() {
-            let id = WorkerId::new(raw);
-            if let Some(parent) = self.workers.get_mut(&id) {
-                let _ = parent.deliver_load_failure(worker);
-                return;
-            }
             self.runtime.worker_dir.send(
-                id,
+                WorkerId::new(raw),
                 WorkerCommand::NestedLoadFailure {
                     worker: worker.get(),
                 },
@@ -594,7 +546,10 @@ impl Engine {
         let world = document.world();
         let world = world.borrow();
         let mut parsed = world.document_mut(container)?;
-        crate::render::resolve_until_settled(&mut parsed.document.base);
+        crate::render::resolve_until_settled(
+            &mut parsed.document.base,
+            world.runtime.animation_seconds(),
+        );
         let node = parsed.document.base.get_node(container.node)?;
         let layout = node.final_layout();
         let width = layout.size.width
@@ -1088,7 +1043,10 @@ impl Engine {
                     blitz_traits::shell::ColorScheme::Light,
                 ));
             sync_canvas_images(&world, &mut parsed);
-            crate::render::resolve_until_settled(&mut parsed.document.base);
+            crate::render::resolve_until_settled(
+                &mut parsed.document.base,
+                world.runtime.animation_seconds(),
+            );
             let image = crate::render::paint(
                 &mut parsed.document.base,
                 width,
@@ -1237,33 +1195,24 @@ impl Engine {
                     self.reconcile_frames();
                 }
             }
-            let worker_ids: Vec<WorkerId> = self.workers.keys().copied().collect();
-            for id in worker_ids {
-                if std::time::Instant::now() >= yield_deadline {
-                    return self.has_ready_work();
-                }
-                if self.workers.get_mut(&id).is_some_and(Worker::drain_step) {
-                    ran = true;
-                    self.reconcile_frames();
-                }
-            }
             // https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model
-            let mut dedicated_ran = false;
+            let now = self.runtime.now();
+            let epoch = self.runtime.animation_epoch;
+            let mut workers_ran = false;
             self.runtime.worker_dir.with_workers(|workers| {
                 for worker in workers.values_mut() {
                     if std::time::Instant::now() >= yield_deadline {
                         break;
                     }
-                    if worker.drain_step() {
-                        dedicated_ran = true;
+                    if worker.drain_step(now, epoch) {
+                        workers_ran = true;
                     }
                 }
             });
-            if dedicated_ran {
+            if workers_ran {
                 ran = true;
                 self.reconcile_frames();
             }
-            self.workers.retain(|_, worker| !worker.is_closed());
             self.runtime.worker_dir.remove_closed();
             if !ran {
                 if self.reconcile_frames() {
@@ -1277,12 +1226,14 @@ impl Engine {
 
     #[must_use]
     pub fn has_ready_work(&self) -> bool {
+        let now = self.runtime.now();
+        let epoch = self.runtime.animation_epoch;
         self.frames.values().any(Document::has_ready_work)
-            || self.workers.values().any(Worker::has_ready_work)
-            || self
-                .runtime
-                .worker_dir
-                .with_workers(|workers| workers.values().any(WorkerHandle::has_ready_work))
+            || self.runtime.worker_dir.with_workers(|workers| {
+                workers
+                    .values()
+                    .any(|worker| worker.has_ready_work(now, epoch))
+            })
             || self.runtime.has_worker_requests()
     }
 
@@ -1290,7 +1241,6 @@ impl Engine {
     pub fn has_pending_dials(&self) -> bool {
         self.frames.values().any(Document::has_pending_dials)
             || self.runtime.shared.has_keepalive_fetches()
-            || self.workers.values().any(Worker::has_pending_dials)
             || self
                 .runtime
                 .worker_dir
@@ -1509,18 +1459,6 @@ impl Engine {
             );
         }
         let origin_string = origin.to_string();
-        for worker in self.workers.values_mut() {
-            // https://html.spec.whatwg.org/multipage/web-messaging.html#broadcasting-to-other-browsing-contexts
-            if !worker.has_origin(origin.origin()) {
-                continue;
-            }
-            worker.queue_broadcast(
-                origin_string.clone(),
-                name.to_owned(),
-                payload.to_owned(),
-                source,
-            );
-        }
         self.runtime.worker_dir.with_workers(|workers| {
             for worker in workers.values_mut() {
                 if !worker.has_origin(origin.origin()) {
@@ -1545,17 +1483,6 @@ impl Engine {
                 continue;
             }
             document.push_broadcast_message(
-                origin_string.clone(),
-                name.to_owned(),
-                payload.to_owned(),
-                Some(channel),
-            );
-        }
-        for worker in self.workers.values_mut() {
-            if !worker.has_origin(origin) {
-                continue;
-            }
-            worker.queue_broadcast(
                 origin_string.clone(),
                 name.to_owned(),
                 payload.to_owned(),
@@ -1608,14 +1535,14 @@ impl Engine {
 
     #[must_use]
     pub fn next_deadline(&self) -> Option<Instant> {
+        let epoch = self.runtime.animation_epoch;
         self.frames
             .values()
             .filter_map(Document::next_deadline)
-            .chain(self.workers.values().filter_map(Worker::next_deadline))
             .chain(self.runtime.worker_dir.with_workers(|workers| {
                 workers
                     .values()
-                    .filter_map(WorkerHandle::next_deadline)
+                    .filter_map(|worker| worker.next_deadline(epoch))
                     .min()
             }))
             .min()
@@ -2547,7 +2474,7 @@ impl Engine {
                         // https://html.spec.whatwg.org/multipage/web-messaging.html#message-port-post-message-steps
                         Some(frame) if frame.as_worker().is_some() => {
                             Self::route_endpoints(&self.runtime.shared, &ports, frame);
-                            self.queue_worker_port_message(frame, endpoint, payload, ports);
+                            self.queue_worker_port_message(frame, endpoint, payload, &ports);
                         }
                         Some(_) => {
                             self.runtime.shared.borrow_mut().forget_endpoints(&ports);
@@ -2667,7 +2594,6 @@ impl Engine {
     }
 
     pub fn shutdown(&mut self) {
-        self.workers.clear();
         self.runtime.worker_dir.terminate_all();
         self.shared_workers.clear();
         for document in self.frames.values_mut() {
@@ -2676,7 +2602,6 @@ impl Engine {
     }
 
     pub fn release(&mut self) {
-        self.workers.clear();
         self.runtime.worker_dir.terminate_all();
         self.shared_workers.clear();
         for document in self.frames.values_mut() {
@@ -2756,7 +2681,6 @@ fn capture_sides(width: u32, height: u32) -> Result<(u32, u32), TabError> {
 
 impl Drop for Engine {
     fn drop(&mut self) {
-        self.workers.clear();
         self.runtime.worker_dir.terminate_all();
         self.shared_workers.clear();
         self.frames.clear();

@@ -497,7 +497,7 @@ fn install_worker_constructor_hosts(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -
                     crate::worker::CreatedWorkerOptions::dedicated(module, credentials),
                 );
                 // https://html.spec.whatwg.org/multipage/workers.html#dom-worker
-                current.runtime.worker_dir.spawn_dedicated(created);
+                current.runtime.worker_dir.spawn_worker(created);
                 Ok(id.get())
             },
         ),
@@ -718,16 +718,8 @@ fn install_worker_global_hosts(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) -> Res
         "__tbWorkerClose",
         rquickjs::prelude::Func::from(move || {
             let world = close_world.borrow();
-            let Some(worker) = world.worker_id() else {
-                return;
-            };
-            if world.is_shared_worker() {
-                // https://html.spec.whatwg.org/multipage/workers.html#dom-sharedworkerglobalscope-close
-                world
-                    .runtime
-                    .push_worker_request(crate::worker::WorkerRequest::Close { id: worker });
-            } else {
-                // https://html.spec.whatwg.org/multipage/workers.html#dom-dedicatedworkerglobalscope-close
+            if world.worker_id().is_some() {
+                // https://html.spec.whatwg.org/multipage/workers.html#close-a-worker
                 world.worker_close_requested.set(true);
             }
         }),
@@ -947,7 +939,7 @@ fn resolved_style<'js>(
     };
     let base = &mut parsed.document.base;
     // https://drafts.csswg.org/cssom/#dom-window-getcomputedstyle
-    base.resolve_if_needed(crate::animation_seconds());
+    base.resolve_if_needed(world.runtime.animation_seconds());
     match computed_pseudo_element(pseudo) {
         Some(pseudo) => base.resolved_pseudo_style_value(id.node, pseudo, &property),
         None if pseudo != 0 => String::new(),
@@ -1029,7 +1021,7 @@ fn has_computed_style<'js>(ctx: Ctx<'js>, element: Value<'js>) -> bool {
         };
         let base = &mut parsed.document.base;
         // https://drafts.csswg.org/cssom/#dom-window-getcomputedstyle
-        base.resolve_if_needed(crate::animation_seconds());
+        base.resolve_if_needed(world.runtime.animation_seconds());
         if !crate::dom::tree::is_connected(base, id.node)
             || !crate::dom::tree::is_in_flat_tree(base, id.node)
         {
@@ -1053,7 +1045,7 @@ fn has_computed_style<'js>(ctx: Ctx<'js>, element: Value<'js>) -> bool {
         return false;
     };
     let base = &mut parsed.document.base;
-    base.resolve_if_needed(crate::animation_seconds());
+    base.resolve_if_needed(world.runtime.animation_seconds());
     base.get_node(container.node).is_some_and(|node| {
         node.try_stylo_element_data()
             .as_ref()
@@ -1185,7 +1177,10 @@ pub(crate) use node::element::{bounding_rect, element_client_rects};
 )]
 pub(crate) fn element_at_point(world: &World, document: NodeId, x: f64, y: f64) -> Option<NodeId> {
     let mut parsed = world.document_mut(document)?;
-    crate::render::resolve_until_settled(&mut parsed.document.base);
+    crate::render::resolve_until_settled(
+        &mut parsed.document.base,
+        world.runtime.animation_seconds(),
+    );
     parsed
         .document
         .base
@@ -1205,7 +1200,10 @@ pub(crate) fn elements_at_point(world: &World, document: NodeId, x: f64, y: f64)
     let Some(mut parsed) = world.document_mut(document) else {
         return Vec::new();
     };
-    crate::render::resolve_until_settled(&mut parsed.document.base);
+    crate::render::resolve_until_settled(
+        &mut parsed.document.base,
+        world.runtime.animation_seconds(),
+    );
     parsed
         .document
         .base

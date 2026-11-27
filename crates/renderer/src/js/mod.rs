@@ -1473,15 +1473,11 @@ impl JsRealm {
                     };
                     dial.referrer_policy = world.policy.referrer_policy.unwrap_or_default();
                     dial.timeout_ms = 30_000;
-                    let (send, receive) = std::sync::mpsc::sync_channel(1);
-                    let cancel = world.runtime.services.start_dial(
-                        dial,
-                        Box::new(move |outcome| {
-                            let _ = send.send(outcome);
-                        }),
-                    );
-                    let Ok(Ok(outcome)) = receive.recv_timeout(Duration::from_secs(30)) else {
-                        cancel();
+                    let Ok(outcome) = world
+                        .runtime
+                        .services
+                        .dial_blocking(dial, Duration::from_secs(30))
+                    else {
                         return None;
                     };
                     if !(200..300).contains(&outcome.status) {

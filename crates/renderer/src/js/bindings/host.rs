@@ -33,10 +33,58 @@ pub(crate) struct Member {
 }
 
 #[derive(Clone, Copy)]
+pub(crate) enum AccessorTarget {
+    Operation(Operation),
+    Reflect(&'static ReflectBinding),
+}
+
+pub(crate) struct ReflectBinding {
+    pub(crate) interface: &'static str,
+    pub(crate) content: &'static str,
+    pub(crate) kind: ReflectKind,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum ReflectKind {
+    GetString,
+    GetBool,
+    GetUrl,
+    GetEnumerated {
+        keywords: &'static [&'static str],
+        missing: Option<&'static str>,
+        invalid: Option<&'static str>,
+        nullable: bool,
+    },
+    SetString {
+        legacy_null: bool,
+        reactions: bool,
+    },
+    SetUsvString {
+        reactions: bool,
+    },
+    SetEnumeratedNullable {
+        reactions: bool,
+    },
+    SetBool {
+        reactions: bool,
+    },
+    SetLong {
+        reactions: bool,
+    },
+    SetUlong {
+        reactions: bool,
+    },
+    SetDouble {
+        restricted: bool,
+        reactions: bool,
+    },
+}
+
+#[derive(Clone, Copy)]
 pub(crate) enum MemberKind {
     Attribute {
-        getter: Operation,
-        setter: Option<Operation>,
+        getter: AccessorTarget,
+        setter: Option<AccessorTarget>,
     },
     Method {
         operation: Operation,
@@ -72,6 +120,15 @@ impl NativeFunc for HostCall {
     }
 }
 
+#[derive(Clone, Copy)]
+struct ReflectCall(&'static ReflectBinding);
+
+impl NativeFunc for ReflectCall {
+    fn call<'js>(&self, params: Params<'_, 'js>) -> Result<Value<'js>> {
+        reflect_dispatch(self.0, &params)
+    }
+}
+
 // https://w3c.github.io/webappsec-secure-contexts/#is-settings-object-contextually-secure
 pub(crate) fn is_secure_context(ctx: &Ctx<'_>) -> Result<bool> {
     Ok(world(ctx)?.borrow().is_secure_context())
@@ -83,7 +140,7 @@ pub(crate) fn prototype<'js>(
     parent_intrinsic: Option<&str>,
     members: &[Member],
     constants: &[Constant],
-    dispatch: Dispatch,
+    dispatch: Option<Dispatch>,
 ) -> Result<Object<'js>> {
     // https://webidl.spec.whatwg.org/#interface-prototype-object
     let realm = world(ctx)?;
@@ -116,7 +173,7 @@ pub(crate) fn install_interface(
     members: &[Member],
     constants: &[Constant],
     unscopables: &[&str],
-    dispatch: Dispatch,
+    dispatch: Option<Dispatch>,
 ) -> Result<()> {
     let constructor: Object = ctx.globals().get(name)?;
     let prototype: Object = constructor.get("prototype")?;
@@ -125,11 +182,27 @@ pub(crate) fn install_interface(
     install_unscopables(&prototype, unscopables)
 }
 
+fn install_accessor<'js>(
+    ctx: &Ctx<'js>,
+    target: AccessorTarget,
+    dispatch: Option<Dispatch>,
+) -> Result<Function<'js>> {
+    match target {
+        AccessorTarget::Operation(operation) => {
+            let dispatch = dispatch.ok_or_else(|| {
+                Exception::throw_internal(ctx, "native operation has no dispatcher")
+            })?;
+            Function::new_native(ctx.clone(), HostCall::new(dispatch, operation))
+        }
+        AccessorTarget::Reflect(binding) => Function::new_native(ctx.clone(), ReflectCall(binding)),
+    }
+}
+
 pub(crate) fn install_members(
     prototype: &Object<'_>,
     members: &[Member],
     constants: &[Constant],
-    dispatch: Dispatch,
+    dispatch: Option<Dispatch>,
 ) -> Result<()> {
     // https://webidl.spec.whatwg.org/#es-attributes
     // https://webidl.spec.whatwg.org/#es-operations
@@ -141,11 +214,11 @@ pub(crate) fn install_members(
         }
         match member.kind {
             MemberKind::Attribute { getter, setter } => {
-                let getter = Function::new_native(ctx.clone(), HostCall::new(dispatch, getter))?
+                let getter = install_accessor(ctx, getter, dispatch)?
                     .with_name(format!("get {}", member.name))?;
                 let setter = setter
-                    .map(|operation| {
-                        Function::new_native(ctx.clone(), HostCall::new(dispatch, operation))?
+                    .map(|target| {
+                        install_accessor(ctx, target, dispatch)?
                             .with_name(format!("set {}", member.name))?
                             .with_length(1)
                     })
@@ -153,6 +226,9 @@ pub(crate) fn install_members(
                 prototype.prop(member.name, Attribute { getter, setter })?;
             }
             MemberKind::Method { operation, length } => {
+                let dispatch = dispatch.ok_or_else(|| {
+                    Exception::throw_internal(ctx, "native operation has no dispatcher")
+                })?;
                 let function =
                     Function::new_native(ctx.clone(), HostCall::new(dispatch, operation))?
                         .with_name(member.name)?
@@ -211,59 +287,150 @@ pub(crate) fn reflect_string<'js>(
     rquickjs::String::from_str(ctx.clone(), &value)
 }
 
-// https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#limited-to-only-known-values
+enum ReflectWrite<'js> {
+    String(rquickjs::String<'js>),
+    EnumeratedNullable(Option<rquickjs::String<'js>>),
+    Bool(bool),
+    Long(i32),
+    Ulong(u32),
+    Double(f64),
+}
+
+// https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#reflect
 #[inline(never)]
-pub(crate) fn reflect_enumerated_attribute<'js, T: crate::js::bindings::enumerated::Enumerated>(
-    ctx: &Ctx<'js>,
-    element: NodeId,
-    name: &str,
-    defaults: crate::js::bindings::enumerated::Defaults<T>,
-) -> Result<rquickjs::String<'js>> {
-    let raw = reflected_attribute_value(ctx, element, name);
-    let value = crate::js::bindings::enumerated::reflect_enumerated(raw.as_deref(), defaults);
-    rquickjs::String::from_str(ctx.clone(), value)
+fn reflect_dispatch<'js>(binding: &ReflectBinding, params: &Params<'_, 'js>) -> Result<Value<'js>> {
+    let ctx = params.ctx();
+    let receiver = receiver::<super::JsNode>(params)?;
+    let node_id = receiver.borrow().node_id();
+    require_node_interface(ctx, node_id, binding.interface)?;
+    let (write, reactions) = match binding.kind {
+        ReflectKind::GetString => {
+            return ret(reflect_string(ctx, node_id, binding.content)?, ctx);
+        }
+        ReflectKind::GetBool => {
+            return ret(reflect_bool(ctx, node_id, binding.content)?, ctx);
+        }
+        ReflectKind::GetUrl => {
+            let result = reflect_url_string(ctx, node_id, binding.content)?;
+            return ret_usv(&result, ctx);
+        }
+        ReflectKind::GetEnumerated {
+            keywords,
+            missing,
+            invalid,
+            nullable,
+        } => {
+            return reflect_enumerated_value(
+                ctx,
+                node_id,
+                binding.content,
+                keywords,
+                missing,
+                invalid,
+                nullable,
+            );
+        }
+        // https://webidl.spec.whatwg.org/#es-attributes — omitted setter argument converts undefined per WebIDL rather than throwing like Chromium and Firefox
+        ReflectKind::SetString {
+            legacy_null,
+            reactions,
+        } => {
+            let value = if legacy_null {
+                legacy_null_string_argument(params, 0)?
+            } else {
+                string_argument(params, 0, None)?
+            };
+            (ReflectWrite::String(value), reactions)
+        }
+        ReflectKind::SetUsvString { reactions } => (
+            ReflectWrite::String(usv_string_argument(params, 0)?),
+            reactions,
+        ),
+        ReflectKind::SetEnumeratedNullable { reactions } => (
+            ReflectWrite::EnumeratedNullable(nullable_string_argument(params, 0)?),
+            reactions,
+        ),
+        ReflectKind::SetBool { reactions } => {
+            (ReflectWrite::Bool(boolean_argument(params, 0)?), reactions)
+        }
+        ReflectKind::SetLong { reactions } => {
+            (ReflectWrite::Long(long_argument(params, 0)?), reactions)
+        }
+        ReflectKind::SetUlong { reactions } => {
+            (ReflectWrite::Ulong(ulong_argument(params, 0)?), reactions)
+        }
+        ReflectKind::SetDouble {
+            restricted,
+            reactions,
+        } => {
+            let value = if restricted {
+                restricted_double_argument(params, 0)?
+            } else {
+                double_argument(params, 0)?
+            };
+            (ReflectWrite::Double(value), reactions)
+        }
+    };
+    if reactions {
+        crate::js::reactions::enter(ctx)?;
+    }
+    let outcome = match write {
+        ReflectWrite::String(value) => reflect_set_string(ctx, node_id, binding.content, &value),
+        ReflectWrite::EnumeratedNullable(value) => {
+            reflect_set_enumerated_nullable(ctx, node_id, binding.content, value)
+        }
+        ReflectWrite::Bool(value) => reflect_set_bool(ctx, node_id, binding.content, value),
+        ReflectWrite::Long(value) => reflect_set_long(ctx, node_id, binding.content, value),
+        ReflectWrite::Ulong(value) => reflect_set_ulong(ctx, node_id, binding.content, value),
+        ReflectWrite::Double(value) => reflect_set_double(ctx, node_id, binding.content, value),
+    };
+    let result = outcome.map(|()| ret_undefined(ctx));
+    if reactions {
+        crate::js::reactions::finish(ctx, result)
+    } else {
+        result
+    }
 }
 
-fn reflected_attribute_value(ctx: &Ctx<'_>, element: NodeId, name: &str) -> Option<String> {
-    let world = super::world(ctx).ok()?;
-    let parsed = world.borrow();
-    parsed.document(element).and_then(|parsed| {
-        crate::dom::tree::attr(&parsed.document.base, element.node, name).map(str::to_owned)
-    })
-}
-
+// https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#limited-to-only-known-values
 // https://w3c.github.io/aria/#enumerated-attribute-values-html
-pub(crate) fn reflect_enumerated_attribute_nullable<
-    'js,
-    T: crate::js::bindings::enumerated::Enumerated,
->(
+fn reflect_enumerated_value<'js>(
     ctx: &Ctx<'js>,
     element: NodeId,
     name: &str,
-    defaults: crate::js::bindings::enumerated::Defaults<T>,
-) -> Result<Option<rquickjs::String<'js>>> {
+    keywords: &'static [&'static str],
+    missing: Option<&'static str>,
+    invalid: Option<&'static str>,
+    nullable: bool,
+) -> Result<Value<'js>> {
     let world = super::world(ctx)?;
     let raw = world.borrow().document(element).and_then(|parsed| {
         crate::dom::tree::attr(&parsed.document.base, element.node, name).map(str::to_owned)
     });
-    if raw.is_none() {
-        // https://w3c.github.io/aria/#enumerated-attribute-values-html
+    if nullable && raw.is_none() {
         let nulled = world
             .borrow()
             .document(element)
             .is_some_and(|parsed| parsed.document.is_enumerated_null(element.node, name));
         if nulled {
-            return Ok(None);
+            return Ok(Value::new_null(ctx.clone()));
         }
     }
-    match crate::js::bindings::enumerated::reflect_enumerated_nullable(raw.as_deref(), defaults) {
-        Some(value) => Ok(Some(rquickjs::String::from_str(ctx.clone(), value)?)),
-        None => Ok(None),
+    let resolved = crate::js::bindings::enumerated::reflect_enumerated_keywords(
+        raw.as_deref(),
+        keywords,
+        missing,
+        invalid,
+    );
+    match resolved {
+        Some(value) => ret(rquickjs::String::from_str(ctx.clone(), value)?, ctx),
+        None if nullable => Ok(Value::new_null(ctx.clone())),
+        None => ret(rquickjs::String::from_str(ctx.clone(), "")?, ctx),
     }
 }
 
 // https://w3c.github.io/aria/#enumerated-attribute-values-html
-pub(crate) fn reflect_set_enumerated_nullable(
+fn reflect_set_enumerated_nullable(
     ctx: &Ctx<'_>,
     element: NodeId,
     name: &str,
@@ -888,32 +1055,17 @@ pub(crate) fn resolved_promise<'js>(ctx: &Ctx<'js>) -> Result<Value<'js>> {
     Ok(promise.into_value())
 }
 
-// https://webidl.spec.whatwg.org/#es-interface
-pub(crate) fn dict_required_object<'js>(
-    ctx: &Ctx<'js>,
-    object: &Object<'js>,
-    key: &str,
-) -> Result<Persistent<Object<'static>>> {
-    let value: Value = object.get(key)?;
-    let Some(object) = value.as_object() else {
-        return Err(Exception::throw_type(
-            ctx,
-            "interface dictionary member must be an object",
-        ));
-    };
-    Ok(Persistent::save(ctx, object.clone()))
-}
-
 // https://webidl.spec.whatwg.org/#es-dictionary
 // https://webidl.spec.whatwg.org/#es-interface
 pub(crate) fn dict_object<'js>(
     ctx: &Ctx<'js>,
     object: &Object<'js>,
     key: &str,
+    nullable: bool,
 ) -> Result<Option<Persistent<Object<'static>>>> {
     let value: Value = object.get(key)?;
     // https://webidl.spec.whatwg.org/#es-interface
-    if value.is_undefined() {
+    if value.is_undefined() || (nullable && value.is_null()) {
         return Ok(None);
     }
     let Some(object) = value.as_object() else {

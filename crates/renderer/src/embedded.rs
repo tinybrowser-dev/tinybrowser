@@ -122,7 +122,7 @@ impl EmbeddedRenderer {
         }
         self.engine
             .next_deadline()
-            .map(|deadline| deadline.saturating_duration_since(tokio::time::Instant::now()))
+            .map(|deadline| deadline.saturating_duration_since(self.engine.now()))
     }
 
     #[cfg(test)]

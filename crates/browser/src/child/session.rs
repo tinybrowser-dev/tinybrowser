@@ -562,9 +562,9 @@ fn stream_error(message: &str) -> TabError {
     }
 }
 
-async fn wait_for_deadline(deadline: Option<tokio::time::Instant>) {
+async fn wait_for_deadline(deadline: Option<std::time::Instant>) {
     match deadline {
-        Some(deadline) => tokio::time::sleep_until(deadline).await,
+        Some(deadline) => tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await,
         None => std::future::pending().await,
     }
 }

@@ -23,6 +23,7 @@ pub mod sniff;
 mod storage;
 #[cfg(test)]
 mod test_services;
+mod timers;
 mod window_features;
 mod worker;
 mod xml;
@@ -612,15 +613,6 @@ pub use protocol::{
 };
 pub use remote::RemoteValue;
 pub use storage::PendingStorageEvent;
-
-// https://drafts.csswg.org/cssom-view/#scroll-an-element
-pub(crate) fn animation_seconds() -> f64 {
-    static EPOCH: std::sync::OnceLock<tokio::time::Instant> = std::sync::OnceLock::new();
-    EPOCH
-        .get_or_init(tokio::time::Instant::now)
-        .elapsed()
-        .as_secs_f64()
-}
 
 // https://html.spec.whatwg.org/multipage/dom.html#current-document-readiness
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

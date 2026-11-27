@@ -14,7 +14,10 @@ pub(crate) fn blitz_base_url(url: &url::Url) -> String {
     }
 }
 
-pub(crate) fn resolve_until_settled(base: &mut blitz_dom::BaseDocument) -> u32 {
+pub(crate) fn resolve_until_settled(
+    base: &mut blitz_dom::BaseDocument,
+    animation_seconds: f64,
+) -> u32 {
     let mut passes = 0;
     for _ in 0..8 {
         base.handle_messages();
@@ -25,7 +28,7 @@ pub(crate) fn resolve_until_settled(base: &mut blitz_dom::BaseDocument) -> u32 {
         if !base.has_changes() && !first_animation_sample {
             break;
         }
-        base.resolve(crate::animation_seconds());
+        base.resolve(animation_seconds);
         passes += 1;
         if !base.has_changes() {
             break;
@@ -48,13 +51,13 @@ pub(crate) fn render_html(html: &str, width: u32, height: u32) -> Result<RgbaIma
     };
     let document = blitz_html::HtmlDocument::from_html(html, config);
     let mut base: blitz_dom::BaseDocument = document.into();
-    base.resolve(crate::animation_seconds());
+    base.resolve(0.0);
     paint(&mut base, width, height, false)
 }
 
 #[cfg(test)]
 pub(crate) fn resolve_frame(base: &mut blitz_dom::BaseDocument, net: &TinyNetProvider) -> bool {
-    resolve_until_settled(base);
+    resolve_until_settled(base, 0.0);
     !base.has_pending_critical_resources() && net.in_flight() == 0
 }
 
@@ -180,7 +183,7 @@ mod tests {
         let mut base: blitz_dom::BaseDocument = document.into();
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
-            base.resolve(crate::animation_seconds());
+            base.resolve(0.0);
             base.handle_messages();
             while let Ok((fetch, handler)) = rx.try_recv() {
                 let mut stream =

@@ -1444,6 +1444,30 @@ pub type DialCancellation = Box<dyn FnOnce() + Send + 'static>;
 pub trait NetworkHost: Send + Sync + 'static {
     fn start_dial(&self, request: DialRequest, completion: DialCompletion) -> DialCancellation;
 
+    fn clock(&self) -> net::Clock {
+        net::Clock::default()
+    }
+
+    fn dial_blocking(
+        &self,
+        request: DialRequest,
+        timeout: std::time::Duration,
+    ) -> Result<DialOutcome, DialFailure> {
+        let (send, receive) = std::sync::mpsc::sync_channel(1);
+        let cancel = self.start_dial(
+            request,
+            Box::new(move |outcome| {
+                let _ = send.send(outcome);
+            }),
+        );
+        if let Ok(outcome) = receive.recv_timeout(timeout) {
+            outcome
+        } else {
+            cancel();
+            Err(DialFailure::Timeout)
+        }
+    }
+
     fn dial_read(&self, _stream: StreamId) -> Result<Option<Vec<u8>>, DialFailure> {
         Err(DialFailure::Connect)
     }

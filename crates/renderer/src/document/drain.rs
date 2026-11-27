@@ -1,10 +1,6 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use tokio::time::Instant;
-
-use super::{
-    CompletedDial, DialContext, Document, MAX_PENDING_JS_FETCHES, QueuedDial, Task, Timer,
-};
+use super::{CompletedDial, DialContext, Document, MAX_PENDING_JS_FETCHES, QueuedDial, Task};
 use crate::document::dials::AdoptedDials;
 use crate::dom::tree::NodeId;
 use crate::js::{JsFetchId, RealmRequest};
@@ -66,10 +62,7 @@ impl Document {
         if self.world.borrow().has_outbox_work() {
             return true;
         }
-        let now = Instant::now();
-        self.timers
-            .values()
-            .any(|timer| !timer.fired && timer.when.is_some_and(|when| when <= now))
+        self.timers.has_due(self.world.borrow().runtime.now())
     }
 
     pub(crate) fn has_pending_dials(&self) -> bool {
@@ -100,16 +93,11 @@ impl Document {
 
     #[must_use]
     pub(crate) fn next_deadline(&self) -> Option<Instant> {
-        let timers = self
-            .timers
-            .values()
-            .filter(|timer| !timer.fired)
-            .filter_map(|timer| timer.when)
-            .min();
+        let timers = self.timers.next_deadline();
         // https://drafts.csswg.org/cssom-view/#scroll-an-element
         // https://drafts.csswg.org/css-animations-1/#events
         let frame = (self.scroll_animation_active() || self.css_animation_active())
-            .then(|| Instant::now() + SCROLL_FRAME_INTERVAL);
+            .then(|| self.world.borrow().runtime.now() + SCROLL_FRAME_INTERVAL);
         match (timers, frame) {
             (Some(timer), Some(frame)) => Some(timer.min(frame)),
             (timer, frame) => timer.or(frame),
@@ -117,16 +105,8 @@ impl Document {
     }
 
     pub(crate) fn schedule_timer(&mut self, delay: Duration) -> TimerId {
-        let id = self.next_timer_id.take_next();
-        self.timers.insert(
-            id,
-            Timer {
-                when: Instant::now().checked_add(delay),
-                fired: false,
-                realm_handle: None,
-            },
-        );
-        id
+        let now = self.world.borrow().runtime.now();
+        self.timers.schedule(now, delay, None)
     }
 
     pub(crate) fn shutdown(&mut self) {
@@ -218,9 +198,7 @@ impl Document {
                 if let Some(target) = self.refresh.take_due(id) {
                     self.fire_refresh(&target);
                 }
-                if let Some(timer) = self.timers.remove(&id)
-                    && let Some((realm, js_id)) = timer.realm_handle
-                {
+                if let Some(Some((realm, js_id))) = self.timers.remove(id) {
                     self.js_timers.remove(&(realm, js_id));
                     self.fire_realm(realm, |js| js.fire_timer(js_id));
                 }
@@ -331,16 +309,16 @@ impl Document {
     fn apply_realm_request(&mut self, request: RealmRequest) {
         match request {
             RealmRequest::Timer(timeout) => {
-                let page_id = self.schedule_timer(timeout.delay);
-                if let Some(timer) = self.timers.get_mut(&page_id) {
-                    timer.realm_handle = Some((timeout.realm, timeout.js_id));
-                }
+                let now = self.world.borrow().runtime.now();
+                let page_id =
+                    self.timers
+                        .schedule(now, timeout.delay, Some((timeout.realm, timeout.js_id)));
                 self.js_timers
                     .insert((timeout.realm, timeout.js_id), page_id);
             }
             RealmRequest::ClearTimer(timeout) => {
                 if let Some(page_id) = self.js_timers.remove(&(timeout.realm, timeout.js_id)) {
-                    self.timers.remove(&page_id);
+                    self.timers.remove(page_id);
                 }
             }
             RealmRequest::CookieChanges => {
@@ -717,15 +695,7 @@ impl Document {
     }
 
     fn due_timer(&mut self) -> Option<TimerId> {
-        let now = Instant::now();
-        // https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#timer-initialisation-steps
-        // https://html.spec.whatwg.org/multipage/webappapis.html#task-queue
-        let (id, timer) = self
-            .timers
-            .iter_mut()
-            .filter(|(_, timer)| !timer.fired && timer.when.is_some_and(|when| when <= now))
-            .min_by_key(|(id, timer)| (timer.when, id.get()))?;
-        timer.fired = true;
-        Some(*id)
+        let now = self.world.borrow().runtime.now();
+        self.timers.take_due(now)
     }
 }

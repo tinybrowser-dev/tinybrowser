@@ -4,12 +4,14 @@ pub(crate) use enumerated::Enumerated;
 use enumerated::enumerated;
 
 // https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#limited-to-only-known-values
+#[cfg(test)]
 #[derive(Clone, Copy)]
 pub(crate) struct Defaults<T> {
     pub(crate) missing: Option<T>,
     pub(crate) invalid: Option<T>,
 }
 
+#[cfg(test)]
 impl<T> Defaults<T> {
     pub(crate) const NONE: Self = Self {
         missing: None,
@@ -18,27 +20,47 @@ impl<T> Defaults<T> {
 }
 
 // https://html.spec.whatwg.org/multipage/common-dom-interfaces.html#limited-to-only-known-values
+pub(crate) fn reflect_enumerated_keywords(
+    raw: Option<&str>,
+    keywords: &'static [&'static str],
+    missing: Option<&'static str>,
+    invalid: Option<&'static str>,
+) -> Option<&'static str> {
+    let Some(raw) = raw else {
+        return missing;
+    };
+    keywords
+        .iter()
+        .copied()
+        .find(|keyword| keyword.eq_ignore_ascii_case(raw))
+        .or(invalid)
+}
+
+#[cfg(test)]
 pub(crate) fn reflect_enumerated<T: Enumerated>(
     raw: Option<&str>,
     defaults: Defaults<T>,
 ) -> &'static str {
-    let Some(raw) = raw else {
-        return defaults.missing.map_or("", |value| value.keyword());
-    };
-    T::parse(raw)
-        .or(defaults.invalid)
-        .map_or("", |value| value.keyword())
+    reflect_enumerated_keywords(
+        raw,
+        T::KEYWORD_STRS,
+        defaults.missing.map(Enumerated::keyword),
+        defaults.invalid.map(Enumerated::keyword),
+    )
+    .unwrap_or("")
 }
 
-// https://w3c.github.io/aria/#enumerated-attribute-values-html
+#[cfg(test)]
 pub(crate) fn reflect_enumerated_nullable<T: Enumerated>(
     raw: Option<&str>,
     defaults: Defaults<T>,
 ) -> Option<&'static str> {
-    let Some(raw) = raw else {
-        return defaults.missing.map(Enumerated::keyword);
-    };
-    T::parse(raw).or(defaults.invalid).map(Enumerated::keyword)
+    reflect_enumerated_keywords(
+        raw,
+        T::KEYWORD_STRS,
+        defaults.missing.map(Enumerated::keyword),
+        defaults.invalid.map(Enumerated::keyword),
+    )
 }
 
 enumerated! {
@@ -120,8 +142,19 @@ pub(crate) enum FormMethod {
     Dialog,
 }
 
+impl FormMethod {
+    pub(crate) const fn as_keyword(self) -> &'static str {
+        match self {
+            Self::Get => "get",
+            Self::Post => "post",
+            Self::Dialog => "dialog",
+        }
+    }
+}
+
 impl Enumerated for FormMethod {
     const KEYWORDS: &'static [Self] = &[Self::Get, Self::Post, Self::Dialog];
+    const KEYWORD_STRS: &'static [&'static str] = &["get", "post", "dialog"];
 
     fn keyword(self) -> &'static str {
         let engine = match self {
@@ -150,8 +183,23 @@ pub(crate) enum FormEnctype {
     TextPlain,
 }
 
+impl FormEnctype {
+    pub(crate) const fn as_keyword(self) -> &'static str {
+        match self {
+            Self::UrlEncoded => "application/x-www-form-urlencoded",
+            Self::Multipart => "multipart/form-data",
+            Self::TextPlain => "text/plain",
+        }
+    }
+}
+
 impl Enumerated for FormEnctype {
     const KEYWORDS: &'static [Self] = &[Self::UrlEncoded, Self::Multipart, Self::TextPlain];
+    const KEYWORD_STRS: &'static [&'static str] = &[
+        "application/x-www-form-urlencoded",
+        "multipart/form-data",
+        "text/plain",
+    ];
 
     fn keyword(self) -> &'static str {
         let engine = match self {
