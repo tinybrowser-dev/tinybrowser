@@ -266,3 +266,15 @@ const __tbInstallGlobal = (implementation, name, construction, members, secureOn
   }
   return value;
 };
+
+const __tbEventConstructor = globalThis.Event;
+const __tbEventTargetConstructor = globalThis.EventTarget;
+const __tbBrand = (value, slots, message) => {
+  const data = slots.get(value);
+  if (data === undefined) throw new TypeError(message === undefined ? 'Illegal invocation' : message);
+  return data;
+};
+const __tbWindowData = host.slots('tinybrowser.window.data');
+const __tbIsWindow = value =>
+  value === globalThis ||
+  (value !== null && typeof value === 'object' && __tbWindowData.get(value) !== undefined);

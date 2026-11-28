@@ -71,6 +71,87 @@ static WORKER_APIS_SHIM: blob::ShimBlob = blob::ShimBlob::new(include_bytes!(con
     "/js_blobs/worker_bundle.deflate"
 )));
 
+static ISOLATED_CORE_SHIM: blob::ShimBlob = blob::ShimBlob::new(include_bytes!(concat!(
+    env!("OUT_DIR"),
+    "/js_blobs/isolated_core_bundle.deflate"
+)));
+
+static ISOLATED_EXTRA_SHIM: blob::ShimBlob = blob::ShimBlob::new(include_bytes!(concat!(
+    env!("OUT_DIR"),
+    "/js_blobs/isolated_extra_bundle.deflate"
+)));
+
+const ISOLATED_DEFERRED_GLOBALS: &[&str] = &[
+    "Intl",
+    "fetch",
+    "Request",
+    "Response",
+    "Headers",
+    "TextEncoder",
+    "TextDecoder",
+    "TextEncoderStream",
+    "TextDecoderStream",
+    "ReadableStream",
+    "WritableStream",
+    "TransformStream",
+    "ByteLengthQueuingStrategy",
+    "CountQueuingStrategy",
+    "Blob",
+    "File",
+    "FileReader",
+    "FileList",
+    "XMLHttpRequest",
+    "XMLHttpRequestEventTarget",
+    "XMLHttpRequestUpload",
+    "ProgressEvent",
+    "navigator",
+    "Navigator",
+    "Origin",
+    "customElements",
+    "CustomElementRegistry",
+    "MessageChannel",
+    "MessagePort",
+    "MessageEvent",
+    "BroadcastChannel",
+    "structuredClone",
+    "QuotaExceededError",
+    "performance",
+    "Performance",
+    "PerformanceEntry",
+    "PerformanceMark",
+    "PerformanceMeasure",
+    "PerformanceObserver",
+    "PerformanceResourceTiming",
+    "indexedDB",
+    "IDBFactory",
+    "IDBDatabase",
+    "IDBTransaction",
+    "IDBObjectStore",
+    "IDBIndex",
+    "IDBCursor",
+    "IDBKeyRange",
+    "IDBRequest",
+    "IDBOpenDBRequest",
+    "crypto",
+    "Crypto",
+    "SubtleCrypto",
+    "CryptoKey",
+    "history",
+    "PopStateEvent",
+    "FormData",
+    "Worker",
+    "SharedWorker",
+    "cookieStore",
+    "CookieStore",
+    "CookieChangeEvent",
+    "WebAssembly",
+    "OffscreenCanvas",
+    "FontFace",
+    "FontFaceSet",
+    "CSSColorValue",
+    "CanvasFilter",
+];
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum ScriptValue {
     Undefined,
@@ -1430,62 +1511,156 @@ impl JsRealm {
         }
     }
 
+    fn capture_event_ctors(ctx: &Ctx<'_>, world: &Rc<RefCell<World>>) {
+        for name in [
+            "BeforeUnloadEvent",
+            "CompositionEvent",
+            "CustomEvent",
+            "DeviceMotionEvent",
+            "DeviceOrientationEvent",
+            "DragEvent",
+            "ErrorEvent",
+            "FocusEvent",
+            "HashChangeEvent",
+            "KeyboardEvent",
+            "MessageEvent",
+            "MouseEvent",
+            "PointerEvent",
+            "SecurityPolicyViolationEvent",
+            "StorageEvent",
+            "TextEvent",
+            "ToggleEvent",
+            "TouchEvent",
+            "UIEvent",
+        ] {
+            if let Ok(ctor) = ctx.globals().get::<_, Object>(name) {
+                world
+                    .borrow_mut()
+                    .event_ctors
+                    .insert(name.to_owned(), Persistent::save(ctx, ctor));
+            }
+        }
+    }
+
+    fn install_isolated_extra_stubs(
+        ctx: &Ctx<'_>,
+        world: &Rc<RefCell<World>>,
+    ) -> rquickjs::Result<()> {
+        let loaded = Rc::new(Cell::new(false));
+        let extra_world = Rc::clone(world);
+        let ensure_loaded = Rc::clone(&loaded);
+        bridge::object(ctx)?.set(
+            "__tbEnsureIsolatedExtras",
+            Func::from(move |ctx: Ctx<'_>| -> rquickjs::Result<()> {
+                if ensure_loaded.replace(true) {
+                    return Ok(());
+                }
+                let globals = ctx.globals();
+                for name in ISOLATED_DEFERRED_GLOBALS {
+                    let _ = globals.remove(*name);
+                }
+                fonts::install(&ctx)?;
+                intl::install(&ctx)?;
+                Self::install_crypto_host_functions(&ctx)
+                    .map_err(|err| Exception::throw_internal(&ctx, &err.to_string()))?;
+                encoding::install(&ctx)?;
+                bridge::evaluate_shim(&ctx, &ISOLATED_EXTRA_SHIM)?;
+                crate::js::canvas::install_serialization(&ctx)?;
+                reactions::capture(&ctx)?;
+                if let Ok(constructor) = ctx.globals().get::<_, Object>("PopStateEvent")
+                    && let Ok(prototype) = constructor.get::<_, Object>("prototype")
+                {
+                    extra_world
+                        .borrow_mut()
+                        .intern_brand("PopStateEvent", Persistent::save(&ctx, prototype));
+                }
+                Self::capture_event_ctors(&ctx, &extra_world);
+                Ok(())
+            }),
+        )?;
+        let names = Array::new(ctx.clone())?;
+        for (index, name) in ISOLATED_DEFERRED_GLOBALS.iter().enumerate() {
+            names.set(index, *name)?;
+        }
+        let installer: Function = ctx.eval(
+            "(function(host, names) {
+                'use strict';
+                if (globalThis.Document && globalThis.Document.prototype) {
+                    Object.defineProperty(globalThis.Document.prototype, 'fonts', {
+                        configurable: true,
+                        enumerable: true,
+                        get() {
+                            delete globalThis.Document.prototype.fonts;
+                            host.__tbEnsureIsolatedExtras();
+                            return this.fonts;
+                        },
+                    });
+                }
+                for (let i = 0; i < names.length; i++) {
+                    const name = names[i];
+                    Object.defineProperty(globalThis, name, {
+                        configurable: true,
+                        enumerable: false,
+                        get() {
+                            host.__tbEnsureIsolatedExtras();
+                            return globalThis[name];
+                        },
+                        set(value) {
+                            Object.defineProperty(globalThis, name, {
+                                value,
+                                writable: true,
+                                enumerable: true,
+                                configurable: true,
+                            });
+                        },
+                    });
+                }
+            })",
+        )?;
+        installer.call::<_, ()>((bridge::object(ctx)?, names))
+    }
+
     fn install(&self) -> Result<(), JsError> {
         let world = self.world.clone();
+        let isolated = world.borrow().is_isolated();
         bridge::prepare(&self.runtime, &world)?;
         self.context.with(|ctx| {
             bindings::install(&ctx, &world)?;
-            fonts::install(&ctx)?;
-            intl::install(&ctx)?;
             self.install_task_host_functions(&ctx, &world)?;
             Self::install_document_host_functions(&ctx, &world)?;
             Self::install_url_host_functions(&ctx, &world)?;
-            Self::install_crypto_host_functions(&ctx)?;
             install_storage_host_functions(&ctx, &world)?;
             install_window_host_functions(&ctx, &world)?;
             install_window_messaging_functions(&ctx, &world)?;
             install_history_host_functions(&ctx, &world)?;
             url_parts::install(&ctx)?;
-            encoding::install(&ctx)?;
             bindings::install_messaging(&ctx)?;
             reactions::install(&ctx)?;
-            bridge::evaluate_shim(&ctx, &WEB_APIS_SHIM)?;
-            crate::js::canvas::install_serialization(&ctx)?;
-            reactions::capture(&ctx)?;
-            for name in ["PopStateEvent", "HashChangeEvent"] {
-                let constructor: Object = ctx.globals().get(name)?;
+            if isolated {
+                bridge::evaluate_shim(&ctx, &ISOLATED_CORE_SHIM)?;
+                let constructor: Object = ctx.globals().get("HashChangeEvent")?;
                 let prototype: Object = constructor.get("prototype")?;
                 world
                     .borrow_mut()
-                    .intern_brand(name, Persistent::save(&ctx, prototype));
-            }
-            for name in [
-                "BeforeUnloadEvent",
-                "CompositionEvent",
-                "CustomEvent",
-                "DeviceMotionEvent",
-                "DeviceOrientationEvent",
-                "DragEvent",
-                "ErrorEvent",
-                "FocusEvent",
-                "HashChangeEvent",
-                "KeyboardEvent",
-                "MessageEvent",
-                "MouseEvent",
-                "PointerEvent",
-                "SecurityPolicyViolationEvent",
-                "StorageEvent",
-                "TextEvent",
-                "ToggleEvent",
-                "TouchEvent",
-                "UIEvent",
-            ] {
-                if let Ok(ctor) = ctx.globals().get::<_, Object>(name) {
+                    .intern_brand("HashChangeEvent", Persistent::save(&ctx, prototype));
+                Self::capture_event_ctors(&ctx, &world);
+                Self::install_isolated_extra_stubs(&ctx, &world)?;
+            } else {
+                fonts::install(&ctx)?;
+                intl::install(&ctx)?;
+                Self::install_crypto_host_functions(&ctx)?;
+                encoding::install(&ctx)?;
+                bridge::evaluate_shim(&ctx, &WEB_APIS_SHIM)?;
+                crate::js::canvas::install_serialization(&ctx)?;
+                reactions::capture(&ctx)?;
+                for name in ["PopStateEvent", "HashChangeEvent"] {
+                    let constructor: Object = ctx.globals().get(name)?;
+                    let prototype: Object = constructor.get("prototype")?;
                     world
                         .borrow_mut()
-                        .event_ctors
-                        .insert(name.to_owned(), Persistent::save(&ctx, ctor));
+                        .intern_brand(name, Persistent::save(&ctx, prototype));
                 }
+                Self::capture_event_ctors(&ctx, &world);
             }
             Ok(())
         })

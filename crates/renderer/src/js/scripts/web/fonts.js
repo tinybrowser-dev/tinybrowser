@@ -673,7 +673,7 @@ function __tbFontFromRule(rule) {
   __tbCssFontFaces.set(rule, face);
   // https://drafts.csswg.org/css-font-loading/#font-face-constructor
   // https://drafts.csswg.org/css-font-loading/#dom-fontface-status
-  const address = __tbCssomRuleAddress(rule);
+  const address = host.__tbCssomRuleAddress(rule);
   if (address !== null) {
     const status = host.__tbFontFaceStatus(address.sheetId, address.path);
     if (status === 'loading') {
@@ -690,7 +690,7 @@ function __tbFontFromRule(rule) {
 // https://drafts.csswg.org/css-fonts-4/#src-desc
 // https://drafts.csswg.org/css-font-loading/#dom-fontface-status
 host.__tbFontFaceSettled = function (sheetId, path, loaded) {
-  const rule = __tbCssomRuleAt(sheetId, path);
+  const rule = host.__tbCssomRuleAt(sheetId, path);
   if (rule === null) return;
   const face = __tbCssFontFaces.get(rule);
   if (face === undefined) return;

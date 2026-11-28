@@ -86,10 +86,14 @@ mod tests {
                 }
                 _ => panic!("unknown manifest mode {mode}"),
             };
+            let contract_name = blob
+                .strip_suffix(".deflate")
+                .filter(|_| mode == "bundle")
+                .unwrap_or(payload);
             let generated = webidl_bindgen::compile_javascript(
                 &idl,
                 &webidl_bindgen::Source {
-                    name: blob,
+                    name: contract_name,
                     text: &expected,
                 },
             )

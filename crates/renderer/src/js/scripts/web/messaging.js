@@ -26,14 +26,10 @@ Object.defineProperty(globalThis.MessageEvent.prototype, Symbol.toStringTag, { v
 // https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal
 const __tbPayloadVersion = 'tb1:';
 const __tbPlatform = host.slots('tinybrowser.platform');
-const __tbWindowData = host.slots('tinybrowser.window.data');
 const __tbPortData = host.slots('tinybrowser.messageport.data');
 const __tbFrameId = host.__tb_frameId;
 __tbWindowData.set(globalThis, { frame: __tbFrameId });
 // https://html.spec.whatwg.org/multipage/nav-history-apis.html#window
-const __tbIsWindow = value =>
-  value === globalThis ||
-  (value !== null && typeof value === 'object' && __tbWindowData.get(value) !== undefined);
 const __tbFrameProxies = Object.create(null);
 // https://html.spec.whatwg.org/multipage/window-object.html#windowproxy-set
 const __tbFramePendingSets = Object.create(null);
