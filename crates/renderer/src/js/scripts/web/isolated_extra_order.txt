@@ -12,7 +12,7 @@ messaging.js
 performance.js
 indexeddb.js
 crypto.js
-forms.js
+history.js
 form_data.js
 input.js
 fonts.js

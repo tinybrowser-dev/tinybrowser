@@ -136,6 +136,8 @@ const ISOLATED_DEFERRED_GLOBALS: &[&str] = &[
     "Crypto",
     "SubtleCrypto",
     "CryptoKey",
+    "history",
+    "PopStateEvent",
     "FormData",
     "Worker",
     "SharedWorker",
@@ -1565,6 +1567,13 @@ impl JsRealm {
                 bridge::evaluate_shim(&ctx, &ISOLATED_EXTRA_SHIM)?;
                 crate::js::canvas::install_serialization(&ctx)?;
                 reactions::capture(&ctx)?;
+                if let Ok(constructor) = ctx.globals().get::<_, Object>("PopStateEvent")
+                    && let Ok(prototype) = constructor.get::<_, Object>("prototype")
+                {
+                    extra_world
+                        .borrow_mut()
+                        .intern_brand("PopStateEvent", Persistent::save(&ctx, prototype));
+                }
                 Self::capture_event_ctors(&ctx, &extra_world);
                 Ok(())
             }),
@@ -1618,13 +1627,11 @@ impl JsRealm {
             reactions::install(&ctx)?;
             if isolated {
                 bridge::evaluate_shim(&ctx, &ISOLATED_CORE_SHIM)?;
-                for name in ["PopStateEvent", "HashChangeEvent"] {
-                    let constructor: Object = ctx.globals().get(name)?;
-                    let prototype: Object = constructor.get("prototype")?;
-                    world
-                        .borrow_mut()
-                        .intern_brand(name, Persistent::save(&ctx, prototype));
-                }
+                let constructor: Object = ctx.globals().get("HashChangeEvent")?;
+                let prototype: Object = constructor.get("prototype")?;
+                world
+                    .borrow_mut()
+                    .intern_brand("HashChangeEvent", Persistent::save(&ctx, prototype));
                 Self::capture_event_ctors(&ctx, &world);
                 Self::install_isolated_extra_stubs(&ctx, &world)?;
             } else {
