@@ -62,27 +62,20 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from timeouts import DEFAULT_TIMEOUT, EXTRA_TIMEOUT, LONG_TIMEOUT
-from profile import (
-    print_timeline,
-    profile_main,
-    profile_report,
-    profile_run,
-)
 from results import (
     corpus_counts,
     corpus_main,
     failing_tests,
-    is_expected,
     merge_main,
     needs_retest,
     publish_main,
     rerun_status,
     summarize,
     summary_main,
-    unexpected_subs,
     write_corpus,
 )
+from timeouts import DEFAULT_TIMEOUT, EXTRA_TIMEOUT, LONG_TIMEOUT
+from wpt_profile import print_timeline, profile_main
 
 ROOT = Path(__file__).resolve().parents[2]
 CLI = Path(__file__).resolve()
@@ -769,7 +762,6 @@ def parse_rerun_argv(
     if report is None:
         return None, include_timeout, dry_run, save_report, [], usage
     return report, include_timeout, dry_run, save_report, [], None
-
 
 
 def patch_wpt(wpt_root: Path, lane: str | None = None) -> None:
@@ -2499,7 +2491,10 @@ def _selftest_corpus() -> None:
         out = tmp / "corpus.json.gz"
         with contextlib.redirect_stderr(io.StringIO()):
             assert corpus_main(["--summary", str(summary_path), "--out", str(out)]) == 0
-        assert json.loads(gzip.decompress(out.read_bytes())) == {"/a.any.html": 2, "/a.any.worker.html": 2}
+        assert json.loads(gzip.decompress(out.read_bytes())) == {
+            "/a.any.html": 2,
+            "/a.any.worker.html": 2,
+        }
         assert out.read_bytes()[:2] == b"\x1f\x8b"
         assert pinned_corpus("abc").name == "abc.json.gz"
         assert pinned_corpus("abc").parent.name == "corpus"
@@ -2740,9 +2735,12 @@ def _read_failures_gz(path: Path) -> list[dict]:
         return []
     try:
         with gzip.open(path, "rt", encoding="utf-8") as handle:
-            return [json.loads(line) for line in handle.read().splitlines() if line.strip()]
+            return [
+                json.loads(line) for line in handle.read().splitlines() if line.strip()
+            ]
     except (OSError, EOFError):
         return []
+
 
 def _selftest_publish() -> None:
     """Two records: one point, then a diff, then a pin change kills the diff.

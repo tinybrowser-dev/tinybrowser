@@ -10,7 +10,7 @@ import subprocess
 import sys
 import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import NoReturn
 
 ROOT = Path(__file__).resolve().parents[2]
 CORPUS_DIR = ROOT / "tools" / "wpt" / "corpus"
@@ -49,7 +49,7 @@ Print the regression summary from regressions.json written by `publish`."""
 class _ArgParser(argparse.ArgumentParser):
     """ArgumentParser that raises ValueError instead of exiting the process."""
 
-    def error(self, message: str) -> Any:
+    def error(self, message: str) -> NoReturn:
         raise ValueError(message)
 
 
