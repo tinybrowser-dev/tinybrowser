@@ -30,4 +30,4 @@ it (#239).
 | WPT timeout policy | `tools/wpt/timeouts.py` | flags from `cli.py` |
 | WPT test selection | `tools/wpt-harness/src/suite.rs` (manifest) | — |
 | WPT response metadata | `tools/wpt-harness/src/{services,wrapper,template}.rs` | — |
-| WPT report shape | `tools/wpt-report` | — |
+| WPT report, verdict, record, publish & website TS types | `tools/wpt-report` | `tools/wpt/results.py` delegates; `website/src/lib/record-types.ts` generated |

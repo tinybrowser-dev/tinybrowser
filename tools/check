@@ -103,7 +103,7 @@ run_py() {
     echo "py: skipping ty, WPT checkout missing (git submodule update --init third_party/wpt)" >&2
     return 0
   fi
-  uvx "$TY_PIN" check --project tools/wpt tools/wpt/cli.py tools/wpt/tinybrowser_wpt.py
+  uvx "$TY_PIN" check --project tools/wpt tools/wpt/cli.py tools/wpt/results.py tools/wpt/profile.py tools/wpt/tinybrowser_wpt.py
 }
 
 valgrind_test() {

@@ -1,3 +1,5 @@
+pub mod record;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
@@ -206,7 +208,8 @@ pub fn compare(baseline: &Path, outcomes: &[Outcome]) -> io::Result<Comparison> 
     Ok(comparison)
 }
 
-fn verdict(result: &Value) -> &str {
+#[must_use]
+pub fn verdict(result: &Value) -> &str {
     let status = result.get("status").and_then(Value::as_str);
     if let Some(status) = status
         && matches!(status, "TIMEOUT" | "ERROR" | "CRASH")
@@ -402,5 +405,60 @@ mod tests {
                 case["why"].as_str().unwrap_or("case")
             );
         }
+    }
+
+    #[test]
+    fn website_record_types_match_generated_schema() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../website/src/lib/record-types.ts");
+        let actual = std::fs::read_to_string(&path).expect("read website/src/lib/record-types.ts");
+        assert_eq!(
+            actual,
+            crate::record::emit_typescript(),
+            "website/src/lib/record-types.ts drifted; run: cargo run -p wpt-report -- emit-ts --out website/src/lib/record-types.ts"
+        );
+    }
+
+    #[test]
+    fn diff_failures_separates_newly_measured_and_timeouts() {
+        use crate::record::{Failure, diff_failures};
+        let prev = vec![
+            Failure {
+                test: "/a.html".into(),
+                subtest: String::new(),
+                status: "TIMEOUT".into(),
+            },
+            Failure {
+                test: "/b.html".into(),
+                subtest: "old".into(),
+                status: "FAIL".into(),
+            },
+        ];
+        let curr = vec![
+            Failure {
+                test: "/a.html".into(),
+                subtest: "sub1".into(),
+                status: "FAIL".into(),
+            },
+            Failure {
+                test: "/c.html".into(),
+                subtest: String::new(),
+                status: "TIMEOUT".into(),
+            },
+            Failure {
+                test: "/d.html".into(),
+                subtest: "new".into(),
+                status: "FAIL".into(),
+            },
+        ];
+        let diff = diff_failures(&prev, &curr, true);
+        assert_eq!(diff.newly_measured.len(), 1);
+        assert_eq!(diff.newly_measured[0].test, "/a.html");
+        assert_eq!(diff.new_timeouts.len(), 1);
+        assert_eq!(diff.new_timeouts[0].test, "/c.html");
+        assert_eq!(diff.regressions.len(), 1);
+        assert_eq!(diff.regressions[0].test, "/d.html");
+        assert_eq!(diff.fixes.len(), 1);
+        assert_eq!(diff.fixes[0].test, "/b.html");
     }
 }

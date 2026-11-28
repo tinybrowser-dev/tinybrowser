@@ -325,6 +325,11 @@ jobs:
             binary: wpt-fast
             output: wpt-fast
             artifact: wpt-fast-bin
+          - name: report
+            package: wpt-report
+            binary: wpt-report
+            output: wpt-report
+            artifact: wpt-report-bin
     steps:
       - uses: actions/checkout@v7
       - name: System libraries
@@ -558,6 +563,14 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: wpt-report-bin
+          path: bin
+      - name: Stage wpt-report binary
+        run: |
+          chmod +x bin/wpt-report
+          echo "WPT_REPORT_BIN=$PWD/bin/wpt-report" >> "$GITHUB_ENV"
       - uses: actions/download-artifact@v8
         with:
           pattern: wpt-report-*

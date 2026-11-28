@@ -1,5 +1,5 @@
 {
-  "why": "One rule, two readers: cli.py scores a merged run, wpt-report diffs a baseline. They read the same wptreports, so a disagreement would report a pass as a regression or hide a fix. Each side tests every case here.",
+  "why": "Unit test cases for the single verdict rule in tools/wpt-report (used by baseline diffs, merge, record scoring, and publish).",
   "cases": [
     {
       "why": "a file timeout outranks the subtests it managed to report",
