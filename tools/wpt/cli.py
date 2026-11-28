@@ -69,6 +69,12 @@ from timeouts import DEFAULT_TIMEOUT, EXTRA_TIMEOUT, LONG_TIMEOUT
 
 ROOT = Path(__file__).resolve().parents[2]
 CLI = Path(__file__).resolve()
+CORPUS_DIR = ROOT / "tools" / "wpt" / "corpus"
+
+
+def pinned_corpus(revision: str) -> Path:
+    return CORPUS_DIR / f"{revision}.json.gz"
+
 
 KNOWN_TEST_TYPES = "aamtest crashtest print-reftest reftest test262 testharness wdspec"
 KNOWN_TEST_TYPE_SET = set(KNOWN_TEST_TYPES.split())
@@ -86,6 +92,62 @@ HARD_STATUSES = ("TIMEOUT", "CRASH", "ERROR")
 TIMEOUT_STATUSES = ("TIMEOUT", "EXTERNAL-TIMEOUT")
 UNMEASURED_STATUSES = HARD_STATUSES + ("EXTERNAL-TIMEOUT",)
 MAX_LISTED = 40
+
+# https://github.com/tinybrowser-dev/tinybrowser/issues/241 — the in-process host lacks SRI/ORB/CSP/cookies/window.open; those directories run in WebDriver until the browser host lands
+BROWSER_POLICY_PREFIXES = (
+    "fetch/http-cache",
+    "fetch/orb",
+    "html/browsers/history",
+    "html/browsers/the-window-object",
+    "html/browsers/windows",
+    "subresource-integrity",
+    "webmessaging/broadcastchannel",
+)
+
+
+def browser_policy_path(url: str) -> bool:
+    path = url.split("?", 1)[0].lstrip("/")
+    return any(
+        path == prefix or path.startswith(prefix + "/")
+        for prefix in BROWSER_POLICY_PREFIXES
+    )
+
+
+def in_process_excludes(paths: list[str]) -> list[str]:
+    """Policy directories the in-process lane must leave to WebDriver.
+
+    A path that names the policy directory itself (or a child) is an explicit
+    request and keeps it; `fetch/` or `/` does not, because those also collect
+    files the in-process lane is meant to run.
+    """
+    requested = [path.split("?", 1)[0].strip("/") for path in paths]
+    return [
+        prefix
+        for prefix in BROWSER_POLICY_PREFIXES
+        if not any(
+            name == prefix or name.startswith(prefix + "/") for name in requested
+        )
+    ]
+
+
+HARNESS_VALUE_FLAGS = {
+    "--wpt-root",
+    "--jobs",
+    "--report",
+    "--baseline",
+    "--limit",
+    "--offset",
+    "--total-chunks",
+    "--this-chunk",
+    "--normal-budget",
+    "--long-budget",
+    "--content-types",
+    "--exclude",
+    "--sidecar",
+    "--journal",
+    "--stale",
+}
+
 
 WPT_RUN_REQUIREMENTS = (
     "tools/manifest/requirements.txt",
@@ -1223,6 +1285,28 @@ def build_record(
     }
 
 
+def merge_corpus(merged: dict) -> tuple[dict[str, int] | None, str | None]:
+    """The pinned corpus for the merged run's WPT revision, if it has one.
+
+    Returns (corpus, problem). A report whose run_info names a revision but
+    whose pinned artifact is absent is a hard error: scoring over only the
+    reported subtests would silently change what the denominator means.
+    """
+    revision = (merged.get("run_info") or {}).get("revision")
+    if not revision:
+        return None, None
+    path = pinned_corpus(revision)
+    if not path.is_file():
+        return None, (
+            f"no pinned corpus for WPT revision {revision} at {path}; "
+            f"generate it with: uv run python tools/wpt/cli.py corpus --revision {revision}"
+        )
+    corpus = read_corpus(path)
+    if corpus is None:
+        return None, f"cannot read pinned corpus for WPT revision {revision} at {path}"
+    return corpus, None
+
+
 def merge_main(argv: list[str]) -> int:
     args = parse_merge_argv(argv)
     if args.error:
@@ -1249,6 +1333,10 @@ def merge_main(argv: list[str]) -> int:
     if error:
         return die("merge", error, 2)
     assert merged is not None
+    if args.summary_out is not None and corpus is None:
+        corpus, problem = merge_corpus(merged)
+        if problem is not None:
+            return die("merge", problem, 2)
     if args.out is not None:
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(json.dumps(merged))
@@ -1280,16 +1368,19 @@ def merge_main(argv: list[str]) -> int:
     return code
 
 
-CORPUS_USAGE = """corpus (--revision REV | --summary FILE) --out FILE
+CORPUS_USAGE = """corpus (--revision REV | --summary FILE) [--out FILE]
 
 Write the per-test subtest counts of a Chrome run at a WPT revision as a
-compact {test: subtests} map. `merge --corpus FILE` uses it to add the
-subtests a run never reported, so the score's denominator is the pinned
-revision's corpus rather than only the part that reached the harness.
+compact {test: subtests} map. `merge` adds the subtests a run never
+reported from the artifact pinned for the run's WPT revision, so the score's
+denominator is that revision's corpus rather than only the part that reached
+the harness.
 
 --revision REV asks wpt.fyi for the newest Chrome run at that revision and
 downloads its summary_v2. --summary FILE reads that summary from disk, which
-is what the selftest uses. The output is JSON, gzipped when FILE ends in .gz.
+is what the selftest uses. --out defaults to tools/wpt/corpus/REV.json.gz
+when --revision is used, which is the file CI reads for the pinned submodule;
+the output is JSON, gzipped when FILE ends in .gz.
 """
 
 WPT_FYI_RUNS = "https://wpt.fyi/api/runs?sha={revision}&max-count=100"
@@ -1366,12 +1457,16 @@ def corpus_main(argv: list[str]) -> int:
         else:
             return die("corpus", f"unexpected argument {arg}\n{CORPUS_USAGE}", 2)
         i += 1
-    if out is None or (revision is None) == (summary_path is None):
+    if (revision is None) == (summary_path is None):
         return die(
             "corpus",
-            f"need --out and exactly one of --revision or --summary\n{CORPUS_USAGE}",
+            f"need exactly one of --revision or --summary\n{CORPUS_USAGE}",
             2,
         )
+    if out is None:
+        if revision is None:
+            return die("corpus", f"--out is required with --summary\n{CORPUS_USAGE}", 2)
+        out = pinned_corpus(revision)
     if summary_path is not None:
         try:
             raw = summary_path.read_bytes()
@@ -1619,21 +1714,6 @@ def publish_main(argv: list[str]) -> int:
         except (OSError, json.JSONDecodeError) as error:
             eprint(f"publish: ignoring unreadable index.json: {error}")
     entry = index_entry(record)
-    denominator = (record.get("totals") or {}).get("subtests")
-    if isinstance(denominator, int) and denominator > 0:
-        for item in index:
-            if item.get("wpt_revision") != record.get("wpt_revision"):
-                continue
-            totals = item.get("totals")
-            if isinstance(totals, dict):
-                denominator = max(denominator, totals.get("subtests") or 0)
-        for item in index:
-            if item.get("wpt_revision") != record.get("wpt_revision"):
-                continue
-            totals = item.get("totals")
-            if isinstance(totals, dict):
-                totals["subtests"] = denominator
-        entry["totals"]["subtests"] = denominator
     index = [item for item in index if item.get("sha") != entry["sha"]]
     index.insert(0, entry)
     index_path.write_text(json.dumps(index, separators=(",", ":")))
@@ -1949,6 +2029,9 @@ def patch_wpt(wpt_root: Path, lane: str | None = None) -> None:
                             selected.add(test)
                             continue
                         url = test.url.split("?", 1)[0]
+                        if browser_policy_path(url):
+                            selected.add(test)
+                            continue
                         if url.endswith((".any.html", ".window.html")):
                             continue
                         if os.path.isfile(os.path.join(str(wpt_root), url.lstrip("/"))):
@@ -2368,10 +2451,11 @@ def in_process_main(options: Options, argv: list[str]) -> int:
     Testdriver files are never selected: driving a WebDriver session is the
     `run webdriver` lane, which owns exactly the files this one cannot run.
 
-    Each file runs in one process, so a page that aborts the engine ends the
-    attempt. The harness journals every file it starts and finishes, and this
-    restarts it until the selection is complete: a finished file is reported
-    from the journal, an unfinished one becomes its own ERROR or TIMEOUT.
+    Each window runs in one process, and that process keeps one file in flight
+    at a time, so a page that aborts the engine costs exactly its own verdict.
+    The harness journals every file it starts and finishes, and this restarts
+    it until the selection is complete: a finished file is reported from the
+    journal, an unfinished one becomes its own ERROR or TIMEOUT.
     """
     argv = [arg for arg in argv if arg != "--exclude-testdriver"]
     if "--score" in argv:
@@ -2409,6 +2493,8 @@ def in_process_main(options: Options, argv: list[str]) -> int:
             "--sidecar",
             sidecar.address,
         ]
+        for prefix in in_process_excludes(harness_paths(argv)):
+            policy.extend(["--exclude", prefix])
         with tempfile.TemporaryDirectory(prefix="wpt-harness-journal-") as scratch:
             journal = Path(scratch) / "journal.jsonl"
             return run_harness_windows(binary, wpt, policy, argv, journal)
@@ -2541,6 +2627,25 @@ def wptserve_content_types(wpt: Path, venv: Path) -> str | None:
         return None
     table = out.stdout.decode(errors="replace").strip()
     return table or None
+
+
+def harness_paths(argv: list[str]) -> list[str]:
+    """The positional paths in a harness argv, skipping option values."""
+    paths: list[str] = []
+    index = 0
+    while index < len(argv):
+        arg = argv[index]
+        if arg == "--":
+            paths.extend(item for item in argv[index + 1 :] if not item.startswith("-"))
+            break
+        name = arg.split("=", 1)[0]
+        if name in HARNESS_VALUE_FLAGS and "=" not in arg:
+            index += 2
+            continue
+        if not arg.startswith("-"):
+            paths.append(arg)
+        index += 1
+    return paths
 
 
 WINDOW_TESTS = 600
@@ -3336,6 +3441,15 @@ def _selftest() -> None:
         and not score
         and not dry
     )
+    assert browser_policy_path("/fetch/orb/x.html")
+    assert browser_policy_path("/html/browsers/windows/opener.html")
+    assert not browser_policy_path("/fetch/api/x.html")
+    assert in_process_excludes(["/"]) == list(BROWSER_POLICY_PREFIXES)
+    assert "fetch/orb" not in in_process_excludes(["fetch/orb/x.html"])
+    assert "fetch/http-cache" in in_process_excludes(["fetch/orb"])
+    assert harness_paths(
+        ["fetch/orb/", "--report", "out.json", "--jobs", "2", "--exclude", "worker"]
+    ) == ["fetch/orb/"]
     paths, score, dry, extras, err = split_run_argv(
         ["--score", "dom/", "--", "--processes", "4"]
     )
@@ -3712,6 +3826,8 @@ def _selftest_corpus() -> None:
             assert corpus_main(["--summary", str(summary_path), "--out", str(out)]) == 0
         assert read_corpus(out) == {"/a.any.html": 2, "/a.any.worker.html": 2}
         assert out.read_bytes()[:2] == b"\x1f\x8b"
+        assert pinned_corpus("abc").name == "abc.json.gz"
+        assert pinned_corpus("abc").parent.name == "corpus"
 
         with (
             contextlib.redirect_stderr(io.StringIO()),
@@ -3846,6 +3962,25 @@ def _selftest_merge() -> None:
                         "--corpus",
                         str(tmp / "missing"),
                     ]
+                )
+                == 2
+            )
+
+        pinned = tmp / "pinned.json"
+        unknown = "0" * 40
+        pinned.write_text(
+            chunk([result("/a.html")], run_info={**info, "revision": unknown})
+        )
+        missing_corpus, problem = merge_corpus({"run_info": {"revision": unknown}})
+        assert missing_corpus is None
+        assert problem is not None and unknown in problem
+        with (
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            assert (
+                merge_main(
+                    [str(pinned), "--summary-out", str(tmp / "pinned-record.json")]
                 )
                 == 2
             )
@@ -4004,7 +4139,9 @@ def _selftest_publish() -> None:
             item["sha"] for item in json.loads((data / "index.json").read_text())
         ] == ["bbb", "aaa"]
         index = json.loads((data / "index.json").read_text())
-        assert index[1]["totals"]["subtests"] == 20
+        latest = json.loads((data / "latest.json").read_text())
+        assert index[1]["totals"]["subtests"] == 10
+        assert index[0]["totals"] == latest["totals"]
 
         rerun = json.loads(json.dumps(updated))
         rerun["time_end"] = 1_800_000_200
@@ -4020,7 +4157,7 @@ def _selftest_publish() -> None:
             item["sha"] for item in json.loads((data / "index.json").read_text())
         ] == ["bbb", "aaa"]
         index = json.loads((data / "index.json").read_text())
-        assert index[0]["totals"]["subtests"] == 20
+        assert index[0]["totals"]["subtests"] == 15
         assert [item["date"] for item in json.loads((data / "index.json").read_text())][
             0
         ].startswith("2027-01-15")
@@ -4153,12 +4290,18 @@ Lanes — `run <lane>`, required, one executor each:
     --total-chunks N --this-chunk K splits by source directory.
     A file that aborts the engine is one ERROR or TIMEOUT: the runner journals
     each file and this command restarts it until the selection is complete.
+    Directories that exercise browser-side policy (SRI, ORB, CSP redirects,
+    cookies, window.open) are left to `run webdriver`; name one explicitly to
+    run it here anyway.
   run webdriver PATH... [--score] [--dry-run] [--testdriver-only | --exclude-in-process] [-- upstream-flags...]
     Drive the real browser through upstream wptrunner and WebDriver. Upstream
     flags follow `--` (or start implicitly at the first `-flag`). --score runs
     then prints the per-directory table. --testdriver-only keeps only files
     that drive a WebDriver session; --exclude-in-process keeps what
-    `run in-process` cannot run, so the two lanes partition the suite.
+    `run in-process` cannot run, so the two lanes partition the suite. That
+    includes the browser-policy directories (#241): the in-process lane has no
+    browser host, so SRI, ORB, CSP redirects, cookies, and window.open are
+    scored only here.
     --dry-run prints the wpt invocation without building or running.
   run test262 [FILTER...] [--jobs N] [--report FILE] [--baseline FILE]
     Run the ECMAScript suite natively in QuickJS, without HTML, testharness.js,

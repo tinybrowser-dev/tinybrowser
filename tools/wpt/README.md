@@ -40,8 +40,14 @@ yet. On this machine the 53,640 test262 files take ~27 s wall across 12 jobs
 (~2m25s CPU) versus 20,587 s under WebDriver.
 
 `run in-process` is the testharness/crashtest/reftest lane: each file is
-mounted in the real engine in the harness process, with no WebDriver
-or renderer child. Requests are served from the checkout, the only replaced
+mounted in the real renderer engine in the harness process, with no WebDriver
+or renderer child. It is not the full browser: the harness supplies its own
+filesystem host, so policy that lives in `crates/browser` (SRI, ORB, CSP
+redirect checks, cookies, `window.open`) is absent here. Those directories run
+in the WebDriver lane instead; `cli.py` excludes them from this lane unless the
+requested path names one explicitly (`run in-process fetch/orb/`). The rest of
+the suite pays for that only where browser policy is exercised: requests are
+served from the checkout, the only replaced
 resource is `/resources/testharnessreport.js` (a small reporter the host
 polls; it also drops a repeated remote result, because a child frame's
 messages can reach the parent both live and through testharness's
@@ -114,7 +120,10 @@ a drain that never yields. The harness writes a journal line before each file
 and another with its verdict (`--journal PATH`), so `cli.py run in-process` runs
 it again after such an abort, reports the finished files from the journal,
 records the files that were in flight as ERROR (TIMEOUT when the watchdog cut a
-file that stopped returning) and runs only the rest. Each attempt must finish
+file that stopped returning) and runs only the rest. A journalled attempt runs
+one file at a time (`--jobs` is ignored when `--journal` is set), so the
+in-flight set is exactly the file that died and no sibling pays for it. Each
+attempt must finish
 at least one more file, so a harness that dies before its first verdict fails
 the run instead of looping. The in-process watchdog allows every file its
 budget plus 30 s before it ends the attempt, which is far above the slowest

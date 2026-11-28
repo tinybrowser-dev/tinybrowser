@@ -12,7 +12,11 @@
 #   Stage 2 (after check + playwright pass, when relevant paths changed):
 #     wpt-*       — full WPT suite (14 in-process harness chunks + 6 WebDriver
 #                   chunks) + test262, merged and published to
-#                   `tinybrowser-dev/tinybrowser-wpt-results`.
+#                   `tinybrowser-dev/tinybrowser-wpt-results`. The in-process
+#                   lane keeps one file in flight per process, so a page that
+#                   aborts it costs one verdict; browser-policy directories
+#                   (SRI, ORB, CSP redirects, cookies, window.open) run in the
+#                   WebDriver lane (#241).
 name: CI
 
 on:
@@ -417,7 +421,7 @@ jobs:
           chmod +x wpt-harness
           python3 tools/wpt/cli.py run in-process / \
             --fast-binary "$PWD/wpt-harness" \
-            --jobs 4 \
+            --jobs 1 \
             --total-chunks "$WPT_HARNESS_CHUNKS" \
             --this-chunk "${{ matrix.chunk }}" \
             --report "$REPORT" 2>&1 | tee "$RAW"
@@ -577,13 +581,16 @@ jobs:
           PY
           )
           if [[ -z "$revision" ]]; then
-            echo "::warning::no WPT revision in the reports; the denominator will be the reported subtests only"
-            exit 0
+            echo "::error::no WPT revision in the reports; the pinned corpus cannot be selected"
+            exit 1
           fi
-          if ! python3 tools/wpt/cli.py corpus --revision "$revision" --out corpus.json.gz; then
-            echo "::warning::could not fetch Chrome's corpus counts; the denominator will be the reported subtests only"
-            rm -f corpus.json.gz
+          corpus="tools/wpt/corpus/$revision.json.gz"
+          if [[ ! -s "$corpus" ]]; then
+            echo "::error::missing pinned corpus for $revision (expected $corpus);"
+            echo "generate and commit it with: uv run python tools/wpt/cli.py corpus --revision $revision"
+            exit 1
           fi
+          cp "$corpus" corpus.json.gz
       - name: Merge chunk reports
         run: |
           set -euo pipefail
@@ -598,6 +605,9 @@ jobs:
           corpus_args=()
           if [[ -s corpus.json.gz ]]; then
             corpus_args=(--corpus corpus.json.gz)
+          else
+            echo "::error::the pinned corpus was not staged"
+            exit 1
           fi
           python3 tools/wpt/cli.py merge --strict-skips "${reports[@]}" \
             --out merged.json --summary-out run.json \

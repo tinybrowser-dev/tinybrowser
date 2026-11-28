@@ -52,6 +52,7 @@ pub struct Selection {
     pub limit: usize,
     pub shard: Option<(usize, usize)>,
     pub exclude_testdriver: bool,
+    pub exclude: Vec<String>,
 }
 
 pub fn select(
@@ -88,6 +89,9 @@ pub fn select(
             paths.join(", ")
         )));
     }
+    if !selection.exclude.is_empty() {
+        selected.retain(|item| !excluded(&item.relative, &selection.exclude));
+    }
     let mut cases = Vec::new();
     for item in selected
         .into_iter()
@@ -97,6 +101,13 @@ pub fn select(
         cases.push(item.materialize(root, content_types)?);
     }
     Ok(cases)
+}
+
+fn excluded(relative: &str, prefixes: &[String]) -> bool {
+    prefixes.iter().any(|prefix| {
+        let prefix = prefix.trim_matches('/');
+        relative == prefix || relative.starts_with(&format!("{prefix}/"))
+    })
 }
 
 fn chunk_of_source(source: &str, count: usize) -> usize {
@@ -401,6 +412,7 @@ mod tests {
             limit: usize::MAX,
             shard: None,
             exclude_testdriver: false,
+            exclude: Vec::new(),
         }
     }
 
@@ -599,6 +611,7 @@ mod tests {
                 limit: usize::MAX,
                 shard: None,
                 exclude_testdriver: true,
+                exclude: Vec::new(),
             },
         );
         assert!(
@@ -621,6 +634,7 @@ mod tests {
                 limit: usize::MAX,
                 shard: Some((index, 2)),
                 exclude_testdriver: false,
+                exclude: Vec::new(),
             };
             let cases = select(&root, &paths, &types(), &shard).expect("chunk");
             seen.extend(cases.into_iter().map(|case| case.relative));
@@ -639,6 +653,7 @@ mod tests {
                 limit: usize::MAX,
                 shard: None,
                 exclude_testdriver: true,
+                exclude: Vec::new(),
             },
         )
         .expect("without testdriver");
@@ -686,10 +701,30 @@ mod tests {
             limit: 1,
             shard: None,
             exclude_testdriver: false,
+            exclude: Vec::new(),
         };
         let sliced = select(&root, &["dom/nodes".into()], &types(), &window).expect("slice");
         assert_eq!(sliced.len(), 1);
         assert_eq!(sliced[0].relative, "dom/nodes/multi.any.html");
+        let excluded = Selection {
+            exclude: vec!["dom/nodes/multi.any.html".into()],
+            ..all()
+        };
+        let kept =
+            select(&root, &["dom/nodes".into()], &types(), &excluded).expect("excluded selection");
+        assert!(
+            kept.iter()
+                .all(|case| case.relative != "dom/nodes/multi.any.html")
+        );
+        let excluded_dir = Selection {
+            exclude: vec!["dom/nodes".into()],
+            ..all()
+        };
+        assert!(
+            select(&root, &["dom/nodes".into()], &types(), &excluded_dir)
+                .expect("excluded directory")
+                .is_empty()
+        );
         assert!(select(&root, &["missing".into()], &types(), &all()).is_err());
         fs::remove_dir_all(&root).expect("checkout removed");
     }

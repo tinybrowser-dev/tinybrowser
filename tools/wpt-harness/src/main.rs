@@ -29,6 +29,7 @@ struct Options {
     offset: usize,
     shard: Option<(usize, usize)>,
     exclude_testdriver: bool,
+    exclude: Vec<String>,
     clock: Clock,
     budgets: engine::Budgets,
     content_types: HashMap<String, String>,
@@ -57,6 +58,7 @@ impl Options {
             offset: 0,
             shard: None,
             exclude_testdriver: false,
+            exclude: Vec::new(),
             clock: Clock::Paused,
             budgets: engine::Budgets {
                 normal: Duration::ZERO,
@@ -123,6 +125,7 @@ fn main() {
             limit: options.limit,
             shard: options.shard,
             exclude_testdriver: options.exclude_testdriver,
+            exclude: options.exclude.clone(),
         },
     ) {
         Ok(cases) => cases,
@@ -265,6 +268,15 @@ fn run_all(
         .collect()
 }
 
+// https://github.com/tinybrowser-dev/tinybrowser/issues/248
+fn worker_count(jobs: usize, pending: usize, journaling: bool) -> usize {
+    if journaling {
+        1
+    } else {
+        jobs.clamp(1, pending)
+    }
+}
+
 fn run_pending(
     options: &Options,
     cases: &[TestCase],
@@ -274,7 +286,13 @@ fn run_pending(
 ) {
     let next = AtomicUsize::new(0);
     let (sender, receiver) = mpsc::channel();
-    let workers = options.jobs.clamp(1, pending.len());
+    let workers = worker_count(options.jobs, pending.len(), journal.is_some());
+    if journal.is_some() && options.jobs > 1 {
+        eprintln!(
+            "wpt-harness: --journal keeps one file in flight; ignoring --jobs {}",
+            options.jobs
+        );
+    }
     let watchdog = watchdog::Watchdog::new(workers);
     let done = AtomicBool::new(false);
     let done = &done;
@@ -391,7 +409,7 @@ usage: wpt-harness [OPTIONS] PATH...
 Runs WPT testharness and crashtest files in-process.
 
   --wpt-root PATH   WPT checkout (default third_party/wpt)
-  --jobs N          worker threads (default: available CPUs)
+  --jobs N          worker threads (default: available CPUs; 1 with --journal)
   --report PATH     write a wptreport JSON
   --baseline PATH   compare with an earlier --report and exit 1 on regressions
   --limit N         stop after N selected files
@@ -399,6 +417,7 @@ Runs WPT testharness and crashtest files in-process.
   --total-chunks N  split the selection into N directory-hashed chunks
   --this-chunk K    run chunk K of N (1-based, with --total-chunks)
   --exclude-testdriver  leave testdriver files to the WebDriver lane
+  --exclude PATH    skip a file or directory prefix (repeatable)
   --normal-budget S wall-clock seconds before a normal file is TIMEOUT
   --long-budget S  wall-clock seconds before a long-timeout file is TIMEOUT
   --content-types JSON  wptserve's extension-to-content-type map
@@ -484,6 +503,10 @@ fn parse_flag(
             ));
         }
         "--exclude-testdriver" => options.exclude_testdriver = true,
+        "--exclude" => {
+            let value = args.next().ok_or("--exclude needs a path")?;
+            options.exclude.push(value);
+        }
         "--normal-budget" => {
             options.budgets.normal = seconds_arg(args, "--normal-budget")?;
         }
@@ -526,4 +549,16 @@ fn seconds_arg(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<Du
         .ok()
         .filter(|duration| !duration.is_zero())
         .ok_or_else(|| format!("{flag} needs a positive number of seconds, got {raw}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::worker_count;
+
+    #[test]
+    fn a_journalled_run_keeps_one_file_in_flight() {
+        assert_eq!(worker_count(8, 100, true), 1);
+        assert_eq!(worker_count(8, 100, false), 8);
+        assert_eq!(worker_count(8, 3, false), 3);
+    }
 }

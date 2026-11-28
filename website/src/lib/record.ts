@@ -48,6 +48,9 @@ export type RunRecord = {
   failures?: Array<Failure>
 }
 
+/** Mirrors `RECORD_SCHEMA` in `tools/wpt/cli.py`; a bump must update both. */
+export const RECORD_SCHEMA = 2
+
 export type IndexEntry = {
   sha: string | null
   date: string
@@ -76,7 +79,7 @@ export function counter(counters: Counters, key: string): number {
   return typeof value === "number" ? value : 0
 }
 
-/** Passing subtests over every subtest that reported. */
+/** Passing subtests over the scored corpus, including unreported subtests. */
 export function subtestPercent(counters: Counters): number | null {
   const total = counter(counters, "subtests")
   if (total === 0) return null
