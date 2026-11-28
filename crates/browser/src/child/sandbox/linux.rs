@@ -319,7 +319,7 @@ const ALLOWED_SYSCALLS: &[i64] = &[
 ];
 
 #[cfg(target_arch = "x86_64")]
-const X86_64_ALLOWED_SYSCALLS: &[i64] = &[
+const ARCH_ALLOWED_SYSCALLS: &[i64] = &[
     libc::SYS_open,
     libc::SYS_stat,
     libc::SYS_lstat,
@@ -338,10 +338,12 @@ const X86_64_ALLOWED_SYSCALLS: &[i64] = &[
     libc::SYS_getrlimit,
 ];
 
+#[cfg(not(target_arch = "x86_64"))]
+const ARCH_ALLOWED_SYSCALLS: &[i64] = &[];
+
 fn allowed_syscalls() -> Vec<i64> {
     let mut syscalls = ALLOWED_SYSCALLS.to_vec();
-    #[cfg(target_arch = "x86_64")]
-    syscalls.extend_from_slice(X86_64_ALLOWED_SYSCALLS);
+    syscalls.extend_from_slice(ARCH_ALLOWED_SYSCALLS);
     syscalls
 }
 
