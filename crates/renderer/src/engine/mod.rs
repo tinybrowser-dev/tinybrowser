@@ -1306,7 +1306,7 @@ impl Engine {
                     if std::time::Instant::now() >= yield_deadline {
                         break;
                     }
-                    if worker.drain_step(now, epoch) {
+                    if worker.wake_due_timer(now, epoch) {
                         workers_ran = true;
                     }
                 }
@@ -1334,9 +1334,17 @@ impl Engine {
             || self.runtime.worker_dir.with_workers(|workers| {
                 workers
                     .values()
-                    .any(|worker| worker.has_ready_work(now, epoch))
+                    .any(|worker| worker.has_due_timer(now, epoch))
             })
             || self.runtime.has_worker_requests()
+            || !self.runtime.shared.lock().deliveries.is_empty()
+    }
+
+    #[must_use]
+    pub fn has_active_workers(&self) -> bool {
+        self.runtime
+            .worker_dir
+            .with_workers(|workers| workers.values().any(WorkerHandle::is_active))
     }
 
     #[must_use]

@@ -1,8 +1,9 @@
 use std::cell::{Cell, RefCell};
 use std::ops::Deref;
 use std::rc::{Rc, Weak};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::mpsc::{Receiver, Sender};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 use tokio::sync::Notify;
@@ -15,9 +16,6 @@ use crate::worker::{WorkerDirectory, WorkerId, WorkerRequest};
 use super::JsRuntimeHandle;
 use super::RealmRegistry;
 
-pub(crate) type WorkerRequests = Arc<Mutex<Vec<WorkerRequest>>>;
-
-#[derive(Clone)]
 pub(crate) struct SharedRuntime {
     pub(crate) services: Arc<dyn BrowserServices>,
     pub(crate) clock: net::Clock,
@@ -27,7 +25,9 @@ pub(crate) struct SharedRuntime {
     pub(crate) wake: Arc<Notify>,
     pub(crate) stop: Arc<Stop>,
     pub(crate) shared: SharedHandle,
-    pub(crate) worker_requests: WorkerRequests,
+    worker_requests_tx: Sender<WorkerRequest>,
+    worker_requests_rx: Mutex<Receiver<WorkerRequest>>,
+    pending_worker_requests: AtomicUsize,
     pub(crate) next_worker: Arc<AtomicU64>,
     pub(crate) next_broadcast: Arc<AtomicU64>,
     pub(crate) next_blob_scope: Arc<AtomicU64>,
@@ -44,6 +44,7 @@ impl SharedRuntime {
     ) -> Self {
         let clock = services.clock();
         let animation_epoch = clock.monotonic();
+        let (worker_requests_tx, worker_requests_rx) = std::sync::mpsc::channel();
         Self {
             services,
             clock,
@@ -52,7 +53,9 @@ impl SharedRuntime {
             wake,
             stop,
             shared: SharedHandle::new(crate::messaging::Shared::default()),
-            worker_requests: Arc::new(Mutex::new(Vec::new())),
+            worker_requests_tx,
+            worker_requests_rx: Mutex::new(worker_requests_rx),
+            pending_worker_requests: AtomicUsize::new(0),
             next_worker: Arc::new(AtomicU64::new(1)),
             next_broadcast: Arc::new(AtomicU64::new(1)),
             next_blob_scope: Arc::new(AtomicU64::new(1)),
@@ -70,6 +73,32 @@ impl SharedRuntime {
             .monotonic()
             .saturating_duration_since(self.animation_epoch)
             .as_secs_f64()
+    }
+
+    pub(crate) fn push_worker_request_waking(&self, request: WorkerRequest) {
+        self.pending_worker_requests.fetch_add(1, Ordering::AcqRel);
+        if self.worker_requests_tx.send(request).is_err() {
+            self.pending_worker_requests.fetch_sub(1, Ordering::AcqRel);
+            return;
+        }
+        self.wake.notify_one();
+    }
+
+    pub(crate) fn take_worker_requests(&self) -> Vec<WorkerRequest> {
+        let rx = self
+            .worker_requests_rx
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let mut out = Vec::new();
+        while let Ok(request) = rx.try_recv() {
+            self.pending_worker_requests.fetch_sub(1, Ordering::AcqRel);
+            out.push(request);
+        }
+        out
+    }
+
+    pub(crate) fn has_worker_requests(&self) -> bool {
+        self.pending_worker_requests.load(Ordering::Acquire) > 0
     }
 }
 
@@ -101,25 +130,6 @@ impl Deref for FrameRuntime {
 impl FrameRuntime {
     pub(crate) fn open_turn(&self, deadline: Instant) -> super::ScriptTurn {
         super::ScriptTurn::enter_at(&self.turn_deadline, deadline)
-    }
-
-    fn requests(&self) -> MutexGuard<'_, Vec<WorkerRequest>> {
-        self.worker_requests
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-    }
-
-    pub(crate) fn push_worker_request_waking(&self, request: WorkerRequest) {
-        self.requests().push(request);
-        self.wake.notify_one();
-    }
-
-    pub(crate) fn take_worker_requests(&self) -> Vec<WorkerRequest> {
-        std::mem::take(&mut *self.requests())
-    }
-
-    pub(crate) fn has_worker_requests(&self) -> bool {
-        !self.requests().is_empty()
     }
 
     pub(crate) fn next_worker_id(&self) -> WorkerId {

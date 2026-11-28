@@ -228,7 +228,7 @@ fn run_testharness(
         if started.elapsed() > limit {
             return Err(timeout_failure(renderer));
         }
-        if renderer.has_pending_dials() {
+        if renderer.has_pending_dials() || renderer.has_active_workers() {
             std::thread::sleep(Duration::from_micros(200));
             continue;
         }
@@ -273,7 +273,7 @@ fn run_crashtest(
         if started.elapsed() > limit {
             return Err(Failure::Timeout);
         }
-        if renderer.has_pending_dials() {
+        if renderer.has_pending_dials() || renderer.has_active_workers() {
             std::thread::sleep(Duration::from_micros(200));
             continue;
         }
@@ -398,7 +398,7 @@ fn settle_reftest(
     let mut frames_left = SCREENSHOT_FRAMES;
     loop {
         let _yielded = session.renderer.drain_until(deadline);
-        if session.renderer.has_pending_dials() {
+        if session.renderer.has_pending_dials() || session.renderer.has_active_workers() {
             if Instant::now() >= deadline {
                 return Err(Failure::Timeout);
             }
