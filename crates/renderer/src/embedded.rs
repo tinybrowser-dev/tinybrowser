@@ -116,6 +116,11 @@ impl EmbeddedRenderer {
     }
 
     #[must_use]
+    pub fn has_active_workers(&self) -> bool {
+        self.engine.has_active_workers()
+    }
+
+    #[must_use]
     pub fn time_until_deadline(&self) -> Option<Duration> {
         if self.ready_queued || self.engine.has_ready_work() {
             return Some(Duration::ZERO);

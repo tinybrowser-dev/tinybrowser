@@ -492,20 +492,24 @@ fn port_post(ctx: Ctx<'_>, endpoint: f64, payload: String, ports: Vec<f64>) -> R
             world.take_serialized_message(payload, ports),
         )
     };
-    {
+    let woke = {
         // https://html.spec.whatwg.org/multipage/web-messaging.html#message-port-post-message-steps
-        let shared = shared.lock();
+        let mut shared = shared.lock();
         if !shared.ports.all_in_transit_from(&message.ports, frame) {
             return Ok(());
         }
+        let Shared {
+            ports: table,
+            deliveries,
+            ..
+        } = &mut *shared;
+        let before = deliveries.len();
+        table.post(endpoint, message, deliveries);
+        deliveries.len() > before
+    };
+    if woke {
+        world.borrow().runtime.wake.notify_one();
     }
-    let mut shared = shared.lock();
-    let Shared {
-        ports: table,
-        deliveries,
-        ..
-    } = &mut *shared;
-    table.post(endpoint, message, deliveries);
     Ok(())
 }
 
@@ -518,13 +522,20 @@ fn port_start(ctx: Ctx<'_>, endpoint: f64) -> Result<()> {
         return Ok(());
     }
     let shared = world.borrow().shared();
-    let mut shared = shared.lock();
-    let Shared {
-        ports: table,
-        deliveries,
-        ..
-    } = &mut *shared;
-    table.start(endpoint, deliveries);
+    let woke = {
+        let mut shared = shared.lock();
+        let Shared {
+            ports: table,
+            deliveries,
+            ..
+        } = &mut *shared;
+        let before = deliveries.len();
+        table.start(endpoint, deliveries);
+        deliveries.len() > before
+    };
+    if woke {
+        world.borrow().runtime.wake.notify_one();
+    }
     Ok(())
 }
 
@@ -537,13 +548,20 @@ fn port_close(ctx: Ctx<'_>, endpoint: f64) -> Result<()> {
         return Ok(());
     }
     let shared = world.borrow().shared();
-    let mut shared = shared.lock();
-    let Shared {
-        ports: table,
-        deliveries,
-        ..
-    } = &mut *shared;
-    table.close(endpoint, deliveries);
+    let woke = {
+        let mut shared = shared.lock();
+        let Shared {
+            ports: table,
+            deliveries,
+            ..
+        } = &mut *shared;
+        let before = deliveries.len();
+        table.close(endpoint, deliveries);
+        deliveries.len() > before
+    };
+    if woke {
+        world.borrow().runtime.wake.notify_one();
+    }
     Ok(())
 }
 

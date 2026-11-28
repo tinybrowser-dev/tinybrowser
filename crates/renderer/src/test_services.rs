@@ -1,5 +1,6 @@
 use std::collections::HashMap;
-use std::sync::{Mutex, PoisonError};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use url::Url;
 
@@ -14,9 +15,17 @@ pub(crate) struct NullServices {
     object_urls: webstorage::ObjectUrlStore<()>,
     // https://html.spec.whatwg.org/multipage/nav-history-apis.html#window-open-steps
     local_window: Mutex<Option<crate::protocol::LocalWindowInit>>,
+    hanging_dial: Option<(Arc<AtomicBool>, Arc<AtomicBool>)>,
 }
 
 impl NullServices {
+    pub(crate) fn hanging_dial(started: Arc<AtomicBool>, cancelled: Arc<AtomicBool>) -> Self {
+        Self {
+            hanging_dial: Some((started, cancelled)),
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn opening_local_window(
         assignment: u64,
         tab: crate::protocol::TabState,
@@ -37,6 +46,13 @@ impl NullServices {
 
 impl NetworkHost for NullServices {
     fn start_dial(&self, _request: DialRequest, completion: DialCompletion) -> DialCancellation {
+        if let Some((started, cancelled)) = &self.hanging_dial {
+            started.store(true, Ordering::Release);
+            let cancelled = Arc::clone(cancelled);
+            return Box::new(move || {
+                cancelled.store(true, Ordering::Release);
+            });
+        }
         completion(Err(DialFailure::Connect));
         Box::new(|| {})
     }
