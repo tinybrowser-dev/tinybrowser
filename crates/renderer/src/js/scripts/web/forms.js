@@ -727,7 +727,8 @@
       .replace(/\r/g, '%0D')
       .replace(/\n/g, '%0A')
       .replace(/"/g, '%22');
-  const encoder = new TextEncoder();
+  let __tbFormEncoder;
+  const encodeUtf8 = text => (__tbFormEncoder || (__tbFormEncoder = new TextEncoder())).encode(text);
   const concatBytes = chunks => {
     let total = 0;
     for (let index = 0; index < chunks.length; index++) total += chunks[index].length;
@@ -744,7 +745,7 @@
   const encodeMultipart = (formData, label) => {
     const boundary = `----tinybrowser${Math.random().toString(16).slice(2)}`;
     const chunks = __tbPrivateArray();
-    const push = text => __tbArray.push(chunks, encoder.encode(text));
+    const push = text => __tbArray.push(chunks, encodeUtf8(text));
     for (const entry of formData) {
       const name = escapeMultipartName(entry[0]);
       const value = entry[1];
@@ -756,7 +757,7 @@
         __tbArray.push(chunks, charsetBytes(escapeMultipartFilename(value.name), label));
         push(`"\r\nContent-Type: ${value.type || 'application/octet-stream'}\r\n\r\n`);
         const data = __tbBlobData.get(value);
-        __tbArray.push(chunks, data === undefined ? encoder.encode(String(value)) : data.bytes);
+        __tbArray.push(chunks, data === undefined ? encodeUtf8(String(value)) : data.bytes);
         push('\r\n');
       } else {
         push(`Content-Disposition: form-data; name="`);
@@ -785,9 +786,9 @@
         label,
       );
       __tbArray.push(chunks, name);
-      __tbArray.push(chunks, encoder.encode('='));
+      __tbArray.push(chunks, encodeUtf8('='));
       __tbArray.push(chunks, value);
-      __tbArray.push(chunks, encoder.encode('\r\n'));
+      __tbArray.push(chunks, encodeUtf8('\r\n'));
     }
     return concatBytes(chunks);
   };
@@ -857,7 +858,7 @@
       body = encodeTextPlain(formData, label);
       contentType = 'text/plain';
     } else {
-      body = encoder.encode(urlEncode(formData, label));
+      body = encodeUtf8(urlEncode(formData, label));
       contentType = 'application/x-www-form-urlencoded';
     }
     host.__tbFormNavigate(action, target, 'POST', body, contentType, form);

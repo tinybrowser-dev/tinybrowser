@@ -223,11 +223,6 @@ const __tbRedirectMode = value => {
 };
 // https://fetch.spec.whatwg.org/#cors-safelisted-method
 const __tbCorsSafelistedMethod = method => host.__tbIsCorsSafelistedMethod(method);
-const __tbBrand = (value, slots, message) => {
-  const data = slots.get(value);
-  if (data === undefined) throw new TypeError(message === undefined ? 'Illegal invocation' : message);
-  return data;
-};
 globalThis.Headers = class Headers {
   constructor(init) {
     __tbHeadersData.set(this, { list: [], guard: 'none', version: 0, sorted: null });

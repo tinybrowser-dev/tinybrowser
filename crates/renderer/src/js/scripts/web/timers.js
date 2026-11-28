@@ -1,5 +1,3 @@
-const __tbEventConstructor = globalThis.Event;
-const __tbEventTargetConstructor = globalThis.EventTarget;
 host.array = __tbPrivateArray;
 host.push = __tbArray.push;
 // https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#dom-settimeout — slot 0 stays unused so the first setTimeout handle is 1, matching Chromium and WPT

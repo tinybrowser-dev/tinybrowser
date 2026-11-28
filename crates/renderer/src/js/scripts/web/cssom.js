@@ -698,6 +698,8 @@ let __tbCssomRuleAt;
     }
     return null;
   };
+  host.__tbCssomRuleAddress = __tbCssomRuleAddress;
+  host.__tbCssomRuleAt = __tbCssomRuleAt;
   function __tbRuleState(receiver) {
     const entry = receiver[__tbRuleEntry];
     if (entry === undefined) throw new TypeError('Illegal invocation');
