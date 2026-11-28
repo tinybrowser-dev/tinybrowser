@@ -1,4 +1,5 @@
 timers.js
+encoding.js
 url.js
 dom.js
 cssom.js

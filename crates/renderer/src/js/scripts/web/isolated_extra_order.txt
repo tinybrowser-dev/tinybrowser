@@ -1,5 +1,4 @@
 fetch.js
-encoding.js
 webassembly.js
 streams.js
 file.js

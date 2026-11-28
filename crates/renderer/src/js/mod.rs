@@ -87,8 +87,6 @@ const ISOLATED_DEFERRED_GLOBALS: &[&str] = &[
     "Request",
     "Response",
     "Headers",
-    "TextEncoder",
-    "TextDecoder",
     "TextEncoderStream",
     "TextDecoderStream",
     "ReadableStream",
@@ -1563,7 +1561,6 @@ impl JsRealm {
                 intl::install(&ctx)?;
                 Self::install_crypto_host_functions(&ctx)
                     .map_err(|err| Exception::throw_internal(&ctx, &err.to_string()))?;
-                encoding::install(&ctx)?;
                 bridge::evaluate_shim(&ctx, &ISOLATED_EXTRA_SHIM)?;
                 crate::js::canvas::install_serialization(&ctx)?;
                 reactions::capture(&ctx)?;
@@ -1585,6 +1582,17 @@ impl JsRealm {
         let installer: Function = ctx.eval(
             "(function(host, names) {
                 'use strict';
+                if (globalThis.Document && globalThis.Document.prototype) {
+                    Object.defineProperty(globalThis.Document.prototype, 'fonts', {
+                        configurable: true,
+                        enumerable: true,
+                        get() {
+                            delete globalThis.Document.prototype.fonts;
+                            host.__tbEnsureIsolatedExtras();
+                            return this.fonts;
+                        },
+                    });
+                }
                 for (let i = 0; i < names.length; i++) {
                     const name = names[i];
                     Object.defineProperty(globalThis, name, {
@@ -1623,6 +1631,7 @@ impl JsRealm {
             install_window_messaging_functions(&ctx, &world)?;
             install_history_host_functions(&ctx, &world)?;
             url_parts::install(&ctx)?;
+            encoding::install(&ctx)?;
             bindings::install_messaging(&ctx)?;
             reactions::install(&ctx)?;
             if isolated {
@@ -1638,7 +1647,6 @@ impl JsRealm {
                 fonts::install(&ctx)?;
                 intl::install(&ctx)?;
                 Self::install_crypto_host_functions(&ctx)?;
-                encoding::install(&ctx)?;
                 bridge::evaluate_shim(&ctx, &WEB_APIS_SHIM)?;
                 crate::js::canvas::install_serialization(&ctx)?;
                 reactions::capture(&ctx)?;
