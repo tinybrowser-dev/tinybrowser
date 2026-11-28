@@ -109,8 +109,11 @@ WebDriver lane's half of the split.
 
 The lane has no result cache: every run executes the selection. It is fast
 because the engine is in-process and the clock is paused, not because an
-earlier verdict is reused. On dom/nodes/ (422 manifest tests) a run is ~11 s
-at 12 jobs. A truncated file is never mistaken for a verdict: testharness
+earlier verdict is reused. The runner journals every file, which keeps one
+file in flight (`--jobs` is accepted but ignored), so the same 420-test slice
+is ~38 s journalled versus ~11 s at 12 jobs without a journal. CI pays that
+cost so an abort costs one verdict instead of every in-flight sibling.
+A truncated file is never mistaken for a verdict: testharness
 reports `interrupted` when the engine cuts a script short, and the runner
 gives each file one drain with its whole budget instead of a short slice.
 

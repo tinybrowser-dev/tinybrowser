@@ -4290,6 +4290,7 @@ Lanes — `run <lane>`, required, one executor each:
     --total-chunks N --this-chunk K splits by source directory.
     A file that aborts the engine is one ERROR or TIMEOUT: the runner journals
     each file and this command restarts it until the selection is complete.
+    The journal keeps one file in flight, so --jobs is accepted but ignored.
     Directories that exercise browser-side policy (SRI, ORB, CSP redirects,
     cookies, window.open) are left to `run webdriver`; name one explicitly to
     run it here anyway.
