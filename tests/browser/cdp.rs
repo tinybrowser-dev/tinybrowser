@@ -851,6 +851,102 @@ fn document_open_announces_replaced_contexts() {
     );
 }
 
+// https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-createIsolatedWorld
+#[test]
+fn an_isolated_world_is_recreated_for_a_new_document() {
+    let server = TestServer::start(
+        vec![(
+            "/",
+            ok(
+                "text/html",
+                b"<!doctype html><title>second document</title>",
+            ),
+        )],
+        None,
+    );
+    let (_fixture, mut client) = start();
+    let created = client
+        .call("Target.createTarget", &json!({"url": "about:blank"}), None)
+        .expect("create");
+    let target_id = created["targetId"].as_str().expect("target id").to_owned();
+    let attached = client
+        .call(
+            "Target.attachToTarget",
+            &json!({"targetId": target_id, "flatten": true}),
+            None,
+        )
+        .expect("attach");
+    let session = attached["sessionId"].as_str().expect("session").to_owned();
+    client
+        .call("Page.enable", &json!({}), Some(&session))
+        .expect("page enable");
+    client
+        .call("Runtime.enable", &json!({}), Some(&session))
+        .expect("runtime enable");
+    let tree = client
+        .call("Page.getFrameTree", &json!({}), Some(&session))
+        .expect("frame tree");
+    let frame_id = tree["frameTree"]["frame"]["id"]
+        .as_str()
+        .expect("frame id")
+        .to_owned();
+    let first = client
+        .call(
+            "Page.createIsolatedWorld",
+            &json!({"frameId": frame_id, "worldName": "utility", "grantUniversalAccess": true}),
+            Some(&session),
+        )
+        .expect("isolated world");
+    let first_id = first["executionContextId"]
+        .as_u64()
+        .expect("execution context id");
+
+    client
+        .call(
+            "Page.navigate",
+            &json!({"url": format!("http://{}/", server.address())}),
+            Some(&session),
+        )
+        .expect("navigate");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let second_id = loop {
+        let event = client
+            .read_event(Duration::from_millis(500))
+            .expect("read event");
+        if let Some(event) = event
+            && event["method"] == json!("Runtime.executionContextCreated")
+            && event["params"]["context"]["name"] == json!("utility")
+            && event["params"]["context"]["auxData"]["frameId"] == json!(frame_id)
+        {
+            let id = event["params"]["context"]["id"]
+                .as_u64()
+                .expect("context id");
+            if id == first_id {
+                continue;
+            }
+            break id;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the isolated world was not recreated for the new document"
+        );
+    };
+
+    let evaluated = client
+        .call(
+            "Runtime.evaluate",
+            &json!({
+                "expression": "document.title",
+                "contextId": second_id,
+                "returnByValue": true,
+            }),
+            Some(&session),
+        )
+        .expect("evaluate in the recreated world");
+    assert_eq!(evaluated["result"]["value"], json!("second document"));
+}
+
 #[test]
 fn capture_screenshot_tall_clip_with_display_none_descendant() {
     let (_fixture, mut client) = start();

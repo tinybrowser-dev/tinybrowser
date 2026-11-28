@@ -339,7 +339,7 @@ struct Conn {
     frame_contexts: HashMap<(TabId, FrameId), u64>,
     // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-setLifecycleEventsEnabled
     lifecycle_events: bool,
-    isolated_worlds: HashMap<TabId, Vec<String>>,
+    isolated_worlds: HashMap<(TabId, FrameId), Vec<String>>,
     isolated_contexts: HashMap<u64, (TabId, FrameId, String)>,
     omit_background: HashMap<TabId, bool>,
     response_bodies: HashMap<String, (TabId, Vec<u8>)>,
@@ -881,6 +881,18 @@ impl Conn {
             .retain(|_, (owner, _, _)| *owner != tab_id);
         self.default_contexts.remove(&tab_id);
         self.create_frame_context(messages, tab_id, FrameId::MAIN, None, url, session);
+        if let Some(worlds) = self.isolated_worlds.get(&(tab_id, FrameId::MAIN)).cloned() {
+            for world in worlds {
+                self.create_frame_context(
+                    messages,
+                    tab_id,
+                    FrameId::MAIN,
+                    Some(&world),
+                    url,
+                    session,
+                );
+            }
+        }
     }
 
     // https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#event-executionContextCreated
@@ -894,7 +906,7 @@ impl Conn {
     ) {
         self.destroy_frame_contexts(messages, tab_id, frame, session);
         self.create_frame_context(messages, tab_id, frame, None, url, session);
-        if let Some(worlds) = self.isolated_worlds.get(&tab_id).cloned() {
+        if let Some(worlds) = self.isolated_worlds.get(&(tab_id, frame)).cloned() {
             for world in worlds {
                 self.create_frame_context(messages, tab_id, frame, Some(&world), url, session);
             }
@@ -1644,7 +1656,7 @@ impl Conn {
         self.next_context = self.next_context.saturating_add(1);
         let name = params.world_name.unwrap_or_default();
         if !name.is_empty() {
-            let worlds = self.isolated_worlds.entry(tab.id()).or_default();
+            let worlds = self.isolated_worlds.entry((tab.id(), frame)).or_default();
             if !worlds.contains(&name) {
                 worlds.push(name.clone());
             }
@@ -1889,7 +1901,7 @@ impl Conn {
         self.current_loaders.remove(&id);
         self.default_contexts.remove(&id);
         self.frame_contexts.retain(|(owner, _), _| *owner != id);
-        self.isolated_worlds.remove(&id);
+        self.isolated_worlds.retain(|(owner, _), _| *owner != id);
         self.isolated_contexts
             .retain(|_, (owner, _, _)| *owner != id);
         self.compiled_scripts.retain(|_, (owner, _)| *owner != id);
