@@ -43,6 +43,8 @@ fn main() {
     for (blob, order) in [
         ("web_bundle.deflate", "order.txt"),
         ("worker_bundle.deflate", "worker_order.txt"),
+        ("isolated_core_bundle.deflate", "isolated_core_order.txt"),
+        ("isolated_extra_bundle.deflate", "isolated_extra_order.txt"),
     ] {
         let order_path = root.join("src/js/scripts/web").join(order);
         println!("cargo:rerun-if-changed={}", order_path.display());
