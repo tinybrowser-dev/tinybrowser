@@ -3,8 +3,8 @@
 #   Stage 1 (parallel):
 #     check       — formatting, clippy (-D warnings), embedded JS syntax,
 #                   realm-free layer check, parsed-type guards, rustdoc, Python
-#                   stack, workspace tests, wasm32-wasip2 check, and the
-#                   Playwright internal bridge spec.
+#                   stack, workspace tests, wasm32-wasip2 check, the android
+#                   aarch64 cross-check, and the Playwright internal bridge spec.
 #     sandbox     — macOS & Windows clippy and sandbox tests.
 #     playwright  — upstream Playwright `tests/page/` specs against tinybrowser
 #                   over CDP, gated by `tools/playwright/pw-expectations.json`.
@@ -171,6 +171,30 @@ jobs:
           SCCACHE_GHA_ENABLED: "true"
           RUSTC_WRAPPER: "sccache"
         run: cargo check -p tinybrowser-wasm --target wasm32-wasip2
+      - name: Android aarch64 cross-check
+        # The libc bindings for android aarch64 omit syscalls the kernel still
+        # implements; the release build finds out at tag time unless a push
+        # compiles the renderer sandbox for the same target.
+        env:
+          OPENSSL_NO_VENDOR: "0"
+          SCCACHE_GHA_ENABLED: "true"
+          RUSTC_WRAPPER: "sccache"
+        run: |
+          set -euo pipefail
+          rustup target add aarch64-linux-android
+          ndk_root="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-}}"
+          if [[ -z "$ndk_root" ]]; then
+            echo "::error::Android NDK not found on runner"
+            exit 1
+          fi
+          toolchain="$ndk_root/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export PATH="$toolchain:$PATH"
+          export CC_aarch64_linux_android="$toolchain/aarch64-linux-android24-clang"
+          export CXX_aarch64_linux_android="$toolchain/aarch64-linux-android24-clang++"
+          export AR_aarch64_linux_android="$toolchain/llvm-ar"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$toolchain/aarch64-linux-android24-clang"
+          export ANDROID_NDK_ROOT="$ndk_root"
+          cargo check -p browser --features vendored-tls --target aarch64-linux-android
       - name: Playwright internal bridge
         env:
           SCCACHE_GHA_ENABLED: "true"

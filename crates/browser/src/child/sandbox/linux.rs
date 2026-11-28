@@ -28,6 +28,23 @@ const CLONE_NAMESPACE_MASK: u64 = 0x0002_0000
     | 0x4000_0000
     | 0x0000_0080;
 
+// https://raw.githubusercontent.com/torvalds/linux/master/include/uapi/asm-generic/unistd.h — libc's Android bindings omit these arm64 generic numbers; the kernel ABI is shared.
+#[cfg(all(target_os = "android", target_arch = "aarch64"))]
+mod sysno {
+    pub(super) const SYS_FSTAT: i64 = 80;
+    pub(super) const SYS_FSTATFS: i64 = 44;
+    pub(super) const SYS_NEWFSTATAT: i64 = 79;
+    pub(super) const SYS_RSEQ: i64 = 293;
+}
+
+#[cfg(not(all(target_os = "android", target_arch = "aarch64")))]
+mod sysno {
+    pub(super) use libc::{
+        SYS_fstat as SYS_FSTAT, SYS_fstatfs as SYS_FSTATFS, SYS_newfstatat as SYS_NEWFSTATAT,
+        SYS_rseq as SYS_RSEQ,
+    };
+}
+
 pub(super) fn engage(font_dirs: &[PathBuf]) -> io::Result<()> {
     engage_landlock(font_dirs)?;
     engage_seccomp()?;
@@ -222,7 +239,7 @@ const ALLOWED_SYSCALLS: &[i64] = &[
     libc::SYS_futex,
     libc::SYS_set_robust_list,
     libc::SYS_get_robust_list,
-    libc::SYS_rseq,
+    sysno::SYS_RSEQ,
     libc::SYS_sched_yield,
     libc::SYS_sched_getaffinity,
     libc::SYS_sched_getparam,
@@ -264,10 +281,10 @@ const ALLOWED_SYSCALLS: &[i64] = &[
     libc::SYS_close,
     libc::SYS_close_range,
     libc::SYS_lseek,
-    libc::SYS_fstat,
-    libc::SYS_newfstatat,
+    sysno::SYS_FSTAT,
+    sysno::SYS_NEWFSTATAT,
     libc::SYS_statx,
-    libc::SYS_fstatfs,
+    sysno::SYS_FSTATFS,
     libc::SYS_getdents64,
     libc::SYS_openat,
     libc::SYS_readlinkat,
