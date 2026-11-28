@@ -72,6 +72,7 @@
     "__tbIsHeaderValue": "readonly",
     "__tbIsTypedArray": "readonly",
     "__tbIsWindow": "readonly",
+    "__tbWindowData": "readonly",
     "__tbIteratorSymbol": "readonly",
     "__tbJsonParse": "readonly",
     "__tbJsonStringify": "readonly",
